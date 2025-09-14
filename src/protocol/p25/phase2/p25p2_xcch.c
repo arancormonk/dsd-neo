@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p2_xcch.c
  * Phase 2 SACCH/FACCH/LCCH Handling
@@ -8,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -41,9 +45,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     int res = (payload[6] << 1) | (payload[7] << 0);
     int b = 9;
     b = (payload[8] << 1) | (payload[9] << 0); //combined b1 and b2
-    int mco_a = 69;
-    //mco will tell us the number of octets to use in variable length MAC PDUs, need a table or something
-    mco_a = (payload[10] << 5) | (payload[11] << 4) | (payload[12] << 3) | (payload[13] << 2) | (payload[14] << 0)
+    int mco_a = 0;
+    // Message Carrying Octets (6 bits) packed in payload[10..15]
+    mco_a = (payload[10] << 5) | (payload[11] << 4) | (payload[12] << 3) | (payload[13] << 2) | (payload[14] << 1)
             | (payload[15] << 0);
     UNUSED3(mac_offset, b, mco_a);
 
@@ -69,10 +73,14 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         }
     }
     if (state->p2_is_lcch == 1) {
-        int len = 0;
-        //int len = mac_msg_len[SMAC[1]] * 8;
-        //if (len > 164) len = 164; //prevent potential stack smash or other issue.
-        len = 164;
+        int len = 164;
+        // Compute CRC16 span when MCO is present: header (16 bits) + mco_a octets, bounded by 164
+        if (mco_a > 0) {
+            int bits = 16 + (mco_a * 8);
+            if (bits > 0 && bits <= 164) {
+                len = bits;
+            }
+        }
         err = crc16_lb_bridge(payload, len);
         if (err != 0) //CRC Failure, warn or skip.
         {
@@ -390,63 +398,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         if (((state->currentslot == 0) && (state->dmrburstL == 24))
             || ((state->currentslot == 1) && (state->dmrburstR == 24))) {
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-
-                //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-                if (state->p25_cc_is_tdma == 0) {
-                    state->samplesPerSymbol = 10;
-                    state->symbolCenter = 4;
-                    //re-enable both slots
-                    opts->slot1_on = 1;
-                    opts->slot2_on = 1;
-                }
-
-                //rigctl
-                if (opts->use_rigctl == 1) {
-                    state->lasttg = 0;
-                    state->lastsrc = 0;
-                    state->lasttgR = 0;
-                    state->lastsrcR = 0;
-                    state->payload_algid = 0;
-                    state->payload_keyid = 0;
-                    state->payload_algidR = 0;
-                    state->payload_keyidR = 0;
-                    // state->payload_miP = 0;
-                    //reset some strings
-                    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-                    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-                    sprintf(state->active_channel[0], "%s", "");
-                    sprintf(state->active_channel[1], "%s", "");
-                    opts->p25_is_tuned = 0;
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
-                    SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
-                }
-                //rtl
-                else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                    state->lasttg = 0;
-                    state->lastsrc = 0;
-                    state->lasttgR = 0;
-                    state->lastsrcR = 0;
-                    state->payload_algid = 0;
-                    state->payload_keyid = 0;
-                    state->payload_algidR = 0;
-                    state->payload_keyidR = 0;
-                    // state->payload_miP = 0;
-                    //reset some strings
-                    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-                    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-                    sprintf(state->active_channel[0], "%s", "");
-                    sprintf(state->active_channel[1], "%s", "");
-                    opts->p25_is_tuned = 0;
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                    if (g_rtl_ctx) {
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
-                    }
-#endif
-                }
+                p25_sm_on_release(opts, state);
             }
         }
 
@@ -848,63 +800,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         if (((state->currentslot == 0) && (state->dmrburstR == 24))
             || ((state->currentslot == 1) && (state->dmrburstL == 24))) {
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-
-                //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-                if (state->p25_cc_is_tdma == 0) {
-                    state->samplesPerSymbol = 10;
-                    state->symbolCenter = 4;
-                    //re-enable both slots
-                    opts->slot1_on = 1;
-                    opts->slot2_on = 1;
-                }
-
-                //rigctl
-                if (opts->use_rigctl == 1) {
-                    state->lasttg = 0;
-                    state->lastsrc = 0;
-                    state->lasttgR = 0;
-                    state->lastsrcR = 0;
-                    state->payload_algid = 0;
-                    state->payload_keyid = 0;
-                    state->payload_algidR = 0;
-                    state->payload_keyidR = 0;
-                    // state->payload_miP = 0;
-                    //reset some strings
-                    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-                    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-                    sprintf(state->active_channel[0], "%s", "");
-                    sprintf(state->active_channel[1], "%s", "");
-                    opts->p25_is_tuned = 0;
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
-                    SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
-                }
-                //rtl
-                else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                    state->lasttg = 0;
-                    state->lastsrc = 0;
-                    state->lasttgR = 0;
-                    state->lastsrcR = 0;
-                    state->payload_algid = 0;
-                    state->payload_keyid = 0;
-                    state->payload_algidR = 0;
-                    state->payload_keyidR = 0;
-                    // state->payload_miP = 0;
-                    //reset some strings
-                    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-                    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-                    sprintf(state->active_channel[0], "%s", "");
-                    sprintf(state->active_channel[1], "%s", "");
-                    opts->p25_is_tuned = 0;
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                    if (g_rtl_ctx) {
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
-                    }
-#endif
-                }
+                p25_sm_on_release(opts, state);
             }
         }
 

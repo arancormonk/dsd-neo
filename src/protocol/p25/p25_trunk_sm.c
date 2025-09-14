@@ -52,6 +52,12 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
             opts->slot1_on = 1;
             opts->slot2_on = 0;
         }
+    } else {
+        // Single‑carrier channel: set baseline symbol timing and enable both slots
+        state->samplesPerSymbol = 10;
+        state->symbolCenter = 4;
+        opts->slot1_on = 1;
+        opts->slot2_on = 1;
     }
 
     // Tune

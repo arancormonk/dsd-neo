@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p2_frame.c
  * Phase 2 TDMA Frame Processing
@@ -10,6 +13,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 //DUID Look Up Table from OP25
 static const int16_t duid_lookup[256] =
@@ -903,16 +907,21 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         //this is primarily a fix for TDMA control channels that carry voice (Duke P25)
         //but may also allow for chain tuning without returning to the control channel <--may be problematic since we can assign a p25_cc_freq from the pdu
         if (duid_decoded == 13 && opts->p25_is_tuned == 1
-            && ((time(NULL) - state->last_vc_sync_time) > opts->trunk_hangtime)) //version for MAC_SIGNAL only, no idle
+            && ((time(NULL) - state->last_vc_sync_time) > opts->trunk_hangtime)) // MAC_SIGNAL hangtime expiry
         {
-            opts->p25_is_tuned = 0;
-            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-            memset(state->active_channel, 0, sizeof(state->active_channel)); //zero out here? I think this will be fine
-            //clear out stale voice samples left in the buffer and reset counter value
-            state->voice_counter[0] = 0;
-            state->voice_counter[1] = 0;
-            memset(state->s_l4, 0, sizeof(state->s_l4));
-            memset(state->s_r4, 0, sizeof(state->s_r4));
+            if (opts->p25_trunk == 1) {
+                // Prefer centralized release logic
+                p25_sm_on_release(opts, state);
+            } else {
+                // Non-trunking: minimal reset
+                state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+                memset(state->active_channel, 0, sizeof(state->active_channel));
+                state->voice_counter[0] = 0;
+                state->voice_counter[1] = 0;
+                memset(state->s_l4, 0, sizeof(state->s_l4));
+                memset(state->s_r4, 0, sizeof(state->s_r4));
+                opts->p25_is_tuned = 0;
+            }
         } else if (duid_decoded == 13 && ((time(NULL) - state->last_active_time) > 2)
                    && opts->p25_is_tuned == 0) //should we use && opts->p25_is_tuned == 1?
         {

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25_lcw.c
  * P25p1 Link Control Word Decoding
@@ -8,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -297,86 +301,15 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " Message Update – Source ID Extension Required");
             }
 
-            //tune back to CC here - save about 1-2 seconds
+            // Return to control channel (call termination)
             else if (lc_format == 0x4F) //# Call Termination/Cancellation
             {
                 uint32_t tgt =
                     (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24); //can be individual, or all units (0xFFFFFF)
                 fprintf(stderr, " Call Termination; TGT: %d;", tgt);
-                memset(state->dmr_pdu_sf[0], 0,
-                       sizeof(state->dmr_pdu_sf[0])); //reset storage for any talker alias (or other items)
+                memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
                 if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-
-                    //clear stale keys if loaded
-                    if (state->keyloader == 1) {
-                        state->R = 0;
-                        state->A1[0] = 0;
-                        state->A2[0] = 0;
-                        state->A3[0] = 0;
-                        state->A4[0] = 0;
-                        state->aes_key_loaded[0] = 0;
-                        // state->H = 0; //shim for above (this apply here?)
-                    }
-
-                    //Will we need to check for a symbolrate change here, can a P25p2 TDMA-CC system
-                    //revert back to a phase 1 traffic channel or carry a phase 1 traffic channel?
-                    if (state->p25_cc_is_tdma == 1) {
-                        state->samplesPerSymbol = 8;
-                        state->symbolCenter = 3;
-                        opts->frame_p25p1 = 0; //turn it back off
-                    }
-
-                    //clear heuristics from current traffic channel
-                    if (opts->frame_p25p1 == 1 && opts->use_heuristics == 1) {
-                        initialize_p25_heuristics(&state->p25_heuristics);
-                        initialize_p25_heuristics(&state->inv_p25_heuristics);
-                    }
-
-                    //re-enable both slots (failsafe)
-                    opts->slot1_on = 1;
-                    opts->slot2_on = 1;
-
-                    //rigctl
-                    if (opts->use_rigctl == 1) {
-                        state->lasttg = 0;
-                        state->lastsrc = 0;
-                        state->gi[0] = -1;
-                        state->payload_algid = 0;
-                        state->payload_keyid = 0;
-                        // state->payload_miP = 0;
-                        //reset some strings
-                        sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-                        sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-                        sprintf(state->active_channel[0], "%s", "");
-                        sprintf(state->active_channel[1], "%s", "");
-                        opts->p25_is_tuned = 0;
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                        if (opts->setmod_bw != 0) {
-                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                        }
-                        SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
-                    }
-                    //rtl
-                    else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                        state->lasttg = 0;
-                        state->lastsrc = 0;
-                        state->gi[0] = -1;
-                        state->payload_algid = 0;
-                        state->payload_keyid = 0;
-                        // state->payload_miP = 0;
-                        //reset some strings
-                        sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-                        sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-                        sprintf(state->active_channel[0], "%s", "");
-                        sprintf(state->active_channel[1], "%s", "");
-                        opts->p25_is_tuned = 0;
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                        if (g_rtl_ctx) {
-                            rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
-                        }
-#endif
-                    }
+                    p25_sm_on_release(opts, state);
                 }
             }
 
