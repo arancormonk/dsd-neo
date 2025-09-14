@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p1_tsbk.c
  * P25p1 Trunking Signal Block Handler
@@ -8,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -292,51 +296,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
                 //tune if tuning available
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                    //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                        && freq1 != 0) //if we aren't already on a VC and have a valid frequency
-                    {
-
-                        //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                        if (1 == 1) {
-                            if (state->p25_chan_tdma[channel >> 12] == 1) {
-                                state->samplesPerSymbol = 8;
-                                state->symbolCenter = 3;
-
-                                //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                                //this will only occur in realtime tuning, not not required .bin or .wav playback
-                                if (channel & 1) //VCH1
-                                {
-                                    opts->slot1_on = 0;
-                                    opts->slot2_on = 1;
-                                } else //VCH0
-                                {
-                                    opts->slot1_on = 1;
-                                    opts->slot2_on = 0;
-                                }
-                            }
-                        }
-                        //rigctl
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd, freq1);
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                            opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                            state->last_vc_sync_time = time(NULL);
-                        }
-                        //rtl
-                        else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)freq1);
-                            }
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                            opts->p25_is_tuned = 1;
-                            state->last_vc_sync_time = time(NULL);
-#endif
-                        }
+                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+                        p25_sm_on_group_grant(opts, state, channel, svc, group, (int)source);
                     }
                 }
             }
@@ -408,40 +369,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
                     //tune if tuning available
                     if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                        //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                            && tempf != 0) //if we aren't already on a VC and have a valid frequency
-                        {
-
-                            //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                            if (1 == 1) {
-                                if (state->p25_chan_tdma[tempc >> 12] == 1) {
-                                    state->samplesPerSymbol = 8;
-                                    state->symbolCenter = 3;
-                                }
-                            }
-                            //rigctl
-                            if (opts->use_rigctl == 1) {
-                                if (opts->setmod_bw != 0) {
-                                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                }
-                                SetFreq(opts->rigctl_sockfd, tempf);
-                                state->p25_vc_freq[0] = state->p25_vc_freq[1] = tempf;
-                                opts->p25_is_tuned =
-                                    1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                                state->last_vc_sync_time = time(NULL);
-                            }
-                            //rtl
-                            else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                                if (g_rtl_ctx) {
-                                    rtl_stream_tune(g_rtl_ctx, (uint32_t)tempf);
-                                }
-                                state->p25_vc_freq[0] = state->p25_vc_freq[1] = tempf;
-                                opts->p25_is_tuned = 1;
-                                state->last_vc_sync_time = time(NULL);
-#endif
-                            }
+                        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tempf != 0) {
+                            p25_sm_on_group_grant(opts, state, tempc, /*svc_bits*/ 0, tempg, /*src*/ 0);
                         }
                     }
                 }
@@ -601,6 +530,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
             fprintf(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
             state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
+            long neigh[1] = {state->p25_cc_freq};
+            p25_sm_on_neighbor_update(opts, state, neigh, 1);
             state->p25_cc_is_tdma = 0; //flag off for CC tuning purposes when system is qpsk
 
             //place the cc freq into the list at index 0 if 0 is empty, or not the same,

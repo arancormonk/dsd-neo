@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -17,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
@@ -759,7 +763,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
             //return to the control channel
             fprintf(stderr, " No Enc Following on P25p1 Trunking; Return to CC; \n");
-            return_to_cc(opts, state);
+            p25_sm_on_release(opts, state);
         }
     }
 #endif //P25p1_ENC_LO

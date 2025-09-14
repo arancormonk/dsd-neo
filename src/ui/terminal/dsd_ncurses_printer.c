@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * dsd_ncurses_printer.c
  * DSD-FME ncurses open, printer, and close
@@ -470,6 +473,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
+        // P25 SM summary line
+        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d\n", state->p25_sm_tune_count,
+               state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count,
+               state->p25_cc_cand_idx);
     }
 #else //set on to UPPER CASE, off to lower case
     if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
@@ -500,6 +507,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
+        // P25 SM summary line
+        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d\n", state->p25_sm_tune_count,
+               state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count,
+               state->p25_cc_cand_idx);
     }
 #endif
 //print additional information for EDACS modes and toggles

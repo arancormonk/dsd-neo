@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -20,6 +23,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <locale.h>
 
 void
@@ -97,6 +101,32 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (state->dmr_rest_channel == -1 && opts->p25_is_tuned == 0 && opts->p25_trunk == 1
         && ((time(NULL) - state->last_cc_sync_time) > (opts->trunk_hangtime + 0))) //was 3, go to hangtime value
     {
+        int tuned_by_candidate = 0;
+        long cand_freq = 0;
+        if (p25_sm_next_cc_candidate(state, &cand_freq) && cand_freq != 0) {
+            //rigctl
+            if (opts->use_rigctl == 1) {
+                if (opts->setmod_bw != 0) {
+                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+                }
+                SetFreq(opts->rigctl_sockfd, cand_freq);
+            }
+            //rtl
+            if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                if (g_rtl_ctx) {
+                    rtl_stream_tune(g_rtl_ctx, (uint32_t)cand_freq);
+                }
+#endif
+            }
+            fprintf(stderr, "Tuning to Candidate CC: %.06lf MHz\n", (double)cand_freq / 1000000);
+            if (opts->verbose > 1) {
+                fprintf(stderr, " P25 SM: CC cand used=%u/%u tunes=%u releases=%u\n", state->p25_cc_cand_used,
+                        state->p25_cc_cand_added, state->p25_sm_tune_count, state->p25_sm_release_count);
+            }
+            state->last_cc_sync_time = time(NULL);
+            tuned_by_candidate = 1;
+        }
 
         //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
         if (state->p25_cc_is_tdma == 0) {
@@ -107,47 +137,49 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             opts->slot2_on = 1;
         }
 
-        //start going through the lcn/frequencies CC/signal hunting
-        fprintf(stderr, "Control Channel Signal Lost. Searching for Control Channel.\n");
-        //make sure our current roll value doesn't exceed value of frequencies imported
-        if (state->lcn_freq_roll
-            >= state->lcn_freq_count) //fixed this to skip the extra wait out at the end of the list
-        {
-            state->lcn_freq_roll = 0; //reset to zero
-        }
-        //roll an extra value up if the current is the same as what's already loaded -- faster hunting on Cap+, etc
-        if (state->lcn_freq_roll != 0) {
-            if (state->trunk_lcn_freq[state->lcn_freq_roll - 1] == state->trunk_lcn_freq[state->lcn_freq_roll]) {
-                state->lcn_freq_roll++;
-                //check roll again if greater than expected, then go back to zero
-                if (state->lcn_freq_roll >= state->lcn_freq_count) {
-                    state->lcn_freq_roll = 0; //reset to zero
+        if (!tuned_by_candidate) {
+            //start going through the lcn/frequencies CC/signal hunting
+            fprintf(stderr, "Control Channel Signal Lost. Searching for Control Channel.\n");
+            //make sure our current roll value doesn't exceed value of frequencies imported
+            if (state->lcn_freq_roll
+                >= state->lcn_freq_count) //fixed this to skip the extra wait out at the end of the list
+            {
+                state->lcn_freq_roll = 0; //reset to zero
+            }
+            //roll an extra value up if the current is the same as what's already loaded -- faster hunting on Cap+, etc
+            if (state->lcn_freq_roll != 0) {
+                if (state->trunk_lcn_freq[state->lcn_freq_roll - 1] == state->trunk_lcn_freq[state->lcn_freq_roll]) {
+                    state->lcn_freq_roll++;
+                    //check roll again if greater than expected, then go back to zero
+                    if (state->lcn_freq_roll >= state->lcn_freq_count) {
+                        state->lcn_freq_roll = 0; //reset to zero
+                    }
                 }
             }
-        }
-        //check that we have a non zero value first, then tune next frequency
-        if (state->trunk_lcn_freq[state->lcn_freq_roll] != 0) {
-            //rigctl
-            if (opts->use_rigctl == 1) {
-                if (opts->setmod_bw != 0) {
-                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+            //check that we have a non zero value first, then tune next frequency
+            if (state->trunk_lcn_freq[state->lcn_freq_roll] != 0) {
+                //rigctl
+                if (opts->use_rigctl == 1) {
+                    if (opts->setmod_bw != 0) {
+                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+                    }
+                    SetFreq(opts->rigctl_sockfd, state->trunk_lcn_freq[state->lcn_freq_roll]);
                 }
-                SetFreq(opts->rigctl_sockfd, state->trunk_lcn_freq[state->lcn_freq_roll]);
-            }
-            //rtl
-            if (opts->audio_in_type == 3) {
+                //rtl
+                if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
-                if (g_rtl_ctx) {
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
-                }
+                    if (g_rtl_ctx) {
+                        rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
+                    }
 #endif
-            }
+                }
 
-            fprintf(stderr, "Tuning to Frequency: %.06lf MHz\n",
-                    (double)state->trunk_lcn_freq[state->lcn_freq_roll] / 1000000);
+                fprintf(stderr, "Tuning to Frequency: %.06lf MHz\n",
+                        (double)state->trunk_lcn_freq[state->lcn_freq_roll] / 1000000);
+            }
+            state->lcn_freq_roll++;
+            state->last_cc_sync_time = time(NULL); //set again to give another x seconds
         }
-        state->lcn_freq_roll++;
-        state->last_cc_sync_time = time(NULL); //set again to give another x seconds
     }
 
     int i, t, dibit, sync, symbol, synctest_pos, lastt;

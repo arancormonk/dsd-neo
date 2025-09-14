@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p1_pdu_trunking.c
  * P25p1 PDU Alt Format Trunking
@@ -8,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -76,6 +80,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             state->p2_wacn = wacn;
             state->p2_sysid = sysid;
         }
+
+        long neigh[2] = {ct_freq, cr_freq};
+        p25_sm_on_neighbor_update(opts, state, neigh, 2);
     }
     //RFSS Status Broadcast - Extended 6.2.15.2
     else if (opcode == 0x3A) {
@@ -91,8 +98,11 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         fprintf(stderr,
                 "  LRA [%02X] SYSID [%03X] RFSS ID [%03d] SITE ID [%03d]\n  CHAN-T [%04X] CHAN-R [%02X] SSC [%02X] ",
                 lra, lsysid, rfssid, siteid, channelt, channelr, sysclass);
-        process_channel_to_freq(opts, state, channelt);
-        process_channel_to_freq(opts, state, channelr);
+        long int f1 = process_channel_to_freq(opts, state, channelt);
+        long int f2 = process_channel_to_freq(opts, state, channelr);
+
+        long neigh2[2] = {f1, f2};
+        p25_sm_on_neighbor_update(opts, state, neigh2, 2);
 
         state->p2_siteid = siteid;
         state->p2_rfssid = rfssid;
@@ -129,8 +139,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         if (cfva & 0x1) {
             fprintf(stderr, " Valid RFSS Connection Active");
         }
-        process_channel_to_freq(opts, state, channelt);
-        process_channel_to_freq(opts, state, channelr);
+        long int f3 = process_channel_to_freq(opts, state, channelt);
+        long int f4 = process_channel_to_freq(opts, state, channelr);
+        long neigh3[2] = {f3, f4};
+        p25_sm_on_neighbor_update(opts, state, neigh3, 2);
 
     }
 
@@ -205,51 +217,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
         //tune if tuning available
         if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-            //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                && freq1 != 0) //if we aren't already on a VC and have a valid frequency
-            {
-
-                //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                if (1 == 1) {
-                    if (state->p25_chan_tdma[channelt >> 12] == 1) {
-                        state->samplesPerSymbol = 8;
-                        state->symbolCenter = 3;
-
-                        //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                        //this will only occur in realtime tuning, not not required .bin or .wav playback
-                        if (channelt & 1) //VCH1
-                        {
-                            opts->slot1_on = 0;
-                            opts->slot2_on = 1;
-                        } else //VCH0
-                        {
-                            opts->slot1_on = 1;
-                            opts->slot2_on = 0;
-                        }
-                    }
-                }
-                //rigctl
-                if (opts->use_rigctl == 1) {
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
-                    SetFreq(opts->rigctl_sockfd, freq1);
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                    opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                    state->last_vc_sync_time = time(NULL);
-                }
-                //rtl
-                else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                    if (g_rtl_ctx) {
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)freq1);
-                    }
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                    opts->p25_is_tuned = 1;
-                    state->last_vc_sync_time = time(NULL);
-#endif
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+                p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
             }
         }
     }
@@ -332,51 +301,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
         //tune if tuning available
         if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-            //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                && freq1 != 0) //if we aren't already on a VC and have a valid frequency
-            {
-
-                //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                if (1 == 1) {
-                    if (state->p25_chan_tdma[channelt >> 12] == 1) {
-                        state->samplesPerSymbol = 8;
-                        state->symbolCenter = 3;
-
-                        //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                        //this will only occur in realtime tuning, not not required .bin or .wav playback
-                        if (channelt & 1) //VCH1
-                        {
-                            opts->slot1_on = 0;
-                            opts->slot2_on = 1;
-                        } else //VCH0
-                        {
-                            opts->slot1_on = 1;
-                            opts->slot2_on = 0;
-                        }
-                    }
-                }
-                //rigctl
-                if (opts->use_rigctl == 1) {
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
-                    SetFreq(opts->rigctl_sockfd, freq1);
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                    opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                    state->last_vc_sync_time = time(NULL);
-                }
-                //rtl
-                else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                    if (g_rtl_ctx) {
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)freq1);
-                    }
-                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                    opts->p25_is_tuned = 1;
-                    state->last_vc_sync_time = time(NULL);
-#endif
-                }
+            if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+                p25_sm_on_indiv_grant(opts, state, channelt, svc, (int)target, (int)source);
             }
         }
     }
@@ -587,51 +513,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
             //tune if tuning available
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                    && freq1 != 0) //if we aren't already on a VC and have a valid frequency
-                {
-
-                    //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                    if (1 == 1) {
-                        if (state->p25_chan_tdma[channelt >> 12] == 1) {
-                            state->samplesPerSymbol = 8;
-                            state->symbolCenter = 3;
-
-                            //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                            //this will only occur in realtime tuning, not not required .bin or .wav playback
-                            if (channelt & 1) //VCH1
-                            {
-                                opts->slot1_on = 0;
-                                opts->slot2_on = 1;
-                            } else //VCH0
-                            {
-                                opts->slot1_on = 1;
-                                opts->slot2_on = 0;
-                            }
-                        }
-                    }
-                    //rigctl
-                    if (opts->use_rigctl == 1) {
-                        if (opts->setmod_bw != 0) {
-                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                        }
-                        SetFreq(opts->rigctl_sockfd, freq1);
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                        opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                        state->last_vc_sync_time = time(NULL);
-                    }
-                    //rtl
-                    else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                        if (g_rtl_ctx) {
-                            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq1);
-                        }
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq1;
-                        opts->p25_is_tuned = 1;
-                        state->last_vc_sync_time = time(NULL);
-#endif
-                    }
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+                    p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
                 }
             }
         }

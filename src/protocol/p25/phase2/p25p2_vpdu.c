@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p2_vpdu.c
  * Phase 2 Variable PDU (and TSBK PDU) Handling
@@ -8,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -161,54 +165,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 goto SKIPCALL;
             }
 
-            //tune if tuning available
+            //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                    && freq != 0) //if we aren't already on a VC and have a valid frequency
-                {
-                    //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                    if (1 == 1) {
-                        if (state->p25_chan_tdma[channel >> 12] == 1) {
-                            state->samplesPerSymbol = 8;
-                            state->symbolCenter = 3;
-
-                            //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                            //this will only occur in realtime tuning, not not required .bin or .wav playback
-                            // if (channel & 1) //VCH1
-                            // {
-                            // 	opts->slot1_on = 0;
-                            // 	opts->slot2_on = 1;
-                            // }
-                            // else //VCH0
-                            // {
-                            // 	opts->slot1_on = 1;
-                            // 	opts->slot2_on = 0;
-                            // }
-                        }
-                    }
-
-                    //rigctl
-                    if (opts->use_rigctl == 1) {
-                        if (opts->setmod_bw != 0) {
-                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                        }
-                        SetFreq(opts->rigctl_sockfd, freq);
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                        opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                        state->last_vc_sync_time = time(NULL);
-                    }
-                    //rtl
-                    else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                        if (g_rtl_ctx) {
-                            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
-                        }
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                        opts->p25_is_tuned = 1;
-                        state->last_vc_sync_time = time(NULL);
-#endif
-                    }
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                    p25_sm_on_group_grant(opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
                 }
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
@@ -829,56 +789,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // 	opts->p25_is_tuned = 0; //unlock tuner
             // }
 
-            //tune if tuning available
+            //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                    && freq != 0) //if we aren't already on a VC and have a valid frequency
-                {
-                    //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                    if (1 == 1) {
-                        if (state->p25_chan_tdma[channel >> 12] == 1) {
-                            state->samplesPerSymbol = 8;
-                            state->symbolCenter = 3;
-
-                            //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                            //this will only occur in realtime tuning, not not required .bin or .wav playback
-                            // if (channel & 1) //VCH1
-                            // {
-                            // 	opts->slot1_on = 0;
-                            // 	opts->slot2_on = 1;
-                            // }
-                            // else //VCH0
-                            // {
-                            // 	opts->slot1_on = 1;
-                            // 	opts->slot2_on = 0;
-                            // }
-                        }
-                    }
-
-                    //rigctl
-                    if (opts->use_rigctl == 1) {
-                        if (opts->setmod_bw != 0) {
-                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                        }
-                        SetFreq(opts->rigctl_sockfd, freq);
-                        if (state->synctype == 0 || state->synctype == 1) {
-                            state->p25_vc_freq[0] = freq;
-                        }
-                        opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                        state->last_vc_sync_time = time(NULL);
-                    }
-                    //rtl
-                    else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                        if (g_rtl_ctx) {
-                            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
-                        }
-                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                        opts->p25_is_tuned = 1;
-                        state->last_vc_sync_time = time(NULL);
-#endif
-                    }
+                if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                    p25_sm_on_indiv_grant(opts, state, channel, /*svc_bits*/ 0, target, source);
                 }
             }
             if (opts->p25_trunk == 0) {
@@ -1033,54 +947,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     opts->p25_is_tuned = 0; //unlock tuner
                 }
 
-                //tune if tuning available
+                //tune if tuning available (centralized)
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                    //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                        && tunable_freq != 0) //if we aren't already on a VC and have a valid frequency
-                    {
-                        //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                        if (1 == 1) {
-                            if (state->p25_chan_tdma[tunable_chan >> 12] == 1) {
-                                state->samplesPerSymbol = 8;
-                                state->symbolCenter = 3;
-
-                                //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                                //this will only occur in realtime tuning, not not required .bin or .wav playback
-                                // if (tunable_chan & 1) //VCH1
-                                // {
-                                // 	opts->slot1_on = 0;
-                                // 	opts->slot2_on = 1;
-                                // }
-                                // else //VCH0
-                                // {
-                                // 	opts->slot1_on = 1;
-                                // 	opts->slot2_on = 0;
-                                // }
-                            }
-                        }
-
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd, tunable_freq);
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = tunable_freq;
-                            opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                            state->last_vc_sync_time = time(NULL);
-                        }
-                        //rtl
-                        else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)tunable_freq);
-                            }
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = tunable_freq;
-                            opts->p25_is_tuned = 1;
-                            state->last_vc_sync_time = time(NULL);
-                            j = 8; //break loop
-#endif
-                        }
+                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                        int svc_bits = (j == 0) ? svc1 : svc2;
+                        p25_sm_on_group_grant(opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
                     }
                 }
                 if (opts->p25_trunk == 0) {
@@ -1266,60 +1137,12 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     opts->p25_is_tuned = 0; //unlock tuner
                 }
 
-                //check to see if the group candidate is blocked first
-                if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
-                    //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                        && tunable_freq != 0) //if we aren't already on a VC and have a valid frequency already
-                    {
-                        //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                        if (1 == 1) {
-                            if (state->p25_chan_tdma[tunable_chan >> 12] == 1) {
-                                state->samplesPerSymbol = 8;
-                                state->symbolCenter = 3;
-
-                                //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                                //this will only occur in realtime tuning, not not required .bin or .wav playback
-                                // if (tunable_chan & 1) //VCH1
-                                // {
-                                // 	opts->slot1_on = 0;
-                                // 	opts->slot2_on = 1;
-                                // }
-                                // else //VCH0
-                                // {
-                                // 	opts->slot1_on = 1;
-                                // 	opts->slot2_on = 0;
-                                // }
-                            }
-                        }
-
-                        //rigctl
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd, tunable_freq);
-                            //probably best to only set these when really tuning
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = tunable_freq;
-                            opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                            state->last_vc_sync_time = time(NULL);
-                            j = 8; //break loop
-                        }
-                        //rtl
-                        else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)tunable_freq);
-                            }
-                            //probably best to only set these when really tuning
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = tunable_freq;
-                            opts->p25_is_tuned = 1;
-                            state->last_vc_sync_time = time(NULL);
-                            j = 8; //break loop
-#endif
-                        }
+                //tune if tuning available (centralized)
+                if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
+                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                        int svc_bits = (j == 0) ? so1 : ((j == 1) ? so2 : so3);
+                        p25_sm_on_group_grant(opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
+                        j = 8; //break loop after tuning one candidate
                     }
                 }
                 if (opts->p25_trunk == 0) {
@@ -1411,60 +1234,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     opts->p25_is_tuned = 0; //unlock tuner
                 }
 
-                //check to see if the group candidate is blocked first
-                if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
-                    && (strcmp(mode, "B") != 0)) //DE is digital encrypted, B is block
-                {
-                    //reworked to set freq once on any call to process_channel_to_freq, and tune on that, independent of slot
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
-                        && tunable_freq != 0) //if we aren't already on a VC and have a valid frequency already
-                    {
-                        //changed to allow symbol rate change on C4FM Phase 2 systems as well as QPSK
-                        if (1 == 1) {
-                            if (state->p25_chan_tdma[tunable_chan >> 12] == 1) {
-                                state->samplesPerSymbol = 8;
-                                state->symbolCenter = 3;
-
-                                //shim fix to stutter/lag by only enabling slot on the target/channel we tuned to
-                                //this will only occur in realtime tuning, not not required .bin or .wav playback
-                                // if (tunable_chan & 1) //VCH1
-                                // {
-                                // 	opts->slot1_on = 0;
-                                // 	opts->slot2_on = 1;
-                                // }
-                                // else //VCH0
-                                // {
-                                // 	opts->slot1_on = 1;
-                                // 	opts->slot2_on = 0;
-                                // }
-                            }
-                        }
-
-                        //rigctl
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd, tunable_freq);
-                            //probably best to only set these when really tuning
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = tunable_freq;
-                            opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                            state->last_vc_sync_time = time(NULL);
-                            j = 8; //break loop
-                        }
-                        //rtl
-                        else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)tunable_freq);
-                            }
-                            //probably best to only set these when really tuning
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = tunable_freq;
-                            opts->p25_is_tuned = 1;
-                            state->last_vc_sync_time = time(NULL);
-                            j = 8; //break loop
-#endif
-                        }
+                //tune if tuning available (centralized)
+                if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
+                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                        p25_sm_on_group_grant(opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
+                        j = 8; //break loop after first tune
                     }
                 }
                 if (opts->p25_trunk == 0) {
@@ -2490,8 +2264,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "TGT: %d; ", add);
             fprintf(stderr, "CC: %03X; ", cc);
 
-            // if (slot == 0) state->lastsrc = 0;
-            // if (slot == 1) state->lastsrcR = 0;
+            // Return to CC on explicit release
+            p25_sm_on_release(opts, state);
         }
 
         //1 or 21, group voice channel message, abb and ext
@@ -2651,6 +2425,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X]", lra, lwacn, lsysid,
                     lcolorcode, channel);
             state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
+            long neigh_a[1] = {state->p25_cc_freq};
+            p25_sm_on_neighbor_update(opts, state, neigh_a, 1);
             state->p25_cc_is_tdma = 1;  //flag on for CC tuning purposes when system is qpsk
             if (state->p2_hardset == 0) //state->p2_is_lcch == 1 shim until CRC is working, prevent bogus data
             {
@@ -2678,8 +2454,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n Network Status Broadcast - Extended \n");
             fprintf(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X] CHAN-R [%04X]", lra, lwacn,
                     lsysid, lcolorcode, channelt, channelr);
-            state->p25_cc_freq = process_channel_to_freq(opts, state, channelt);
-            process_channel_to_freq(opts, state, channelr);
+            long int nf1 = process_channel_to_freq(opts, state, channelt);
+            long int nf2 = process_channel_to_freq(opts, state, channelr);
+            state->p25_cc_freq = nf1;
+            long neigh_b[2] = {nf1, nf2};
+            p25_sm_on_neighbor_update(opts, state, neigh_b, 2);
             state->p25_cc_is_tdma = 1;  //flag on for CC tuning purposes when system is qpsk
             if (state->p2_hardset == 0) //state->p2_is_lcch == 1 shim until CRC is working, prevent bogus data
             {
@@ -2715,7 +2494,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (cfva & 0x1) {
                 fprintf(stderr, " Valid RFSS Connection Active");
             }
-            process_channel_to_freq(opts, state, channelt);
+            long int af1 = process_channel_to_freq(opts, state, channelt);
+            long neigh_c[1] = {af1};
+            p25_sm_on_neighbor_update(opts, state, neigh_c, 1);
         }
 
         //Adjacent Status Broadcast, extended
@@ -2746,8 +2527,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (cfva & 0x1) {
                 fprintf(stderr, " Valid RFSS Connection Active");
             }
-            process_channel_to_freq(opts, state, channelt);
-            process_channel_to_freq(opts, state, channelr);
+            long int af2 = process_channel_to_freq(opts, state, channelt);
+            long int af3 = process_channel_to_freq(opts, state, channelr);
+            long neigh_d[2] = {af2, af3};
+            p25_sm_on_neighbor_update(opts, state, neigh_d, 2);
         }
 
     SKIPCALL:; //do nothing

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -827,6 +830,17 @@ typedef struct {
     long int p25_cc_freq;    //cc freq from net_stat
     long int p25_vc_freq[2]; //vc freq from voice grant updates, etc
     int p25_cc_is_tdma; //flag to tell us that the P25 control channel is TDMA so we can change symbol rate when required
+
+    // P25 CC hunting candidates discovered from RFSS/Adjacent/Network messages
+    long p25_cc_candidates[16];
+    int p25_cc_cand_count;
+    int p25_cc_cand_idx;
+
+    // P25 SM metrics
+    unsigned int p25_sm_tune_count;    // number of VC tunes via SM
+    unsigned int p25_sm_release_count; // number of releases via SM
+    unsigned int p25_cc_cand_added;    // candidates added
+    unsigned int p25_cc_cand_used;     // candidates used for hunting
 
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed
