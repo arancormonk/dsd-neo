@@ -1,0 +1,19 @@
+# Build artifacts
+/build/
+
+# Tool caches
+/.cache/
+
+# Editor/IntelliSense database generated via CMake Tools
+/compile_commands.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Ignore all markdown files in root directory except README.md
+/*.md
+!/README.md
+
+# Disable CI system (codebase not ready)
+/.github/
