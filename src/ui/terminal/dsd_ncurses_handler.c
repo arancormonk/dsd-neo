@@ -632,6 +632,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         if (opts->trunk_tune_enc_calls == 1) {
             // Enable ENC lockout
             opts->trunk_tune_enc_calls = 0;
+            // Immediately gate off P25p2 audio until next MAC_PTT decision
+            state->p25_p2_audio_allowed[0] = 0;
+            state->p25_p2_audio_allowed[1] = 0;
         } else {
             // Disable ENC lockout
             opts->trunk_tune_enc_calls = 1;

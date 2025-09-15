@@ -344,6 +344,9 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
             if (enc_lo == 1 && state->lasttg != 0) {
                 // Return to CC swiftly; prints/logs handled in later code path
                 p25_sm_on_release(opts, state);
+                // Stop processing remaining IMBE frames for this LDU to avoid
+                // any residual audio output while releasing to CC.
+                return;
             }
         }
 #endif // P25p1_ENC_LO
