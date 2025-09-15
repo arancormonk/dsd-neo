@@ -789,6 +789,9 @@ initOpts(dsd_opts* opts) {
     //Trunking - Tune Encrypted Calls (P25 only on applicable grants with svc opts)
     opts->trunk_tune_enc_calls = 1; //enabled by default
 
+    //P25 LCW explicit retune (format 0x44)
+    opts->p25_lcw_retune = 0; //disabled by default
+
     opts->dPMR_next_part_of_superframe = 0;
 
 //OSS audio - Slot Preference
@@ -1350,6 +1353,7 @@ usage() {
     printf("  -N            Use NCurses Terminal\n");
     printf("                 dsd-neo -N 2> console_log.txt \n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
+    printf("  -j            Enable P25 LCW explicit retune (format 0x44)\n");
     printf("\n");
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
@@ -1911,7 +1915,7 @@ main(int argc, char** argv) {
 
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
-                       "89:Ek:I:J:O"))
+                       "89:Ek:I:J:Oj"))
            != -1) {
 
         switch (c) {
@@ -1967,6 +1971,12 @@ main(int argc, char** argv) {
             case '8':
                 opts.monitor_input_audio = 1;
                 fprintf(stderr, "Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");
+                break;
+
+            //Enable optional retune from P25 LCW explicit updates (format 0x44)
+            case 'j':
+                opts.p25_lcw_retune = 1;
+                fprintf(stderr, "P25: Enable LCW explicit retune (0x44).\n");
                 break;
 
             //rc4 enforcement on DMR (due to missing the PI header)

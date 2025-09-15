@@ -467,6 +467,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw(" Encrypted(e)");
         attron(COLOR_PAIR(4));
+        // LCW explicit retune toggle display
+        if (opts->p25_lcw_retune == 0) {
+            attron(COLOR_PAIR(2));
+        }
+        printw(" LCW-44(j)");
+        attron(COLOR_PAIR(4));
         printw(" Calls");
         if (opts->trunk_use_allow_list == 1) {
             printw(" - White List Mode\n");
@@ -500,6 +506,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw(" encrypted(e)");
         } else {
             printw(" ENCRYPTED(e)");
+        }
+        if (opts->p25_lcw_retune == 0) {
+            printw(" lcw-44(j)");
+        } else {
+            printw(" LCW-44(j)");
         }
         printw(" Calls");
         if (opts->trunk_use_allow_list == 1) {

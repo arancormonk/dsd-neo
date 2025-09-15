@@ -161,6 +161,30 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&LCW_bits[56], 16);
                 fprintf(stderr, "Ch: %04X TG: %d; ", channelt, group1);
                 UNUSED(channelr);
+
+                // Optional, guarded retune from LCW explicit update (format 0x44)
+                // Conditions:
+                //  - Enabled via opts->p25_lcw_retune
+                //  - Trunking mode active and CC known
+                //  - Group-call tuning allowed and TG Hold honored
+                //  - Encrypted calls skipped unless explicitly allowed
+                if (opts->p25_lcw_retune == 1 && opts->p25_trunk == 1 && state->p25_cc_freq != 0) {
+                    // Respect group-call tuning policy
+                    if (opts->trunk_tune_group_calls == 1) {
+                        // TG Hold gating
+                        if (state->tg_hold != 0 && state->tg_hold != group1) {
+                            // skip retune due to TG hold mismatch
+                        } else {
+                            // ENC gating from service options
+                            if ((lc_svcopt & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                                // skip encrypted when not allowed
+                            } else {
+                                // Dispatch to SM; SM will compute frequency and decide if a tune is appropriate
+                                p25_sm_on_group_grant(opts, state, channelt, lc_svcopt, group1, (int)state->lastsrc);
+                            }
+                        }
+                    }
+                }
             }
 
             else if (lc_format == 0x45) {

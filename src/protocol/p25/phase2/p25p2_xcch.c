@@ -383,23 +383,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
         }
 
-        //Return to CC on MAC_END_PTT if other slot is idle
-        //TODO: Look at the source address of the END_PTT, if it is 0xFFFFFF, then its from the FNE?
-        //if from the FNE, that may be when we know channel teardown will really occur vs using MAC_END_PTT directly
-
-        /*
-		Upon receipt of a MAC_END_PTT PDU on the assigned VCH, and having verified it contains the
-		correct color code, the SU shall return to the idle state on the control channel.
-		*/
-
-        //NOTE: Disable return later on if not desirable to use
-
-        //end_ptt in this slot, idle in the other slot (Normal Slots)
-        if (((state->currentslot == 0) && (state->dmrburstL == 24))
-            || ((state->currentslot == 1) && (state->dmrburstR == 24))) {
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-                p25_sm_on_release(opts, state);
-            }
+        // Return to CC on MAC_END_PTT (message-driven release)
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+            p25_sm_on_release(opts, state);
         }
 
         fprintf(stderr, "%s", KNRM);
@@ -793,15 +779,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
         }
 
-        //Return to CC on MAC_END_PTT if other slot is idle
-        //NOTE: Disable return later on if not desirable to use
-
-        //end_ptt in this slot, idle in the other slot (Normal Slots)
-        if (((state->currentslot == 0) && (state->dmrburstR == 24))
-            || ((state->currentslot == 1) && (state->dmrburstL == 24))) {
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-                p25_sm_on_release(opts, state);
-            }
+        // Return to CC on MAC_END_PTT (message-driven release)
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+            p25_sm_on_release(opts, state);
         }
 
         fprintf(stderr, "%s", KNRM);

@@ -488,6 +488,9 @@ typedef struct {
     //Trunking - Tune Enc Calls (P25 only on applicable grants with svc opts)
     uint8_t trunk_tune_enc_calls;
 
+    //P25 LCW: allow optional retune from explicit LCW updates (format 0x44)
+    uint8_t p25_lcw_retune;
+
     //OSS audio 48k/1 - slot preference
     int slot_preference;
 
