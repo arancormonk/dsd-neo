@@ -114,6 +114,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
+        // Per-slot audio gating: disable both on MAC_SIGNAL
+        state->p25_p2_audio_allowed[0] = 0;
+        state->p25_p2_audio_allowed[1] = 0;
     }
     //do not permit MAC_PTT with CRC errs, help prevent false positives on calls
     if (opcode == 0x1 && err == 0) {
@@ -190,6 +193,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             if (opts->floating_point == 1) {
                 state->aout_gain = opts->audio_gain;
             }
+            // Enable audio for this slot (SACCH uses flipped slot index)
+            state->p25_p2_audio_allowed[slot] = 1;
         }
 
         if (state->currentslot == 0) {
@@ -254,6 +259,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             if (opts->floating_point == 1) {
                 state->aout_gainR = opts->audio_gain;
             }
+            // Enable audio for this slot (SACCH uses flipped slot index)
+            state->p25_p2_audio_allowed[slot] = 1;
         }
 
         if (opts->payload == 1) {
@@ -388,6 +395,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
         }
 
+        // Disable audio for this slot and Return to CC on MAC_END_PTT (message-driven release)
+        state->p25_p2_audio_allowed[slot] = 0;
         // Return to CC on MAC_END_PTT (message-driven release)
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
             p25_sm_on_release(opts, state);
@@ -423,6 +432,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         //blank the call string here -- slot variable is already flipped accordingly for sacch
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
 
+        // Disable audio for this slot
+        state->p25_p2_audio_allowed[slot] = 0;
         // If both logical channels are idle, return to CC
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
             p25_sm_on_release(opts, state);
@@ -450,6 +461,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
+        // Enable audio for this slot (SACCH flips slot index above)
+        state->p25_p2_audio_allowed[slot] = 1;
     }
     if (opcode == 0x6 && err == 0) {
         if (state->currentslot == 1) {
@@ -603,6 +616,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (opts->floating_point == 1) {
                 state->aout_gain = opts->audio_gain;
             }
+            // Enable audio for this slot
+            state->p25_p2_audio_allowed[slot] = 1;
         }
 
         if (state->currentslot == 1) {
@@ -666,6 +681,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (opts->floating_point == 1) {
                 state->aout_gainR = opts->audio_gain;
             }
+            // Enable audio for this slot
+            state->p25_p2_audio_allowed[slot] = 1;
         }
 
         if (opts->payload == 1) {
@@ -838,6 +855,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
 
         //blank the call string here
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
+        // Disable audio for this slot
+        state->p25_p2_audio_allowed[slot] = 0;
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim
@@ -861,6 +880,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 0, FMAC);
         fprintf(stderr, "%s", KNRM);
+        // Enable audio for this slot
+        state->p25_p2_audio_allowed[slot] = 1;
     }
     if (opcode == 0x6 && err == 0) {
         if (state->currentslot == 0) {

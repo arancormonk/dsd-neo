@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  *
  *
@@ -124,6 +127,14 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     // encR = 0;
 
     //TODO: add option to bypass enc with a toggle as well
+
+    //Per-slot audio gating (P25p2): mute when audio not allowed
+    if (!state->p25_p2_audio_allowed[0]) {
+        encL = 1;
+    }
+    if (!state->p25_p2_audio_allowed[1]) {
+        encR = 1;
+    }
 
     //CHEAT: Using the slot on/off, use that to set encL or encR back on
     //as a simple way to turn off voice synthesis in a particular slot
@@ -1749,9 +1760,13 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    //debug, unmute both slots
-    // encL = 0;
-    // encR = 0;
+    // Per-slot audio gating (P25p2): mute when audio not allowed
+    if (!state->p25_p2_audio_allowed[0]) {
+        encL = 1;
+    }
+    if (!state->p25_p2_audio_allowed[1]) {
+        encR = 1;
+    }
 
     //WIP: Mute if on B list (or not W list)
     char modeL[8];

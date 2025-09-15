@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * dsd_rigctl.c
  * Simple RIGCTL Client for DSD (remote control of GQRX, SDR++, etc)
@@ -526,6 +529,9 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     state->payload_miN = 0;
     opts->p25_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    // Clear P25p2 per-slot audio gating
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
 
     //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
     //RIGCTL

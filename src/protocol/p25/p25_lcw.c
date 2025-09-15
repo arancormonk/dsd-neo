@@ -370,6 +370,13 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
             uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
             fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
+            if (iden < 16 && base != 0) {
+                uint32_t old = state->p25_base_freq[iden];
+                if (old != base) {
+                    state->p25_base_freq[iden] = base; // store in 5 kHz units
+                    fprintf(stderr, " (updated)");
+                }
+            }
         }
 
         //This lc_format doesn't use the MFID field
@@ -377,6 +384,13 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
             uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
             fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
+            if (iden < 16 && base != 0) {
+                uint32_t old = state->p25_base_freq[iden];
+                if (old != base) {
+                    state->p25_base_freq[iden] = base; // store in 5 kHz units
+                    fprintf(stderr, " (updated)");
+                }
+            }
         }
 
         //This lc_format doesn't use the MFID field

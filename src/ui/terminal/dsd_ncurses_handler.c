@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
 * dsd_ncurses_handler.c
 * DSD-FME ncurses terminal user input handler
@@ -8,6 +11,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -811,7 +815,8 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //if trunking or scanning, manually cycle forward through channels loaded (can be run without trunking or scanning enabled)
-    if ((opts->use_rigctl == 1 || opts->audio_in_type == 3) && c == 76) //Capital L key - Cycle Channels Forward
+    if ((opts->use_rigctl == 1 || opts->audio_in_type == 3)
+        && c == 76) //Capital L key - Cycle Channels Forward / P25 CC candidates
     {
 
         //extra safeguards due to sync issues with NXDN
@@ -838,6 +843,32 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->payload_miN = 0;
         opts->p25_is_tuned = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+
+        // Optionally try P25 CC candidates before LCN scan
+        if (opts->p25_prefer_candidates == 1) {
+            long cand = 0;
+            if (p25_sm_next_cc_candidate(state, &cand)) {
+                //rigctl
+                if (opts->use_rigctl == 1) {
+                    if (opts->setmod_bw != 0) {
+                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+                    }
+                    SetFreq(opts->rigctl_sockfd, cand);
+                }
+                //rtl
+                if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                    if (g_rtl_ctx) {
+                        rtl_stream_tune(g_rtl_ctx, (uint32_t)cand);
+                    }
+#endif
+                }
+                fprintf(stderr, "\n User Activated Candidate Cycle;  Tuning to Candidate: %.06lf MHz\n",
+                        (double)cand / 1000000);
+                state->last_cc_sync_time = time(NULL);
+                return 1;
+            }
+        }
 
         //just copy and pasted the cycle logic for CC/signal hunting on no sync
         if (state->lcn_freq_roll

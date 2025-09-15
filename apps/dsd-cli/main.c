@@ -1364,6 +1364,7 @@ usage() {
     printf("                 dsd-neo -N 2> console_log.txt \n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("  -j            Enable P25 LCW explicit retune (format 0x44)\n");
+    printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
     printf("\n");
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
@@ -1925,7 +1926,7 @@ main(int argc, char** argv) {
 
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
-                       "89:Ek:I:J:Oj"))
+                       "89:Ek:I:J:Oj^"))
            != -1) {
 
         switch (c) {
@@ -1987,6 +1988,10 @@ main(int argc, char** argv) {
             case 'j':
                 opts.p25_lcw_retune = 1;
                 fprintf(stderr, "P25: Enable LCW explicit retune (0x44).\n");
+                break;
+            case '^':
+                opts.p25_prefer_candidates = 1;
+                fprintf(stderr, "P25: Prefer CC candidates during hunt: ON.\n");
                 break;
 
             //rc4 enforcement on DMR (due to missing the PI header)

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 #include <itpp/itcomm.h>
 
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
@@ -79,11 +82,11 @@ check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
         unsigned char expected_parity = parity_table.get_value(new_duid_0, new_duid_1);
 
         if (expected_parity != parity) {
-            // Ignore, not sure what to do
-            //fprintf (stderr, "Error in parity detected?");
+            // BCH decoded but parity disagrees: report explicit mismatch
+            result = -1;
+        } else {
+            result = 1;
         }
-
-        result = 1;
     }
 
     return result;

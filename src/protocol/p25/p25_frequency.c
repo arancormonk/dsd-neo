@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25_frequency.c
  * P25 Channel to Frequency Calculator
@@ -11,7 +14,15 @@
 
 #include <dsd-neo/core/dsd.h>
 
-//P25
+// P25 channel → frequency mapping
+// - Channel format: 4-bit iden (MSBs) + 12-bit channel number.
+// - Frequency calculation per OP25 practice:
+//     freq_hz = base[iden]*5 + (step * spacing[iden] * 125)
+//   Where:
+//     base[iden] is in units of 5 kHz (per IDEN_UP encoding),
+//     spacing[iden] is in units of 125 Hz,
+//     step = channel_number / slots_per_carrier[type]
+// - slots_per_carrier table below is sourced from OP25 and common system behavior.
 long int
 process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     UNUSED(opts);
@@ -36,30 +47,46 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
 
     //Note: Base Frequency is calculated as (Base Frequency) x (0.000005 MHz) from the IDEN_UP message.
 
-    long int freq = -1;
-    int iden = channel >> 12;
-    int type = state->p25_chan_type[iden];
-    int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}; //from OP25
-    int step = (channel & 0xFFF) / slots_per_carrier[type];
+    long int freq = 0;
+    int iden = (channel >> 12) & 0xF;
+    if (iden < 0 || iden > 15) {
+        fprintf(stderr, "\n  P25 FREQ: invalid iden %d", iden);
+        return 0;
+    }
+    int type = state->p25_chan_type[iden] & 0xF;
+    // OP25-derived slots-per-carrier by channel type
+    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+    if (type < 0 || type > 15) {
+        fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
+        return 0;
+    }
+    int denom = slots_per_carrier[type];
+    if (denom <= 0) {
+        fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
+        return 0;
+    }
+    int step = (channel & 0xFFF) / denom;
 
     //first, check channel map
     if (state->trunk_chan_map[channel] != 0) {
         freq = state->trunk_chan_map[channel];
-        fprintf(stderr, "\n  Frequency [%.6lf] MHz", (double)freq / 1000000);
-        return (freq);
+        fprintf(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", channel, (double)freq / 1000000.0);
+        return freq;
     }
 
     //if not found, attempt to find it via calculation
     else {
-        if (state->p25_base_freq[iden] != 0) {
-            freq = (state->p25_base_freq[iden] * 5) + (step * state->p25_chan_spac[iden] * 125);
-            fprintf(stderr, "\n  Frequency [%.6lf] MHz", (double)freq / 1000000);
-            return (freq);
-        } else {
-            fprintf(stderr, "\n  Base Frequency Not Found - Iden [%d]", iden);
-            fprintf(stderr, "\n    or Channel not found in import file");
-            return (0);
+        long base = state->p25_base_freq[iden];
+        long spac = state->p25_chan_spac[iden];
+        if (base == 0 || spac == 0) {
+            fprintf(stderr, "\n  P25 FREQ: missing iden %d params (base=%ld, spac=%ld); refusing tune", iden, base,
+                    spac);
+            return 0;
         }
+        freq = (base * 5) + (step * spac * 125);
+        fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, channel,
+                (double)freq / 1000000.0);
+        return freq;
     }
 }
 

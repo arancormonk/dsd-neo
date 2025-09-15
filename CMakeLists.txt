@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(dsd-neo)
+enable_testing()
 
 SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake/")
 # Prefer ncurses wide-character support
@@ -143,3 +144,4 @@ add_subdirectory(src/crypto)
 add_subdirectory(src/fec)
 add_subdirectory(src/third_party)
 add_subdirectory(apps)
+add_subdirectory(tests)

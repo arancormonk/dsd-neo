@@ -84,6 +84,23 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 
     //initialize this
     memset(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
+
+    // When ncurses UI is active, suppress direct stderr logging to prevent
+    // screen corruption from background fprintf calls in protocol paths.
+    // This avoids mixed ncurses/stdio output overwriting the UI until resize.
+    // If console logs are needed, consider adding a file logger later.
+    static int stderr_suppressed = 0;
+    if (!stderr_suppressed) {
+#ifdef __unix__
+        FILE* devnull = fopen("/dev/null", "w");
+        if (devnull) {
+            fflush(stderr);
+            dup2(fileno(devnull), fileno(stderr));
+            // keep devnull open; stderr now points to it
+            stderr_suppressed = 1;
+        }
+#endif
+    }
 }
 
 static int lls = -1;

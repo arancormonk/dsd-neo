@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -403,7 +406,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
         // Check if the NID is correct
         check_result = check_NID(bch_code, &new_nac, new_duid, parity);
-        if (check_result) {
+        if (check_result == 1) {
             if (new_nac != state->nac) {
                 // NAC fixed by error correction
                 state->nac = new_nac;
@@ -421,6 +424,11 @@ processFrame(dsd_opts* opts, dsd_state* state) {
                 state->debug_header_errors++;
             }
         } else {
+            if (check_result == -1 && opts->verbose > 0) {
+                fprintf(stderr, "%s", KRED);
+                fprintf(stderr, " NID PARITY MISMATCH ");
+                fprintf(stderr, "%s", KNRM);
+            }
             // Check of NID failed and unable to recover its value
             //fprintf (stderr,"NID error\n");
             duid[0] = 'E';

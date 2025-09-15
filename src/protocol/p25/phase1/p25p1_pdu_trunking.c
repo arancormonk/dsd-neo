@@ -47,6 +47,33 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
     }
     fprintf(stderr, " - OP: %02X", opcode);
 
+    // Bridge Identifier Updates (MBT -> MAC layout) so iden tables are populated on P1, too
+    // Use the existing MAC decoder to normalize parsing and state updates.
+    if ((opcode == 0x74 || opcode == 0x7D || opcode == 0x73 || opcode == 0xF3 || opcode == 0x34 || opcode == 0x3D
+         || opcode == 0x33) // accept both MAC-coded and MBT/TSBK-coded values
+        && MFID < 2) {
+        // Build a minimal MAC buffer from MBT payload immediately after the opcode byte
+        // ALT format places opcode at index 7; UNCONF at index 12
+        int op_idx = (fmt == 0x17) ? 7 : 12;
+        int payload_off = op_idx + 1;
+        int total_len = (12 * (blks + 1));
+        unsigned long long int MAC[24] = {0};
+        MAC[1] = opcode; // opcode
+        MAC[2] = MFID;   // mfid
+
+        // Copy as many bytes as we have room for and are available in this MBT
+        int mac_i = 3;
+        for (int i = payload_off; i < total_len && mac_i < 24; i++, mac_i++) {
+            MAC[mac_i] = mpdu_byte[i];
+        }
+
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n Identifier Update (MBT bridged) OP:%02X -> MAC decode", opcode);
+        process_MAC_VPDU(opts, state, 0, MAC);
+        fprintf(stderr, "%s", KNRM);
+        // Fall through to allow any additional prints for known MBT messages below
+    }
+
     //NET_STS_BCST -- TIA-102.AABC-D 6.2.11.2
     if (opcode == 0x3B) {
         int lra = mpdu_byte[3];

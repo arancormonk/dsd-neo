@@ -201,21 +201,13 @@ p25_decrypt_pdu(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t alg_id
                 aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, 0, nblocks);
             }
 
-            fprintf(stderr, "\n Key: ");
-            for (i = 0; i < 32; i++) {
-                if ((i != 0) && ((i % 8) == 0)) {
-                    fprintf(stderr, " ");
-                }
-                fprintf(stderr, "%02X", aes_key[i]);
+            // Minimal logging: do not print key material
+            if (opts->payload == 1) {
+                fprintf(stderr, "\n AES-%s keystream ready", (alg_id == 0x84) ? "256" : "128");
             }
-
             encrypted = 0;
         }
-
-        fprintf(stderr, "\n IV(128): ");
-        for (i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", aes_iv[i]);
-        }
+        // Optional: IV log is not sensitive but omit by default for brevity
     }
 
     if (alg_id == 0x81) //DES56
@@ -239,8 +231,9 @@ p25_decrypt_pdu(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t alg_id
 
         encrypted = 0;
 
-        //debug, print key, iv, and keystream stuff
-        fprintf(stderr, "\n Key: %16llX", des_key);
+        if (opts->payload == 1) {
+            fprintf(stderr, "\n DES56 keystream ready");
+        }
     }
 
     if (alg_id == 0xAA) //RC4, or 'ADP'
@@ -281,8 +274,9 @@ p25_decrypt_pdu(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t alg_id
 
         encrypted = 0;
 
-        //debug, print key, iv, and keystream stuff
-        fprintf(stderr, "\n Key: %16llX", rc4_key);
+        if (opts->payload == 1) {
+            fprintf(stderr, "\n RC4 keystream ready");
+        }
     }
 
     //debug input offset

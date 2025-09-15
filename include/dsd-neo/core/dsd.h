@@ -491,6 +491,9 @@ typedef struct {
     //P25 LCW: allow optional retune from explicit LCW updates (format 0x44)
     uint8_t p25_lcw_retune;
 
+    //P25: prefer CC candidates (RFSS/Adjacent/Network) during CC hunt before LCN list (optional)
+    uint8_t p25_prefer_candidates;
+
     //OSS audio 48k/1 - slot preference
     int slot_preference;
 
@@ -820,6 +823,8 @@ typedef struct {
     int fourv_counter[2];   //external reference counter for ESS_B fragment collection
     int voice_counter[2];   //external reference counter for 18V x 2 P25p2 Superframe
     int p2_is_lcch;         //flag to tell us when a frame is lcch and not sacch
+    // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
+    int p25_p2_audio_allowed[2];
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
 * dsd_ncurses_menu.c
 * DSD-FME ncurses terminal menu system
@@ -47,7 +50,8 @@ char* choicesc[] = {"Return",
                     "Stop & Close Symbol Capture Bin Playback",
                     "Stop & Close Symbol Capture Bin Saving",
                     "Toggle Call Alert Beep     ",
-                    "Resume Decoding"};
+                    "Resume Decoding",
+                    "Prefer P25 CC Candidates (hunt)"};
 //make tweaks for TDMA and AUTO?
 char* choices[] = {
     "Resume Decoding",
@@ -521,6 +525,17 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                         state->symbolCenter = 4;
                         opts->mod_c4fm = 1;
                         opts->mod_qpsk = 0;
+                    }
+                }
+
+                // Prefer P25 CC candidates (hunt) toggle
+                if (choicec == 19) {
+                    if (opts->p25_prefer_candidates == 0) {
+                        opts->p25_prefer_candidates = 1;
+                        fprintf(stderr, "\n P25: Prefer CC Candidates: ON\n");
+                    } else {
+                        opts->p25_prefer_candidates = 0;
+                        fprintf(stderr, "\n P25: Prefer CC Candidates: OFF\n");
                     }
                 }
 
