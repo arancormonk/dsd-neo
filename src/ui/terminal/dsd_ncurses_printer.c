@@ -467,12 +467,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw(" Encrypted(e)");
         attron(COLOR_PAIR(4));
-        // LCW explicit retune toggle display
-        if (opts->p25_lcw_retune == 0) {
-            attron(COLOR_PAIR(2));
-        }
-        printw(" LCW-44(j)");
-        attron(COLOR_PAIR(4));
         printw(" Calls");
         if (opts->trunk_use_allow_list == 1) {
             printw(" - White List Mode\n");
@@ -483,6 +477,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d\n", state->p25_sm_tune_count,
                state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count,
                state->p25_cc_cand_idx);
+        // P25p2 RS summary line
+        printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
+               state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
+               state->p25_p2_rs_ess_err);
     }
 #else //set on to UPPER CASE, off to lower case
     if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
@@ -507,11 +505,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" ENCRYPTED(e)");
         }
-        if (opts->p25_lcw_retune == 0) {
-            printw(" lcw-44(j)");
-        } else {
-            printw(" LCW-44(j)");
-        }
         printw(" Calls");
         if (opts->trunk_use_allow_list == 1) {
             printw(" - White List Mode\n");
@@ -522,6 +515,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d\n", state->p25_sm_tune_count,
                state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count,
                state->p25_cc_cand_idx);
+        // P25p2 RS summary line
+        printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
+               state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
+               state->p25_p2_rs_ess_err);
     }
 #endif
 //print additional information for EDACS modes and toggles

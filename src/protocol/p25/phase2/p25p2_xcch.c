@@ -325,6 +325,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             //blank the call string here -- slot variable is already flipped accordingly for sacch
             sprintf(state->call_string[slot], "%s", "                     "); //21 spaces -- wrong placement!
 
+            // If both logical channels are idle, return to CC
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+                p25_sm_on_release(opts, state);
+            }
+
             //reset gain
             if (opts->floating_point == 1) {
                 state->aout_gain = opts->audio_gain;
@@ -417,6 +422,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
         //blank the call string here -- slot variable is already flipped accordingly for sacch
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
+
+        // If both logical channels are idle, return to CC
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+            p25_sm_on_release(opts, state);
+        }
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p1_pdu_data.c
  * P25p1 PDU Data Decoding
@@ -526,9 +529,15 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
             decode_ip_pdu(opts, state, len + 1, input + ptr);
         }
 
-        else if (sap == 48) { //Tier 1 Location Service (or does it depend on the io bit?)
-            utf8_to_text(state, 1, len - ptr + 1,
-                         input + ptr); //TODO, read initial string, i.e., $GPRMC and properly decode
+        else if (sap == 48) { //Tier 1 Location Service (LRRP/NMEA)
+            // Capture as text for event history; if present, prefix for UI clarity
+            utf8_to_text(state, 1, len - ptr + 1, input + ptr);
+            if (state->event_history_s[0].Event_History_Items[0].text_message[0] != '\0') {
+                snprintf(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "LRRP: %s",
+                         state->event_history_s[0].Event_History_Items[0].text_message);
+                snprintf(state->event_history_s[0].Event_History_Items[0].gps_s,
+                         sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
+            }
         }
 
         // else //default catch all (debug only)

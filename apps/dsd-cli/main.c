@@ -1120,6 +1120,16 @@ initState(dsd_state* state) {
     state->p2_rfssid = 0;
     state->p2_hardset = 0;
     state->p2_is_lcch = 0;
+    // P25p2 RS metrics
+    state->p25_p2_rs_facch_ok = 0;
+    state->p25_p2_rs_facch_err = 0;
+    state->p25_p2_rs_facch_corr = 0;
+    state->p25_p2_rs_sacch_ok = 0;
+    state->p25_p2_rs_sacch_err = 0;
+    state->p25_p2_rs_sacch_corr = 0;
+    state->p25_p2_rs_ess_ok = 0;
+    state->p25_p2_rs_ess_err = 0;
+    state->p25_p2_rs_ess_corr = 0;
     state->p25_cc_is_tdma =
         2; //init on 2, TSBK NET_STS will set 0, TDMA NET_STS will set 1. //used to determine if we need to change symbol rate when cc hunting
 

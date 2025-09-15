@@ -152,7 +152,7 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
         facch_rs[state->currentslot][i + 42] = p2bit[i + 246 + (ts_counter * 360)];
     }
 
-    //send payload and parity to ez_rs28_facch for error correction
+    //send payload and parity to ez_rs28_facch for error correction (RS(63,35), t=14)
     int ec = -2;
     ec = ez_rs28_facch(facch[state->currentslot], facch_rs[state->currentslot]);
 
@@ -166,10 +166,12 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
         state->dmr_soR = opcode;
     }
 
-    if (ec > -1) //unsure of upper limit, CRC check will pass or fail from this point
-    {
+    if (ec >= 0) {
+        state->p25_p2_rs_facch_ok++;
+        state->p25_p2_rs_facch_corr += (unsigned int)ec;
         process_FACCH_MAC_PDU(opts, state, facch[state->currentslot]);
     } else {
+        state->p25_p2_rs_facch_err++;
         fprintf(stderr, " R-S ERR Fc");
         //if (state->currentslot == 0) state->dmrburstL = 13;
         //else state->dmrburstR = 13;
@@ -199,7 +201,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
         facch_rs[state->currentslot][i + 42] = p2xbit[i + 246 + (ts_counter * 360)];
     }
 
-    //send payload and parity to ez_rs28_facch for error correction
+    //send payload and parity to ez_rs28_facch for error correction (RS(63,35), t=14)
     int ec = -2;
     ec = ez_rs28_facch(facch[state->currentslot], facch_rs[state->currentslot]);
 
@@ -213,10 +215,12 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
         state->dmr_soR = opcode;
     }
 
-    if (ec > -1) //unsure of upper limit, CRC check will pass or fail from this point
-    {
+    if (ec >= 0) {
+        state->p25_p2_rs_facch_ok++;
+        state->p25_p2_rs_facch_corr += (unsigned int)ec;
         process_FACCH_MAC_PDU(opts, state, facch[state->currentslot]);
     } else {
+        state->p25_p2_rs_facch_err++;
         fprintf(stderr, " R-S ERR Fs");
         //if (state->currentslot == 0) state->dmrburstL = 13;
         //else state->dmrburstR = 13;
@@ -242,7 +246,7 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
         sacch_rs[state->currentslot][i + 60] = p2bit[i + 246 + (ts_counter * 360)];
     }
 
-    //send payload and parity to ez_rs28_sacch for error correction
+    //send payload and parity to ez_rs28_sacch for error correction (RS(63,35), t=14)
     int ec = -2;
     ec = ez_rs28_sacch(sacch[0], sacch_rs[0]);
 
@@ -257,10 +261,12 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
         state->dmr_so = opcode;
     }
 
-    if (ec > -1) //unsure of upper limit, CRC check will pass or fail from this point
-    {
+    if (ec >= 0) {
+        state->p25_p2_rs_sacch_ok++;
+        state->p25_p2_rs_sacch_corr += (unsigned int)ec;
         process_SACCH_MAC_PDU(opts, state, sacch[state->currentslot]);
     } else {
+        state->p25_p2_rs_sacch_err++;
         fprintf(stderr, " R-S ERR Sc");
         // if (state->currentslot == 0) state->dmrburstL = 13;
         // else state->dmrburstR = 13;
@@ -286,7 +292,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
         sacch_rs[state->currentslot][i + 60] = p2xbit[i + 246 + (ts_counter * 360)];
     }
 
-    //send payload and parity to ez_rs28_sacch for error correction
+    //send payload and parity to ez_rs28_sacch for error correction (RS(63,35), t=14)
     int ec = -2;
     ec = ez_rs28_sacch(sacch[0], sacch_rs[0]);
 
@@ -301,10 +307,12 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
         state->dmr_so = opcode;
     }
 
-    if (ec > -1) //unsure of upper limit, CRC check will pass or fail from this point
-    {
+    if (ec >= 0) {
+        state->p25_p2_rs_sacch_ok++;
+        state->p25_p2_rs_sacch_corr += (unsigned int)ec;
         process_SACCH_MAC_PDU(opts, state, sacch[state->currentslot]);
     } else {
+        state->p25_p2_rs_sacch_err++;
         fprintf(stderr, " R-S ERR Ss");
         // if (state->currentslot == 0) state->dmrburstL = 13;
         // else state->dmrburstR = 13;
@@ -519,8 +527,10 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot, essb_hex1, essb_hex2, ec);
     }
 
-    if (ec >= 0 && ec < 15) //corrected up to 14 errors and not -1 failure//
+    if (ec >= 0 && ec < 15) //corrected up to 14 errors and not -1 failure
     {
+        state->p25_p2_rs_ess_ok++;
+        state->p25_p2_rs_ess_corr += (unsigned int)ec;
         if (state->currentslot == 0) {
             state->payload_algid = (essb_hex1 >> 24) & 0xFF;
             state->payload_keyid = (essb_hex1 >> 8) & 0xFFFF;
@@ -666,6 +676,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 #endif //P25p2_ENC_LO
     }
     if (ec == -1 || ec >= 15) {
+        state->p25_p2_rs_ess_err++;
         //below needs a line break before LFSRP runs (when payload == 0)
         //ESS R-S Failure -- run LFSR on current MI if applicable
         if (state->currentslot == 0 && state->payload_algid != 0x80 && state->payload_keyid != 0

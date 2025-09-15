@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25p1_mpdu.c
  * P25p1 Multi Block PDU Assembly
@@ -203,7 +206,10 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
                 k++;
             }
             tsbk_byte[i] = byte;
-            mpdu_byte[i + (j * 12)] = byte; //add to completed MBF format 12 rate bytes
+            size_t mpdu_off = (size_t)i + ((size_t)j * 12u);
+            if (mpdu_off < sizeof(mpdu_byte)) {
+                mpdu_byte[mpdu_off] = byte; //add to completed MBF format 12 rate bytes
+            }
         }
 
         //check header data to see if this is a 12 rate, or 34 rate packet data unit
@@ -226,9 +232,9 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
                     + 1; //(TDU follows any Trunking MPDU, not sure if that's an error in handling, or actual behavior)
             }
 
-            //sanity check -- since blks is only 7 bit anyways, this probably isn't needed now
+            // Bound header+blocks to allocation (1+127)
             if (end > 128) {
-                end = 128; //Storage for up to 127 blocks plus 1 header
+                end = 128;
             }
         }
     }
@@ -310,8 +316,13 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             crc_bytes[i] = (uint8_t)ConvertBitIntoBytes(&mpdu_crc_bits[i * 8], 8);
         }
 
-        CRCExtracted = (uint32_t)ConvertBitIntoBytes(&mpdu_crc_bits[(128 * blks) - 32], 32);
-        CRCComputed = crc32mbf(crc_bytes, (128 * blks) - 32);
+        if (blks > 0 && (128 * blks) >= 32) {
+            CRCExtracted = (uint32_t)ConvertBitIntoBytes(&mpdu_crc_bits[(128 * blks) - 32], 32);
+            CRCComputed = crc32mbf(crc_bytes, (128 * blks) - 32);
+        } else {
+            CRCExtracted = 0;
+            CRCComputed = 0;
+        }
         if (CRCComputed == CRCExtracted) {
             err[1] = 0;
         }
@@ -342,7 +353,9 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
                     i += 2; //skip the next DBSN/CRC9
                 }
             }
-            mpdu_byte[mpdu_idx++] = r34bytes[i];
+            if ((size_t)mpdu_idx < sizeof(mpdu_byte)) {
+                mpdu_byte[mpdu_idx++] = r34bytes[i];
+            }
         }
 
         //minus 1 to offset the last rounds mpdu_idx++
@@ -403,9 +416,14 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     {
         int len = 12 * (blks + 1);
         if (blks != 0) {
-            CRCExtracted = (mpdu_byte[len - 4] << 24) | (mpdu_byte[len - 3] << 16) | (mpdu_byte[len - 2] << 8)
-                           | (mpdu_byte[len - 1] << 0);
-            CRCComputed = crc32mbf(mpdu_byte + 12, (96 * blks) - 32);
+            if (len >= 4 && (96 * blks) >= 32) {
+                CRCExtracted = (mpdu_byte[len - 4] << 24) | (mpdu_byte[len - 3] << 16) | (mpdu_byte[len - 2] << 8)
+                               | (mpdu_byte[len - 1] << 0);
+                CRCComputed = crc32mbf(mpdu_byte + 12, (96 * blks) - 32);
+            } else {
+                CRCExtracted = 0;
+                CRCComputed = 0;
+            }
             if (CRCComputed == CRCExtracted) {
                 err[1] = 0;
             }

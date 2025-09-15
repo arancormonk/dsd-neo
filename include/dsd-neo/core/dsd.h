@@ -821,6 +821,17 @@ typedef struct {
     int voice_counter[2];   //external reference counter for 18V x 2 P25p2 Superframe
     int p2_is_lcch;         //flag to tell us when a frame is lcch and not sacch
 
+    // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
+    unsigned int p25_p2_rs_facch_ok;
+    unsigned int p25_p2_rs_facch_err;
+    unsigned int p25_p2_rs_facch_corr; // total corrected symbols over accepts
+    unsigned int p25_p2_rs_sacch_ok;
+    unsigned int p25_p2_rs_sacch_err;
+    unsigned int p25_p2_rs_sacch_corr; // total corrected symbols over accepts
+    unsigned int p25_p2_rs_ess_ok;
+    unsigned int p25_p2_rs_ess_err;
+    unsigned int p25_p2_rs_ess_corr; // total corrected symbols over accepts
+
     //iden freq storage for frequency calculations
     int p25_chan_tdma[16]; //set from iden_up vs iden_up_tdma
     int p25_chan_iden;
