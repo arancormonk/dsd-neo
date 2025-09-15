@@ -532,11 +532,8 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // Clear P25p2 per-slot audio gating
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
-    // Restore UI/output slot switches to default ON when returning to CC
-    // We do not want the UI to show a slot permanently OFF due to a prior
-    // TDMA grant or ENC lockout. Actual audio gating is controlled elsewhere.
-    opts->slot1_on = 1;
-    opts->slot2_on = 1;
+    state->p25_p2_active_slot = -1;
+    // Do not alter user slot ON/OFF toggles here; UI controls own persistence.
 
     //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
     //RIGCTL

@@ -825,6 +825,8 @@ typedef struct {
     int p2_is_lcch;         //flag to tell us when a frame is lcch and not sacch
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
+    // P25p2 currently active voice slot (0 or 1), -1 when unknown/idle
+    int p25_p2_active_slot;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;

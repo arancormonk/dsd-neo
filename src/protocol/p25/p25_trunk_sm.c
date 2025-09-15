@@ -44,20 +44,13 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
     if (is_tdma) {
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
-        // Slot gating from channel LSB
-        if (channel & 1) {
-            opts->slot1_on = 0;
-            opts->slot2_on = 1;
-        } else {
-            opts->slot1_on = 1;
-            opts->slot2_on = 0;
-        }
+        // Track active slot from channel LSB without changing user slot toggles
+        state->p25_p2_active_slot = (channel & 1) ? 1 : 0;
     } else {
         // Single‑carrier channel: set baseline symbol timing and enable both slots
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;
-        opts->slot1_on = 1;
-        opts->slot2_on = 1;
+        state->p25_p2_active_slot = -1;
     }
 
     // Tune
