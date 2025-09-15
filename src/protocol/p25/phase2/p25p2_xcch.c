@@ -117,6 +117,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Per-slot audio gating: disable both on MAC_SIGNAL
         state->p25_p2_audio_allowed[0] = 0;
         state->p25_p2_audio_allowed[1] = 0;
+        // Flush both jitter buffers to avoid stale audio on next voice
+        p25_p2_audio_ring_reset(state, -1);
     }
     //do not permit MAC_PTT with CRC errs, help prevent false positives on calls
     if (opcode == 0x1 && err == 0) {
@@ -439,6 +441,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
             //blank the call string here -- slot variable is already flipped accordingly for sacch
             sprintf(state->call_string[slot], "%s", "                     "); //21 spaces -- wrong placement!
+            // Flush ring for this slot on PTT end
+            p25_p2_audio_ring_reset(state, slot);
 
             // If both logical channels are idle, return to CC
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
@@ -505,6 +509,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
         // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
+        // Flush ring for this slot to drop any residual samples
+        p25_p2_audio_ring_reset(state, slot);
         // Message-driven retune: if the opposite slot is idle/unknown, treat
         // this slot as idle and return to CC immediately (applies to clear and
         // encrypted-followed calls). Otherwise, defer until both slots are IDLE
@@ -1023,6 +1029,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
         // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
+        // Flush ring for this slot to drop any residual samples
+        p25_p2_audio_ring_reset(state, slot);
         // Only return to CC when both slots are IDLE (not merely audio-gated),
         // or upon explicit vPDU release. This avoids bouncing on encrypted calls.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {

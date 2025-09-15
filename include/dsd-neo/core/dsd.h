@@ -833,6 +833,12 @@ typedef struct {
     int p2_is_lcch;         //flag to tell us when a frame is lcch and not sacch
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
+    // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
+    // Depth 3 per checklist to bound latency (~60 ms max)
+    float p25_p2_audio_ring[2][3][160];
+    int p25_p2_audio_ring_head[2]; // pop index
+    int p25_p2_audio_ring_tail[2]; // push index
+    int p25_p2_audio_ring_count[2];
     // P25p2 currently active voice slot (0 or 1), -1 when unknown/idle
     int p25_p2_active_slot;
 
@@ -1753,6 +1759,61 @@ int ez_rs28_ess(int payload[96], int parity[168]);    //ezpwd bridge for FME
 int ez_rs28_facch(int payload[156], int parity[114]); //ezpwd bridge for FME
 int ez_rs28_sacch(int payload[180], int parity[132]); //ezpwd bridge for FME
 int isch_lookup(uint64_t isch);                       //isch map lookup
+
+// P25p2 audio jitter ring helpers (inline for simple state access)
+static inline void
+p25_p2_audio_ring_reset(dsd_state* state, int slot) {
+    if (!state) {
+        return;
+    }
+    if (slot < 0 || slot > 1) {
+        // reset both
+        state->p25_p2_audio_ring_head[0] = state->p25_p2_audio_ring_tail[0] = 0;
+        state->p25_p2_audio_ring_count[0] = 0;
+        state->p25_p2_audio_ring_head[1] = state->p25_p2_audio_ring_tail[1] = 0;
+        state->p25_p2_audio_ring_count[1] = 0;
+        memset(state->p25_p2_audio_ring, 0, sizeof(state->p25_p2_audio_ring));
+        return;
+    }
+    state->p25_p2_audio_ring_head[slot] = 0;
+    state->p25_p2_audio_ring_tail[slot] = 0;
+    state->p25_p2_audio_ring_count[slot] = 0;
+    memset(state->p25_p2_audio_ring[slot], 0, sizeof(state->p25_p2_audio_ring[slot]));
+}
+
+static inline int
+p25_p2_audio_ring_push(dsd_state* state, int slot, const float* frame160) {
+    if (!state || !frame160 || slot < 0 || slot > 1) {
+        return 0;
+    }
+    // Drop oldest on overflow to keep bounded latency
+    if (state->p25_p2_audio_ring_count[slot] >= 3) {
+        // advance head (pop) to make room
+        state->p25_p2_audio_ring_head[slot] = (state->p25_p2_audio_ring_head[slot] + 1) % 3;
+        state->p25_p2_audio_ring_count[slot]--;
+    }
+    int idx = state->p25_p2_audio_ring_tail[slot];
+    memcpy(state->p25_p2_audio_ring[slot][idx], frame160, 160 * sizeof(float));
+    state->p25_p2_audio_ring_tail[slot] = (state->p25_p2_audio_ring_tail[slot] + 1) % 3;
+    state->p25_p2_audio_ring_count[slot]++;
+    return 1;
+}
+
+static inline int
+p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160) {
+    if (!state || !out160 || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (state->p25_p2_audio_ring_count[slot] <= 0) {
+        memset(out160, 0, 160 * sizeof(float));
+        return 0;
+    }
+    int idx = state->p25_p2_audio_ring_head[slot];
+    memcpy(out160, state->p25_p2_audio_ring[slot][idx], 160 * sizeof(float));
+    state->p25_p2_audio_ring_head[slot] = (state->p25_p2_audio_ring_head[slot] + 1) % 3;
+    state->p25_p2_audio_ring_count[slot]--;
+    return 1;
+}
 
 #ifdef __cplusplus
 }

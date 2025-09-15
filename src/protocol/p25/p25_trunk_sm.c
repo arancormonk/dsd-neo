@@ -225,6 +225,10 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     opts->p25_is_tuned = 1;
     state->last_vc_sync_time = time(NULL);
+    // Reset Phase 2 per-slot audio gate and jitter buffers on new VC
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    p25_p2_audio_ring_reset(state, -1);
     state->p25_sm_tune_count++;
     if (opts->verbose > 0) {
         fprintf(stderr, "\n P25 SM: Tune VC ch=0x%04X freq=%.6lf MHz tdma=%d\n", channel, (double)freq / 1000000.0,
@@ -301,6 +305,10 @@ p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     if (opts && opts->verbose > 0) {
         fprintf(stderr, "\n P25 SM: Release -> CC\n");
     }
+    // Flush per-slot audio gates and jitter buffers on release
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    p25_p2_audio_ring_reset(state, -1);
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
 }

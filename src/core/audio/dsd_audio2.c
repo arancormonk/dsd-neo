@@ -431,52 +431,52 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     memset(empty, 0.0f, sizeof(empty));
 
-    //run autogain on the f_ buffers
-    agf(opts, state, state->f_l4[0], 0);
-    agf(opts, state, state->f_r4[0], 1);
-    agf(opts, state, state->f_l4[1], 0);
-    agf(opts, state, state->f_r4[1], 1);
-    agf(opts, state, state->f_l4[2], 0); //doing 2 and 3 here will break the memcmp below, so we also do it on empty
-    agf(opts, state, state->f_r4[2], 1);
-    agf(opts, state, state->f_l4[3], 0);
-    agf(opts, state, state->f_r4[3], 1);
-    agf(opts, state, empty,
-        2); //running empty may invalidate the memcmp, ideally both this empty and an empty f_ should come out with the same result anyways
-
-    //interleave left and right channels from the temp (float) buffer with makeshift 'volume' decimation
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp1[i * 2 + 0] = state->f_l4[0][i]; // / ((float) 480.0f*10.0f)
+    // Drain up to 4 frames from per-slot jitter buffers and interleave to stereo
+    float lf[4][160];
+    float rf[4][160];
+    int l_ok[4] = {0, 0, 0, 0};
+    int r_ok[4] = {0, 0, 0, 0};
+    for (int j = 0; j < 4; j++) {
+        l_ok[j] = p25_p2_audio_ring_pop(state, 0, lf[j]);
+        r_ok[j] = p25_p2_audio_ring_pop(state, 1, rf[j]);
+        if (l_ok[j]) {
+            agf(opts, state, lf[j], 0);
         }
-        if (!encR) {
-            stereo_samp1[i * 2 + 1] = state->f_r4[0][i];
+        if (r_ok[j]) {
+            agf(opts, state, rf[j], 1);
         }
     }
 
     for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp2[i * 2 + 0] = state->f_l4[1][i];
+        if (!encL && l_ok[0]) {
+            stereo_samp1[i * 2 + 0] = lf[0][i];
         }
-        if (!encR) {
-            stereo_samp2[i * 2 + 1] = state->f_r4[1][i];
-        }
-    }
-
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp3[i * 2 + 0] = state->f_l4[2][i];
-        }
-        if (!encR) {
-            stereo_samp3[i * 2 + 1] = state->f_r4[2][i];
+        if (!encR && r_ok[0]) {
+            stereo_samp1[i * 2 + 1] = rf[0][i];
         }
     }
-
     for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp4[i * 2 + 0] = state->f_l4[3][i];
+        if (!encL && l_ok[1]) {
+            stereo_samp2[i * 2 + 0] = lf[1][i];
         }
-        if (!encR) {
-            stereo_samp4[i * 2 + 1] = state->f_r4[3][i];
+        if (!encR && r_ok[1]) {
+            stereo_samp2[i * 2 + 1] = rf[1][i];
+        }
+    }
+    for (i = 0; i < 160; i++) {
+        if (!encL && l_ok[2]) {
+            stereo_samp3[i * 2 + 0] = lf[2][i];
+        }
+        if (!encR && r_ok[2]) {
+            stereo_samp3[i * 2 + 1] = rf[2][i];
+        }
+    }
+    for (i = 0; i < 160; i++) {
+        if (!encL && l_ok[3]) {
+            stereo_samp4[i * 2 + 0] = lf[3][i];
+        }
+        if (!encR && r_ok[3]) {
+            stereo_samp4[i * 2 + 1] = rf[3][i];
         }
     }
 

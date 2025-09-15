@@ -433,17 +433,29 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         state->voice_counter[1] = 0;
     }
 
-    processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
-    if (state->currentslot == 0) {
-        memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        // memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
+    // Gate before decode to avoid spurious/stuttery output when audio not allowed
+    if (state->p25_p2_audio_allowed[state->currentslot]) {
+        processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
+        if (state->currentslot == 0) {
+            memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+            memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
+            // Push into small jitter buffer (slot 0)
+            p25_p2_audio_ring_push(state, 0, state->f_l4[0]);
+        } else {
+            memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+            memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
+            // Push into small jitter buffer (slot 1)
+            p25_p2_audio_ring_push(state, 1, state->f_r4[0]);
+        }
     } else {
-        memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-        // memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
+        // Not allowed: avoid decoding noise while retaining timing
+        if (state->currentslot == 0) {
+            memset(state->f_l4[0], 0, sizeof(state->f_l4[0]));
+        } else {
+            memset(state->f_r4[0], 0, sizeof(state->f_r4[0]));
+        }
     }
 
     processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
@@ -780,18 +792,25 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
     }
 
-    processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
-    if (state->currentslot == 0) {
-        memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        // memcpy(state->s_l4[1], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
-
+    if (state->p25_p2_audio_allowed[state->currentslot]) {
+        processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
+        if (state->currentslot == 0) {
+            memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+            memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
+            p25_p2_audio_ring_push(state, 0, state->f_l4[1]);
+        } else {
+            memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+            memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
+            p25_p2_audio_ring_push(state, 1, state->f_r4[1]);
+        }
     } else {
-        memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-        // memcpy(state->s_r4[1], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
+        if (state->currentslot == 0) {
+            memset(state->f_l4[1], 0, sizeof(state->f_l4[1]));
+        } else {
+            memset(state->f_r4[1], 0, sizeof(state->f_r4[1]));
+        }
     }
     // if (state->currentslot == 0) state->voice_counter[0] = 0; if (state->currentslot == 1) state->voice_counter[1] = 0;
     process_ESS(opts, state);
