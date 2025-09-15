@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  *
  *
@@ -91,6 +94,21 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
         //print IMBE frame
         mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        // Update P25p1 voice error moving average (errs2)
+        {
+            int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
+            if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
+                len = (int)sizeof(state->p25_p1_voice_err_hist);
+            }
+            state->p25_p1_voice_err_hist_len = len;
+            uint8_t pos = (uint8_t)state->p25_p1_voice_err_hist_pos;
+            uint8_t old = state->p25_p1_voice_err_hist[pos % len];
+            uint8_t val = (uint8_t)(state->errs2 & 0xFF);
+            state->p25_p1_voice_err_hist[pos % len] = val;
+            state->p25_p1_voice_err_hist_sum += val;
+            state->p25_p1_voice_err_hist_sum -= old;
+            state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
+        }
         //send to playback here
     }
 

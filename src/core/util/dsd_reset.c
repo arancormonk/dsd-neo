@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
@@ -91,6 +94,26 @@ resetState(dsd_state* state) {
     state->errs2 = 0;
     state->errsR = 0;
     state->errs2R = 0;
+
+    // Initialize P25p1 voice avg error histogram
+    memset(state->p25_p1_voice_err_hist, 0, sizeof(state->p25_p1_voice_err_hist));
+    state->p25_p1_voice_err_hist_len = 50; // default short window
+    if (state->p25_p1_voice_err_hist_len > (int)sizeof(state->p25_p1_voice_err_hist)) {
+        state->p25_p1_voice_err_hist_len = (int)sizeof(state->p25_p1_voice_err_hist);
+    }
+    state->p25_p1_voice_err_hist_pos = 0;
+    state->p25_p1_voice_err_hist_sum = 0;
+
+    // Initialize P25p2 voice avg error histogram (per slot)
+    memset(state->p25_p2_voice_err_hist, 0, sizeof(state->p25_p2_voice_err_hist));
+    state->p25_p2_voice_err_hist_len = 50;
+    if (state->p25_p2_voice_err_hist_len > 64) {
+        state->p25_p2_voice_err_hist_len = 64;
+    }
+    state->p25_p2_voice_err_hist_pos[0] = 0;
+    state->p25_p2_voice_err_hist_pos[1] = 0;
+    state->p25_p2_voice_err_hist_sum[0] = 0;
+    state->p25_p2_voice_err_hist_sum[1] = 0;
 
     //Misc -- may not be needed
     state->optind = 0;

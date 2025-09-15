@@ -105,6 +105,65 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 
 static int lls = -1;
 
+static int
+compute_p25p2_ber_pct(const dsd_state* s, double* out_pct) {
+    unsigned int ok = s->p25_p2_rs_facch_ok + s->p25_p2_rs_sacch_ok + s->p25_p2_rs_ess_ok;
+    unsigned int err = s->p25_p2_rs_facch_err + s->p25_p2_rs_sacch_err + s->p25_p2_rs_ess_err;
+    unsigned int tot = ok + err;
+    if (tot == 0) {
+        return 0;
+    }
+    double ber = (double)err * 100.0 / (double)tot;
+    if (out_pct) {
+        *out_pct = ber;
+    }
+    return 1;
+}
+
+static int
+compute_p25p1_ber_pct(const dsd_state* s, double* out_pct) {
+    unsigned int ok = s->p25_p1_fec_ok;
+    unsigned int err = s->p25_p1_fec_err;
+    unsigned int tot = ok + err;
+    if (tot == 0) {
+        return 0;
+    }
+    double ber = (double)err * 100.0 / (double)tot;
+    if (out_pct) {
+        *out_pct = ber;
+    }
+    return 1;
+}
+
+static int
+compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) {
+    int len = s->p25_p1_voice_err_hist_len;
+    if (len <= 0) {
+        return 0;
+    }
+    double avg = (double)s->p25_p1_voice_err_hist_sum / (double)len;
+    if (out_avg) {
+        *out_avg = avg;
+    }
+    return 1;
+}
+
+static int
+compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
+    if (slot < 0 || slot > 1) {
+        return 0;
+    }
+    int len = s->p25_p2_voice_err_hist_len;
+    if (len <= 0) {
+        return 0;
+    }
+    double avg = (double)s->p25_p2_voice_err_hist_sum[slot] / (double)len;
+    if (out_avg) {
+        *out_avg = avg;
+    }
+    return 1;
+}
+
 void
 ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     uint8_t idas = 0;
@@ -231,7 +290,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw(" V: %iX;", opts->rtl_volume_multiplier);
         printw(" PPM: %i;", opts->rtlsdr_ppm_error); //Adjust manually now with { and }
         printw(" SQ: %i;", opts->rtl_squelch_level);
-        printw(" PWR: %04li;", opts->rtl_pwr);
+        double ber = 0.0;
+        if (compute_p25p2_ber_pct(state, &ber) || compute_p25p1_ber_pct(state, &ber)) {
+            printw(" BER: %4.1f%%;", ber);
+        } else {
+            printw(" PWR: %04li;", opts->rtl_pwr);
+        }
         printw(" BW: %i;", opts->rtl_bandwidth);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         if (opts->rtl_udp_port != 0) {
@@ -277,7 +341,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("Manual ");
         }
         if (opts->audio_in_type != 3) {
-            printw("PWR: %04ld; ", opts->rtl_pwr);
+            double ber2 = 0.0;
+            if (compute_p25p2_ber_pct(state, &ber2) || compute_p25p1_ber_pct(state, &ber2)) {
+                printw("BER: %4.1f%%; ", ber2);
+            } else {
+                printw("PWR: %04ld; ", opts->rtl_pwr);
+            }
         }
         if (opts->use_lpf == 1) {
             printw("F: |LP|");
@@ -366,7 +435,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         if ((opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
             && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            printw(" - Monitor PWR: %04ld ", opts->rtl_pwr);
+            double ber3 = 0.0;
+            if (compute_p25p2_ber_pct(state, &ber3) || compute_p25p1_ber_pct(state, &ber3)) {
+                printw(" - Monitor BER: %4.1f%% ", ber3);
+            } else {
+                printw(" - Monitor PWR: %04ld ", opts->rtl_pwr);
+            }
         }
         printw(" \n");
         if (opts->udp_sockfdA != 0) //Analog Output on udp port +2
@@ -379,7 +453,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("M ");
             }
             if (opts->audio_in_type != 3) {
-                printw("PWR: %04ld; ", opts->rtl_pwr);
+                double ber4 = 0.0;
+                if (compute_p25p2_ber_pct(state, &ber4) || compute_p25p1_ber_pct(state, &ber4)) {
+                    printw("BER: %4.1f%%; ", ber4);
+                } else {
+                    printw("PWR: %04ld; ", opts->rtl_pwr);
+                }
             }
             if (opts->use_lpf == 1) {
                 printw("F: |LP|");
@@ -494,6 +573,30 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
                state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
                state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early);
+        // P25p1 voice error snapshot (IMBE ECC) + moving average
+        {
+            double avgv = 0.0;
+            if (compute_p25p1_voice_avg_err(state, &avgv)) {
+                printw("| P1 Voice: ERR [%X][%X] Avg:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
+            } else {
+                printw("| P1 Voice: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
+            }
+        }
+        // P25p2 voice avg (per slot)
+        {
+            double avgl = 0.0, avgr = 0.0;
+            int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
+            int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
+            if (hasl || hasr) {
+                if (hasl && hasr) {
+                    printw("| P2 Voice: Avg L:%4.1f%% R:%4.1f%%\n", avgl, avgr);
+                } else if (hasl) {
+                    printw("| P2 Voice: Avg L:%4.1f%%\n", avgl);
+                } else {
+                    printw("| P2 Voice: Avg R:%4.1f%%\n", avgr);
+                }
+            }
+        }
         // P25p2 RS summary line
         printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
                state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
@@ -532,6 +635,30 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
                state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
                state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early);
+        // P25p1 voice error snapshot (IMBE ECC) + moving average
+        {
+            double avgv = 0.0;
+            if (compute_p25p1_voice_avg_err(state, &avgv)) {
+                printw("| P1 Voice: ERR [%X][%X] Avg:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
+            } else {
+                printw("| P1 Voice: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
+            }
+        }
+        // P25p2 voice avg (per slot)
+        {
+            double avgl = 0.0, avgr = 0.0;
+            int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
+            int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
+            if (hasl || hasr) {
+                if (hasl && hasr) {
+                    printw("| P2 Voice: Avg L:%4.1f%% R:%4.1f%%\n", avgl, avgr);
+                } else if (hasl) {
+                    printw("| P2 Voice: Avg L:%4.1f%%\n", avgl);
+                } else {
+                    printw("| P2 Voice: Avg R:%4.1f%%\n", avgr);
+                }
+            }
+        }
         // P25p2 RS summary line
         printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
                state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
@@ -710,10 +837,52 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("Tuner Available ");
     }
     printw("\n");
+    // DSP status: CQPSK pre-processing + LMS (experimental)
+    {
+        int cq_on = (opts->mod_qpsk == 1 || opts->frame_p25p2 == 1) ? 1 : 0;
+        const char* ev_cq = getenv("DSD_NEO_CQPSK");
+        if (ev_cq && (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T')) {
+            cq_on = 1;
+        }
+        int lms_on = (opts->cqpsk_lms != 0) ? 1 : 0;
+        const char* ev_lms = getenv("DSD_NEO_CQPSK_LMS");
+        if (ev_lms && (*ev_lms == '1' || *ev_lms == 'y' || *ev_lms == 'Y' || *ev_lms == 't' || *ev_lms == 'T')) {
+            lms_on = 1;
+        }
+        // Optional MU/STR from CLI or env
+        int mu = opts->cqpsk_mu_q15 > 0 ? opts->cqpsk_mu_q15 : 0;
+        if (mu == 0) {
+            const char* ev_mu = getenv("DSD_NEO_CQPSK_MU");
+            if (ev_mu) {
+                mu = atoi(ev_mu);
+            }
+        }
+        int stride = opts->cqpsk_stride > 0 ? opts->cqpsk_stride : 0;
+        if (stride == 0) {
+            const char* ev_st = getenv("DSD_NEO_CQPSK_STRIDE");
+            if (ev_st) {
+                stride = atoi(ev_st);
+            }
+        }
+        printw("| DSP: CQPSK %s  LMS %s", cq_on ? "ON" : "OFF", lms_on ? "ON" : "OFF");
+        if (lms_on) {
+            if (mu > 0) {
+                printw(" MU:%d", mu);
+            }
+            if (stride > 0) {
+                printw(" STR:%d", stride);
+            }
+        }
+        printw("\n");
+    }
     printw("| In Level:    [%02d%%] \n", level);
 
     if (opts->dmr_stereo == 0) {
         printw("| Voice Error: [%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
+        double avgv = 0.0;
+        if (compute_p25p1_voice_avg_err(state, &avgv)) {
+            printw(" Avg:%4.1f%%", avgv);
+        }
         if (opts->slot1_on == 0) {
             printw(" OFF");
         }

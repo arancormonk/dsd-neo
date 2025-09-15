@@ -11,6 +11,7 @@
  * and audio filtering. Public APIs are declared in `dsp/demod_pipeline.h`.
  */
 
+#include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
@@ -703,6 +704,10 @@ full_demod(struct demod_state* d) {
     /* Residual CFO loop: estimate error then rotate */
     fll_update_error(d);
     fll_mix_and_update(d);
+    /* Optional CQPSK/LSM pre-processing on complex baseband for QPSK paths */
+    if (d->cqpsk_enable) {
+        cqpsk_process_block(d);
+    }
     /* Lightweight timing error correction (optional, avoid for analog FM demod) */
     if (d->ted_enabled && (d->mode_demod != &fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);

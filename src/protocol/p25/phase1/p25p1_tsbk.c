@@ -110,6 +110,11 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         }
 
         err = crc16_lb_bridge(tsbk_decoded_bits, 80);
+        if (err == 0) {
+            state->p25_p1_fec_ok++;
+        } else {
+            state->p25_p1_fec_err++;
+        }
 
         //shuffle corrected bits back into tsbk_byte
         k = 0;

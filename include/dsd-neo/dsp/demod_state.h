@@ -167,4 +167,10 @@ struct demod_state {
     pthread_cond_t ready;
     pthread_mutex_t ready_m;
     struct output_state* output_target;
+
+    /* Experimental: enable CQPSK/LSM path pre-processing (default off). */
+    int cqpsk_enable;
+    int cqpsk_lms_enable;    /* enable decision-directed LMS for CQPSK EQ */
+    int cqpsk_mu_q15;        /* step size (Q15), small (1..64) */
+    int cqpsk_update_stride; /* update every N complex samples */
 };

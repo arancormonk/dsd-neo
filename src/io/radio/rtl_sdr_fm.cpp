@@ -704,6 +704,15 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     pthread_mutex_init(&s->ready_m, NULL);
     s->output_target = &output;
 
+    /* Experimental CQPSK/LSM path (off by default). Enable via env DSD_NEO_CQPSK=1 */
+    s->cqpsk_enable = 0;
+    const char* env_cqpsk = getenv("DSD_NEO_CQPSK");
+    if (env_cqpsk
+        && (*env_cqpsk == '1' || *env_cqpsk == 'y' || *env_cqpsk == 'Y' || *env_cqpsk == 't' || *env_cqpsk == 'T')) {
+        s->cqpsk_enable = 1;
+        fprintf(stderr, " DSP: CQPSK/LSM pre-processing enabled (experimental)\n");
+    }
+
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {
         s->downsample_passes = 1;
@@ -945,6 +954,29 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.ted_sps = cfg->ted_sps_is_set ? cfg->ted_sps : 10;
     demod.ted_mu_q20 = 0;
     demod.ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
+
+    /* Auto-enable CQPSK path for QPSK-centric modes unless already enabled by env */
+    if (demod.cqpsk_enable == 0) {
+        if (opts->mod_qpsk == 1 || opts->frame_p25p2 == 1) {
+            demod.cqpsk_enable = 1;
+            fprintf(stderr, " DSP: CQPSK/LSM pre-processing auto-enabled for QPSK/TDMA\n");
+        }
+    }
+
+    /* Map CLI runtime toggles for CQPSK LMS */
+    if (opts->cqpsk_lms != 0) {
+        demod.cqpsk_lms_enable = 1;
+    }
+    if (opts->cqpsk_mu_q15 > 0) {
+        demod.cqpsk_mu_q15 = opts->cqpsk_mu_q15;
+    } else if (demod.cqpsk_mu_q15 == 0) {
+        demod.cqpsk_mu_q15 = 1; /* tiny default */
+    }
+    if (opts->cqpsk_stride > 0) {
+        demod.cqpsk_update_stride = opts->cqpsk_stride;
+    } else if (demod.cqpsk_update_stride == 0) {
+        demod.cqpsk_update_stride = 4;
+    }
 }
 
 /**

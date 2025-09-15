@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -84,6 +87,20 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                 readImbe4400Data(opts, state, imbe_d);
                 mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                          state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+                if (state->synctype == 0 || state->synctype == 1) {
+                    int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
+                    if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
+                        len = (int)sizeof(state->p25_p1_voice_err_hist);
+                    }
+                    state->p25_p1_voice_err_hist_len = len;
+                    uint8_t pos = (uint8_t)state->p25_p1_voice_err_hist_pos;
+                    uint8_t old = state->p25_p1_voice_err_hist[pos % len];
+                    uint8_t val = (uint8_t)(state->errs2 & 0xFF);
+                    state->p25_p1_voice_err_hist[pos % len] = val;
+                    state->p25_p1_voice_err_hist_sum += val;
+                    state->p25_p1_voice_err_hist_sum -= old;
+                    state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
+                }
                 if (opts->audio_out == 1 && opts->floating_point == 0) {
                     processAudio(opts, state);
                 }
@@ -379,6 +396,20 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        if (state->synctype == 0 || state->synctype == 1) {
+            int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
+            if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
+                len = (int)sizeof(state->p25_p1_voice_err_hist);
+            }
+            state->p25_p1_voice_err_hist_len = len;
+            uint8_t pos = (uint8_t)state->p25_p1_voice_err_hist_pos;
+            uint8_t old = state->p25_p1_voice_err_hist[pos % len];
+            uint8_t val = (uint8_t)(state->errs2 & 0xFF);
+            state->p25_p1_voice_err_hist[pos % len] = val;
+            state->p25_p1_voice_err_hist_sum += val;
+            state->p25_p1_voice_err_hist_sum -= old;
+            state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
+        }
 
         //mbe_processImbe7200x4400Framef (state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_fr, imbe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
         if (opts->payload == 1) {
@@ -410,6 +441,20 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         mbe_convertImbe7100to7200(imbe_d);
         mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        if (state->synctype == 0 || state->synctype == 1) {
+            int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
+            if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
+                len = (int)sizeof(state->p25_p1_voice_err_hist);
+            }
+            state->p25_p1_voice_err_hist_len = len;
+            uint8_t pos = (uint8_t)state->p25_p1_voice_err_hist_pos;
+            uint8_t old = state->p25_p1_voice_err_hist[pos % len];
+            uint8_t val = (uint8_t)(state->errs2 & 0xFF);
+            state->p25_p1_voice_err_hist[pos % len] = val;
+            state->p25_p1_voice_err_hist_sum += val;
+            state->p25_p1_voice_err_hist_sum -= old;
+            state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
+        }
 
         if (opts->mbe_out_f != NULL) {
             saveImbe4400Data(opts, state, imbe_d);
@@ -507,6 +552,21 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+        if (state->synctype == 35 || state->synctype == 36) {
+            int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
+            if (len2 > 64) {
+                len2 = 64;
+            }
+            state->p25_p2_voice_err_hist_len = len2;
+            int sidx = (state->currentslot == 1) ? 1 : 0;
+            int hpos = state->p25_p2_voice_err_hist_pos[sidx] % len2;
+            uint8_t hold = state->p25_p2_voice_err_hist[sidx][hpos];
+            uint8_t hval = (uint8_t)(state->errs2 & 0xFF);
+            state->p25_p2_voice_err_hist[sidx][hpos] = hval;
+            state->p25_p2_voice_err_hist_sum[sidx] += hval;
+            state->p25_p2_voice_err_hist_sum[sidx] -= hold;
+            state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
+        }
 
         if (opts->payload == 1) {
             PrintAMBEData(opts, state, ambe_d);
@@ -898,6 +958,21 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                      state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+            if (state->synctype == 35 || state->synctype == 36) {
+                int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
+                if (len2 > 64) {
+                    len2 = 64;
+                }
+                state->p25_p2_voice_err_hist_len = len2;
+                int sidx = (state->currentslot == 1) ? 1 : 0;
+                int hpos = state->p25_p2_voice_err_hist_pos[sidx] % len2;
+                uint8_t hold = state->p25_p2_voice_err_hist[sidx][hpos];
+                uint8_t hval = (uint8_t)(state->errs2 & 0xFF);
+                state->p25_p2_voice_err_hist[sidx][hpos] = hval;
+                state->p25_p2_voice_err_hist_sum[sidx] += hval;
+                state->p25_p2_voice_err_hist_sum[sidx] -= hold;
+                state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
+            }
 
             //old method for this step below
             //mbe_processAmbe3600x2450Framef (state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_fr, ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
@@ -1293,6 +1368,21 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_d,
                                      state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);
+            if (state->synctype == 35 || state->synctype == 36) {
+                int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
+                if (len2 > 64) {
+                    len2 = 64;
+                }
+                state->p25_p2_voice_err_hist_len = len2;
+                int sidx = 1;
+                int hpos = state->p25_p2_voice_err_hist_pos[sidx] % len2;
+                uint8_t hold = state->p25_p2_voice_err_hist[sidx][hpos];
+                uint8_t hval = (uint8_t)(state->errs2R & 0xFF);
+                state->p25_p2_voice_err_hist[sidx][hpos] = hval;
+                state->p25_p2_voice_err_hist_sum[sidx] += hval;
+                state->p25_p2_voice_err_hist_sum[sidx] -= hold;
+                state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
+            }
 
             //old method for this step below
             //mbe_processAmbe3600x2450Framef (state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_fr, ambe_d, state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);

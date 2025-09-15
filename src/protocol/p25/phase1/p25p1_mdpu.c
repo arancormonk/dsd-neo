@@ -189,6 +189,11 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         //CRC16 on the header
         if (j == 0) {
             err[0] = crc16_lb_bridge(tsbk_decoded_bits, 80);
+            if (err[0] == 0) {
+                state->p25_p1_fec_ok++;
+            } else {
+                state->p25_p1_fec_err++;
+            }
         }
 
         //load into bit array for storage (easier decoding for future PDUs)

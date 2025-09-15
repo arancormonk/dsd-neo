@@ -517,6 +517,11 @@ typedef struct {
     //Use floating point audio output
     int floating_point;
 
+    /* DSP CQPSK controls (CLI) */
+    int cqpsk_lms;    // 0 off, 1 on
+    int cqpsk_mu_q15; // small step size (1..64)
+    int cqpsk_stride; // update stride (1..32)
+
 } dsd_opts;
 
 typedef struct {
@@ -862,8 +867,24 @@ typedef struct {
     // P25 SM metrics
     unsigned int p25_sm_tune_count;    // number of VC tunes via SM
     unsigned int p25_sm_release_count; // number of releases via SM
-    unsigned int p25_cc_cand_added;    // candidates added
-    unsigned int p25_cc_cand_used;     // candidates used for hunting
+
+    // P25 Phase 1 FEC/CRC telemetry (for BER display)
+    unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes
+    unsigned int p25_p1_fec_err;    // count of CRC16/1/2-rate header/FEC failures
+    unsigned int p25_cc_cand_added; // candidates added
+    unsigned int p25_cc_cand_used;  // candidates used for hunting
+
+    // P25 Phase 1 voice error moving average (last N IMBE frames)
+    uint8_t p25_p1_voice_err_hist[64];
+    int p25_p1_voice_err_hist_len;          // window length (<=64), default 50
+    int p25_p1_voice_err_hist_pos;          // ring head
+    unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
+
+    // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
+    uint8_t p25_p2_voice_err_hist[2][64];
+    int p25_p2_voice_err_hist_len; // window length (<=64), default 50
+    int p25_p2_voice_err_hist_pos[2];
+    unsigned int p25_p2_voice_err_hist_sum[2];
 
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed

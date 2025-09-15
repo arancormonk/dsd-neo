@@ -1537,6 +1537,7 @@ usage() {
     printf("  -mg           Use only GFSK modulation optimizations\n");
     printf("  -mq           Use only QPSK modulation optimizations\n");
     printf("  -m2           Use P25p2 6000 sps QPSK modulation optimizations\n");
+    printf("  -mL           Enable CQPSK LMS (experimental)\n");
     //printf ("                 (4 Level, not 8 Level LSM) (this is honestly unknown since I can't verify what local systems are using)\n");
     printf("  -F            Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");
     printf("                 Use this feature to allow MAC_SIGNAL even if CRC errors.\n");
@@ -3095,6 +3096,12 @@ main(int argc, char** argv) {
                     state.symbolCenter = 3;
                     // opts.setmod_bw = 12000;
                     fprintf(stderr, "Enabling 6000 sps P25p2 QPSK.\n");
+                } else if (optarg[0] == 'L') {
+                    opts.cqpsk_lms = 1;
+                    /* Tiny defaults unless overridden later */
+                    opts.cqpsk_mu_q15 = 1;
+                    opts.cqpsk_stride = 4;
+                    fprintf(stderr, "Enabling CQPSK LMS (experimental).\n");
                 }
                 //test
                 else if (optarg[0] == '3') {
