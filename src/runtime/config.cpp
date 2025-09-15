@@ -181,6 +181,11 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.window_freeze_is_set = env_is_set(wf);
     c.window_freeze = c.window_freeze_is_set ? (atoi(wf) != 0) : 0;
 
+    /* Optional JSON emitter for P25 PDUs */
+    const char* pj = getenv("DSD_NEO_PDU_JSON");
+    c.pdu_json_is_set = env_is_set(pj);
+    c.pdu_json_enable = c.pdu_json_is_set ? (atoi(pj) != 0) : 0;
+
     g_config = c;
     g_config_inited = 1;
 }

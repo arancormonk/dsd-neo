@@ -133,7 +133,33 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         //without it stuttering during actual voice
     }
 
+    // One-time diagnostics for unknown vendor/opcode MAC lengths to aid future coverage
     if (len_b == 0 || len_b > 18) {
+        static struct {
+            uint8_t mfid;
+            uint8_t opcode;
+        } seen[32];
+
+        static int seen_count = 0;
+        uint8_t mfid = (uint8_t)MAC[2];
+        uint8_t opcode = (uint8_t)MAC[1];
+
+        int already = 0;
+        for (int i = 0; i < seen_count; i++) {
+            if (seen[i].mfid == mfid && seen[i].opcode == opcode) {
+                already = 1;
+                break;
+            }
+        }
+        if (!already && seen_count < (int)(sizeof(seen) / sizeof(seen[0]))) {
+            seen[seen_count].mfid = mfid;
+            seen[seen_count].opcode = opcode;
+            seen_count++;
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n P25p2 MAC length unknown/unsupported: MFID=%02X OPCODE=%02X (len=0). Please report.\n",
+                    mfid, opcode);
+            fprintf(stderr, "%s", KNRM);
+        }
         goto END_PDU;
     }
 

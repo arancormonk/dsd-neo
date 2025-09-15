@@ -11,6 +11,65 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/config.h>
+
+static void
+p25_emit_pdu_json_if_enabled(uint8_t fmt, uint8_t sap, uint8_t mfid, uint8_t io, uint32_t llid, uint8_t blks,
+                             uint8_t pad, uint8_t offset, int payload_len, int encrypted, const char* summary) {
+    const dsdneoRuntimeConfig* rc = dsd_neo_get_config();
+    if (!rc || !rc->pdu_json_enable) {
+        return;
+    }
+
+    /* Skip trunking control SAPs to reduce noise unless explicitly desired later */
+    if (sap == 61 || sap == 63) {
+        return;
+    }
+
+    time_t ts = time(NULL);
+    char sum[160];
+    if (summary && summary[0] != '\0') {
+        /* ensure no embedded quotes break JSON (very minimal escape) */
+        int j = 0;
+        for (int i = 0; summary[i] != '\0' && j < (int)sizeof(sum) - 1; i++) {
+            char ch = summary[i];
+            if (ch == '"') {
+                continue; /* drop quotes */
+            }
+            sum[j++] = ch;
+        }
+        sum[j] = '\0';
+    } else {
+        sum[0] = '\0';
+    }
+
+    fprintf(stderr,
+            "{\"ts\":%ld,\"proto\":\"p25\",\"fmt\":%u,\"sap\":%u,\"mfid\":%u,\"io\":%u,\"llid\":%u,"
+            "\"blks\":%u,\"pad\":%u,\"offset\":%u,\"len\":%d,\"enc\":%d,\"summary\":\"%s\"}\n",
+            (long)ts, fmt, sap, mfid, io, llid, blks, pad, offset, payload_len, encrypted ? 1 : 0, sum);
+}
+
+static void
+p25_parse_sap32_regauth(dsd_opts* opts, dsd_state* state, const uint8_t* p, int plen, char* out_summary,
+                        size_t out_sz) {
+    UNUSED(opts);
+    UNUSED(state);
+    /* Minimal: first byte often indicates message subtype/opcode. Keep concise. */
+    uint8_t subtype = (plen > 0) ? p[0] : 0xFF;
+    snprintf(out_summary, out_sz, "RegAuth subtype:%u bytes:%d", (unsigned)subtype, plen);
+}
+
+static void
+p25_parse_sap34_syscfg(dsd_opts* opts, dsd_state* state, const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    UNUSED(opts);
+    UNUSED(state);
+    /* Minimal: emit subtype and a couple of key bytes to help field analysis. */
+    uint8_t subtype = (plen > 0) ? p[0] : 0xFF;
+    uint8_t b1 = (plen > 1) ? p[1] : 0;
+    uint8_t b2 = (plen > 2) ? p[2] : 0;
+    snprintf(out_summary, out_sz, "SysCfg subtype:%u b1:%u b2:%u bytes:%d", (unsigned)subtype, (unsigned)b1,
+             (unsigned)b2, plen);
+}
 
 void
 p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string) {
@@ -486,6 +545,10 @@ void
 p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
 
     uint8_t sap = input[1] & 0x3F;
+    uint8_t fmt = input[0] & 0x1F;
+    uint8_t io = (input[0] >> 1) & 0x1;
+    uint8_t mfid = input[2];
+    uint32_t llid = (input[3] << 16) | (input[4] << 8) | input[5];
     uint8_t pad = input[7] & 0x1F;
     uint8_t offset = input[9] & 0x3F;
     UNUSED(offset); //determine the best way to use this
@@ -523,6 +586,34 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
             decode_ip_pdu(opts, state, len + 1, input + ptr);
         }
 
+        else if (sap == 32) { // Registration & Authorization
+            char summary[128] = {0};
+            int plen = (len > ptr) ? (len - ptr + 1) : (len);
+            if (plen < 0) {
+                plen = 0;
+            }
+            p25_parse_sap32_regauth(opts, state, input + ptr, plen, summary, sizeof(summary));
+            if (summary[0] != '\0') {
+                snprintf(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "RegAuth: %s", summary);
+            }
+            p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len,
+                                         encrypted, summary);
+        }
+
+        else if (sap == 34) { // System Configuration
+            char summary[128] = {0};
+            int plen = (len > ptr) ? (len - ptr + 1) : (len);
+            if (plen < 0) {
+                plen = 0;
+            }
+            p25_parse_sap34_syscfg(opts, state, input + ptr, plen, summary, sizeof(summary));
+            if (summary[0] != '\0') {
+                snprintf(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "SysCfg: %s", summary);
+            }
+            p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len,
+                                         encrypted, summary);
+        }
+
         else if (sap == 48) { //Tier 1 Location Service (LRRP/NMEA)
             // Capture as text for event history; if present, prefix for UI clarity
             utf8_to_text(state, 1, len - ptr + 1, input + ptr);
@@ -532,6 +623,8 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
                 snprintf(state->event_history_s[0].Event_History_Items[0].gps_s,
                          sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
             }
+            p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len,
+                                         encrypted, state->event_history_s[0].Event_History_Items[0].text_message);
         }
 
         // else //default catch all (debug only)
@@ -542,6 +635,12 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
         // }
     } else {
         fprintf(stderr, " Encrypted PDU;");
+    }
+
+    /* Emit JSON for other SAPs as generic entries (skip trunking control) */
+    if (sap != 32 && sap != 34 && sap != 48) {
+        p25_emit_pdu_json_if_enabled(fmt, sap, mfid, io, llid, input[6] & 0x7F, pad, input[9] & 0x3F, len, encrypted,
+                                     "");
     }
 
     //watchdog the data call and make it push to event history

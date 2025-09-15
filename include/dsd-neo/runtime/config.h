@@ -187,6 +187,10 @@ typedef struct dsdneoRuntimeConfig {
     /* Symbol window debug/testing */
     int window_freeze_is_set;
     int window_freeze;
+
+    /* Optional JSON emitter for P25 PDUs */
+    int pdu_json_is_set;
+    int pdu_json_enable;
 }
 
 dsdneoRuntimeConfig;
