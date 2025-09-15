@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * p25_crc.c
  * P25 Misc CRC checks
@@ -144,15 +147,22 @@ uint8_t lsd_parity[256] = {
 
 int
 p25p1_lsd_fec(uint8_t* input) {
+    // Expect 16 bits: [0..7] = data bits, [8..15] = parity bits; bits are 0/1 values
     uint8_t lsd = (uint8_t)ConvertBitIntoBytes(&input[0], 8);
     uint8_t par = (uint8_t)ConvertBitIntoBytes(&input[8], 8);
     uint8_t chk = lsd_parity[lsd];
-    //NOTE: Simply checking the parity doesn't account for the parity bits being bad, but the
-    //low speed data bits being correct, but is better than nothing
     if (chk == par) {
-        return 1;
-    } else {
-        //TODO: some FEC functions
-        return 0;
+        return 1; // valid
     }
+    // Attempt single-bit correction in data bits only
+    for (int pos = 0; pos < 8; pos++) {
+        // Flip bit MSB-first: input[0] is MSB
+        uint8_t cand = (uint8_t)(lsd ^ (uint8_t)(1u << (7 - pos)));
+        if (lsd_parity[cand] == par) {
+            // Write back corrected bit to the bit buffer (toggle 0/1)
+            input[pos] = (uint8_t)(1 - (input[pos] & 1));
+            return 1;
+        }
+    }
+    return 0; // uncorrectable
 }

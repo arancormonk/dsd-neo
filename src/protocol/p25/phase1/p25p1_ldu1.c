@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -278,7 +281,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
             lsd_hex1 = lsd_hex1 << 1;
             lsd1[i] = lsd[i] + '0';
             lsd_hex1 |= (uint8_t)lsd[i];
-            lowspeeddata[i + 0] = (uint8_t)lsd1[i];
+            lowspeeddata[i + 0] = (uint8_t)lsd[i];
             lowspeeddata[i + 8] = (uint8_t)cyclic_parity[i];
         }
 
@@ -293,7 +296,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
             lsd_hex2 = lsd_hex2 << 1;
             lsd2[i] = lsd[i] + '0';
             lsd_hex2 |= (uint8_t)lsd[i];
-            lowspeeddata[i + 16] = (uint8_t)lsd2[i];
+            lowspeeddata[i + 16] = (uint8_t)lsd[i];
             lowspeeddata[i + 24] = (uint8_t)cyclic_parity[i];
         }
 
@@ -518,7 +521,6 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "[%02X]", LCW_bytes[i]);
         }
 
-#ifdef SOFTID
         //view Low Speed Data
         fprintf(stderr, "%s", KCYN);
         fprintf(stderr, "    LSD: %02X %02X ", lsd_hex1, lsd_hex2);
@@ -538,7 +540,6 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         if (lsd2_okay == 0) {
             fprintf(stderr, " L2 ERR");
         }
-#endif
         fprintf(stderr, "%s\n", KNRM);
     }
 #ifdef SOFTID

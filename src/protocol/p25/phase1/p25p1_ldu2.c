@@ -282,9 +282,8 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
             lsd_hex1 = lsd_hex1 << 1;
             lsd1[i] = lsd[i] + '0';
             lsd_hex1 |= (uint8_t)lsd[i];
-            lowspeeddata[i + 0] = (uint8_t)lsd1[i];
+            lowspeeddata[i + 0] = (uint8_t)lsd[i];
             lowspeeddata[i + 8] = (uint8_t)cyclic_parity[i];
-            ;
         }
 
         for (i = 0; i <= 6; i += 2) {
@@ -298,7 +297,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
             lsd_hex2 = lsd_hex2 << 1;
             lsd2[i] = lsd[i] + '0';
             lsd_hex2 |= (uint8_t)lsd[i];
-            lowspeeddata[i + 16] = (uint8_t)lsd2[i];
+            lowspeeddata[i + 16] = (uint8_t)lsd[i];
             lowspeeddata[i + 24] = (uint8_t)cyclic_parity[i];
         }
 
@@ -574,7 +573,6 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "%s", KNRM);
     }
 
-#ifdef SOFTID
     if (opts->payload == 1) {
         //view Low Speed Data
         fprintf(stderr, "%s", KCYN);
@@ -698,11 +696,6 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         state->dmr_alias_block_len[0] = 0;
         // memset (state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
     }
-#else
-    UNUSED2(lsd1_okay, lsd2_okay);
-    fprintf(stderr, "%s", KNRM);
-    fprintf(stderr, "\n");
-#endif //SOFTID
 
     //run LFSR on the MI if we have irrecoverable errors here
     if (irrecoverable_errors && state->payload_algid != 0x80 && state->payload_keyid != 0 && state->payload_miP != 0) {
