@@ -34,6 +34,20 @@ cqpsk_init(struct demod_state* s) {
     /* Configure from demod_state first (CLI/runtime), then allow env to override if set */
     if (s) {
         g_cqpsk_ctx.eq.lms_enable = (s->cqpsk_lms_enable != 0);
+        /* If samples-per-symbol is known, pick a small odd tap count relative to it (cap at MAX). */
+        if (s->ted_sps >= 4 && s->ted_sps <= 12) {
+            int taps = 5;
+            if (s->ted_sps >= 8) {
+                taps = 7;
+            }
+            if (taps > CQPSK_EQ_MAX_TAPS) {
+                taps = CQPSK_EQ_MAX_TAPS;
+            }
+            if ((taps & 1) == 0) {
+                taps++; /* enforce odd */
+            }
+            g_cqpsk_ctx.eq.num_taps = taps;
+        }
         if (s->cqpsk_mu_q15 > 0) {
             g_cqpsk_ctx.eq.mu_q15 = (int16_t)s->cqpsk_mu_q15;
         }
@@ -45,6 +59,20 @@ cqpsk_init(struct demod_state* s) {
     const char* lms = getenv("DSD_NEO_CQPSK_LMS");
     if (lms && (*lms == '1' || *lms == 'y' || *lms == 'Y' || *lms == 't' || *lms == 'T')) {
         g_cqpsk_ctx.eq.lms_enable = 1;
+    }
+    const char* taps = getenv("DSD_NEO_CQPSK_TAPS");
+    if (taps) {
+        int v = atoi(taps);
+        if (v < 1) {
+            v = 1;
+        }
+        if (v > CQPSK_EQ_MAX_TAPS) {
+            v = CQPSK_EQ_MAX_TAPS;
+        }
+        if ((v & 1) == 0) {
+            v++; /* odd only */
+        }
+        g_cqpsk_ctx.eq.num_taps = v;
     }
     const char* mu = getenv("DSD_NEO_CQPSK_MU");
     if (mu) {

@@ -998,7 +998,8 @@ select_defaults_for_mode(dsd_opts* opts) {
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
         if (!env_ted_set) {
-            demod.ted_enabled = 0;
+            /* Enable timing correction by default for QPSK/TDMA paths */
+            demod.ted_enabled = (demod.cqpsk_enable ? 1 : 0);
         }
         if (!env_ted_sps_set) {
             /* Use actual demod output rate to derive default SPS for 4800 sym/s */
@@ -1466,6 +1467,74 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
     if (count == 0) {
         return 0;
     }
+
+    /* Optional: auto-adjust RTL PPM using smoothed TED residual (opt-in).
+       This gently nudges opts->rtlsdr_ppm_error by +/-1 when the Gardner bias
+       shows a persistent sign and magnitude above a threshold. */
+    do {
+        static int init = 0;
+        static int enabled = 0;
+        static int thr = 30000; /* coarse units */
+        static int hold = 200;  /* consecutive hits before change */
+        static int step = 1;    /* ppm per adjust */
+        static int dir_run = 0; /* -1,0,+1 */
+        static int run_len = 0;
+        if (!init) {
+            init = 1;
+            const char* on = getenv("DSD_NEO_AUTO_PPM");
+            if (on && (*on == '1' || *on == 'y' || *on == 'Y' || *on == 't' || *on == 'T')) {
+                enabled = 1;
+            }
+            const char* sthr = getenv("DSD_NEO_AUTO_PPM_THR");
+            if (sthr) {
+                int v = atoi(sthr);
+                if (v > 1000 && v < 200000) {
+                    thr = v;
+                }
+            }
+            const char* shold = getenv("DSD_NEO_AUTO_PPM_HOLD");
+            if (shold) {
+                int v = atoi(shold);
+                if (v >= 50 && v <= 2000) {
+                    hold = v;
+                }
+            }
+            const char* sstep = getenv("DSD_NEO_AUTO_PPM_STEP");
+            if (sstep) {
+                int v = atoi(sstep);
+                if (v >= 1 && v <= 5) {
+                    step = v;
+                }
+            }
+        }
+        if (enabled) {
+            int e = demod.ted_state.e_ema;
+            int dir = 0;
+            if (e > thr) {
+                dir = +1;
+            } else if (e < -thr) {
+                dir = -1;
+            }
+            if (dir == 0) {
+                dir_run = 0;
+                run_len = 0;
+            } else {
+                if (dir == dir_run) {
+                    run_len++;
+                } else {
+                    dir_run = dir;
+                    run_len = 1;
+                }
+                if (run_len >= hold) {
+                    int new_ppm = opts->rtlsdr_ppm_error + dir * step;
+                    opts->rtlsdr_ppm_error = new_ppm;
+                    run_len = 0;
+                    /* leave dir_run as-is to require persistence for next change */
+                    LOG_INFO("AUTO-PPM: e_ema=%d, dir=%d, ppm->%d\n", e, dir, new_ppm);
+                }
+            }
+        }
+    } while (0);
 
     /* If PPM Error is Manually Changed, change it here once per batch */
     if (opts->rtlsdr_ppm_error != dongle.ppm_error) {

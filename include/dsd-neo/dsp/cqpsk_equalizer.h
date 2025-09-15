@@ -8,34 +8,41 @@
 #include <stdint.h>
 
 /*
- * Minimal, lightweight decision-directed CQPSK equalizer interface.
+ * Decision-directed CQPSK equalizer interface (fractionally-spaced, NLMS).
  *
- * This interface purposely keeps state opaque and small. The initial
- * implementation acts as a pass-through while scaffolding is validated;
- * subsequent iterations can add LMS updates and taps without changing the
- * public API.
+ * Lightweight, fixed-point implementation intended to mitigate moderate ISI
+ * on P25 LSM/CQPSK paths. Uses a short feed-forward FIR with complex taps
+ * (Q14) and normalized LMS updates every N samples. Defaults to 5 taps and
+ * tiny step size for stability; configurable via runtime/env.
  */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Max taps for the short equalizer. Must be odd, up to 11. */
+#ifndef CQPSK_EQ_MAX_TAPS
+#define CQPSK_EQ_MAX_TAPS 11
+#endif
+
 typedef struct cqpsk_eq_state_s {
-    /* Two complex taps (I/Q pairs) for a short FIR equalizer.
-       Fixed-point Q14 coefficients; initial pass-through uses {1, 0}. */
-    int16_t c0_i, c0_q; /* center tap (complex) */
-    int16_t c1_i, c1_q; /* side tap (complex), initially 0 */
-    /* Simple clamp for LMS updates (magnitude limit) */
-    int16_t max_abs_q14;
-    /* Last input sample for side-tap (I/Q) */
-    int16_t x1_i, x1_q;
-    /* LMS parameters */
-    int lms_enable;    /* 0 off (default), 1 on (experimental) */
-    int16_t mu_q15;    /* small step size (e.g. 1..8) */
+    /* Complex FIR taps (Q14), 0..num_taps-1 */
+    int16_t c_i[CQPSK_EQ_MAX_TAPS];
+    int16_t c_q[CQPSK_EQ_MAX_TAPS];
+    int num_taps;        /* odd number of taps in use (1..CQPSK_EQ_MAX_TAPS) */
+    int16_t max_abs_q14; /* clamp for coefficient magnitude */
+    /* Circular buffer of recent complex input samples */
+    int16_t x_i[CQPSK_EQ_MAX_TAPS];
+    int16_t x_q[CQPSK_EQ_MAX_TAPS];
+    int head; /* index of most recent sample in circular buffer */
+    /* NLMS parameters */
+    int lms_enable;    /* 0 off (default), 1 on */
+    int16_t mu_q15;    /* small step size (e.g., 1..128) */
     int update_stride; /* apply update every N complex samples (e.g., 4) */
     int update_count;  /* internal counter */
-    /* Reserved for future history/bias tracking */
-    int16_t _rsvd[8];
+    int16_t eps_q15;   /* NLMS epsilon in Q15 to avoid div-by-zero (~1..8) */
+    /* Reserved for future growth */
+    int16_t _rsvd[4];
 } cqpsk_eq_state_t;
 
 /* Initialize equalizer state with identity response. */
