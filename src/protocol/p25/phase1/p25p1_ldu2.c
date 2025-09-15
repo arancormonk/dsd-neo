@@ -193,6 +193,162 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     read_and_correct_hex_word(opts, state, &(hex_data[0][0]), &status_count, analog_signal_array, &analog_signal_index);
     analog_signal_array[12 * 5].sequence_broken = 1;
 
+    // Early extract of ALGID/KID/MI after IMBE 5 so we can gate audio for the
+    // remainder of this LDU if encrypted. Keep prints later; just set state.
+    if (state->payload_algid == 0) {
+        char algid_b[9] = {0};
+        char kid_b[17] = {0};
+        char mi_b[73] = {0};
+
+        // Build MI bits from hex_data[15..4]
+        mi_b[0] = hex_data[15][0] + '0';
+        mi_b[1] = hex_data[15][1] + '0';
+        mi_b[2] = hex_data[15][2] + '0';
+        mi_b[3] = hex_data[15][3] + '0';
+        mi_b[4] = hex_data[15][4] + '0';
+        mi_b[5] = hex_data[15][5] + '0';
+
+        mi_b[6] = hex_data[14][0] + '0';
+        mi_b[7] = hex_data[14][1] + '0';
+        mi_b[8] = hex_data[14][2] + '0';
+        mi_b[9] = hex_data[14][3] + '0';
+        mi_b[10] = hex_data[14][4] + '0';
+        mi_b[11] = hex_data[14][5] + '0';
+
+        mi_b[12] = hex_data[13][0] + '0';
+        mi_b[13] = hex_data[13][1] + '0';
+        mi_b[14] = hex_data[13][2] + '0';
+        mi_b[15] = hex_data[13][3] + '0';
+        mi_b[16] = hex_data[13][4] + '0';
+        mi_b[17] = hex_data[13][5] + '0';
+
+        mi_b[18] = hex_data[12][0] + '0';
+        mi_b[19] = hex_data[12][1] + '0';
+        mi_b[20] = hex_data[12][2] + '0';
+        mi_b[21] = hex_data[12][3] + '0';
+        mi_b[22] = hex_data[12][4] + '0';
+        mi_b[23] = hex_data[12][5] + '0';
+
+        mi_b[24] = hex_data[11][0] + '0';
+        mi_b[25] = hex_data[11][1] + '0';
+        mi_b[26] = hex_data[11][2] + '0';
+        mi_b[27] = hex_data[11][3] + '0';
+        mi_b[28] = hex_data[11][4] + '0';
+        mi_b[29] = hex_data[11][5] + '0';
+
+        mi_b[30] = hex_data[10][0] + '0';
+        mi_b[31] = hex_data[10][1] + '0';
+        mi_b[32] = hex_data[10][2] + '0';
+        mi_b[33] = hex_data[10][3] + '0';
+        mi_b[34] = hex_data[10][4] + '0';
+        mi_b[35] = hex_data[10][5] + '0';
+
+        mi_b[36] = hex_data[9][0] + '0';
+        mi_b[37] = hex_data[9][1] + '0';
+        mi_b[38] = hex_data[9][2] + '0';
+        mi_b[39] = hex_data[9][3] + '0';
+        mi_b[40] = hex_data[9][4] + '0';
+        mi_b[41] = hex_data[9][5] + '0';
+
+        mi_b[42] = hex_data[8][0] + '0';
+        mi_b[43] = hex_data[8][1] + '0';
+        mi_b[44] = hex_data[8][2] + '0';
+        mi_b[45] = hex_data[8][3] + '0';
+        mi_b[46] = hex_data[8][4] + '0';
+        mi_b[47] = hex_data[8][5] + '0';
+
+        mi_b[48] = hex_data[7][0] + '0';
+        mi_b[49] = hex_data[7][1] + '0';
+        mi_b[50] = hex_data[7][2] + '0';
+        mi_b[51] = hex_data[7][3] + '0';
+        mi_b[52] = hex_data[7][4] + '0';
+        mi_b[53] = hex_data[7][5] + '0';
+
+        mi_b[54] = hex_data[6][0] + '0';
+        mi_b[55] = hex_data[6][1] + '0';
+        mi_b[56] = hex_data[6][2] + '0';
+        mi_b[57] = hex_data[6][3] + '0';
+        mi_b[58] = hex_data[6][4] + '0';
+        mi_b[59] = hex_data[6][5] + '0';
+
+        mi_b[60] = hex_data[5][0] + '0';
+        mi_b[61] = hex_data[5][1] + '0';
+        mi_b[62] = hex_data[5][2] + '0';
+        mi_b[63] = hex_data[5][3] + '0';
+        mi_b[64] = hex_data[5][4] + '0';
+        mi_b[65] = hex_data[5][5] + '0';
+
+        mi_b[66] = hex_data[4][0] + '0';
+        mi_b[67] = hex_data[4][1] + '0';
+        mi_b[68] = hex_data[4][2] + '0';
+        mi_b[69] = hex_data[4][3] + '0';
+        mi_b[70] = hex_data[4][4] + '0';
+        mi_b[71] = hex_data[4][5] + '0';
+
+        // Build ALGID bits
+        algid_b[0] = hex_data[3][0] + '0';
+        algid_b[1] = hex_data[3][1] + '0';
+        algid_b[2] = hex_data[3][2] + '0';
+        algid_b[3] = hex_data[3][3] + '0';
+        algid_b[4] = hex_data[3][4] + '0';
+        algid_b[5] = hex_data[3][5] + '0';
+        algid_b[6] = hex_data[2][0] + '0';
+        algid_b[7] = hex_data[2][1] + '0';
+
+        // Build KID bits
+        kid_b[0] = hex_data[2][2] + '0';
+        kid_b[1] = hex_data[2][3] + '0';
+        kid_b[2] = hex_data[2][4] + '0';
+        kid_b[3] = hex_data[2][5] + '0';
+        kid_b[4] = hex_data[1][0] + '0';
+        kid_b[5] = hex_data[1][1] + '0';
+        kid_b[6] = hex_data[1][2] + '0';
+        kid_b[7] = hex_data[1][3] + '0';
+        kid_b[8] = hex_data[1][4] + '0';
+        kid_b[9] = hex_data[1][5] + '0';
+        kid_b[10] = hex_data[0][0] + '0';
+        kid_b[11] = hex_data[0][1] + '0';
+        kid_b[12] = hex_data[0][2] + '0';
+        kid_b[13] = hex_data[0][3] + '0';
+        kid_b[14] = hex_data[0][4] + '0';
+        kid_b[15] = hex_data[0][5] + '0';
+
+        int algid_early = (int)strtol(algid_b, NULL, 2);
+        int kid_early = (int)strtol(kid_b, NULL, 2);
+        unsigned long long mihex1_e = (unsigned long long)ConvertBitIntoBytes(&mi_b[0], 32);
+        unsigned long long mihex2_e = (unsigned long long)ConvertBitIntoBytes(&mi_b[32], 32);
+
+        state->payload_algid = algid_early;
+        state->payload_keyid = kid_early;
+        state->payload_miP = (mihex1_e << 32) | mihex2_e; // 64 MSBs
+
+        // Establish mute/unmute policy early (no prints here)
+        if (state->R != 0
+            && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
+            opts->unmute_encrypted_p25 = 1; // RC4/DES/DES-XL with key
+        } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
+            // AES: defer unmute unless key already known loaded; keep muted by default
+            // opts->unmute_encrypted_p25 remains as-is
+        } else if (state->payload_algid != 0 && state->payload_algid != 0x80) {
+            opts->unmute_encrypted_p25 = 0;
+        }
+
+#ifdef P25p1_ENC_LO
+        // Apply early ENC lockout policy consistent with later block
+        if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->p25_trunk == 1 && opts->p25_is_tuned == 1
+            && opts->trunk_tune_enc_calls == 0) {
+            int enc_lo = 1;
+            if (state->payload_algid == 0xAA && state->R != 0) {
+                enc_lo = 0; // RC4 with key present → allow
+            }
+            if (enc_lo == 1 && state->lasttg != 0) {
+                // Return to CC swiftly; prints/logs handled in later code path
+                p25_sm_on_release(opts, state);
+            }
+        }
+#endif // P25p1_ENC_LO
+    }
+
     // IMBE 6
 #ifdef TRACE_DSD
     state->debug_prefix_2 = '5';

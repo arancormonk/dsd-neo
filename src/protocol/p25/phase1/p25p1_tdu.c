@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 #include <dsd-neo/core/dsd.h>
 
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -46,10 +49,11 @@ processTDU(dsd_opts* opts, dsd_state* state) {
         state->aout_gain = opts->audio_gain;
     }
 
-    //zero out MI, key, alg
-    // state->payload_miP = 0;
-    // state->payload_algid = 0;
-    // state->payload_keyid = 0;
+    // Reset encryption indicators at TDU boundary so the next LDU starts muted
+    // until we positively identify clear payload (prevents brief encrypted bursts).
+    state->payload_miP = 0;
+    state->payload_algid = 0; // unknown → treated as encrypted by IMBE path
+    state->payload_keyid = 0;
 
     // state->lasttg = 0;
     // state->lastsrc = 0;
