@@ -236,8 +236,21 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             if (opts->floating_point == 1) {
                 state->aout_gain = opts->audio_gain;
             }
-            // Enable audio for this slot (SACCH uses flipped slot index)
-            state->p25_p2_audio_allowed[slot] = 1;
+            // Conditionally enable audio only if clear or decryptable
+            {
+                int allow_audio = 0;
+                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+                unsigned long long key = (slot == 0) ? state->R : state->RR;
+                int aes_loaded = state->aes_key_loaded[slot];
+                if (alg == 0 || alg == 0x80) {
+                    allow_audio = 1; // clear
+                } else if ((alg == 0xAA || alg == 0x81) && key != 0) {
+                    allow_audio = 1; // RC4 or DES with key
+                } else if ((alg == 0x84 || alg == 0x89) && aes_loaded == 1) {
+                    allow_audio = 1; // AES with key preloaded
+                }
+                state->p25_p2_audio_allowed[slot] = allow_audio;
+            }
         }
 
         if (state->currentslot == 0) {
@@ -341,8 +354,21 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             if (opts->floating_point == 1) {
                 state->aout_gainR = opts->audio_gain;
             }
-            // Enable audio for this slot (SACCH uses flipped slot index)
-            state->p25_p2_audio_allowed[slot] = 1;
+            // Conditionally enable audio only if clear or decryptable
+            {
+                int allow_audio = 0;
+                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+                unsigned long long key = (slot == 0) ? state->R : state->RR;
+                int aes_loaded = state->aes_key_loaded[slot];
+                if (alg == 0 || alg == 0x80) {
+                    allow_audio = 1;
+                } else if ((alg == 0xAA || alg == 0x81) && key != 0) {
+                    allow_audio = 1;
+                } else if ((alg == 0x84 || alg == 0x89) && aes_loaded == 1) {
+                    allow_audio = 1;
+                }
+                state->p25_p2_audio_allowed[slot] = allow_audio;
+            }
         }
 
         if (opts->payload == 1) {
@@ -698,8 +724,21 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (opts->floating_point == 1) {
                 state->aout_gain = opts->audio_gain;
             }
-            // Enable audio for this slot
-            state->p25_p2_audio_allowed[slot] = 1;
+            // Conditionally enable audio only if clear or decryptable
+            {
+                int allow_audio = 0;
+                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+                unsigned long long key = (slot == 0) ? state->R : state->RR;
+                int aes_loaded = state->aes_key_loaded[slot];
+                if (alg == 0 || alg == 0x80) {
+                    allow_audio = 1; // clear
+                } else if ((alg == 0xAA || alg == 0x81) && key != 0) {
+                    allow_audio = 1; // RC4 or DES with key
+                } else if ((alg == 0x84 || alg == 0x89) && aes_loaded == 1) {
+                    allow_audio = 1; // AES with key preloaded
+                }
+                state->p25_p2_audio_allowed[slot] = allow_audio;
+            }
         }
 
         if (state->currentslot == 1) {
@@ -763,8 +802,21 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (opts->floating_point == 1) {
                 state->aout_gainR = opts->audio_gain;
             }
-            // Enable audio for this slot
-            state->p25_p2_audio_allowed[slot] = 1;
+            // Conditionally enable audio only if clear or decryptable
+            {
+                int allow_audio = 0;
+                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+                unsigned long long key = (slot == 0) ? state->R : state->RR;
+                int aes_loaded = state->aes_key_loaded[slot];
+                if (alg == 0 || alg == 0x80) {
+                    allow_audio = 1;
+                } else if ((alg == 0xAA || alg == 0x81) && key != 0) {
+                    allow_audio = 1;
+                } else if ((alg == 0x84 || alg == 0x89) && aes_loaded == 1) {
+                    allow_audio = 1;
+                }
+                state->p25_p2_audio_allowed[slot] = allow_audio;
+            }
         }
 
         if (opts->payload == 1) {
