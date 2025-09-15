@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * EDACS-FME
  * A program for decoding EDACS (ported to DSD-FME)
@@ -462,7 +465,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             fprintf(stderr, "%s", KRED);
         }
 
-        fprintf(stderr, " Analog PWR: %04ld SQL: %ld", pwr, sql);
+        fprintf(stderr, " Analog PWR: %.1f dBFS SQL: %.1f dBFS", pwr_to_dBFS(pwr), pwr_to_dBFS(sql));
         if (state->ea_mode == 0) {
             int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
             int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;

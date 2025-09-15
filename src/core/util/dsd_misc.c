@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * dsd_misc.c
  * Misc Code that needs to be reorganized and sorted out
@@ -8,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <math.h>
 
 static const int PARITY[] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
                              1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
@@ -590,4 +594,47 @@ raw_pwr(int16_t* samples, int len, int step) {
         energy = 0;
     }
     return (long int)(energy / (len > 0 ? len : 1));
+}
+
+/*
+ * Convert a mean power value (RMS^2 proxy on 16-bit samples) to dBFS.
+ * The input is the DC-corrected mean of squares on int16 samples.
+ * Output is clamped to [-120.0 dBFS, 0.0 dBFS] for stable display.
+ */
+double
+pwr_to_dBFS(long int mean_power) {
+    if (mean_power <= 0) {
+        return -120.0;
+    }
+    const double full_scale_sq = 32768.0 * 32768.0; /* int16 full scale squared */
+    double ratio = (double)mean_power / full_scale_sq;
+    double dB = 10.0 * log10(ratio);
+    if (dB > 0.0) {
+        dB = 0.0; /* never exceed 0 dBFS */
+    }
+    if (dB < -120.0) {
+        dB = -120.0; /* floor for readability */
+    }
+    return dB;
+}
+
+/* Inverse of pwr_to_dBFS: convert dBFS back to mean power threshold. */
+long int
+dBFS_to_pwr(double dB) {
+    if (dB >= 0.0) {
+        return (long int)(32768.0 * 32768.0);
+    }
+    if (dB < -200.0) {
+        dB = -200.0; /* avoid denormals */
+    }
+    const double full_scale_sq = 32768.0 * 32768.0;
+    double ratio = pow(10.0, dB / 10.0);
+    double pwr = ratio * full_scale_sq;
+    if (pwr < 0.0) {
+        pwr = 0.0;
+    }
+    if (pwr > full_scale_sq) {
+        pwr = full_scale_sq;
+    }
+    return (long int)(pwr + 0.5);
 }

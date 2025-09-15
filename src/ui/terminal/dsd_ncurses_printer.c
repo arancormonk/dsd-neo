@@ -448,11 +448,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw(" V: %iX;", opts->rtl_volume_multiplier);
         printw(" PPM: %i;", opts->rtlsdr_ppm_error); //Adjust manually now with { and }
-        printw(" SQ: %i;", opts->rtl_squelch_level);
+        printw(" SQ: %.1f dBFS;", pwr_to_dBFS(opts->rtl_squelch_level));
         if (print_labeled_ber_with_voice(opts, state)) {
             /* printed labeled BER with optional voice avg */
         } else {
-            printw(" PWR: %04li;", opts->rtl_pwr);
+            printw(" PWR: %.1f dBFS;", pwr_to_dBFS(opts->rtl_pwr));
         }
         printw(" BW: %i;", opts->rtl_bandwidth);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
@@ -503,7 +503,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (print_labeled_ber_with_voice(opts, state)) {
                 printw(" ");
             } else {
-                printw("PWR: %04ld; ", opts->rtl_pwr);
+                printw("PWR: %.1f dBFS; ", pwr_to_dBFS(opts->rtl_pwr));
             }
         }
         if (opts->use_lpf == 1) {
@@ -548,7 +548,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         if ((opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
             && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            printw("\n| Analog Monitor PWR: %04ld; G: %02.0f%% (/|*) ", opts->rtl_pwr, opts->audio_gainA);
+            printw("\n| Analog Monitor PWR: %.1f dBFS; G: %02.0f%% (/|*) ", pwr_to_dBFS(opts->rtl_pwr),
+                   opts->audio_gainA);
             if (opts->audio_gainA == 0.0f) {
                 printw("Auto   ");
             } else {
@@ -596,7 +597,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (print_labeled_ber_with_voice(opts, state)) {
                 /* in analog monitor context, still show prefix */
             } else {
-                printw(" - Monitor PWR: %04ld ", opts->rtl_pwr);
+                printw(" - Monitor PWR: %.1f dBFS ", pwr_to_dBFS(opts->rtl_pwr));
             }
         }
         printw(" \n");
@@ -613,7 +614,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (print_labeled_ber_with_voice(opts, state)) {
                     printw(" ");
                 } else {
-                    printw("PWR: %04ld; ", opts->rtl_pwr);
+                    printw("PWR: %.1f dBFS; ", pwr_to_dBFS(opts->rtl_pwr));
                 }
             }
             if (opts->use_lpf == 1) {
@@ -664,7 +665,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("  |");
         }
         if (opts->audio_in_type != 3 && state->m17_vox == 1) {
-            printw(" SQL: %04ld : %04d;", opts->rtl_pwr, opts->rtl_squelch_level);
+            printw(" SQL: %.1f : %.1f dBFS;", pwr_to_dBFS(opts->rtl_pwr), pwr_to_dBFS(opts->rtl_squelch_level));
         }
         printw("\n");
     }

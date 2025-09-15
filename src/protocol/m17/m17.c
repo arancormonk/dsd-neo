@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * m17.c
  * M17 Decoder and Encoder
@@ -2347,7 +2350,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //debug power value
             if (state->m17_vox == 1) {
-                fprintf(stderr, " PWR: %04ld", opts->rtl_pwr);
+                fprintf(stderr, " PWR: %.1f dBFS", pwr_to_dBFS(opts->rtl_pwr));
                 fprintf(stderr, " SQL HIT: %d;", sql_hit);
             }
 
@@ -2617,7 +2620,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
                 //debug power value
                 if (state->m17_vox == 1) {
-                    fprintf(stderr, " PWR: %04ld", opts->rtl_pwr);
+                    fprintf(stderr, " PWR: %.1f dBFS", pwr_to_dBFS(opts->rtl_pwr));
                     fprintf(stderr, " SQL HIT: %d;", sql_hit);
                 }
 

@@ -410,11 +410,15 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
 
                     entry_win = newwin(8, WIDTH + 22, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
-                    mvwprintw(entry_win, 2, 2, " RTL Power Squelch Level (NXDN/dPMR/Analog/Raw only): ");
+                    mvwprintw(entry_win, 2, 2, " RTL Squelch Threshold (negative=dBFS; positive=linear): ");
                     mvwprintw(entry_win, 3, 3, " ");
                     echo();
                     refresh();
-                    wscanw(entry_win, "%d", &opts->rtl_squelch_level);
+                    {
+                        double sq_dbfs = pwr_to_dBFS(opts->rtl_squelch_level);
+                        wscanw(entry_win, "%lf", &sq_dbfs);
+                        opts->rtl_squelch_level = (int)dBFS_to_pwr(sq_dbfs);
+                    }
                     noecho();
 
                     //use to list out all detected RTL dongles
@@ -451,7 +455,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     mvwprintw(entry_win, 8, 2, " RTL Volume Multiplier: %d", opts->rtl_volume_multiplier);
                     mvwprintw(entry_win, 9, 2, " RTL Device UDP Port: %d", opts->rtl_udp_port);
                     mvwprintw(entry_win, 10, 2, " RTL Device PPM: %d", opts->rtlsdr_ppm_error);
-                    mvwprintw(entry_win, 11, 2, " RTL PWR Squelch: %d", opts->rtl_squelch_level);
+                    mvwprintw(entry_win, 11, 2, " RTL PWR Squelch: %.1f dBFS", pwr_to_dBFS(opts->rtl_squelch_level));
                     mvwprintw(entry_win, 13, 2, " Are You Sure?");
                     mvwprintw(entry_win, 14, 2, " 1 = Yes, 2 = No ");
                     mvwprintw(entry_win, 15, 3, " ");

@@ -1671,6 +1671,10 @@ void init_rrc_filter_memory();
 //misc audio filtering for analog
 long int raw_rms(short* samples, int len, int step);
 long int raw_pwr(short* samples, int len, int step);
+/* Convert mean power (RMS^2 on int16 samples) to dBFS, clamped to [-120, 0]. */
+double pwr_to_dBFS(long int mean_power);
+/* Convert dBFS to mean power (RMS^2 on int16 samples). */
+long int dBFS_to_pwr(double dB);
 void init_audio_filters(dsd_state* state);
 void lpf(dsd_state* state, short* input, int len);
 void hpf(dsd_state* state, short* input, int len);

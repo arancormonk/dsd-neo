@@ -1480,7 +1480,8 @@ usage() {
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
     printf("  bw   <num>    RTL-SDR Bandwidth kHz (default = 12)(4, 6, 8, 12, 16, 24)  \n");
-    printf("  sq   <num>    RTL-SDR Squelch Level vs PWR Value (Optional)\n");
+    printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
+    printf("                 (Negative = dBFS; Positive/Zero = linear mean power)\n");
     // printf ("  udp  <num>    RTL-SDR Legacy UDP Remote Port (Optional -- External Use Only)\n"); //NOTE: This is still available as an option in the ncurses menu
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
@@ -3372,9 +3373,14 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl squelch level "-L"
+        curr = strtok(NULL, ":"); //rtl squelch threshold (dBFS if negative; else linear)
         if (curr != NULL) {
-            opts.rtl_squelch_level = atoi(curr);
+            double sq_val = atof(curr);
+            if (sq_val < 0.0) {
+                opts.rtl_squelch_level = (int)dBFS_to_pwr(sq_val);
+            } else {
+                opts.rtl_squelch_level = (int)sq_val;
+            }
         } else {
             goto RTLEND;
         }
@@ -3423,7 +3429,7 @@ main(int argc, char** argv) {
         fprintf(stderr, "Gain %d ", opts.rtl_gain_value);
         fprintf(stderr, "PPM %d ", opts.rtlsdr_ppm_error);
         fprintf(stderr, "BW %d ", opts.rtl_bandwidth);
-        fprintf(stderr, "SQ %d ", opts.rtl_squelch_level);
+        fprintf(stderr, "SQ %.1f dBFS ", pwr_to_dBFS(opts.rtl_squelch_level));
         // fprintf (stderr, "UDP %d \n", opts.rtl_udp_port);
         fprintf(stderr, "VOL %d \n", opts.rtl_volume_multiplier);
         opts.audio_in_type = 3;
