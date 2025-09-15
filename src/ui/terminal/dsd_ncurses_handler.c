@@ -630,9 +630,21 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     if (opts->p25_trunk == 1 && c == 101) //'e' key, toggle tune enc calls (P25 only on certain grants)
     {
         if (opts->trunk_tune_enc_calls == 1) {
+            // Enable ENC lockout
             opts->trunk_tune_enc_calls = 0;
         } else {
+            // Disable ENC lockout
             opts->trunk_tune_enc_calls = 1;
+            // Scrub any groups previously marked as ENC LO so they can be tracked again
+            // Mode "DE" is used as an ENC-lockout mark; restore to normal "D".
+            for (int i = 0; i < state->group_tally; i++) {
+                if (strcmp(state->group_array[i].groupMode, "DE") == 0) {
+                    sprintf(state->group_array[i].groupMode, "%s", "D");
+                }
+                if (strcmp(state->group_array[i].groupName, "ENC LO") == 0) {
+                    sprintf(state->group_array[i].groupName, "%s", "");
+                }
+            }
         }
     }
 
