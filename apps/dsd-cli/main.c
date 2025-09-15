@@ -477,6 +477,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
 
+    // Initialize P25 SM candidate cache bookkeeping
+    state->p25_cc_cand_count = 0;
+    state->p25_cc_cand_idx = 0;
+    state->p25_cc_cache_loaded = 0;
+
     // memset(state->active_channel, 0, sizeof(state->active_channel));
 
     //REMUS! multi-purpose call_string

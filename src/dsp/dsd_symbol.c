@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -17,8 +20,128 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
+#endif
+
+/*
+ * Centralized window selection helpers per modulation. These encapsulate
+ * left/right offsets used during symbol decision and allow a single point for
+ * future tuning. When freeze_window is enabled (env/config), defaults are used
+ * and any per-protocol dynamic tweaks are disabled for A/B comparisons.
+ */
+static inline void
+select_window_c4fm(const dsd_state* state, int* l_edge, int* r_edge, int freeze_window) {
+    int l = 2;
+    int r = 2;
+    if (!freeze_window) {
+        if (state->synctype == 30 || state->synctype == 31) {
+            l = 1; // YSF
+        } else if ((state->lastsynctype >= 10 && state->lastsynctype <= 13) || state->lastsynctype == 32
+                   || state->lastsynctype == 33) {
+            l = 1; // DMR and some NXDN cases
+        } else {
+            l = 2; // P25 and NXDN96 prefer wider left window
+        }
+    }
+    *l_edge = l;
+    *r_edge = r;
+}
+
+static inline void
+select_window_qpsk(int* l_edge, int* r_edge, int freeze_window) {
+    (void)freeze_window; /* no dynamic tweaks for QPSK at present */
+    *l_edge = 1;         // pick i == center-1
+    *r_edge = 2;         // pick i == center+2
+}
+
+static inline void
+select_window_gfsk(int* l_edge, int* r_edge, int freeze_window) {
+    (void)freeze_window; /* no dynamic tweaks for GFSK at present */
+    *l_edge = 1;         // pick i == center-1
+    *r_edge = 1;         // pick i == center+1
+}
+
+#ifdef USE_RTLSDR
+/*
+ * Nudge symbolCenter by ±1 based on a smoothed TED residual when available.
+ * Guards against oscillation using a small deadband and a cooldown period.
+ *
+ * Safety gates:
+ *  - Only when using RTL input (audio_in_type == 3)
+ *  - Only when not currently synchronized (have_sync == 0)
+ *  - Only for C4FM path (rf_mod == 0) to avoid QPSK/LSM perturbations
+ */
+static inline void
+maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int freeze_window = (cfg && cfg->window_freeze_is_set) ? (cfg->window_freeze != 0) : 0;
+    if (freeze_window) {
+        return; // explicit freeze requested
+    }
+    if (opts->audio_in_type != 3) {
+        return; // only when using RTL stream/demod pipeline
+    }
+    if (have_sync != 0) {
+        return; // do not adjust while synchronized
+    }
+    if (state->rf_mod != 0) {
+        return; // limit to C4FM for now; avoid QPSK/LSM
+    }
+
+    /* Cooldown to avoid rapid flips */
+    static int cooldown = 0;
+    if (cooldown > 0) {
+        cooldown--;
+        return;
+    }
+
+    /* Read smoothed TED residual (can be 0 when TED disabled). */
+    int e_ema = rtl_stream_ted_bias(NULL); /* ctx currently unused */
+    if (e_ema == 0) {
+        return;
+    }
+
+    /* Small deadband and persistence guard */
+    const int deadband = 5000; /* empirically small; residual uses coarse units */
+    static int run_dir = 0;    /* -1, 0, +1 */
+    static int run_len = 0;
+    int dir = 0;
+    if (e_ema > deadband) {
+        dir = +1; /* sample was early; center → right */
+    } else if (e_ema < -deadband) {
+        dir = -1; /* sample was late; center → left */
+    } else {
+        run_dir = 0;
+        run_len = 0;
+        return;
+    }
+
+    if (dir == run_dir) {
+        run_len++;
+    } else {
+        run_dir = dir;
+        run_len = 1;
+    }
+
+    /* Require brief persistence before nudging center. */
+    if (run_len >= 6) {
+        int c = state->symbolCenter + dir;
+        /* Keep a reasonable margin within [0..samplesPerSymbol-1] */
+        int min_c = 1;
+        int max_c = state->samplesPerSymbol - 2;
+        if (c < min_c) {
+            c = min_c;
+        }
+        if (c > max_c) {
+            c = max_c;
+        }
+        state->symbolCenter = c;
+        cooldown = 12; /* short cooldown after each nudge */
+        run_len = 0;
+    }
+}
 #endif
 
 int
@@ -30,6 +153,25 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     sum = 0;
     count = 0;
     sample = 0; //init sample with a value of 0...see if this was causing issues with raw audio monitoring
+
+    /* Optional auto-centering based on TED residual (RTL path only, C4FM, when not synced) */
+#ifdef USE_RTLSDR
+    maybe_auto_center(opts, state, have_sync);
+#endif
+
+    /* Resolve any window freeze override once per symbol to avoid inner-loop overhead */
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int freeze_window = (cfg && cfg->window_freeze_is_set) ? (cfg->window_freeze != 0) : 0;
+
+    /* Precompute left/right edges for current modulation once per symbol */
+    int l_edge_pre = 0, r_edge_pre = 0;
+    if (state->rf_mod == 0) {
+        select_window_c4fm(state, &l_edge_pre, &r_edge_pre, freeze_window);
+    } else if (state->rf_mod == 1) {
+        select_window_qpsk(&l_edge_pre, &r_edge_pre, freeze_window);
+    } else {
+        select_window_gfsk(&l_edge_pre, &r_edge_pre, freeze_window);
+    }
 
     for (i = 0; i < state->samplesPerSymbol; i++) //right HERE
     {
@@ -459,29 +601,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         } else {
             if (state->rf_mod == 0) {
                 // 0: C4FM modulation
-
-                //EXPERIMENTAL: manipulate the left edge depending on sync type
-                //TODO: See if we can manipulate this a bit more based on AFC or similar type function
-                int l_edge = 2;
-                int r_edge = 2;
-
-                if (state->synctype == 30 || state->synctype == 31) {
-                    l_edge = 1; //YSF (need to test with new recordings at BW:12000)
-                } else if ((state->lastsynctype >= 10 && state->lastsynctype <= 13) || state->lastsynctype == 32
-                           || state->lastsynctype == 33) {
-                    l_edge = 1;
-                } else {
-                    l_edge =
-                        2; //P25 and NXDN96 perform better, DMR doesn't seem to care too much, but may favor 1 and not 2
-                }
-
-                if ((i >= state->symbolCenter - l_edge) && (i <= state->symbolCenter + r_edge)) {
+                if ((i >= state->symbolCenter - l_edge_pre) && (i <= state->symbolCenter + r_edge_pre)) {
                     sum += sample;
                     count++;
                 }
-
-                //debug: show what was selected for the left edge
-                // fprintf (stderr, "  L:%d", l_edge);
 
 #ifdef TRACE_DSD
                 if (i == state->symbolCenter - 1) {
@@ -493,11 +616,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 #endif
             } else if (state->rf_mod == 1) //QPSK
             {
-                //going one left, two on the right for QPSK, local system seems to favor that
-                //with same PPM setting used on C4FM, unsure if that works on other systems, just
-                //testing things now, not like QPSK works well here anyways
-                if ((i == state->symbolCenter - 1) || (i == state->symbolCenter + 2)) //1,2
-                {
+                // Two-sample window: one left, two right (precomputed)
+                if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
                     sum += sample;
                     count++;
                 }
@@ -511,9 +631,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 // This change makes a significant improvement in the BER, at least for
                 // this file.
                 // if ((i == state->symbolCenter) || (i == state->symbolCenter + 1))
-                //GFSK should ideally be the same on the left and right, I would think
-                //I have not observed a system that would benefit from this alignment
-                if ((i == state->symbolCenter - 1) || (i == state->symbolCenter + 1)) {
+                // GFSK should ideally be symmetric (precomputed)
+                if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
                     sum += sample;
                     count++;
                 }

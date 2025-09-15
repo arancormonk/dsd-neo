@@ -102,6 +102,11 @@ extern "C" {
  *     Maximum time in milliseconds to wait for output ring to drain on retune/hop when not clearing.
  *     Default: 50ms.
  *
+ * Symbol window debug/testing
+ * - DSD_NEO_WINDOW_FREEZE
+ *     Freeze symbol decision window selection and disable auto-centering nudges. Useful for A/B testing.
+ *     Values: 1 freeze, else dynamic. Default: 0 (dynamic).
+ *
  * Intra-block multithreading
  * - DSD_NEO_MT
  *     Enable a minimal 2-thread worker pool for certain CPU-heavy inner loops.
@@ -178,6 +183,10 @@ typedef struct dsdneoRuntimeConfig {
     int output_clear_on_retune;
     int retune_drain_ms_is_set;
     int retune_drain_ms;
+
+    /* Symbol window debug/testing */
+    int window_freeze_is_set;
+    int window_freeze;
 }
 
 dsdneoRuntimeConfig;

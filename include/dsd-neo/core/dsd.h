@@ -866,6 +866,8 @@ typedef struct {
     long p25_cc_candidates[16];
     int p25_cc_cand_count;
     int p25_cc_cand_idx;
+    // Persisted CC cache bookkeeping
+    uint8_t p25_cc_cache_loaded; // 1 once we attempted to load per-system cache
 
     // P25 SM metrics
     unsigned int p25_sm_tune_count;    // number of VC tunes via SM

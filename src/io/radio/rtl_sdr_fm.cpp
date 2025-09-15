@@ -49,6 +49,7 @@ extern "C" {
 void dsd_rtl_stream_clear_output(void);
 long int dsd_rtl_stream_return_pwr(void);
 unsigned int dsd_rtl_stream_output_rate(void);
+int dsd_rtl_stream_ted_bias(void);
 #ifdef __cplusplus
 }
 #endif
@@ -1492,6 +1493,15 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
 extern "C" unsigned int
 dsd_rtl_stream_output_rate(void) {
     return (unsigned int)output.rate;
+}
+
+/**
+ * @brief Return smoothed TED residual (EMA of Gardner error). Sign indicates
+ * persistent early/late bias; 0 when TED disabled or no bias.
+ */
+extern "C" int
+dsd_rtl_stream_ted_bias(void) {
+    return demod.ted_state.e_ema;
 }
 
 /**

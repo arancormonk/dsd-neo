@@ -19,6 +19,7 @@
 void
 ted_init_state(ted_state_t* state) {
     state->mu_q20 = 0;
+    state->e_ema = 0;
 }
 
 /**
@@ -97,6 +98,12 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
         /* Update fractional phase: nominal advance + small correction */
         int64_t corr = ((int64_t)gain * (int64_t)e) >> 15; /* scale */
         mu += mu_nom + (int)corr;
+
+        /* Smooth residual using simple EMA with small weight. Use shift to avoid FP. */
+        int ee = state->e_ema;
+        /* alpha ≈ 1/64 => k=6 */
+        ee += (int)((e - ee) >> 6);
+        state->e_ema = ee;
 
         /* Wrap mu to [0, one) */
         if (mu >= one) {

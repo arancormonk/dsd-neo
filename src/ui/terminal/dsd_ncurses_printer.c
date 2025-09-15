@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/synctype.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 
 char mbeversionstr[25]; //MBElib version string
@@ -1027,6 +1028,67 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (stride > 0) {
                 printw(" STR:%d", stride);
             }
+        }
+        /* TED status and params (on/off + SPS/GAIN/FORCE) from runtime config or env */
+        int ted_on = 0;
+        int ted_sps = 0;
+        int ted_gain = -1;
+        int ted_force = 0;
+        int have_sps = 0, have_gain = 0, have_force = 0;
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (cfg) {
+            if (cfg->ted_is_set) {
+                ted_on = (cfg->ted_enable != 0);
+            }
+            if (cfg->ted_sps_is_set) {
+                ted_sps = cfg->ted_sps;
+                have_sps = 1;
+            }
+            if (cfg->ted_gain_is_set) {
+                ted_gain = cfg->ted_gain_q20;
+                have_gain = 1;
+            }
+            if (cfg->ted_force_is_set) {
+                ted_force = (cfg->ted_force != 0);
+                have_force = 1;
+            }
+        }
+        if (!ted_on) {
+            const char* ev_ted = getenv("DSD_NEO_TED");
+            if (ev_ted && (*ev_ted == '1' || *ev_ted == 'y' || *ev_ted == 'Y' || *ev_ted == 't' || *ev_ted == 'T')) {
+                ted_on = 1;
+            }
+        }
+        if (!have_sps) {
+            const char* ev_ts = getenv("DSD_NEO_TED_SPS");
+            if (ev_ts && *ev_ts) {
+                ted_sps = atoi(ev_ts);
+                have_sps = (ted_sps > 0);
+            }
+        }
+        if (!have_gain) {
+            const char* ev_tg = getenv("DSD_NEO_TED_GAIN");
+            if (ev_tg && *ev_tg) {
+                ted_gain = atoi(ev_tg);
+                have_gain = (ted_gain >= 0);
+            }
+        }
+        if (!have_force) {
+            const char* ev_tf = getenv("DSD_NEO_TED_FORCE");
+            if (ev_tf && (*ev_tf == '1' || *ev_tf == 'y' || *ev_tf == 'Y' || *ev_tf == 't' || *ev_tf == 'T')) {
+                ted_force = 1;
+                have_force = 1;
+            }
+        }
+        printw("  TED %s", ted_on ? "ON" : "OFF");
+        if (have_sps) {
+            printw(" SPS:%d", ted_sps);
+        }
+        if (have_gain) {
+            printw(" G:%d", ted_gain);
+        }
+        if (have_force) {
+            printw(" F:%s", ted_force ? "ON" : "OFF");
         }
         printw("\n");
     }

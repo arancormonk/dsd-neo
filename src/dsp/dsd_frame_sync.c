@@ -103,7 +103,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     {
         int tuned_by_candidate = 0;
         long cand_freq = 0;
-        if (p25_sm_next_cc_candidate(state, &cand_freq) && cand_freq != 0) {
+        if (opts->p25_prefer_candidates == 1 && p25_sm_next_cc_candidate(state, &cand_freq) && cand_freq != 0) {
             //rigctl
             if (opts->use_rigctl == 1) {
                 if (opts->setmod_bw != 0) {

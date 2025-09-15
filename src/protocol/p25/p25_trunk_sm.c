@@ -5,6 +5,15 @@
 
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
+
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -19,6 +28,152 @@ p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
                 tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added,
                 state->p25_cc_cand_used, state->p25_cc_cand_count, state->p25_cc_cand_idx);
     }
+}
+
+// Build a per-system cache file path for CC candidates. Returns 1 on success.
+static int
+p25_sm_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
+    if (!state || !out || out_len == 0) {
+        return 0;
+    }
+    // Require system identity to be known
+    if (state->p2_wacn == 0 || state->p2_sysid == 0) {
+        return 0;
+    }
+
+    // Allow override via env var
+    const char* root = getenv("DSD_NEO_CACHE_DIR");
+    char path[1024] = {0};
+    if (root && root[0] != '\0') {
+        snprintf(path, sizeof(path), "%s", root);
+    } else {
+        const char* home = getenv("HOME");
+#ifdef _WIN32
+        if (!home || home[0] == '\0') {
+            home = getenv("LOCALAPPDATA");
+        }
+#endif
+        if (home && home[0] != '\0') {
+            snprintf(path, sizeof(path), "%s/.cache/dsd-neo", home);
+        } else {
+            // Fallback to CWD
+            snprintf(path, sizeof(path), ".dsdneo_cache");
+        }
+    }
+
+    // Ensure directory exists (best-effort)
+    struct stat st;
+    if (stat(path, &st) != 0) {
+#ifdef _WIN32
+        (void)_mkdir(path);
+#else
+        (void)mkdir(path, 0700);
+#endif
+    }
+
+    // Compose final file path
+    int n = snprintf(out, out_len, "%s/p25_cc_%05lX_%03X.txt", path, state->p2_wacn, state->p2_sysid);
+    return (n > 0 && (size_t)n < out_len);
+}
+
+// Load cached CC candidates for this system if not already loaded.
+static void
+p25_sm_try_load_cache(dsd_opts* opts, dsd_state* state) {
+    if (!state || state->p25_cc_cache_loaded) {
+        return;
+    }
+    // Optional opt-in via env flag; default ON
+    int enable = 1;
+    const char* env = getenv("DSD_NEO_CC_CACHE");
+    if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
+        enable = 0;
+    }
+    if (!enable) {
+        state->p25_cc_cache_loaded = 1; // mark checked to avoid repeated attempts
+        return;
+    }
+
+    char fpath[1024];
+    if (!p25_sm_build_cache_path(state, fpath, sizeof(fpath))) {
+        return; // system identity not known yet or path failed
+    }
+
+    FILE* fp = fopen(fpath, "r");
+    if (!fp) {
+        state->p25_cc_cache_loaded = 1; // nothing to load
+        return;
+    }
+
+    // Initialize if needed
+    if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
+        state->p25_cc_cand_count = 0;
+        state->p25_cc_cand_idx = 0;
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        char* end = NULL;
+        long f = strtol(line, &end, 10);
+        if (end == line) {
+            continue; // no number parsed
+        }
+        if (f == 0 || f == state->p25_cc_freq) {
+            continue;
+        }
+        // dedup
+        int exists = 0;
+        for (int k = 0; k < state->p25_cc_cand_count; k++) {
+            if (state->p25_cc_candidates[k] == f) {
+                exists = 1;
+                break;
+            }
+        }
+        if (!exists) {
+            if (state->p25_cc_cand_count < 16) {
+                state->p25_cc_candidates[state->p25_cc_cand_count++] = f;
+            }
+        }
+    }
+    fclose(fp);
+    state->p25_cc_cache_loaded = 1;
+    if (opts && opts->verbose > 0 && state->p25_cc_cand_count > 0) {
+        fprintf(stderr, "\n P25 SM: Loaded %d CC candidates from cache\n", state->p25_cc_cand_count);
+    }
+}
+
+// Persist the current CC candidate list to disk (best-effort).
+static void
+p25_sm_persist_cache(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    // Optional opt-in via env flag; default ON
+    int enable = 1;
+    const char* env = getenv("DSD_NEO_CC_CACHE");
+    if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
+        enable = 0;
+    }
+    if (!enable) {
+        return;
+    }
+
+    char fpath[1024];
+    if (!p25_sm_build_cache_path(state, fpath, sizeof(fpath))) {
+        return;
+    }
+    FILE* fp = fopen(fpath, "w");
+    if (!fp) {
+        if (opts && opts->verbose > 1) {
+            fprintf(stderr, " P25 SM: Failed to open CC cache for write: %s (errno=%d)\n", fpath, errno);
+        }
+        return;
+    }
+    for (int i = 0; i < state->p25_cc_cand_count; i++) {
+        if (state->p25_cc_candidates[i] != 0) {
+            fprintf(fp, "%ld\n", state->p25_cc_candidates[i]);
+        }
+    }
+    fclose(fp);
 }
 
 // Internal helper: compute and tune to a P25 VC, set symbol/slot appropriately
@@ -156,6 +311,8 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     if (count <= 0 || state == NULL || freqs == NULL) {
         return;
     }
+    // Lazy-load any persisted candidates once system identity is known
+    p25_sm_try_load_cache(opts, state);
     // Initialize if needed
     if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
         state->p25_cc_cand_count = 0;
@@ -200,6 +357,8 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
                     state->p25_cc_cand_count);
         }
     }
+    // Best-effort persistence for warm start in future runs
+    p25_sm_persist_cache(opts, state);
     p25_sm_log_status(opts, state, "after-neigh");
 }
 

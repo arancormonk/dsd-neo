@@ -176,6 +176,11 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.retune_drain_ms_is_set = env_is_set(dms);
     c.retune_drain_ms = c.retune_drain_ms_is_set ? atoi(dms) : 50;
 
+    /* Symbol window freeze for A/B testing */
+    const char* wf = getenv("DSD_NEO_WINDOW_FREEZE");
+    c.window_freeze_is_set = env_is_set(wf);
+    c.window_freeze = c.window_freeze_is_set ? (atoi(wf) != 0) : 0;
+
     g_config = c;
     g_config_inited = 1;
 }

@@ -22,6 +22,7 @@ extern "C" {
 // Local forward declarations for legacy helpers used under the hood
 void dsd_rtl_stream_clear_output(void);
 long dsd_rtl_stream_return_pwr(void);
+int dsd_rtl_stream_ted_bias(void);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -178,4 +179,9 @@ rtl_stream_clear_output(RtlSdrContext* /*ctx*/) {
 extern "C" long
 rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
     return dsd_rtl_stream_return_pwr();
+}
+
+extern "C" int
+rtl_stream_ted_bias(const RtlSdrContext* /*ctx*/) {
+    return dsd_rtl_stream_ted_bias();
 }

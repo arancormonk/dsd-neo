@@ -95,6 +95,16 @@ void rtl_stream_clear_output(RtlSdrContext* ctx);
  */
 long rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
+/**
+ * @brief Get smoothed TED residual (EMA of Gardner error) from demod pipeline.
+ * Positive: persistent early (nudge center right). Negative: late (nudge left).
+ * Returns 0 when unavailable.
+ *
+ * @param ctx Stream context (unused).
+ * @return Residual value (coarse units, signed integer).
+ */
+int rtl_stream_ted_bias(const RtlSdrContext* ctx);
+
 #ifdef __cplusplus
 }
 #endif
