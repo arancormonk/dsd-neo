@@ -760,6 +760,9 @@ typedef struct {
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
+    // Source unit ID that last populated generic_talker_alias per slot
+    // Used to suppress stale alias across protocol/call transitions
+    uint32_t generic_talker_alias_src[2];
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
 

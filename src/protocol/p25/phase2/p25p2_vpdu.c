@@ -1764,11 +1764,17 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->lasttg = gr;
                 if (src != 0) {
                     state->lastsrc = src;
+                    // Clear alias at start/update of talker for this call (don’t reuse across calls)
+                    state->generic_talker_alias[0][0] = '\0';
+                    state->generic_talker_alias_src[0] = 0;
                 }
             } else {
                 state->lasttgR = gr;
                 if (src != 0) {
                     state->lastsrcR = src;
+                    // Clear alias at start/update of talker for this call (don’t reuse across calls)
+                    state->generic_talker_alias[1][0] = '\0';
+                    state->generic_talker_alias_src[1] = 0;
                 }
             }
         }
@@ -1790,11 +1796,15 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->lasttg = gr;
                 if (src != 0) {
                     state->lastsrc = src;
+                    state->generic_talker_alias[0][0] = '\0';
+                    state->generic_talker_alias_src[0] = 0;
                 }
             } else {
                 state->lasttgR = gr;
                 if (src != 0) {
                     state->lastsrcR = src;
+                    state->generic_talker_alias[1][0] = '\0';
+                    state->generic_talker_alias_src[1] = 0;
                 }
             }
         }
@@ -2068,11 +2078,15 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->lasttg = gr;
                 if (src != 0) {
                     state->lastsrc = src;
+                    state->generic_talker_alias[0][0] = '\0';
+                    state->generic_talker_alias_src[0] = 0;
                 }
             } else {
                 state->lasttgR = gr;
                 if (src != 0) {
                     state->lastsrcR = src;
+                    state->generic_talker_alias[1][0] = '\0';
+                    state->generic_talker_alias_src[1] = 0;
                 }
             }
         }
@@ -2137,11 +2151,19 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->lasttg = gr;
                 if (src != 0) {
                     state->lastsrc = src;
+                    if (state->generic_talker_alias_src[0] != (uint32_t)src) {
+                        state->generic_talker_alias[0][0] = '\0';
+                        state->generic_talker_alias_src[0] = 0;
+                    }
                 }
             } else {
                 state->lasttgR = gr;
                 if (src != 0) {
                     state->lastsrcR = src;
+                    if (state->generic_talker_alias_src[1] != (uint32_t)src) {
+                        state->generic_talker_alias[1][0] = '\0';
+                        state->generic_talker_alias_src[1] = 0;
+                    }
                 }
             }
         }

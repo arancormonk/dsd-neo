@@ -1485,7 +1485,19 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (state->dmrburstL < 16 && state->carrier == 1 && state->lasttg > 0 && state->lastsrc > 0) {
             attron(COLOR_PAIR(2));
         }
-        printw("TGT: [%8i] SRC: [%8i] ", state->lasttg, state->lastsrc);
+        // Only show IDs when the left slot is actively in a call; otherwise avoid stale values
+        // Active when:
+        //  - DMR voice (16)
+        //  - P25p2: PTT/VOICE/HANGTIME (20/21/22)
+        //  - P25p1 voice frames (26/27)
+        int show_l_ids = (state->dmrburstL == 16) || (state->dmrburstL >= 20 && state->dmrburstL <= 22)
+                         || (state->dmrburstL == 26) || (state->dmrburstL == 27);
+        if (show_l_ids) {
+            printw("TGT: [%8i] SRC: [%8i] ", state->lasttg, state->lastsrc);
+        } else {
+            // Blank out IDs cleanly when slot 1 is not in an active call
+            printw("TGT: [        ] SRC: [        ] ");
+        }
         if (state->dmrburstL != 16 && state->carrier == 1 && state->lasttg > 0 && state->lastsrc > 0) {
             attroff(COLOR_PAIR(2));
             attron(COLOR_PAIR(3));
@@ -1623,8 +1635,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             //Embedded GPS (not LRRP)
             printw("%s ", state->dmr_embedded_gps[0]);
 
-            //Embedded Talker Alias String
-            printw("%s ", state->generic_talker_alias[0]);
+            //Embedded Talker Alias String (show when present during active call)
+            if (state->generic_talker_alias[0][0] != '\0') {
+                printw("%s ", state->generic_talker_alias[0]);
+            }
 
             attroff(COLOR_PAIR(5));
             if (state->carrier == 1) {
@@ -1668,7 +1682,19 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (state->dmrburstR < 16 && state->carrier == 1 && state->lasttgR > 0 && state->lastsrcR > 0) {
                 attron(COLOR_PAIR(2));
             }
-            printw("TGT: [%8i] SRC: [%8i] ", state->lasttgR, state->lastsrcR);
+            // Only show IDs when the right slot is actively in a call; otherwise avoid stale values
+            // Active when:
+            //  - DMR voice (16)
+            //  - P25p2: PTT/VOICE/HANGTIME (20/21/22)
+            //  - P25p1 voice frames (26/27) [right slot used for MS/dual displays]
+            int show_r_ids = (state->dmrburstR == 16) || (state->dmrburstR >= 20 && state->dmrburstR <= 22)
+                             || (state->dmrburstR == 26) || (state->dmrburstR == 27);
+            if (show_r_ids) {
+                printw("TGT: [%8i] SRC: [%8i] ", state->lasttgR, state->lastsrcR);
+            } else {
+                // Blank out IDs cleanly when slot 2 is not in an active call
+                printw("TGT: [        ] SRC: [        ] ");
+            }
             if (state->dmrburstR != 16 && state->carrier == 1 && state->lasttgR > 0 && state->lastsrcR > 0) {
                 attroff(COLOR_PAIR(2));
                 attron(COLOR_PAIR(3));
@@ -1800,8 +1826,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 attron(COLOR_PAIR(4));
                 printw("%s ", state->dmr_embedded_gps[1]);
 
-                //Embedded Talker Alias String
-                printw("%s ", state->generic_talker_alias[1]);
+                //Embedded Talker Alias String (show when present during active call)
+                if (state->generic_talker_alias[1][0] != '\0') {
+                    printw("%s ", state->generic_talker_alias[1]);
+                }
 
                 attroff(COLOR_PAIR(5));
                 if (state->carrier == 1) {

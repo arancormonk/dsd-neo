@@ -92,6 +92,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 }
                 // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
                 state->lastsrc = source;
+                // Clear alias at start/update of talker for this call (don’t reuse across calls)
+                state->generic_talker_alias[0][0] = '\0';
+                state->generic_talker_alias_src[0] = 0;
 
                 sprintf(state->call_string[0], "   Group ");
                 if (lc_svcopt & 0x80) {
@@ -115,6 +118,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 }
                 // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
                 state->lastsrc = source;
+                // Clear alias at start/update of talker for this call (don’t reuse across calls)
+                state->generic_talker_alias[0][0] = '\0';
+                state->generic_talker_alias_src[0] = 0;
                 state->gi[0] = 1;
                 state->dmr_so = lc_svcopt;
 

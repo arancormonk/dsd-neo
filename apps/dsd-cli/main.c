@@ -461,6 +461,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
     //Generic Talker Alias String
     memset(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
+    state->generic_talker_alias_src[0] = 0;
+    state->generic_talker_alias_src[1] = 0;
 
     /* Initialize P25 metrics counters used by ncurses BER display */
     state->p25_p1_fec_ok = 0;
@@ -1268,6 +1270,8 @@ initState(dsd_state* state) {
 
     //Generic Talker Alias String
     memset(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
+    state->generic_talker_alias_src[0] = 0;
+    state->generic_talker_alias_src[1] = 0;
 
     //REMUS! multi-purpose call_string
     sprintf(state->call_string[0], "%s", "                     "); //21 spaces

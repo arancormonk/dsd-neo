@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * dsd_alias.c
  * Talker Alias Handling for Various Protocols and Vendors
@@ -888,4 +891,5 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
         sprintf(state->event_history_s[slot].Event_History_Items[0].alias, "%s; ", alias_string);
     }
     sprintf(state->generic_talker_alias[slot], "Talker Alias: %s; ", alias_string);
+    state->generic_talker_alias_src[slot] = source;
 }
