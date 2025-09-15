@@ -140,6 +140,19 @@ resetState(dsd_state* state) {
     //rest the heurestics, we want to do this on each tune, each RF frequency can deviate quite a bit in strength
     initialize_p25_heuristics(&state->p25_heuristics);
     initialize_p25_heuristics(&state->inv_p25_heuristics);
+
+    /* Reset P25 BER/FEC counters so UI reflects fresh conditions after retune */
+    state->p25_p1_fec_ok = 0;
+    state->p25_p1_fec_err = 0;
+    state->p25_p2_rs_facch_ok = 0;
+    state->p25_p2_rs_facch_err = 0;
+    state->p25_p2_rs_facch_corr = 0;
+    state->p25_p2_rs_sacch_ok = 0;
+    state->p25_p2_rs_sacch_err = 0;
+    state->p25_p2_rs_sacch_corr = 0;
+    state->p25_p2_rs_ess_ok = 0;
+    state->p25_p2_rs_ess_err = 0;
+    state->p25_p2_rs_ess_corr = 0;
 }
 
 //simple function to reset the dibit buffer

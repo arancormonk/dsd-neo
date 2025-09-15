@@ -71,6 +71,23 @@ void fll_mix_and_update(const fll_config_t* config, fll_state_t* state, int16_t*
  */
 void fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N);
 
+/**
+ * @brief Estimate frequency error for QPSK carriers using symbol-spaced phase
+ *        differences, then update the FLL control (PI in Q15).
+ *
+ * Computes the angle of s[k] * conj(s[k - sps]) across the block and averages
+ * the result to form a frequency error estimate that is robust to QPSK symbol
+ * transitions. The integrator and proportional terms are applied to the NCO
+ * frequency increment with slew limiting.
+ *
+ * @param config FLL configuration (gains, deadband, slew limit).
+ * @param state  FLL state (updates freq_q15 and may advance phase_q15).
+ * @param x      Input interleaved I/Q buffer.
+ * @param N      Length of buffer in elements (must be even).
+ * @param sps    Nominal samples-per-symbol (complex samples per symbol).
+ */
+void fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N, int sps);
+
 #ifdef __cplusplus
 }
 #endif

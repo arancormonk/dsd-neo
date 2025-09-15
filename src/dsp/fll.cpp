@@ -356,3 +356,79 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
         }
     }
 }
+
+/**
+ * @brief QPSK-oriented FLL update using symbol-spaced phase differences.
+ *
+ * Estimates CFO by averaging the angle of s[k] * conj(s[k - sps]) across the
+ * block, where sps is the nominal samples-per-symbol in complex samples. This
+ * reduces modulation-induced phase noise compared to adjacent-sample methods
+ * when operating on QPSK/CQPSK signals.
+ *
+ * @param config FLL configuration (gains, deadband, slew limit).
+ * @param state  FLL state (updates freq_q15; phase untouched here).
+ * @param x      Input interleaved I/Q buffer.
+ * @param N      Length of the buffer in elements (must be even).
+ * @param sps    Samples-per-symbol (complex samples per symbol). If < 2, this
+ *               function falls back to adjacent-sample update semantics.
+ */
+void
+fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N, int sps) {
+    if (!config->enabled) {
+        return;
+    }
+    if (N < 4) {
+        return;
+    }
+    /* Convert sps in complex samples to element stride in the interleaved array */
+    int stride_elems = (sps >= 2) ? (sps << 1) : 2; /* >= 4 elements, else fallback to 2 */
+
+    int32_t err_acc = 0;
+    int count = 0;
+
+    /* Start at the first index that has a valid s[k - sps] */
+    for (int i = stride_elems; i + 1 < N; i += 2) {
+        int r = x[i];
+        int j = x[i + 1];
+        int br = x[i - stride_elems];
+        int bj = x[i - stride_elems + 1];
+        int e = polar_disc_fast(r, j, br, bj); /* Q14 */
+        err_acc += e;
+        count++;
+    }
+
+    if (count == 0) {
+        return;
+    }
+
+    int32_t err = err_acc / count; /* Q14 */
+
+    /* Deadband to avoid audible low-frequency sweeps or chattering */
+    if (err < config->deadband_q14 && err > -config->deadband_q14) {
+        return;
+    }
+
+    /* 2nd-order PI on frequency only */
+    int32_t p = ((int64_t)config->alpha_q15 * err) >> 14;   /* -> Q15 */
+    int32_t iacc = ((int64_t)config->beta_q15 * err) >> 14; /* -> Q15 */
+    int32_t df = p + iacc;                                  /* Q15 */
+
+    /* Slew-rate limit to prevent runaway */
+    if (df > config->slew_max_q15) {
+        df = config->slew_max_q15;
+    }
+    if (df < -config->slew_max_q15) {
+        df = -config->slew_max_q15;
+    }
+
+    state->freq_q15 += (int)df;
+
+    /* Clamp NCO frequency to a safe range */
+    const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
+    if (state->freq_q15 > F_CLAMP) {
+        state->freq_q15 = F_CLAMP;
+    }
+    if (state->freq_q15 < -F_CLAMP) {
+        state->freq_q15 = -F_CLAMP;
+    }
+}

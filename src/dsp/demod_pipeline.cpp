@@ -583,7 +583,12 @@ fll_update_error(struct demod_state* d) {
                         .slew_max_q15 = d->fll_slew_max_q15,
                         .use_lut = fll_lut_enabled};
 
-    fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
+    /* Use QPSK-friendly symbol-spaced update when CQPSK path is active */
+    if (d->cqpsk_enable && d->ted_sps >= 2) {
+        fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
+    } else {
+        fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
+    }
 
     /* Sync back to demod_state */
     d->fll_freq_q15 = d->fll_state.freq_q15;

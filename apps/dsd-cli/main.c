@@ -462,6 +462,19 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     //Generic Talker Alias String
     memset(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
 
+    /* Initialize P25 metrics counters used by ncurses BER display */
+    state->p25_p1_fec_ok = 0;
+    state->p25_p1_fec_err = 0;
+    state->p25_p2_rs_facch_ok = 0;
+    state->p25_p2_rs_facch_err = 0;
+    state->p25_p2_rs_facch_corr = 0;
+    state->p25_p2_rs_sacch_ok = 0;
+    state->p25_p2_rs_sacch_err = 0;
+    state->p25_p2_rs_sacch_corr = 0;
+    state->p25_p2_rs_ess_ok = 0;
+    state->p25_p2_rs_ess_err = 0;
+    state->p25_p2_rs_ess_corr = 0;
+
     // memset(state->active_channel, 0, sizeof(state->active_channel));
 
     //REMUS! multi-purpose call_string
