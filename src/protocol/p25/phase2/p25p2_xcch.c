@@ -503,11 +503,26 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
         }
 
-        // Disable audio for this slot and Return to CC on MAC_END_PTT (message-driven release)
+        // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
-        // Return to CC on MAC_END_PTT (message-driven release)
+        // Message-driven retune: if the opposite slot is idle/unknown, treat
+        // this slot as idle and return to CC immediately (applies to clear and
+        // encrypted-followed calls). Otherwise, defer until both slots are IDLE
+        // or an explicit vPDU Release arrives.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            p25_sm_on_release(opts, state);
+            int other_dmr = (slot == 0) ? state->dmrburstR : state->dmrburstL;
+            int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+            int other_idle = (other_dmr == 24) || (other_dmr == 0 && other_audio == 0);
+            if (other_idle) {
+                if (slot == 0) {
+                    state->dmrburstL = 24;
+                } else {
+                    state->dmrburstR = 24;
+                }
+                p25_sm_on_release(opts, state);
+            } else if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+                p25_sm_on_release(opts, state);
+            }
         }
 
         fprintf(stderr, "%s", KNRM);
@@ -940,9 +955,26 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
         }
 
-        // Return to CC on MAC_END_PTT (message-driven release)
+        // Disable audio for this slot (FACCH uses current slot index)
+        state->p25_p2_audio_allowed[slot] = 0;
+        // Message-driven retune: if the other slot is idle/unknown, mark this
+        // slot idle and return to CC immediately (applies to clear and ENC-followed).
+        // Otherwise, defer until both slots are IDLE.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            p25_sm_on_release(opts, state);
+            int slot = state->currentslot; // re-evaluate for safety
+            int other_dmr = (slot == 0) ? state->dmrburstR : state->dmrburstL;
+            int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+            int other_idle = (other_dmr == 24) || (other_dmr == 0 && other_audio == 0);
+            if (other_idle) {
+                if (slot == 0) {
+                    state->dmrburstL = 24;
+                } else {
+                    state->dmrburstR = 24;
+                }
+                p25_sm_on_release(opts, state);
+            } else if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+                p25_sm_on_release(opts, state);
+            }
         }
 
         fprintf(stderr, "%s", KNRM);
@@ -991,6 +1023,11 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
         // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
+        // Only return to CC when both slots are IDLE (not merely audio-gated),
+        // or upon explicit vPDU release. This avoids bouncing on encrypted calls.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+            p25_sm_on_release(opts, state);
+        }
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim

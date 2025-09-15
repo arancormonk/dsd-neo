@@ -113,9 +113,37 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 
 void
 p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
-    // Defer to the project-wide helper to ensure consistent cleanup
+    // Centralized release handling. For Phase 2 (TDMA) voice channels with two
+    // logical slots, do not return to the control channel if the other slot is
+    // still active. This prevents dropping an in-progress call on the opposite
+    // timeslot when only one slot sends an END/IDLE indication.
     state->p25_sm_release_count++;
-    if (opts->verbose > 0) {
+
+    int is_p2_vc = (state && state->p25_p2_active_slot != -1);
+    if (is_p2_vc) {
+        int left_active = 0;
+        int right_active = 0;
+        // Consider a slot active if audio is allowed OR its burst state is
+        // not idle (24). This preserves encrypted call following (audio gated)
+        // while still honoring true idle determinations.
+        if (state) {
+            left_active = (state->p25_p2_audio_allowed[0] != 0) || (state->dmrburstL != 24 && state->dmrburstL != 0);
+            right_active = (state->p25_p2_audio_allowed[1] != 0) || (state->dmrburstR != 24 && state->dmrburstR != 0);
+        }
+
+        if (left_active || right_active) {
+            if (opts && opts->verbose > 0) {
+                fprintf(stderr, "\n P25 SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u allowL=%d allowR=%d\n",
+                        left_active, right_active, state->dmrburstL, state->dmrburstR, state->p25_p2_audio_allowed[0],
+                        state->p25_p2_audio_allowed[1]);
+            }
+            p25_sm_log_status(opts, state, "release-deferred");
+            return; // keep current VC; do not return to CC yet
+        }
+    }
+
+    // Either not a P25p2 VC or no other slot is active: return to CC.
+    if (opts && opts->verbose > 0) {
         fprintf(stderr, "\n P25 SM: Release -> CC\n");
     }
     return_to_cc(opts, state);

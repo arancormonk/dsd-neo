@@ -268,7 +268,7 @@ print_labeled_ber_with_voice(const dsd_opts* opts, const dsd_state* s) {
         int have1 = compute_p25p2_voice_avg_err(s, 1, &v1);
         if (have0 || have1) {
             if (have0 && have1) {
-                printw(" VAvg S0:%4.1f S1:%4.1f;", v0, v1);
+                printw(" VAvg S1:%4.1f S2:%4.1f;", v0, v1);
             } else if (have0) {
                 printw(" VAvg:%4.1f%%;", v0);
             } else {
@@ -300,7 +300,7 @@ print_labeled_ber_with_voice(const dsd_opts* opts, const dsd_state* s) {
             int have1 = compute_p25p2_voice_avg_err(s, 1, &v1);
             if (have0 || have1) {
                 if (have0 && have1) {
-                    printw(" VAvg S0:%4.1f S1:%4.1f;", v0, v1);
+                    printw(" VAvg S1:%4.1f S2:%4.1f;", v0, v1);
                 } else if (have0) {
                     printw(" VAvg:%4.1f%%;", v0);
                 } else {

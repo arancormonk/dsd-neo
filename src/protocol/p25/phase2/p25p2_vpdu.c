@@ -1990,6 +1990,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "TGT: %d; ", add);
             fprintf(stderr, "CC: %03X; ", cc);
 
+            // Clear per-slot audio gating so the SM can immediately return to CC
+            // without being blocked by stale slot activity.
+            state->p25_p2_audio_allowed[0] = 0;
+            state->p25_p2_audio_allowed[1] = 0;
+            // Mark both bursts idle to keep legacy checks consistent
+            state->dmrburstL = 24;
+            state->dmrburstR = 24;
+
             // Return to CC on explicit release
             p25_sm_on_release(opts, state);
         }
