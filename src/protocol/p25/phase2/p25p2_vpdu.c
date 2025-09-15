@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -78,6 +79,40 @@ mac_len_for(uint8_t mfid, uint8_t opcode) {
     return base; // zero if unknown; caller will guard
 }
 
+/* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
+static void
+p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
+                               int len_c, const char* summary) {
+    const dsdneoRuntimeConfig* rc = dsd_neo_get_config();
+    if (!rc || !rc->pdu_json_enable) {
+        return;
+    }
+
+    /* xch_type: 0 FACCH, 1 SACCH; prefer LCCH label when flagged */
+    const char* xch = (state && state->p2_is_lcch) ? "LCCH" : (xch_type == 1 ? "SACCH" : "FACCH");
+
+    /* Minimal summary sanitization (drop quotes) to keep JSON valid */
+    char sum[80];
+    sum[0] = '\0';
+    if (summary && summary[0] != '\0') {
+        int j = 0;
+        for (int i = 0; summary[i] != '\0' && j < (int)sizeof(sum) - 1; i++) {
+            char ch = summary[i];
+            if (ch == '"') {
+                continue;
+            }
+            sum[j++] = ch;
+        }
+        sum[j] = '\0';
+    }
+
+    time_t ts = time(NULL);
+    fprintf(stderr,
+            "{\"ts\":%ld,\"proto\":\"p25\",\"mac\":1,\"xch\":\"%s\",\"mfid\":%u,\"op\":%u,\"slot\":%d,"
+            "\"lenB\":%d,\"lenC\":%d,\"summary\":\"%s\"}\n",
+            (long)ts, xch, (unsigned)mfid, (unsigned)opcode, slot, len_b, len_c, sum);
+}
+
 //MAC PDU 3-bit Opcodes BBAC (8.4.1) p 123:
 //0 - reserved //1 - Mac PTT //2 - Mac End PTT //3 - Mac Idle //4 - Mac Active
 //5 - reserved //6 - Mac Hangtime //7 - reserved //Mac PTT BBAC p80
@@ -110,6 +145,25 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         slot = (state->currentslot ^ 1) & 1; //flip slot internally for SACCH
     } else {
         slot = state->currentslot;
+    }
+
+    /* Emit one JSON record for this MAC PDU (when enabled) */
+    {
+        uint8_t mfid = (uint8_t)MAC[2];
+        uint8_t opcode = (uint8_t)MAC[1];
+        const char* tag = NULL;
+        switch (opcode) {
+            case 0x0: tag = "SIGNAL"; break;
+            case 0x1: tag = "PTT"; break;
+            case 0x2: tag = "END"; break;
+            case 0x3: tag = "IDLE"; break;
+            case 0x4: tag = "ACTIVE"; break;
+            case 0x6: tag = "HANGTIME"; break;
+            default:
+                tag = "MAC"; /* generic */
+                break;
+        }
+        p25p2_emit_mac_json_if_enabled(state, type, mfid, opcode, slot, len_b, len_c, tag);
     }
 
     //assigning here if OECI MAC SIGNAL, after passing RS and CRC
