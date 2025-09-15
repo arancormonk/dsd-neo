@@ -836,6 +836,8 @@ typedef struct {
     unsigned int p25_p2_rs_ess_ok;
     unsigned int p25_p2_rs_ess_err;
     unsigned int p25_p2_rs_ess_corr; // total corrected symbols over accepts
+    // P25p2 early ENC lockout counter (MAC_PTT-driven)
+    unsigned int p25_p2_enc_lo_early;
 
     //iden freq storage for frequency calculations
     int p25_chan_tdma[16]; //set from iden_up vs iden_up_tdma

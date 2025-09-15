@@ -668,9 +668,11 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                     watchdog_event_current(opts, state, slot);
                 }
 
-                //return to the control channel -- NOTE: Disabled, just mark as lockout for now, return would require complex check of the other slot activity
-                // fprintf (stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
-                // return_to_cc (opts, state);
+                // Return to the control channel to avoid tying up the tuner on
+                // encrypted traffic when ENC lockout is enabled. The P25 SM
+                // will handle cleanup and CC return consistently across I/O backends.
+                fprintf(stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
+                p25_sm_on_release(opts, state);
             }
         }
 #endif //P25p2_ENC_LO

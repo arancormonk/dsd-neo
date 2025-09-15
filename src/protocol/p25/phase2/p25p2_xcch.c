@@ -185,8 +185,51 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     LFSR128(state);
                     // fprintf (stderr, "\n");
                 }
-                // fprintf (stderr, " %s", KRED);
-                // fprintf (stderr, "ENC");
+                // Early ENC lockout: as soon as MAC_PTT provides ALG/KID, decide
+                if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+                    int alg = state->payload_algid;
+                    int have_key = 0;
+                    if (alg == 0xAA && state->R != 0) {
+                        have_key = 1; // RC4 key loaded
+                    } else if (alg == 0x81 && state->R != 0) {
+                        have_key = 1; // DES-OFB key present in R
+                    } else if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1) {
+                        have_key = 1; // AES key loaded for slot 0 context
+                    }
+                    if (alg != 0 && alg != 0x80 && have_key == 0) {
+                        // Mark and release to CC immediately to minimize tuner occupancy
+                        // Label TG as ENC LO and record an event
+                        int ttg = state->lasttg;
+                        if (ttg != 0) {
+                            int enc_wr = 0;
+                            for (unsigned int xx = 0; xx < state->group_tally; xx++) {
+                                if (state->group_array[xx].groupNumber == ttg) {
+                                    enc_wr = 1;
+                                    break;
+                                }
+                            }
+                            if (enc_wr == 0
+                                && state->group_tally
+                                       < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                                state->group_array[state->group_tally].groupNumber = ttg;
+                                sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                                sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                                state->group_tally++;
+                            }
+                            // Event history (use current slot index; SACCH is inverted for payload)
+                            uint8_t eslot = state->currentslot;
+                            sprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
+                                    "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                            watchdog_event_current(opts, state, eslot);
+                        }
+                        state->p25_p2_enc_lo_early++;
+                        fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT); Return to CC; \n");
+                        p25_sm_on_release(opts, state);
+                        // Avoid enabling audio; bail out early
+                        fprintf(stderr, "%s", KNRM);
+                        goto END_SMAC;
+                    }
+                }
             }
 
             //reset gain
@@ -251,8 +294,47 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     LFSR128(state);
                     // fprintf (stderr, "\n");
                 }
-                // fprintf (stderr, " %s", KRED);
-                // fprintf (stderr, "ENC");
+                // Early ENC lockout on slot 1 as well
+                if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+                    int alg = state->payload_algidR;
+                    int have_key = 0;
+                    if (alg == 0xAA && state->RR != 0) {
+                        have_key = 1; // RC4 key loaded (slot R)
+                    } else if (alg == 0x81 && state->RR != 0) {
+                        have_key = 1; // DES-OFB key present in RR
+                    } else if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1) {
+                        have_key = 1; // AES key loaded for slot 1 context
+                    }
+                    if (alg != 0 && alg != 0x80 && have_key == 0) {
+                        int ttg = state->lasttgR;
+                        if (ttg != 0) {
+                            int enc_wr = 0;
+                            for (unsigned int xx = 0; xx < state->group_tally; xx++) {
+                                if (state->group_array[xx].groupNumber == ttg) {
+                                    enc_wr = 1;
+                                    break;
+                                }
+                            }
+                            if (enc_wr == 0
+                                && state->group_tally
+                                       < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                                state->group_array[state->group_tally].groupNumber = ttg;
+                                sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                                sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                                state->group_tally++;
+                            }
+                            uint8_t eslot = state->currentslot;
+                            sprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
+                                    "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                            watchdog_event_current(opts, state, eslot);
+                        }
+                        state->p25_p2_enc_lo_early++;
+                        fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT); Return to CC; \n");
+                        p25_sm_on_release(opts, state);
+                        fprintf(stderr, "%s", KNRM);
+                        goto END_SMAC;
+                    }
+                }
             }
 
             //reset gain

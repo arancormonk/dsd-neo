@@ -490,10 +490,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
-        // P25 SM summary line
-        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d\n", state->p25_sm_tune_count,
-               state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count,
-               state->p25_cc_cand_idx);
+        // P25 SM summary line + early ENC LO counter
+        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
+               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
+               state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early);
         // P25p2 RS summary line
         printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
                state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
@@ -528,10 +528,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
-        // P25 SM summary line
-        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d\n", state->p25_sm_tune_count,
-               state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count,
-               state->p25_cc_cand_idx);
+        // P25 SM summary line + early ENC LO counter
+        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
+               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
+               state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early);
         // P25p2 RS summary line
         printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
                state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
