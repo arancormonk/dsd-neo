@@ -1666,7 +1666,8 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
 }
 
 /* Runtime DSP tuning entrypoints (C shim) */
-static int g_auto_dsp_enable = 0; /* default OFF */
+static int g_auto_dsp_enable = 0;     /* default OFF */
+static int g_manual_dsp_override = 0; /* default OFF: allow auto toggles */
 
 /* Forward declaration for CQPSK runtime setter used by auto-DSP update below */
 extern "C" void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable,
@@ -1861,6 +1862,16 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* aut
 extern "C" void
 rtl_stream_toggle_auto_dsp(int onoff) {
     g_auto_dsp_enable = onoff ? 1 : 0;
+}
+
+extern "C" void
+rtl_stream_set_manual_dsp(int onoff) {
+    g_manual_dsp_override = onoff ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_get_manual_dsp(void) {
+    return g_manual_dsp_override ? 1 : 0;
 }
 
 /* Configure RRC matched filter parameters. Any arg <0 leaves it unchanged. */

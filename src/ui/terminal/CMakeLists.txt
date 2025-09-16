@@ -4,6 +4,8 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   dsd_ncurses_handler.c
   dsd_ncurses_menu.c
   dsd_ncurses_printer.c
+  menu_core.c
+  menu_services.c
 )
 
 target_include_directories(dsd-neo_ui_terminal

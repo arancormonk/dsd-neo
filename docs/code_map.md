@@ -57,6 +57,24 @@ High‑level layout with module responsibilities and libraries. All public heade
 - Path: `src/third_party/ezpwd`
 - Target: `dsd-neo_ezpwd` (INTERFACE; headers included via `src/third_party` path)
 
+## UI
+
+- Path: `src/ui`, `include/dsd-neo/ui`
+- Target: `dsd-neo_ui_terminal`
+- Responsibilities: ncurses terminal UI. The menu system is moving to a data‑driven core in `menu_core.[ch]` with standardized prompt helpers and declarative menu tables. Legacy menus remain functional during migration.
+
+### Adding Menu Items
+- Define a handler:
+  - Prefer a service in `include/dsd-neo/ui/menu_services.h` with implementation in `src/ui/terminal/menu_services.c` for side effects (I/O, mode switches, file ops).
+  - UI handlers in `menu_core.c` should be thin wrappers that call service helpers and use `ui_prompt_*` to gather input.
+- Extend a menu table:
+  - Add an `NcMenuItem` entry to the relevant table (e.g., `ui_menu_main`, `ui_menu_io_options`, `ui_menu_dsp_options`). Set `id`, `label`, optional `help`, and `.on_select`.
+  - For nested menus, set `.submenu` and `.submenu_len` to a child array.
+- Keep UI/business logic separate:
+  - Do not perform device or file operations directly in `dsd_ncurses_menu.c`. Use services instead to make behavior testable and reusable by other front‑ends.
+- Prompts and exit:
+  - Use `ui_prompt_string/int/double/confirm`. Handlers can set `exitflag` to request immediate exit; the loop will return.
+
 ## Include Prefix Summary
 
 - Core: `<dsd-neo/core/...>`

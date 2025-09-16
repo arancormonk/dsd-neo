@@ -147,6 +147,12 @@ int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int*
 /** Toggle all automatic DSP assistance (e.g., BER-based tuning). */
 void rtl_stream_toggle_auto_dsp(int onoff);
 
+/** Manual DSP override: when enabled, frame-sync logic will not auto-toggle
+ * CQPSK/FLL/TED based on detected modulation. Useful to pin user-selected
+ * DSP behavior across menu closes and non-QPSK intervals. */
+void rtl_stream_set_manual_dsp(int onoff);
+int rtl_stream_get_manual_dsp(void);
+
 /**
  * @brief Set or disable the resampler target rate (applied on controller thread).
  * Pass 0 to disable the resampler; otherwise, pass desired Hz (e.g., 48000).

@@ -373,13 +373,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     erase();
     if (opts->ncurses_compact == 1) {
         printw("------------------------------------------------------------------------------\n");
-        printw("| Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
+        printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
         printw("------------------------------------------------------------------------------\n");
     }
     if (opts->ncurses_compact == 0) {
         attron(COLOR_PAIR(6));
         printw("------------------------------------------------------------------------------\n");
-        printw("| Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
+        printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
         printw("------------------------------------------------------------------------------\n");
         attroff(COLOR_PAIR(6));
         attron(COLOR_PAIR(4));
