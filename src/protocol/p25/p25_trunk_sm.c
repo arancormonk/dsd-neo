@@ -24,7 +24,7 @@ p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
         return;
     }
     if (opts->verbose > 1) {
-        fprintf(stderr, " P25 SM: %s tunes=%u releases=%u cc_cand add=%u used=%u count=%d idx=%d\n",
+        fprintf(stderr, "\n  P25 SM: %s tunes=%u releases=%u cc_cand add=%u used=%u count=%d idx=%d\n",
                 tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added,
                 state->p25_cc_cand_used, state->p25_cc_cand_count, state->p25_cc_cand_idx);
     }
@@ -137,7 +137,7 @@ p25_sm_try_load_cache(dsd_opts* opts, dsd_state* state) {
     fclose(fp);
     state->p25_cc_cache_loaded = 1;
     if (opts && opts->verbose > 0 && state->p25_cc_cand_count > 0) {
-        fprintf(stderr, "\n P25 SM: Loaded %d CC candidates from cache\n", state->p25_cc_cand_count);
+        fprintf(stderr, "\n  P25 SM: Loaded %d CC candidates from cache\n", state->p25_cc_cand_count);
     }
 }
 
@@ -164,7 +164,7 @@ p25_sm_persist_cache(dsd_opts* opts, dsd_state* state) {
     FILE* fp = fopen(fpath, "w");
     if (!fp) {
         if (opts && opts->verbose > 1) {
-            fprintf(stderr, " P25 SM: Failed to open CC cache for write: %s (errno=%d)\n", fpath, errno);
+            fprintf(stderr, "\n  P25 SM: Failed to open CC cache for write: %s (errno=%d)\n", fpath, errno);
         }
         return;
     }
@@ -231,7 +231,7 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
     p25_p2_audio_ring_reset(state, -1);
     state->p25_sm_tune_count++;
     if (opts->verbose > 0) {
-        fprintf(stderr, "\n P25 SM: Tune VC ch=0x%04X freq=%.6lf MHz tdma=%d\n", channel, (double)freq / 1000000.0,
+        fprintf(stderr, "\n  P25 SM: Tune VC ch=0x%04X freq=%.6lf MHz tdma=%d\n", channel, (double)freq / 1000000.0,
                 is_tdma);
     }
     p25_sm_log_status(opts, state, "after-tune");
@@ -292,7 +292,7 @@ p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
 
         if (left_active || right_active) {
             if (opts && opts->verbose > 0) {
-                fprintf(stderr, "\n P25 SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u allowL=%d allowR=%d\n",
+                fprintf(stderr, "\n  P25 SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u allowL=%d allowR=%d\n",
                         left_active, right_active, state->dmrburstL, state->dmrburstR, state->p25_p2_audio_allowed[0],
                         state->p25_p2_audio_allowed[1]);
             }
@@ -303,7 +303,7 @@ p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
 
     // Either not a P25p2 VC or no other slot is active: return to CC.
     if (opts && opts->verbose > 0) {
-        fprintf(stderr, "\n P25 SM: Release -> CC\n");
+        fprintf(stderr, "\n  P25 SM: Release -> CC\n");
     }
     // Flush per-slot audio gates and jitter buffers on release
     state->p25_p2_audio_allowed[0] = 0;
@@ -361,7 +361,7 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
             state->p25_cc_cand_added++;
         }
         if (opts->verbose > 1) {
-            fprintf(stderr, "\n P25 SM: Add CC cand=%.6lf MHz (count=%d)\n", (double)f / 1000000.0,
+            fprintf(stderr, "\n  P25 SM: Add CC cand=%.6lf MHz (count=%d)\n", (double)f / 1000000.0,
                     state->p25_cc_cand_count);
         }
     }

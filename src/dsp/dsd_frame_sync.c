@@ -124,7 +124,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             fprintf(stderr, "Tuning to Candidate CC: %.06lf MHz\n", (double)cand_freq / 1000000);
             if (opts->verbose > 1) {
-                fprintf(stderr, " P25 SM: CC cand used=%u/%u tunes=%u releases=%u\n", state->p25_cc_cand_used,
+                fprintf(stderr, "\n  P25 SM: CC cand used=%u/%u tunes=%u releases=%u\n", state->p25_cc_cand_used,
                         state->p25_cc_cand_added, state->p25_sm_tune_count, state->p25_sm_release_count);
             }
             state->last_cc_sync_time = time(NULL);
