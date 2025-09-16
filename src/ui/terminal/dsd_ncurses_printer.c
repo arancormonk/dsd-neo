@@ -542,7 +542,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
             if (hasl || hasr) {
                 if (hasl && hasr) {
-                    printw("| P2 Voice: Avg BER - S1:%4.1f%% S2:%4.1f%%\n", avgl, avgr);
+                    printw("| P2 Voice: Avg BER - S1:%4.1f%%, S2:%4.1f%%\n", avgl, avgr);
                 } else if (hasl) {
                     printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avgl);
                 } else {
@@ -604,7 +604,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
             if (hasl || hasr) {
                 if (hasl && hasr) {
-                    printw("| P2 Voice: Avg BER - S1:%4.1f%% S2:%4.1f%%\n", avgl, avgr);
+                    printw("| P2 Voice: Avg BER - S1:%4.1f%%, S2:%4.1f%%\n", avgl, avgr);
                 } else if (hasl) {
                     printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avgl);
                 } else {
