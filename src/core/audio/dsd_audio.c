@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -29,16 +32,25 @@ pa_buffer_attr lt;
 
 void
 closePulseOutput(dsd_opts* opts) {
-    pa_simple_free(opts->pulse_digi_dev_out);
-    if (opts->frame_provoice == 1
-        || opts->monitor_input_audio == 1) { //EDACS analog calls and/or monitoring source analog audio
+    // In analog-only monitor mode, the digital output stream may never be opened.
+    // Guard against NULL to avoid pa_simple_free aborting on a NULL handle.
+    if (opts->pulse_digi_dev_out) {
+        pa_simple_free(opts->pulse_digi_dev_out);
+        opts->pulse_digi_dev_out = NULL;
+    }
+    // EDACS analog or raw analog monitoring can open a separate 48kHz stream.
+    if (opts->pulse_raw_dev_out) {
         pa_simple_free(opts->pulse_raw_dev_out);
+        opts->pulse_raw_dev_out = NULL;
     }
 }
 
 void
 closePulseInput(dsd_opts* opts) {
-    pa_simple_free(opts->pulse_digi_dev_in);
+    if (opts->pulse_digi_dev_in) {
+        pa_simple_free(opts->pulse_digi_dev_in);
+        opts->pulse_digi_dev_in = NULL;
+    }
 }
 
 void

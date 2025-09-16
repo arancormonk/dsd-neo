@@ -1648,10 +1648,10 @@ long int GetCurrentFreq(int sockfd);
 bool SetFreq(int sockfd, long int freq);
 bool SetModulation(int sockfd, int bandwidth);
 //commands below unique to GQRX only, not usable on SDR++
-bool GetSignalLevel(int sockfd, double* dBFS);
-bool GetSquelchLevel(int sockfd, double* dBFS);
-bool SetSquelchLevel(int sockfd, double dBFS);
-bool GetSignalLevelEx(int sockfd, double* dBFS, int n_samp);
+bool GetSignalLevel(int sockfd, double* dB);
+bool GetSquelchLevel(int sockfd, double* dB);
+bool SetSquelchLevel(int sockfd, double dB);
+bool GetSignalLevelEx(int sockfd, double* dB, int n_samp);
 //end gqrx-scanner
 
 //UDP socket connection
@@ -1671,10 +1671,10 @@ void init_rrc_filter_memory();
 //misc audio filtering for analog
 long int raw_rms(short* samples, int len, int step);
 long int raw_pwr(short* samples, int len, int step);
-/* Convert mean power (RMS^2 on int16 samples) to dBFS, clamped to [-120, 0]. */
-double pwr_to_dBFS(long int mean_power);
-/* Convert dBFS to mean power (RMS^2 on int16 samples). */
-long int dBFS_to_pwr(double dB);
+/* Convert mean power (RMS^2 on int16 samples) to dB, clamped to [-120, 0]. */
+double pwr_to_dB(long int mean_power);
+/* Convert dB to mean power (RMS^2 on int16 samples). */
+long int dB_to_pwr(double dB);
 void init_audio_filters(dsd_state* state);
 void lpf(dsd_state* state, short* input, int len);
 void hpf(dsd_state* state, short* input, int len);

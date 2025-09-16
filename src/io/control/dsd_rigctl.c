@@ -172,7 +172,7 @@ SetModulation(int sockfd, int bandwidth) {
 }
 
 bool
-GetSignalLevel(int sockfd, double* dBFS) {
+GetSignalLevel(int sockfd, double* dB) {
     char buf[BUFSIZE];
 
     Send(sockfd, "l\n");
@@ -182,17 +182,17 @@ GetSignalLevel(int sockfd, double* dBFS) {
         return false;
     }
 
-    sscanf(buf, "%lf", dBFS);
-    *dBFS = round((*dBFS) * 10) / 10;
+    sscanf(buf, "%lf", dB);
+    *dB = round((*dB) * 10) / 10;
 
-    if (*dBFS == 0.0) {
+    if (*dB == 0.0) {
         return false;
     }
     return true;
 }
 
 bool
-GetSquelchLevel(int sockfd, double* dBFS) {
+GetSquelchLevel(int sockfd, double* dB) {
     char buf[BUFSIZE];
 
     Send(sockfd, "l SQL\n");
@@ -202,17 +202,17 @@ GetSquelchLevel(int sockfd, double* dBFS) {
         return false;
     }
 
-    sscanf(buf, "%lf", dBFS);
-    *dBFS = round((*dBFS) * 10) / 10;
+    sscanf(buf, "%lf", dB);
+    *dB = round((*dB) * 10) / 10;
 
     return true;
 }
 
 bool
-SetSquelchLevel(int sockfd, double dBFS) {
+SetSquelchLevel(int sockfd, double dB) {
     char buf[BUFSIZE];
 
-    sprintf(buf, "L SQL %f\n", dBFS);
+    sprintf(buf, "L SQL %f\n", dB);
     Send(sockfd, buf);
     Recv(sockfd, buf);
 
@@ -228,19 +228,19 @@ SetSquelchLevel(int sockfd, double dBFS) {
 // Get a bunch of sample with some delay and calculate the mean value
 //
 bool
-GetSignalLevelEx(int sockfd, double* dBFS, int n_samp) {
+GetSignalLevelEx(int sockfd, double* dB, int n_samp) {
     double temp_level;
-    *dBFS = 0;
+    *dB = 0;
     int errors = 0;
     for (int i = 0; i < n_samp; i++) {
         if (GetSignalLevel(sockfd, &temp_level)) {
-            *dBFS = *dBFS + temp_level;
+            *dB = *dB + temp_level;
         } else {
             errors++;
         }
         usleep(1000);
     }
-    *dBFS = *dBFS / (n_samp - errors);
+    *dB = *dB / (n_samp - errors);
     return true;
 }
 

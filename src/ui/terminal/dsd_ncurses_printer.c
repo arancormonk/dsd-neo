@@ -108,36 +108,6 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 static int lls = -1;
 
 static int
-compute_p25p2_ber_pct(const dsd_state* s, double* out_pct) {
-    unsigned int ok = s->p25_p2_rs_facch_ok + s->p25_p2_rs_sacch_ok + s->p25_p2_rs_ess_ok;
-    unsigned int err = s->p25_p2_rs_facch_err + s->p25_p2_rs_sacch_err + s->p25_p2_rs_ess_err;
-    unsigned int tot = ok + err;
-    if (tot == 0) {
-        return 0;
-    }
-    double ber = (double)err * 100.0 / (double)tot;
-    if (out_pct) {
-        *out_pct = ber;
-    }
-    return 1;
-}
-
-static int
-compute_p25p1_ber_pct(const dsd_state* s, double* out_pct) {
-    unsigned int ok = s->p25_p1_fec_ok;
-    unsigned int err = s->p25_p1_fec_err;
-    unsigned int tot = ok + err;
-    if (tot == 0) {
-        return 0;
-    }
-    double ber = (double)err * 100.0 / (double)tot;
-    if (out_pct) {
-        *out_pct = ber;
-    }
-    return 1;
-}
-
-static int
 compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) {
     int len = s->p25_p1_voice_err_hist_len;
     if (len <= 0) {
@@ -164,164 +134,6 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
         *out_avg = avg;
     }
     return 1;
-}
-
-/*
- * Labeled BER with a short-time window and optional voice avg alongside.
- *
- * To avoid session-long accumulation skewing the display, maintain a
- * per-process baseline snapshot and compute a local BER over a rolling
- * window. The baseline resets when frequency changes or after a timeout.
- */
-static int
-print_labeled_ber_with_voice(const dsd_opts* opts, const dsd_state* s) {
-    /* Window baseline snapshot (static across calls) */
-    static unsigned int p1_ok0 = 0, p1_err0 = 0;
-    static unsigned int p2_ok0_facch = 0, p2_err0_facch = 0;
-    static unsigned int p2_ok0_sacch = 0, p2_err0_sacch = 0;
-    static unsigned int p2_ok0_ess = 0, p2_err0_ess = 0;
-    static time_t base_ts = 0;
-    static int last_freq = 0;
-
-    time_t now = time(NULL);
-    int cur_freq = opts ? opts->rtlsdr_center_freq : 0;
-    int need_rebase = 0;
-    if (base_ts == 0) {
-        need_rebase = 1;
-    }
-    if (cur_freq != 0 && last_freq != 0 && cur_freq != last_freq) {
-        need_rebase = 1; /* retune */
-    }
-    if (now - base_ts >= 60) {
-        need_rebase = 1; /* periodic rebase */
-    }
-    if (need_rebase) {
-        p1_ok0 = s->p25_p1_fec_ok;
-        p1_err0 = s->p25_p1_fec_err;
-        p2_ok0_facch = s->p25_p2_rs_facch_ok;
-        p2_err0_facch = s->p25_p2_rs_facch_err;
-        p2_ok0_sacch = s->p25_p2_rs_sacch_ok;
-        p2_err0_sacch = s->p25_p2_rs_sacch_err;
-        p2_ok0_ess = s->p25_p2_rs_ess_ok;
-        p2_err0_ess = s->p25_p2_rs_ess_err;
-        base_ts = now;
-        last_freq = cur_freq;
-    }
-
-    /* Compute windowed deltas */
-    unsigned int p2_ok = 0, p2_err = 0;
-    if (s->p25_p2_rs_facch_ok >= p2_ok0_facch) {
-        p2_ok += s->p25_p2_rs_facch_ok - p2_ok0_facch;
-    } else {
-        need_rebase = 1;
-    }
-    if (s->p25_p2_rs_facch_err >= p2_err0_facch) {
-        p2_err += s->p25_p2_rs_facch_err - p2_err0_facch;
-    } else {
-        need_rebase = 1;
-    }
-    if (s->p25_p2_rs_sacch_ok >= p2_ok0_sacch) {
-        p2_ok += s->p25_p2_rs_sacch_ok - p2_ok0_sacch;
-    } else {
-        need_rebase = 1;
-    }
-    if (s->p25_p2_rs_sacch_err >= p2_err0_sacch) {
-        p2_err += s->p25_p2_rs_sacch_err - p2_err0_sacch;
-    } else {
-        need_rebase = 1;
-    }
-    if (s->p25_p2_rs_ess_ok >= p2_ok0_ess) {
-        p2_ok += s->p25_p2_rs_ess_ok - p2_ok0_ess;
-    } else {
-        need_rebase = 1;
-    }
-    if (s->p25_p2_rs_ess_err >= p2_err0_ess) {
-        p2_err += s->p25_p2_rs_ess_err - p2_err0_ess;
-    } else {
-        need_rebase = 1;
-    }
-
-    unsigned int p1_ok = 0, p1_err = 0;
-    if (s->p25_p1_fec_ok >= p1_ok0) {
-        p1_ok = s->p25_p1_fec_ok - p1_ok0;
-    } else {
-        need_rebase = 1;
-    }
-    if (s->p25_p1_fec_err >= p1_err0) {
-        p1_err = s->p25_p1_fec_err - p1_err0;
-    } else {
-        need_rebase = 1;
-    }
-
-    if (need_rebase && base_ts != 0) {
-        /* Rare wrap/reset; refresh baseline so next call recomputes window.
-           Do not return early; fall through to totals-based fallback below
-           so we still show a useful metric this tick. */
-        base_ts = 0;
-    }
-
-    /* Prefer Phase 2 metrics if present in the window */
-    if ((p2_ok + p2_err) > 0) {
-        double ber = (double)p2_err * 100.0 / (double)(p2_ok + p2_err);
-        printw(" P2 RS BER: %4.1f%%;", ber);
-        /* Add P2 voice moving-average (both slots if available) */
-        double v0, v1;
-        int have0 = compute_p25p2_voice_avg_err(s, 0, &v0);
-        int have1 = compute_p25p2_voice_avg_err(s, 1, &v1);
-        if (have0 || have1) {
-            if (have0 && have1) {
-                printw(" VAvg S1:%4.1f S2:%4.1f;", v0, v1);
-            } else if (have0) {
-                printw(" VAvg:%4.1f%%;", v0);
-            } else {
-                printw(" VAvg:%4.1f%%;", v1);
-            }
-        }
-        return 1;
-    }
-
-    /* Fall back to Phase 1 control/FEC window */
-    if ((p1_ok + p1_err) > 0) {
-        double ber = (double)p1_err * 100.0 / (double)(p1_ok + p1_err);
-        printw(" P1 CC BER: %4.1f%%;", ber);
-        double avgv;
-        if (compute_p25p1_voice_avg_err(s, &avgv)) {
-            printw(" VAvg:%4.1f%%;", avgv);
-        }
-        return 1;
-    }
-
-    /* No new traffic in the window. If totals exist, show a totals-based BER
-       instead of falling back to power so the user still gets signal quality. */
-    {
-        double ber_tot = 0.0;
-        if (compute_p25p2_ber_pct(s, &ber_tot)) {
-            printw(" P2 RS BER: %4.1f%%;", ber_tot);
-            double v0, v1;
-            int have0 = compute_p25p2_voice_avg_err(s, 0, &v0);
-            int have1 = compute_p25p2_voice_avg_err(s, 1, &v1);
-            if (have0 || have1) {
-                if (have0 && have1) {
-                    printw(" VAvg S1:%4.1f S2:%4.1f;", v0, v1);
-                } else if (have0) {
-                    printw(" VAvg:%4.1f%%;", v0);
-                } else {
-                    printw(" VAvg:%4.1f%%;", v1);
-                }
-            }
-            return 1;
-        }
-        if (compute_p25p1_ber_pct(s, &ber_tot)) {
-            printw(" P1 CC BER: %4.1f%%;", ber_tot);
-            double avgv;
-            if (compute_p25p1_voice_avg_err(s, &avgv)) {
-                printw(" VAvg:%4.1f%%;", avgv);
-            }
-            return 1;
-        }
-    }
-
-    return 0;
 }
 
 void
@@ -449,12 +261,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw(" V: %iX;", opts->rtl_volume_multiplier);
         printw(" PPM: %i;", opts->rtlsdr_ppm_error); //Adjust manually now with { and }
-        printw(" SQ: %.1f dBFS;", pwr_to_dBFS(opts->rtl_squelch_level));
-        if (print_labeled_ber_with_voice(opts, state)) {
-            /* printed labeled BER with optional voice avg */
-        } else {
-            printw(" PWR: %.1f dBFS;", pwr_to_dBFS(opts->rtl_pwr));
-        }
+        printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
+        printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
         printw(" BW: %i;", opts->rtl_bandwidth);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         if (opts->rtl_udp_port != 0) {
@@ -501,11 +309,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("Manual ");
         }
         if (opts->audio_in_type != 3) {
-            if (print_labeled_ber_with_voice(opts, state)) {
-                printw(" ");
-            } else {
-                printw("PWR: %.1f dBFS; ", pwr_to_dBFS(opts->rtl_pwr));
-            }
+            printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
         }
         if (opts->use_lpf == 1) {
             printw("F: |LP|");
@@ -549,8 +353,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         if ((opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
             && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            printw("\n| Analog Monitor PWR: %.1f dBFS; G: %02.0f%% (/|*) ", pwr_to_dBFS(opts->rtl_pwr),
-                   opts->audio_gainA);
+            printw("\n| Analog Monitor PWR: %.1f dB; G: %02.0f%% (/|*) ", pwr_to_dB(opts->rtl_pwr), opts->audio_gainA);
             if (opts->audio_gainA == 0.0f) {
                 printw("Auto   ");
             } else {
@@ -595,11 +398,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         if ((opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
             && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            if (print_labeled_ber_with_voice(opts, state)) {
-                /* in analog monitor context, still show prefix */
-            } else {
-                printw(" - Monitor PWR: %.1f dBFS ", pwr_to_dBFS(opts->rtl_pwr));
-            }
+            printw(" - Monitor PWR: %.1f dB ", pwr_to_dB(opts->rtl_pwr));
         }
         printw(" \n");
         if (opts->udp_sockfdA != 0) //Analog Output on udp port +2
@@ -612,11 +411,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("M ");
             }
             if (opts->audio_in_type != 3) {
-                if (print_labeled_ber_with_voice(opts, state)) {
-                    printw(" ");
-                } else {
-                    printw("PWR: %.1f dBFS; ", pwr_to_dBFS(opts->rtl_pwr));
-                }
+                printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
             }
             if (opts->use_lpf == 1) {
                 printw("F: |LP|");
@@ -666,7 +461,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("  |");
         }
         if (opts->audio_in_type != 3 && state->m17_vox == 1) {
-            printw(" SQL: %.1f : %.1f dBFS;", pwr_to_dBFS(opts->rtl_pwr), pwr_to_dBFS(opts->rtl_squelch_level));
+            printw(" SQL: %.1f : %.1f dB;", pwr_to_dB(opts->rtl_pwr), pwr_to_dB(opts->rtl_squelch_level));
         }
         printw("\n");
     }

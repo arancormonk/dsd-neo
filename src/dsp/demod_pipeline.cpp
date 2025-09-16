@@ -893,9 +893,12 @@ full_demod(struct demod_state* d) {
     if (d->ted_enabled && (d->mode_demod != &fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
     }
-    /* Power squelch (sqrt-free): compare mean power estimate against squared threshold.
-	   Samples are decimated by `squelch_decim_stride`; an EMA smooths block power.
-	   The sampling phase advances by lp_len % stride per block to cover all offsets. */
+    /* Power squelch (sqrt-free): compare pair power mean (I^2+Q^2) against a threshold.
+	   Threshold is specified as per-component mean power (RMS^2 on int16).
+	   Since block_mean estimates E[I^2+Q^2], the equivalent threshold in this
+	   domain is 2 * squelch_level. Samples are decimated by `squelch_decim_stride`;
+	   an EMA smooths block power. The sampling phase advances by lp_len % stride
+	   per block to cover all offsets. */
     if (d->squelch_level) {
         /* Decimated block power estimate (no DC correction; EMA smooths) */
         int stride = (d->squelch_decim_stride > 0) ? d->squelch_decim_stride : 16;
@@ -923,7 +926,7 @@ full_demod(struct demod_state* d) {
             d->squelch_decim_phase = (phase + adv) % stride;
         }
         if (count > 0) {
-            int64_t block_mean = p / count;
+            int64_t block_mean = p / count; /* mean of I^2+Q^2 per complex sample */
             if (d->squelch_running_power == 0) {
                 /* Initialize on first measurement to avoid long ramp */
                 d->squelch_running_power = block_mean;
@@ -939,8 +942,9 @@ full_demod(struct demod_state* d) {
                 d->squelch_running_power += (delta >> shift);
             }
         }
-        int64_t thr2 = (int64_t)d->squelch_level * (int64_t)d->squelch_level;
-        if (d->squelch_running_power < thr2) {
+        /* Convert per-component mean power threshold -> pair domain */
+        int64_t thr_pair = 2LL * (int64_t)d->squelch_level;
+        if (d->squelch_running_power < thr_pair) {
             d->squelch_hits++;
             for (i = 0; i < d->lp_len; i++) {
                 d->lowpassed[i] = 0;

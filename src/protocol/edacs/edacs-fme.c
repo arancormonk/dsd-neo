@@ -465,7 +465,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             fprintf(stderr, "%s", KRED);
         }
 
-        fprintf(stderr, " Analog PWR: %.1f dBFS SQL: %.1f dBFS", pwr_to_dBFS(pwr), pwr_to_dBFS(sql));
+        fprintf(stderr, " Analog PWR: %.1f dB SQL: %.1f dB", pwr_to_dB(pwr), pwr_to_dB(sql));
         if (state->ea_mode == 0) {
             int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
             int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;

@@ -597,12 +597,12 @@ raw_pwr(int16_t* samples, int len, int step) {
 }
 
 /*
- * Convert a mean power value (RMS^2 proxy on 16-bit samples) to dBFS.
+ * Convert a mean power value (RMS^2 proxy on 16-bit samples) to dB.
  * The input is the DC-corrected mean of squares on int16 samples.
- * Output is clamped to [-120.0 dBFS, 0.0 dBFS] for stable display.
+ * Output is clamped to [-120.0 dB, 0.0 dB] for stable display.
  */
 double
-pwr_to_dBFS(long int mean_power) {
+pwr_to_dB(long int mean_power) {
     if (mean_power <= 0) {
         return -120.0;
     }
@@ -610,7 +610,7 @@ pwr_to_dBFS(long int mean_power) {
     double ratio = (double)mean_power / full_scale_sq;
     double dB = 10.0 * log10(ratio);
     if (dB > 0.0) {
-        dB = 0.0; /* never exceed 0 dBFS */
+        dB = 0.0; /* never exceed 0 dB */
     }
     if (dB < -120.0) {
         dB = -120.0; /* floor for readability */
@@ -618,9 +618,9 @@ pwr_to_dBFS(long int mean_power) {
     return dB;
 }
 
-/* Inverse of pwr_to_dBFS: convert dBFS back to mean power threshold. */
+/* Inverse of pwr_to_dB: convert dB back to mean power threshold. */
 long int
-dBFS_to_pwr(double dB) {
+dB_to_pwr(double dB) {
     if (dB >= 0.0) {
         return (long int)(32768.0 * 32768.0);
     }

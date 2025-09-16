@@ -689,9 +689,9 @@ initOpts(dsd_opts* opts) {
     opts->use_cosine_filter = 1;
     opts->unmute_encrypted_p25 = 0;
     //all RTL user options -- enabled AGC by default due to weak signal related issues
-    opts->rtl_dev_index = 0;         //choose which device we want by index number
-    opts->rtl_gain_value = 0;        //mid value, 0 - AGC - 0 to 49 acceptable values
-    opts->rtl_squelch_level = 10000; //default scaled for rtl_pwr (RMS^2 proxy); ~100 RMS equivalent
+    opts->rtl_dev_index = 0;  //choose which device we want by index number
+    opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
+    opts->rtl_squelch_level = dB_to_pwr(-90);
     opts->rtl_volume_multiplier =
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     opts->rtl_udp_port =
@@ -1408,7 +1408,7 @@ usage() {
     printf("                pulse:6 or pulse:virtual_sink2.monitor for pulse audio signal input on virtual_sink2 (see "
            "-O) \n");
     printf("                rtl for rtl dongle (Default Values -- see below)\n");
-    printf("                rtl:dev:freq:gain:ppm:bw:sq:vol for rtl dongle (see below)\n");
+    printf("                rtl:dev:freq:gain:ppm:bw:sql:vol for rtl dongle (see below)\n");
     printf("                tcp for tcp client SDR++/GNURadio Companion/Other (Port 7355)\n");
     printf("                tcp:192.168.7.5:7355 for custom address and port \n");
     printf("                m17udp for M17 UDP/IP socket bind input (default host 127.0.0.1; default port 17000)\n");
@@ -1477,7 +1477,7 @@ usage() {
     printf("                1 1 1 1 (0xF): PBF/LPF/HPF/HPFD on\n");
     printf("\n");
     printf("RTL-SDR options:\n");
-    printf(" Usage: rtl:dev:freq:gain:ppm:bw:sq:vol\n");
+    printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
     printf("  dev  <num>    RTL-SDR Device Index Number or 8 Digit Serial Number, no strings! (default 0)\n");
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M) \n");
@@ -1485,7 +1485,7 @@ usage() {
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
     printf("  bw   <num>    RTL-SDR Bandwidth kHz (default = 12)(4, 6, 8, 12, 16, 24)  \n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
-    printf("                 (Negative = dBFS; Positive/Zero = linear mean power)\n");
+    printf("                 (Negative = dB; Positive/Zero = linear mean power)\n");
     // printf ("  udp  <num>    RTL-SDR Legacy UDP Remote Port (Optional -- External Use Only)\n"); //NOTE: This is still available as an option in the ncurses menu
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
@@ -3377,11 +3377,11 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl squelch threshold (dBFS if negative; else linear)
+        curr = strtok(NULL, ":"); //rtl squelch threshold (dB if negative; else linear)
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
-                opts.rtl_squelch_level = (int)dBFS_to_pwr(sq_val);
+                opts.rtl_squelch_level = (int)dB_to_pwr(sq_val);
             } else {
                 opts.rtl_squelch_level = (int)sq_val;
             }
@@ -3433,7 +3433,7 @@ main(int argc, char** argv) {
         fprintf(stderr, "Gain %d ", opts.rtl_gain_value);
         fprintf(stderr, "PPM %d ", opts.rtlsdr_ppm_error);
         fprintf(stderr, "BW %d ", opts.rtl_bandwidth);
-        fprintf(stderr, "SQ %.1f dBFS ", pwr_to_dBFS(opts.rtl_squelch_level));
+        fprintf(stderr, "SQ %.1f dB ", pwr_to_dB(opts.rtl_squelch_level));
         // fprintf (stderr, "UDP %d \n", opts.rtl_udp_port);
         fprintf(stderr, "VOL %d \n", opts.rtl_volume_multiplier);
         opts.audio_in_type = 3;
