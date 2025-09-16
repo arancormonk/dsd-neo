@@ -884,7 +884,7 @@ svc_rtl_restart(dsd_opts* opts) {
         return -1;
     }
     if (g_rtl_ctx) {
-        rtl_stream_stop(g_rtl_ctx);
+        rtl_stream_soft_stop(g_rtl_ctx);
         rtl_stream_destroy(g_rtl_ctx);
         g_rtl_ctx = NULL;
     }

@@ -22,6 +22,7 @@ void dsd_rtl_stream_close(void);
 int dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
 unsigned int dsd_rtl_stream_output_rate(void);
+int dsd_rtl_stream_soft_stop(void);
 }
 
 namespace {
@@ -92,6 +93,17 @@ RtlSdrOrchestrator::stop() {
         return 0;
     }
     dsd_rtl_stream_close();
+    started_ = false;
+    last_error_code_ = 0;
+    return 0;
+}
+
+int
+RtlSdrOrchestrator::soft_stop() {
+    if (!started_) {
+        return 0;
+    }
+    dsd_rtl_stream_soft_stop();
     started_ = false;
     last_error_code_ = 0;
     return 0;

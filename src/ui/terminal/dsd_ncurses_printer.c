@@ -523,9 +523,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw(" - Black List Mode\n");
         }
         // P25 SM summary line + early ENC LO counter
-        printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
+        /* printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
                state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
-               state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early);
+               state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early); */
         // P25p1 voice error snapshot (IMBE ECC) + moving average
         {
             double avgv = 0.0;
@@ -542,11 +542,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
             if (hasl || hasr) {
                 if (hasl && hasr) {
-                    printw("| P2 Voice: Avg L:%4.1f%% R:%4.1f%%\n", avgl, avgr);
+                    printw("| P2 Voice: Avg BER - S1:%4.1f%% S2:%4.1f%%\n", avgl, avgr);
                 } else if (hasl) {
-                    printw("| P2 Voice: Avg L:%4.1f%%\n", avgl);
+                    printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avgl);
                 } else {
-                    printw("| P2 Voice: Avg R:%4.1f%%\n", avgr);
+                    printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
                 }
             }
         }

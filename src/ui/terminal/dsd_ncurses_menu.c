@@ -57,7 +57,12 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
         if (g_rtl_ctx) {
-            rtl_stream_clear_output(g_rtl_ctx);
+            // Soft-stop the RTL stream while the menu is open to avoid CPU spin
+            rtl_stream_soft_stop(g_rtl_ctx);
+            // Destroy the context so a fresh one is created with updated opts
+            rtl_stream_destroy(g_rtl_ctx);
+            g_rtl_ctx = NULL;
+            opts->rtl_started = 0;
         }
 #endif
     }
@@ -111,9 +116,6 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             if (g_rtl_ctx && rtl_stream_start(g_rtl_ctx) < 0) {
                 fprintf(stderr, "Failed to open RTL-SDR stream.\n");
             }
-        }
-        if (g_rtl_ctx) {
-            rtl_stream_clear_output(g_rtl_ctx);
         }
         reset_dibit_buffer(state);
 #elif AERO_BUILD

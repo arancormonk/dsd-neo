@@ -1505,6 +1505,45 @@ dsd_rtl_stream_close(void) {
 }
 
 /**
+ * @brief Soft-stop the RTL stream without setting global exitflag.
+ *
+ * Requests threads to exit via should_exit, stops async I/O, joins threads,
+ * and cleans up resources similarly to dsd_rtl_stream_close(), but does not
+ * touch the global exitflag so the application continues running.
+ */
+extern "C" int
+dsd_rtl_stream_soft_stop(void) {
+    LOG_INFO("soft stopping...\n");
+    if (g_stream) {
+        g_stream->should_exit.store(1);
+    }
+    if (g_udp_ctrl) {
+        udp_control_stop(g_udp_ctrl);
+        g_udp_ctrl = NULL;
+    }
+    safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+    safe_cond_signal(&controller.hop, &controller.hop_m);
+    rtl_device_stop_async(rtl_device_handle);
+    safe_cond_signal(&demod.ready, &demod.ready_m);
+    pthread_join(demod.thread, NULL);
+    safe_cond_signal(&output.ready, &output.ready_m);
+    pthread_join(controller.thread, NULL);
+
+    demod_cleanup(&demod);
+    output_cleanup(&output);
+    controller_cleanup(&controller);
+
+    if (input_ring.buffer) {
+        dsd_neo_aligned_free(input_ring.buffer);
+        input_ring.buffer = NULL;
+    }
+    atan_lut_free();
+    rtl_device_destroy(rtl_device_handle);
+    rtl_device_handle = NULL;
+    return 0;
+}
+
+/**
  * @brief Batched consumer API: read up to count samples with fewer wakeups/locks.
  * Applies volume scaling.
  *

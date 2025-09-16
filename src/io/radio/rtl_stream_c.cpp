@@ -94,6 +94,14 @@ rtl_stream_stop(RtlSdrContext* ctx) {
     return ctx->stream->stop();
 }
 
+extern "C" int
+rtl_stream_soft_stop(RtlSdrContext* ctx) {
+    if (!ctx || !ctx->stream) {
+        return -1;
+    }
+    return ctx->stream->soft_stop();
+}
+
 /**
  * @brief Destroy the stream context and free all associated resources.
  *

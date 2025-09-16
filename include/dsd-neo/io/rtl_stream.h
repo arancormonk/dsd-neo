@@ -49,6 +49,8 @@ class RtlSdrOrchestrator {
      * @return 0 on success.
      */
     int stop();
+    // Soft-stop without setting global exit flags (used for UI restarts)
+    int soft_stop();
 
     /**
      * @brief Tune to a new center frequency in Hz.

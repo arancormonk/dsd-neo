@@ -46,6 +46,7 @@ int rtl_stream_start(RtlSdrContext* ctx);
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_stop(RtlSdrContext* ctx);
+int rtl_stream_soft_stop(RtlSdrContext* ctx);
 /**
  * @brief Destroy the stream context and free all associated resources.
  * If the stream is running, it is stopped before destruction.

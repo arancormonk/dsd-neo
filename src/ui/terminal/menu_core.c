@@ -794,10 +794,10 @@ static void
 ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
     static const NcMenuItem items[] = {
-        {.id = "summary",
+        /*{.id = "summary",
          .label = "Current Config",
          .label_fn = lbl_rtl_summary,
-         .help = "Snapshot of RTL-SDR settings."},
+         .help = "Snapshot of RTL-SDR settings."},*/
         {.id = "enable", .label = "Enable RTL-SDR Input", .help = "Switch input to RTL-SDR.", .on_select = rtl_enable},
         {.id = "restart",
          .label = "Restart RTL Stream",
