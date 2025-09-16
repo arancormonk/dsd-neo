@@ -1,0 +1,464 @@
+name: CI (Linux)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-linux:
+    needs: [format-check, clang-tidy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5.0.0
+
+      - name: Prepare dependency environment
+        id: prep-env
+        run: |
+          set -euxo pipefail
+          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Compute dependency SHAs (for cache key)
+        id: dep-shas
+        run: |
+          set -euxo pipefail
+          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependency cache
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.DEPS_PREFIX }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          restore-keys: |
+            deps-${{ runner.os }}-
+
+      - name: Install base build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git ccache \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
+            gfortran
+
+      - name: Prepare ccache environment
+        id: prep-ccache
+        run: |
+          set -euxo pipefail
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
+          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          mkdir -p "${GITHUB_WORKSPACE}/.ccache"
+
+      - name: Compute tool versions (for ccache key)
+        id: toolver
+        run: |
+          set -euxo pipefail
+          echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)" >> "$GITHUB_OUTPUT"
+          echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ steps.toolver.outputs.gcc_ver }}-${{ steps.toolver.outputs.cmake_ver }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Initialize ccache
+        run: |
+          ccache --version
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Install dependencies via APT when available (codec2, itpp, rtl-sdr)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libcodec2-dev libitpp-dev librtlsdr-dev || true
+
+      - name: Build and install mbelib-neo (required, cached)
+        run: |
+          set -euxo pipefail
+          if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+            git -C /tmp/mbelib-neo fetch --depth 1 origin ${{ steps.dep-shas.outputs.mbe_sha }}
+            git -C /tmp/mbelib-neo checkout ${{ steps.dep-shas.outputs.mbe_sha }}
+            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/mbelib-neo/build -j
+            cmake --install /tmp/mbelib-neo/build
+          fi
+
+      - name: Ensure codec2 (cached fallback if not found)
+        run: |
+          set -euxo pipefail
+          if ! pkg-config --exists codec2 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
+            git -C /tmp/codec2 fetch --depth 1 origin ${{ steps.dep-shas.outputs.codec2_sha }}
+            git -C /tmp/codec2 checkout ${{ steps.dep-shas.outputs.codec2_sha }}
+            cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/codec2/build -j
+            cmake --install /tmp/codec2/build
+          fi
+
+      - name: Ensure ITPP (cached fallback if headers/libs not found)
+        run: |
+          set -euxo pipefail
+          # Prefer system headers; otherwise, use cached or build
+          if ! echo '#include <itpp/itcomm.h>' | gcc -E -I/usr/include - >/dev/null 2>&1 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
+            git -C /tmp/itpp fetch --depth 1 origin ${{ steps.dep-shas.outputs.itpp_sha }}
+            git -C /tmp/itpp checkout ${{ steps.dep-shas.outputs.itpp_sha }}
+            cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/itpp/build -j
+            cmake --install /tmp/itpp/build
+          fi
+
+      - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
+        run: |
+          set -euxo pipefail
+          if ! pkg-config --exists librtlsdr && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
+            git -C /tmp/rtl-sdr fetch --depth 1 origin ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+            git -C /tmp/rtl-sdr checkout ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+            cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/rtl-sdr/build -j
+            cmake --install /tmp/rtl-sdr/build
+          fi
+
+      - name: Show dependency versions
+        run: |
+          pkg-config --modversion codec2 || true
+          pkg-config --modversion itpp || true
+          pkg-config --modversion librtlsdr || true
+          ldconfig -p | grep -E 'libsndfile|libpulse|ncursesw' || true
+
+      - name: Configure (Release preset)
+        run: |
+          cmake --preset dev-release
+
+      - name: Build
+        run: |
+          cmake --build --preset dev-release -j
+
+      - name: Smoke test: show CLI help
+        run: |
+          ./build/dev-release/apps/dsd-cli/dsd-neo -h || true
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache -s
+
+  sanitize-linux:
+    needs: [format-check, clang-tidy]
+    name: Linux • Debug • sanitizers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5.0.0
+
+      - name: Prepare dependency environment
+        run: |
+          set -euxo pipefail
+          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Compute dependency SHAs (for cache key)
+        id: dep-shas
+        run: |
+          set -euxo pipefail
+          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependency cache
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.DEPS_PREFIX }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          restore-keys: |
+            deps-${{ runner.os }}-
+
+      - name: Install base build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git ccache \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
+            gfortran
+
+      - name: Prepare ccache environment
+        run: |
+          set -euxo pipefail
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
+          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          mkdir -p "${GITHUB_WORKSPACE}/.ccache"
+
+      - name: Compute tool versions (for ccache key)
+        id: toolver-sanitize
+        run: |
+          set -euxo pipefail
+          echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)" >> "$GITHUB_OUTPUT"
+          echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ steps.toolver-sanitize.outputs.gcc_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Initialize ccache
+        run: |
+          ccache --version
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Install dependencies via APT when available (codec2, itpp, rtl-sdr)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libcodec2-dev libitpp-dev librtlsdr-dev || true
+
+      - name: Build and install mbelib-neo (required, cached)
+        run: |
+          set -euxo pipefail
+          if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+            git -C /tmp/mbelib-neo fetch --depth 1 origin ${{ steps.dep-shas.outputs.mbe_sha }}
+            git -C /tmp/mbelib-neo checkout ${{ steps.dep-shas.outputs.mbe_sha }}
+            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/mbelib-neo/build -j
+            cmake --install /tmp/mbelib-neo/build
+          fi
+
+      - name: Ensure codec2 (cached fallback if not found)
+        run: |
+          set -euxo pipefail
+          if ! pkg-config --exists codec2 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
+            git -C /tmp/codec2 fetch --depth 1 origin ${{ steps.dep-shas.outputs.codec2_sha }}
+            git -C /tmp/codec2 checkout ${{ steps.dep-shas.outputs.codec2_sha }}
+            cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/codec2/build -j
+            cmake --install /tmp/codec2/build
+          fi
+
+      - name: Ensure ITPP (cached fallback if headers/libs not found)
+        run: |
+          set -euxo pipefail
+          if ! echo '#include <itpp/itcomm.h>' | gcc -E -I/usr/include - >/dev/null 2>&1 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
+            git -C /tmp/itpp fetch --depth 1 origin ${{ steps.dep-shas.outputs.itpp_sha }}
+            git -C /tmp/itpp checkout ${{ steps.dep-shas.outputs.itpp_sha }}
+            cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/itpp/build -j
+            cmake --install /tmp/itpp/build
+          fi
+
+      - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
+        run: |
+          set -euxo pipefail
+          if ! pkg-config --exists librtlsdr && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
+            git -C /tmp/rtl-sdr fetch --depth 1 origin ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+            git -C /tmp/rtl-sdr checkout ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+            cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/rtl-sdr/build -j
+            cmake --install /tmp/rtl-sdr/build
+          fi
+
+      - name: Configure (asan-ubsan-debug)
+        run: cmake --preset asan-ubsan-debug
+
+      - name: Build (asan-ubsan-debug)
+        run: cmake --build --preset asan-ubsan-debug --parallel
+
+      - name: Test (asan-ubsan-debug)
+        run: ctest --preset asan-ubsan-debug -V || true
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache -s
+
+  format-check:
+    name: clang-format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5.0.0
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: Check formatting
+        run: |
+          files=$(git ls-files '*.c' '*.cc' '*.cxx' '*.cpp' '*.h' '*.hpp' ':!:build/**')
+          if [ -z "$files" ]; then echo "No C/C++ files to check"; exit 0; fi
+          clang-format --version
+          # Try strict check; fallback to diff if unsupported
+          if clang-format -n --Werror $files 2>/dev/null; then
+            echo "Formatting OK (clang-format -n --Werror)"
+          else
+            echo "clang-format -n --Werror unsupported or failed; using diff"
+            diff -u <(cat $files) <(clang-format $files) || (echo "Formatting issues found. Run clang-format." && exit 1)
+          fi
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5.0.0
+
+      - name: Prepare dependency environment
+        run: |
+          set -euxo pipefail
+          echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Compute dependency SHAs (for cache key)
+        id: dep-shas
+        run: |
+          set -euxo pipefail
+          echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependency cache
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.DEPS_PREFIX }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          restore-keys: |
+            deps-${{ runner.os }}-
+
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy build-essential cmake ninja-build pkg-config git ccache \
+            libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev \
+            libfftw3-dev libblas-dev liblapack-dev gfortran
+
+      - name: Prepare ccache environment
+        run: |
+          set -euxo pipefail
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "$GITHUB_ENV"
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
+          echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"
+          mkdir -p "${GITHUB_WORKSPACE}/.ccache"
+
+      - name: Compute tool versions (for ccache key)
+        id: toolver-tidy
+        run: |
+          set -euxo pipefail
+          echo "gcc_ver=$(gcc -dumpfullversion -dumpversion || gcc --version | head -n1)" >> "$GITHUB_OUTPUT"
+          echo "cmake_ver=$(cmake --version | head -n1 | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ steps.toolver-tidy.outputs.gcc_ver }}-${{ steps.toolver-tidy.outputs.cmake_ver }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Initialize ccache
+        run: |
+          ccache --version
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Install dependencies via APT when available (codec2, itpp, rtl-sdr)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libcodec2-dev libitpp-dev librtlsdr-dev || true
+
+      - name: Build and install mbelib-neo (required, cached)
+        run: |
+          set -euxo pipefail
+          if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+            git -C /tmp/mbelib-neo fetch --depth 1 origin ${{ steps.dep-shas.outputs.mbe_sha }}
+            git -C /tmp/mbelib-neo checkout ${{ steps.dep-shas.outputs.mbe_sha }}
+            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/mbelib-neo/build -j
+            cmake --install /tmp/mbelib-neo/build
+          fi
+
+      - name: Ensure codec2 (cached fallback if not found)
+        run: |
+          set -euxo pipefail
+          if ! pkg-config --exists codec2 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
+            git -C /tmp/codec2 fetch --depth 1 origin ${{ steps.dep-shas.outputs.codec2_sha }}
+            git -C /tmp/codec2 checkout ${{ steps.dep-shas.outputs.codec2_sha }}
+            cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/codec2/build -j
+            cmake --install /tmp/codec2/build
+          fi
+
+      - name: Ensure ITPP (cached fallback if headers/libs not found)
+        run: |
+          set -euxo pipefail
+          if ! echo '#include <itpp/itcomm.h>' | gcc -E -I/usr/include - >/dev/null 2>&1 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
+            git -C /tmp/itpp fetch --depth 1 origin ${{ steps.dep-shas.outputs.itpp_sha }}
+            git -C /tmp/itpp checkout ${{ steps.dep-shas.outputs.itpp_sha }}
+            cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/itpp/build -j
+            cmake --install /tmp/itpp/build
+          fi
+
+      - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
+        run: |
+          set -euxo pipefail
+          if ! pkg-config --exists librtlsdr && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then
+            git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
+            git -C /tmp/rtl-sdr fetch --depth 1 origin ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+            git -C /tmp/rtl-sdr checkout ${{ steps.dep-shas.outputs.rtlsdr_sha }}
+            cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build /tmp/rtl-sdr/build -j
+            cmake --install /tmp/rtl-sdr/build
+          fi
+
+      - name: Configure (dev-debug)
+        run: cmake --preset dev-debug
+
+      - name: Run clang-tidy
+        run: |
+          files=$(git ls-files '*.c' '*.cc' '*.cxx' '*.cpp' ':!:build/**')
+          if [ -z "$files" ]; then echo "No C/C++ files to analyze"; exit 0; fi
+          echo "Analyzing: $files"
+          clang-tidy -p build/dev-debug $files
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache -s
