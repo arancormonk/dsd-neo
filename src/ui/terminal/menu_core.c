@@ -64,6 +64,40 @@ static void act_toggle_payload(void* v);
 static void act_reset_eh(void* v);
 static void act_p2_params(void* v);
 static void act_key_entry(void* v);
+// New action prototypes used before definitions
+static void act_event_log_set(void* v);
+static void act_event_log_disable(void* v);
+static void act_static_wav(void* v);
+static void act_raw_wav(void* v);
+static void act_dsp_out(void* v);
+static void act_crc_relax(void* v);
+static void act_trunk_toggle(void* v);
+static void act_scan_toggle(void* v);
+static void act_lcw_toggle(void* v);
+static void act_setmod_bw(void* v);
+static void act_import_chan(void* v);
+static void act_import_group(void* v);
+static void act_allow_toggle(void* v);
+static void act_tune_group(void* v);
+static void act_tune_priv(void* v);
+static void act_tune_data(void* v);
+static void act_tg_hold(void* v);
+static void act_hangtime(void* v);
+static void act_rev_mute(void* v);
+static void act_dmr_le(void* v);
+static void act_slot_pref(void* v);
+static void act_slots_on(void* v);
+static void act_keys_dec(void* v);
+static void act_keys_hex(void* v);
+static void act_tyt_ap(void* v);
+static void act_retevis_rc2(void* v);
+static void act_tyt_ep(void* v);
+static void act_ken_scr(void* v);
+static void act_anytone_bp(void* v);
+static void act_xor_ks(void* v);
+#ifdef USE_RTLSDR
+static void act_rtl_opts(void* v);
+#endif
 
 static void
 ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* ctx) {
@@ -353,6 +387,13 @@ io_toggle_cc_candidates(void* vctx) {
 }
 
 static void
+io_list_pulse(void* vctx) {
+    (void)vctx;
+    pulse_list();
+    ui_statusf("Pulse devices printed to console");
+}
+
+static void
 io_enable_per_call_wav(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     if (svc_enable_per_call_wav(c->opts, c->state) == 0) {
@@ -412,6 +453,317 @@ io_stop_symbol_saving(void* vctx) {
     svc_stop_symbol_saving(c->opts, c->state);
     ui_statusf("Symbol capture stopped");
 }
+
+// Simple list chooser for short lists
+static int
+ui_choose_from_strings(const char* title, const char* const* items, int count) {
+    if (!items || count <= 0) {
+        return -1;
+    }
+    int h = count + 6;
+    if (h < 10) {
+        h = 10;
+    }
+    if (h > 28) {
+        h = 28;
+    }
+    int w = 76;
+    WINDOW* win = ui_make_window(h, w, 3, 4);
+    keypad(win, TRUE);
+    int sel = 0;
+    while (1) {
+        werase(win);
+        box(win, 0, 0);
+        mvwprintw(win, 1, 2, "%s", title);
+        int y = 3;
+        for (int i = 0; i < count; i++) {
+            if (i == sel) {
+                wattron(win, A_REVERSE);
+            }
+            mvwprintw(win, y++, 2, "%s", items[i]);
+            if (i == sel) {
+                wattroff(win, A_REVERSE);
+            }
+        }
+        mvwprintw(win, h - 2, 2, "Arrows = Move   Enter = Select   q = Cancel");
+        wrefresh(win);
+        int c = wgetch(win);
+        if (c == KEY_UP) {
+            sel = (sel - 1 + count) % count;
+        } else if (c == KEY_DOWN) {
+            sel = (sel + 1) % count;
+        } else if (c == 'q' || c == 'Q' || c == 27) {
+            sel = -1;
+            break;
+        } else if (c == 10 || c == KEY_ENTER || c == '\r') {
+            break;
+        }
+    }
+    ui_destroy_window(&win);
+    return sel;
+}
+
+static void
+io_set_pulse_out(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    pa_devicelist_t outs[16];
+    pa_devicelist_t ins[16];
+    if (pa_get_devicelist(ins, outs) < 0) {
+        ui_statusf("Failed to get Pulse device list");
+        return;
+    }
+    const char* labels[16];
+    const char* names[16];
+    char buf[16][768];
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+        if (!outs[i].initialized) {
+            break;
+        }
+        snprintf(buf[n], sizeof buf[n], "[%d] %s — %s", outs[i].index, outs[i].name, outs[i].description);
+        labels[n] = buf[n];
+        names[n] = outs[i].name;
+        n++;
+    }
+    if (n == 0) {
+        ui_statusf("No Pulse outputs found");
+        return;
+    }
+    int sel = ui_choose_from_strings("Select Pulse Output", labels, n);
+    if (sel >= 0) {
+        svc_set_pulse_output(c->opts, names[sel]);
+        ui_statusf("Pulse out: %s", names[sel]);
+    }
+}
+
+static void
+io_set_pulse_in(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    pa_devicelist_t outs[16];
+    pa_devicelist_t ins[16];
+    if (pa_get_devicelist(ins, outs) < 0) {
+        ui_statusf("Failed to get Pulse device list");
+        return;
+    }
+    const char* labels[16];
+    const char* names[16];
+    char buf[16][768];
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+        if (!ins[i].initialized) {
+            break;
+        }
+        snprintf(buf[n], sizeof buf[n], "[%d] %s — %s", ins[i].index, ins[i].name, ins[i].description);
+        labels[n] = buf[n];
+        names[n] = ins[i].name;
+        n++;
+    }
+    if (n == 0) {
+        ui_statusf("No Pulse inputs found");
+        return;
+    }
+    int sel = ui_choose_from_strings("Select Pulse Input", labels, n);
+    if (sel >= 0) {
+        svc_set_pulse_input(c->opts, names[sel]);
+        ui_statusf("Pulse in: %s", names[sel]);
+    }
+}
+
+static void
+io_set_udp_out(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    char host[256] = {0};
+    int port = c->opts->udp_portno > 0 ? c->opts->udp_portno : 23456;
+    snprintf(host, sizeof host, "%s", (c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1"));
+    if (!ui_prompt_string("UDP blaster host (default 127.0.0.1)", host, sizeof host)) {
+        return;
+    }
+    if (!ui_prompt_int("UDP blaster port (default 23456)", &port)) {
+        return;
+    }
+    if (svc_udp_output_config(c->opts, c->state, host, port) == 0) {
+        ui_statusf("UDP out: %s:%d", host, port);
+    } else {
+        ui_statusf("UDP out failed");
+    }
+}
+
+static void
+io_set_gain_dig(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    double g = c->opts->audio_gain;
+    if (ui_prompt_double("Digital output gain (0=auto; 1..50)", &g)) {
+        if (g < 0.0) {
+            g = 0.0;
+        }
+        if (g > 50.0) {
+            g = 50.0;
+        }
+        c->opts->audio_gain = (float)g;
+        c->opts->audio_gainR = (float)g;
+        ui_statusf("Digital gain set to %.1f", g);
+    }
+}
+
+static void
+io_set_gain_ana(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    double g = c->opts->audio_gainA;
+    if (ui_prompt_double("Analog output gain (0..100)", &g)) {
+        if (g < 0.0) {
+            g = 0.0;
+        }
+        if (g > 100.0) {
+            g = 100.0;
+        }
+        c->opts->audio_gainA = (float)g;
+        ui_statusf("Analog gain set to %.1f", g);
+    }
+}
+
+static void
+io_toggle_monitor(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->monitor_input_audio = !c->opts->monitor_input_audio;
+}
+
+static void
+io_toggle_cosine(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->use_cosine_filter = c->opts->use_cosine_filter ? 0 : 1;
+}
+
+static void
+inv_x2(void* v) {
+    svc_toggle_inv_x2(((UiCtx*)v)->opts);
+}
+
+static void
+inv_dmr(void* v) {
+    svc_toggle_inv_dmr(((UiCtx*)v)->opts);
+}
+
+static void
+inv_dpmr(void* v) {
+    svc_toggle_inv_dpmr(((UiCtx*)v)->opts);
+}
+
+static void
+inv_m17(void* v) {
+    svc_toggle_inv_m17(((UiCtx*)v)->opts);
+}
+
+#ifdef USE_RTLSDR
+// ---- RTL-SDR submenu ----
+static const char*
+lbl_rtl_summary(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Dev %d  Freq %u Hz  Gain %d  PPM %d  BW %d kHz  SQL %.1f dB  VOL %d", c->opts->rtl_dev_index,
+             c->opts->rtlsdr_center_freq, c->opts->rtl_gain_value, c->opts->rtlsdr_ppm_error, c->opts->rtl_bandwidth,
+             pwr_to_dB(c->opts->rtl_squelch_level), c->opts->rtl_volume_multiplier);
+    return b;
+}
+
+static void
+rtl_enable(void* v) {
+    svc_rtl_enable_input(((UiCtx*)v)->opts);
+}
+
+static void
+rtl_restart(void* v) {
+    svc_rtl_restart(((UiCtx*)v)->opts);
+}
+
+static void
+rtl_set_dev(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int i = c->opts->rtl_dev_index;
+    if (ui_prompt_int("Device index", &i)) {
+        svc_rtl_set_dev_index(c->opts, i);
+    }
+}
+
+static void
+rtl_set_freq(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int f = (int)c->opts->rtlsdr_center_freq;
+    if (ui_prompt_int("Frequency (Hz)", &f)) {
+        svc_rtl_set_freq(c->opts, (uint32_t)f);
+    }
+}
+
+static void
+rtl_set_gain(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int g = c->opts->rtl_gain_value;
+    if (ui_prompt_int("Gain (0=AGC, 0..49)", &g)) {
+        svc_rtl_set_gain(c->opts, g);
+    }
+}
+
+static void
+rtl_set_ppm(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int p = c->opts->rtlsdr_ppm_error;
+    if (ui_prompt_int("PPM error (-200..200)", &p)) {
+        svc_rtl_set_ppm(c->opts, p);
+    }
+}
+
+static void
+rtl_set_bw(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int bw = c->opts->rtl_bandwidth;
+    if (ui_prompt_int("Bandwidth kHz (4,6,8,12,16,24)", &bw)) {
+        svc_rtl_set_bandwidth(c->opts, bw);
+    }
+}
+
+static void
+rtl_set_sql(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    double dB = pwr_to_dB(c->opts->rtl_squelch_level);
+    if (ui_prompt_double("Squelch (dB, negative)", &dB)) {
+        svc_rtl_set_sql_db(c->opts, dB);
+    }
+}
+
+static void
+rtl_set_vol(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int m = c->opts->rtl_volume_multiplier;
+    if (ui_prompt_int("Volume multiplier (0..3)", &m)) {
+        svc_rtl_set_volume_mult(c->opts, m);
+    }
+}
+
+static void
+ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
+    UiCtx ctx = {opts, state};
+    static const NcMenuItem items[] = {
+        {.id = "summary",
+         .label = "Current Config",
+         .label_fn = lbl_rtl_summary,
+         .help = "Snapshot of RTL-SDR settings."},
+        {.id = "enable", .label = "Enable RTL-SDR Input", .help = "Switch input to RTL-SDR.", .on_select = rtl_enable},
+        {.id = "restart",
+         .label = "Restart RTL Stream",
+         .help = "Apply config by restarting the stream.",
+         .on_select = rtl_restart},
+        {.id = "dev", .label = "Set Device Index...", .help = "Select RTL device index.", .on_select = rtl_set_dev},
+        {.id = "freq",
+         .label = "Set Frequency (Hz)...",
+         .help = "Set center frequency in Hz.",
+         .on_select = rtl_set_freq},
+        {.id = "gain", .label = "Set Gain...", .help = "0=AGC; else driver gain units.", .on_select = rtl_set_gain},
+        {.id = "ppm", .label = "Set PPM error...", .help = "-200..200.", .on_select = rtl_set_ppm},
+        {.id = "bw", .label = "Set Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
+        {.id = "sql", .label = "Set Squelch (dB)...", .help = "More negative -> tighter.", .on_select = rtl_set_sql},
+        {.id = "vol", .label = "Set Volume Multiplier...", .help = "0..3 sample scaler.", .on_select = rtl_set_vol},
+    };
+    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
+}
+#endif
 
 static void
 io_tcp_direct_link(void* vctx) {
@@ -573,6 +925,23 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
          .help = "Connect to a remote PCM16LE source via TCP.",
          .is_enabled = io_always_on,
          .on_select = io_tcp_direct_link},
+#ifdef USE_RTLSDR
+        {.id = "rtl",
+         .label = "RTL-SDR...",
+         .help = "Configure RTL device, gain, PPM, BW, SQL.",
+         .is_enabled = io_always_on,
+         .on_select = act_rtl_opts},
+#endif
+        {.id = "pulse_in",
+         .label = "Set Pulse Input...",
+         .help = "Set Pulse input by index/name.",
+         .is_enabled = io_always_on,
+         .on_select = io_set_pulse_in},
+        {.id = "pulse_out",
+         .label = "Set Pulse Output...",
+         .help = "Set Pulse output by index/name.",
+         .is_enabled = io_always_on,
+         .on_select = io_set_pulse_out},
         {.id = "read_sym",
          .label = "Read Symbol Capture File",
          .help = "Open an existing symbol capture for replay.",
@@ -595,6 +964,24 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
          .help = "Invert/uninvert all supported inputs.",
          .is_enabled = io_always_on,
          .on_select = act_toggle_invert},
+        {.id = "inv_x2", .label = "Invert X2-TDMA", .help = "Toggle X2 inversion.", .on_select = inv_x2},
+        {.id = "inv_dmr", .label = "Invert DMR", .help = "Toggle DMR inversion.", .on_select = inv_dmr},
+        {.id = "inv_dpmr", .label = "Invert dPMR", .help = "Toggle dPMR inversion.", .on_select = inv_dpmr},
+        {.id = "inv_m17", .label = "Invert M17", .help = "Toggle M17 inversion.", .on_select = inv_m17},
+        {.id = "udp_out",
+         .label = "Configure UDP Output...",
+         .help = "Set UDP blaster host/port and enable.",
+         .on_select = io_set_udp_out},
+        {.id = "gain_d", .label = "Set Digital Output Gain...", .help = "0=auto; 1..50.", .on_select = io_set_gain_dig},
+        {.id = "gain_a", .label = "Set Analog Output Gain...", .help = "0..100.", .on_select = io_set_gain_ana},
+        {.id = "monitor",
+         .label = "Toggle Source Audio Monitor",
+         .help = "Enable analog source monitor.",
+         .on_select = io_toggle_monitor},
+        {.id = "cosine",
+         .label = "Toggle Cosine Filter",
+         .help = "Enable/disable cosine filter.",
+         .on_select = io_toggle_cosine},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }
@@ -627,6 +1014,30 @@ ui_menu_logging_capture(dsd_opts* opts, dsd_state* state) {
          .help = "Toggle raw payloads to console.",
          .is_enabled = io_always_on,
          .on_select = act_toggle_payload},
+        {.id = "event_on",
+         .label = "Set Event Log File...",
+         .help = "Append event history to a file.",
+         .on_select = act_event_log_set},
+        {.id = "event_off",
+         .label = "Disable Event Log",
+         .help = "Stop logging events to file.",
+         .on_select = act_event_log_disable},
+        {.id = "static_wav",
+         .label = "Static WAV Output...",
+         .help = "Append decoded audio to one WAV file.",
+         .on_select = act_static_wav},
+        {.id = "raw_wav",
+         .label = "Raw Audio WAV...",
+         .help = "Write raw 48k/1 input audio to WAV.",
+         .on_select = act_raw_wav},
+        {.id = "dsp_out",
+         .label = "DSP Structured Output...",
+         .help = "Write DSP structured or M17 stream to ./DSP/",
+         .on_select = act_dsp_out},
+        {.id = "crc_relax",
+         .label = "Toggle Relaxed CRC checks",
+         .help = "Relax CRC checks across protocols.",
+         .on_select = act_crc_relax},
         {.id = "reset_eh",
          .label = "Reset Event History",
          .help = "Clear ring-buffered event history.",
@@ -646,11 +1057,23 @@ void
 ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
     static const NcMenuItem items[] = {
+        {.id = "trunk_on",
+         .label = "Toggle Trunking",
+         .help = "Enable/disable trunking features.",
+         .on_select = act_trunk_toggle},
+        {.id = "scan_on",
+         .label = "Toggle Scanning Mode",
+         .help = "Enable/disable conventional scanning.",
+         .on_select = act_scan_toggle},
         {.id = "prefer_cc",
          .label = "Prefer P25 CC Candidates",
          .help = "Prefer viable control-channel candidates during hunt.",
          .is_enabled = io_always_on,
          .on_select = io_toggle_cc_candidates},
+        {.id = "lcw_retune",
+         .label = "Toggle P25 LCW Retune",
+         .help = "Enable LCW explicit retune.",
+         .on_select = act_lcw_toggle},
         {.id = "p2params",
          .label = "Set P25 Phase 2 Parameters",
          .help = "Set WACN/SYSID/NAC manually.",
@@ -662,6 +1085,58 @@ ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
          .help = "Connect to a rigctl server for tuner control.",
          .is_enabled = io_always_on,
          .on_select = io_rigctl_config},
+        {.id = "setmod_bw",
+         .label = "Set Rigctl Setmod BW...",
+         .help = "Set rigctl setmod bandwidth (Hz).",
+         .on_select = act_setmod_bw},
+        {.id = "chan_map",
+         .label = "Import Channel Map CSV...",
+         .help = "Load channel->frequency map.",
+         .on_select = act_import_chan},
+        {.id = "group_list",
+         .label = "Import Group List CSV...",
+         .help = "Load groups allow/block & labels.",
+         .on_select = act_import_group},
+        {.id = "allow_list",
+         .label = "Toggle Allow/White List",
+         .help = "Use group list as allow list.",
+         .on_select = act_allow_toggle},
+        {.id = "tune_group",
+         .label = "Toggle Tune Group Calls",
+         .help = "Enable/disable group call tuning.",
+         .on_select = act_tune_group},
+        {.id = "tune_priv",
+         .label = "Toggle Tune Private Calls",
+         .help = "Enable/disable private call tuning.",
+         .on_select = act_tune_priv},
+        {.id = "tune_data",
+         .label = "Toggle Tune Data Calls",
+         .help = "Enable/disable data call tuning.",
+         .on_select = act_tune_data},
+        {.id = "tg_hold",
+         .label = "Set TG Hold...",
+         .help = "Hold on a specific TG while trunking.",
+         .on_select = act_tg_hold},
+        {.id = "hangtime",
+         .label = "Set Hangtime (s)...",
+         .help = "VC/sync loss hangtime (seconds).",
+         .on_select = act_hangtime},
+        {.id = "reverse_mute",
+         .label = "Toggle Reverse Mute",
+         .help = "Reverse mute behavior.",
+         .on_select = act_rev_mute},
+        {.id = "dmr_le",
+         .label = "Toggle DMR Late Entry",
+         .help = "Enable/disable DMR late entry.",
+         .on_select = act_dmr_le},
+        {.id = "slot_pref",
+         .label = "Set TDMA Slot Preference...",
+         .help = "Prefer slot 1 or 2 (DMR/P25p2).",
+         .on_select = act_slot_pref},
+        {.id = "slots_on",
+         .label = "Set TDMA Synth Slots...",
+         .help = "Bitmask: 1=slot1, 2=slot2, 3=both, 0=off.",
+         .on_select = act_slots_on},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }
@@ -681,11 +1156,40 @@ ui_menu_keys_security(dsd_opts* opts, dsd_state* state) {
          .label = "Manage Encryption Keys...",
          .help = "Enter or edit BP/Hytera/RC4/AES keys.",
          .on_select = act_keys_submenu},
+        {.id = "keys_dec",
+         .label = "Import Keys CSV (DEC)...",
+         .help = "Import decimal keys CSV.",
+         .on_select = act_keys_dec},
+        {.id = "keys_hex",
+         .label = "Import Keys CSV (HEX)...",
+         .help = "Import hexadecimal keys CSV.",
+         .on_select = act_keys_hex},
         {.id = "muting",
          .label = "Toggle Encrypted Audio Muting",
          .help = "Toggle P25 and DMR encrypted audio muting.",
          .is_enabled = io_always_on,
          .on_select = io_toggle_mute_enc},
+        {.id = "tyt_ap",
+         .label = "TYT AP (PC4) Keystream...",
+         .help = "Enter AP seed string.",
+         .on_select = act_tyt_ap},
+        {.id = "retevis_rc2",
+         .label = "Retevis AP (RC2) Keystream...",
+         .help = "Enter AP seed string.",
+         .on_select = act_retevis_rc2},
+        {.id = "tyt_ep",
+         .label = "TYT EP (AES) Keystream...",
+         .help = "Enter EP seed string.",
+         .on_select = act_tyt_ep},
+        {.id = "ken_scr",
+         .label = "Kenwood DMR Scrambler...",
+         .help = "Enter scrambler seed.",
+         .on_select = act_ken_scr},
+        {.id = "anytone_bp", .label = "Anytone BP Keystream...", .help = "Enter BP seed.", .on_select = act_anytone_bp},
+        {.id = "xor_ks",
+         .label = "Straight XOR Keystream...",
+         .help = "Enter raw string to XOR.",
+         .on_select = act_xor_ks},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }
@@ -1412,6 +1916,255 @@ act_toggle_payload(void* v) {
     UiCtx* c = (UiCtx*)v;
     svc_toggle_payload(c->opts);
 }
+
+// Generic small actions used by menus (C, no lambdas!)
+static void
+act_event_log_set(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char path[1024] = {0};
+    if (ui_prompt_string("Event log filename", path, sizeof path)) {
+        if (svc_set_event_log(c->opts, path) == 0) {
+            ui_statusf("Event log: %s", path);
+        }
+    }
+}
+
+static void
+act_event_log_disable(void* v) {
+    svc_disable_event_log(((UiCtx*)v)->opts);
+}
+
+static void
+act_static_wav(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char path[1024] = {0};
+    if (ui_prompt_string("Static WAV filename", path, sizeof path)) {
+        if (svc_open_static_wav(c->opts, c->state, path) == 0) {
+            ui_statusf("Static WAV: %s", path);
+        }
+    }
+}
+
+static void
+act_raw_wav(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char path[1024] = {0};
+    if (ui_prompt_string("Raw WAV filename", path, sizeof path)) {
+        if (svc_open_raw_wav(c->opts, c->state, path) == 0) {
+            ui_statusf("Raw WAV: %s", path);
+        }
+    }
+}
+
+static void
+act_dsp_out(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char name[256] = {0};
+    if (ui_prompt_string("DSP output base filename", name, sizeof name)) {
+        if (svc_set_dsp_output_file(c->opts, name) == 0) {
+            ui_statusf("DSP out: %s", c->opts->dsp_out_file);
+        }
+    }
+}
+
+static void
+act_crc_relax(void* v) {
+    svc_toggle_crc_relax(((UiCtx*)v)->opts);
+}
+
+static void
+act_trunk_toggle(void* v) {
+    svc_toggle_trunking(((UiCtx*)v)->opts);
+}
+
+static void
+act_scan_toggle(void* v) {
+    svc_toggle_scanner(((UiCtx*)v)->opts);
+}
+
+static void
+act_lcw_toggle(void* v) {
+    svc_toggle_lcw_retune(((UiCtx*)v)->opts);
+}
+
+static void
+act_setmod_bw(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int bw = c->opts->setmod_bw;
+    if (ui_prompt_int("Setmod BW (Hz)", &bw)) {
+        svc_set_rigctl_setmod_bw(c->opts, bw);
+    }
+}
+
+static void
+act_import_chan(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char p[1024] = {0};
+    if (ui_prompt_string("Channel map CSV", p, sizeof p)) {
+        svc_import_channel_map(c->opts, c->state, p);
+    }
+}
+
+static void
+act_import_group(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char p[1024] = {0};
+    if (ui_prompt_string("Group list CSV", p, sizeof p)) {
+        svc_import_group_list(c->opts, c->state, p);
+    }
+}
+
+static void
+act_allow_toggle(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    c->opts->trunk_use_allow_list = !c->opts->trunk_use_allow_list;
+}
+
+static void
+act_tune_group(void* v) {
+    svc_toggle_tune_group(((UiCtx*)v)->opts);
+}
+
+static void
+act_tune_priv(void* v) {
+    svc_toggle_tune_private(((UiCtx*)v)->opts);
+}
+
+static void
+act_tune_data(void* v) {
+    svc_toggle_tune_data(((UiCtx*)v)->opts);
+}
+
+static void
+act_tg_hold(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int tg = (int)c->state->tg_hold;
+    if (ui_prompt_int("TG Hold", &tg)) {
+        svc_set_tg_hold(c->state, (unsigned)tg);
+    }
+}
+
+static void
+act_hangtime(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    double s = c->opts->trunk_hangtime;
+    if (ui_prompt_double("Hangtime seconds", &s)) {
+        svc_set_hangtime(c->opts, s);
+    }
+}
+
+static void
+act_rev_mute(void* v) {
+    svc_toggle_reverse_mute(((UiCtx*)v)->opts);
+}
+
+static void
+act_dmr_le(void* v) {
+    svc_toggle_dmr_le(((UiCtx*)v)->opts);
+}
+
+static void
+act_slot_pref(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int p = c->opts->slot_preference + 1;
+    if (ui_prompt_int("Slot 1 or 2", &p)) {
+        if (p < 1) {
+            p = 1;
+        }
+        if (p > 2) {
+            p = 2;
+        }
+        svc_set_slot_pref(c->opts, p - 1);
+    }
+}
+
+static void
+act_slots_on(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int m = (c->opts->slot1_on ? 1 : 0) | (c->opts->slot2_on ? 2 : 0);
+    if (ui_prompt_int("Slots mask (0..3)", &m)) {
+        svc_set_slots_onoff(c->opts, m);
+    }
+}
+
+static void
+act_keys_dec(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char p[1024] = {0};
+    if (ui_prompt_string("Keys CSV (DEC)", p, sizeof p)) {
+        svc_import_keys_dec(c->opts, c->state, p);
+    }
+}
+
+static void
+act_keys_hex(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char p[1024] = {0};
+    if (ui_prompt_string("Keys CSV (HEX)", p, sizeof p)) {
+        svc_import_keys_hex(c->opts, c->state, p);
+    }
+}
+
+static void
+act_tyt_ap(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char s[256] = {0};
+    if (ui_prompt_string("TYT AP string", s, sizeof s)) {
+        tyt_ap_pc4_keystream_creation(c->state, s);
+    }
+}
+
+static void
+act_retevis_rc2(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char s[256] = {0};
+    if (ui_prompt_string("Retevis AP string", s, sizeof s)) {
+        retevis_rc2_keystream_creation(c->state, s);
+    }
+}
+
+static void
+act_tyt_ep(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char s[256] = {0};
+    if (ui_prompt_string("TYT EP string", s, sizeof s)) {
+        tyt_ep_aes_keystream_creation(c->state, s);
+    }
+}
+
+static void
+act_ken_scr(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char s[256] = {0};
+    if (ui_prompt_string("Kenwood scrambler", s, sizeof s)) {
+        ken_dmr_scrambler_keystream_creation(c->state, s);
+    }
+}
+
+static void
+act_anytone_bp(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char s[256] = {0};
+    if (ui_prompt_string("Anytone BP", s, sizeof s)) {
+        anytone_bp_keystream_creation(c->state, s);
+    }
+}
+
+static void
+act_xor_ks(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    char s[256] = {0};
+    if (ui_prompt_string("XOR keystream", s, sizeof s)) {
+        straight_mod_xor_keystream_creation(c->state, s);
+    }
+}
+#ifdef USE_RTLSDR
+static void
+act_rtl_opts(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_menu_rtl_options(c->opts, c->state);
+}
+#endif
 
 static void
 act_key_entry(void* v) {

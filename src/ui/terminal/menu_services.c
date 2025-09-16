@@ -552,3 +552,430 @@ svc_set_p2_params(dsd_state* state, unsigned long long wacn, unsigned long long 
     state->p2_cc = (cc > 0xFFF) ? 0xFFF : cc;
     state->p2_hardset = (state->p2_wacn != 0 && state->p2_sysid != 0 && state->p2_cc != 0) ? 1 : 0;
 }
+
+// Logging & file outputs ----------------------------------------------------
+int
+svc_set_event_log(dsd_opts* opts, const char* path) {
+    if (!opts || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->event_out_file, path, sizeof opts->event_out_file - 1);
+    opts->event_out_file[sizeof opts->event_out_file - 1] = '\0';
+    return 0;
+}
+
+void
+svc_disable_event_log(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->event_out_file[0] = '\0';
+}
+
+int
+svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->wav_out_file, path, sizeof opts->wav_out_file - 1);
+    opts->wav_out_file[sizeof opts->wav_out_file - 1] = '\0';
+    opts->dmr_stereo_wav = 0;
+    opts->static_wav_file = 1;
+    openWavOutFileLR(opts, state);
+    return 0;
+}
+
+int
+svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->wav_out_file_raw, path, sizeof opts->wav_out_file_raw - 1);
+    opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
+    openWavOutFileRaw(opts, state);
+    return 0;
+}
+
+int
+svc_set_dsp_output_file(dsd_opts* opts, const char* filename) {
+    if (!opts || !filename || !*filename) {
+        return -1;
+    }
+    char dir[1024];
+    snprintf(dir, sizeof dir, "./DSP");
+    struct stat st;
+    if (stat(dir, &st) == -1) {
+        mkdir(dir, 0700);
+    }
+    snprintf(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", dir, filename);
+    opts->use_dsp_output = 1;
+    return 0;
+}
+
+// Pulse/UDP helpers ---------------------------------------------------------
+int
+svc_set_pulse_output(dsd_opts* opts, const char* index) {
+    if (!opts || !index) {
+        return -1;
+    }
+    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+    opts->audio_out_type = 0;
+    // supply only the part after 'pulse:' to parser
+    char tmp[128];
+    snprintf(tmp, sizeof tmp, "%s", index);
+    parse_pulse_output_string(opts, tmp);
+    return 0;
+}
+
+int
+svc_set_pulse_input(dsd_opts* opts, const char* index) {
+    if (!opts || !index) {
+        return -1;
+    }
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    opts->audio_in_type = 0;
+    char tmp[128];
+    snprintf(tmp, sizeof tmp, "%s", index);
+    parse_pulse_input_string(opts, tmp);
+    return 0;
+}
+
+int
+svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int port) {
+    if (!opts || !state || !host || port <= 0) {
+        return -1;
+    }
+    strncpy(opts->udp_hostname, host, sizeof opts->udp_hostname - 1);
+    opts->udp_hostname[sizeof opts->udp_hostname - 1] = '\0';
+    opts->udp_portno = port;
+    int err = udp_socket_connect(opts, state);
+    if (err < 0) {
+        return -1;
+    }
+    opts->audio_out_type = 8;
+    if (opts->monitor_input_audio == 1 || opts->frame_provoice == 1) {
+        if (udp_socket_connectA(opts, state) < 0) {
+            opts->udp_sockfdA = 0;
+        }
+    }
+    return 0;
+}
+
+// Trunking & control --------------------------------------------------------
+void
+svc_toggle_trunking(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->p25_trunk = !opts->p25_trunk;
+    if (opts->p25_trunk) {
+        opts->scanner_mode = 0;
+    }
+}
+
+void
+svc_toggle_scanner(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->scanner_mode = !opts->scanner_mode;
+    if (opts->scanner_mode) {
+        opts->p25_trunk = 0;
+    }
+}
+
+int
+svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
+    opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
+    return csvChanImport(opts, state);
+}
+
+int
+svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->group_in_file, path, sizeof opts->group_in_file - 1);
+    opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
+    return csvGroupImport(opts, state);
+}
+
+int
+svc_import_keys_dec(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->key_in_file, path, sizeof opts->key_in_file - 1);
+    opts->key_in_file[sizeof opts->key_in_file - 1] = '\0';
+    return csvKeyImportDec(opts, state);
+}
+
+int
+svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    strncpy(opts->key_in_file, path, sizeof opts->key_in_file - 1);
+    opts->key_in_file[sizeof opts->key_in_file - 1] = '\0';
+    return csvKeyImportHex(opts, state);
+}
+
+void
+svc_toggle_tune_group(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->trunk_tune_group_calls = !opts->trunk_tune_group_calls;
+}
+
+void
+svc_toggle_tune_private(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->trunk_tune_private_calls = !opts->trunk_tune_private_calls;
+}
+
+void
+svc_toggle_tune_data(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->trunk_tune_data_calls = !opts->trunk_tune_data_calls;
+}
+
+void
+svc_set_tg_hold(dsd_state* state, unsigned tg) {
+    if (!state) {
+        return;
+    }
+    state->tg_hold = tg;
+}
+
+void
+svc_set_hangtime(dsd_opts* opts, double seconds) {
+    if (!opts) {
+        return;
+    }
+    if (seconds < 0.0) {
+        seconds = 0.0;
+    }
+    opts->trunk_hangtime = seconds;
+}
+
+void
+svc_set_rigctl_setmod_bw(dsd_opts* opts, int hz) {
+    if (!opts) {
+        return;
+    }
+    if (hz < 0) {
+        hz = 0;
+    }
+    if (hz > 25000) {
+        hz = 25000;
+    }
+    opts->setmod_bw = hz;
+}
+
+void
+svc_toggle_reverse_mute(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->reverse_mute = !opts->reverse_mute;
+}
+
+void
+svc_toggle_crc_relax(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
+}
+
+void
+svc_toggle_lcw_retune(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->p25_lcw_retune = !opts->p25_lcw_retune;
+}
+
+void
+svc_toggle_dmr_le(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->dmr_le = !opts->dmr_le;
+}
+
+void
+svc_set_slot_pref(dsd_opts* opts, int pref01) {
+    if (!opts) {
+        return;
+    }
+    if (pref01 < 0) {
+        pref01 = 0;
+    }
+    if (pref01 > 1) {
+        pref01 = 1;
+    }
+    opts->slot_preference = pref01;
+}
+
+void
+svc_set_slots_onoff(dsd_opts* opts, int mask) {
+    if (!opts) {
+        return;
+    }
+    opts->slot1_on = (mask & 1) ? 1 : 0;
+    opts->slot2_on = (mask & 2) ? 1 : 0;
+}
+
+// Inversion toggles ---------------------------------------------------------
+void
+svc_toggle_inv_x2(dsd_opts* opts) {
+    if (opts) {
+        opts->inverted_x2tdma = !opts->inverted_x2tdma;
+    }
+}
+
+void
+svc_toggle_inv_dmr(dsd_opts* opts) {
+    if (opts) {
+        opts->inverted_dmr = !opts->inverted_dmr;
+    }
+}
+
+void
+svc_toggle_inv_dpmr(dsd_opts* opts) {
+    if (opts) {
+        opts->inverted_dpmr = !opts->inverted_dpmr;
+    }
+}
+
+void
+svc_toggle_inv_m17(dsd_opts* opts) {
+    if (opts) {
+        opts->inverted_m17 = !opts->inverted_m17;
+    }
+}
+
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+extern struct RtlSdrContext* g_rtl_ctx;
+
+int
+svc_rtl_enable_input(dsd_opts* opts) {
+    if (!opts) {
+        return -1;
+    }
+    opts->audio_in_type = 3;
+    return 0;
+}
+
+int
+svc_rtl_restart(dsd_opts* opts) {
+    if (!opts) {
+        return -1;
+    }
+    if (g_rtl_ctx) {
+        rtl_stream_stop(g_rtl_ctx);
+        rtl_stream_destroy(g_rtl_ctx);
+        g_rtl_ctx = NULL;
+    }
+    opts->rtl_started = 0;
+    return 0;
+}
+
+int
+svc_rtl_set_dev_index(dsd_opts* opts, int index) {
+    if (!opts) {
+        return -1;
+    }
+    if (index < 0) {
+        index = 0;
+    }
+    opts->rtl_dev_index = index;
+    return 0;
+}
+
+int
+svc_rtl_set_freq(dsd_opts* opts, uint32_t hz) {
+    if (!opts) {
+        return -1;
+    }
+    opts->rtlsdr_center_freq = hz;
+    if (g_rtl_ctx) {
+        rtl_stream_tune(g_rtl_ctx, hz);
+    }
+    return 0;
+}
+
+int
+svc_rtl_set_gain(dsd_opts* opts, int value) {
+    if (!opts) {
+        return -1;
+    }
+    if (value < 0) {
+        value = 0;
+    }
+    if (value > 49) {
+        value = 49;
+    }
+    opts->rtl_gain_value = value;
+    return 0;
+}
+
+int
+svc_rtl_set_ppm(dsd_opts* opts, int ppm) {
+    if (!opts) {
+        return -1;
+    }
+    if (ppm < -200) {
+        ppm = -200;
+    }
+    if (ppm > 200) {
+        ppm = 200;
+    }
+    opts->rtlsdr_ppm_error = ppm;
+    return 0;
+}
+
+int
+svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
+    if (!opts) {
+        return -1;
+    }
+    if (khz != 4 && khz != 6 && khz != 8 && khz != 12 && khz != 16 && khz != 24) {
+        khz = 12;
+    }
+    opts->rtl_bandwidth = khz;
+    return 0;
+}
+
+int
+svc_rtl_set_sql_db(dsd_opts* opts, double dB) {
+    if (!opts) {
+        return -1;
+    }
+    opts->rtl_squelch_level = (long)dB_to_pwr(dB);
+    return 0;
+}
+
+int
+svc_rtl_set_volume_mult(dsd_opts* opts, int mult) {
+    if (!opts) {
+        return -1;
+    }
+    if (mult < 0 || mult > 3) {
+        mult = 1;
+    }
+    opts->rtl_volume_multiplier = mult;
+    return 0;
+}
+#endif
