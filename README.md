@@ -77,8 +77,9 @@ cmake --build build/dev-release --target uninstall
 - Build hygiene and optimization:
   - `-DDSD_ENABLE_WARNINGS=ON` — Enable common warnings (default ON).
   - `-DDSD_WARNINGS_AS_ERRORS=ON` — Treat warnings as errors.
-  - `-DDSD_ENABLE_FAST_MATH=ON` — Enable fast‑math (`-ffast-math`/`/fp:fast`) on targets.
-  - `-DDSD_ENABLE_LTO=ON` — Enable IPO/LTO in Release builds when supported.
+  - `-DDSD_ENABLE_FAST_MATH=ON` — Enable fast‑math (`-ffast-math`/`/fp:fast`) across targets.
+  - `-DDSD_ENABLE_LTO=ON` — Enable IPO/LTO in Release builds (when supported).
+  - `-DDSD_ENABLE_NATIVE=ON` — Enable `-march=native -mtune=native` (non‑portable binaries).
   - `-DDSD_ENABLE_ASAN=ON` — AddressSanitizer in Debug builds.
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
 - UI and behavior toggles:

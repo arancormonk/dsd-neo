@@ -63,14 +63,7 @@ if(DSD_ENABLE_WARNINGS)
     endif()
 endif()
 
-# Optional fast-math
-if(DSD_ENABLE_FAST_MATH)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(dsd-neo PRIVATE -ffast-math -fno-math-errno)
-    elseif(MSVC)
-        target_compile_options(dsd-neo PRIVATE /fp:fast)
-    endif()
-endif()
+## Fast-math now configured globally when enabled
 
 # Sanitizers in Debug
 if(CMAKE_BUILD_TYPE MATCHES "Debug")
@@ -92,16 +85,7 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
     endif()
 endif()
 
-# Optional LTO/IPO in Release
-if(DSD_ENABLE_LTO AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg)
-    if(_ipo_ok)
-        set_property(TARGET dsd-neo PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-    else()
-        message(STATUS "IPO/LTO not supported: ${_ipo_msg}")
-    endif()
-endif()
+## LTO/IPO now configured globally for Release when enabled
 
 include(GNUInstallDirs)
 install(TARGETS dsd-neo DESTINATION ${CMAKE_INSTALL_BINDIR})

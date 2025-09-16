@@ -21,8 +21,56 @@ option(DSD_ENABLE_WARNINGS "Enable common warning flags" ON)
 option(DSD_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 option(DSD_ENABLE_FAST_MATH "Enable fast-math optimizations (may relax IEEE semantics)" OFF)
 option(DSD_ENABLE_LTO "Enable Link Time Optimization (IPO/LTO) for Release builds" OFF)
+option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
+
+#
+# Global optimization knobs for Release-like builds
+# Place early so they affect subsequently created targets
+#
+
+# Optional fast-math across all targets (use with care)
+if(DSD_ENABLE_FAST_MATH)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:C>:-ffast-math>
+            $<$<COMPILE_LANGUAGE:C>:-fno-math-errno>
+            $<$<COMPILE_LANGUAGE:CXX>:-ffast-math>
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-math-errno>
+        )
+    elseif(MSVC)
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:C>:/fp:fast>
+            $<$<COMPILE_LANGUAGE:CXX>:/fp:fast>
+        )
+    endif()
+endif()
+
+# Optional native CPU tuning across all targets (non-portable binaries)
+if(DSD_ENABLE_NATIVE)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:C>:-march=native>
+            $<$<COMPILE_LANGUAGE:C>:-mtune=native>
+            $<$<COMPILE_LANGUAGE:CXX>:-march=native>
+            $<$<COMPILE_LANGUAGE:CXX>:-mtune=native>
+        )
+    endif()
+endif()
+
+# Optional LTO/IPO for Release/RelWithDebInfo (when supported)
+if(DSD_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg)
+    if(_ipo_ok)
+        # Affect targets created after this point for Release-like configs
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    else()
+        message(STATUS "IPO/LTO not supported: ${_ipo_msg}")
+    endif()
+endif()
 
 #use cmake option -DCOLORS=OFF to disable color output (ncurses)
 option(COLORS
