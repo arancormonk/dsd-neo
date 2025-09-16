@@ -33,6 +33,28 @@ int reset = 0;
 int startx = 0;
 int starty = 0;
 
+static void
+destroy_window(WINDOW** win) {
+    if (win != NULL && *win != NULL) {
+        delwin(*win);
+        *win = NULL;
+    }
+}
+
+static int
+read_string_at(WINDOW* win, int y, int x, char* buffer, size_t capacity) {
+    if (buffer == NULL || capacity == 0) {
+        return ERR;
+    }
+
+    wmove(win, y, x);
+    int rc = wgetnstr(win, buffer, (int)capacity - 1);
+    if (rc == ERR && capacity > 0) {
+        buffer[0] = '\0';
+    }
+    return rc;
+}
+
 char* choicesc[] = {"Return",
                     "      ", //Save Decoded Audio WAV (Legacy Mode) //Disabled
                     "Save Signal to Symbol Capture Bin",
@@ -166,10 +188,10 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     state->nxdn_last_ran = -1; //0
     state->nxdn_last_rid = 0;  //0
 
-    WINDOW* menu_win;
-    WINDOW* test_win;
-    WINDOW* entry_win;
-    WINDOW* info_win;
+    WINDOW* menu_win = NULL;
+    WINDOW* test_win = NULL;
+    WINDOW* entry_win = NULL;
+    WINDOW* info_win = NULL;
     int highlight = 1;
     int highlightc = 1;
     int choice = 0;
@@ -213,6 +235,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
 
         print_menu(menu_win, highlight);
 
+        destroy_window(&info_win);
         if (highlight == 2) {
             info_win = newwin(7, WIDTH + 18, starty, startx + 20);
             box(info_win, 0, 0);
@@ -220,18 +243,14 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             mvwprintw(info_win, 3, 2, " P25p1, YSF, DSTAR, X2-TDMA and DMR");
             mvwprintw(info_win, 4, 2, " C4FM or QPSK @ 4800bps (no H8D-QPSK)");
             wrefresh(info_win);
-        }
-
-        if (highlight == 3) {
+        } else if (highlight == 3) {
             info_win = newwin(7, WIDTH + 18, starty, startx + 20);
             box(info_win, 0, 0);
             mvwprintw(info_win, 2, 2, " TDMA Trunking Class Supports the following:");
             mvwprintw(info_win, 3, 2, " P25p1 Voice/Control, P25p2 Traffic, and DMR");
             mvwprintw(info_win, 4, 2, " C4FM or QPSK @ 4800 or 6000 (no H8D-QPSK)");
             wrefresh(info_win);
-        }
-
-        if (highlight == 7) {
+        } else if (highlight == 7) {
             info_win = newwin(7, WIDTH + 18, starty, startx + 20);
             box(info_win, 0, 0);
             mvwprintw(info_win, 2, 2, " P25p2 Control (MAC_SIGNAL) or Single Voice Freq.");
@@ -294,16 +313,19 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 // }
                 if (choicec == 3) {
                     //read in filename for symbol capture bin
+                    destroy_window(&entry_win);
                     entry_win = newwin(6, WIDTH + 16, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
                     mvwprintw(entry_win, 2, 2, " Enter FME Symbol Capture Bin Filename");
-                    mvwprintw(entry_win, 3, 3, " ");
                     echo();
                     refresh();
-                    wscanw(entry_win, "%s", opts->symbol_out_file); //&opts->symbol_out_file
+                    int rc = read_string_at(entry_win, 3, 3, opts->symbol_out_file, sizeof(opts->symbol_out_file));
                     noecho();
+                    destroy_window(&entry_win);
 
-                    openSymbolOutFile(opts, state);
+                    if (rc != ERR && opts->symbol_out_file[0] != '\0') {
+                        openSymbolOutFile(opts, state);
+                    }
                 }
                 if (choicec == 4) {
                     //toggle all mutes
@@ -355,6 +377,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtl_dev_index);
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(6, WIDTH + 6, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -364,6 +387,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtlsdr_ppm_error);
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(6, WIDTH + 18, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -373,6 +397,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtlsdr_center_freq);
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(6, WIDTH + 18, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -382,6 +407,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtl_bandwidth);
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(6, WIDTH + 18, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -391,6 +417,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtl_gain_value);
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(6, WIDTH + 18, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -400,6 +427,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtl_udp_port);
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(6, WIDTH + 18, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -412,6 +440,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                         opts->rtl_volume_multiplier = 1;
                     }
                     noecho();
+                    destroy_window(&entry_win);
 
                     entry_win = newwin(8, WIDTH + 22, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
@@ -425,6 +454,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                         opts->rtl_squelch_level = (int)dBFS_to_pwr(sq_dbfs);
                     }
                     noecho();
+                    destroy_window(&entry_win);
 
                     //use to list out all detected RTL dongles
                     device_count = rtlsdr_get_device_count();
@@ -468,6 +498,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &confirm);
                     noecho();
+                    destroy_window(&entry_win);
 
                     refresh();
 
@@ -496,6 +527,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rtlsdr_center_freq);
                     noecho();
+                    destroy_window(&entry_win);
 
                     //retune dongle if frequency is not zero
                     if (opts->rtlsdr_center_freq != 0 && g_rtl_ctx) {
@@ -580,18 +612,22 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     sprintf(opts->tcp_hostname, "%s", "localhost");
                     opts->tcp_portno = 7355;
 
+                    destroy_window(&entry_win);
                     entry_win = newwin(8, WIDTH + 16, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
                     mvwprintw(entry_win, 2, 2, " Enter TCP Direct Link Hostname:");
                     mvwprintw(entry_win, 3, 2, "  (default is localhost)");
-                    mvwprintw(entry_win, 4, 2, "                        ");
-                    mvwprintw(entry_win, 5, 3, " ");
                     echo();
                     refresh();
-                    wscanw(entry_win, "%s", opts->tcp_hostname);
+                    int rc = read_string_at(entry_win, 5, 3, opts->tcp_hostname, sizeof(opts->tcp_hostname));
                     noecho();
+                    destroy_window(&entry_win);
+                    if (rc == ERR || opts->tcp_hostname[0] == '\0') {
+                        goto TCP_END;
+                    }
 
                     //read in tcp port number
+                    destroy_window(&entry_win);
                     entry_win = newwin(8, WIDTH + 16, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
                     mvwprintw(entry_win, 2, 2, " Enter TCP Direct Link Port Number:");
@@ -602,6 +638,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->tcp_portno);
                     noecho();
+                    destroy_window(&entry_win);
 
                     opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
                     if (opts->tcp_sockfd == 0) {
@@ -636,18 +673,23 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     sprintf(opts->rigctlhostname, "%s", "localhost");
                     opts->rigctlportno = 4532;
 
+                    destroy_window(&entry_win);
                     entry_win = newwin(8, WIDTH + 16, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
                     mvwprintw(entry_win, 2, 2, " Enter RIGCTL Hostname:");
                     mvwprintw(entry_win, 3, 2, "  (default is localhost)");
-                    mvwprintw(entry_win, 4, 2, "                        ");
-                    mvwprintw(entry_win, 5, 3, " ");
                     echo();
                     refresh();
-                    wscanw(entry_win, "%s", opts->rigctlhostname);
+                    int rc = read_string_at(entry_win, 5, 3, opts->rigctlhostname, sizeof(opts->rigctlhostname));
                     noecho();
+                    destroy_window(&entry_win);
+                    if (rc == ERR || opts->rigctlhostname[0] == '\0') {
+                        opts->use_rigctl = 0;
+                        goto RIGCTL_END;
+                    }
 
                     //read in tcp port number
+                    destroy_window(&entry_win);
                     entry_win = newwin(8, WIDTH + 16, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
                     mvwprintw(entry_win, 2, 2, " Enter RIGCTL Port Number:");
@@ -658,6 +700,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     refresh();
                     wscanw(entry_win, "%d", &opts->rigctlportno);
                     noecho();
+                    destroy_window(&entry_win);
 
                     opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
                     if (opts->rigctl_sockfd != 0) {
@@ -665,6 +708,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     } else {
                         opts->use_rigctl = 0;
                     }
+                RIGCTL_END:;
                 }
 
                 // if (choicec == 10)
@@ -700,16 +744,20 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 if (choicec == 13) //lucky number 13 for OP25 Symbol Capture Bin Files
                 {
                     //read in filename for symbol capture bin
+                    destroy_window(&entry_win);
                     entry_win = newwin(6, WIDTH + 16, starty + 10, startx + 10);
                     box(entry_win, 0, 0);
                     mvwprintw(entry_win, 2, 2, " Enter OP25 Symbol Capture Bin Filename");
-                    mvwprintw(entry_win, 3, 3, " ");
                     echo();
                     refresh();
-                    wscanw(entry_win, "%s", opts->audio_in_dev); //&opts->audio_in_dev
+                    int rc = read_string_at(entry_win, 3, 3, opts->audio_in_dev, sizeof(opts->audio_in_dev));
                     noecho();
+                    destroy_window(&entry_win);
                     //do the thing with the thing
                     struct stat stat_buf;
+                    if (rc == ERR || opts->audio_in_dev[0] == '\0') {
+                        goto SKIP;
+                    }
                     if (stat(opts->audio_in_dev, &stat_buf) != 0) {
                         fprintf(stderr, "Error, couldn't open %s\n", opts->audio_in_dev);
                         goto SKIP;
@@ -782,7 +830,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
 
                     keypad(test_win, FALSE);
                     keypad(menu_win, TRUE);
-                    delwin(test_win);
+                    destroy_window(&test_win);
                     flushinp();
                     print_menu(menu_win, highlight);
                     //wrefresh(menu_win);
@@ -797,7 +845,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
 
                     keypad(test_win, FALSE);
                     keypad(menu_win, TRUE);
-                    delwin(test_win);
+                    destroy_window(&test_win);
                     flushinp();
                     print_menu(menu_win, highlight);
                     break;
@@ -996,7 +1044,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             }
 
             // close dsp window, restore input
-            delwin(dsp_win);
+            destroy_window(&dsp_win);
             keypad(menu_win, TRUE);
             flushinp(); // clear any pending ENTER from propagating to parent menu
             // prevent fall-through into subsequent handlers using the same choice value
@@ -1029,6 +1077,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             refresh();
             wscanw(entry_win, "%hd", &option); //%d
             noecho();
+            destroy_window(&entry_win);
             opts->dmr_mute_encL = 0;
             opts->dmr_mute_encR = 0;
             if (option == 1) {
@@ -1041,6 +1090,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%lld", &state->K);
                 noecho();
+                destroy_window(&entry_win);
                 if (state->K > 255) {
                     state->K = 255;
                 }
@@ -1063,6 +1113,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->H);
                 noecho();
+                destroy_window(&entry_win);
                 state->K1 = state->H;
 
                 entry_win = newwin(7, WIDTH + 8, starty + 10, startx + 10);
@@ -1074,6 +1125,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K2);
                 noecho();
+                destroy_window(&entry_win);
 
                 entry_win = newwin(7, WIDTH + 8, starty + 10, startx + 10);
                 box(entry_win, 0, 0);
@@ -1084,6 +1136,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K3);
                 noecho();
+                destroy_window(&entry_win);
 
                 entry_win = newwin(7, WIDTH + 8, starty + 10, startx + 10);
                 box(entry_win, 0, 0);
@@ -1094,6 +1147,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K4);
                 noecho();
+                destroy_window(&entry_win);
 
                 state->keyloader = 0; //turn off keyloader
             }
@@ -1107,6 +1161,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%lld", &state->R);
                 noecho();
+                destroy_window(&entry_win);
                 if (state->R > 0x7FFF) {
                     state->R = 0x7FFF;
                 }
@@ -1132,6 +1187,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->R);
                 noecho();
+                destroy_window(&entry_win);
                 //disable size check for DES keys
                 // if (state->R > 0xFFFFFFFFFF)
                 // {
@@ -1173,6 +1229,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K1);
                 noecho();
+                destroy_window(&entry_win);
 
                 entry_win = newwin(7, WIDTH + 8, starty + 10, startx + 10);
                 box(entry_win, 0, 0);
@@ -1183,6 +1240,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K2);
                 noecho();
+                destroy_window(&entry_win);
 
                 entry_win = newwin(7, WIDTH + 8, starty + 10, startx + 10);
                 box(entry_win, 0, 0);
@@ -1193,6 +1251,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K3);
                 noecho();
+                destroy_window(&entry_win);
 
                 entry_win = newwin(7, WIDTH + 8, starty + 10, startx + 10);
                 box(entry_win, 0, 0);
@@ -1203,6 +1262,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 refresh();
                 wscanw(entry_win, "%llX", &state->K4);
                 noecho();
+                destroy_window(&entry_win);
 
                 //load the AES keys into a seperate handler
                 state->A1[0] = state->A1[1] = state->K1;
@@ -1634,6 +1694,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 state->p2_wacn = 0xFFFFF;
             }
             noecho();
+            destroy_window(&entry_win);
 
             entry_win = newwin(6, WIDTH + 16, starty + 10, startx + 10);
             box(entry_win, 0, 0);
@@ -1646,6 +1707,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 state->p2_sysid = 0xFFF;
             }
             noecho();
+            destroy_window(&entry_win);
 
             entry_win = newwin(6, WIDTH + 16, starty + 10, startx + 10);
             box(entry_win, 0, 0);
@@ -1658,6 +1720,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 state->p2_cc = 0xFFF;
             }
             noecho();
+            destroy_window(&entry_win);
 
             //need handling to truncate larger than expected values
 
@@ -1683,6 +1746,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             refresh();
             wscanw(entry_win, "%hd", &lrrpchoice); //%d
             noecho();
+            destroy_window(&entry_win);
 
             if (lrrpchoice == 1) {
                 //find user home directory and append directory and filename.
@@ -1704,15 +1768,16 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             else if (lrrpchoice == 3) {
                 //read in filename for symbol capture bin
                 opts->lrrp_out_file[0] = 0;
+                destroy_window(&entry_win);
                 entry_win = newwin(6, WIDTH + 16, starty + 10, startx + 10);
                 box(entry_win, 0, 0);
                 mvwprintw(entry_win, 2, 2, " Enter LRRP Data Filename");
-                mvwprintw(entry_win, 3, 3, " ");
                 echo();
                 refresh();
-                wscanw(entry_win, "%s", opts->lrrp_out_file); //&opts->lrrp_out_file
+                int rc = read_string_at(entry_win, 3, 3, opts->lrrp_out_file, sizeof(opts->lrrp_out_file));
                 noecho();
-                if (opts->lrrp_out_file[0] != 0) //NULL
+                destroy_window(&entry_win);
+                if (rc != ERR && opts->lrrp_out_file[0] != 0) //NULL
                 {
                     opts->lrrp_file_output = 1;
                 } else {
@@ -1739,6 +1804,11 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             break;
         }
     }
+
+    destroy_window(&info_win);
+    destroy_window(&entry_win);
+    destroy_window(&test_win);
+    destroy_window(&menu_win);
 
     clrtoeol(); //clear to end of line?
     refresh();
