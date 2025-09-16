@@ -105,6 +105,72 @@ long rtl_stream_return_pwr(const RtlSdrContext* ctx);
  */
 int rtl_stream_ted_bias(const RtlSdrContext* ctx);
 
+/* Runtime DSP adjustments and feedback hooks */
+/**
+ * @brief Set CQPSK path parameters at runtime; pass -1 to leave any field unchanged.
+ */
+void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
+                          int dfe_taps, int mf_enable, int cma_warmup_samples);
+/**
+ * @brief Get CQPSK path parameters snapshot; returns 0 on success.
+ */
+int rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
+                         int* dfe_taps, int* mf_enable, int* cma_warmup_remaining);
+/**
+ * @brief Configure RRC matched filter (pass -1 to leave field unchanged).
+ * enable: 0/1, alpha_percent: 1..100, span_syms: 3..16.
+ */
+void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+/**
+ * @brief Toggle DQPSK-aware decision mode (0=off, 1=on).
+ */
+void rtl_stream_cqpsk_set_dqpsk(int onoff);
+/** Get current RRC params; returns 0 on success. */
+int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
+/** Get DQPSK decision mode; returns 0 on success. */
+int rtl_stream_cqpsk_get_dqpsk(int* onoff);
+/**
+ * @brief Provide P25P1 FEC OK/ERR deltas to drive BER-adaptive tuning.
+ * Call with positive deltas (not totals). No-ops when RTL stream inactive.
+ */
+void rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta);
+
+/* Coarse DSP feature toggles and snapshot */
+/** Toggle CQPSK path pre-processing on/off (0=off, nonzero=on). */
+void rtl_stream_toggle_cqpsk(int onoff);
+/** Toggle FLL on/off (0=off, nonzero=on). */
+void rtl_stream_toggle_fll(int onoff);
+/** Toggle TED on/off (0=off, nonzero=on). */
+void rtl_stream_toggle_ted(int onoff);
+/** Get current coarse DSP feature flags; any pointer may be NULL. Returns 0 on success. */
+int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* auto_dsp_enable);
+/** Toggle all automatic DSP assistance (e.g., BER-based tuning). */
+void rtl_stream_toggle_auto_dsp(int onoff);
+
+/**
+ * @brief Set or disable the resampler target rate (applied on controller thread).
+ * Pass 0 to disable the resampler; otherwise, pass desired Hz (e.g., 48000).
+ */
+void rtl_stream_set_resampler_target(int target_hz);
+
+/**
+ * @brief Set the nominal samples-per-symbol used by the Gardner TED.
+ *
+ * Useful to align the complex DSP pipeline with protocol-layer symbol timing
+ * (e.g., 10 for P25 Phase 1 at 48 kHz, 8 for P25 Phase 2 at 48 kHz).
+ * Values < 2 are clamped to 2; large values are clamped to a safe range.
+ */
+void rtl_stream_set_ted_sps(int sps);
+
+/**
+ * @brief Provide P25 Phase 2 RS/voice error deltas to drive auto-DSP tuning.
+ *
+ * Pass positive deltas (not totals). Slot is 0 or 1. Any delta may be 0 when
+ * not applicable. No-ops when RTL stream inactive or auto-DSP disabled.
+ */
+void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
+                                 int sacch_err_delta, int voice_err_delta);
+
 #ifdef __cplusplus
 }
 #endif

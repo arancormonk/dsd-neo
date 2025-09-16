@@ -337,6 +337,27 @@ verbose_offset_tuning(rtlsdr_dev_t* dev) {
 }
 
 /**
+ * @brief Set tuner IF bandwidth (if supported by the library/driver).
+ */
+static int
+verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
+#ifdef RTLSDR_SET_TUNER_BANDWIDTH
+    int r = rtlsdr_set_tuner_bandwidth(dev, (int)bw_hz);
+    if (r != 0) {
+        fprintf(stderr, "WARNING: Failed to set tuner bandwidth to %u Hz.\n", bw_hz);
+    } else {
+        fprintf(stderr, "Tuner bandwidth set to %u Hz.\n", bw_hz);
+    }
+    return r;
+#else
+    (void)dev;
+    (void)bw_hz;
+    fprintf(stderr, "NOTE: Tuner bandwidth API not available in this build.\n");
+    return 0;
+#endif
+}
+
+/**
  * @brief Enable tuner automatic gain control.
  *
  * @param dev RTL-SDR device handle.
@@ -577,6 +598,14 @@ rtl_device_set_offset_tuning(struct rtl_device* dev) {
     }
     dev->offset_tuning = 1;
     return verbose_offset_tuning(dev->dev);
+}
+
+int
+rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
+    if (!dev || !dev->dev) {
+        return -1;
+    }
+    return verbose_set_tuner_bandwidth(dev->dev, bw_hz);
 }
 
 /**

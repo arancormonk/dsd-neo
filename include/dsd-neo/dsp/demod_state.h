@@ -173,4 +173,9 @@ struct demod_state {
     int cqpsk_lms_enable;    /* enable decision-directed LMS for CQPSK EQ */
     int cqpsk_mu_q15;        /* step size (Q15), small (1..64) */
     int cqpsk_update_stride; /* update every N complex samples */
+    /* Optional pre-EQ matched filter (RRC-like) */
+    int cqpsk_mf_enable;     /* enable small matched filter pre-processing */
+    int cqpsk_rrc_enable;    /* use RRC matched filter instead of 5-tap MF */
+    int cqpsk_rrc_alpha_q15; /* RRC roll-off (Q15), e.g., 0.20 -> 0.20*32768 */
+    int cqpsk_rrc_span_syms; /* half-span in symbols on each side (total span ~ 2*span) */
 };

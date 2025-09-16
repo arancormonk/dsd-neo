@@ -18,6 +18,7 @@
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/runtime/mem.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -633,6 +634,174 @@ fll_mix_and_update(struct demod_state* d) {
     d->fll_prev_j = d->fll_state.prev_j;
 }
 
+/* Small symmetric 5-tap matched-like FIR on interleaved I/Q (in-place via workbuf). */
+static void
+mf5_complex_interleaved(struct demod_state* d) {
+    if (!d || !d->lowpassed || d->lp_len < 10) {
+        return;
+    }
+    const int N = d->lp_len >> 1; /* complex samples */
+    int16_t* in = d->lowpassed;
+    int16_t* out = d->hb_workbuf; /* reuse work buffer */
+    /* taps ~ [1, 4, 6, 4, 1] / 16 in Q15 */
+    const int t0 = 2048;  /* 1/16 */
+    const int t1 = 8192;  /* 4/16 */
+    const int t2 = 12288; /* 6/16 */
+    for (int n = 0; n < N; n++) {
+        int idxm2 = (n - 2);
+        int idxm1 = (n - 1);
+        int idxp1 = (n + 1 < N) ? (n + 1) : (N - 1);
+        int idxp2 = (n + 2 < N) ? (n + 2) : (N - 1);
+        if (idxm2 < 0) {
+            idxm2 = 0;
+        }
+        if (idxm1 < 0) {
+            idxm1 = 0;
+        }
+        int16_t im2 = in[(size_t)(idxm2 << 1)];
+        int16_t jm2 = in[(size_t)(idxm2 << 1) + 1];
+        int16_t im1 = in[(size_t)(idxm1 << 1)];
+        int16_t jm1 = in[(size_t)(idxm1 << 1) + 1];
+        int16_t i0 = in[(size_t)(n << 1)];
+        int16_t j0 = in[(size_t)(n << 1) + 1];
+        int16_t ip1 = in[(size_t)(idxp1 << 1)];
+        int16_t jp1 = in[(size_t)(idxp1 << 1) + 1];
+        int16_t ip2 = in[(size_t)(idxp2 << 1)];
+        int16_t jp2 = in[(size_t)(idxp2 << 1) + 1];
+        int64_t accI = (int64_t)im2 * t0 + (int64_t)im1 * t1 + (int64_t)i0 * t2 + (int64_t)ip1 * t1 + (int64_t)ip2 * t0;
+        int64_t accQ = (int64_t)jm2 * t0 + (int64_t)jm1 * t1 + (int64_t)j0 * t2 + (int64_t)jp1 * t1 + (int64_t)jp2 * t0;
+        out[(size_t)(n << 1)] = sat16((int32_t)((accI + (1 << 14)) >> 15));
+        out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
+    }
+    /* swap buffers */
+    for (int i = 0; i < (N << 1); i++) {
+        d->lowpassed[i] = out[i];
+    }
+}
+
+/* RRC matched filter on interleaved I/Q using current TED SPS and configured alpha/span. */
+static void
+mf_rrc_complex_interleaved(struct demod_state* d) {
+    if (!d || !d->lowpassed || d->lp_len < 10) {
+        return;
+    }
+    if (d->ted_sps <= 1) {
+        return;
+    }
+    int sps = d->ted_sps;
+    double alpha = (d->cqpsk_rrc_alpha_q15 > 0) ? ((double)d->cqpsk_rrc_alpha_q15 / 32768.0) : 0.25;
+    int span = (d->cqpsk_rrc_span_syms > 0) ? d->cqpsk_rrc_span_syms : 6;
+    int taps_len = span * 2 * sps + 1;
+    if (taps_len < 7) {
+        taps_len = 7;
+    }
+    if (taps_len > 257) {
+        taps_len = 257;
+    }
+    static int last_sps = 0;
+    static int last_span = 0;
+    static int last_alpha_q15 = 0;
+    static int last_taps_len = 0;
+    static int16_t taps_q15[257];
+    static int taps_ready = 0;
+    if (!taps_ready || sps != last_sps || span != last_span || d->cqpsk_rrc_alpha_q15 != last_alpha_q15
+        || taps_len != last_taps_len) {
+        /* Design RRC taps */
+        int mid = taps_len / 2;
+        double sum = 0.0;
+        for (int n = 0; n < taps_len; n++) {
+            double t_over_T = ((double)n - (double)mid) / (double)sps;
+            double tau = t_over_T;
+            double h;
+            double pi = 3.14159265358979323846;
+            double four_a_tau = 4.0 * alpha * tau;
+            double denom = pi * tau * (1.0 - (four_a_tau * four_a_tau));
+            if (fabs(tau) < 1e-8) {
+                /* Limit at tau=0 */
+                h = (1.0 + alpha * (4.0 / pi - 1.0));
+            } else if (fabs(fabs(tau) - (1.0 / (4.0 * alpha))) < 1e-6) {
+                /* Limit at tau = ±1/(4α) */
+                double a = alpha;
+                double term1 = (1.0 + 2.0 / pi) * sin(pi / (4.0 * a));
+                double term2 = (1.0 - 2.0 / pi) * cos(pi / (4.0 * a));
+                h = (a / sqrt(2.0)) * (term1 + term2);
+            } else {
+                double num = sin(pi * tau * (1.0 - alpha)) + four_a_tau * cos(pi * tau * (1.0 + alpha));
+                h = num / denom;
+            }
+            sum += h;
+            /* store temporarily in taps_q15 for second pass */
+            taps_q15[n] = (int16_t)h; /* placeholder */
+        }
+        /* Normalize DC gain to 1.0 (sum taps = 1) */
+        if (fabs(sum) < 1e-9) {
+            sum = 1.0;
+        }
+        for (int n = 0; n < taps_len; n++) {
+            double t_over_T = ((double)n - (double)mid) / (double)sps;
+            double tau = t_over_T;
+            double h;
+            double pi = 3.14159265358979323846;
+            double four_a_tau = 4.0 * alpha * tau;
+            double denom = pi * tau * (1.0 - (four_a_tau * four_a_tau));
+            if (fabs(tau) < 1e-8) {
+                h = (1.0 + alpha * (4.0 / pi - 1.0));
+            } else if (fabs(fabs(tau) - (1.0 / (4.0 * alpha))) < 1e-6) {
+                double a = alpha;
+                double term1 = (1.0 + 2.0 / pi) * sin(pi / (4.0 * a));
+                double term2 = (1.0 - 2.0 / pi) * cos(pi / (4.0 * a));
+                h = (a / sqrt(2.0)) * (term1 + term2);
+            } else {
+                double num = sin(pi * tau * (1.0 - alpha)) + four_a_tau * cos(pi * tau * (1.0 + alpha));
+                h = num / denom;
+            }
+            h = h / sum;
+            long v = lrint(h * 32768.0);
+            if (v > 32767) {
+                v = 32767;
+            }
+            if (v < -32768) {
+                v = -32768;
+            }
+            taps_q15[n] = (int16_t)v;
+        }
+        last_sps = sps;
+        last_span = span;
+        last_alpha_q15 = d->cqpsk_rrc_alpha_q15;
+        last_taps_len = taps_len;
+        taps_ready = 1;
+    }
+
+    const int N = d->lp_len >> 1; /* complex length */
+    int16_t* in = d->lowpassed;
+    int16_t* out = d->hb_workbuf; /* reuse work buffer */
+    int mid = last_taps_len / 2;
+    for (int n = 0; n < N; n++) {
+        int64_t accI = 0;
+        int64_t accQ = 0;
+        for (int k = 0; k < last_taps_len; k++) {
+            int idx = n + (k - mid);
+            if (idx < 0) {
+                idx = 0;
+            }
+            if (idx >= N) {
+                idx = N - 1;
+            }
+            int16_t ir = in[(size_t)(idx << 1)];
+            int16_t iq = in[(size_t)(idx << 1) + 1];
+            int16_t t = taps_q15[k];
+            accI += (int32_t)ir * t;
+            accQ += (int32_t)iq * t;
+        }
+        out[(size_t)(n << 1)] = sat16((int32_t)((accI + (1 << 14)) >> 15));
+        out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
+    }
+    /* swap buffers */
+    for (int i = 0; i < (N << 1); i++) {
+        d->lowpassed[i] = out[i];
+    }
+}
+
 /**
  * @brief Apply a lightweight Gardner timing correction to complex baseband.
  *
@@ -711,6 +880,13 @@ full_demod(struct demod_state* d) {
     fll_mix_and_update(d);
     /* Optional CQPSK/LSM pre-processing on complex baseband for QPSK paths */
     if (d->cqpsk_enable) {
+        if (d->cqpsk_mf_enable) {
+            if (d->cqpsk_rrc_enable) {
+                mf_rrc_complex_interleaved(d);
+            } else {
+                mf5_complex_interleaved(d);
+            }
+        }
         cqpsk_process_block(d);
     }
     /* Lightweight timing error correction (optional, avoid for analog FM demod) */

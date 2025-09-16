@@ -66,8 +66,6 @@ pretty_colors() {
 #include <dsd-neo/io/pa_devs.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
-/* ASCII art banner removed; using simple header */
-
 int
 comp(const void* a, const void* b) {
     if (*((const int*)a) == *((const int*)b)) {
@@ -189,6 +187,9 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
             {
                 state->samplesPerSymbol = 10;
                 state->symbolCenter = 4;
+#ifdef USE_RTLSDR
+                rtl_stream_set_ted_sps(10);
+#endif
                 //re-enable both slots
                 opts->slot1_on = 1;
                 opts->slot2_on = 1;
@@ -197,6 +198,9 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
             else if (state->p25_cc_is_tdma == 1) {
                 state->samplesPerSymbol = 8;
                 state->symbolCenter = 3;
+#ifdef USE_RTLSDR
+                rtl_stream_set_ted_sps(8);
+#endif
                 //re-enable both slots (in case of late entry voice, MAC_SIGNAL can turn them back off)
                 opts->slot1_on = 1;
                 opts->slot2_on = 1;

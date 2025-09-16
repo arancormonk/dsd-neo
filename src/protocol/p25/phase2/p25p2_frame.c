@@ -13,6 +13,9 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 //DUID Look Up Table from OP25
@@ -169,10 +172,18 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
+        /* Feedback: RS OK */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
+#endif
         process_FACCH_MAC_PDU(opts, state, facch[state->currentslot]);
     } else {
         state->p25_p2_rs_facch_err++;
         fprintf(stderr, " R-S ERR Fc");
+        /* Feedback: RS ERR */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 0, 1, 0, 0, 0);
+#endif
         //if (state->currentslot == 0) state->dmrburstL = 13;
         //else state->dmrburstR = 13;
     }
@@ -218,10 +229,18 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
+        /* Feedback: RS OK */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
+#endif
         process_FACCH_MAC_PDU(opts, state, facch[state->currentslot]);
     } else {
         state->p25_p2_rs_facch_err++;
         fprintf(stderr, " R-S ERR Fs");
+        /* Feedback: RS ERR */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 0, 1, 0, 0, 0);
+#endif
         //if (state->currentslot == 0) state->dmrburstL = 13;
         //else state->dmrburstR = 13;
     }
@@ -264,10 +283,18 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
+        /* Feedback: RS OK */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
+#endif
         process_SACCH_MAC_PDU(opts, state, sacch[state->currentslot]);
     } else {
         state->p25_p2_rs_sacch_err++;
         fprintf(stderr, " R-S ERR Sc");
+        /* Feedback: RS ERR */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 0, 0, 0, 1, 0);
+#endif
         // if (state->currentslot == 0) state->dmrburstL = 13;
         // else state->dmrburstR = 13;
     }
@@ -310,10 +337,18 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
+        /* Feedback: RS OK */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
+#endif
         process_SACCH_MAC_PDU(opts, state, sacch[state->currentslot]);
     } else {
         state->p25_p2_rs_sacch_err++;
         fprintf(stderr, " R-S ERR Ss");
+        /* Feedback: RS ERR */
+#ifdef USE_RTLSDR
+        rtl_stream_p25p2_err_update(state->currentslot, 0, 0, 0, 1, 0);
+#endif
         // if (state->currentslot == 0) state->dmrburstL = 13;
         // else state->dmrburstR = 13;
     }

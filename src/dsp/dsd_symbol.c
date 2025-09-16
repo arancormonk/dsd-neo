@@ -144,6 +144,62 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
 }
 #endif
 
+#ifdef USE_RTLSDR
+/*
+ * When using the RTL pipeline without resampling to 48 kHz, adjust
+ * samplesPerSymbol and symbolCenter proportional to the current output rate
+ * to preserve decoder timing windows. Runs cheaply with a rate-change guard.
+ */
+static inline void
+maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
+    if (opts->audio_in_type != 3) {
+        return; /* only for RTL input */
+    }
+    static unsigned int last_rate = 0;
+    unsigned int Fs = rtl_stream_output_rate(NULL);
+    if (Fs == 0 || Fs == last_rate) {
+        return;
+    }
+    last_rate = Fs;
+    if (Fs == 48000) {
+        return; /* canonical, keep existing SPS */
+    }
+    /* Scale SPS w.r.t. 48 kHz and preserve center ratio */
+    int old_sps = state->samplesPerSymbol;
+    if (old_sps <= 0) {
+        old_sps = 10; /* safe default */
+    }
+    /* new_sps = round(old_sps * Fs / 48000) */
+    long long num = (long long)old_sps * (long long)Fs;
+    int new_sps = (int)((num + 24000) / 48000);
+    if (new_sps < 2) {
+        new_sps = 2;
+    }
+    if (new_sps == old_sps) {
+        return;
+    }
+    /* Preserve existing center fraction within [1 .. new_sps-2] */
+    double ratio = (double)state->symbolCenter / (double)old_sps;
+    if (ratio < 0.05) {
+        ratio = 0.05; /* avoid extreme left */
+    }
+    if (ratio > 0.95) {
+        ratio = 0.95; /* avoid extreme right */
+    }
+    int new_center = (int)(ratio * (double)new_sps + 0.5);
+    int min_c = 1;
+    int max_c = new_sps - 2;
+    if (new_center < min_c) {
+        new_center = min_c;
+    }
+    if (new_center > max_c) {
+        new_center = max_c;
+    }
+    state->samplesPerSymbol = new_sps;
+    state->symbolCenter = new_center;
+}
+#endif
+
 int
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     short sample;
@@ -157,6 +213,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     /* Optional auto-centering based on TED residual (RTL path only, C4FM, when not synced) */
 #ifdef USE_RTLSDR
     maybe_auto_center(opts, state, have_sync);
+    /* Align SPS to current RTL output rate if not 48 kHz */
+    maybe_adjust_sps_for_output_rate(opts, state);
 #endif
 
     /* Resolve any window freeze override once per symbol to avoid inner-loop overhead */

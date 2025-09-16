@@ -47,6 +47,8 @@ cqpsk_init(struct demod_state* s) {
                 taps++; /* enforce odd */
             }
             g_cqpsk_ctx.eq.num_taps = taps;
+            /* Use SPS as DFE symbol gating stride */
+            g_cqpsk_ctx.eq.sym_stride = s->ted_sps;
         }
         if (s->cqpsk_mu_q15 > 0) {
             g_cqpsk_ctx.eq.mu_q15 = (int16_t)s->cqpsk_mu_q15;
@@ -88,7 +90,56 @@ cqpsk_init(struct demod_state* s) {
             g_cqpsk_ctx.eq.update_stride = v;
         }
     }
+    /* Default symbol gating to update stride if SPS is unknown */
+    if (g_cqpsk_ctx.eq.sym_stride <= 0) {
+        g_cqpsk_ctx.eq.sym_stride = g_cqpsk_ctx.eq.update_stride;
+    }
+    const char* wl = getenv("DSD_NEO_CQPSK_WL");
+    if (wl && (*wl == '1' || *wl == 'y' || *wl == 'Y' || *wl == 't' || *wl == 'T')) {
+        g_cqpsk_ctx.eq.wl_enable = 1;
+    }
+    const char* dfe = getenv("DSD_NEO_CQPSK_DFE");
+    if (dfe && (*dfe == '1' || *dfe == 'y' || *dfe == 'Y' || *dfe == 't' || *dfe == 'T')) {
+        g_cqpsk_ctx.eq.dfe_enable = 1;
+    }
+    const char* dfe_t = getenv("DSD_NEO_CQPSK_DFE_TAPS");
+    if (dfe_t) {
+        int v = atoi(dfe_t);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 4) {
+            v = 4;
+        }
+        g_cqpsk_ctx.eq.dfe_taps = v;
+    } else if (g_cqpsk_ctx.eq.dfe_enable && g_cqpsk_ctx.eq.dfe_taps == 0) {
+        g_cqpsk_ctx.eq.dfe_taps = 2; /* small default */
+    }
+    const char* cma = getenv("DSD_NEO_CQPSK_CMA");
+    if (cma) {
+        int v = atoi(cma);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 20000) {
+            v = 20000;
+        }
+        g_cqpsk_ctx.eq.cma_warmup = v; /* samples */
+    }
+    const char* cma_mu = getenv("DSD_NEO_CQPSK_CMA_MU");
+    if (cma_mu) {
+        int v = atoi(cma_mu);
+        if (v >= 1 && v <= 64) {
+            g_cqpsk_ctx.eq.cma_mu_q15 = (int16_t)v;
+        }
+    }
     g_cqpsk_ctx.initialized = 1;
+
+    /* DQPSK decision mode (env: DSD_NEO_CQPSK_DQPSK=1) */
+    const char* dq = getenv("DSD_NEO_CQPSK_DQPSK");
+    if (dq && (*dq == '1' || *dq == 'y' || *dq == 'Y' || *dq == 't' || *dq == 'T')) {
+        g_cqpsk_ctx.eq.dqpsk_decision = 1;
+    }
 }
 
 void
@@ -101,4 +152,148 @@ cqpsk_process_block(struct demod_state* s) {
     }
     /* In-place EQ on interleaved I/Q */
     cqpsk_eq_process_block(&g_cqpsk_ctx.eq, s->lowpassed, s->lp_len);
+}
+
+extern "C" void
+cqpsk_reset_all(void) {
+    if (!g_cqpsk_ctx.initialized) {
+        return;
+    }
+    cqpsk_eq_reset_all(&g_cqpsk_ctx.eq);
+}
+
+extern "C" void
+cqpsk_reset_runtime(void) {
+    if (!g_cqpsk_ctx.initialized) {
+        return;
+    }
+    cqpsk_eq_reset_runtime(&g_cqpsk_ctx.eq);
+}
+
+extern "C" void
+cqpsk_reset_wl(void) {
+    if (!g_cqpsk_ctx.initialized) {
+        return;
+    }
+    cqpsk_eq_reset_wl(&g_cqpsk_ctx.eq);
+}
+
+extern "C" void
+cqpsk_runtime_set_params(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
+                         int dfe_taps, int cma_warmup_samples) {
+    if (!g_cqpsk_ctx.initialized) {
+        return;
+    }
+    int prev_lms = g_cqpsk_ctx.eq.lms_enable;
+    int prev_dfe = g_cqpsk_ctx.eq.dfe_enable;
+    if (lms_enable >= 0) {
+        g_cqpsk_ctx.eq.lms_enable = lms_enable ? 1 : 0;
+    }
+    if (taps >= 1) {
+        if (taps > CQPSK_EQ_MAX_TAPS) {
+            taps = CQPSK_EQ_MAX_TAPS;
+        }
+        if ((taps & 1) == 0) {
+            taps++;
+        }
+        g_cqpsk_ctx.eq.num_taps = taps;
+    }
+    if (mu_q15 >= 1) {
+        if (mu_q15 > 128) {
+            mu_q15 = 128;
+        }
+        g_cqpsk_ctx.eq.mu_q15 = (int16_t)mu_q15;
+    }
+    if (update_stride >= 1) {
+        g_cqpsk_ctx.eq.update_stride = update_stride;
+    }
+    if (wl_enable >= 0) {
+        int prev = g_cqpsk_ctx.eq.wl_enable;
+        g_cqpsk_ctx.eq.wl_enable = wl_enable ? 1 : 0;
+        if (prev && !g_cqpsk_ctx.eq.wl_enable) {
+            /* Reset WL taps on disable */
+            cqpsk_eq_reset_wl(&g_cqpsk_ctx.eq);
+        }
+    }
+    if (dfe_enable >= 0) {
+        int newd = dfe_enable ? 1 : 0;
+        g_cqpsk_ctx.eq.dfe_enable = newd;
+        if (newd && !prev_dfe) {
+            /* Safe-enable: clear DFE taps and decision history */
+            cqpsk_eq_reset_dfe(&g_cqpsk_ctx.eq);
+        } else if (!newd && prev_dfe) {
+            /* Reset on disable to avoid stale feedback */
+            cqpsk_eq_reset_dfe(&g_cqpsk_ctx.eq);
+        }
+    }
+    if (dfe_taps >= 0) {
+        if (dfe_taps > 4) {
+            dfe_taps = 4;
+        }
+        g_cqpsk_ctx.eq.dfe_taps = dfe_taps;
+    }
+    if (cma_warmup_samples >= 0) {
+        g_cqpsk_ctx.eq.cma_warmup = cma_warmup_samples;
+    }
+    /* If LMS just turned on and no explicit CMA requested, kick a small warmup for stability */
+    if (!prev_lms && g_cqpsk_ctx.eq.lms_enable) {
+        if (g_cqpsk_ctx.eq.cma_warmup <= 0) {
+            g_cqpsk_ctx.eq.cma_warmup = 1200; /* ~1/4 second at 4800 sym/s */
+        }
+    } else if (prev_lms && !g_cqpsk_ctx.eq.lms_enable) {
+        /* On LMS disable, reset EQ to identity to stabilize pipeline */
+        cqpsk_eq_reset_all(&g_cqpsk_ctx.eq);
+    }
+}
+
+extern "C" int
+cqpsk_runtime_get_params(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
+                         int* dfe_taps, int* cma_warmup_remaining) {
+    if (!g_cqpsk_ctx.initialized) {
+        return -1;
+    }
+    if (lms_enable) {
+        *lms_enable = g_cqpsk_ctx.eq.lms_enable ? 1 : 0;
+    }
+    if (taps) {
+        *taps = g_cqpsk_ctx.eq.num_taps;
+    }
+    if (mu_q15) {
+        *mu_q15 = g_cqpsk_ctx.eq.mu_q15;
+    }
+    if (update_stride) {
+        *update_stride = g_cqpsk_ctx.eq.update_stride;
+    }
+    if (wl_enable) {
+        *wl_enable = g_cqpsk_ctx.eq.wl_enable ? 1 : 0;
+    }
+    if (dfe_enable) {
+        *dfe_enable = g_cqpsk_ctx.eq.dfe_enable ? 1 : 0;
+    }
+    if (dfe_taps) {
+        *dfe_taps = g_cqpsk_ctx.eq.dfe_taps;
+    }
+    if (cma_warmup_remaining) {
+        *cma_warmup_remaining = g_cqpsk_ctx.eq.cma_warmup;
+    }
+    return 0;
+}
+
+extern "C" void
+cqpsk_runtime_set_dqpsk(int enable) {
+    if (!g_cqpsk_ctx.initialized) {
+        return;
+    }
+    g_cqpsk_ctx.eq.dqpsk_decision = enable ? 1 : 0;
+}
+
+extern "C" int
+cqpsk_runtime_get_dqpsk(int* enable) {
+    if (!g_cqpsk_ctx.initialized) {
+        return -1;
+    }
+    if (enable) {
+        *enable = g_cqpsk_ctx.eq.dqpsk_decision ? 1 : 0;
+    }
+    return 0;
 }

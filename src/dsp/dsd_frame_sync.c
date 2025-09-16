@@ -23,6 +23,9 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <locale.h>
 
@@ -296,14 +299,34 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             if (state->numflips > opts->mod_threshold) {
                 if (opts->mod_qpsk == 1) {
                     state->rf_mod = 1;
+                    /* Auto-enable CQPSK/LSM DSP path and loops when QPSK detected */
+#ifdef USE_RTLSDR
+                    rtl_stream_toggle_cqpsk(1);
+                    rtl_stream_toggle_fll(1);
+                    rtl_stream_toggle_ted(1);
+                    /* Default-on small matched filter and brief CMA kick */
+                    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, 1, 1200);
+#endif
                 }
             } else if (state->numflips > 18) {
                 if (opts->mod_gfsk == 1) {
                     state->rf_mod = 2;
+                    /* Disable CQPSK path outside QPSK */
+#ifdef USE_RTLSDR
+                    rtl_stream_toggle_cqpsk(0);
+                    rtl_stream_toggle_fll(0);
+                    rtl_stream_toggle_ted(0);
+#endif
                 }
             } else {
                 if (opts->mod_c4fm == 1) {
                     state->rf_mod = 0;
+                    /* Disable CQPSK path outside QPSK */
+#ifdef USE_RTLSDR
+                    rtl_stream_toggle_cqpsk(0);
+                    rtl_stream_toggle_fll(0);
+                    rtl_stream_toggle_ted(0);
+#endif
                 }
             }
             state->numflips = 0;

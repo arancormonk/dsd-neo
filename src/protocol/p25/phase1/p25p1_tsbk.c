@@ -11,6 +11,9 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -112,8 +115,14 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         err = crc16_lb_bridge(tsbk_decoded_bits, 80);
         if (err == 0) {
             state->p25_p1_fec_ok++;
+#ifdef USE_RTLSDR
+            rtl_stream_p25p1_ber_update(1, 0);
+#endif
         } else {
             state->p25_p1_fec_err++;
+#ifdef USE_RTLSDR
+            rtl_stream_p25p1_ber_update(0, 1);
+#endif
         }
 
         //shuffle corrected bits back into tsbk_byte

@@ -72,6 +72,7 @@ char* choices[] = {
     "Toggle Payloads to Console",
     "Manually Set p2 Parameters", //16
     "Input & Output Options",
+    "DSP Options",
     "LRRP Data to File",
     "Exit DSD-neo",
 };
@@ -201,7 +202,9 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     ++highlight;
                 }
                 break;
-            case 10: choice = highlight; break;
+            case 10:
+            case KEY_ENTER:
+            case '\r': choice = highlight; break;
             default:
                 //mvprintw(24, 0, "Character pressed is = %3d Hopefully it can be printed as '%c'", c, c);
                 refresh();
@@ -263,7 +266,9 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                             ++highlightc;
                         }
                         break;
-                    case 10: choicec = highlightc; break;
+                    case 10:
+                    case KEY_ENTER:
+                    case '\r': choicec = highlightc; break;
                     default:
                         //mvprintw(24, 0, "Character pressed is = %3d Hopefully it can be printed as '%c'", c, c);
                         refresh();
@@ -778,6 +783,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     keypad(test_win, FALSE);
                     keypad(menu_win, TRUE);
                     delwin(test_win);
+                    flushinp();
                     print_menu(menu_win, highlight);
                     //wrefresh(menu_win);
                     break;
@@ -792,12 +798,212 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                     keypad(test_win, FALSE);
                     keypad(menu_win, TRUE);
                     delwin(test_win);
+                    flushinp();
                     print_menu(menu_win, highlight);
                     break;
                 }
             }
             clrtoeol(); //clear to end of line?
             refresh();
+        }
+
+        // DSP Options (dependency-aware)
+        if (choice == 19) {
+#ifdef USE_RTLSDR
+            WINDOW* dsp_win = newwin(HEIGHT - 1, WIDTH + 14, starty + 5, startx + 5);
+            keypad(menu_win, FALSE);
+            keypad(dsp_win, TRUE);
+            mvprintw(0, 0, "DSP Options                                             ");
+            refresh();
+
+            int dh = 1;   //highlight index
+            int dsel = 0; //selection
+            while (1) {
+                // Build items dynamically based on runtime state
+                int gcq = 0, gfl = 0, gtd = 0, gau = 0;
+                int glms = 0, gtaps = 0, gmu = 0, gstr = 0, gwl = 0, gdfe = 0, gdft = 0, gmf = 0, gcma = 0;
+                rtl_stream_dsp_get(&gcq, &gfl, &gtd, &gau);
+                rtl_stream_cqpsk_get(&glms, &gtaps, &gmu, &gstr, &gwl, &gdfe, &gdft, &gmf, &gcma);
+
+                /* Query RRC and DQPSK states */
+                int rrc_on = 0, rrc_alpha = 0, rrc_span = 0;
+                int dq_on = 0;
+                rtl_stream_cqpsk_get_rrc(&rrc_on, &rrc_alpha, &rrc_span);
+                rtl_stream_cqpsk_get_dqpsk(&dq_on);
+
+                enum {
+                    DSPI_RETURN = 0,
+                    DSPI_T_CQ,
+                    DSPI_T_FLL,
+                    DSPI_T_TED,
+                    DSPI_T_AUTO,
+                    DSPI_T_LMS,
+                    DSPI_T_MF,
+                    DSPI_BURST_CMA,
+                    DSPI_T_WL,
+                    DSPI_T_DFE,
+                    DSPI_CYCLE_DFT,
+                    DSPI_TAPS_5_7,
+                    DSPI_T_RRC,
+                    DSPI_RRC_A_UP,
+                    DSPI_RRC_A_DN,
+                    DSPI_RRC_S_UP,
+                    DSPI_RRC_S_DN,
+                    DSPI_T_DQPSK
+                };
+
+                const int MAXI = 24; /* allow enough items when CQPSK+LMS+DFE options are visible */
+                int code[MAXI];
+                char label[MAXI][64];
+                int n = 0;
+                // Always-present controls
+                code[n] = DSPI_RETURN;
+                snprintf(label[n++], sizeof label[0], "%s", "Return");
+                code[n] = DSPI_T_CQ;
+                snprintf(label[n++], sizeof label[0], "Toggle CQPSK: %s", gcq ? "ON" : "OFF");
+                code[n] = DSPI_T_FLL;
+                snprintf(label[n++], sizeof label[0], "Toggle FLL: %s", gfl ? "ON" : "OFF");
+                code[n] = DSPI_T_TED;
+                snprintf(label[n++], sizeof label[0], "Toggle TED: %s", gtd ? "ON" : "OFF");
+                code[n] = DSPI_T_AUTO;
+                snprintf(label[n++], sizeof label[0], "Toggle AUTO-DSP: %s", gau ? "ON" : "OFF");
+
+                if (gcq) {
+                    code[n] = DSPI_T_LMS;
+                    snprintf(label[n++], sizeof label[0], "Toggle LMS: %s", glms ? "ON" : "OFF");
+                    code[n] = DSPI_T_MF;
+                    snprintf(label[n++], sizeof label[0], "Toggle MF: %s", gmf ? "ON" : "OFF");
+                    code[n] = DSPI_T_RRC;
+                    snprintf(label[n++], sizeof label[0], "Toggle RRC: %s", rrc_on ? "ON" : "OFF");
+                    code[n] = DSPI_RRC_A_UP;
+                    snprintf(label[n++], sizeof label[0], "RRC alpha +5%% (now %d%%)", rrc_alpha);
+                    code[n] = DSPI_RRC_A_DN;
+                    snprintf(label[n++], sizeof label[0], "RRC alpha -5%% (now %d%%)", rrc_alpha);
+                    code[n] = DSPI_RRC_S_UP;
+                    snprintf(label[n++], sizeof label[0], "RRC span +1 (now %d)", rrc_span);
+                    code[n] = DSPI_RRC_S_DN;
+                    snprintf(label[n++], sizeof label[0], "RRC span -1 (now %d)", rrc_span);
+                    code[n] = DSPI_BURST_CMA;
+                    snprintf(label[n++], sizeof label[0], "%s", "CMA Warmup Burst (~1500)");
+                    if (glms) {
+                        code[n] = DSPI_T_WL;
+                        snprintf(label[n++], sizeof label[0], "Toggle WL: %s", gwl ? "ON" : "OFF");
+                        code[n] = DSPI_T_DFE;
+                        snprintf(label[n++], sizeof label[0], "Toggle DFE: %s", gdfe ? "ON" : "OFF");
+                        if (gdfe) {
+                            code[n] = DSPI_CYCLE_DFT;
+                            snprintf(label[n++], sizeof label[0], "Cycle DFE taps: %d", gdft);
+                        }
+                        code[n] = DSPI_TAPS_5_7;
+                        snprintf(label[n++], sizeof label[0], "EQ taps: %d (set 5/7)", gtaps);
+                    }
+                    code[n] = DSPI_T_DQPSK;
+                    snprintf(label[n++], sizeof label[0], "Toggle DQPSK decision: %s", dq_on ? "ON" : "OFF");
+                }
+
+                // draw window
+                werase(dsp_win);
+                box(dsp_win, 0, 0);
+                for (int i = 0, y = 2; i < n; i++, y++) {
+                    if (dh == i + 1) {
+                        wattron(dsp_win, A_REVERSE);
+                        mvwprintw(dsp_win, y, 2, "%s", label[i]);
+                        wattroff(dsp_win, A_REVERSE);
+                    } else {
+                        mvwprintw(dsp_win, y, 2, "%s", label[i]);
+                    }
+                }
+                wrefresh(dsp_win);
+
+                int ch = wgetch(dsp_win);
+                if (ch == KEY_UP) {
+                    dh = (dh <= 1) ? n : dh - 1;
+                } else if (ch == KEY_DOWN) {
+                    dh = (dh >= n) ? 1 : dh + 1;
+                } else if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+                    dsel = dh;
+                } else if (ch == 27) { // Esc to return
+                    dsel = 1;
+                } else if (ch == 'q' || ch == 'Q') { // also allow q to return
+                    dsel = 1;
+                }
+
+                if (dsel > 0) {
+                    int act = code[dsel - 1];
+                    dsel = 0; // reset selection, will rebuild menu next loop
+                    if (act == DSPI_RETURN) {
+                        break;
+                    } else if (act == DSPI_T_CQ) {
+                        rtl_stream_toggle_cqpsk(gcq ? 0 : 1);
+                    } else if (act == DSPI_T_FLL) {
+                        rtl_stream_toggle_fll(gfl ? 0 : 1);
+                    } else if (act == DSPI_T_TED) {
+                        rtl_stream_toggle_ted(gtd ? 0 : 1);
+                    } else if (act == DSPI_T_AUTO) {
+                        rtl_stream_toggle_auto_dsp(gau ? 0 : 1);
+                    } else if (act == DSPI_T_LMS) {
+                        rtl_stream_cqpsk_set(glms ? 0 : 1, -1, -1, -1, -1, -1, -1, -1, -1);
+                    } else if (act == DSPI_T_MF) {
+                        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, gmf ? 0 : 1, -1);
+                    } else if (act == DSPI_T_RRC) {
+                        extern void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+                        rtl_stream_cqpsk_set_rrc(rrc_on ? 0 : 1, -1, -1);
+                    } else if (act == DSPI_RRC_A_UP) {
+                        extern void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+                        int na = rrc_alpha + 5;
+                        if (na > 50) {
+                            na = 50;
+                        }
+                        rtl_stream_cqpsk_set_rrc(-1, na, -1);
+                    } else if (act == DSPI_RRC_A_DN) {
+                        extern void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+                        int na = rrc_alpha - 5;
+                        if (na < 5) {
+                            na = 5;
+                        }
+                        rtl_stream_cqpsk_set_rrc(-1, na, -1);
+                    } else if (act == DSPI_RRC_S_UP) {
+                        extern void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+                        int ns = rrc_span + 1;
+                        if (ns > 16) {
+                            ns = 16;
+                        }
+                        rtl_stream_cqpsk_set_rrc(-1, -1, ns);
+                    } else if (act == DSPI_RRC_S_DN) {
+                        extern void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+                        int ns = rrc_span - 1;
+                        if (ns < 3) {
+                            ns = 3;
+                        }
+                        rtl_stream_cqpsk_set_rrc(-1, -1, ns);
+                    } else if (act == DSPI_BURST_CMA) {
+                        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, -1, 1500);
+                    } else if (act == DSPI_T_WL) {
+                        rtl_stream_cqpsk_set(-1, -1, -1, -1, gwl ? 0 : 1, -1, -1, -1, -1);
+                    } else if (act == DSPI_T_DFE) {
+                        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, gdfe ? 0 : 1, gdft, -1, -1);
+                    } else if (act == DSPI_CYCLE_DFT) {
+                        int ndft = (gdft + 1) & 3;
+                        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, gdfe, ndft, -1, -1);
+                    } else if (act == DSPI_TAPS_5_7) {
+                        int ntaps = (gtaps >= 7) ? 5 : 7;
+                        rtl_stream_cqpsk_set(-1, ntaps, -1, -1, -1, -1, -1, -1, -1);
+                    } else if (act == DSPI_T_DQPSK) {
+                        extern void rtl_stream_cqpsk_set_dqpsk(int onoff);
+                        rtl_stream_cqpsk_set_dqpsk(dq_on ? 0 : 1);
+                    }
+                }
+            }
+
+            // close dsp window, restore input
+            delwin(dsp_win);
+            keypad(menu_win, TRUE);
+            flushinp(); // clear any pending ENTER from propagating to parent menu
+            // prevent fall-through into subsequent handlers using the same choice value
+            choice = 0;
+#else
+            // No RTL build; nothing to show
+#endif
         }
 
         //Key Entry
@@ -1462,7 +1668,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 state->p2_hardset = 0;
             }
         }
-        if (choice == 19) {
+        if (choice == 20) {
             short int lrrpchoice = 0;
             entry_win = newwin(10, WIDTH + 16, starty + 10, startx + 10);
             box(entry_win, 0, 0);
@@ -1520,7 +1726,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
                 opts->lrrp_out_file[0] = 0;
             }
         }
-        if (choice == 20) {
+        if (choice == 21) {
             exitflag = 1;
             // Exit immediately; skip device reopen logic since we're shutting down
             clrtoeol();
@@ -1529,7 +1735,7 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             return;
         }
 
-        if (choice != 0 && choice != 20) { /* User did a choice come out of the infinite loop */
+        if (choice != 0 && choice != 21) { /* User did a choice come out of the infinite loop */
             break;
         }
     }

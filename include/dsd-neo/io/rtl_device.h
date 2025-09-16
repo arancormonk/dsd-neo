@@ -97,6 +97,14 @@ int rtl_device_set_direct_sampling(struct rtl_device* dev, int on);
 int rtl_device_set_offset_tuning(struct rtl_device* dev);
 
 /**
+ * @brief Set tuner IF bandwidth if supported by the driver.
+ * @param dev RTL-SDR device handle.
+ * @param bw_hz Target bandwidth in Hz (e.g., 200000).
+ * @return 0 on success, negative on failure.
+ */
+int rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz);
+
+/**
  * @brief Reset device buffer.
  *
  * @param dev RTL-SDR device handle.

@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
@@ -381,8 +382,10 @@ optimal_settings(int freq, int rate) {
     struct dongle_state* d = &dongle;
     struct demod_state* dm = &demod;
     struct controller_state* cs = &controller;
+    /* Compute integer oversample factor to target ~1 MS/s capture then map
+       to a cascade of 2:1 decimators (half-band/CIC) via passes = ceil(log2(ds)). */
     dm->downsample = (1000000 / dm->rate_in) + 1;
-    if (dm->downsample_passes) {
+    {
         int ds = dm->downsample;
         if (ds <= 1) {
             dm->downsample_passes = 0;
@@ -401,6 +404,12 @@ optimal_settings(int freq, int rate) {
 #endif
             int is_pow2 = (ds & (ds - 1)) == 0;
             int passes = is_pow2 ? floor_log2 : (floor_log2 + 1);
+            if (passes < 0) {
+                passes = 0;
+            }
+            if (passes > 10) {
+                passes = 10; /* practical guard */
+            }
             dm->downsample_passes = passes;
             dm->downsample = 1 << passes;
         }
@@ -457,6 +466,8 @@ apply_capture_settings(uint32_t center_freq_hz) {
     optimal_settings((int)center_freq_hz, demod.rate_in);
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
+    /* Best-effort set tuner IF bandwidth close to configured RTL bandwidth */
+    rtl_device_set_tuner_bandwidth(rtl_device_handle, (uint32_t)rtl_bandwidth);
 }
 
 /**
@@ -956,12 +967,11 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.ted_mu_q20 = 0;
     demod.ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
-    /* Auto-enable CQPSK path for QPSK-centric modes unless already enabled by env */
-    if (demod.cqpsk_enable == 0) {
-        if (opts->mod_qpsk == 1 || opts->frame_p25p2 == 1) {
-            demod.cqpsk_enable = 1;
-            fprintf(stderr, " DSP: CQPSK/LSM pre-processing auto-enabled for QPSK/TDMA\n");
-        }
+    /* Default all DSP handles OFF unless explicitly requested via env/CLI. */
+    demod.cqpsk_enable = 0;
+    const char* ev_cq = getenv("DSD_NEO_CQPSK");
+    if (ev_cq && (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T')) {
+        demod.cqpsk_enable = 1;
     }
 
     /* Map CLI runtime toggles for CQPSK LMS */
@@ -977,6 +987,44 @@ configure_from_env_and_opts(dsd_opts* opts) {
         demod.cqpsk_update_stride = opts->cqpsk_stride;
     } else if (demod.cqpsk_update_stride == 0) {
         demod.cqpsk_update_stride = 4;
+    }
+
+    /* Matched filter pre-EQ default OFF; allow env to enable */
+    demod.cqpsk_mf_enable = 0;
+    const char* mf = getenv("DSD_NEO_CQPSK_MF");
+    if (mf && (*mf == '1' || *mf == 'y' || *mf == 'Y' || *mf == 't' || *mf == 'T')) {
+        demod.cqpsk_mf_enable = 1;
+    }
+
+    /* Optional RRC matched filter configuration */
+    demod.cqpsk_rrc_enable = 0;
+    demod.cqpsk_rrc_alpha_q15 = (int)(0.25 * 32768.0); /* default 0.25 */
+    demod.cqpsk_rrc_span_syms = 6;                     /* default 6 symbols (total span ~12) */
+    const char* rrc = getenv("DSD_NEO_CQPSK_RRC");
+    if (rrc && (*rrc == '1' || *rrc == 'y' || *rrc == 'Y' || *rrc == 't' || *rrc == 'T')) {
+        demod.cqpsk_rrc_enable = 1;
+    }
+    const char* rrca = getenv("DSD_NEO_CQPSK_RRC_ALPHA");
+    if (rrca) {
+        int v = atoi(rrca);
+        if (v < 1) {
+            v = 1;
+        }
+        if (v > 100) {
+            v = 100;
+        }
+        demod.cqpsk_rrc_alpha_q15 = (int)((v / 100.0) * 32768.0);
+    }
+    const char* rrcs = getenv("DSD_NEO_CQPSK_RRC_SPAN");
+    if (rrcs) {
+        int v = atoi(rrcs);
+        if (v < 3) {
+            v = 3;
+        }
+        if (v > 16) {
+            v = 16;
+        }
+        demod.cqpsk_rrc_span_syms = v;
     }
 }
 
@@ -997,17 +1045,24 @@ select_defaults_for_mode(dsd_opts* opts) {
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
-        if (!env_ted_set) {
-            /* Enable timing correction by default for QPSK/TDMA paths */
-            demod.ted_enabled = (demod.cqpsk_enable ? 1 : 0);
-        }
+        /* Keep TED disabled by default; user/UI can enable as needed. */
         if (!env_ted_sps_set) {
-            /* Use actual demod output rate to derive default SPS for 4800 sym/s */
-            int Fs_cx = (demod.resamp_enabled && demod.resamp_target_hz > 0) ? demod.resamp_target_hz : demod.rate_out;
+            /* Use configured target or current output rate to derive default SPS per mode */
+            int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
+                                                     : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
             if (Fs_cx <= 0) {
-                Fs_cx = (int)output.rate;
+                Fs_cx = 48000; /* safe default */
             }
-            int sps = (Fs_cx + 2400) / 4800; /* round(Fs/4800) */
+            int sps = 0;
+            if (opts->frame_p25p2 == 1) {
+                sps = (Fs_cx + 3000) / 6000; /* round(Fs/6000) */
+            } else if (opts->frame_p25p1 == 1) {
+                sps = (Fs_cx + 2400) / 4800; /* round(Fs/4800) */
+            } else if (opts->frame_nxdn48 == 1) {
+                sps = (Fs_cx + 1200) / 2400; /* round(Fs/2400) */
+            } else {
+                sps = (Fs_cx + 2400) / 4800; /* generic 4800 sym/s */
+            }
             if (sps < 2) {
                 sps = 2;
             }
@@ -1022,9 +1077,7 @@ select_defaults_for_mode(dsd_opts* opts) {
         if (!env_fll_beta_set) {
             demod.fll_beta_q15 = 15;
         }
-        if (!demod.fll_enabled && !dsd_neo_get_config()->fll_is_set) {
-            demod.fll_enabled = 1;
-        }
+        /* Keep FLL disabled by default; user/UI can enable as needed. */
     } else {
         if (!env_ted_set) {
             demod.ted_enabled = 0;
@@ -1571,6 +1624,312 @@ dsd_rtl_stream_output_rate(void) {
 extern "C" int
 dsd_rtl_stream_ted_bias(void) {
     return demod.ted_state.e_ema;
+}
+
+/**
+ * @brief Set the Gardner TED nominal samples-per-symbol.
+ * Clamps to a sensible range and applies immediately.
+ */
+extern "C" void
+dsd_rtl_stream_set_ted_sps(int sps) {
+    if (sps < 2) {
+        sps = 2;
+    }
+    if (sps > 32) {
+        sps = 32;
+    }
+    demod.ted_sps = sps;
+}
+
+/**
+ * @brief Set or disable the resampler target rate and reapply capture settings.
+ *
+ * Marshals onto the controller thread by scheduling a no-op retune to the
+ * current frequency, which safely reconfigures the resampler and updates the
+ * output rate with proper buffer draining.
+ *
+ * @param target_hz Target output rate in Hz. Pass 0 to disable resampler.
+ */
+extern "C" void
+dsd_rtl_stream_set_resampler_target(int target_hz) {
+    if (target_hz <= 0) {
+        demod.resamp_target_hz = 0;
+    } else {
+        demod.resamp_target_hz = target_hz;
+    }
+    /* Schedule retune to current center to apply changes on controller thread */
+    pthread_mutex_lock(&controller.hop_m);
+    controller.manual_retune_freq = dongle.freq;
+    controller.manual_retune_pending.store(1);
+    pthread_cond_signal(&controller.hop);
+    pthread_mutex_unlock(&controller.hop_m);
+}
+
+/* Runtime DSP tuning entrypoints (C shim) */
+static int g_auto_dsp_enable = 0; /* default OFF */
+
+/* Forward declaration for CQPSK runtime setter used by auto-DSP update below */
+extern "C" void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable,
+                                     int dfe_enable, int dfe_taps, int mf_enable, int cma_warmup_samples);
+
+/**
+ * @brief P25 Phase 2 error-driven auto-DSP adaptation.
+ * Aggregates recent RS/voice error deltas and nudges CQPSK EQ settings.
+ * No-ops when auto-DSP is disabled.
+ */
+extern "C" void
+dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
+                                int sacch_err_delta, int voice_err_delta) {
+    (void)slot; /* reserved for future per-slot tuning */
+    if (!g_auto_dsp_enable) {
+        return;
+    }
+    int ok = 0, err = 0;
+    if (facch_ok_delta > 0) {
+        ok += facch_ok_delta;
+    }
+    if (sacch_ok_delta > 0) {
+        ok += sacch_ok_delta;
+    }
+    if (facch_err_delta > 0) {
+        err += facch_err_delta;
+    }
+    if (sacch_err_delta > 0) {
+        err += sacch_err_delta;
+    }
+    if (voice_err_delta > 0) {
+        err += voice_err_delta / 2; /* voice errors are noisier; downweight */
+    }
+
+    int aggressive = 0, moderate = 0;
+    if (err > ok + 2 || ok < 4) {
+        aggressive = 1;
+    } else if (err > 0) {
+        moderate = 1;
+    }
+
+    /* Guard: only adjust when CQPSK path active; otherwise, ensure defaults modest */
+    if (!demod.cqpsk_enable) {
+        if (aggressive || moderate) {
+            rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 1, 2, 1, 800);
+            demod.ted_enabled = 1;
+            if (demod.ted_gain_q20 < 64) {
+                demod.ted_gain_q20 = 64;
+            }
+        }
+        return;
+    }
+
+    if (aggressive) {
+        /* More taps, enable WL+DFE, small µ, enable MF; brief CMA warmup */
+        rtl_stream_cqpsk_set(1, 7, 2, 4, 1, 1, 3, 1, 2000);
+        demod.ted_enabled = 1;
+        if (demod.ted_gain_q20 < 64) {
+            demod.ted_gain_q20 = 64;
+        }
+    } else if (moderate) {
+        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 1, 2, 1, 1000);
+        demod.ted_enabled = 1;
+    } else {
+        /* Relax settings when clean */
+        rtl_stream_cqpsk_set(1, 5, 1, 8, 0, 0, 0, 1, 0);
+    }
+}
+
+/* Master toggle to gate automatic DSP assistance (BER-based eq tweaks, etc.) */
+
+extern "C" void
+rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
+                     int dfe_taps, int mf_enable, int cma_warmup_samples) {
+    /* Apply matched-filter toggle directly on demod state */
+    if (mf_enable >= 0) {
+        demod.cqpsk_mf_enable = mf_enable ? 1 : 0;
+    }
+    /* Forward the rest to CQPSK path */
+    cqpsk_runtime_set_params(lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps,
+                             cma_warmup_samples);
+}
+
+extern "C" void
+rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
+    if (!g_auto_dsp_enable) {
+        return; /* auto-DSP disabled: ignore BER-driven tuning */
+    }
+    static int64_t ok_acc = 0;
+    static int64_t err_acc = 0;
+    if (fec_ok_delta > 0) {
+        ok_acc += fec_ok_delta;
+    }
+    if (fec_err_delta > 0) {
+        err_acc += fec_err_delta;
+    }
+    int64_t total = ok_acc + err_acc;
+    if (total < 200) {
+        return; /* wait for window */
+    }
+    /* Compute error rate */
+    int64_t err = err_acc;
+    /* Reset for next window */
+    ok_acc = 0;
+    err_acc = 0;
+    /* Guard: only adjust when CQPSK path active */
+    if (!demod.cqpsk_enable) {
+        return;
+    }
+    /* Heuristics: escalate assistance with increasing ER */
+    /* err_rate ≈ err/total, compare against thresholds without FP */
+    /* T1 ~7%, T2 ~15% */
+    int heavy = (err * 100 >= 15 * total) ? 1 : 0;
+    int moderate = (err * 100 >= 7 * total) ? 1 : 0;
+
+    if (heavy) {
+        /* Enable WL, DFE, more taps, small µ; brief CMA kick */
+        rtl_stream_cqpsk_set(1, 7, 2, 4, 1, 1, 3, -1, 2000);
+        /* Ensure TED is on and gain modest */
+        demod.ted_enabled = 1;
+        if (demod.ted_gain_q20 < 64) {
+            demod.ted_gain_q20 = 64;
+        }
+    } else if (moderate) {
+        /* Keep WL off by default, enable DFE lightly, 5–7 taps, µ=2 */
+        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 1, 2, -1, 1000);
+        demod.ted_enabled = 1;
+    } else {
+        /* Relax settings when clean: fewer taps, µ=1, DFE off */
+        rtl_stream_cqpsk_set(1, 5, 1, 8, 0, 0, 0, -1, 0);
+    }
+}
+
+extern "C" int
+rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
+                     int* dfe_taps, int* mf_enable, int* cma_warmup_remaining) {
+    if (mf_enable) {
+        *mf_enable = demod.cqpsk_mf_enable ? 1 : 0;
+    }
+    return cqpsk_runtime_get_params(lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps,
+                                    cma_warmup_remaining);
+}
+
+/* Coarse DSP feature toggles and snapshot */
+extern "C" void
+rtl_stream_toggle_cqpsk(int onoff) {
+    demod.cqpsk_enable = onoff ? 1 : 0;
+    /* Reset EQ state when toggling path to avoid stale filters */
+    cqpsk_reset_all();
+}
+
+extern "C" void
+rtl_stream_toggle_fll(int onoff) {
+    demod.fll_enabled = onoff ? 1 : 0;
+    if (!demod.fll_enabled) {
+        /* Reset FLL state to baseline to avoid carryover */
+        fll_init_state(&demod.fll_state);
+        demod.fll_freq_q15 = 0;
+        demod.fll_phase_q15 = 0;
+        demod.fll_prev_r = 0;
+        demod.fll_prev_j = 0;
+    }
+}
+
+extern "C" void
+rtl_stream_toggle_ted(int onoff) {
+    demod.ted_enabled = onoff ? 1 : 0;
+    if (!demod.ted_enabled) {
+        /* Reset TED state */
+        ted_init_state(&demod.ted_state);
+        demod.ted_mu_q20 = 0;
+    }
+}
+
+extern "C" int
+rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* auto_dsp_enable) {
+    if (cqpsk_enable) {
+        *cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
+    }
+    if (fll_enable) {
+        *fll_enable = demod.fll_enabled ? 1 : 0;
+    }
+    if (ted_enable) {
+        *ted_enable = demod.ted_enabled ? 1 : 0;
+    }
+    if (auto_dsp_enable) {
+        *auto_dsp_enable = g_auto_dsp_enable ? 1 : 0;
+    }
+    return 0;
+}
+
+extern "C" void
+rtl_stream_toggle_auto_dsp(int onoff) {
+    g_auto_dsp_enable = onoff ? 1 : 0;
+}
+
+/* Configure RRC matched filter parameters. Any arg <0 leaves it unchanged. */
+extern "C" void
+dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms) {
+    if (enable >= 0) {
+        demod.cqpsk_rrc_enable = enable ? 1 : 0;
+    }
+    if (alpha_percent >= 0) {
+        int v = alpha_percent;
+        if (v < 1) {
+            v = 1;
+        }
+        if (v > 100) {
+            v = 100;
+        }
+        demod.cqpsk_rrc_alpha_q15 = (int)((v / 100.0) * 32768.0);
+    }
+    if (span_syms >= 0) {
+        int v = span_syms;
+        if (v < 3) {
+            v = 3;
+        }
+        if (v > 16) {
+            v = 16;
+        }
+        demod.cqpsk_rrc_span_syms = v;
+    }
+}
+
+/* Toggle DQPSK decision mode in CQPSK path */
+extern "C" void
+dsd_rtl_stream_cqpsk_set_dqpsk(int onoff) {
+    cqpsk_runtime_set_dqpsk(onoff ? 1 : 0);
+}
+
+/* Get current RRC MF params */
+extern "C" int
+dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
+    if (enable) {
+        *enable = demod.cqpsk_rrc_enable ? 1 : 0;
+    }
+    if (alpha_percent) {
+        int ap = (int)lrint((demod.cqpsk_rrc_alpha_q15 / 32768.0) * 100.0);
+        if (ap < 0) {
+            ap = 0;
+        }
+        if (ap > 100) {
+            ap = 100;
+        }
+        *alpha_percent = ap;
+    }
+    if (span_syms) {
+        *span_syms = demod.cqpsk_rrc_span_syms;
+    }
+    return 0;
+}
+
+/* Get DQPSK decision mode */
+extern "C" int
+dsd_rtl_stream_cqpsk_get_dqpsk(int* onoff) {
+    int v = 0;
+    if (cqpsk_runtime_get_dqpsk(&v) != 0) {
+        return -1;
+    }
+    if (onoff) {
+        *onoff = v ? 1 : 0;
+    }
+    return 0;
 }
 
 /**

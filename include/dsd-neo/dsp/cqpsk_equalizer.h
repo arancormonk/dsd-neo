@@ -41,12 +41,46 @@ typedef struct cqpsk_eq_state_s {
     int update_stride; /* apply update every N complex samples (e.g., 4) */
     int update_count;  /* internal counter */
     int16_t eps_q15;   /* NLMS epsilon in Q15 to avoid div-by-zero (~1..8) */
-    /* Reserved for future growth */
-    int16_t _rsvd[4];
+    /* Symbol gating for DFE decisions/updates (approximate SPS) */
+    int sym_stride; /* advance decision history every sym_stride samples */
+    int sym_count;  /* internal counter for symbol gating */
+    /* Decision-Feedback Equalizer (DFE) small branch (feedback taps) */
+    int dfe_enable; /* enable feedback branch */
+    int dfe_taps;   /* number of feedback taps (0..4) */
+    int16_t b_i[4]; /* feedback taps (Q14) real */
+    int16_t b_q[4]; /* feedback taps (Q14) imag */
+    /* Short history of past decisions (sliced symbols) for feedback */
+    int16_t d_i[4];
+    int16_t d_q[4];
+    /* Widely-linear augmentation (conjugate branch) */
+    int wl_enable;                   /* include conj(x) taps when set */
+    int16_t cw_i[CQPSK_EQ_MAX_TAPS]; /* conj taps real */
+    int16_t cw_q[CQPSK_EQ_MAX_TAPS]; /* conj taps imag */
+    /* CMA warmup (blind pre-training) */
+    int cma_warmup;     /* number of samples to run CMA updates before DD */
+    int16_t cma_mu_q15; /* CMA step (tiny) */
+
+    /* Optional DQPSK-aware decision mode */
+    int dqpsk_decision;   /* 0=axis-aligned (default), 1=DQPSK decision */
+    int have_last_sym;    /* whether previous symbol output is valid */
+    int16_t last_y_i_q14; /* previous symbol output (Q14) */
+    int16_t last_y_q_q14; /* previous symbol output (Q14) */
 } cqpsk_eq_state_t;
 
 /* Initialize equalizer state with identity response. */
 void cqpsk_eq_init(cqpsk_eq_state_t* st);
+
+/* Reset only runtime history/counters; keep taps/flags. */
+void cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st);
+
+/* Reset DFE branch taps and decision history to zero (safe enable). */
+void cqpsk_eq_reset_dfe(cqpsk_eq_state_t* st);
+
+/* Reset WL (conjugate) branch taps to zero. */
+void cqpsk_eq_reset_wl(cqpsk_eq_state_t* st);
+
+/* Full reset: taps to identity, WL/DFE cleared, histories/counters cleared. */
+void cqpsk_eq_reset_all(cqpsk_eq_state_t* st);
 
 /*
  * Apply equalizer to interleaved I/Q samples in-place.

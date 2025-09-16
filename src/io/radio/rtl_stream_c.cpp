@@ -23,6 +23,14 @@ extern "C" {
 void dsd_rtl_stream_clear_output(void);
 long dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
+void dsd_rtl_stream_set_resampler_target(int target_hz);
+void dsd_rtl_stream_set_ted_sps(int sps);
+void dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
+                                     int sacch_err_delta, int voice_err_delta);
+void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
+void dsd_rtl_stream_cqpsk_set_dqpsk(int onoff);
+int dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
+int dsd_rtl_stream_cqpsk_get_dqpsk(int* onoff);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -184,4 +192,41 @@ rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
 extern "C" int
 rtl_stream_ted_bias(const RtlSdrContext* /*ctx*/) {
     return dsd_rtl_stream_ted_bias();
+}
+
+extern "C" void
+rtl_stream_set_resampler_target(int target_hz) {
+    dsd_rtl_stream_set_resampler_target(target_hz);
+}
+
+extern "C" void
+rtl_stream_set_ted_sps(int sps) {
+    dsd_rtl_stream_set_ted_sps(sps);
+}
+
+extern "C" void
+rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta, int sacch_err_delta,
+                            int voice_err_delta) {
+    dsd_rtl_stream_p25p2_err_update(slot, facch_ok_delta, facch_err_delta, sacch_ok_delta, sacch_err_delta,
+                                    voice_err_delta);
+}
+
+extern "C" void
+rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms) {
+    dsd_rtl_stream_cqpsk_set_rrc(enable, alpha_percent, span_syms);
+}
+
+extern "C" void
+rtl_stream_cqpsk_set_dqpsk(int onoff) {
+    dsd_rtl_stream_cqpsk_set_dqpsk(onoff);
+}
+
+extern "C" int
+rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
+    return dsd_rtl_stream_cqpsk_get_rrc(enable, alpha_percent, span_syms);
+}
+
+extern "C" int
+rtl_stream_cqpsk_get_dqpsk(int* onoff) {
+    return dsd_rtl_stream_cqpsk_get_dqpsk(onoff);
 }

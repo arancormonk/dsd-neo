@@ -1043,10 +1043,6 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->rtlsdr_ppm_error--;
     }
 
-    //anything with an entry box will need the inputs and outputs stopped first
-    //so probably just write a function to handle c input, and when c = certain values
-    //needing an entry box, then stop all of those
-
     return 0;
 
 } //end ncursesPrinter
