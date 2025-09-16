@@ -46,6 +46,11 @@ int ui_prompt_int(const char* title, int* out);
 int ui_prompt_double(const char* title, double* out);
 int ui_prompt_confirm(const char* title); // 1 = yes, 0 = no
 
+// Prefill variants that show current value in the input box
+int ui_prompt_string_prefill(const char* title, const char* current, char* out, size_t out_cap);
+int ui_prompt_int_prefill(const char* title, int current, int* out);
+int ui_prompt_double_prefill(const char* title, double current, double* out);
+
 // IO submenu entry point using the core framework
 void ui_menu_io_options(dsd_opts* opts, dsd_state* state);
 // Additional grouped submenus

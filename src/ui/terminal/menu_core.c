@@ -230,7 +230,7 @@ ui_menu_run(const NcMenuItem* items, size_t n_items, void* ctx) {
 }
 
 static int
-ui_prompt_common(const char* title, char* buf, size_t cap) {
+ui_prompt_common_prefill(const char* title, char* buf, size_t cap, const char* prefill) {
     if (!buf || cap == 0) {
         return 0;
     }
@@ -247,7 +247,16 @@ ui_prompt_common(const char* title, char* buf, size_t cap) {
     mvwprintw(win, 1, 2, "%s", title);
     mvwprintw(win, 3, 2, "> ");
     mvwprintw(win, h - 2, 2, "Enter=OK  Esc=Cancel");
-    wmove(win, 3, 4);
+    if (prefill && *prefill) {
+        // copy prefill and render it
+        strncpy(buf, prefill, cap - 1);
+        buf[cap - 1] = '\0';
+        len = strlen(buf);
+        mvwprintw(win, 3, 4, "%s", buf);
+        wmove(win, 3, 4 + (int)len);
+    } else {
+        wmove(win, 3, 4);
+    }
     wrefresh(win);
 
     while (1) {
@@ -290,14 +299,19 @@ ui_prompt_common(const char* title, char* buf, size_t cap) {
 }
 
 int
+ui_prompt_common(const char* title, char* buf, size_t cap) {
+    return ui_prompt_common_prefill(title, buf, cap, NULL);
+}
+
+int
 ui_prompt_string(const char* title, char* out, size_t out_cap) {
-    return ui_prompt_common(title, out, out_cap);
+    return ui_prompt_common_prefill(title, out, out_cap, NULL);
 }
 
 int
 ui_prompt_int(const char* title, int* out) {
     char tmp[64] = {0};
-    if (!ui_prompt_common(title, tmp, sizeof tmp)) {
+    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, NULL)) {
         return 0;
     }
     char* end = NULL;
@@ -312,7 +326,46 @@ ui_prompt_int(const char* title, int* out) {
 int
 ui_prompt_double(const char* title, double* out) {
     char tmp[64] = {0};
-    if (!ui_prompt_common(title, tmp, sizeof tmp)) {
+    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, NULL)) {
+        return 0;
+    }
+    char* end = NULL;
+    double v = strtod(tmp, &end);
+    if (!end || *end != '\0') {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+int
+ui_prompt_string_prefill(const char* title, const char* current, char* out, size_t out_cap) {
+    return ui_prompt_common_prefill(title, out, out_cap, (current && *current) ? current : NULL);
+}
+
+int
+ui_prompt_int_prefill(const char* title, int current, int* out) {
+    char pre[64];
+    snprintf(pre, sizeof pre, "%d", current);
+    char tmp[64] = {0};
+    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, pre)) {
+        return 0;
+    }
+    char* end = NULL;
+    long v = strtol(tmp, &end, 10);
+    if (!end || *end != '\0') {
+        return 0;
+    }
+    *out = (int)v;
+    return 1;
+}
+
+int
+ui_prompt_double_prefill(const char* title, double current, double* out) {
+    char pre[64];
+    snprintf(pre, sizeof pre, "%.6f", current);
+    char tmp[64] = {0};
+    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, pre)) {
         return 0;
     }
     char* end = NULL;
@@ -575,10 +628,10 @@ io_set_udp_out(void* vctx) {
     char host[256] = {0};
     int port = c->opts->udp_portno > 0 ? c->opts->udp_portno : 23456;
     snprintf(host, sizeof host, "%s", (c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1"));
-    if (!ui_prompt_string("UDP blaster host (default 127.0.0.1)", host, sizeof host)) {
+    if (!ui_prompt_string_prefill("UDP blaster host", c->opts->udp_hostname, host, sizeof host)) {
         return;
     }
-    if (!ui_prompt_int("UDP blaster port (default 23456)", &port)) {
+    if (!ui_prompt_int_prefill("UDP blaster port", port, &port)) {
         return;
     }
     if (svc_udp_output_config(c->opts, c->state, host, port) == 0) {
@@ -678,7 +731,7 @@ static void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
     int i = c->opts->rtl_dev_index;
-    if (ui_prompt_int("Device index", &i)) {
+    if (ui_prompt_int_prefill("Device index", i, &i)) {
         svc_rtl_set_dev_index(c->opts, i);
     }
 }
@@ -687,7 +740,7 @@ static void
 rtl_set_freq(void* v) {
     UiCtx* c = (UiCtx*)v;
     int f = (int)c->opts->rtlsdr_center_freq;
-    if (ui_prompt_int("Frequency (Hz)", &f)) {
+    if (ui_prompt_int_prefill("Frequency (Hz)", f, &f)) {
         svc_rtl_set_freq(c->opts, (uint32_t)f);
     }
 }
@@ -696,7 +749,7 @@ static void
 rtl_set_gain(void* v) {
     UiCtx* c = (UiCtx*)v;
     int g = c->opts->rtl_gain_value;
-    if (ui_prompt_int("Gain (0=AGC, 0..49)", &g)) {
+    if (ui_prompt_int_prefill("Gain (0=AGC, 0..49)", g, &g)) {
         svc_rtl_set_gain(c->opts, g);
     }
 }
@@ -705,7 +758,7 @@ static void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
     int p = c->opts->rtlsdr_ppm_error;
-    if (ui_prompt_int("PPM error (-200..200)", &p)) {
+    if (ui_prompt_int_prefill("PPM error (-200..200)", p, &p)) {
         svc_rtl_set_ppm(c->opts, p);
     }
 }
@@ -714,7 +767,7 @@ static void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     int bw = c->opts->rtl_bandwidth;
-    if (ui_prompt_int("Bandwidth kHz (4,6,8,12,16,24)", &bw)) {
+    if (ui_prompt_int_prefill("Bandwidth kHz (4,6,8,12,16,24)", bw, &bw)) {
         svc_rtl_set_bandwidth(c->opts, bw);
     }
 }
@@ -723,7 +776,7 @@ static void
 rtl_set_sql(void* v) {
     UiCtx* c = (UiCtx*)v;
     double dB = pwr_to_dB(c->opts->rtl_squelch_level);
-    if (ui_prompt_double("Squelch (dB, negative)", &dB)) {
+    if (ui_prompt_double_prefill("Squelch (dB, negative)", dB, &dB)) {
         svc_rtl_set_sql_db(c->opts, dB);
     }
 }
@@ -732,7 +785,7 @@ static void
 rtl_set_vol(void* v) {
     UiCtx* c = (UiCtx*)v;
     int m = c->opts->rtl_volume_multiplier;
-    if (ui_prompt_int("Volume multiplier (0..3)", &m)) {
+    if (ui_prompt_int_prefill("Volume multiplier (0..3)", m, &m)) {
         svc_rtl_set_volume_mult(c->opts, m);
     }
 }
@@ -772,12 +825,12 @@ io_tcp_direct_link(void* vctx) {
     snprintf(c->opts->tcp_hostname, sizeof c->opts->tcp_hostname, "%s", "localhost");
     c->opts->tcp_portno = 7355;
 
-    if (!ui_prompt_string("Enter TCP Direct Link Hostname (default: localhost)", c->opts->tcp_hostname,
-                          sizeof c->opts->tcp_hostname)) {
+    if (!ui_prompt_string_prefill("Enter TCP Direct Link Hostname", c->opts->tcp_hostname, c->opts->tcp_hostname,
+                                  sizeof c->opts->tcp_hostname)) {
         return;
     }
     int port = c->opts->tcp_portno;
-    if (!ui_prompt_int("Enter TCP Direct Link Port Number (default: 7355)", &port)) {
+    if (!ui_prompt_int_prefill("Enter TCP Direct Link Port Number", port, &port)) {
         return;
     }
     c->opts->tcp_portno = port;
@@ -796,13 +849,13 @@ io_rigctl_config(void* vctx) {
     snprintf(c->opts->rigctlhostname, sizeof c->opts->rigctlhostname, "%s", "localhost");
     c->opts->rigctlportno = 4532;
 
-    if (!ui_prompt_string("Enter RIGCTL Hostname (default: localhost)", c->opts->rigctlhostname,
-                          sizeof c->opts->rigctlhostname)) {
+    if (!ui_prompt_string_prefill("Enter RIGCTL Hostname", c->opts->rigctlhostname, c->opts->rigctlhostname,
+                                  sizeof c->opts->rigctlhostname)) {
         c->opts->use_rigctl = 0;
         return;
     }
     int port = c->opts->rigctlportno;
-    if (!ui_prompt_int("Enter RIGCTL Port Number (default: 4532)", &port)) {
+    if (!ui_prompt_int_prefill("Enter RIGCTL Port Number", port, &port)) {
         c->opts->use_rigctl = 0;
         return;
     }
@@ -914,6 +967,176 @@ lbl_stop_symbol_capture(void* vctx, char* b, size_t n) {
     return b;
 }
 
+// ---- Toggle status labels (file-scope helpers) ----
+static const char*
+lbl_invert_all(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Signal Inversion [%s]", c->opts->inverted_dmr ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_inv_x2(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Invert X2-TDMA [%s]", c->opts->inverted_x2tdma ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_inv_dmr(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Invert DMR [%s]", c->opts->inverted_dmr ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_inv_dpmr(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Invert dPMR [%s]", c->opts->inverted_dpmr ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_inv_m17(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Invert M17 [%s]", c->opts->inverted_m17 ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_monitor(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Source Audio Monitor [%s]", c->opts->monitor_input_audio ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_cosine(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Cosine Filter [%s]", c->opts->use_cosine_filter ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_toggle_payload(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Payload Logging [%s]", c->opts->payload ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_call_alert(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Call Alert Beep [%s]", c->opts->call_alert ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_crc_relax(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    int relaxed = (c->opts->aggressive_framesync == 0);
+    snprintf(b, n, "Toggle Relaxed CRC checks [%s]", relaxed ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_trunk(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Trunking [%s]", c->opts->p25_trunk ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_scan(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Scanning Mode [%s]", c->opts->scanner_mode ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_pref_cc(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Prefer P25 CC Candidates [%s]", c->opts->p25_prefer_candidates ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_lcw(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle P25 LCW Retune [%s]", c->opts->p25_lcw_retune ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_allow(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Allow/White List [%s]", c->opts->trunk_use_allow_list ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_tune_group(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Tune Group Calls [%s]", c->opts->trunk_tune_group_calls ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_tune_priv(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Tune Private Calls [%s]", c->opts->trunk_tune_private_calls ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_tune_data(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Tune Data Calls [%s]", c->opts->trunk_tune_data_calls ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_rev_mute(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle Reverse Mute [%s]", c->opts->reverse_mute ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_dmr_le(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Toggle DMR Late Entry [%s]", c->opts->dmr_le ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_slotpref(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    const char* now = (c->opts->slot_preference == 0) ? "1" : (c->opts->slot_preference == 1) ? "2" : "Auto";
+    snprintf(b, n, "Set TDMA Slot Preference... [now %s]", now);
+    return b;
+}
+
+static const char*
+lbl_slots_on(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    const char* now = (c->opts->slot1_on && c->opts->slot2_on)
+                          ? "both"
+                          : (c->opts->slot1_on ? "1" : (c->opts->slot2_on ? "2" : "off"));
+    snprintf(b, n, "Set TDMA Synth Slots... [now %s]", now);
+    return b;
+}
+
+static const char*
+lbl_muting(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    int dmr = (c->opts->dmr_mute_encL == 1 && c->opts->dmr_mute_encR == 1);
+    int p25 = (c->opts->unmute_encrypted_p25 == 0);
+    int active = (dmr && p25);
+    snprintf(b, n, "Toggle Encrypted Audio Muting [%s]", active ? "Active" : "Inactive");
+    return b;
+}
+
 void
 ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
     // Reorganized: Devices & IO (sources and immediate playback controls)
@@ -961,13 +1184,30 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
          .on_select = io_stop_symbol_playback},
         {.id = "invert",
          .label = "Toggle Signal Inversion",
+         .label_fn = lbl_invert_all,
          .help = "Invert/uninvert all supported inputs.",
          .is_enabled = io_always_on,
          .on_select = act_toggle_invert},
-        {.id = "inv_x2", .label = "Invert X2-TDMA", .help = "Toggle X2 inversion.", .on_select = inv_x2},
-        {.id = "inv_dmr", .label = "Invert DMR", .help = "Toggle DMR inversion.", .on_select = inv_dmr},
-        {.id = "inv_dpmr", .label = "Invert dPMR", .help = "Toggle dPMR inversion.", .on_select = inv_dpmr},
-        {.id = "inv_m17", .label = "Invert M17", .help = "Toggle M17 inversion.", .on_select = inv_m17},
+        {.id = "inv_x2",
+         .label = "Invert X2-TDMA",
+         .label_fn = lbl_inv_x2,
+         .help = "Toggle X2 inversion.",
+         .on_select = inv_x2},
+        {.id = "inv_dmr",
+         .label = "Invert DMR",
+         .label_fn = lbl_inv_dmr,
+         .help = "Toggle DMR inversion.",
+         .on_select = inv_dmr},
+        {.id = "inv_dpmr",
+         .label = "Invert dPMR",
+         .label_fn = lbl_inv_dpmr,
+         .help = "Toggle dPMR inversion.",
+         .on_select = inv_dpmr},
+        {.id = "inv_m17",
+         .label = "Invert M17",
+         .label_fn = lbl_inv_m17,
+         .help = "Toggle M17 inversion.",
+         .on_select = inv_m17},
         {.id = "udp_out",
          .label = "Configure UDP Output...",
          .help = "Set UDP blaster host/port and enable.",
@@ -976,10 +1216,12 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
         {.id = "gain_a", .label = "Set Analog Output Gain...", .help = "0..100.", .on_select = io_set_gain_ana},
         {.id = "monitor",
          .label = "Toggle Source Audio Monitor",
+         .label_fn = lbl_monitor,
          .help = "Enable analog source monitor.",
          .on_select = io_toggle_monitor},
         {.id = "cosine",
          .label = "Toggle Cosine Filter",
+         .label_fn = lbl_cosine,
          .help = "Enable/disable cosine filter.",
          .on_select = io_toggle_cosine},
     };
@@ -1011,6 +1253,7 @@ ui_menu_logging_capture(dsd_opts* opts, dsd_state* state) {
          .on_select = io_enable_per_call_wav},
         {.id = "payload",
          .label = "Toggle Payload Logging",
+         .label_fn = lbl_toggle_payload,
          .help = "Toggle raw payloads to console.",
          .is_enabled = io_always_on,
          .on_select = act_toggle_payload},
@@ -1036,6 +1279,7 @@ ui_menu_logging_capture(dsd_opts* opts, dsd_state* state) {
          .on_select = act_dsp_out},
         {.id = "crc_relax",
          .label = "Toggle Relaxed CRC checks",
+         .label_fn = lbl_crc_relax,
          .help = "Relax CRC checks across protocols.",
          .on_select = act_crc_relax},
         {.id = "reset_eh",
@@ -1045,6 +1289,7 @@ ui_menu_logging_capture(dsd_opts* opts, dsd_state* state) {
          .on_select = act_reset_eh},
         {.id = "call_alert",
          .label = "Toggle Call Alert Beep",
+         .label_fn = lbl_call_alert,
          .help = "Audible beep on call start.",
          .is_enabled = io_always_on,
          .on_select = io_toggle_call_alert},
@@ -1059,19 +1304,23 @@ ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
     static const NcMenuItem items[] = {
         {.id = "trunk_on",
          .label = "Toggle Trunking",
+         .label_fn = lbl_trunk,
          .help = "Enable/disable trunking features.",
          .on_select = act_trunk_toggle},
         {.id = "scan_on",
          .label = "Toggle Scanning Mode",
+         .label_fn = lbl_scan,
          .help = "Enable/disable conventional scanning.",
          .on_select = act_scan_toggle},
         {.id = "prefer_cc",
          .label = "Prefer P25 CC Candidates",
+         .label_fn = lbl_pref_cc,
          .help = "Prefer viable control-channel candidates during hunt.",
          .is_enabled = io_always_on,
          .on_select = io_toggle_cc_candidates},
         {.id = "lcw_retune",
          .label = "Toggle P25 LCW Retune",
+         .label_fn = lbl_lcw,
          .help = "Enable LCW explicit retune.",
          .on_select = act_lcw_toggle},
         {.id = "p2params",
@@ -1099,18 +1348,22 @@ ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
          .on_select = act_import_group},
         {.id = "allow_list",
          .label = "Toggle Allow/White List",
+         .label_fn = lbl_allow,
          .help = "Use group list as allow list.",
          .on_select = act_allow_toggle},
         {.id = "tune_group",
          .label = "Toggle Tune Group Calls",
+         .label_fn = lbl_tune_group,
          .help = "Enable/disable group call tuning.",
          .on_select = act_tune_group},
         {.id = "tune_priv",
          .label = "Toggle Tune Private Calls",
+         .label_fn = lbl_tune_priv,
          .help = "Enable/disable private call tuning.",
          .on_select = act_tune_priv},
         {.id = "tune_data",
          .label = "Toggle Tune Data Calls",
+         .label_fn = lbl_tune_data,
          .help = "Enable/disable data call tuning.",
          .on_select = act_tune_data},
         {.id = "tg_hold",
@@ -1123,18 +1376,22 @@ ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
          .on_select = act_hangtime},
         {.id = "reverse_mute",
          .label = "Toggle Reverse Mute",
+         .label_fn = lbl_rev_mute,
          .help = "Reverse mute behavior.",
          .on_select = act_rev_mute},
         {.id = "dmr_le",
          .label = "Toggle DMR Late Entry",
+         .label_fn = lbl_dmr_le,
          .help = "Enable/disable DMR late entry.",
          .on_select = act_dmr_le},
         {.id = "slot_pref",
          .label = "Set TDMA Slot Preference...",
+         .label_fn = lbl_slotpref,
          .help = "Prefer slot 1 or 2 (DMR/P25p2).",
          .on_select = act_slot_pref},
         {.id = "slots_on",
          .label = "Set TDMA Synth Slots...",
+         .label_fn = lbl_slots_on,
          .help = "Bitmask: 1=slot1, 2=slot2, 3=both, 0=off.",
          .on_select = act_slots_on},
     };
@@ -1166,6 +1423,7 @@ ui_menu_keys_security(dsd_opts* opts, dsd_state* state) {
          .on_select = act_keys_hex},
         {.id = "muting",
          .label = "Toggle Encrypted Audio Muting",
+         .label_fn = lbl_muting,
          .help = "Toggle P25 and DMR encrypted audio muting.",
          .is_enabled = io_always_on,
          .on_select = io_toggle_mute_enc},
@@ -1922,7 +2180,7 @@ static void
 act_event_log_set(void* v) {
     UiCtx* c = (UiCtx*)v;
     char path[1024] = {0};
-    if (ui_prompt_string("Event log filename", path, sizeof path)) {
+    if (ui_prompt_string_prefill("Event log filename", c->opts->event_out_file, path, sizeof path)) {
         if (svc_set_event_log(c->opts, path) == 0) {
             ui_statusf("Event log: %s", path);
         }
@@ -1938,7 +2196,7 @@ static void
 act_static_wav(void* v) {
     UiCtx* c = (UiCtx*)v;
     char path[1024] = {0};
-    if (ui_prompt_string("Static WAV filename", path, sizeof path)) {
+    if (ui_prompt_string_prefill("Static WAV filename", c->opts->wav_out_file, path, sizeof path)) {
         if (svc_open_static_wav(c->opts, c->state, path) == 0) {
             ui_statusf("Static WAV: %s", path);
         }
@@ -1949,7 +2207,7 @@ static void
 act_raw_wav(void* v) {
     UiCtx* c = (UiCtx*)v;
     char path[1024] = {0};
-    if (ui_prompt_string("Raw WAV filename", path, sizeof path)) {
+    if (ui_prompt_string_prefill("Raw WAV filename", c->opts->wav_out_file_raw, path, sizeof path)) {
         if (svc_open_raw_wav(c->opts, c->state, path) == 0) {
             ui_statusf("Raw WAV: %s", path);
         }
@@ -1960,7 +2218,7 @@ static void
 act_dsp_out(void* v) {
     UiCtx* c = (UiCtx*)v;
     char name[256] = {0};
-    if (ui_prompt_string("DSP output base filename", name, sizeof name)) {
+    if (ui_prompt_string_prefill("DSP output base filename", c->opts->dsp_out_file, name, sizeof name)) {
         if (svc_set_dsp_output_file(c->opts, name) == 0) {
             ui_statusf("DSP out: %s", c->opts->dsp_out_file);
         }
@@ -1991,7 +2249,7 @@ static void
 act_setmod_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     int bw = c->opts->setmod_bw;
-    if (ui_prompt_int("Setmod BW (Hz)", &bw)) {
+    if (ui_prompt_int_prefill("Setmod BW (Hz)", bw, &bw)) {
         svc_set_rigctl_setmod_bw(c->opts, bw);
     }
 }
@@ -2039,7 +2297,7 @@ static void
 act_tg_hold(void* v) {
     UiCtx* c = (UiCtx*)v;
     int tg = (int)c->state->tg_hold;
-    if (ui_prompt_int("TG Hold", &tg)) {
+    if (ui_prompt_int_prefill("TG Hold", tg, &tg)) {
         svc_set_tg_hold(c->state, (unsigned)tg);
     }
 }
@@ -2048,7 +2306,7 @@ static void
 act_hangtime(void* v) {
     UiCtx* c = (UiCtx*)v;
     double s = c->opts->trunk_hangtime;
-    if (ui_prompt_double("Hangtime seconds", &s)) {
+    if (ui_prompt_double_prefill("Hangtime seconds", s, &s)) {
         svc_set_hangtime(c->opts, s);
     }
 }
@@ -2067,7 +2325,7 @@ static void
 act_slot_pref(void* v) {
     UiCtx* c = (UiCtx*)v;
     int p = c->opts->slot_preference + 1;
-    if (ui_prompt_int("Slot 1 or 2", &p)) {
+    if (ui_prompt_int_prefill("Slot 1 or 2", p, &p)) {
         if (p < 1) {
             p = 1;
         }
@@ -2082,7 +2340,7 @@ static void
 act_slots_on(void* v) {
     UiCtx* c = (UiCtx*)v;
     int m = (c->opts->slot1_on ? 1 : 0) | (c->opts->slot2_on ? 2 : 0);
-    if (ui_prompt_int("Slots mask (0..3)", &m)) {
+    if (ui_prompt_int_prefill("Slots mask (0..3)", m, &m)) {
         svc_set_slots_onoff(c->opts, m);
     }
 }
@@ -2219,9 +2477,12 @@ act_p2_params(void* v) {
     UiCtx* c = (UiCtx*)v;
     unsigned long long w = 0, s = 0, n = 0;
     char buf[64];
-    if (ui_prompt_string("Enter Phase 2 WACN (HEX)", buf, sizeof buf) && parse_hex_u64(buf, &w)) {}
-    if (ui_prompt_string("Enter Phase 2 SYSID (HEX)", buf, sizeof buf) && parse_hex_u64(buf, &s)) {}
-    if (ui_prompt_string("Enter Phase 2 NAC/CC (HEX)", buf, sizeof buf) && parse_hex_u64(buf, &n)) {}
+    snprintf(buf, sizeof buf, "%llX", (unsigned long long)c->state->p2_wacn);
+    if (ui_prompt_string_prefill("Enter Phase 2 WACN (HEX)", buf, buf, sizeof buf) && parse_hex_u64(buf, &w)) {}
+    snprintf(buf, sizeof buf, "%llX", (unsigned long long)c->state->p2_sysid);
+    if (ui_prompt_string_prefill("Enter Phase 2 SYSID (HEX)", buf, buf, sizeof buf) && parse_hex_u64(buf, &s)) {}
+    snprintf(buf, sizeof buf, "%llX", (unsigned long long)c->state->p2_cc);
+    if (ui_prompt_string_prefill("Enter Phase 2 NAC/CC (HEX)", buf, buf, sizeof buf) && parse_hex_u64(buf, &n)) {}
     svc_set_p2_params(c->state, w, s, n);
 }
 
