@@ -642,7 +642,9 @@ mf5_complex_interleaved(struct demod_state* d) {
     }
     const int N = d->lp_len >> 1; /* complex samples */
     int16_t* in = d->lowpassed;
-    int16_t* out = d->hb_workbuf; /* reuse work buffer */
+    /* Choose an output buffer that does not alias input. If lowpassed already
+       points to hb_workbuf (odd HB decim passes), use timing_buf as scratch. */
+    int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     /* taps ~ [1, 4, 6, 4, 1] / 16 in Q15 */
     const int t0 = 2048;  /* 1/16 */
     const int t1 = 8192;  /* 4/16 */
@@ -774,7 +776,8 @@ mf_rrc_complex_interleaved(struct demod_state* d) {
 
     const int N = d->lp_len >> 1; /* complex length */
     int16_t* in = d->lowpassed;
-    int16_t* out = d->hb_workbuf; /* reuse work buffer */
+    /* Avoid in-place aliasing with hb_workbuf; use timing_buf when needed. */
+    int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     int mid = last_taps_len / 2;
     for (int n = 0; n < N; n++) {
         int64_t accI = 0;
