@@ -406,7 +406,8 @@ demod_thread_fn(void* arg) {
                         g_snr_qpsk_db = ema;
                     }
                 }
-            } else if (sps >= 6 && sps <= 12) {
+            }
+            if (sps >= 6 && sps <= 12) {
                 /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
                 enum { MAXS = 8192 };
 
