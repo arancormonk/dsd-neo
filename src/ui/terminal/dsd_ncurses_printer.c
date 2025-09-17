@@ -287,6 +287,9 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 #endif
 }
 
+/* Forward decl for int comparator used in eye/hist quartile computation */
+static int cmp_int_asc(const void* a, const void* b);
+
 static void
 print_eye_view(dsd_opts* opts) {
 #ifdef USE_RTLSDR
@@ -302,20 +305,32 @@ print_eye_view(dsd_opts* opts) {
         printw("------------------------------------------------------------------------------\n");
         return;
     }
-    /* Grid size */
-    const int W = 65; /* columns */
-    const int H = 17; /* rows */
-    char grid[(size_t)H][(size_t)W];
+    /* Grid size adaptive */
+    int rows = 24, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    int W = cols - 4;
+    if (W < 32) {
+        W = 32;
+    }
+    if (W > 97) {
+        W = 97;
+    }
+    int H = rows / 3;
+    if (H < 12) {
+        H = 12;
+    }
+    if (H > 25) {
+        H = 25;
+    }
+    /* Density buffer */
+    static unsigned short den[33][97]; /* max HxW */
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            grid[y][x] = ' ';
+            den[y][x] = 0;
         }
     }
     int mid = H / 2;
-    for (int x = 0; x < W; x++) {
-        grid[mid][x] = '-';
-    }
-    /* Normalize scale using EMA for stability */
+    /* Normalize peak with EMA for stability */
     static int s_peak = 256;
     int peak = 1;
     for (int i = 0; i < n; i++) {
@@ -332,51 +347,105 @@ print_eye_view(dsd_opts* opts) {
     if (s_peak < 64) {
         s_peak = 64;
     }
-    /* Overlay several traces, each spanning ~2 symbols mapped to W columns */
-    int span = 2 * sps;
-    if (span < 8) {
-        span = 8;
+    /* Build quartiles for reference levels */
+    int step_ds = (n > 8192) ? (n / 8192) : 1;
+    int m = (n + step_ds - 1) / step_ds;
+    if (m > 8192) {
+        m = 8192;
     }
-    int step = sps / 4;
-    if (step < 1) {
-        step = 1;
+    static int qvals[8192];
+    int vi = 0;
+    for (int i = 0; i < n && vi < m; i += step_ds) {
+        qvals[vi++] = (int)buf[i];
     }
-    int overlays = H; /* number of traces */
-    for (int o = 0; o < overlays; o++) {
-        int start = (n - 1) - o * step - span;
-        if (start < 0) {
-            break;
+    m = vi;
+    if (m < 8) {
+        qvals[0] = -s_peak;
+        qvals[1] = s_peak;
+        m = 2;
+    }
+    qsort(qvals, (size_t)m, sizeof(int), cmp_int_asc);
+    int q1 = qvals[(size_t)m / 4];
+    int q2 = qvals[(size_t)m / 2];
+    int q3 = qvals[(size_t)(3 * (size_t)m) / 4];
+    /* Accumulate density by folding modulo 2 symbols */
+    int two_sps = 2 * sps;
+    if (two_sps < 8) {
+        two_sps = 8;
+    }
+    for (int i = 0; i < n; i++) {
+        double v = (double)buf[i] / (double)s_peak;
+        if (v > 1.0) {
+            v = 1.0;
         }
+        if (v < -1.0) {
+            v = -1.0;
+        }
+        int y = mid - (int)lrint(v * (H / 2 - 1));
+        if (y < 0) {
+            y = 0;
+        }
+        if (y >= H) {
+            y = H - 1;
+        }
+        int phase = i % two_sps;
+        int x = (int)lrint(((double)phase / (double)(two_sps - 1)) * (double)(W - 1));
+        if (x < 0) {
+            x = 0;
+        }
+        if (x >= W) {
+            x = W - 1;
+        }
+        if (den[y][x] < 65535) {
+            den[y][x]++;
+        }
+    }
+    /* Determine max density for mapping */
+    unsigned short dmax = 1;
+    for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            double t = (double)x / (double)(W - 1);
-            int idx = start + (int)lrint(t * (double)(span - 1));
-            if (idx < 0) {
-                idx = 0;
-            }
-            if (idx >= n) {
-                idx = n - 1;
-            }
-            double v = (double)buf[idx] / (double)s_peak; /* -1..+1 */
-            int y = mid - (int)lrint(v * (H / 2 - 1));
-            if (y < 0) {
-                y = 0;
-            }
-            if (y >= H) {
-                y = H - 1;
-            }
-            if (grid[y][x] == ' ') {
-                grid[y][x] = '.';
+            if (den[y][x] > dmax) {
+                dmax = den[y][x];
             }
         }
     }
-    /* Print */
+    /* Draw density */
     for (int y = 0; y < H; y++) {
         printw("|");
         for (int x = 0; x < W; x++) {
-            addch(grid[y][x]);
+            unsigned short d = den[y][x];
+            char ch = ' ';
+            if (d > 0) {
+                double f = (double)d / (double)dmax;
+                ch = (f > 0.66) ? '#' : (f > 0.33) ? '*' : '.';
+            }
+            addch(ch);
         }
         printw("\n");
     }
+    /* Reference levels info */
+    int yq1 = mid - (int)lrint(((double)q1 / (double)s_peak) * (H / 2 - 1));
+    if (yq1 < 0) {
+        yq1 = 0;
+    }
+    if (yq1 >= H) {
+        yq1 = H - 1;
+    }
+    int yq2 = mid - (int)lrint(((double)q2 / (double)s_peak) * (H / 2 - 1));
+    if (yq2 < 0) {
+        yq2 = 0;
+    }
+    if (yq2 >= H) {
+        yq2 = H - 1;
+    }
+    int yq3 = mid - (int)lrint(((double)q3 / (double)s_peak) * (H / 2 - 1));
+    if (yq3 < 0) {
+        yq3 = 0;
+    }
+    if (yq3 >= H) {
+        yq3 = H - 1;
+    }
+    printw("| Levels: Q1@row=%d  Median@row=%d  Q3@row=%d\n", yq1, yq2, yq3);
     printw("------------------------------------------------------------------------------\n");
 #else
     printw("--Eye Diagram-----------------------------------------------------------------\n");

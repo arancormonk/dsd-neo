@@ -231,7 +231,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 101 || c == 69) //'e' or 'E' key, toggle eye view
+    if (c == 69) //'E' key, toggle eye view
     {
         opts->eye_view = opts->eye_view ? 0 : 1;
     }
