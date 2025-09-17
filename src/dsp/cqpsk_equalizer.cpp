@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <cstddef>
 #include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <stdint.h>
 
@@ -21,6 +22,23 @@ sat16_i32(int32_t x) {
         return -32768;
     }
     return (int16_t)x;
+}
+
+/* Ring buffer of recent equalized symbol outputs at sym ticks (Q0 int16) */
+static const int kSymMax = 2048;
+static int16_t g_sym_xy[kSymMax * 2];
+static volatile int g_sym_head = 0; /* pairs written [0..kSymMax-1], wraps */
+
+static inline void
+sym_ring_append_q0(int32_t yI_q0, int32_t yQ_q0) {
+    int h = g_sym_head;
+    g_sym_xy[(size_t)(h << 1) + 0] = sat16_i32(yI_q0);
+    g_sym_xy[(size_t)(h << 1) + 1] = sat16_i32(yQ_q0);
+    h++;
+    if (h >= kSymMax) {
+        h = 0;
+    }
+    g_sym_head = h;
 }
 
 void
@@ -484,6 +502,24 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
             st->last_y_i_q14 = (int16_t)accI_q14;
             st->last_y_q_q14 = (int16_t)accQ_q14;
             st->have_last_sym = 1;
+            /* Append equalized symbol (Q0) to ring for EVM/SNR */
+            sym_ring_append_q0(yI, yQ);
         }
     }
+}
+
+extern "C" int
+cqpsk_eq_get_symbols(int16_t* out_xy, int max_pairs) {
+    if (!out_xy || max_pairs <= 0) {
+        return 0;
+    }
+    int head = g_sym_head; /* snapshot */
+    int n = (max_pairs < kSymMax) ? max_pairs : kSymMax;
+    int start = head;
+    for (int k = 0; k < n; k++) {
+        int idx = (start + k) % kSymMax;
+        out_xy[(size_t)(k << 1) + 0] = g_sym_xy[(size_t)(idx << 1) + 0];
+        out_xy[(size_t)(k << 1) + 1] = g_sym_xy[(size_t)(idx << 1) + 1];
+    }
+    return n;
 }

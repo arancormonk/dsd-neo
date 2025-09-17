@@ -241,6 +241,16 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
     }
 
+    if (c == 85) //'U' key, toggle Unicode blocks in eye view
+    {
+        opts->eye_unicode = opts->eye_unicode ? 0 : 1;
+    }
+
+    if (c == 67) //'C' key, toggle colorized eye view
+    {
+        opts->eye_color = opts->eye_color ? 0 : 1;
+    }
+
     if (c == 116) //'t' key, toggle trunking
     {
         if (opts->p25_trunk == 1) {

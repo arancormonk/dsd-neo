@@ -89,6 +89,13 @@ void cqpsk_eq_reset_all(cqpsk_eq_state_t* st);
  */
 void cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len);
 
+/*
+ * Retrieve recent equalized symbol outputs captured at symbol ticks.
+ * Copies up to max_pairs complex samples (interleaved I,Q in Q0 int16) into out_xy.
+ * Returns the number of pairs copied (0 if unavailable).
+ */
+int cqpsk_eq_get_symbols(int16_t* out_xy, int max_pairs);
+
 #ifdef __cplusplus
 }
 #endif

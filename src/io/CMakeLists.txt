@@ -13,6 +13,7 @@ if(RTLSDR_FOUND)
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${_PUBLIC_INCLUDES} ${RTLSDR_INCLUDE_DIRS}
   )
+  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp)
 else()
   # Provide a stub target so linking remains unconditional upstream
   add_library(dsd-neo_io_radio INTERFACE)

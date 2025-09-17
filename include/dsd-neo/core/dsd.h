@@ -397,6 +397,8 @@ typedef struct {
     uint8_t ncurses_history;
     uint8_t eye_view;      //ncurses timing/eye diagram for C4FM/FSK (0=off)
     uint8_t fsk_hist_view; //ncurses 4-level histogram for C4FM/FSK (0=off)
+    uint8_t eye_unicode;   //use Unicode block glyphs in eye diagram (0=ASCII)
+    uint8_t eye_color;     //use colorized density in eye diagram (0=mono)
     int reset_state;
     int payload;
     char output_name[1024];

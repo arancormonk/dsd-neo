@@ -122,6 +122,17 @@ int rtl_stream_get_ted_force(void);
  */
 int rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
 
+/**
+ * @brief Get smoothed demod SNR estimate in dB (post-filter, center-of-symbol).
+ *
+ * Computed on the demod thread for digital modes using I-channel samples near
+ * symbol centers and a 4-level clustering heuristic for C4FM/FSK.
+ * Returns a negative value when unavailable.
+ */
+double rtl_stream_get_snr_c4fm(void);
+double rtl_stream_get_snr_cqpsk(void);
+double rtl_stream_get_snr_gfsk(void);
+
 /* Runtime DSP adjustments and feedback hooks */
 /**
  * @brief Set CQPSK path parameters at runtime; pass -1 to leave any field unchanged.

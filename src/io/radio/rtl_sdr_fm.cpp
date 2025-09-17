@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -324,6 +325,11 @@ demod_reset_on_retune(struct demod_state* s) {
  * @param arg Pointer to `demod_state`.
  * @return NULL on exit.
  */
+/* SNR buffers for different modulations */
+static double g_snr_c4fm_db = -100.0;
+static double g_snr_qpsk_db = -100.0;
+static double g_snr_gfsk_db = -100.0;
+
 static void*
 demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
@@ -344,6 +350,178 @@ demod_thread_fn(void* arg) {
         constellation_ring_append(d->lowpassed, d->lp_len, d->ted_sps);
         /* Capture I-channel for eye diagram */
         eye_ring_append_i_chan(d->lowpassed, d->lp_len);
+
+        /* Estimate SNR per modulation using post-filter samples */
+        const int16_t* iq = d->lowpassed;
+        const int n_iq = d->lp_len;
+        const int sps = d->ted_sps;
+        if (iq && n_iq >= 4 && sps >= 2) {
+            const int pairs = n_iq / 2;
+            const int mid = sps / 2;
+            int win = sps / 10;
+            if (win < 1) {
+                win = 1;
+            }
+            if (win > mid) {
+                win = mid;
+            }
+            /* QPSK/CQPSK: EVM-based SNR from equalizer symbol outputs */
+            if (d->cqpsk_enable) {
+                enum { MAXP = 2048 };
+
+                static int16_t syms[(size_t)MAXP * 2];
+                int n = cqpsk_eq_get_symbols(syms, MAXP);
+                if (n > 32) {
+                    double sum_mag = 0.0;
+                    for (int i = 0; i < n; i++) {
+                        double I = (double)syms[(size_t)(i << 1) + 0];
+                        double Q = (double)syms[(size_t)(i << 1) + 1];
+                        sum_mag += sqrt(I * I + Q * Q);
+                    }
+                    double r_mean = sum_mag / (double)n;
+                    double a = r_mean / 1.41421356237; /* per-axis target amplitude */
+                    double e2_sum = 0.0, t2_sum = 0.0;
+                    for (int i = 0; i < n; i++) {
+                        double I = (double)syms[(size_t)(i << 1) + 0];
+                        double Q = (double)syms[(size_t)(i << 1) + 1];
+                        double ti = (I >= 0.0) ? a : -a;
+                        double tq = (Q >= 0.0) ? a : -a;
+                        double ei = I - ti;
+                        double eq = Q - tq;
+                        e2_sum += ei * ei + eq * eq;
+                        t2_sum += ti * ti + tq * tq;
+                    }
+                    if (t2_sum > 1e-9) {
+                        double evm = sqrt(e2_sum / (double)n) / sqrt(t2_sum / (double)n);
+                        if (evm < 1e-6) {
+                            evm = 1e-6;
+                        }
+                        double snr = 20.0 * log10(1.0 / evm);
+                        static double ema = -100.0;
+                        if (ema < -50.0) {
+                            ema = snr;
+                        } else {
+                            ema = 0.8 * ema + 0.2 * snr;
+                        }
+                        g_snr_qpsk_db = ema;
+                    }
+                }
+            } else if (sps >= 6 && sps <= 12) {
+                /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
+                enum { MAXS = 8192 };
+
+                static int vals[(size_t)MAXS];
+                int m = 0;
+                for (int k = 0; k < pairs && m < MAXS; k++) {
+                    int phase = k % sps;
+                    if (phase >= mid - win && phase <= mid + win) {
+                        vals[m++] = (int)iq[2 * k + 0]; /* I-channel */
+                    }
+                }
+                if (m > 32) {
+                    auto cmp_int = [](const void* a, const void* b) {
+                        int ia = *(const int*)a, ib = *(const int*)b;
+                        return (ia > ib) - (ia < ib);
+                    };
+                    qsort(vals, (size_t)m, sizeof(int), cmp_int);
+                    int q1 = vals[(size_t)m / 4];
+                    int q2 = vals[(size_t)m / 2];
+                    int q3 = vals[(size_t)(3 * (size_t)m) / 4];
+                    /* 4-level (C4FM-like) */
+                    {
+                        double sum[4] = {0, 0, 0, 0};
+                        int cnt[4] = {0, 0, 0, 0};
+                        for (int i = 0; i < m; i++) {
+                            int v = vals[i];
+                            int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
+                            sum[b] += v;
+                            cnt[b]++;
+                        }
+                        if (cnt[0] && cnt[1] && cnt[2] && cnt[3]) {
+                            double mu[4];
+                            int total = 0;
+                            for (int b = 0; b < 4; b++) {
+                                mu[b] = sum[b] / (double)cnt[b];
+                                total += cnt[b];
+                            }
+                            double nsum = 0.0;
+                            for (int i = 0; i < m; i++) {
+                                int v = vals[i];
+                                int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
+                                double e = (double)v - mu[b];
+                                nsum += e * e;
+                            }
+                            double noise_var = nsum / (double)total;
+                            if (noise_var > 1e-9) {
+                                double mu_all = 0.0;
+                                for (int b = 0; b < 4; b++) {
+                                    mu_all += mu[b] * (double)cnt[b] / (double)total;
+                                }
+                                double ssum = 0.0;
+                                for (int b = 0; b < 4; b++) {
+                                    double d = mu[b] - mu_all;
+                                    ssum += (double)cnt[b] * d * d;
+                                }
+                                double sig_var = ssum / (double)total;
+                                if (sig_var > 1e-9) {
+                                    double snr = 10.0 * log10(sig_var / noise_var);
+                                    static double ema = -100.0;
+                                    if (ema < -50.0) {
+                                        ema = snr;
+                                    } else {
+                                        ema = 0.8 * ema + 0.2 * snr;
+                                    }
+                                    g_snr_c4fm_db = ema;
+                                }
+                            }
+                        }
+                        /* 2-level (GFSK-like) using median split */
+                        {
+                            double sumL = 0.0, sumH = 0.0;
+                            int cntL = 0, cntH = 0;
+                            for (int i = 0; i < m; i++) {
+                                int v = vals[i];
+                                if (v <= q2) {
+                                    sumL += v;
+                                    cntL++;
+                                } else {
+                                    sumH += v;
+                                    cntH++;
+                                }
+                            }
+                            if (cntL > 0 && cntH > 0) {
+                                double muL = sumL / (double)cntL, muH = sumH / (double)cntH;
+                                int total = cntL + cntH;
+                                double nsum = 0.0;
+                                for (int i = 0; i < m; i++) {
+                                    int v = vals[i];
+                                    double mu = (v <= q2) ? muL : muH;
+                                    double e = (double)v - mu;
+                                    nsum += e * e;
+                                }
+                                double noise_var = nsum / (double)total;
+                                if (noise_var > 1e-9) {
+                                    double mu_all = (muL * (double)cntL + muH * (double)cntH) / (double)total;
+                                    double ssum = (double)cntL * (muL - mu_all) * (muL - mu_all)
+                                                  + (double)cntH * (muH - mu_all) * (muH - mu_all);
+                                    double sig_var = ssum / (double)total;
+                                    if (sig_var > 1e-9) {
+                                        double snr = 10.0 * log10(sig_var / noise_var);
+                                        static double ema = -100.0;
+                                        if (ema < -50.0) {
+                                            ema = snr;
+                                        } else {
+                                            ema = 0.8 * ema + 0.2 * snr;
+                                        }
+                                        g_snr_gfsk_db = ema;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (d->exit_flag) {
             exitflag = 1;
         }
@@ -708,6 +886,22 @@ dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
         out[k] = g_eye_buf[idx];
     }
     return n;
+}
+
+/* ---------------- SNR export (smoothed) ---------------- */
+extern "C" double
+rtl_stream_get_snr_c4fm(void) {
+    return g_snr_c4fm_db;
+}
+
+extern "C" double
+rtl_stream_get_snr_cqpsk(void) {
+    return g_snr_qpsk_db;
+}
+
+extern "C" double
+rtl_stream_get_snr_gfsk(void) {
+    return g_snr_gfsk_db;
 }
 
 /**

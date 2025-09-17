@@ -604,6 +604,8 @@ initOpts(dsd_opts* opts) {
     opts->const_gate_other = 0.05f;
     opts->eye_view = 0;
     opts->fsk_hist_view = 0;
+    opts->eye_unicode = 1; //default ON for clearer rendering
+    opts->eye_color = 1;   //default ON when terminal supports color
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;
