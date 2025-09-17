@@ -278,6 +278,9 @@ typedef struct {
     FILE* mbe_in_f;
     int errorbars;
     int datascope;
+    int constellation;      //ncurses ASCII constellation view (0=off, 1=on)
+    float const_gate_qpsk;  //constellation magnitude gate for QPSK
+    float const_gate_other; //constellation gate for non-QPSK (FSK)
     int symboltiming;
     int verbose;
     int p25enc;
@@ -392,6 +395,8 @@ typedef struct {
     uint8_t use_ncurses_terminal;
     uint8_t ncurses_compact;
     uint8_t ncurses_history;
+    uint8_t eye_view;      //ncurses timing/eye diagram for C4FM/FSK (0=off)
+    uint8_t fsk_hist_view; //ncurses 4-level histogram for C4FM/FSK (0=off)
     int reset_state;
     int payload;
     char output_name[1024];

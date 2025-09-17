@@ -195,6 +195,33 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
+    if (c == 111 || c == 79) //'o' or 'O' key, toggle constellation view
+    {
+        if (opts->constellation == 1) {
+            opts->constellation = 0;
+        } else {
+            opts->constellation = 1;
+        }
+    }
+
+    if (c == 60) //'<' key, decrease constellation gate
+    {
+        float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
+        *g -= 0.02f;
+        if (*g < 0.0f) {
+            *g = 0.0f;
+        }
+    }
+
+    if (c == 62) //'>' key, increase constellation gate
+    {
+        float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
+        *g += 0.02f;
+        if (*g > 0.90f) {
+            *g = 0.90f;
+        }
+    }
+
     if (c == 99) //'c' key, toggle compact mode
     {
         if (opts->ncurses_compact == 1) {
@@ -202,6 +229,16 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         } else {
             opts->ncurses_compact = 1;
         }
+    }
+
+    if (c == 101 || c == 69) //'e' or 'E' key, toggle eye view
+    {
+        opts->eye_view = opts->eye_view ? 0 : 1;
+    }
+
+    if (c == 75) //'K' key, toggle FSK histogram view
+    {
+        opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
     }
 
     if (c == 116) //'t' key, toggle trunking

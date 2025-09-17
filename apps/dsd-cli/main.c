@@ -599,6 +599,11 @@ initOpts(dsd_opts* opts) {
     opts->mbe_in_f = NULL;
     opts->errorbars = 1;
     opts->datascope = 0;
+    opts->constellation = 0;
+    opts->const_gate_qpsk = 0.25f;
+    opts->const_gate_other = 0.05f;
+    opts->eye_view = 0;
+    opts->fsk_hist_view = 0;
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;

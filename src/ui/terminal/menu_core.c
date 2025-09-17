@@ -1500,6 +1500,76 @@ lbl_onoff_ted(void* v, char* b, size_t n) {
 }
 
 static const char*
+lbl_ted_sps(void* v, char* b, size_t n) {
+    int sps = rtl_stream_get_ted_sps();
+    snprintf(b, n, "TED SPS: %d (+1/-1)", sps);
+    return b;
+}
+
+static void
+act_ted_sps_up(void* v) {
+    int sps = rtl_stream_get_ted_sps();
+    if (sps < 32) {
+        sps++;
+    }
+    rtl_stream_set_ted_sps(sps);
+}
+
+static void
+act_ted_sps_dn(void* v) {
+    int sps = rtl_stream_get_ted_sps();
+    if (sps > 2) {
+        sps--;
+    }
+    rtl_stream_set_ted_sps(sps);
+}
+
+static const char*
+lbl_ted_gain(void* v, char* b, size_t n) {
+    int g = rtl_stream_get_ted_gain();
+    snprintf(b, n, "TED Gain (Q20): %d (+/-)", g);
+    return b;
+}
+
+static void
+act_ted_gain_up(void* v) {
+    int g = rtl_stream_get_ted_gain();
+    if (g < 512) {
+        g += 8;
+    }
+    rtl_stream_set_ted_gain(g);
+}
+
+static void
+act_ted_gain_dn(void* v) {
+    int g = rtl_stream_get_ted_gain();
+    if (g > 16) {
+        g -= 8;
+    }
+    rtl_stream_set_ted_gain(g);
+}
+
+static const char*
+lbl_ted_force(void* v, char* b, size_t n) {
+    int f = rtl_stream_get_ted_force();
+    snprintf(b, n, "TED Force [%s]", f ? "Active" : "Inactive");
+    return b;
+}
+
+static void
+act_ted_force_toggle(void* v) {
+    int f = rtl_stream_get_ted_force();
+    rtl_stream_set_ted_force(f ? 0 : 1);
+}
+
+static const char*
+lbl_ted_bias(void* v, char* b, size_t n) {
+    int eb = rtl_stream_ted_bias(NULL);
+    snprintf(b, n, "TED Bias (EMA): %d", eb);
+    return b;
+}
+
+static const char*
 lbl_manual_dsp(void* v, char* b, size_t n) {
     int man = rtl_stream_get_manual_dsp();
     snprintf(b, n, "Manual DSP Override [%s]", man ? "Active" : "Inactive");
@@ -1779,6 +1849,33 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_onoff_ted,
          .help = "Enable/disable TED.",
          .on_select = act_toggle_ted},
+        {.id = "ted_sps_status",
+         .label = "TED SPS (status)",
+         .label_fn = lbl_ted_sps,
+         .help = "Current nominal samples-per-symbol."},
+        {.id = "ted_sps+",
+         .label = "TED SPS +1",
+         .help = "Increase nominal samples-per-symbol.",
+         .on_select = act_ted_sps_up},
+        {.id = "ted_sps-",
+         .label = "TED SPS -1",
+         .help = "Decrease nominal samples-per-symbol.",
+         .on_select = act_ted_sps_dn},
+        {.id = "ted_gain_status",
+         .label = "TED Gain (status)",
+         .label_fn = lbl_ted_gain,
+         .help = "Current TED small gain (Q20)."},
+        {.id = "ted_gain+", .label = "TED Gain +", .help = "Increase TED small gain.", .on_select = act_ted_gain_up},
+        {.id = "ted_gain-", .label = "TED Gain -", .help = "Decrease TED small gain.", .on_select = act_ted_gain_dn},
+        {.id = "ted_force",
+         .label = "Toggle TED Force",
+         .label_fn = lbl_ted_force,
+         .help = "Force TED even for FM/C4FM paths.",
+         .on_select = act_ted_force_toggle},
+        {.id = "ted_bias",
+         .label = "TED Bias (status)",
+         .label_fn = lbl_ted_bias,
+         .help = "Smoothed Gardner residual (read-only status)."},
         {.id = "auto",
          .label = "Toggle Auto-DSP",
          .label_fn = lbl_onoff_auto,

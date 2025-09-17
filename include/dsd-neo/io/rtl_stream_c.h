@@ -105,6 +105,22 @@ long rtl_stream_return_pwr(const RtlSdrContext* ctx);
  * @return Residual value (coarse units, signed integer).
  */
 int rtl_stream_ted_bias(const RtlSdrContext* ctx);
+/** Get current TED SPS setting. */
+int rtl_stream_get_ted_sps(void);
+/** Set small TED gain (Q20). Typical 32..256 (default ~64). */
+void rtl_stream_set_ted_gain(int gain_q20);
+/** Get current TED gain (Q20). */
+int rtl_stream_get_ted_gain(void);
+/** Force TED even for FM/C4FM paths (0/1). */
+void rtl_stream_set_ted_force(int onoff);
+/** Get TED force flag (0/1). */
+int rtl_stream_get_ted_force(void);
+
+/* Eye diagram (timing) support for FSK/C4FM.
+ * Copies up to max_samples real I-channel samples of the decimated complex baseband
+ * and returns the number of samples. Also returns current nominal SPS via out_sps (may be 0 if unknown).
+ */
+int rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
 
 /* Runtime DSP adjustments and feedback hooks */
 /**
@@ -177,6 +193,13 @@ void rtl_stream_set_ted_sps(int sps);
  */
 void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                  int sacch_err_delta, int voice_err_delta);
+
+/*
+ * Constellation capture (recent, decimated complex samples after DSP).
+ * Copies up to max_points I/Q pairs into out_xy as interleaved int16 [I0,Q0,I1,Q1,...].
+ * Returns the number of pairs copied (0 if unavailable).
+ */
+int rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 
 #ifdef __cplusplus
 }

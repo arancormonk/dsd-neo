@@ -107,6 +107,436 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 
 static int lls = -1;
 
+static void
+print_constellation_view(dsd_opts* opts, dsd_state* state) {
+#ifdef USE_RTLSDR
+    /* Fetch a snapshot of recent I/Q points */
+    enum { MAXP = 4096 };
+
+    int16_t buf[(size_t)MAXP * 2];
+    int n = rtl_stream_constellation_get(buf, MAXP);
+    if (n <= 0) {
+        printw("--Constellation---------------------------------------------------------------\n");
+        printw("| (no samples yet)\n");
+        printw("------------------------------------------------------------------------------\n");
+        return;
+    }
+    /* Grid dims */
+    const int W = 97; /* cols */
+    const int H = 33; /* rows */
+    char grid[(size_t)H][(size_t)W];
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            grid[y][x] = ' ';
+        }
+    }
+    int cx = W / 2, cy = H / 2;
+    for (int x = 0; x < W; x++) {
+        grid[cy][x] = '-';
+    }
+    for (int y = 0; y < H; y++) {
+        grid[y][cx] = '|';
+    }
+    grid[cy][cx] = '+';
+    /* Dynamic scale from data (separate I/Q to maximize usage of the grid).
+       Smooth with a short EMA so scaling doesn't jump frame-to-frame. */
+    static int s_maxI = 256, s_maxQ = 256; /* smoothed maxima */
+    int maxI = 1, maxQ = 1;
+    for (int k = 0; k < n; k++) {
+        int i = buf[(size_t)(k << 1) + 0];
+        int q = buf[(size_t)(k << 1) + 1];
+        int a = i < 0 ? -i : i;
+        int b = q < 0 ? -q : q;
+        if (a > maxI) {
+            maxI = a;
+        }
+        if (b > maxQ) {
+            maxQ = b;
+        }
+    }
+    /* Avoid over-zooming when signal is extremely small */
+    if (maxI < 64) {
+        maxI = 64;
+    }
+    if (maxQ < 64) {
+        maxQ = 64;
+    }
+    /* EMA smoothing (alpha ~0.2) for stable display */
+    s_maxI = (int)(0.8 * (double)s_maxI + 0.2 * (double)maxI);
+    s_maxQ = (int)(0.8 * (double)s_maxQ + 0.2 * (double)maxQ);
+    if (s_maxI < 64) {
+        s_maxI = 64;
+    }
+    if (s_maxQ < 64) {
+        s_maxQ = 64;
+    }
+
+    /* Optional QPSK slicer overlay: diagonals + reference cluster centers */
+    if (opts && (opts->mod_qpsk == 1)) {
+        /* Diagonals to visualize 45° decision lines (approx, aspect-corrected) */
+        for (int x = 0; x < W; x++) {
+            int dy = (int)lrint(((double)(H - 1) / (double)(W - 1)) * (double)(x - cx));
+            int y1 = cy + dy;
+            int y2 = cy - dy;
+            if (y1 >= 0 && y1 < H) {
+                if (grid[y1][x] == ' ') {
+                    grid[y1][x] = '/';
+                }
+            }
+            if (y2 >= 0 && y2 < H) {
+                if (grid[y2][x] == ' ') {
+                    grid[y2][x] = '\\';
+                }
+            }
+        }
+        /* Reference constellation target points near ~70% of full-scale */
+        double refI = 0.70 * (double)s_maxI;
+        double refQ = 0.70 * (double)s_maxQ;
+        int ref_ix[4] = {+1, -1, -1, +1};
+        int ref_qx[4] = {+1, +1, -1, -1};
+        for (int r = 0; r < 4; r++) {
+            double i = ref_ix[r] * refI;
+            double q = ref_qx[r] * refQ;
+            int x = cx + (int)lrint((i / (double)s_maxI) * (W / 2 - 1));
+            int y = cy - (int)lrint((q / (double)s_maxQ) * (H / 2 - 1));
+            if (x < 0) {
+                x = 0;
+            }
+            if (x >= W) {
+                x = W - 1;
+            }
+            if (y < 0) {
+                y = 0;
+            }
+            if (y >= H) {
+                y = H - 1;
+            }
+            grid[y][x] = 'o';
+        }
+        /* Quadrant labels */
+        int qdx = (W / 4);
+        int qdy = (H / 4);
+        if (cy - qdy >= 0 && cx + qdx < W) {
+            grid[cy - qdy][cx + qdx] = '1'; /* (+I,+Q) */
+        }
+        if (cy - qdy >= 0 && cx - qdx >= 0) {
+            grid[cy - qdy][cx - qdx] = '2'; /* (-I,+Q) */
+        }
+        if (cy + qdy < H && cx - qdx >= 0) {
+            grid[cy + qdy][cx - qdx] = '3'; /* (-I,-Q) */
+        }
+        if (cy + qdy < H && cx + qdx < W) {
+            grid[cy + qdy][cx + qdx] = '4'; /* (+I,-Q) */
+        }
+    }
+    /* Plot points with a small magnitude gate to reduce near-origin clutter.
+       Use a lower gate for non-QPSK (e.g., C4FM/FSK) so rings don't vanish. */
+    double gate = 0.10;
+    if (opts) {
+        gate = (opts->mod_qpsk == 1) ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
+        if (gate < 0.0) {
+            gate = 0.0;
+        }
+        if (gate > 0.90) {
+            gate = 0.90;
+        }
+    }
+    const double gate2 = gate * gate;
+    for (int k = 0; k < n; k++) {
+        int i = buf[(size_t)(k << 1) + 0];
+        int q = buf[(size_t)(k << 1) + 1];
+        double nx = (double)i / (double)s_maxI;
+        double ny = (double)q / (double)s_maxQ;
+        double r2 = nx * nx + ny * ny;
+        if (r2 < gate2) {
+            continue;
+        }
+        int x = cx + (int)lrint(nx * (W / 2 - 1));
+        int y = cy - (int)lrint(ny * (H / 2 - 1));
+        if (x < 0) {
+            x = 0;
+        }
+        if (x >= W) {
+            x = W - 1;
+        }
+        if (y < 0) {
+            y = 0;
+        }
+        if (y >= H) {
+            y = H - 1;
+        }
+        char c = '.';
+        if (grid[y][x] == ' ' || grid[y][x] == '.') {
+            grid[y][x] = c;
+        }
+    }
+    /* Print */
+    printw("--Constellation---------------------------------------------------------------\n");
+    for (int y = 0; y < H; y++) {
+        printw("|");
+        for (int x = 0; x < W; x++) {
+            addch(grid[y][x]);
+        }
+        printw("\n");
+    }
+    printw("------------------------------------------------------------------------------\n");
+#else
+    printw("--Constellation---------------------------------------------------------------\n");
+    printw("| (RTL disabled in this build)\n");
+    printw("------------------------------------------------------------------------------\n");
+#endif
+}
+
+static void
+print_eye_view(dsd_opts* opts) {
+#ifdef USE_RTLSDR
+    /* Fetch a snapshot of recent I-channel samples and SPS */
+    enum { MAXS = 8192 };
+
+    static int16_t buf[(size_t)MAXS];
+    int sps = 0;
+    int n = rtl_stream_eye_get(buf, MAXS, &sps);
+    printw("--Eye Diagram (C4FM/FSK)-----------------------------------------------------\n");
+    if (n <= 0 || sps <= 0) {
+        printw("| (no samples or SPS)\n");
+        printw("------------------------------------------------------------------------------\n");
+        return;
+    }
+    /* Grid size */
+    const int W = 65; /* columns */
+    const int H = 17; /* rows */
+    char grid[(size_t)H][(size_t)W];
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            grid[y][x] = ' ';
+        }
+    }
+    int mid = H / 2;
+    for (int x = 0; x < W; x++) {
+        grid[mid][x] = '-';
+    }
+    /* Normalize scale using EMA for stability */
+    static int s_peak = 256;
+    int peak = 1;
+    for (int i = 0; i < n; i++) {
+        int v = buf[i];
+        int a = v < 0 ? -v : v;
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    if (peak < 64) {
+        peak = 64;
+    }
+    s_peak = (int)(0.8 * (double)s_peak + 0.2 * (double)peak);
+    if (s_peak < 64) {
+        s_peak = 64;
+    }
+    /* Overlay several traces, each spanning ~2 symbols mapped to W columns */
+    int span = 2 * sps;
+    if (span < 8) {
+        span = 8;
+    }
+    int step = sps / 4;
+    if (step < 1) {
+        step = 1;
+    }
+    int overlays = H; /* number of traces */
+    for (int o = 0; o < overlays; o++) {
+        int start = (n - 1) - o * step - span;
+        if (start < 0) {
+            break;
+        }
+        for (int x = 0; x < W; x++) {
+            double t = (double)x / (double)(W - 1);
+            int idx = start + (int)lrint(t * (double)(span - 1));
+            if (idx < 0) {
+                idx = 0;
+            }
+            if (idx >= n) {
+                idx = n - 1;
+            }
+            double v = (double)buf[idx] / (double)s_peak; /* -1..+1 */
+            int y = mid - (int)lrint(v * (H / 2 - 1));
+            if (y < 0) {
+                y = 0;
+            }
+            if (y >= H) {
+                y = H - 1;
+            }
+            if (grid[y][x] == ' ') {
+                grid[y][x] = '.';
+            }
+        }
+    }
+    /* Print */
+    for (int y = 0; y < H; y++) {
+        printw("|");
+        for (int x = 0; x < W; x++) {
+            addch(grid[y][x]);
+        }
+        printw("\n");
+    }
+    printw("------------------------------------------------------------------------------\n");
+#else
+    printw("--Eye Diagram-----------------------------------------------------------------\n");
+    printw("| (RTL disabled in this build)\n");
+    printw("------------------------------------------------------------------------------\n");
+#endif
+}
+
+/* Comparator for ascending sort of int values (used in FSK histogram quartiles) */
+static int
+cmp_int_asc(const void* a, const void* b) {
+    int ia = *(const int*)a;
+    int ib = *(const int*)b;
+    return (ia > ib) - (ia < ib);
+}
+
+static void
+print_fsk_hist_view(void) {
+#ifdef USE_RTLSDR
+    enum { MAXS = 8192 };
+
+    static int16_t buf[(size_t)MAXS];
+    int sps = 0;
+    int n = rtl_stream_eye_get(buf, MAXS, &sps);
+    printw("--FSK 4-Level Histogram-------------------------------------------------------\n");
+    if (n <= 0) {
+        printw("| (no samples)\n");
+        printw("------------------------------------------------------------------------------\n");
+        return;
+    }
+    /* Compute peak and mean DC offset */
+    int peak = 1;
+    int64_t sum = 0;
+    for (int i = 0; i < n; i++) {
+        int v = (int)buf[i];
+        int a = v < 0 ? -v : v;
+        if (a > peak) {
+            peak = a;
+        }
+        sum += v;
+    }
+    if (peak < 64) {
+        peak = 64;
+    }
+    double dc_norm = (double)sum / (double)n / (double)peak; /* ~[-1,1] */
+
+    /* Adaptive quartile thresholds over recent I-channel samples. */
+    /* Downsample set for faster sort if needed */
+    int step = (n > 4096) ? (n / 4096) : 1;
+    int m = (n + step - 1) / step;
+    if (m < 8) {
+        m = n, step = 1; /* ensure adequate sample count */
+    }
+    /* Copy sampled values into a temp array for sorting */
+    static int vals[8192];
+    if (m > 8192) {
+        m = 8192;
+    }
+    int vi = 0;
+    for (int i = 0; i < n && vi < m; i += step) {
+        vals[vi++] = (int)buf[i];
+    }
+    m = vi;
+    /* Sort ascending */
+    qsort(vals, (size_t)m, sizeof(int), cmp_int_asc);
+    int q1 = vals[(size_t)m / 4];
+    int q2 = vals[(size_t)m / 2];
+    int q3 = vals[(size_t)(3 * (size_t)m) / 4];
+    /* Bin using quartile boundaries */
+    int64_t bin[4] = {0, 0, 0, 0};
+    for (int i = 0; i < n; i++) {
+        int v = (int)buf[i];
+        int b = 0;
+        if (v <= q1) {
+            b = 0;
+        } else if (v <= q2) {
+            b = 1;
+        } else if (v <= q3) {
+            b = 2;
+        } else {
+            b = 3;
+        }
+        bin[b]++;
+    }
+    /* Draw quartile ruler across value span (min..max) */
+    int minv = vals[0];
+    int maxv = vals[m - 1];
+    if (maxv == minv) {
+        maxv = minv + 1; /* avoid div-by-zero */
+    }
+    const int WR = 60;
+    char ruler[(size_t)WR];
+    for (int x = 0; x < WR; x++) {
+        ruler[x] = '-';
+    }
+    int p1 = (int)lrint(((double)(q1 - minv) / (double)(maxv - minv)) * (double)(WR - 1));
+    int p2 = (int)lrint(((double)(q2 - minv) / (double)(maxv - minv)) * (double)(WR - 1));
+    int p3 = (int)lrint(((double)(q3 - minv) / (double)(maxv - minv)) * (double)(WR - 1));
+    if (p1 < 0) {
+        p1 = 0;
+    }
+    if (p1 >= WR) {
+        p1 = WR - 1;
+    }
+    if (p2 < 0) {
+        p2 = 0;
+    }
+    if (p2 >= WR) {
+        p2 = WR - 1;
+    }
+    if (p3 < 0) {
+        p3 = 0;
+    }
+    if (p3 >= WR) {
+        p3 = WR - 1;
+    }
+    ruler[p1] = '|';
+    ruler[p2] = '+'; /* median */
+    ruler[p3] = '|';
+    printw("| Ruler:  ");
+    for (int x = 0; x < WR; x++) {
+        addch(ruler[x]);
+    }
+    printw("  (Q1='|', Median='+', Q3='|')\n");
+
+    /* Draw bars */
+    const int W = 60;
+    int64_t maxc = 1;
+    for (int i = 0; i < 4; i++) {
+        if (bin[i] > maxc) {
+            maxc = bin[i];
+        }
+    }
+    const char* labels[4] = {"L3(-)", "L1(-)", "L1(+)", "L3(+)"};
+    printw("| DC Offset: %+0.2f%% of full-scale\n", dc_norm * 100.0);
+    for (int i = 0; i < 4; i++) {
+        int w = (int)((double)bin[i] / (double)maxc * (double)W + 0.5);
+        if (w < 0) {
+            w = 0;
+        }
+        if (w > W) {
+            w = W;
+        }
+        printw("| %-6s ", labels[i]);
+        for (int x = 0; x < w; x++) {
+            addch('#');
+        }
+        for (int x = w; x < W; x++) {
+            addch(' ');
+        }
+        printw(" %lld\n", (long long)bin[i]);
+    }
+    printw("------------------------------------------------------------------------------\n");
+#else
+    printw("--FSK 4-Level Histogram-------------------------------------------------------\n");
+    printw("| (RTL disabled in this build)\n");
+    printw("------------------------------------------------------------------------------\n");
+#endif
+}
+
 static int
 compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) {
     int len = s->p25_p1_voice_err_hist_len;
@@ -745,6 +1175,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     // if (opts->call_alert == 1)   printw ("| Call Alert Tone Enabled\n");
 
     printw("------------------------------------------------------------------------------\n");
+    if (opts->constellation == 1) {
+        print_constellation_view(opts, state);
+    }
+    if (opts->eye_view == 1) {
+        print_eye_view(opts);
+    }
+    if (opts->fsk_hist_view == 1) {
+        print_fsk_hist_view();
+    }
     attroff(COLOR_PAIR(4));
 
     if (state->carrier == 1) {
@@ -775,6 +1214,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("[GFSK]");
     }
     printw("[%d] \n", (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
+    printw("| Const View:  %s (O)  Gate: %.02f (</>)  Eye: %s (E)  Hist: %s (K)\n", opts->constellation ? "ON" : "off",
+           (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other, opts->eye_view ? "ON" : "off",
+           opts->fsk_hist_view ? "ON" : "off");
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
     }

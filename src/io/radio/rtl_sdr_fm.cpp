@@ -55,6 +55,9 @@ int dsd_rtl_stream_ted_bias(void);
 }
 #endif
 
+/* Forward declaration for eye ring append used in demod loop */
+static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
+
 #define DEFAULT_SAMPLE_RATE      48000
 #define DEFAULT_BUF_LENGTH       (1 * 16384)
 #define MAXIMUM_OVERSAMPLE       16
@@ -334,6 +337,11 @@ demod_thread_fn(void* arg) {
         d->lowpassed = d->input_cb_buf;
         d->lp_len = got;
         full_demod(d);
+        /* Capture decimated I/Q for constellation view after DSP. */
+        extern void constellation_ring_append(const int16_t* iq, int len, int sps_hint);
+        constellation_ring_append(d->lowpassed, d->lp_len, d->ted_sps);
+        /* Capture I-channel for eye diagram */
+        eye_ring_append_i_chan(d->lowpassed, d->lp_len);
         if (d->exit_flag) {
             exitflag = 1;
         }
@@ -608,6 +616,96 @@ controller_thread_fn(void* arg) {
         drain_output_on_retune();
     }
     return 0;
+}
+
+/* ---------------- Constellation capture (simple lock-free ring) ---------------- */
+
+static const int kConstMaxPairs = 8192;
+static int16_t g_const_xy[kConstMaxPairs * 2];
+static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wraps */
+/* Forward decl for eye-ring append used in demod loop */
+static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
+
+/* Append decimated I/Q samples from lowpassed[] after DSP. */
+void
+constellation_ring_append(const int16_t* iq, int len, int sps_hint) {
+    if (!iq || len < 2) {
+        return;
+    }
+    int N = len >> 1;                                              /* complex samples */
+    int stride = (sps_hint >= 1 && sps_hint <= 64) ? sps_hint : 4; /* rough decimation */
+    if (stride < 1) {
+        stride = 1;
+    }
+    for (int n = 0; n < N; n += stride) {
+        int i = iq[(size_t)(n << 1) + 0];
+        int q = iq[(size_t)(n << 1) + 1];
+        int h = g_const_head;
+        g_const_xy[(size_t)(h << 1) + 0] = (int16_t)i;
+        g_const_xy[(size_t)(h << 1) + 1] = (int16_t)q;
+        h++;
+        if (h >= kConstMaxPairs) {
+            h = 0;
+        }
+        g_const_head = h;
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
+    if (!out_xy || max_points <= 0) {
+        return 0;
+    }
+    int head = g_const_head; /* snapshot */
+    int n = (max_points < kConstMaxPairs) ? max_points : kConstMaxPairs;
+    int start = head;
+    for (int k = 0; k < n; k++) {
+        int idx = (start + k) % kConstMaxPairs;
+        out_xy[(size_t)(k << 1) + 0] = g_const_xy[(size_t)(idx << 1) + 0];
+        out_xy[(size_t)(k << 1) + 1] = g_const_xy[(size_t)(idx << 1) + 1];
+    }
+    return n;
+}
+
+/* ---------------- Eye diagram capture (I-channel of complex baseband) ---------------- */
+static const int kEyeMax = 16384;
+static int16_t g_eye_buf[kEyeMax];
+static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
+
+static inline void
+eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved) {
+    if (!iq_interleaved || len_interleaved < 2) {
+        return;
+    }
+    int N = len_interleaved >> 1; /* complex samples */
+    for (int n = 0; n < N; n++) {
+        int16_t i = iq_interleaved[(size_t)(n << 1) + 0];
+        int h = g_eye_head;
+        g_eye_buf[h] = i;
+        h++;
+        if (h >= kEyeMax) {
+            h = 0;
+        }
+        g_eye_head = h;
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
+    if (out_sps) {
+        *out_sps = demod.ted_sps;
+    }
+    if (!out || max_samples <= 0) {
+        return 0;
+    }
+    int head = g_eye_head;
+    int n = (max_samples < kEyeMax) ? max_samples : kEyeMax;
+    int start = head;
+    for (int k = 0; k < n; k++) {
+        int idx = (start + k) % kEyeMax;
+        out[k] = g_eye_buf[idx];
+    }
+    return n;
 }
 
 /**
@@ -1162,8 +1260,38 @@ start_threads_and_async(void) {
  * @param opts Decoder options used to configure the pipeline.
  * @return 0 on success, negative on error.
  */
+/* Forward decl for manual-DSP override query used during open */
+extern "C" int rtl_stream_get_manual_dsp(void);
+
 extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
+    /* If Manual DSP Override is active, preserve current DSP toggles across
+       demod re-initialization so they don't reset to defaults. */
+    struct {
+        int use;
+        int cqpsk_enable;
+        int fll_enable;
+        int ted_enable;
+        int ted_sps;
+        int ted_gain_q20;
+        int ted_force;
+        int mf_enable;
+        int rrc_enable, rrc_alpha_q15, rrc_span_syms;
+    } persist = {0};
+
+    if (rtl_stream_get_manual_dsp()) {
+        persist.use = 1;
+        persist.cqpsk_enable = demod.cqpsk_enable;
+        persist.fll_enable = demod.fll_enabled;
+        persist.ted_enable = demod.ted_enabled;
+        persist.ted_sps = demod.ted_sps;
+        persist.ted_gain_q20 = demod.ted_gain_q20;
+        persist.ted_force = demod.ted_force ? 1 : 0;
+        persist.mf_enable = demod.cqpsk_mf_enable;
+        persist.rrc_enable = demod.cqpsk_rrc_enable;
+        persist.rrc_alpha_q15 = demod.cqpsk_rrc_alpha_q15;
+        persist.rrc_span_syms = demod.cqpsk_rrc_span_syms;
+    }
     rtl_bandwidth = opts->rtl_bandwidth * 1000; //reverted back to straight value
     bandwidth_multiplier = (bandwidth_divisor / rtl_bandwidth);
     /* Guard multiplier to a safe range [1, MAX_BANDWIDTH_MULTIPLIER] */
@@ -1222,6 +1350,28 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* Read optional environment flags (centralized) */
     configure_from_env_and_opts(opts);
     select_defaults_for_mode(opts);
+
+    /* Reapply preserved DSP toggles when Manual Override is active. */
+    if (persist.use) {
+        demod.cqpsk_enable = persist.cqpsk_enable ? 1 : 0;
+        demod.fll_enabled = persist.fll_enable ? 1 : 0;
+        demod.ted_enabled = persist.ted_enable ? 1 : 0;
+        if (persist.ted_sps > 0) {
+            demod.ted_sps = persist.ted_sps;
+        }
+        if (persist.ted_gain_q20 > 0) {
+            demod.ted_gain_q20 = persist.ted_gain_q20;
+        }
+        demod.ted_force = persist.ted_force ? 1 : 0;
+        demod.cqpsk_mf_enable = persist.mf_enable ? 1 : 0;
+        demod.cqpsk_rrc_enable = persist.rrc_enable ? 1 : 0;
+        if (persist.rrc_alpha_q15 > 0) {
+            demod.cqpsk_rrc_alpha_q15 = persist.rrc_alpha_q15;
+        }
+        if (persist.rrc_span_syms > 0) {
+            demod.cqpsk_rrc_span_syms = persist.rrc_span_syms;
+        }
+    }
 
     setup_initial_freq_and_rate(opts);
 
@@ -1678,6 +1828,37 @@ dsd_rtl_stream_set_ted_sps(int sps) {
         sps = 32;
     }
     demod.ted_sps = sps;
+}
+
+extern "C" int
+dsd_rtl_stream_get_ted_sps(void) {
+    return demod.ted_sps;
+}
+
+extern "C" void
+dsd_rtl_stream_set_ted_gain(int g) {
+    if (g < 16) {
+        g = 16;
+    }
+    if (g > 512) {
+        g = 512;
+    }
+    demod.ted_gain_q20 = g;
+}
+
+extern "C" int
+dsd_rtl_stream_get_ted_gain(void) {
+    return demod.ted_gain_q20;
+}
+
+extern "C" void
+dsd_rtl_stream_set_ted_force(int onoff) {
+    demod.ted_force = onoff ? 1 : 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_ted_force(void) {
+    return demod.ted_force ? 1 : 0;
 }
 
 /**

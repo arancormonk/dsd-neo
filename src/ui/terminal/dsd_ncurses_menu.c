@@ -38,6 +38,54 @@ destroy_window(WINDOW** win) {
 
 // (legacy helpers and static choice tables removed)
 
+#ifdef USE_RTLSDR
+// Snapshot and reapply DSP settings selected in the ncurses menu so they
+// persist across stream destroy/recreate during menu lifetime.
+typedef struct {
+    int have;
+    int manual_override;
+    int cqpsk_enable, fll_enable, ted_enable, auto_dsp_enable;
+    int lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps, mf_enable, cma;
+    int rrc_enable, rrc_alpha_percent, rrc_span_syms;
+    int dqpsk_enable;
+} DspMenuSnapshot;
+
+static void
+dsp_capture_snapshot(DspMenuSnapshot* s) {
+    if (!s) {
+        return;
+    }
+    memset(s, 0, sizeof(*s));
+    s->have = 1;
+    s->manual_override = rtl_stream_get_manual_dsp();
+    rtl_stream_dsp_get(&s->cqpsk_enable, &s->fll_enable, &s->ted_enable, &s->auto_dsp_enable);
+    rtl_stream_cqpsk_get(&s->lms_enable, &s->taps, &s->mu_q15, &s->update_stride, &s->wl_enable, &s->dfe_enable,
+                         &s->dfe_taps, &s->mf_enable, &s->cma);
+    rtl_stream_cqpsk_get_rrc(&s->rrc_enable, &s->rrc_alpha_percent, &s->rrc_span_syms);
+    rtl_stream_cqpsk_get_dqpsk(&s->dqpsk_enable);
+}
+
+static void
+dsp_apply_snapshot(const DspMenuSnapshot* s) {
+    if (!s || !s->have) {
+        return;
+    }
+    // Manual override and auto-DSP gate
+    rtl_stream_set_manual_dsp(s->manual_override);
+    rtl_stream_toggle_auto_dsp(s->auto_dsp_enable);
+    // Coarse toggles
+    rtl_stream_toggle_cqpsk(s->cqpsk_enable);
+    rtl_stream_toggle_fll(s->fll_enable);
+    rtl_stream_toggle_ted(s->ted_enable);
+    // CQPSK runtime params (leave -1 to keep from snapshot when not relevant)
+    rtl_stream_cqpsk_set(s->lms_enable, s->taps, s->mu_q15, s->update_stride, s->wl_enable, s->dfe_enable, s->dfe_taps,
+                         s->mf_enable, -1);
+    // Matched filter / RRC and DQPSK decision
+    rtl_stream_cqpsk_set_rrc(s->rrc_enable, s->rrc_alpha_percent, s->rrc_span_syms);
+    rtl_stream_cqpsk_set_dqpsk(s->dqpsk_enable);
+}
+#endif
+
 //ncursesMenu
 void
 ncursesMenu(dsd_opts* opts, dsd_state* state) {
@@ -80,6 +128,12 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     // Run the data-driven main menu
     ui_menu_main(opts, state);
 
+    // Capture current DSP runtime selections before we restart the stream
+#ifdef USE_RTLSDR
+    DspMenuSnapshot dsp_snap = {0};
+    dsp_capture_snapshot(&dsp_snap);
+#endif
+
     // Minimal window cleanup (kept for symmetry; not used by the new menu)
     WINDOW* menu_win = NULL;
     WINDOW* test_win = NULL;
@@ -116,6 +170,8 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
             if (g_rtl_ctx && rtl_stream_start(g_rtl_ctx) < 0) {
                 fprintf(stderr, "Failed to open RTL-SDR stream.\n");
             }
+            // Reapply DSP settings selected in the menu to the fresh stream
+            dsp_apply_snapshot(&dsp_snap);
         }
         reset_dibit_buffer(state);
 #elif AERO_BUILD

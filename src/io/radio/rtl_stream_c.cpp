@@ -25,12 +25,19 @@ long dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
 void dsd_rtl_stream_set_ted_sps(int sps);
+int dsd_rtl_stream_get_ted_sps(void);
+void dsd_rtl_stream_set_ted_gain(int g);
+int dsd_rtl_stream_get_ted_gain(void);
+void dsd_rtl_stream_set_ted_force(int onoff);
+int dsd_rtl_stream_get_ted_force(void);
 void dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                      int sacch_err_delta, int voice_err_delta);
 void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
 void dsd_rtl_stream_cqpsk_set_dqpsk(int onoff);
 int dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 int dsd_rtl_stream_cqpsk_get_dqpsk(int* onoff);
+int dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
+int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -212,6 +219,31 @@ rtl_stream_set_ted_sps(int sps) {
     dsd_rtl_stream_set_ted_sps(sps);
 }
 
+extern "C" int
+rtl_stream_get_ted_sps(void) {
+    return dsd_rtl_stream_get_ted_sps();
+}
+
+extern "C" void
+rtl_stream_set_ted_gain(int gain_q20) {
+    dsd_rtl_stream_set_ted_gain(gain_q20);
+}
+
+extern "C" int
+rtl_stream_get_ted_gain(void) {
+    return dsd_rtl_stream_get_ted_gain();
+}
+
+extern "C" void
+rtl_stream_set_ted_force(int onoff) {
+    dsd_rtl_stream_set_ted_force(onoff);
+}
+
+extern "C" int
+rtl_stream_get_ted_force(void) {
+    return dsd_rtl_stream_get_ted_force();
+}
+
 extern "C" void
 rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta, int sacch_err_delta,
                             int voice_err_delta) {
@@ -237,4 +269,14 @@ rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
 extern "C" int
 rtl_stream_cqpsk_get_dqpsk(int* onoff) {
     return dsd_rtl_stream_cqpsk_get_dqpsk(onoff);
+}
+
+extern "C" int
+rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
+    return dsd_rtl_stream_constellation_get(out_xy, max_points);
+}
+
+extern "C" int
+rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
+    return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
 }
