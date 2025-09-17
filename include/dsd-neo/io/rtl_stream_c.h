@@ -164,6 +164,54 @@ int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int*
 /** Toggle all automatic DSP assistance (e.g., BER-based tuning). */
 void rtl_stream_toggle_auto_dsp(int onoff);
 
+/**
+ * @brief Auto-DSP tuning configuration (thresholds, windows, smoothing).
+ *
+ * All values are integers for easy ABI stability. Reasonable defaults are
+ * applied internally; unset fields should be initialized to 0 to accept
+ * defaults. Percent thresholds are in whole-percent units.
+ */
+typedef struct rtl_auto_dsp_config {
+    /* P25 Phase 1 (BER-driven) */
+    int p25p1_window_min_total; /* default 200 symbols */
+    int p25p1_moderate_on_pct;  /* default 7 */
+    int p25p1_moderate_off_pct; /* default 5 */
+    int p25p1_heavy_on_pct;     /* default 15 */
+    int p25p1_heavy_off_pct;    /* default 10 */
+    int p25p1_cooldown_ms;      /* default 700 */
+
+    /* P25 Phase 2 (FACCH/SACCH/voice deltas) */
+    int p25p2_ok_min;         /* default 4 */
+    int p25p2_err_margin_on;  /* default 2 */
+    int p25p2_err_margin_off; /* default 0 */
+    int p25p2_cooldown_ms;    /* default 500 */
+
+    /* Common smoothing (Q15 fixed-point alpha; 0..32768). default ~0.2 */
+    int ema_alpha_q15; /* default 6553 */
+} rtl_auto_dsp_config;
+
+/** Get current Auto-DSP configuration. Any pointer may be NULL. */
+void rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out);
+/** Set Auto-DSP configuration (applies sane bounds; 0 uses defaults). */
+void rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
+
+/**
+ * @brief Auto-DSP live status snapshot.
+ *
+ * Modes: 0=Clean, 1=Moderate, 2=Heavy.
+ * Percent fields are whole-percent integers (0..100).
+ */
+typedef struct rtl_auto_dsp_status {
+    int p25p1_mode;     /* 0..2 */
+    int p25p1_ema_pct;  /* 0..100 */
+    int p25p1_since_ms; /* milliseconds since last mode change */
+    int p25p2_mode;     /* 0..2 */
+    int p25p2_since_ms; /* milliseconds since last mode change */
+} rtl_auto_dsp_status;
+
+/** Get Auto-DSP live status (any pointer may be NULL). */
+void rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
+
 /** Manual DSP override: when enabled, frame-sync logic will not auto-toggle
  * CQPSK/FLL/TED based on detected modulation. Useful to pin user-selected
  * DSP behavior across menu closes and non-QPSK intervals. */

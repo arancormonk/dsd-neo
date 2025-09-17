@@ -38,6 +38,10 @@ int dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms
 int dsd_rtl_stream_cqpsk_get_dqpsk(int* onoff);
 int dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
 int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
+/* Auto-DSP config accessors (implemented in rtl_sdr_fm.cpp) */
+void dsd_rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out);
+void dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
+void dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -279,4 +283,19 @@ rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
 extern "C" int
 rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
+}
+
+extern "C" void
+rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out) {
+    dsd_rtl_stream_auto_dsp_get_config(out);
+}
+
+extern "C" void
+rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in) {
+    dsd_rtl_stream_auto_dsp_set_config(in);
+}
+
+extern "C" void
+rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
+    dsd_rtl_stream_auto_dsp_get_status(out);
 }

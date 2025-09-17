@@ -1822,6 +1822,365 @@ act_toggle_dqpsk(void* v) {
     rtl_stream_cqpsk_set_dqpsk(on ? 0 : 1);
 }
 
+#ifdef USE_RTLSDR
+// ---- Auto-DSP status & config (UI) ----
+static const char*
+mode_to_str(int m) {
+    switch (m) {
+        case 2: return "Heavy";
+        case 1: return "Moderate";
+        default: return "Clean";
+    }
+}
+
+static const char*
+lbl_auto_status(void* v, char* b, size_t n) {
+    (void)v;
+    rtl_auto_dsp_status s = {0};
+    rtl_stream_auto_dsp_get_status(&s);
+    snprintf(b, n, "Auto-DSP Status [P1: %s %d%%, P2: %s]", mode_to_str(s.p25p1_mode), s.p25p1_ema_pct,
+             mode_to_str(s.p25p2_mode));
+    return b;
+}
+
+// Config helpers
+static rtl_auto_dsp_config g_auto_cfg_cache;
+
+static void
+cfg_refresh(void) {
+    rtl_stream_auto_dsp_get_config(&g_auto_cfg_cache);
+}
+
+static void
+cfg_apply(void) {
+    rtl_stream_auto_dsp_set_config(&g_auto_cfg_cache);
+}
+
+static const char*
+lbl_p1_win(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P1 Window min total: %d", g_auto_cfg_cache.p25p1_window_min_total);
+    return b;
+}
+
+static const char*
+lbl_p1_mod_on(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P1 Moderate ON %%: %d", g_auto_cfg_cache.p25p1_moderate_on_pct);
+    return b;
+}
+
+static const char*
+lbl_p1_mod_off(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P1 Moderate OFF %%: %d", g_auto_cfg_cache.p25p1_moderate_off_pct);
+    return b;
+}
+
+static const char*
+lbl_p1_hvy_on(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P1 Heavy ON %%: %d", g_auto_cfg_cache.p25p1_heavy_on_pct);
+    return b;
+}
+
+static const char*
+lbl_p1_hvy_off(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P1 Heavy OFF %%: %d", g_auto_cfg_cache.p25p1_heavy_off_pct);
+    return b;
+}
+
+static const char*
+lbl_p1_cool(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P1 Cooldown (ms): %d", g_auto_cfg_cache.p25p1_cooldown_ms);
+    return b;
+}
+
+static const char*
+lbl_p2_okmin(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P2 OK min: %d", g_auto_cfg_cache.p25p2_ok_min);
+    return b;
+}
+
+static const char*
+lbl_p2_margin_on(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P2 Err margin ON: %d", g_auto_cfg_cache.p25p2_err_margin_on);
+    return b;
+}
+
+static const char*
+lbl_p2_margin_off(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P2 Err margin OFF: %d", g_auto_cfg_cache.p25p2_err_margin_off);
+    return b;
+}
+
+static const char*
+lbl_p2_cool(void* v, char* b, size_t n) {
+    cfg_refresh();
+    snprintf(b, n, "P25P2 Cooldown (ms): %d", g_auto_cfg_cache.p25p2_cooldown_ms);
+    return b;
+}
+
+static const char*
+lbl_ema_alpha(void* v, char* b, size_t n) {
+    cfg_refresh();
+    int pct = (int)((g_auto_cfg_cache.ema_alpha_q15 * 100 + 16384) / 32768); // approx
+    snprintf(b, n, "EMA alpha (Q15 ~%d%%): %d", pct, g_auto_cfg_cache.ema_alpha_q15);
+    return b;
+}
+
+// Adjusters
+static void
+inc_p1_win(void* v) {
+    cfg_refresh();
+    g_auto_cfg_cache.p25p1_window_min_total += 50;
+    cfg_apply();
+}
+
+static void
+dec_p1_win(void* v) {
+    cfg_refresh();
+    if (g_auto_cfg_cache.p25p1_window_min_total > 50) {
+        g_auto_cfg_cache.p25p1_window_min_total -= 50;
+    }
+    cfg_apply();
+}
+
+static void
+inc_i(int* p, int d, int max) {
+    int v = *p + d;
+    if (v > max) {
+        v = max;
+    }
+    *p = v;
+}
+
+static void
+dec_i(int* p, int d, int min) {
+    int v = *p - d;
+    if (v < min) {
+        v = min;
+    }
+    *p = v;
+}
+
+static void
+inc_p1_mod_on(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p1_moderate_on_pct, 1, 50);
+    cfg_apply();
+}
+
+static void
+dec_p1_mod_on(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p1_moderate_on_pct, 1, 1);
+    cfg_apply();
+}
+
+static void
+inc_p1_mod_off(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p1_moderate_off_pct, 1, 50);
+    cfg_apply();
+}
+
+static void
+dec_p1_mod_off(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p1_moderate_off_pct, 1, 0);
+    cfg_apply();
+}
+
+static void
+inc_p1_hvy_on(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p1_heavy_on_pct, 1, 90);
+    cfg_apply();
+}
+
+static void
+dec_p1_hvy_on(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p1_heavy_on_pct, 1, 1);
+    cfg_apply();
+}
+
+static void
+inc_p1_hvy_off(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p1_heavy_off_pct, 1, 90);
+    cfg_apply();
+}
+
+static void
+dec_p1_hvy_off(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p1_heavy_off_pct, 1, 0);
+    cfg_apply();
+}
+
+static void
+inc_p1_cool(void* v) {
+    cfg_refresh();
+    g_auto_cfg_cache.p25p1_cooldown_ms += 100;
+    cfg_apply();
+}
+
+static void
+dec_p1_cool(void* v) {
+    cfg_refresh();
+    if (g_auto_cfg_cache.p25p1_cooldown_ms > 100) {
+        g_auto_cfg_cache.p25p1_cooldown_ms -= 100;
+    }
+    cfg_apply();
+}
+
+static void
+inc_p2_okmin(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p2_ok_min, 1, 50);
+    cfg_apply();
+}
+
+static void
+dec_p2_okmin(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p2_ok_min, 1, 1);
+    cfg_apply();
+}
+
+static void
+inc_p2_m_on(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p2_err_margin_on, 1, 50);
+    cfg_apply();
+}
+
+static void
+dec_p2_m_on(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p2_err_margin_on, 1, 0);
+    cfg_apply();
+}
+
+static void
+inc_p2_m_off(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.p25p2_err_margin_off, 1, 50);
+    cfg_apply();
+}
+
+static void
+dec_p2_m_off(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.p25p2_err_margin_off, 1, 0);
+    cfg_apply();
+}
+
+static void
+inc_p2_cool(void* v) {
+    cfg_refresh();
+    g_auto_cfg_cache.p25p2_cooldown_ms += 100;
+    cfg_apply();
+}
+
+static void
+dec_p2_cool(void* v) {
+    cfg_refresh();
+    if (g_auto_cfg_cache.p25p2_cooldown_ms > 100) {
+        g_auto_cfg_cache.p25p2_cooldown_ms -= 100;
+    }
+    cfg_apply();
+}
+
+static void
+inc_alpha(void* v) {
+    cfg_refresh();
+    inc_i(&g_auto_cfg_cache.ema_alpha_q15, 512, 32768);
+    cfg_apply();
+}
+
+static void
+dec_alpha(void* v) {
+    cfg_refresh();
+    dec_i(&g_auto_cfg_cache.ema_alpha_q15, 512, 1);
+    cfg_apply();
+}
+
+static void
+ui_menu_auto_dsp_config(dsd_opts* opts, dsd_state* state) {
+    UiCtx ctx = {opts, state};
+    static const NcMenuItem items[] = {
+        {.id = "p1_win",
+         .label = "P25P1 Window (status)",
+         .label_fn = lbl_p1_win,
+         .help = "Min symbols per decision window."},
+        {.id = "p1_win+", .label = "P25P1 Window +50", .help = "Increase window.", .on_select = inc_p1_win},
+        {.id = "p1_win-", .label = "P25P1 Window -50", .help = "Decrease window.", .on_select = dec_p1_win},
+        {.id = "p1_mon",
+         .label = "P25P1 Moderate ON%",
+         .label_fn = lbl_p1_mod_on,
+         .help = "Engage moderate threshold."},
+        {.id = "p1_mon+", .label = "Moderate ON% +1", .on_select = inc_p1_mod_on},
+        {.id = "p1_mon-", .label = "Moderate ON% -1", .on_select = dec_p1_mod_on},
+        {.id = "p1_moff", .label = "P25P1 Moderate OFF%", .label_fn = lbl_p1_mod_off, .help = "Relax to clean."},
+        {.id = "p1_moff+", .label = "Moderate OFF% +1", .on_select = inc_p1_mod_off},
+        {.id = "p1_moff-", .label = "Moderate OFF% -1", .on_select = dec_p1_mod_off},
+        {.id = "p1_hon", .label = "P25P1 Heavy ON%", .label_fn = lbl_p1_hvy_on, .help = "Engage heavy threshold."},
+        {.id = "p1_hon+", .label = "Heavy ON% +1", .on_select = inc_p1_hvy_on},
+        {.id = "p1_hon-", .label = "Heavy ON% -1", .on_select = dec_p1_hvy_on},
+        {.id = "p1_hoff", .label = "P25P1 Heavy OFF%", .label_fn = lbl_p1_hvy_off, .help = "Relax from heavy."},
+        {.id = "p1_hoff+", .label = "Heavy OFF% +1", .on_select = inc_p1_hvy_off},
+        {.id = "p1_hoff-", .label = "Heavy OFF% -1", .on_select = dec_p1_hvy_off},
+        {.id = "p1_cool",
+         .label = "P25P1 Cooldown (status)",
+         .label_fn = lbl_p1_cool,
+         .help = "Cooldown ms between changes."},
+        {.id = "p1_cool+", .label = "Cooldown +100ms", .on_select = inc_p1_cool},
+        {.id = "p1_cool-", .label = "Cooldown -100ms", .on_select = dec_p1_cool},
+        {.id = "p2_ok", .label = "P25P2 OK min (status)", .label_fn = lbl_p2_okmin, .help = "Min OKs to avoid heavy."},
+        {.id = "p2_ok+", .label = "OK min +1", .on_select = inc_p2_okmin},
+        {.id = "p2_ok-", .label = "OK min -1", .on_select = dec_p2_okmin},
+        {.id = "p2_mon",
+         .label = "P25P2 Err margin ON",
+         .label_fn = lbl_p2_margin_on,
+         .help = "Err > OK + margin -> heavy."},
+        {.id = "p2_mon+", .label = "Margin ON +1", .on_select = inc_p2_m_on},
+        {.id = "p2_mon-", .label = "Margin ON -1", .on_select = dec_p2_m_on},
+        {.id = "p2_moff", .label = "P25P2 Err margin OFF", .label_fn = lbl_p2_margin_off, .help = "Relax heavy."},
+        {.id = "p2_moff+", .label = "Margin OFF +1", .on_select = inc_p2_m_off},
+        {.id = "p2_moff-", .label = "Margin OFF -1", .on_select = dec_p2_m_off},
+        {.id = "p2_cool",
+         .label = "P25P2 Cooldown (status)",
+         .label_fn = lbl_p2_cool,
+         .help = "Cooldown ms between changes."},
+        {.id = "p2_cool+", .label = "Cooldown +100ms", .on_select = inc_p2_cool},
+        {.id = "p2_cool-", .label = "Cooldown -100ms", .on_select = dec_p2_cool},
+        {.id = "ema",
+         .label = "EMA alpha (status)",
+         .label_fn = lbl_ema_alpha,
+         .help = "Smoothing constant for P25P1."},
+        {.id = "ema+", .label = "EMA alpha +512", .on_select = inc_alpha},
+        {.id = "ema-", .label = "EMA alpha -512", .on_select = dec_alpha},
+    };
+    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
+}
+#endif
+
+#ifdef USE_RTLSDR
+static void
+act_auto_cfg(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_menu_auto_dsp_config(c->opts, c->state);
+}
+#endif
+
 void
 ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
@@ -1876,11 +2235,19 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .label = "TED Bias (status)",
          .label_fn = lbl_ted_bias,
          .help = "Smoothed Gardner residual (read-only status)."},
+        {.id = "auto_status",
+         .label = "Auto-DSP Status",
+         .label_fn = lbl_auto_status,
+         .help = "Live mode and smoothed error rate."},
         {.id = "auto",
          .label = "Toggle Auto-DSP",
          .label_fn = lbl_onoff_auto,
          .help = "Enable/disable auto-DSP.",
          .on_select = act_toggle_auto},
+        {.id = "auto_cfg",
+         .label = "Auto-DSP Config",
+         .help = "Adjust Auto-DSP thresholds and windows.",
+         .on_select = act_auto_cfg},
         {.id = "lms",
          .label = "Toggle LMS",
          .label_fn = lbl_onoff_lms,
