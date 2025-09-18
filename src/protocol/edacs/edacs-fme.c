@@ -24,6 +24,7 @@
  * 2024-03 rewrite EDACS standard parsing to spec, add reverse-engineered EA messages
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/udp_input.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -286,6 +287,29 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             //this pwr will only work properly (for now) with squelch enabled in SDR++
+            pwr = raw_pwr(analog3, 960, 1);
+        }
+
+        // UDP direct input
+        else if (opts->audio_in_type == 6) {
+            for (i = 0; i < 960; i++) {
+                if (!udp_input_read_sample(opts, &sample)) {
+                    sample = 0;
+                }
+                analog1[i] = sample;
+            }
+            for (i = 0; i < 960; i++) {
+                if (!udp_input_read_sample(opts, &sample)) {
+                    sample = 0;
+                }
+                analog2[i] = sample;
+            }
+            for (i = 0; i < 960; i++) {
+                if (!udp_input_read_sample(opts, &sample)) {
+                    sample = 0;
+                }
+                analog3[i] = sample;
+            }
             pwr = raw_pwr(analog3, 960, 1);
         }
 

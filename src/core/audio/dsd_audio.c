@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/udp_input.h>
 
 pa_sample_spec ss;
 pa_sample_spec tt;
@@ -775,6 +776,25 @@ openAudioInDevice(dsd_opts* opts) {
 
     else if (strncmp(opts->audio_in_dev, "m17udp", 6) == 0) {
         opts->audio_in_type = 9; //NULL audio device
+    }
+
+    else if (strncmp(opts->audio_in_dev, "udp", 3) == 0) {
+        // UDP direct audio input (PCM16LE)
+        opts->audio_in_type = 6;
+        // parse optional udp:addr:port string
+        // default bind 127.0.0.1:7355 (matches TCP default)
+        if (opts->udp_in_portno == 0) {
+            opts->udp_in_portno = 7355;
+        }
+        if (opts->udp_in_bindaddr[0] == '\0') {
+            snprintf(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
+        }
+        // Start UDP input
+        if (udp_input_start(opts, opts->udp_in_bindaddr, opts->udp_in_portno, opts->wav_sample_rate) < 0) {
+            fprintf(stderr, "Error, couldn't start UDP input on %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
+            exit(1);
+        }
+        fprintf(stderr, "Waiting for UDP audio on %s:%d ...\n", opts->udp_in_bindaddr, opts->udp_in_portno);
     }
 
     else if (strncmp(opts->audio_in_dev, "tcp", 3) == 0) {

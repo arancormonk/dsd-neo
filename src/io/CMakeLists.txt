@@ -24,6 +24,7 @@ add_library(dsd-neo_io_audio)
 target_sources(dsd-neo_io_audio PRIVATE
   audio_backends/pa_devs.c
   audio_backends/pulse_devices.c
+  audio_backends/udp_input.c
 )
 target_include_directories(dsd-neo_io_audio
   PUBLIC ${PROJECT_SOURCE_DIR}/include

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/dsd.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/udp_input.h>
 #endif
 
 //try to find a fancy lfsr or calculation for this and not an array if possible
@@ -2016,6 +2017,38 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         sf_close(opts->tcp_file_in);
                         fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                         fprintf(stderr, "Closing DSD-neo.\n");
+                        exitflag = 1;
+                        break;
+                    }
+                }
+            }
+        } else if (opts->audio_in_type == 6) // UDP direct audio
+        {
+            int result = 1;
+            for (i = 0; i < nsam; i++) {
+                for (j = 0; j < dec; j++) {
+                    if (!udp_input_read_sample(opts, &sample)) {
+                        result = 0;
+                    }
+                }
+                voice1[i] = sample;
+                if (result == 0) {
+                    fprintf(stderr, "UDP input stopped.\n");
+                    exitflag = 1;
+                    break;
+                }
+            }
+
+            if (st == 2) {
+                for (i = 0; i < nsam; i++) {
+                    for (j = 0; j < dec; j++) {
+                        if (!udp_input_read_sample(opts, &sample)) {
+                            result = 0;
+                        }
+                    }
+                    voice2[i] = sample;
+                    if (result == 0) {
+                        fprintf(stderr, "UDP input stopped.\n");
                         exitflag = 1;
                         break;
                     }

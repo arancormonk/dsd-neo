@@ -1608,6 +1608,18 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
     }
 
+    if (opts->audio_in_type == 6) {
+        const char* host = (opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
+        printw("| UDP Signal Input: %s:%d; %d kHz; 1 Ch; ", host, opts->udp_in_portno, opts->wav_sample_rate / 1000);
+        if (opts->udp_in_packets == 0ULL) {
+            printw("[Waiting]");
+        } else {
+            printw("Pkts:%llu Drops:%llu", (unsigned long long)opts->udp_in_packets,
+                   (unsigned long long)opts->udp_in_drops);
+        }
+        printw("\n");
+    }
+
     if (opts->audio_in_type == 2) {
         printw("| WAV Audio Input: %s; %d kHz; \n", opts->audio_in_dev, opts->wav_sample_rate);
     }

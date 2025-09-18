@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -423,6 +424,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
             }
 #endif
+        }
+
+        // UDP direct audio input (PCM16LE over UDP)
+        else if (opts->audio_in_type == 6) {
+            if (!udp_input_read_sample(opts, &sample)) {
+                cleanupAndExit(opts, state);
+            }
         }
 
         //BUG REPORT: 1. DMR Simplex doesn't work with raw wav files. 2. Using the monitor w/ wav file saving may produce undecodable wav files.

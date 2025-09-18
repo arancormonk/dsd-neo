@@ -34,6 +34,7 @@
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/udp_input.h>
 #include <rtl-sdr.h>
 #endif
 
@@ -786,6 +787,15 @@ initOpts(dsd_opts* opts) {
     opts->tcp_portno = 7355; //default favored by SDR++
     sprintf(opts->tcp_hostname, "%s", "localhost");
 
+    // UDP direct input defaults
+    opts->udp_in_sockfd = 0;
+    opts->udp_in_portno = 7355;
+    opts->udp_in_bindaddr[0] = '\0';
+    opts->udp_in_ctx = NULL;
+    opts->udp_in_packets = 0ULL;
+    opts->udp_in_bytes = 0ULL;
+    opts->udp_in_drops = 0ULL;
+
     opts->p25_trunk = 0;    //0 disabled, 1 is enabled
     opts->p25_is_tuned = 0; //set to 1 if currently on VC, set back to 0 on carrier drop
     opts->trunk_hangtime =
@@ -1419,6 +1429,8 @@ usage() {
     printf("                rtl:dev:freq:gain:ppm:bw:sql:vol for rtl dongle (see below)\n");
     printf("                tcp for tcp client SDR++/GNURadio Companion/Other (Port 7355)\n");
     printf("                tcp:192.168.7.5:7355 for custom address and port \n");
+    printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
+    printf("                udp:0.0.0.0:7355 to bind all interfaces for UDP input\n");
     printf("                m17udp for M17 UDP/IP socket bind input (default host 127.0.0.1; default port 17000)\n");
     printf("                m17udp:192.168.7.8:17001 for M17 UDP/IP bind input (Binding Address and Port\n");
     printf("                filename.bin for OP25/FME capture bin files\n");
@@ -1498,6 +1510,12 @@ usage() {
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
     printf(" Example: dsd-neo -fp -i rtl:0:851.375M:22:-2:24:0:2\n");
+    printf("\n");
+    printf("UDP examples:\n");
+    printf(" Example: dsd-neo -i udp -o pulse -N\n");
+    printf("   Listen for UDP audio on 127.0.0.1:7355 and play to PulseAudio.\n");
+    printf(" Example: dsd-neo -i udp:0.0.0.0:7355 -o pulse -N\n");
+    printf("   Bind all interfaces; point GQRX/SDR++ UDP audio to this host:port.\n");
     printf("\n");
     printf("Encoder options:\n");
     printf("  -fZ           M17 Stream Voice Encoder\n");
@@ -1871,6 +1889,10 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
 
     if (opts->m17_udp_sock) {
         close(opts->m17_udp_sock);
+    }
+
+    if (opts->udp_in_ctx) {
+        udp_input_stop(opts);
     }
 
     //close MBE out files
@@ -3229,6 +3251,37 @@ main(int argc, char** argv) {
     M17ENDIN:
         fprintf(stderr, "%s:", opts.m17_hostname);
         fprintf(stderr, "%d \n", opts.m17_portno);
+    }
+
+    if ((strncmp(opts.audio_in_dev, "udp", 3) == 0)) // UDP Direct Audio Input
+    {
+        fprintf(stderr, "UDP Direct Input: ");
+        char* curr;
+
+        curr = strtok(opts.audio_in_dev, ":"); // 'udp'
+        if (curr == NULL) {
+            goto UDPINEND;
+        }
+
+        curr = strtok(NULL, ":"); // bind address
+        if (curr != NULL) {
+            strncpy(opts.udp_in_bindaddr, curr, 1023);
+            opts.udp_in_bindaddr[1023] = '\0';
+        }
+
+        curr = strtok(NULL, ":"); // bind port
+        if (curr != NULL) {
+            opts.udp_in_portno = atoi(curr);
+        }
+
+    UDPINEND:
+        if (opts.udp_in_portno == 0) {
+            opts.udp_in_portno = 7355;
+        }
+        if (opts.udp_in_bindaddr[0] == '\0') {
+            snprintf(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "%s", "127.0.0.1");
+        }
+        fprintf(stderr, "%s:%d\n", opts.udp_in_bindaddr, opts.udp_in_portno);
     }
 
     if ((strncmp(opts.audio_out_dev, "m17udp", 6) == 0)) //M17 UDP Socket Output

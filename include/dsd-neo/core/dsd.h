@@ -438,6 +438,15 @@ typedef struct {
     int udp_portno;
     char udp_hostname[1024];
 
+    //UDP Direct Audio Input (PCM16LE over UDP)
+    int udp_in_sockfd;                 // bound UDP socket for input
+    int udp_in_portno;                 // bind port (default 7355)
+    char udp_in_bindaddr[1024];        // bind address (default 127.0.0.1)
+    void* udp_in_ctx;                  // opaque UDP input context
+    unsigned long long udp_in_packets; // received datagrams
+    unsigned long long udp_in_bytes;   // received bytes
+    unsigned long long udp_in_drops;   // dropped samples due to ring overflow
+
     //M17 UDP for IP frame output
     int m17_use_ip;   //if enabled, open UDP and broadcast IP frame
     int m17_portno;   //default is 17000
