@@ -57,6 +57,7 @@ jobs:
             make
             cmake
             curl
+            ninja
             pkg-config
             libsndfile-devel
             itpp-devel
@@ -97,7 +98,7 @@ jobs:
       - name: Build mbe-neo (static or shared)
         shell: pwsh
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
 
       - name: Configure (Release)
         shell: pwsh
