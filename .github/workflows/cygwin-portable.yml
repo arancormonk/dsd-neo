@@ -76,14 +76,14 @@ jobs:
               cygdeps-${{ runner.os }}-
 
       - name: Show Cygwin versions
-        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
         run: |
           uname -a
           cmake --version
           gcc --version
 
       - name: Prepare deps environment
-        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
         run: |
           set -eux
           echo "DEPS_PREFIX=$PWD/.cygdeps" >> "$GITHUB_ENV"
@@ -93,7 +93,7 @@ jobs:
           echo "LD_LIBRARY_PATH=$PWD/.cygdeps/bin:$PWD/.cygdeps/lib:$PWD/.cygdeps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Build mbe-neo (static or shared)
-        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
         run: |
           set -eux
           if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
@@ -106,20 +106,20 @@ jobs:
           fi
 
       - name: Configure (Release)
-        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
         run: |
           set -eux
           cmake --preset dev-release -DDSD_ENABLE_LTO=OFF
 
       - name: Build
-        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
         run: |
           set -eux
           cmake --build --preset dev-release -j
 
       - name: Stage portable tree
         id: stage
-        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
         run: |
           set -euxo pipefail
           EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
