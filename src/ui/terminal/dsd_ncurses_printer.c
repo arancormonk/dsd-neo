@@ -305,31 +305,69 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 
     int16_t buf[(size_t)MAXP * 2];
     int n = rtl_stream_constellation_get(buf, MAXP);
+
+    printw("--Constellation---------------------------------------------------------------\n");
     if (n <= 0) {
-        printw("--Constellation---------------------------------------------------------------\n");
         printw("| (no samples yet)\n");
         printw("------------------------------------------------------------------------------\n");
         return;
     }
-    /* Grid dims */
-    const int W = 97; /* cols */
-    const int H = 33; /* rows */
-    char grid[(size_t)H][(size_t)W];
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            grid[y][x] = ' ';
+
+    /* Determine grid size from terminal */
+    int rows = 24, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    int W = cols - 4;
+    if (W < 32) {
+        W = 32;
+    }
+    int H = rows / 3;
+    if (H < 12) {
+        H = 12;
+    }
+
+    /* Respect UI toggles */
+    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+
+    /* Local palettes */
+    static const char ascii_palette[] = " .:-=+*#%@"; /* 10 levels */
+    const int ascii_len = (int)(sizeof(ascii_palette) - 1);
+    /* Blocks (eye-style) */
+    static const char* block_palette[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}; /* 9 levels */
+    const int block_len = (int)(sizeof(block_palette) / sizeof(block_palette[0]));
+    /* Dots of increasing weight/size (preferred for constellation) */
+    static const char* dot_palette[] = {" ", "·", "∙", "•", "●", "⬤"}; /* 6 levels */
+    const int dot_len = (int)(sizeof(dot_palette) / sizeof(dot_palette[0]));
+    int use_dots = 1; /* default to dot style for constellation */
+
+    /* Optional color ramp (blue->cyan->green->yellow->red) */
+    static const short color_seq[] = {COLOR_BLUE,    COLOR_CYAN, COLOR_GREEN, COLOR_YELLOW,
+                                      COLOR_MAGENTA, COLOR_RED,  COLOR_WHITE};
+    const int color_len = (int)(sizeof(color_seq) / sizeof(color_seq[0]));
+    const short color_base = 41; /* keep separate from eye's base to avoid clashes */
+    const short guide_h_pair = (short)(color_base + 8);
+    const short guide_v_pair = (short)(color_base + 9);
+    const short guide_x_pair = (short)(color_base + 10);
+    static int color_inited = 0;
+    if (opts && opts->eye_color && has_colors() && !color_inited) {
+        for (int i = 0; i < color_len; i++) {
+            init_pair((short)(color_base + i), color_seq[i], COLOR_BLACK);
         }
+        init_pair(guide_h_pair, COLOR_YELLOW, COLOR_BLACK);
+        init_pair(guide_v_pair, COLOR_CYAN, COLOR_BLACK);
+        init_pair(guide_x_pair, COLOR_MAGENTA, COLOR_BLACK);
+        color_inited = 1;
     }
-    int cx = W / 2, cy = H / 2;
-    for (int x = 0; x < W; x++) {
-        grid[cy][x] = '-';
+
+    /* Density buffer */
+    size_t den_sz = (size_t)H * (size_t)W;
+    unsigned short* den = (unsigned short*)calloc(den_sz, sizeof(unsigned short));
+    if (!den) {
+        printw("| (constellation: out of memory)\n");
+        printw("------------------------------------------------------------------------------\n");
+        return;
     }
-    for (int y = 0; y < H; y++) {
-        grid[y][cx] = '|';
-    }
-    grid[cy][cx] = '+';
-    /* Dynamic scale from data (separate I/Q to maximize usage of the grid).
-       Smooth with a short EMA so scaling doesn't jump frame-to-frame. */
+
+    /* Dynamic scale from data with smoothing */
     static int s_maxI = 256, s_maxQ = 256; /* smoothed maxima */
     int maxI = 1, maxQ = 1;
     for (int k = 0; k < n; k++) {
@@ -344,14 +382,12 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             maxQ = b;
         }
     }
-    /* Avoid over-zooming when signal is extremely small */
     if (maxI < 64) {
-        maxI = 64;
+        maxI = 64; /* avoid zooming into noise */
     }
     if (maxQ < 64) {
         maxQ = 64;
     }
-    /* EMA smoothing (alpha ~0.2) for stable display */
     s_maxI = (int)(0.8 * (double)s_maxI + 0.2 * (double)maxI);
     s_maxQ = (int)(0.8 * (double)s_maxQ + 0.2 * (double)maxQ);
     if (s_maxI < 64) {
@@ -361,66 +397,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         s_maxQ = 64;
     }
 
-    /* Optional QPSK slicer overlay: diagonals + reference cluster centers */
-    if (opts && (opts->mod_qpsk == 1)) {
-        /* Diagonals to visualize 45° decision lines (approx, aspect-corrected) */
-        for (int x = 0; x < W; x++) {
-            int dy = (int)lrint(((double)(H - 1) / (double)(W - 1)) * (double)(x - cx));
-            int y1 = cy + dy;
-            int y2 = cy - dy;
-            if (y1 >= 0 && y1 < H) {
-                if (grid[y1][x] == ' ') {
-                    grid[y1][x] = '/';
-                }
-            }
-            if (y2 >= 0 && y2 < H) {
-                if (grid[y2][x] == ' ') {
-                    grid[y2][x] = '\\';
-                }
-            }
-        }
-        /* Reference constellation target points near ~70% of full-scale */
-        double refI = 0.70 * (double)s_maxI;
-        double refQ = 0.70 * (double)s_maxQ;
-        int ref_ix[4] = {+1, -1, -1, +1};
-        int ref_qx[4] = {+1, +1, -1, -1};
-        for (int r = 0; r < 4; r++) {
-            double i = ref_ix[r] * refI;
-            double q = ref_qx[r] * refQ;
-            int x = cx + (int)lrint((i / (double)s_maxI) * (W / 2 - 1));
-            int y = cy - (int)lrint((q / (double)s_maxQ) * (H / 2 - 1));
-            if (x < 0) {
-                x = 0;
-            }
-            if (x >= W) {
-                x = W - 1;
-            }
-            if (y < 0) {
-                y = 0;
-            }
-            if (y >= H) {
-                y = H - 1;
-            }
-            grid[y][x] = 'o';
-        }
-        /* Quadrant labels */
-        int qdx = (W / 4);
-        int qdy = (H / 4);
-        if (cy - qdy >= 0 && cx + qdx < W) {
-            grid[cy - qdy][cx + qdx] = '1'; /* (+I,+Q) */
-        }
-        if (cy - qdy >= 0 && cx - qdx >= 0) {
-            grid[cy - qdy][cx - qdx] = '2'; /* (-I,+Q) */
-        }
-        if (cy + qdy < H && cx - qdx >= 0) {
-            grid[cy + qdy][cx - qdx] = '3'; /* (-I,-Q) */
-        }
-        if (cy + qdy < H && cx + qdx < W) {
-            grid[cy + qdy][cx + qdx] = '4'; /* (+I,-Q) */
-        }
-    }
-    /* Plot points with a small magnitude gate to reduce near-origin clutter.
-       Use a lower gate for non-QPSK (e.g., C4FM/FSK) so rings don't vanish. */
+    /* Magnitude gate to reduce near-origin clutter */
     double gate = 0.10;
     if (opts) {
         gate = (opts->mod_qpsk == 1) ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
@@ -432,6 +409,10 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         }
     }
     const double gate2 = gate * gate;
+
+    /* Accumulate density */
+    int cx = W / 2, cy = H / 2;
+    unsigned short dmax = 0;
     for (int k = 0; k < n; k++) {
         int i = buf[(size_t)(k << 1) + 0];
         int q = buf[(size_t)(k << 1) + 1];
@@ -455,21 +436,249 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         if (y >= H) {
             y = H - 1;
         }
-        char c = '.';
-        if (grid[y][x] == ' ' || grid[y][x] == '.') {
-            grid[y][x] = c;
+        unsigned short* cell = &den[(size_t)y * (size_t)W + (size_t)x];
+        if (*cell != 0xFFFF) {
+            (*cell)++;
+            if (*cell > dmax) {
+                dmax = *cell;
+            }
         }
     }
-    /* Print */
-    printw("--Constellation---------------------------------------------------------------\n");
+    if (dmax == 0) {
+        dmax = 1; /* avoid div-by-zero */
+    }
+
+    /* Render with overlays and optional color */
     for (int y = 0; y < H; y++) {
         printw("|");
+        int last_pair = -1;
         for (int x = 0; x < W; x++) {
-            addch(grid[y][x]);
+            /* Determine overlays */
+            int is_haxis = (y == cy);
+            int is_vaxis = (x == cx);
+            int is_diag = 0;
+            if (opts && (opts->mod_qpsk == 1)) {
+                int dy = (int)lrint(((double)(H - 1) / (double)(W - 1)) * (double)(x - cx));
+                int y1 = cy + dy;
+                int y2 = cy - dy;
+                is_diag = (y == y1) || (y == y2);
+            }
+
+            unsigned short d = den[(size_t)y * (size_t)W + (size_t)x];
+            char ch = ' ';
+            int used_guide = 0;
+
+            if (is_haxis || is_vaxis || is_diag) {
+                /* Choose overlay char */
+                if ((is_haxis && is_vaxis) || (is_vaxis && is_diag) || (is_haxis && is_diag)) {
+                    ch = '+';
+                } else if (is_haxis) {
+                    ch = '-';
+                } else if (is_vaxis) {
+                    ch = '|';
+                } else {
+                    ch = (x >= cx) ? '\\' : '/';
+                }
+                if (opts && opts->eye_color && has_colors()) {
+                    short gp = is_diag ? guide_x_pair : (is_haxis ? guide_h_pair : guide_v_pair);
+                    if (last_pair >= 0) {
+                        attroff(COLOR_PAIR(last_pair));
+                        last_pair = -1;
+                    }
+                    attron(COLOR_PAIR(gp));
+                    used_guide = gp;
+                }
+            } else if (d > 0) {
+                /* Density glyph + color */
+                double f = (double)d / (double)dmax;
+                if (f < 0.0) {
+                    f = 0.0;
+                }
+                if (f > 1.0) {
+                    f = 1.0;
+                }
+                double g = sqrt(f); /* gamma brighten */
+                if (opts && opts->eye_color && has_colors()) {
+                    int ci = (int)lrint(g * (double)(color_len - 1));
+                    if (ci < 0) {
+                        ci = 0;
+                    }
+                    if (ci >= color_len) {
+                        ci = color_len - 1;
+                    }
+                    int pid = color_base + ci;
+                    if (pid != last_pair) {
+                        if (last_pair >= 0) {
+                            attroff(COLOR_PAIR(last_pair));
+                        }
+                        attron(COLOR_PAIR(pid));
+                        last_pair = pid;
+                    }
+                }
+                if (use_unicode) {
+                    if (use_dots) {
+                        int idx = (int)lrint(g * (double)(dot_len - 1));
+                        if (idx < 0) {
+                            idx = 0;
+                        }
+                        if (idx >= dot_len) {
+                            idx = dot_len - 1;
+                        }
+                        ch = 0; /* mark to addstr */
+                        addstr(dot_palette[idx]);
+                    } else {
+                        int idx = (int)lrint(g * (double)(block_len - 1));
+                        if (idx < 0) {
+                            idx = 0;
+                        }
+                        if (idx >= block_len) {
+                            idx = block_len - 1;
+                        }
+                        ch = 0; /* mark to addstr */
+                        addstr(block_palette[idx]);
+                    }
+                } else {
+                    int idx = (int)lrint(g * (double)(ascii_len - 1));
+                    if (idx < 0) {
+                        idx = 0;
+                    }
+                    if (idx >= ascii_len) {
+                        idx = ascii_len - 1;
+                    }
+                    ch = ascii_palette[idx];
+                }
+            }
+
+            /* Reference cluster centers + quadrant labels (QPSK only) */
+            if (opts && (opts->mod_qpsk == 1)) {
+                /* Reference points near ~70% radius */
+                double refI = 0.70 * (double)s_maxI;
+                double refQ = 0.70 * (double)s_maxQ;
+                int ref_ix[4] = {+1, -1, -1, +1};
+                int ref_qx[4] = {+1, +1, -1, -1};
+                for (int r = 0; r < 4; r++) {
+                    double ii = ref_ix[r] * refI;
+                    double qq = ref_qx[r] * refQ;
+                    int xr = cx + (int)lrint((ii / (double)s_maxI) * (W / 2 - 1));
+                    int yr = cy - (int)lrint((qq / (double)s_maxQ) * (H / 2 - 1));
+                    if (xr == x && yr == y) {
+                        ch = 'o';
+                        if (opts->eye_color && has_colors()) {
+                            if (last_pair >= 0) {
+                                attroff(COLOR_PAIR(last_pair));
+                                last_pair = -1;
+                            }
+                            attron(COLOR_PAIR(guide_x_pair));
+                            used_guide = guide_x_pair;
+                        }
+                    }
+                }
+                /* Quadrant labels */
+                int qdx = (W / 4);
+                int qdy = (H / 4);
+                if (y == cy - qdy && x == cx + qdx) {
+                    ch = '1';
+                } else if (y == cy - qdy && x == cx - qdx) {
+                    ch = '2';
+                } else if (y == cy + qdy && x == cx - qdx) {
+                    ch = '3';
+                } else if (y == cy + qdy && x == cx + qdx) {
+                    ch = '4';
+                }
+            }
+
+            if (ch != 0) {
+                addch(ch);
+            }
+            if (used_guide) {
+                attroff(COLOR_PAIR(used_guide));
+                used_guide = 0;
+                /* Restore density color if active */
+                if (opts && opts->eye_color && has_colors()) {
+                    /* Recompute density pair for this cell */
+                    if (d > 0) {
+                        double f = (double)d / (double)dmax;
+                        if (f < 0.0) {
+                            f = 0.0;
+                        }
+                        if (f > 1.0) {
+                            f = 1.0;
+                        }
+                        double g = sqrt(f);
+                        int ci = (int)lrint(g * (double)(color_len - 1));
+                        if (ci < 0) {
+                            ci = 0;
+                        }
+                        if (ci >= color_len) {
+                            ci = color_len - 1;
+                        }
+                        int pid = color_base + ci;
+                        attron(COLOR_PAIR(pid));
+                        last_pair = pid;
+                    }
+                }
+            }
+        }
+        if (opts && opts->eye_color && has_colors()) {
+            if (last_pair >= 0) {
+                attroff(COLOR_PAIR(last_pair));
+            }
         }
         printw("\n");
     }
+
+    /* Legend */
+    printw("| Ref: axes '+', '/'\\'\\' slicer; 'o' cluster refs\n");
+    if (use_unicode) {
+        if (use_dots) {
+            printw("| Density: · • ● ⬤  (low -> high)%s\n",
+                   (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+        } else {
+            printw("| Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n",
+                   (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+        }
+    } else {
+        printw("| Density: . : - = + * # @  (low -> high)%s\n",
+               (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+    }
+    /* Color bar legend (consistent with Eye Diagram) */
+    if (opts && opts->eye_color && has_colors()) {
+        printw("|\n");
+        printw("| Color:   ");
+        for (int i = 0; i < color_len; i++) {
+            attron(COLOR_PAIR((short)(color_base + i)));
+            if (use_unicode) {
+                addstr("██");
+            } else {
+                addstr("##");
+            }
+            attroff(COLOR_PAIR((short)(color_base + i)));
+        }
+        printw("  low -> high\n");
+        printw("|          ");
+        int barw = color_len * 2;
+        for (int x = 0; x < barw; x++) {
+            if (x == 0 || x == barw / 2 || x == barw - 1) {
+                addch('|');
+            } else {
+                addch(' ');
+            }
+        }
+        printw("\n");
+        printw("|          0%%");
+        int pad_mid = barw / 2 - 2;
+        for (int i = 0; i < pad_mid; i++) {
+            addch(' ');
+        }
+        printw("50%%");
+        int pad_end = barw - (barw / 2 + 2) - 4;
+        for (int i = 0; i < pad_end; i++) {
+            addch(' ');
+        }
+        printw("100%%\n");
+    }
     printw("------------------------------------------------------------------------------\n");
+    free(den);
 #else
     printw("--Constellation---------------------------------------------------------------\n");
     printw("| (RTL disabled in this build)\n");
