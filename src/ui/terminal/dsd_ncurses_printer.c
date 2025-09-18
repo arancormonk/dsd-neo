@@ -542,8 +542,52 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         dmax = 1; /* avoid div-by-zero */
     }
 
-    /* Render with overlays and optional color */
-    for (int y = 0; y < H; y++) {
+    /* Render with overlays and optional color (trim to active density vertically) */
+    /* Find first/last rows within [y0,y1] that contain any density. */
+    int y_start = y0;
+    int y_end = y1;
+    if (y_start < 0) {
+        y_start = 0;
+    }
+    if (y_end >= H) {
+        y_end = H - 1;
+    }
+    int y_top = -1, y_bot = -1;
+    for (int y = y_start; y <= y_end; y++) {
+        int has = 0;
+        for (int x = x0; x <= x1; x++) {
+            if (x >= 0 && x < W) {
+                if (den[(size_t)y * (size_t)W + (size_t)x] > 0) {
+                    has = 1;
+                    break;
+                }
+            }
+        }
+        if (has) {
+            y_top = y;
+            break;
+        }
+    }
+    for (int y = y_end; y >= y_start; y--) {
+        int has = 0;
+        for (int x = x0; x <= x1; x++) {
+            if (x >= 0 && x < W) {
+                if (den[(size_t)y * (size_t)W + (size_t)x] > 0) {
+                    has = 1;
+                    break;
+                }
+            }
+        }
+        if (has) {
+            y_bot = y;
+            break;
+        }
+    }
+    if (y_top >= 0 && y_bot >= y_top) {
+        y_start = y_top;
+        y_end = y_bot;
+    }
+    for (int y = y_start; y <= y_end; y++) {
         printw("|");
         int last_pair = -1;
         for (int x = 0; x < W; x++) {
