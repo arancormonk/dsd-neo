@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /*-------------------------------------------------------------------------------
  * dsd_gps.c
  * GPS Handling Functions for Various Protocols
@@ -8,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/unicode.h>
 
 void
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
@@ -52,8 +57,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     sprintf(latstr, "%s", "N");
     sprintf(lonstr, "%s", "E");
 
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
 
     //lat and lon calculations
     if (lat_sign) {
@@ -214,8 +218,7 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     uint16_t nmea_cog = (uint16_t)ConvertBitIntoBytes(&input[103], 9);       //course over ground in degrees
 
     //lat and lon conversion
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
     float latitude = 0.0f;
     float longitude = 0.0f;
     // float m_unit = 1.0f / 60.0f;     //unit to convert min into decimal value - (1/60)*60 minutes = 1 degree
@@ -347,8 +350,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     uint32_t tsec = (rtime % 3600) % 60;
 
     //lat and lon conversion
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
     float latitude = 0.0f;
     float longitude = 0.0f;
     float m_unit = 1.0f / 60.0f;
@@ -516,8 +518,7 @@ harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input) {
     float lat_dec = 0.0f;
     float lon_dec = 0.0f;
 
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
 
     //This appears to be similar to the NMEA GPGGA format (DDmm.mm) but
     //octets are ordered in least significant to most significant value
@@ -624,8 +625,7 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     uint8_t pos_err = (uint8_t)ConvertBitIntoBytes(&lc_bits[20], 3);
     UNUSED2(res_a, res_b);
 
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
 
     uint32_t lon_sign = lc_bits[23];
     uint32_t lon = (uint32_t)ConvertBitIntoBytes(&lc_bits[24], 24);
@@ -738,8 +738,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     uint8_t res_b = (uint8_t)ConvertBitIntoBytes(&lc_bits[16], 7);
     uint8_t expired = lc_bits[23]; //this bit seems to indicate that the GPS coordinates are out of date or fresh
 
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
 
     uint32_t lon_sign = lc_bits[48];
     uint32_t lon = (uint32_t)ConvertBitIntoBytes(&lc_bits[49], 23);

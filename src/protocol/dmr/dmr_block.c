@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /*-------------------------------------------------------------------------------
  * dmr_block.c
  * DMR Data Header and Data Block Assembly/Handling
@@ -9,6 +13,7 @@
 
 #include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/unicode.h>
 
 #define DMR_PDU_DECRYPTION //disable to skip attempting to decrypt DMR PDUs
 
@@ -886,7 +891,16 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
             u16[1] = 0;
             if (utf16c >= 0x20 && utf16c != 0x7F) //avoid control chars
             {
-                fprintf(stderr, "%lc", utf16c); //will using lc work here? May depend on console locale settings?
+                if (dsd_unicode_supported()) {
+                    fprintf(stderr, "%lc", utf16c); // may depend on console locale
+                } else {
+                    unsigned char lo = (unsigned char)(utf16c & 0xFF);
+                    if (lo >= 0x20 && lo < 0x7F) {
+                        fputc((int)lo, stderr);
+                    } else {
+                        fputc('?', stderr);
+                    }
+                }
                 if (utf16c >= 0x20 && utf16c < 0x7F) {
                     strcat(state->event_history_s[slot].Event_History_Items[0].text_message, u16);
                 }
@@ -947,7 +961,16 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
             u16[1] = 0;
             if (utf16c >= 0x20 && utf16c != 0x7F) //avoid control chars
             {
-                fprintf(stderr, "%lc", utf16c);
+                if (dsd_unicode_supported()) {
+                    fprintf(stderr, "%lc", utf16c);
+                } else {
+                    unsigned char lo = (unsigned char)(utf16c & 0xFF);
+                    if (lo >= 0x20 && lo < 0x7F) {
+                        fputc((int)lo, stderr);
+                    } else {
+                        fputc('?', stderr);
+                    }
+                }
                 if (utf16c >= 0x20 && utf16c < 0x7F) {
                     strcat(state->event_history_s[slot].Event_History_Items[0].text_message, u16);
                 }

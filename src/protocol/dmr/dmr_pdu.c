@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /*-------------------------------------------------------------------------------
  * dmr_bs.c
  * DMR Data (1/2, 3/4, 1) PDU Decoding
@@ -8,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/unicode.h>
 
 //convert a value that is stored as a string decimal into a decimal uint16_t
 uint16_t
@@ -35,7 +40,17 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
         // fprintf (stderr, " %04X; ", ch16); //debug for raw values to check grouping for offset
 
         if (ch16 >= 0x20 && ch16 != 0x040D) { //if not a linebreak or terminal commmands
-            fprintf(stderr, "%lc", ch16);
+            if (dsd_unicode_supported()) {
+                fprintf(stderr, "%lc", ch16);
+            } else {
+                /* best-effort ASCII: print low byte if printable */
+                unsigned char lo = (unsigned char)(ch16 & 0xFF);
+                if (lo >= 0x20 && lo < 0x7F) {
+                    fputc((int)lo, stderr);
+                } else {
+                    fputc('?', stderr);
+                }
+            }
         } else if (ch16 == 0) { //if padding (0 could also indicate end of text terminator?)
             fprintf(stderr, "_");
         } else if (ch16 == 0x040D) { //Ѝ or 0x040D may be ETLF
@@ -575,8 +590,7 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
     uint8_t degrees = 0;
     uint8_t deg_set = 0;
 
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
 
     //debug passed LRRP message
     // fprintf (stderr, "\n LRRP (Debug): ");
@@ -900,8 +914,7 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     uint16_t lon_min = 0;
     uint16_t lon_sec = 0;
 
-    char deg_glyph[4];
-    sprintf(deg_glyph, "%s", "°");
+    const char* deg_glyph = dsd_degrees_glyph();
 
     //more strings...
     char locnstr[50];

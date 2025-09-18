@@ -9,6 +9,7 @@ target_sources(dsd-neo_runtime PRIVATE
   input_ring.cpp
   worker_pool.cpp
   rt_sched.cpp
+  unicode.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
 )
 

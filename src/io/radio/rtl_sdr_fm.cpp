@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <math.h>
 #include <pthread.h>
@@ -1676,7 +1677,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             }
             demod.audio_lpf_alpha = alpha_q15;
             demod.audio_lpf_enable = 1;
-            LOG_INFO("Audio LPF enabled: fc≈%d Hz, alpha_q15=%d\n", cutoff_hz, demod.audio_lpf_alpha);
+            const char* approx = dsd_unicode_or_ascii("≈", "~");
+            LOG_INFO("Audio LPF enabled: fc%s%d Hz, alpha_q15=%d\n", approx, cutoff_hz, demod.audio_lpf_alpha);
         }
     }
 
@@ -1784,8 +1786,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             int sps_p25p1 = (int)((out_hz + 2400) / 4800);  /* ~10 at 48k */
             int sps_p25p2 = (int)((out_hz + 3000) / 6000);  /* ~8 at 48k */
             int sps_nxdn48 = (int)((out_hz + 1200) / 2400); /* ~20 at 48k */
-            LOG_INFO("Derived SPS (@%u Hz): P25P1≈%d, P25P2≈%d, NXDN48≈%d.\n", out_hz, sps_p25p1, sps_p25p2,
-                     sps_nxdn48);
+            const char* approx2 = dsd_unicode_or_ascii("≈", "~");
+            LOG_INFO("Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx2, sps_p25p1, approx2,
+                     sps_p25p2, sps_nxdn48);
             /* Warn if far from canonical 48k-based SPS expectations */
             if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
                 || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {

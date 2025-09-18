@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
+
 /*-------------------------------------------------------------------------------
  * p25_lcw.c
  * P25p1 Link Control Word Decoding
@@ -12,6 +13,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/unicode.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -161,7 +163,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x44) {
-                fprintf(stderr, " Group Voice Channel Update – Explicit");
+                fprintf(stderr, " Group Voice Channel Update %s Explicit", dsd_unicode_or_ascii("–", "-"));
                 uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&LCW_bits[24], 16);
                 uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&LCW_bits[40], 16);
                 uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&LCW_bits[56], 16);
@@ -214,7 +216,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x4A) {
-                fprintf(stderr, " Unit to Unit Voice Channel User – Extended");
+                fprintf(stderr, " Unit to Unit Voice Channel User %s Extended", dsd_unicode_or_ascii("–", "-"));
                 uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 24);
                 uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
                 fprintf(stderr, "TGT: %d; SRC: %d; ", target, src);
@@ -251,11 +253,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x5A) {
-                fprintf(stderr, " Status Update – Source ID Extension Required");
+                fprintf(stderr, " Status Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
             }
 
             else if (lc_format == 0x5C) {
-                fprintf(stderr, " Extended Function Command – Source ID Extension Required");
+                fprintf(stderr, " Extended Function Command %s Source ID Extension Required",
+                        dsd_unicode_or_ascii("–", "-"));
             }
 
             else if (lc_format == 0x60) {
@@ -285,7 +288,8 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x66) {
-                fprintf(stderr, " Secondary Control Channel Broadcast – Explicit (LCSCBX)");
+                fprintf(stderr, " Secondary Control Channel Broadcast %s Explicit (LCSCBX)",
+                        dsd_unicode_or_ascii("–", "-"));
             }
 
             else if (lc_format == 0x67) //explicit
@@ -316,11 +320,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x68) {
-                fprintf(stderr, " RFSS Status Broadcast – Explicit (LCRSBX)");
+                fprintf(stderr, " RFSS Status Broadcast %s Explicit (LCRSBX)", dsd_unicode_or_ascii("–", "-"));
             }
 
             else if (lc_format == 0x69) {
-                fprintf(stderr, " Network Status Broadcast – Explicit (LCNSBX)");
+                fprintf(stderr, " Network Status Broadcast %s Explicit (LCNSBX)", dsd_unicode_or_ascii("–", "-"));
             }
 
             else if (lc_format == 0x6A) {
@@ -328,7 +332,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             else if (lc_format == 0x6B) {
-                fprintf(stderr, " Message Update – Source ID Extension Required");
+                fprintf(stderr, " Message Update %s Source ID Extension Required", dsd_unicode_or_ascii("–", "-"));
             }
 
             // Return to control channel (call termination)

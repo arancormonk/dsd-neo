@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 
 #include <ctype.h>
@@ -573,7 +574,8 @@ io_set_pulse_out(void* vctx) {
         if (!outs[i].initialized) {
             break;
         }
-        snprintf(buf[n], sizeof buf[n], "[%d] %s — %s", outs[i].index, outs[i].name, outs[i].description);
+        snprintf(buf[n], sizeof buf[n], "[%d] %s %s %s", outs[i].index, outs[i].name, dsd_unicode_or_ascii("—", "-"),
+                 outs[i].description);
         labels[n] = buf[n];
         names[n] = outs[i].name;
         n++;
@@ -606,7 +608,8 @@ io_set_pulse_in(void* vctx) {
         if (!ins[i].initialized) {
             break;
         }
-        snprintf(buf[n], sizeof buf[n], "[%d] %s — %s", ins[i].index, ins[i].name, ins[i].description);
+        snprintf(buf[n], sizeof buf[n], "[%d] %s %s %s", ins[i].index, ins[i].name, dsd_unicode_or_ascii("—", "-"),
+                 ins[i].description);
         labels[n] = buf[n];
         names[n] = ins[i].name;
         n++;

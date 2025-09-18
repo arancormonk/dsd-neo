@@ -13,8 +13,10 @@
  */
 
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 /**
  * @brief Write a formatted log message to the logging sink.
@@ -32,6 +34,16 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
 
     va_list args;
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    /* Format into a temporary buffer first so we can apply ASCII fallback if needed. */
+    char buf[4096];
+    vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
+
+    if (dsd_unicode_supported()) {
+        fputs(buf, stderr);
+    } else {
+        char safe[4096];
+        dsd_ascii_fallback(buf, safe, sizeof(safe));
+        fputs(safe, stderr);
+    }
 }

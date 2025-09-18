@@ -36,31 +36,31 @@ typedef enum { LOG_LEVEL_ERROR = 0, LOG_LEVEL_WARN = 1, LOG_LEVEL_INFO = 2, LOG_
  */
 void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...);
 
-/* Logging macros that map directly to fprintf for initial compatibility */
+/* Logging macros route through dsd_neo_log_write to allow environment handling */
 
 /* Error messages - always shown */
 #define LOG_ERROR(...)                                                                                                 \
     do {                                                                                                               \
-        fprintf(stderr, __VA_ARGS__);                                                                                  \
+        dsd_neo_log_write(LOG_LEVEL_ERROR, __VA_ARGS__);                                                               \
     } while (0)
 
 /* Warning messages - always shown */
 #define LOG_WARN(...)                                                                                                  \
     do {                                                                                                               \
-        fprintf(stderr, __VA_ARGS__);                                                                                  \
+        dsd_neo_log_write(LOG_LEVEL_WARN, __VA_ARGS__);                                                                \
     } while (0)
 
 /* Info messages - always shown */
 #define LOG_INFO(...)                                                                                                  \
     do {                                                                                                               \
-        fprintf(stderr, __VA_ARGS__);                                                                                  \
+        dsd_neo_log_write(LOG_LEVEL_INFO, __VA_ARGS__);                                                                \
     } while (0)
 
 /* Debug messages - compile-time gated */
 #if DSD_NEO_LOG_LEVEL >= LOG_LEVEL_DEBUG
 #define LOG_DEBUG(...)                                                                                                 \
     do {                                                                                                               \
-        fprintf(stderr, __VA_ARGS__);                                                                                  \
+        dsd_neo_log_write(LOG_LEVEL_DEBUG, __VA_ARGS__);                                                               \
     } while (0)
 #else
 #define LOG_DEBUG(...)                                                                                                 \

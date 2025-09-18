@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
+
 /*-------------------------------------------------------------------------------
  * dsd_alias.c
  * Talker Alias Handling for Various Protocols and Vendors
@@ -11,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/unicode.h>
 
 //Motorola P25 OTA Alias Decoding ripped/demystified from Ilya Smirnov's SDRTrunk Voodoo Code
 uint8_t moto_alias_lut[256] = {
@@ -436,7 +438,17 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
         // fprintf (stderr, "\n");
         fprintf(stderr, " Alias: ");
         for (int16_t i = 0; i < num_bytes / 2; i++) {
-            fprintf(stderr, "%lc", ((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
+            uint16_t ch = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
+            if (dsd_unicode_supported()) {
+                fprintf(stderr, "%lc", ch);
+            } else {
+                unsigned char lo = (unsigned char)(ch & 0xFF);
+                if (lo >= 0x20 && lo < 0x7F) {
+                    fputc((int)lo, stderr);
+                } else {
+                    fputc('?', stderr);
+                }
+            }
         }
 
         apx_embedded_alias_dump(opts, state, slot, num_bytes, input, decoded);
@@ -861,7 +873,16 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             ch[1] = 0;
 
             if (character >= 0x20 && character != 0x7F) {
-                fprintf(stderr, "%lc", character);
+                if (dsd_unicode_supported()) {
+                    fprintf(stderr, "%lc", character);
+                } else {
+                    unsigned char lo = (unsigned char)(character & 0xFF);
+                    if (lo >= 0x20 && lo < 0x7F) {
+                        fputc((int)lo, stderr);
+                    } else {
+                        fputc('?', stderr);
+                    }
+                }
             } else {
                 fprintf(stderr, " ");
             }
