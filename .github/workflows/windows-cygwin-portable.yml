@@ -75,7 +75,7 @@ jobs:
 
       - name: Mark repo safe for Cygwin git
         shell: pwsh
-        run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; git config --global --add safe.directory "$(cygpath -u "$GITHUB_WORKSPACE")"'
+        run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; git config --global --add safe.directory "$(cygpath -u "$GITHUB_WORKSPACE")"'
 
       - name: Restore cygdeps cache
         uses: actions/cache@v4.2.4
@@ -89,12 +89,12 @@ jobs:
 
       - name: Show Cygwin versions
         shell: pwsh
-        run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; uname -a; cmake --version; gcc --version'
+        run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; uname -a; cmake --version; gcc --version'
 
       - name: Prepare deps environment
         shell: pwsh
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; DEPS_PREFIX="$WS/.cygdeps"; echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"; echo "CMAKE_PREFIX_PATH=$DEPS_PREFIX:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"; echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"; echo "PATH=$DEPS_PREFIX/bin:${PATH}" >> "$GITHUB_ENV"; echo "LD_LIBRARY_PATH=$DEPS_PREFIX/bin:$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; DEPS_PREFIX="$WS/.cygdeps"; echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"; echo "CMAKE_PREFIX_PATH=$DEPS_PREFIX:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"; echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"; echo "PATH=$DEPS_PREFIX/bin:${PATH}" >> "$GITHUB_ENV"; echo "LD_LIBRARY_PATH=$DEPS_PREFIX/bin:$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"'
 
       - name: Decide deps to build (manifest)
         id: dep-plan
@@ -105,43 +105,43 @@ jobs:
           ITPP_SHA: ${{ steps.dep-shas.outputs.itpp_sha }}
           RTLSDR_SHA: ${{ steps.dep-shas.outputs.rtlsdr_sha }}
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; : "${DEPS_PREFIX:?DEPS_PREFIX not set}"; mf="$DEPS_PREFIX/.manifest"; man_mbe=$(sed -n "s/^mbe_sha=//p" "$mf" 2>/dev/null || true); man_codec2=$(sed -n "s/^codec2_sha=//p" "$mf" 2>/dev/null || true); man_itpp=$(sed -n "s/^itpp_sha=//p" "$mf" 2>/dev/null || true); man_rtlsdr=$(sed -n "s/^rtlsdr_sha=//p" "$mf" 2>/dev/null || true); has_pc() { name="$1"; [ -f "$DEPS_PREFIX/lib/pkgconfig/$name.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/$name.pc" ]; }; inst_mbe=false; has_pc libmbe-neo && inst_mbe=true || true; inst_codec2=false; has_pc codec2 && inst_codec2=true || true; inst_itpp=false; has_pc itpp && inst_itpp=true || true; inst_rtlsdr=false; has_pc librtlsdr && inst_rtlsdr=true || true; m_ok=false; c2_ok=false; i_ok=false; r_ok=false; [ "$inst_mbe" = true ] && [ -n "$man_mbe" ] && [ "$man_mbe" = "$MBE_SHA" ] && m_ok=true || true; [ "$inst_codec2" = true ] && [ -n "$man_codec2" ] && [ "$man_codec2" = "$CODEC2_SHA" ] && c2_ok=true || true; [ "$inst_itpp" = true ] && [ -n "$man_itpp" ] && [ "$man_itpp" = "$ITPP_SHA" ] && i_ok=true || true; [ "$inst_rtlsdr" = true ] && [ -n "$man_rtlsdr" ] && [ "$man_rtlsdr" = "$RTLSDR_SHA" ] && r_ok=true || true; build_mbe=true; [ "$m_ok" = true ] && build_mbe=false || true; build_codec2=true; [ "$c2_ok" = true ] && build_codec2=false || true; build_itpp=true; [ "$i_ok" = true ] && build_itpp=false || true; build_rtlsdr=true; [ "$r_ok" = true ] && build_rtlsdr=false || true; echo "build_mbe=$build_mbe"       >> "$GITHUB_OUTPUT"; echo "build_codec2=$build_codec2" >> "$GITHUB_OUTPUT"; echo "build_itpp=$build_itpp"     >> "$GITHUB_OUTPUT"; echo "build_rtlsdr=$build_rtlsdr" >> "$GITHUB_OUTPUT"; echo "Plan: mbe=$build_mbe codec2=$build_codec2 itpp=$build_itpp rtlsdr=$build_rtlsdr"'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; : "${DEPS_PREFIX:?DEPS_PREFIX not set}"; mf="$DEPS_PREFIX/.manifest"; man_mbe=$(sed -n "s/^mbe_sha=//p" "$mf" 2>/dev/null || true); man_codec2=$(sed -n "s/^codec2_sha=//p" "$mf" 2>/dev/null || true); man_itpp=$(sed -n "s/^itpp_sha=//p" "$mf" 2>/dev/null || true); man_rtlsdr=$(sed -n "s/^rtlsdr_sha=//p" "$mf" 2>/dev/null || true); has_pc() { name="$1"; [ -f "$DEPS_PREFIX/lib/pkgconfig/$name.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/$name.pc" ]; }; inst_mbe=false; has_pc libmbe-neo && inst_mbe=true || true; inst_codec2=false; has_pc codec2 && inst_codec2=true || true; inst_itpp=false; has_pc itpp && inst_itpp=true || true; inst_rtlsdr=false; has_pc librtlsdr && inst_rtlsdr=true || true; m_ok=false; c2_ok=false; i_ok=false; r_ok=false; [ "$inst_mbe" = true ] && [ -n "$man_mbe" ] && [ "$man_mbe" = "$MBE_SHA" ] && m_ok=true || true; [ "$inst_codec2" = true ] && [ -n "$man_codec2" ] && [ "$man_codec2" = "$CODEC2_SHA" ] && c2_ok=true || true; [ "$inst_itpp" = true ] && [ -n "$man_itpp" ] && [ "$man_itpp" = "$ITPP_SHA" ] && i_ok=true || true; [ "$inst_rtlsdr" = true ] && [ -n "$man_rtlsdr" ] && [ "$man_rtlsdr" = "$RTLSDR_SHA" ] && r_ok=true || true; build_mbe=true; [ "$m_ok" = true ] && build_mbe=false || true; build_codec2=true; [ "$c2_ok" = true ] && build_codec2=false || true; build_itpp=true; [ "$i_ok" = true ] && build_itpp=false || true; build_rtlsdr=true; [ "$r_ok" = true ] && build_rtlsdr=false || true; echo "build_mbe=$build_mbe"       >> "$GITHUB_OUTPUT"; echo "build_codec2=$build_codec2" >> "$GITHUB_OUTPUT"; echo "build_itpp=$build_itpp"     >> "$GITHUB_OUTPUT"; echo "build_rtlsdr=$build_rtlsdr" >> "$GITHUB_OUTPUT"; echo "Plan: mbe=$build_mbe codec2=$build_codec2 itpp=$build_itpp rtlsdr=$build_rtlsdr"'
 
       - name: Download mbelib-neo source (tarball)
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_mbe == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o mbelib-neo.tar.gz https://github.com/arancormonk/mbelib-neo/archive/refs/heads/main.tar.gz && ls -l mbelib-neo.tar.gz'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o mbelib-neo.tar.gz https://github.com/arancormonk/mbelib-neo/archive/refs/heads/main.tar.gz && ls -l mbelib-neo.tar.gz'
 
       - name: Build mbe-neo (static or shared)
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_mbe == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
 
       - name: Download codec2 source (tarball)
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_codec2 == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o codec2.tar.gz https://github.com/arancormonk/codec2/archive/refs/heads/main.tar.gz && ls -l codec2.tar.gz'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o codec2.tar.gz https://github.com/arancormonk/codec2/archive/refs/heads/main.tar.gz && ls -l codec2.tar.gz'
 
       - name: Build codec2
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_codec2 == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then echo "Extracting codec2.tar.gz in $WS"; tar -xzf codec2.tar.gz; D="codec2-main"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" codec2 || true; git clone --depth 1 https://github.com/arancormonk/codec2.git codec2; D="codec2"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DBUILD_SHARED_LIBS=ON -DUNITTEST=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached codec2 in $DEPS_PREFIX"; fi'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then echo "Extracting codec2.tar.gz in $WS"; tar -xzf codec2.tar.gz; D="codec2-main"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" codec2 || true; git clone --depth 1 https://github.com/arancormonk/codec2.git codec2; D="codec2"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DBUILD_SHARED_LIBS=ON -DUNITTEST=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached codec2 in $DEPS_PREFIX"; fi'
 
       - name: Download rtl-sdr source (tarball)
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_rtlsdr == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o rtl-sdr.tar.gz https://github.com/arancormonk/rtl-sdr/archive/refs/heads/master.tar.gz && ls -l rtl-sdr.tar.gz'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o rtl-sdr.tar.gz https://github.com/arancormonk/rtl-sdr/archive/refs/heads/master.tar.gz && ls -l rtl-sdr.tar.gz'
 
       - name: Build rtl-sdr
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_rtlsdr == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then echo "Extracting rtl-sdr.tar.gz in $WS"; tar -xzf rtl-sdr.tar.gz; D="rtl-sdr-master"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" rtl-sdr || true; git clone --depth 1 https://github.com/arancormonk/rtl-sdr.git rtl-sdr; D="rtl-sdr"; fi; echo "Using source dir: $D"; # Patch link order on Cygwin: ensure convenience_static pulls in rtlsdr
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then echo "Extracting rtl-sdr.tar.gz in $WS"; tar -xzf rtl-sdr.tar.gz; D="rtl-sdr-master"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" rtl-sdr || true; git clone --depth 1 https://github.com/arancormonk/rtl-sdr.git rtl-sdr; D="rtl-sdr"; fi; echo "Using source dir: $D"; # Patch link order on Cygwin: ensure convenience_static pulls in rtlsdr
           if ! grep -q "target_link_libraries(\s*convenience_static\s\+rtlsdr" "$D/src/CMakeLists.txt"; then echo "target_link_libraries(convenience_static rtlsdr)" >> "$D/src/CMakeLists.txt"; fi; 
           cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DINSTALL_UDEV_RULES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached rtl-sdr in $DEPS_PREFIX"; fi'
 
@@ -149,13 +149,13 @@ jobs:
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_itpp == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o itpp.tar.gz https://github.com/arancormonk/itpp/archive/refs/heads/develop.tar.gz && ls -l itpp.tar.gz'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o itpp.tar.gz https://github.com/arancormonk/itpp/archive/refs/heads/develop.tar.gz && ls -l itpp.tar.gz'
 
       - name: Build itpp
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_itpp == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then echo "Extracting itpp.tar.gz in $WS"; tar -xzf itpp.tar.gz; D="itpp-develop"; if [ ! -d "$D/itpp" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" itpp || true; git clone --depth 1 https://github.com/arancormonk/itpp.git itpp; D="itpp"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached itpp in $DEPS_PREFIX"; fi'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then echo "Extracting itpp.tar.gz in $WS"; tar -xzf itpp.tar.gz; D="itpp-develop"; if [ ! -d "$D/itpp" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" itpp || true; git clone --depth 1 https://github.com/arancormonk/itpp.git itpp; D="itpp"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached itpp in $DEPS_PREFIX"; fi'
 
       - name: Update cygdeps manifest
         shell: pwsh
@@ -165,7 +165,7 @@ jobs:
           ITPP_SHA: ${{ steps.dep-shas.outputs.itpp_sha }}
           RTLSDR_SHA: ${{ steps.dep-shas.outputs.rtlsdr_sha }}
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; set -e; : "${DEPS_PREFIX:?}"; mkdir -p "$DEPS_PREFIX"; {
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -e; : "${DEPS_PREFIX:?}"; mkdir -p "$DEPS_PREFIX"; {
             echo "mbe_sha=$MBE_SHA";
             echo "codec2_sha=$CODEC2_SHA";
             echo "itpp_sha=$ITPP_SHA";
@@ -176,18 +176,18 @@ jobs:
       - name: Configure (Release)
         shell: pwsh
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --preset dev-release -DDSD_ENABLE_LTO=OFF'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --preset dev-release -DDSD_ENABLE_LTO=OFF'
 
       - name: Build
         shell: pwsh
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --build --preset dev-release -j'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --build --preset dev-release -j'
 
       - name: Stage portable tree
         id: stage
         shell: pwsh
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'shopt -s igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"; test -f "$EXE"; STAGE="dist/dsd-neo-cygwin"; mkdir -p "$STAGE/bin" "$STAGE/etc"; cp -f "$EXE" "$STAGE/bin/"; cygcheck -v "$EXE" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > dlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < dlls.txt; PULSEAUDIO_BIN="$(command -v pulseaudio || true)"; if [ -n "$PULSEAUDIO_BIN" ]; then cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"; cygcheck -v "$PULSEAUDIO_BIN" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > padlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < padlls.txt; fi; MINTTY_BIN="$(command -v mintty || true)"; if [ -n "$MINTTY_BIN" ]; then cp -f "$MINTTY_BIN" "$STAGE/bin/"; cygcheck -v "$MINTTY_BIN" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > mtdlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < mtdlls.txt; fi; cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"; cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true; cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"; if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then mkdir -p "$STAGE/etc/pulse"; cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"; fi'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"; test -f "$EXE"; STAGE="dist/dsd-neo-cygwin"; mkdir -p "$STAGE/bin" "$STAGE/etc"; cp -f "$EXE" "$STAGE/bin/"; cygcheck -v "$EXE" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > dlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < dlls.txt; PULSEAUDIO_BIN="$(command -v pulseaudio || true)"; if [ -n "$PULSEAUDIO_BIN" ]; then cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"; cygcheck -v "$PULSEAUDIO_BIN" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > padlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < padlls.txt; fi; MINTTY_BIN="$(command -v mintty || true)"; if [ -n "$MINTTY_BIN" ]; then cp -f "$MINTTY_BIN" "$STAGE/bin/"; cygcheck -v "$MINTTY_BIN" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > mtdlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < mtdlls.txt; fi; cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"; cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true; cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"; if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then mkdir -p "$STAGE/etc/pulse"; cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"; fi'
 
       - name: Archive ZIP
         shell: pwsh
