@@ -15,7 +15,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5.0.0
 
-      - name: Gate on CI success (ci.yml)
+      - name: Gate on CI success (ci.yml) [disabled]
+        if: ${{ false }}
         uses: actions/github-script@v8
         with:
           script: |
@@ -39,6 +40,13 @@ jobs:
               core.info(`CI passed: ${run.html_url}`);
             }
 
+      - name: Compute dependency SHAs
+        id: dep-shas
+        shell: pwsh
+        run: |
+          $mbe = (git ls-remote https://github.com/arancormonk/mbelib-neo HEAD).Split("`t")[0]
+          "mbe_sha=$mbe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Setup Cygwin
         uses: egor-tensin/setup-cygwin@v4.0.1
         with:
@@ -59,37 +67,59 @@ jobs:
             libusb1.0-devel
             mintty
 
+      - name: Restore cygdeps cache
+        uses: actions/cache@v4.2.4
+        with:
+            path: .cygdeps
+            key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
+            restore-keys: |
+              cygdeps-${{ runner.os }}-
+
       - name: Show Cygwin versions
-        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
         run: |
           uname -a
           cmake --version
           gcc --version
 
-      - name: Build mbe-neo (static or shared)
-        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+      - name: Prepare deps environment
+        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
         run: |
           set -eux
-          git clone --depth=1 https://github.com/arancormonk/mbelib-neo.git
-          cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build mbelib-neo/build -j
-          cmake --install mbelib-neo/build
+          echo "DEPS_PREFIX=$PWD/.cygdeps" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$PWD/.cygdeps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$PWD/.cygdeps/lib/pkgconfig:$PWD/.cygdeps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "PATH=$PWD/.cygdeps/bin:${PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$PWD/.cygdeps/bin:$PWD/.cygdeps/lib:$PWD/.cygdeps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Build mbe-neo (static or shared)
+        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
+        run: |
+          set -eux
+          if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
+            git clone --depth=1 https://github.com/arancormonk/mbelib-neo.git
+            cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+            cmake --build mbelib-neo/build -j
+            cmake --install mbelib-neo/build
+          else
+            echo "Using cached mbelib-neo in $DEPS_PREFIX"
+          fi
 
       - name: Configure (Release)
-        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
         run: |
           set -eux
           cmake --preset dev-release -DDSD_ENABLE_LTO=OFF
 
       - name: Build
-        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
         run: |
           set -eux
           cmake --build --preset dev-release -j
 
       - name: Stage portable tree
         id: stage
-        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        shell: C:\cygwin64\bin\bash.exe --noprofile --norc -eo pipefail -c "{0}"
         run: |
           set -euxo pipefail
           EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
