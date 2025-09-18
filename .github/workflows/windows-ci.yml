@@ -168,7 +168,7 @@ jobs:
       - name: Configure (Release)
         shell: pwsh
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --preset dev-release -DDSD_ENABLE_LTO=OFF'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --preset dev-release -G Ninja -DDSD_ENABLE_LTO=OFF'
 
       - name: Build
         shell: pwsh
