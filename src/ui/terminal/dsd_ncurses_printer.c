@@ -77,6 +77,12 @@ snr_hist_push(int mod, double snr) {
 
 static void
 print_snr_sparkline(const dsd_opts* opts, int mod) {
+    /* Preserve the current color pair so our temporary colors don't clear it */
+#ifdef PRETTY_COLORS
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    attr_get(&saved_attrs, &saved_pair, NULL);
+#endif
     static const char* uni8[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
     /* Make the lowest ASCII level visible (no leading space) */
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
@@ -143,6 +149,64 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
         attroff(COLOR_PAIR(cp));
 #endif
     }
+#ifdef PRETTY_COLORS
+    /* Restore previously active color pair (e.g., green call banner) */
+    if (saved_pair >= 0) {
+        attron(COLOR_PAIR(saved_pair));
+    }
+#endif
+}
+
+/* Render a compact horizontal meter for current SNR using existing glyphs. */
+static void
+print_snr_meter(const dsd_opts* opts, double snr_db) {
+    /* Preserve the current color pair so our temporary colors don't clear it */
+#ifdef PRETTY_COLORS
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    attr_get(&saved_attrs, &saved_pair, NULL);
+#endif
+    /* Color bands match sparkline thresholds */
+    const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
+    /* Map 0..30 dB onto 8 glyph levels (same set used elsewhere) */
+    static const char* uni8[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+    static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
+
+    double v = snr_db;
+    if (v < 0.0) {
+        v = 0.0;
+    }
+    if (v > 30.0) {
+        v = 30.0;
+    }
+    const int levels = 8;
+    int li = (int)floor((v / 30.0) * (levels - 1) + 0.5);
+    if (li < 0) {
+        li = 0;
+    }
+    if (li >= levels) {
+        li = levels - 1;
+    }
+
+    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+    short cp = (snr_db < 12.0) ? C_POOR : (snr_db < 18.0) ? C_MOD : C_GOOD;
+#ifdef PRETTY_COLORS
+    attron(COLOR_PAIR(cp));
+#endif
+    if (use_unicode) {
+        addstr(uni8[li]);
+    } else {
+        addch(ascii8[li]);
+    }
+#ifdef PRETTY_COLORS
+    attroff(COLOR_PAIR(cp));
+#endif
+#ifdef PRETTY_COLORS
+    /* Restore previously active color pair (e.g., green call banner) */
+    if (saved_pair >= 0) {
+        attron(COLOR_PAIR(saved_pair));
+    }
+#endif
 }
 
 char* DMRBusrtTypes[32] = {
@@ -1717,7 +1781,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     printw("--Audio Decode----------------------------------------------------------------\n");
-    printw("| Demod/Rate:  ");
+    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+        printw("| Tuner state: Busy");
+    }
+    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0) {
+        printw("| Tuner state: Free");
+    }
+    printw("\n| Demod/Rate:  ");
     if (opts->mod_qpsk == 1) {
         printw("[QPSK]");
     }
@@ -1847,13 +1917,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             m = "GFSK";
         }
         if (snr > -50.0) {
-            /* Push to history and render sparkline with quality colors */
-            int mod = (state->rf_mod == 0) ? 0 : (state->rf_mod == 1) ? 1 : 2;
-            snr_hist_push(mod, snr);
-            printw(" SNR: %.1f dB (%s) ", snr, m);
+            /* Show current SNR as a compact, colorized meter */
+            printw(" SNR: %.1f dB ", snr);
             printw("[");
-            print_snr_sparkline(opts, mod);
+            print_snr_meter(opts, snr);
             printw("]");
+            printw(" (%s)", m);
         } else {
             /* Show placeholder so users can see the field even when no estimate */
             printw(" SNR: n/a (%s) []", m[0] ? m : "-");
@@ -1864,14 +1933,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     /* If built without RTL support, still show a placeholder */
     printw(" SNR: n/a []");
 #endif
-
-    //debug -- troubleshoot voice tuning after grant on DMR CC, subsequent grant may not tune because tuner isn't available
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-        printw("Tuner Locked    ");
-    }
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0) {
-        printw("Tuner Available ");
-    }
     printw("\n");
     printw("| In Level:    [%02d%%] \n", level);
 

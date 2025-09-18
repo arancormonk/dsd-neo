@@ -1788,7 +1788,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             int sps_nxdn48 = (int)((out_hz + 1200) / 2400); /* ~20 at 48k */
             const char* approx2 = dsd_unicode_or_ascii("≈", "~");
             LOG_INFO("Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx2, sps_p25p1, approx2,
-                     sps_p25p2, sps_nxdn48);
+                     sps_p25p2, approx2, sps_nxdn48);
             /* Warn if far from canonical 48k-based SPS expectations */
             if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
                 || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
