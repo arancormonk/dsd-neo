@@ -1,0 +1,22 @@
+### Minimal PulseAudio default.pa for Windows (WASAPI backend)
+### If this file causes issues on some systems, delete it and the launcher
+### will start pulseaudio with its built-in defaults.
+
+.fail
+
+### Load native protocol (TCP disabled by default)
+load-module module-native-protocol-tcp auth-anonymous=1 port=4713 listen=127.0.0.1
+load-module module-native-protocol-unix
+
+### Improve device probing
+load-module module-device-restore
+load-module module-default-device-restore
+load-module module-rescue-streams
+load-module module-always-sink
+
+### On Windows, the pulseaudio package typically selects the WASAPI backend
+### automatically. No explicit module-wasapi load is necessary here.
+
+set-default-sink   auto_null
+set-default-source auto_null.monitor
+

@@ -1,0 +1,191 @@
+name: windows-cygwin-portable
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-portable-zip:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5.0.0
+
+      - name: Gate on CI success (ci.yml)
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+            // Check latest run of the Linux CI workflow for this commit
+            const res = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: 'ci.yml',
+              head_sha: sha,
+              per_page: 1
+            });
+            const run = res.data.workflow_runs[0];
+            if (!run) {
+              core.setFailed(`No CI (ci.yml) run found for commit ${sha}.`);
+            } else if (run.status !== 'completed' || run.conclusion !== 'success') {
+              core.setFailed(`CI (ci.yml) not successful for ${sha}. status=${run.status} conclusion=${run.conclusion}`);
+            } else {
+              core.info(`CI passed: ${run.html_url}`);
+            }
+
+      - name: Setup Cygwin
+        uses: egor-tensin/setup-cygwin@v4.0.1
+        with:
+          platform: x64
+          packages: >-
+            git
+            gcc-g++
+            make
+            cmake
+            pkg-config
+            libsndfile-devel
+            itpp-devel
+            ncursesw-devel
+            libpulse-devel
+            pulseaudio
+            pulseaudio-utils
+            librtlsdr-devel
+            libusb1.0-devel
+            mintty
+
+      - name: Show Cygwin versions
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        run: |
+          uname -a
+          cmake --version
+          gcc --version
+
+      - name: Build mbe-neo (static or shared)
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        run: |
+          set -eux
+          git clone --depth=1 https://github.com/arancormonk/mbelib-neo.git
+          cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build mbelib-neo/build -j
+          cmake --install mbelib-neo/build
+
+      - name: Configure (Release)
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        run: |
+          set -eux
+          cmake --preset dev-release -DDSD_ENABLE_LTO=OFF
+
+      - name: Build
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        run: |
+          set -eux
+          cmake --build --preset dev-release -j
+
+      - name: Stage portable tree
+        id: stage
+        shell: C:\cygwin64\bin\bash.exe -leo pipefail {0}
+        run: |
+          set -euxo pipefail
+          EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
+          test -f "$EXE"
+
+          # Create staging directories
+          STAGE="dist/dsd-neo-cygwin"
+          mkdir -p "$STAGE/bin"
+          mkdir -p "$STAGE/etc"
+
+          # Copy our binary
+          cp -f "$EXE" "$STAGE/bin/"
+
+          # Collect runtime DLLs for our exe
+          cygcheck -v "$EXE" | sed -n 's/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p' | sort -u > dlls.txt || true
+          while IFS= read -r f; do
+            if [ -f "$f" ]; then
+              cp -n "$f" "$STAGE/bin/" || true
+            fi
+          done < dlls.txt
+
+          # Also bundle PulseAudio server and its DLLs
+          PULSEAUDIO_BIN="$(command -v pulseaudio || true)"
+          if [ -n "$PULSEAUDIO_BIN" ]; then
+            cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"
+            cygcheck -v "$PULSEAUDIO_BIN" | sed -n 's/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p' | sort -u > padlls.txt || true
+            while IFS= read -r f; do
+              if [ -f "$f" ]; then
+                cp -n "$f" "$STAGE/bin/" || true
+              fi
+            done < padlls.txt
+          fi
+
+          # Also include mintty terminal (optional) and its DLLs
+          MINTTY_BIN="$(command -v mintty || true)"
+          if [ -n "$MINTTY_BIN" ]; then
+            cp -f "$MINTTY_BIN" "$STAGE/bin/"
+            cygcheck -v "$MINTTY_BIN" | sed -n 's/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p' | sort -u > mtdlls.txt || true
+            while IFS= read -r f; do
+              if [ -f "$f" ]; then
+                cp -n "$f" "$STAGE/bin/" || true
+              fi
+            done < mtdlls.txt
+          fi
+
+          # Project-provided launcher and README
+          cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"
+          cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true
+          cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"
+
+          # Optional: include default.pa if present
+          if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then
+            mkdir -p "$STAGE/etc/pulse"
+            cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"
+          fi
+
+          # Emit STAGE path for next steps
+          echo "stage_dir=$STAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Archive ZIP
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          $stage = '${{ steps.stage.outputs.stage_dir }}'
+          $defaultZip = "$stage.zip"
+          if ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME) {
+            $zip = "dist/dsd-neo-cygwin-$($env:REF_NAME).zip"
+            $artName = "dsd-neo-cygwin-portable-$($env:REF_NAME)"
+          } else {
+            $short = if ($env:GITHUB_SHA) { $env:GITHUB_SHA.Substring(0,7) } else { "dev" }
+            $zip = "dist/dsd-neo-cygwin-$short.zip"
+            $artName = "dsd-neo-cygwin-portable-$short"
+          }
+          $zipDir = Split-Path -Parent $zip
+          if ($zipDir -and !(Test-Path $zipDir)) { New-Item -Type Directory -Force -Path $zipDir | Out-Null }
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
+          Write-Host "Created: $zip"
+          echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.zip.outputs.ART_NAME }}
+          path: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.zip.outputs.ZIP_PATH }}
+          name: dsd-neo portable (Cygwin) ${{ github.ref_name }}
+          generate_release_notes: true
