@@ -495,8 +495,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 //   opts->rtl_pwr = raw_pwr(state->analog_out, 960, 1);
 
                 //seems to be working now, but PWR values are lower on actual analog signal than on no signal but noise
-                if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1
-                    && state->carrier == 0) //added carrier check here in lieu of disabling it above
+                if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
+                    && opts->audio_out == 1) //added carrier check here in lieu of disabling it above
                 {
                     if (opts->audio_out_type == 0) {
                         pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, 960 * 2, NULL);

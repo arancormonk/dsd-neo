@@ -446,13 +446,13 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //   pwr = raw_pwr(analog3, 960, 1);
 
         //reconfigured to use seperate audio out stream that is always 48k short
-        if (opts->audio_out_type == 0 && opts->slot1_on == 1) {
+        if (opts->audio_out == 1 && opts->audio_out_type == 0 && opts->slot1_on == 1) {
             pa_simple_write(opts->pulse_raw_dev_out, analog1, 960 * 2, NULL);
             pa_simple_write(opts->pulse_raw_dev_out, analog2, 960 * 2, NULL);
             pa_simple_write(opts->pulse_raw_dev_out, analog3, 960 * 2, NULL);
         }
 
-        if (opts->audio_out_type == 8) //UDP Audio
+        if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
         {
             udp_socket_blasterA(opts, state, 960 * 2, analog1);
             udp_socket_blasterA(opts, state, 960 * 2, analog2);

@@ -237,27 +237,29 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         goto FS3_END;
     }
 
-    if (opts->audio_out_type == 0) //Pulse Audio
-    {
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL); //switch to sizeof(stereo_samp1) * 2?
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 4, NULL);
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, 320 * 4, NULL);
-    }
+    if (opts->audio_out == 1) {
+        if (opts->audio_out_type == 0) //Pulse Audio
+        {
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 4, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, 320 * 4, NULL);
+        }
 
-    if (opts->audio_out_type == 8) //UDP Audio
-    {
-        udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
-        udp_socket_blaster(opts, state, 320 * 4, stereo_samp2);
-        udp_socket_blaster(opts, state, 320 * 4, stereo_samp3);
-    }
+        if (opts->audio_out_type == 8) //UDP Audio
+        {
+            udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
+            udp_socket_blaster(opts, state, 320 * 4, stereo_samp2);
+            udp_socket_blaster(opts, state, 320 * 4, stereo_samp3);
+        }
 
-    //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
+        //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
 
-    if (opts->audio_out_type == 1) //STDOUT (still need these seperated? or not really?)
-    {
-        write(opts->audio_out_fd, stereo_samp1, 320 * 4);
-        write(opts->audio_out_fd, stereo_samp2, 320 * 4);
-        write(opts->audio_out_fd, stereo_samp3, 320 * 4);
+        if (opts->audio_out_type == 1) //STDOUT (still need these seperated? or not really?)
+        {
+            write(opts->audio_out_fd, stereo_samp1, 320 * 4);
+            write(opts->audio_out_fd, stereo_samp2, 320 * 4);
+            write(opts->audio_out_fd, stereo_samp3, 320 * 4);
+        }
     }
 
 FS3_END:
@@ -484,7 +486,7 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         goto END_FS4;
     }
 
-    if (opts->audio_out_type == 0) //Pulse Audio
+    if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
     {
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL); //switch to sizeof(stereo_samp1) * 2?
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 4, NULL);
@@ -497,7 +499,7 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if (opts->audio_out_type == 8) //UDP Audio
+    if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
         udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
         udp_socket_blaster(opts, state, 320 * 4, stereo_samp2);
@@ -512,7 +514,7 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     //No OSS, since we can't use float output, but the STDOUT can with play, aplay, etc
 
-    if (opts->audio_out_type == 1) //STDOUT
+    if (opts->audio_out == 1 && opts->audio_out_type == 1) //STDOUT
     {
         write(opts->audio_out_fd, stereo_samp1, 320 * 4);
         write(opts->audio_out_fd, stereo_samp2, 320 * 4);
@@ -647,18 +649,19 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if (opts->audio_out_type == 0) {                                            //Pulse Audio
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL); //switch to sizeof(stereo_samp1) * 2?
-    }
+    if (opts->audio_out == 1) {
+        if (opts->audio_out_type == 0) { //Pulse Audio
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL);
+        }
 
-    if (opts->audio_out_type == 8) { //UDP Audio
-        udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
-    }
+        if (opts->audio_out_type == 8) { //UDP Audio
+            udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
+        }
 
-    //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
-
-    if (opts->audio_out_type == 1) {
-        write(opts->audio_out_fd, stereo_samp1, 320 * 4);
+        //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
+        if (opts->audio_out_type == 1) {
+            write(opts->audio_out_fd, stereo_samp1, 320 * 4);
+        }
     }
 
 FS_END:
@@ -772,16 +775,18 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
         goto vfm_end;
     }
 
-    if (opts->audio_out_type == 0) {
-        pa_simple_write(opts->pulse_digi_dev_out, state->f_l, 160 * 4, NULL);
-    }
+    if (opts->audio_out == 1) {
+        if (opts->audio_out_type == 0) {
+            pa_simple_write(opts->pulse_digi_dev_out, state->f_l, 160 * 4, NULL);
+        }
 
-    if (opts->audio_out_type == 8) { //UDP Audio
-        udp_socket_blaster(opts, state, 160 * 4, state->f_l);
-    }
+        if (opts->audio_out_type == 8) { //UDP Audio
+            udp_socket_blaster(opts, state, 160 * 4, state->f_l);
+        }
 
-    if (opts->audio_out_type == 1 || opts->audio_out_type == 5) {
-        write(opts->audio_out_fd, state->f_l, 160 * 4);
+        if (opts->audio_out_type == 1 || opts->audio_out_type == 5) {
+            write(opts->audio_out_fd, state->f_l, 160 * 4);
+        }
     }
 
 vfm_end:
@@ -830,16 +835,18 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         hpf_dL(state, state->s_l, len);
     }
 
-    if (opts->audio_out_type == 0) { //Pulse Audio
-        pa_simple_write(opts->pulse_digi_dev_out, mono_samp, len * 2, NULL);
-    }
+    if (opts->audio_out == 1) {
+        if (opts->audio_out_type == 0) { //Pulse Audio
+            pa_simple_write(opts->pulse_digi_dev_out, mono_samp, len * 2, NULL);
+        }
 
-    if (opts->audio_out_type == 8) { //UDP Audio
-        udp_socket_blaster(opts, state, len * 2, mono_samp);
-    }
+        if (opts->audio_out_type == 8) { //UDP Audio
+            udp_socket_blaster(opts, state, len * 2, mono_samp);
+        }
 
-    if (opts->audio_out_type == 1 || opts->audio_out_type == 2 || opts->audio_out_type == 5) { //STDOUT or OSS
-        write(opts->audio_out_fd, mono_samp, len * 2);
+        if (opts->audio_out_type == 1 || opts->audio_out_type == 2 || opts->audio_out_type == 5) { //STDOUT or OSS
+            write(opts->audio_out_fd, mono_samp, len * 2);
+        }
     }
 
     //this one needs testing w/ 48000 OSS output when audio is not split
@@ -910,16 +917,18 @@ playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
         hpf_dR(state, mono_samp, len);
     }
 
-    if (opts->audio_out_type == 0) { //Pulse Audio
-        pa_simple_write(opts->pulse_digi_dev_out, mono_samp, len * 2, NULL);
-    }
+    if (opts->audio_out == 1) {
+        if (opts->audio_out_type == 0) { //Pulse Audio
+            pa_simple_write(opts->pulse_digi_dev_out, mono_samp, len * 2, NULL);
+        }
 
-    if (opts->audio_out_type == 8) { //UDP Audio
-        udp_socket_blaster(opts, state, len * 2, mono_samp);
-    }
+        if (opts->audio_out_type == 8) { //UDP Audio
+            udp_socket_blaster(opts, state, len * 2, mono_samp);
+        }
 
-    if (opts->audio_out_type == 1 || opts->audio_out_type == 2 || opts->audio_out_type == 5) { //STDOUT or OSS
-        write(opts->audio_out_fd, mono_samp, len * 2);
+        if (opts->audio_out_type == 1 || opts->audio_out_type == 2 || opts->audio_out_type == 5) { //STDOUT or OSS
+            write(opts->audio_out_fd, mono_samp, len * 2);
+        }
     }
 
     //this one needs testing w/ 48000 OSS output when audio is not split
@@ -1051,16 +1060,18 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         goto SSM_END;
     }
 
-    if (opts->audio_out_type == 0) { //Pulse Audio
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 2, NULL);
-    }
+    if (opts->audio_out == 1) {
+        if (opts->audio_out_type == 0) { //Pulse Audio
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 2, NULL);
+        }
 
-    if (opts->audio_out_type == 8) { //UDP Audio
-        udp_socket_blaster(opts, state, 320 * 2, stereo_samp1);
-    }
+        if (opts->audio_out_type == 8) { //UDP Audio
+            udp_socket_blaster(opts, state, 320 * 2, stereo_samp1);
+        }
 
-    if (opts->audio_out_type == 1 || opts->audio_out_type == 2) { //STDOUT or OSS 8k/2
-        write(opts->audio_out_fd, stereo_samp1, 320 * 2);
+        if (opts->audio_out_type == 1 || opts->audio_out_type == 2) { //STDOUT or OSS 8k/2
+            write(opts->audio_out_fd, stereo_samp1, 320 * 2);
+        }
     }
 
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
@@ -1376,21 +1387,21 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
         stereo_samp3[i * 2 + 1] = state->s_r4[2][i];
     }
 
-    if (opts->audio_out_type == 0) //Pulse Audio
+    if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
     {
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 2, NULL);
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 2, NULL);
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, 320 * 2, NULL);
     }
 
-    if (opts->audio_out_type == 8) //UDP Audio
+    if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
         udp_socket_blaster(opts, state, 320 * 2, stereo_samp1);
         udp_socket_blaster(opts, state, 320 * 2, stereo_samp2);
         udp_socket_blaster(opts, state, 320 * 2, stereo_samp3);
     }
 
-    if (opts->audio_out_type == 1 || opts->audio_out_type == 2) //STDOUT or OSS 8k/2channel
+    if (opts->audio_out == 1 && (opts->audio_out_type == 1 || opts->audio_out_type == 2)) //STDOUT or OSS 8k/2channel
     {
         write(opts->audio_out_fd, stereo_samp1, 320 * 2);
         write(opts->audio_out_fd, stereo_samp2, 320 * 2);
@@ -1622,7 +1633,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         goto SS4_END;
     }
 
-    if (opts->audio_out_type == 0) //Pulse Audio
+    if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
     {
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 2, NULL);
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 2, NULL);
@@ -1635,7 +1646,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if (opts->audio_out_type == 8) //UDP Audio
+    if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
         udp_socket_blaster(opts, state, 320 * 2, stereo_samp1);
         udp_socket_blaster(opts, state, 320 * 2, stereo_samp2);
@@ -1648,7 +1659,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if (opts->audio_out_type == 1 || opts->audio_out_type == 2) //STDOUT or OSS 8k/2channel
+    if (opts->audio_out == 1 && (opts->audio_out_type == 1 || opts->audio_out_type == 2)) //STDOUT or OSS 8k/2channel
     {
         write(opts->audio_out_fd, stereo_samp1, 320 * 2);
         write(opts->audio_out_fd, stereo_samp2, 320 * 2);

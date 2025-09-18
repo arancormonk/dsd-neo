@@ -1508,7 +1508,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
 
     //playing back signal audio into device/udp
     //NOTE: Open the analog output device, use -8
-    if (opts->monitor_input_audio == 1) {
+    if (opts->monitor_input_audio == 1 && opts->audio_out == 1) {
         //Pulse Audio
         if (opts->audio_out_type == 0) {
             pa_simple_write(opts->pulse_raw_dev_out, baseband, 1920 * 2, NULL);

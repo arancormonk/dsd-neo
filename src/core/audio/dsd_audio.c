@@ -649,17 +649,18 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->audio_out_idx > opts->delay) {
-        if (opts->audio_out_type == 5 || opts->audio_out_type == 1) //OSS
+        if (opts->audio_out == 1 && (opts->audio_out_type == 5 || opts->audio_out_type == 1)) //OSS
         {
             //OSS 48k/1
             result =
                 write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx), (state->audio_out_idx * 2));
             state->audio_out_idx = 0;
-        } else if (opts->audio_out_type == 0) {
+        } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
             pa_simple_write(opts->pulse_digi_dev_out, (state->audio_out_buf_p - state->audio_out_idx),
                             (state->audio_out_idx * 2), NULL);
             state->audio_out_idx = 0;
-        } else if (opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now
+        } else if (opts->audio_out == 1
+                   && opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now
         {
             udp_socket_blaster(opts, state, (state->audio_out_idx * 2),
                                (state->audio_out_buf_p - state->audio_out_idx));
@@ -687,19 +688,20 @@ playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
 
     if (state->audio_out_idxR > opts->delay) {
         // output synthesized speech to sound card
-        if (opts->audio_out_type == 5) //OSS
+        if (opts->audio_out == 1 && opts->audio_out_type == 5) //OSS
         {
             //OSS 48k/1
             result = write(opts->audio_out_fd, (state->audio_out_buf_pR - state->audio_out_idxR),
                            (state->audio_out_idxR * 2));
             state->audio_out_idxR = 0;
-        } else if (opts->audio_out_type == 0) {
+        } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
             pa_simple_write(opts->pulse_digi_dev_outR, (state->audio_out_buf_pR - state->audio_out_idxR),
                             (state->audio_out_idxR * 2), NULL);
             state->audio_out_idxR = 0;
         } else if (
-            opts->audio_out_type
-            == 8) //UDP Audio Out -- Not sure how this would handle, but R never gets called anymore, so just here for symmetry
+            opts->audio_out == 1
+            && opts->audio_out_type
+                   == 8) //UDP Audio Out -- Not sure how this would handle, but R never gets called anymore, so just here for symmetry
         {
             udp_socket_blaster(opts, state, (state->audio_out_idxR * 2),
                                (state->audio_out_buf_pR - state->audio_out_idxR));

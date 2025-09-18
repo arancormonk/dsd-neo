@@ -1394,6 +1394,10 @@ initState(dsd_state* state) {
         init_event_history(&state->event_history_s[i], 0, 255);
     }
 
+    // Initialize transient UI toast message state
+    state->ui_msg[0] = '\0';
+    state->ui_msg_expire = 0;
+
 } //init_state
 
 void
