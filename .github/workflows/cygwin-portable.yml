@@ -83,9 +83,13 @@ jobs:
         shell: pwsh
         run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'DEPS_PREFIX="$PWD/.cygdeps"; echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"; echo "CMAKE_PREFIX_PATH=$DEPS_PREFIX:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"; echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"; echo "PATH=$DEPS_PREFIX/bin:${PATH}" >> "$GITHUB_ENV"; echo "LD_LIBRARY_PATH=$DEPS_PREFIX/bin:$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"'
 
+      - name: Download mbelib-neo source (tarball)
+        shell: pwsh
+        run: Invoke-WebRequest -UseBasicParsing -Uri https://github.com/arancormonk/mbelib-neo/archive/refs/heads/main.tar.gz -OutFile mbelib-neo.tar.gz
+
       - name: Build mbe-neo (static or shared)
         shell: pwsh
-        run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then git config --global core.autocrlf false; git clone https://github.com/arancormonk/mbelib-neo.git; cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"; cmake --build mbelib-neo/build -j; cmake --install mbelib-neo/build; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
+        run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then tar -xzf mbelib-neo.tar.gz; set -- mbelib-neo-*; D="$1"; cmake -S "$D" -B "$D/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
 
       - name: Configure (Release)
         shell: pwsh
