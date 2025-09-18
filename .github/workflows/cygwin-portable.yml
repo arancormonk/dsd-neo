@@ -45,7 +45,13 @@ jobs:
         shell: pwsh
         run: |
           $mbe = (git ls-remote https://github.com/arancormonk/mbelib-neo HEAD).Split("`t")[0]
+          $codec2 = (git ls-remote https://github.com/arancormonk/codec2 HEAD).Split("`t")[0]
+          $itpp = (git ls-remote https://github.com/arancormonk/itpp HEAD).Split("`t")[0]
+          $rtlsdr = (git ls-remote https://github.com/arancormonk/rtl-sdr HEAD).Split("`t")[0]
           "mbe_sha=$mbe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "codec2_sha=$codec2" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "itpp_sha=$itpp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "rtlsdr_sha=$rtlsdr" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Setup Cygwin
         uses: egor-tensin/setup-cygwin@v4.0.1
@@ -60,12 +66,10 @@ jobs:
             ninja
             pkg-config
             libsndfile-devel
-            itpp-devel
             ncursesw-devel
             libpulse-devel
             pulseaudio
             pulseaudio-utils
-            librtlsdr-devel
             libusb1.0-devel
             mintty
 
@@ -77,7 +81,7 @@ jobs:
         uses: actions/cache@v4.2.4
         with:
           path: .cygdeps
-          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
+          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             cygdeps-${{ runner.os }}-
 
@@ -99,6 +103,36 @@ jobs:
         shell: pwsh
         run: |
           C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
+
+      - name: Download codec2 source (tarball)
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o codec2.tar.gz https://github.com/arancormonk/codec2/archive/refs/heads/main.tar.gz && ls -l codec2.tar.gz'
+
+      - name: Build codec2
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then echo "Extracting codec2.tar.gz in $WS"; tar -xzf codec2.tar.gz; D="codec2-main"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" codec2 || true; git clone --depth 1 https://github.com/arancormonk/codec2.git codec2; D="codec2"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DBUILD_SHARED_LIBS=ON -DUNITTEST=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached codec2 in $DEPS_PREFIX"; fi'
+
+      - name: Download rtl-sdr source (tarball)
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o rtl-sdr.tar.gz https://github.com/arancormonk/rtl-sdr/archive/refs/heads/master.tar.gz && ls -l rtl-sdr.tar.gz'
+
+      - name: Build rtl-sdr
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then echo "Extracting rtl-sdr.tar.gz in $WS"; tar -xzf rtl-sdr.tar.gz; D="rtl-sdr-master"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" rtl-sdr || true; git clone --depth 1 https://github.com/arancormonk/rtl-sdr.git rtl-sdr; D="rtl-sdr"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DINSTALL_UDEV_RULES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached rtl-sdr in $DEPS_PREFIX"; fi'
+
+      - name: Download itpp source (tarball)
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o itpp.tar.gz https://github.com/arancormonk/itpp/archive/refs/heads/develop.tar.gz && ls -l itpp.tar.gz'
+
+      - name: Build itpp
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then echo "Extracting itpp.tar.gz in $WS"; tar -xzf itpp.tar.gz; D="itpp-develop"; if [ ! -d "$D/itpp" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" itpp || true; git clone --depth 1 https://github.com/arancormonk/itpp.git itpp; D="itpp"; fi; echo "Using source dir: $D"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached itpp in $DEPS_PREFIX"; fi'
 
       - name: Configure (Release)
         shell: pwsh
