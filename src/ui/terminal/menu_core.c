@@ -109,11 +109,12 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
     int mh = 0, mw = 0;
     getmaxyx(menu_win, mh, mw);
     for (size_t i = 0; i < n; i++) {
+        if (!ui_is_enabled(&items[i], ctx)) {
+            // Hide items that are not enabled for current context
+            continue;
+        }
         if ((int)i == hi) {
             wattron(menu_win, A_REVERSE);
-        }
-        if (!ui_is_enabled(&items[i], ctx)) {
-            wattron(menu_win, A_DIM);
         }
         char dyn[128];
         const char* lab = items[i].label ? items[i].label : items[i].id;
@@ -124,7 +125,7 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
             }
         }
         mvwprintw(menu_win, y++, x, "%s", lab);
-        wattroff(menu_win, A_REVERSE | A_DIM);
+        wattroff(menu_win, A_REVERSE);
     }
     // footer help
     mvwprintw(menu_win, mh - 3, x, "Arrows: move  Enter: select  h: help  q: back");
@@ -417,6 +418,16 @@ io_always_on(void* ctx) {
     return true;
 }
 
+// Enable items only when RTL-SDR is the active input
+static bool
+io_rtl_active(void* ctx) {
+    UiCtx* c = (UiCtx*)ctx;
+    if (!c || !c->opts) {
+        return false;
+    }
+    return (c->opts->audio_in_type == 3);
+}
+
 static void
 io_toggle_mute_enc(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
@@ -644,6 +655,61 @@ io_set_udp_out(void* vctx) {
     }
 }
 
+// ---- Switch Output helpers ----
+static const char*
+lbl_current_output(void* vctx, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)vctx;
+    const char* name = "Unknown";
+    switch (c->opts->audio_out_type) {
+        case 0: name = "Pulse Digital"; break;
+        case 2: name = "OSS (8k/2)"; break;
+        case 5: name = "OSS (48k/1)"; break;
+        case 8: name = "UDP"; break;
+        default: name = "?"; break;
+    }
+    if (c->opts->audio_out_type == 0) {
+        if (c->opts->pa_output_idx[0]) {
+            snprintf(b, n, "Current Output: Pulse [%s]", c->opts->pa_output_idx);
+        } else {
+            snprintf(b, n, "Current Output: Pulse [default]");
+        }
+    } else if (c->opts->audio_out_type == 8) {
+        snprintf(b, n, "Current Output: UDP %s:%d", c->opts->udp_hostname, c->opts->udp_portno);
+    } else if (c->opts->audio_out_type == 2 || c->opts->audio_out_type == 5) {
+        snprintf(b, n, "Current Output: %s (%s)", c->opts->audio_out_dev, name);
+    } else {
+        snprintf(b, n, "Current Output: %s", name);
+    }
+    return b;
+}
+
+static void
+switch_out_pulse(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    // Keep current Pulse sink index if set; else default
+    const char* idx = c->opts->pa_output_idx[0] ? c->opts->pa_output_idx : "";
+    svc_set_pulse_output(c->opts, idx);
+}
+
+static void
+switch_out_udp(void* vctx) {
+    io_set_udp_out(vctx);
+}
+
+static const char*
+lbl_out_mute(void* vctx, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)vctx;
+    snprintf(b, n, "Mute Output [%s]", (c->opts->audio_out == 0) ? "ON" : "OFF");
+    return b;
+}
+
+static void
+switch_out_toggle_mute(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->audio_out = (c->opts->audio_out == 0) ? 1 : 0;
+    ui_statusf("Output: %s", c->opts->audio_out ? "ON" : "Muted");
+}
+
 static void
 io_set_gain_dig(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
@@ -843,6 +909,112 @@ io_tcp_direct_link(void* vctx) {
     } else {
         ui_statusf("TCP connect failed: %s:%d", c->opts->tcp_hostname, c->opts->tcp_portno);
     }
+}
+
+// ---- Switch Input helpers ----
+static const char*
+lbl_current_input(void* vctx, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)vctx;
+    const char* name = "Unknown";
+    switch (c->opts->audio_in_type) {
+        case 0: name = "Pulse"; break;
+        case 1: name = "STDIN"; break;
+        case 2: name = "WAV/File"; break;
+        case 3: name = "RTL-SDR"; break;
+        case 4: name = "Symbol .bin"; break;
+        case 5: name = "OSS /dev/dsp"; break;
+        case 6: name = "UDP"; break;
+        case 8: name = "TCP"; break;
+        case 44: name = "Symbol Float"; break;
+        default: name = "?"; break;
+    }
+    if (c->opts->audio_in_type == 8) {
+        snprintf(b, n, "Current Input: TCP %s:%d", c->opts->tcp_hostname, c->opts->tcp_portno);
+    } else if (c->opts->audio_in_type == 6) {
+        snprintf(b, n, "Current Input: UDP %s:%d", c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1",
+                 c->opts->udp_in_portno);
+    } else if (c->opts->audio_in_type == 2 || c->opts->audio_in_type == 4 || c->opts->audio_in_type == 44) {
+        snprintf(b, n, "Current Input: %s", c->opts->audio_in_dev);
+    } else if (c->opts->audio_in_type == 3) {
+        snprintf(b, n, "Current Input: RTL-SDR dev %d", c->opts->rtl_dev_index);
+    } else {
+        snprintf(b, n, "Current Input: %s", name);
+    }
+    return b;
+}
+
+static void
+switch_to_pulse(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", "pulse");
+    c->opts->audio_in_type = 0;
+}
+
+#ifdef USE_RTLSDR
+static void
+switch_to_rtl(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    svc_rtl_enable_input(c->opts);
+}
+#endif
+
+static void
+switch_to_wav(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    char path[1024] = {0};
+    if (ui_prompt_string("Enter WAV/RAW filename (or named pipe)", path, sizeof path)) {
+        snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
+        c->opts->audio_in_type = 2; // openAudioInDevice will refine based on extension
+    }
+}
+
+static void
+switch_to_symbol(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    char path[1024] = {0};
+    if (ui_prompt_string("Enter symbol .bin/.raw/.sym filename", path, sizeof path)) {
+        // Prefer .bin via service; else let openAudioInDevice detect .raw/.sym
+        size_t len = strlen(path);
+        if (len >= 4 && (strcasecmp(path + len - 4, ".bin") == 0)) {
+            if (svc_open_symbol_in(c->opts, c->state, path) != 0) {
+                ui_statusf("Failed to open %s", path);
+            }
+        } else {
+            snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
+            // Type refined on reopen; set a sensible default
+            c->opts->audio_in_type = 44; // float symbols for .raw/.sym
+        }
+    }
+}
+
+static void
+switch_to_tcp(void* vctx) {
+    io_tcp_direct_link(vctx);
+}
+
+static void
+switch_to_udp(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    // Defaults
+    if (c->opts->udp_in_portno <= 0) {
+        c->opts->udp_in_portno = 7355;
+    }
+    if (c->opts->udp_in_bindaddr[0] == '\0') {
+        snprintf(c->opts->udp_in_bindaddr, sizeof c->opts->udp_in_bindaddr, "%s", "127.0.0.1");
+    }
+    char addr[128];
+    snprintf(addr, sizeof addr, "%s", c->opts->udp_in_bindaddr);
+    if (!ui_prompt_string_prefill("Enter UDP bind address", c->opts->udp_in_bindaddr, addr, sizeof addr)) {
+        return;
+    }
+    int port = c->opts->udp_in_portno;
+    if (!ui_prompt_int_prefill("Enter UDP bind port", port, &port)) {
+        return;
+    }
+    snprintf(c->opts->udp_in_bindaddr, sizeof c->opts->udp_in_bindaddr, "%s", addr);
+    c->opts->udp_in_portno = port;
+    snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", "udp");
+    c->opts->audio_in_type = 6;
 }
 
 static void
@@ -1144,7 +1316,58 @@ void
 ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
     // Reorganized: Devices & IO (sources and immediate playback controls)
     UiCtx ctx = {opts, state};
+    // Switch Input submenu (always compiled; RTL option gated by build)
+    static const NcMenuItem switch_items[] = {
+        {.id = "current", .label = "Current", .label_fn = lbl_current_input, .help = "Shows current input."},
+        {.id = "pulse",
+         .label = "Pulse Audio (mic/line)",
+         .help = "Use Pulse Audio input.",
+         .on_select = switch_to_pulse},
+#ifdef USE_RTLSDR
+        {.id = "rtl", .label = "RTL-SDR", .help = "Switch to RTL-SDR input.", .on_select = switch_to_rtl},
+#endif
+        {.id = "tcp",
+         .label = "TCP Direct Audio...",
+         .help = "Connect to PCM16LE over TCP.",
+         .on_select = switch_to_tcp},
+        {.id = "wav", .label = "WAV/File...", .help = "Open WAV/RAW file or named pipe.", .on_select = switch_to_wav},
+        {.id = "sym",
+         .label = "Symbol Capture (.bin/.raw/.sym)...",
+         .help = "Replay captured symbols.",
+         .on_select = switch_to_symbol},
+        {.id = "udp", .label = "UDP Signal Input...", .help = "Bind UDP PCM16LE input.", .on_select = switch_to_udp},
+    };
+    static const NcMenuItem out_switch_items[] = {
+        {.id = "current_out",
+         .label = "Current Output",
+         .label_fn = lbl_current_output,
+         .help = "Shows the active output sink."},
+        {.id = "pulse_out",
+         .label = "Pulse Digital Output",
+         .help = "Play decoded audio via Pulse.",
+         .on_select = switch_out_pulse},
+        {.id = "udp_out_set",
+         .label = "UDP Audio Output...",
+         .help = "Send decoded audio via UDP.",
+         .on_select = switch_out_udp},
+        {.id = "mute",
+         .label = "Mute Output",
+         .label_fn = lbl_out_mute,
+         .help = "Toggle mute without changing sink.",
+         .on_select = switch_out_toggle_mute},
+    };
+
     static const NcMenuItem items[] = {
+        {.id = "switch_input",
+         .label = "Switch Input...",
+         .help = "Change active input source.",
+         .submenu = switch_items,
+         .submenu_len = sizeof switch_items / sizeof switch_items[0]},
+        {.id = "switch_output",
+         .label = "Switch Output...",
+         .help = "Change audio output sink.",
+         .submenu = out_switch_items,
+         .submenu_len = sizeof out_switch_items / sizeof out_switch_items[0]},
         {.id = "tcp_input",
          .label = "TCP Direct Audio",
          .label_fn = lbl_tcp,
@@ -1155,7 +1378,7 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
         {.id = "rtl",
          .label = "RTL-SDR...",
          .help = "Configure RTL device, gain, PPM, BW, SQL.",
-         .is_enabled = io_always_on,
+         .is_enabled = io_rtl_active,
          .on_select = act_rtl_opts},
 #endif
         {.id = "pulse_in",
@@ -2998,7 +3221,11 @@ ui_menu_main(dsd_opts* opts, dsd_state* state) {
          .label = "Keys & Security",
          .help = "Manage keys and encrypted audio muting.",
          .on_select = act_keys_sec_menu},
-        {.id = "dsp", .label = "DSP Options", .help = "RTL-SDR DSP toggles and tuning.", .on_select = act_dsp_opts},
+        {.id = "dsp",
+         .label = "DSP Options",
+         .help = "RTL-SDR DSP toggles and tuning.",
+         .is_enabled = io_rtl_active,
+         .on_select = act_dsp_opts},
         {.id = "lrrp", .label = "LRRP Output", .help = "Configure LRRP file output.", .on_select = act_lrrp_opts},
         {.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit},
     };

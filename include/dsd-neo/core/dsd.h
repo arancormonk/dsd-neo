@@ -1096,6 +1096,10 @@ typedef struct {
     uint8_t static_ks_bits[2][882];
     int static_ks_counter[2];
 
+    // Transient UI message (shown briefly in ncurses printer)
+    char ui_msg[128];
+    time_t ui_msg_expire; // epoch seconds when ui_msg should stop displaying
+
 } dsd_state;
 
 /*

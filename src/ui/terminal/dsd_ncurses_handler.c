@@ -197,33 +197,41 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     if (c == 111 || c == 79) //'o' or 'O' key, toggle constellation view
     {
-        if (opts->constellation == 1) {
-            opts->constellation = 0;
-        } else {
-            opts->constellation = 1;
+        if (opts->audio_in_type == 3) {
+            if (opts->constellation == 1) {
+                opts->constellation = 0;
+            } else {
+                opts->constellation = 1;
+            }
         }
     }
 
     if (c == 110 || c == 78) //'n' or 'N' key, toggle constellation normalization
     {
-        opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+        if (opts->audio_in_type == 3) {
+            opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+        }
     }
 
     if (c == 60) //'<' key, decrease constellation gate
     {
-        float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
-        *g -= 0.02f;
-        if (*g < 0.0f) {
-            *g = 0.0f;
+        if (opts->audio_in_type == 3) {
+            float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
+            *g -= 0.02f;
+            if (*g < 0.0f) {
+                *g = 0.0f;
+            }
         }
     }
 
     if (c == 62) //'>' key, increase constellation gate
     {
-        float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
-        *g += 0.02f;
-        if (*g > 0.90f) {
-            *g = 0.90f;
+        if (opts->audio_in_type == 3) {
+            float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
+            *g += 0.02f;
+            if (*g > 0.90f) {
+                *g = 0.90f;
+            }
         }
     }
 
@@ -236,24 +244,45 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
+    if (c == 120 || c == 88) //'x' or 'X' key, toggle audio mute
+    {
+        opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
+        if (state) {
+            if (opts->audio_out == 0) {
+                snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: Muted");
+            } else {
+                snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: ON");
+            }
+            state->ui_msg_expire = time(NULL) + 3; // show ~3 seconds
+        }
+    }
+
     if (c == 69) //'E' key, toggle eye view
     {
-        opts->eye_view = opts->eye_view ? 0 : 1;
+        if (opts->audio_in_type == 3) {
+            opts->eye_view = opts->eye_view ? 0 : 1;
+        }
     }
 
     if (c == 75) //'K' key, toggle FSK histogram view
     {
-        opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
+        if (opts->audio_in_type == 3) {
+            opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
+        }
     }
 
     if (c == 85) //'U' key, toggle Unicode blocks in eye view
     {
-        opts->eye_unicode = opts->eye_unicode ? 0 : 1;
+        if (opts->audio_in_type == 3) {
+            opts->eye_unicode = opts->eye_unicode ? 0 : 1;
+        }
     }
 
     if (c == 67) //'C' key, toggle colorized eye view
     {
-        opts->eye_color = opts->eye_color ? 0 : 1;
+        if (opts->audio_in_type == 3) {
+            opts->eye_color = opts->eye_color ? 0 : 1;
+        }
     }
 
     if (c == 116) //'t' key, toggle trunking

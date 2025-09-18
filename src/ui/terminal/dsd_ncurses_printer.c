@@ -1567,6 +1567,20 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         attron(COLOR_PAIR(4));
     }
 
+    // Transient toast message (e.g., mute toggled)
+    if (state) {
+        time_t now = time(NULL);
+        if (state->ui_msg[0] != '\0' && state->ui_msg_expire > now) {
+            attron(COLOR_PAIR(2));
+            printw("| %s\n", state->ui_msg);
+            attroff(COLOR_PAIR(2));
+            ui_print_hr();
+        } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
+            // clear stale message
+            state->ui_msg[0] = '\0';
+        }
+    }
+
     ui_print_header("Input Output");
     if (opts->audio_in_type == 0) {
         printw("| Pulse Signal Input:  %i kHz; %i Ch; ", opts->pulse_digi_rate_in / 1000, opts->pulse_digi_in_channels);
@@ -2144,15 +2158,20 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     // if (opts->call_alert == 1)   printw ("| Call Alert Tone Enabled\n");
 
     ui_print_hr();
-    if (opts->constellation == 1) {
-        print_constellation_view(opts, state);
+#ifdef USE_RTLSDR
+    /* Only render RTL-driven visualizers when RTL input is active */
+    if (opts->audio_in_type == 3) {
+        if (opts->constellation == 1) {
+            print_constellation_view(opts, state);
+        }
+        if (opts->eye_view == 1) {
+            print_eye_view(opts, state);
+        }
+        if (opts->fsk_hist_view == 1) {
+            print_fsk_hist_view();
+        }
     }
-    if (opts->eye_view == 1) {
-        print_eye_view(opts, state);
-    }
-    if (opts->fsk_hist_view == 1) {
-        print_fsk_hist_view();
-    }
+#endif
     attroff(COLOR_PAIR(4));
 
     if (state->carrier == 1) {
@@ -2189,11 +2208,16 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("[GFSK]");
     }
     printw("[%d] \n", (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
-    printw(
-        "| Const View:  %s (O)  Gate: %.02f (</>)  Norm: %s (N)  Eye: %s (E) Uni: %s (U) Col: %s (C)  Hist: %s (K)\n",
-        opts->constellation ? "ON" : "off", (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-        opts->const_norm_mode ? "unit" : "radial", opts->eye_view ? "ON" : "off", opts->eye_unicode ? "ON" : "off",
-        opts->eye_color ? "ON" : "off", opts->fsk_hist_view ? "ON" : "off");
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == 3) {
+        printw("| Const View:  %s (O)  Gate: %.02f (</>)  Norm: %s (N)  Eye: %s (E) Uni: %s (U) Col: %s (C)  Hist: %s "
+               "(K)\n",
+               opts->constellation ? "ON" : "off",
+               (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
+               opts->const_norm_mode ? "unit" : "radial", opts->eye_view ? "ON" : "off",
+               opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off", opts->fsk_hist_view ? "ON" : "off");
+    }
+#endif
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
     }
@@ -2327,6 +2351,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 #endif
     printw("\n");
     printw("| In Level:    [%02d%%] \n", level);
+    /* Quick hint for output mute toggle */
+    printw("| Output:      [%s] (x to toggle)\n", (opts->audio_out == 0) ? "Muted" : "ON");
 
     if (opts->dmr_stereo == 0) {
         printw("| Voice Error: [%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
