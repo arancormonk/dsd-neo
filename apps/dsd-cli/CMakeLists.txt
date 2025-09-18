@@ -4,7 +4,6 @@ target_sources(dsd-neo PRIVATE main.c)
 
 # Link against modular libraries
 target_link_libraries(dsd-neo PRIVATE
-  ${LIBS}
   dsd-neo_ezpwd
   dsd-neo_fec
   dsd-neo_crypto
@@ -24,7 +23,9 @@ target_link_libraries(dsd-neo PRIVATE
   dsd-neo_proto_dpmr
   dsd-neo_proto_dmr
   dsd-neo_proto_nxdn
-  dsd-neo_proto_p25)
+  dsd-neo_proto_p25
+  # System/third-party libraries last to satisfy static lib resolution order
+  ${LIBS})
 
 # Target include directories (prefer target-scoped over global)
 target_include_directories(dsd-neo SYSTEM PRIVATE ${_PUBLIC_INCLUDES})
