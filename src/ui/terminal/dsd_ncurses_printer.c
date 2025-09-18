@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <math.h>
+#include <stdlib.h>
 #include <wchar.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -483,7 +484,7 @@ static void
 print_eye_view(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
     /* Fetch a snapshot of recent I-channel samples and SPS */
-    enum { MAXS = 8192 };
+    enum { MAXS = 16384 };
 
     static int16_t buf[(size_t)MAXS];
     int sps = 0;
@@ -518,22 +519,17 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     if (W < 32) {
         W = 32;
     }
-    if (W > 97) {
-        W = 97;
-    }
     int H = rows / 3;
     if (H < 12) {
         H = 12;
     }
-    if (H > 25) {
-        H = 25;
-    }
-    /* Density buffer */
-    static unsigned short den[33][97]; /* max HxW */
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            den[y][x] = 0;
-        }
+    /* Density buffer sized to current grid */
+    size_t den_sz = (size_t)H * (size_t)W;
+    unsigned short* den = (unsigned short*)calloc(den_sz, sizeof(unsigned short));
+    if (!den) {
+        printw("| (eye: out of memory)\n");
+        printw("------------------------------------------------------------------------------\n");
+        return;
     }
     int mid = H / 2;
     /* Normalize peak with EMA for stability */
@@ -602,16 +598,18 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         if (x >= W) {
             x = W - 1;
         }
-        if (den[y][x] < 65535) {
-            den[y][x]++;
+        size_t di = (size_t)y * (size_t)W + (size_t)x;
+        if (den[di] < 65535) {
+            den[di]++;
         }
     }
     /* Determine max density for mapping */
     unsigned short dmax = 1;
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            if (den[y][x] > dmax) {
-                dmax = den[y][x];
+            unsigned short dv = den[(size_t)y * (size_t)W + (size_t)x];
+            if (dv > dmax) {
+                dmax = dv;
             }
         }
     }
@@ -681,7 +679,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         printw("|");
         int last_pair = -1;
         for (int x = 0; x < W; x++) {
-            unsigned short d = den[y][x];
+            unsigned short d = den[(size_t)y * (size_t)W + (size_t)x];
             char ch = ' ';
             if (d > 0) {
                 /* Gamma to brighten low densities */
@@ -780,7 +778,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
             }
             if (opts->eye_unicode && ch == 0 && !used_guide) {
                 /* Redetermine density index for unicode and print glyph */
-                unsigned short d2 = den[y][x];
+                unsigned short d2 = den[(size_t)y * (size_t)W + (size_t)x];
                 double f2 = (double)d2 / (double)dmax;
                 if (f2 < 0.0) {
                     f2 = 0.0;
@@ -956,6 +954,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         printw("| Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=n/a\n", yq1, yq2, yq3, sps);
     }
     printw("------------------------------------------------------------------------------\n");
+    free(den);
 #else
     printw("--Eye Diagram-----------------------------------------------------------------\n");
     printw("| (RTL disabled in this build)\n");
