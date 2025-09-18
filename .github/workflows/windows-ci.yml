@@ -187,17 +187,41 @@ jobs:
         shell: pwsh
         run: |
           C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"; test -f "$EXE"; STAGE="dist/dsd-neo-cygwin"; mkdir -p "$STAGE/bin" "$STAGE/etc"; cp -f "$EXE" "$STAGE/bin/";
-            # Collect dependent DLLs via cygcheck (Windows-style paths)
-            cygcheck -v "$EXE" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > dlls.txt || true;
-            while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < dlls.txt;
+            : "${DEPS_PREFIX:?DEPS_PREFIX not set}";
+            # Collect dependent DLLs via cygcheck; capture both Windows and POSIX paths
+            cygcheck -v "$EXE" | awk '/\\.dll/ {print}' | sed -E "s/^ *//" | awk '{print $1}' | sort -u > dlls.txt || true;
+            while IFS= read -r f; do 
+              [ -z "$f" ] && continue;
+              # Convert Windows path to POSIX if needed
+              fn=$(cygpath -u "$f" 2>/dev/null || echo "$f");
+              if [ -f "$fn" ]; then cp -n "$fn" "$STAGE/bin/" || true; fi;
+            done < dlls.txt;
+            # Also stage any dependency DLLs we built into .cygdeps/bin
+            if [ -d "$DEPS_PREFIX/bin" ]; then cp -n "$DEPS_PREFIX"/bin/*.dll "$STAGE/bin/" 2>/dev/null || true; fi;
             # Ensure Cygwin runtime and common toolchain DLLs are included even if cygcheck misses them
             for rt in /bin/cygwin1.dll /bin/cyggcc_s-*.dll /bin/cygstdc++-*.dll /bin/libwinpthread-1.dll; do
               for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" || true; done;
             done;
             # Bundle PulseAudio server (optional) and its DLLs
-            PULSEAUDIO_BIN="$(command -v pulseaudio || true)"; if [ -n "$PULSEAUDIO_BIN" ]; then cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"; cygcheck -v "$PULSEAUDIO_BIN" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > padlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < padlls.txt; fi;
+            PULSEAUDIO_BIN="$(command -v pulseaudio || true)"; if [ -n "$PULSEAUDIO_BIN" ]; then 
+              cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"; 
+              cygcheck -v "$PULSEAUDIO_BIN" | awk '/\\.dll/ {print}' | sed -E "s/^ *//" | awk '{print $1}' | sort -u > padlls.txt || true;
+              while IFS= read -r f; do 
+                [ -z "$f" ] && continue;
+                fn=$(cygpath -u "$f" 2>/dev/null || echo "$f");
+                if [ -f "$fn" ]; then cp -n "$fn" "$STAGE/bin/" || true; fi;
+              done < padlls.txt; 
+            fi;
             # Bundle mintty (optional) and its DLLs
-            MINTTY_BIN="$(command -v mintty || true)"; if [ -n "$MINTTY_BIN" ]; then cp -f "$MINTTY_BIN" "$STAGE/bin/"; cygcheck -v "$MINTTY_BIN" | sed -n "s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p" | sort -u > mtdlls.txt || true; while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < mtdlls.txt; fi;
+            MINTTY_BIN="$(command -v mintty || true)"; if [ -n "$MINTTY_BIN" ]; then 
+              cp -f "$MINTTY_BIN" "$STAGE/bin/"; 
+              cygcheck -v "$MINTTY_BIN" | awk '/\\.dll/ {print}' | sed -E "s/^ *//" | awk '{print $1}' | sort -u > mtdlls.txt || true; 
+              while IFS= read -r f; do 
+                [ -z "$f" ] && continue;
+                fn=$(cygpath -u "$f" 2>/dev/null || echo "$f");
+                if [ -f "$fn" ]; then cp -n "$fn" "$STAGE/bin/" || true; fi; 
+              done < mtdlls.txt; 
+            fi;
             # Copy launchers and config
             cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"; cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true; cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"; if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then mkdir -p "$STAGE/etc/pulse"; cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"; fi'
 
@@ -214,9 +238,8 @@ jobs:
             $zip = "dist/dsd-neo-cygwin-$($env:REF_NAME).zip"
             $artName = "dsd-neo-cygwin-portable-$($env:REF_NAME)"
           } else {
-            $short = if ($env:GITHUB_SHA) { $env:GITHUB_SHA.Substring(0,7) } else { "dev" }
-            $zip = "dist/dsd-neo-cygwin-$short.zip"
-            $artName = "dsd-neo-cygwin-portable-$short"
+            $zip = "dist/dsd-neo-cygwin-nightly.zip"
+            $artName = "dsd-neo-cygwin-portable-nightly"
           }
           $zipDir = Split-Path -Parent $zip
           if ($zipDir -and !(Test-Path $zipDir)) { New-Item -Type Directory -Force -Path $zipDir | Out-Null }
@@ -233,6 +256,7 @@ jobs:
         with:
           name: ${{ steps.zip.outputs.ART_NAME }}
           path: ${{ steps.zip.outputs.ZIP_PATH }}
+          retention-days: 7
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
@@ -242,12 +266,15 @@ jobs:
           name: dsd-neo portable (Cygwin) ${{ github.ref_name }}
           generate_release_notes: true
 
-      - name: Upload nightly asset (non-tag)
+      - name: Upload nightly asset (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v2.3.3
+        uses: svenstaro/upload-release-action@v2
         with:
-          tag_name: nightly
-          name: dsd-neo portable (Cygwin) nightly
-          body: "Latest nightly build for ${{ github.sha }}"
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: nightly
+          release_name: dsd-neo portable (Cygwin) nightly
+          body: Latest nightly build
           prerelease: true
-          files: ${{ steps.zip.outputs.ZIP_PATH }}
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          asset_name: dsd-neo-cygwin-nightly.zip
+          overwrite: true
