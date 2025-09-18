@@ -223,8 +223,18 @@ jobs:
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.3.3
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
           name: dsd-neo portable (Cygwin) ${{ github.ref_name }}
           generate_release_notes: true
+
+      - name: Upload nightly asset (non-tag)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2.3.3
+        with:
+          tag_name: nightly
+          name: dsd-neo portable (Cygwin) nightly
+          body: "Latest nightly build for ${{ github.sha }}"
+          prerelease: true
+          files: ${{ steps.zip.outputs.ZIP_PATH }}
