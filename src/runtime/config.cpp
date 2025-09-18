@@ -186,6 +186,11 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.pdu_json_is_set = env_is_set(pj);
     c.pdu_json_enable = c.pdu_json_is_set ? (atoi(pj) != 0) : 0;
 
+    /* Optional SNR-based digital squelch threshold (dB) */
+    const char* snrsql = getenv("DSD_NEO_SNR_SQL_DB");
+    c.snr_sql_is_set = env_is_set(snrsql);
+    c.snr_sql_db = c.snr_sql_is_set ? atoi(snrsql) : 0;
+
     g_config = c;
     g_config_inited = 1;
 }

@@ -71,6 +71,20 @@ int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
 int rtl_device_set_gain(struct rtl_device* dev, int gain);
 
 /**
+ * @brief Get current tuner gain in tenths of dB as reported by the driver.
+ *
+ * Returns a non-negative value (e.g., 270 for 27.0 dB) on success, or a
+ * negative value on error. When auto-gain is enabled, the returned value may
+ * be undefined; prefer checking rtl_device_is_auto_gain().
+ */
+int rtl_device_get_tuner_gain(struct rtl_device* dev);
+
+/**
+ * @brief Return 1 if auto-gain is enabled (requested), 0 if manual.
+ */
+int rtl_device_is_auto_gain(struct rtl_device* dev);
+
+/**
  * @brief Set frequency correction (PPM error).
  *
  * @param dev RTL-SDR device handle.

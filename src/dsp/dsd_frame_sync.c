@@ -23,6 +23,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -430,7 +431,36 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 state->minref = state->min;
             }
 
-            //if using an rtl input method, do not look for sync patterns if the pwr value is lower than our 'soft squelch' level
+            // Optional SNR-based pre-decode squelch: skip expensive sync search when SNR is low.
+            // Falls back to legacy power squelch gating for certain modes.
+#ifdef USE_RTLSDR
+            {
+                extern const dsdneoRuntimeConfig* dsd_neo_get_config(void);
+                const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                int snr_gate = 0;
+                if (cfg && cfg->snr_sql_is_set) {
+                    double snr_db = -200.0;
+                    if (opts->frame_p25p1 == 1) {
+                        extern double rtl_stream_get_snr_c4fm(void);
+                        snr_db = rtl_stream_get_snr_c4fm();
+                    } else if (opts->frame_p25p2 == 1) {
+                        extern double rtl_stream_get_snr_cqpsk(void);
+                        snr_db = rtl_stream_get_snr_cqpsk();
+                    } else if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1
+                               || opts->frame_m17 == 1) {
+                        extern double rtl_stream_get_snr_gfsk(void);
+                        snr_db = rtl_stream_get_snr_gfsk();
+                    }
+                    if (snr_db > -150.0 && snr_db < (double)cfg->snr_sql_db) {
+                        snr_gate = 1;
+                    }
+                }
+                if (snr_gate) {
+                    goto SYNC_TEST_END;
+                }
+            }
+#endif
+            // Legacy power-based pre-gate for some GFSK modes when using RTL input
             if (opts->audio_in_type == 3 && opts->rtl_pwr < opts->rtl_squelch_level) {
                 if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1
                     || opts->frame_m17 == 1) {

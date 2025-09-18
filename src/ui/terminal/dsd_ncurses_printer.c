@@ -1619,10 +1619,32 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_in_type == 3) {
         printw("| RTL: %d;", opts->rtl_dev_index);
-        if (opts->rtl_gain_value == 0) {
-            printw(" G: AGC;");
-        } else {
-            printw(" G: %idB;", opts->rtl_gain_value);
+        /* Show applied tuner gain when available (actual driver value),
+           otherwise fall back to requested value. */
+        {
+            int g10 = 0, is_auto = 1;
+            int have = 0;
+#ifdef USE_RTLSDR
+            /* Header is already included indirectly via other UI modules. */
+            extern int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
+            if (rtl_stream_get_gain(&g10, &is_auto) == 0) {
+                have = 1;
+            }
+#endif
+            if (have) {
+                if (is_auto) {
+                    printw(" G: AGC;");
+                } else {
+                    int gdB = (g10 >= 0) ? (g10 + 5) / 10 : (g10 - 5) / 10;
+                    printw(" G: %idB;", gdB);
+                }
+            } else {
+                if (opts->rtl_gain_value == 0) {
+                    printw(" G: AGC;");
+                } else {
+                    printw(" G: %idB;", opts->rtl_gain_value);
+                }
+            }
         }
         printw(" V: %iX;", opts->rtl_volume_multiplier);
         printw(" PPM: %i;", opts->rtlsdr_ppm_error); //Adjust manually now with { and }

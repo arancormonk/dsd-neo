@@ -42,6 +42,8 @@ int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 void dsd_rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out);
 void dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
 void dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
+/* Gain query helper implemented in rtl_sdr_fm.cpp */
+int dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -206,6 +208,11 @@ rtl_stream_clear_output(RtlSdrContext* /*ctx*/) {
 extern "C" long
 rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
     return dsd_rtl_stream_return_pwr();
+}
+
+extern "C" int
+rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
+    return dsd_rtl_stream_get_gain(out_tenth_db, out_is_auto);
 }
 
 extern "C" int

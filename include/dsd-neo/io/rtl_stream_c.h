@@ -97,6 +97,16 @@ void rtl_stream_clear_output(RtlSdrContext* ctx);
 long rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
 /**
+ * @brief Get the currently applied tuner gain.
+ *
+ * Returns the driver-reported tuner gain in tenths of a dB (e.g., 270 for
+ * 27.0 dB) via out_tenth_db, and whether auto-gain is active via out_is_auto
+ * (1=auto, 0=manual). Any pointer may be NULL. Returns 0 on success; <0 if
+ * the RTL stream/device is not available.
+ */
+int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
+
+/**
  * @brief Get smoothed TED residual (EMA of Gardner error) from demod pipeline.
  * Positive: persistent early (nudge center right). Negative: late (nudge left).
  * Returns 0 when unavailable.

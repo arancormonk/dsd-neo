@@ -220,6 +220,24 @@ struct RtlSdrInternals {
 
 static struct RtlSdrInternals* g_stream = NULL;
 
+/*
+ * Pick a hardware tuner bandwidth. Default 0 lets the driver choose.
+ * Optionally override via env DSD_NEO_TUNER_BW_HZ with a positive integer.
+ */
+static uint32_t
+choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
+    (void)capture_rate_hz;
+    (void)dsp_bw_hz;
+    const char* e = getenv("DSD_NEO_TUNER_BW_HZ");
+    if (e && *e) {
+        long v = strtol(e, NULL, 10);
+        if (v >= 0 && v <= 10000000) {
+            return (uint32_t)v;
+        }
+    }
+    return 0; /* auto */
+}
+
 /**
  * @brief On retune/hop, drain audio output ring for a short time to avoid
  * cutting off transmissions. If configured to clear, force-clear instead.
@@ -259,6 +277,36 @@ drain_output_on_retune(void) {
         dsd_rtl_stream_clear_output();
     }
     (void)before; /* reserved for future diagnostics */
+}
+
+/* Export applied tuner gain for UI without exposing internals. */
+extern "C" int
+dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
+    if (out_tenth_db) {
+        *out_tenth_db = 0;
+    }
+    if (out_is_auto) {
+        *out_is_auto = 1;
+    }
+    if (!rtl_device_handle) {
+        return -1;
+    }
+    int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
+    if (out_is_auto) {
+        *out_is_auto = (is_auto > 0) ? 1 : 0;
+    }
+    if (is_auto > 0) {
+        /* In auto mode, report AGC without a specific gain value. */
+        return 0;
+    }
+    int g = rtl_device_get_tuner_gain(rtl_device_handle);
+    if (g < 0) {
+        return -1;
+    }
+    if (out_tenth_db) {
+        *out_tenth_db = g;
+    }
+    return 0;
 }
 
 /**
@@ -656,8 +704,8 @@ apply_capture_settings(uint32_t center_freq_hz) {
     optimal_settings((int)center_freq_hz, demod.rate_in);
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
-    /* Best-effort set tuner IF bandwidth close to configured RTL bandwidth */
-    rtl_device_set_tuner_bandwidth(rtl_device_handle, (uint32_t)rtl_bandwidth);
+    /* Use driver auto hardware bandwidth by default, or override via env */
+    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
 }
 
 /**
@@ -1507,7 +1555,14 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             bandwidth_multiplier = MAX_BANDWIDTH_MULTIPLIER;
         }
     }
-    volume_multiplier = 1;
+    /* Apply CLI volume multiplier (1..3), default to 1 if out of range */
+    {
+        int vm = opts->rtl_volume_multiplier;
+        if (vm < 1 || vm > 3) {
+            vm = 1;
+        }
+        volume_multiplier = (short int)vm;
+    }
 
     dongle_init(&dongle);
     {
@@ -1988,11 +2043,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
     if (got <= 0) {
         return -1;
     }
-    /* Apply volume scaling with saturation */
-    for (int i = 0; i < got; i++) {
-        int32_t y = (int32_t)out[i] * (int32_t)volume_multiplier;
-        out[i] = sat16(y);
-    }
+    /* No internal scaling here; callers may apply their own multiplier. */
     return got;
 }
 
@@ -2646,8 +2697,9 @@ extern "C" long int
 dsd_rtl_stream_return_pwr(void) {
     long int pwr = 0;
     int n = demod.lp_len;
-    if (n > 160) {
-        n = 160;
+    /* Use a slightly longer window for a more stable estimate. */
+    if (n > 512) {
+        n = 512;
     }
     if (n < 0) {
         n = 0;

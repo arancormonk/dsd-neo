@@ -341,7 +341,7 @@ verbose_offset_tuning(rtlsdr_dev_t* dev) {
  */
 static int
 verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
-#ifdef RTLSDR_SET_TUNER_BANDWIDTH
+    /* Pass-through to librtlsdr; bw_hz == 0 lets driver choose an appropriate filter */
     int r = rtlsdr_set_tuner_bandwidth(dev, (int)bw_hz);
     if (r != 0) {
         fprintf(stderr, "WARNING: Failed to set tuner bandwidth to %u Hz.\n", bw_hz);
@@ -349,12 +349,6 @@ verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
         fprintf(stderr, "Tuner bandwidth set to %u Hz.\n", bw_hz);
     }
     return r;
-#else
-    (void)dev;
-    (void)bw_hz;
-    fprintf(stderr, "NOTE: Tuner bandwidth API not available in this build.\n");
-    return 0;
-#endif
 }
 
 /**
@@ -372,6 +366,19 @@ verbose_auto_gain(rtlsdr_dev_t* dev) {
     } else {
         fprintf(stderr, "Tuner gain set to automatic.\n");
     }
+    /* Original plan: enable RTL digital AGC in auto mode by default.
+       Allow override via env DSD_NEO_RTL_AGC=0 to disable. */
+    const char* e = getenv("DSD_NEO_RTL_AGC");
+    int want = 1;
+    if (e && (*e == '0' || *e == 'n' || *e == 'N' || *e == 'f' || *e == 'F')) {
+        want = 0;
+    }
+    int ra = rtlsdr_set_agc_mode(dev, want);
+    if (ra != 0) {
+        fprintf(stderr, "WARNING: Failed to %s RTL AGC.\n", want ? "enable" : "disable");
+    } else {
+        fprintf(stderr, "RTL AGC %s.\n", want ? "enabled" : "disabled");
+    }
     return r;
 }
 
@@ -385,6 +392,8 @@ verbose_auto_gain(rtlsdr_dev_t* dev) {
 static int
 verbose_gain_set(rtlsdr_dev_t* dev, int gain) {
     int r;
+    /* Disable RTL digital AGC when setting manual tuner gain */
+    (void)rtlsdr_set_agc_mode(dev, 0);
     r = rtlsdr_set_tuner_gain_mode(dev, 1);
     if (r < 0) {
         fprintf(stderr, "WARNING: Failed to enable manual gain.\n");
@@ -551,6 +560,23 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
         int nearest = nearest_gain(dev->dev, gain);
         return verbose_gain_set(dev->dev, nearest);
     }
+}
+
+int
+rtl_device_get_tuner_gain(struct rtl_device* dev) {
+    if (!dev || !dev->dev) {
+        return -1;
+    }
+    return rtlsdr_get_tuner_gain(dev->dev);
+}
+
+int
+rtl_device_is_auto_gain(struct rtl_device* dev) {
+    if (!dev) {
+        return -1;
+    }
+    /* We track AUTO vs manual in the requested field. */
+    return (dev->gain == AUTO_GAIN) ? 1 : 0;
 }
 
 /**

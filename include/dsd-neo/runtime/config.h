@@ -191,6 +191,12 @@ typedef struct dsdneoRuntimeConfig {
     /* Optional JSON emitter for P25 PDUs */
     int pdu_json_is_set;
     int pdu_json_enable;
+
+    /* Optional SNR-based digital squelch (dB threshold). When set, frame sync
+     * may skip expensive searches if estimated SNR is below this value.
+     * Applies to relevant digital modes (e.g., P25 C4FM/CQPSK, GFSK family). */
+    int snr_sql_is_set;
+    int snr_sql_db; /* integer dB threshold */
 }
 
 dsdneoRuntimeConfig;
