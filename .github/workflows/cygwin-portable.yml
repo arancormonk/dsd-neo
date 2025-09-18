@@ -83,88 +83,65 @@ jobs:
       - name: Prepare deps environment
         shell: pwsh
         run: |
-          $cmd = @'
-          set -eux
-          echo "DEPS_PREFIX=$PWD/.cygdeps" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=$PWD/.cygdeps:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$PWD/.cygdeps/lib/pkgconfig:$PWD/.cygdeps/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-          echo "PATH=$PWD/.cygdeps/bin:${PATH}" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$PWD/.cygdeps/bin:$PWD/.cygdeps/lib:$PWD/.cygdeps/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          '@
-          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc $cmd
+          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc 'DEPS_PREFIX="$PWD/.cygdeps"; \
+            echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"; \
+            echo "CMAKE_PREFIX_PATH=$DEPS_PREFIX:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"; \
+            echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"; \
+            echo "PATH=$DEPS_PREFIX/bin:${PATH}" >> "$GITHUB_ENV"; \
+            echo "LD_LIBRARY_PATH=$DEPS_PREFIX/bin:$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"'
 
       - name: Build mbe-neo (static or shared)
         shell: pwsh
         run: |
-          $cmd = @'
-          set -eux
-          if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
-            git clone --depth=1 https://github.com/arancormonk/mbelib-neo.git
-            cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
-            cmake --build mbelib-neo/build -j
-            cmake --install mbelib-neo/build
-          else
-            echo "Using cached mbelib-neo in $DEPS_PREFIX"
-          fi
-          '@
-          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc $cmd
+          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc 'if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then \
+              git clone --depth=1 https://github.com/arancormonk/mbelib-neo.git; \
+              cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"; \
+              cmake --build mbelib-neo/build -j; \
+              cmake --install mbelib-neo/build; \
+            else \
+              echo "Using cached mbelib-neo in $DEPS_PREFIX"; \
+            fi'
 
       - name: Configure (Release)
         shell: pwsh
         run: |
-          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc "set -eux; cmake --preset dev-release -DDSD_ENABLE_LTO=OFF"
+          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc 'cmake --preset dev-release -DDSD_ENABLE_LTO=OFF'
 
       - name: Build
         shell: pwsh
         run: |
-          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc "set -eux; cmake --build --preset dev-release -j"
+          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc 'cmake --build --preset dev-release -j'
 
       - name: Stage portable tree
         id: stage
         shell: pwsh
         run: |
-          $cmd = @'
-          set -euxo pipefail
-          EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
-          test -f "$EXE"
-
-          STAGE="dist/dsd-neo-cygwin"
-          mkdir -p "$STAGE/bin" "$STAGE/etc"
-          cp -f "$EXE" "$STAGE/bin/"
-
-          cygcheck -v "$EXE" | sed -n 's/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p' | sort -u > dlls.txt || true
-          while IFS= read -r f; do
-            if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi
-          done < dlls.txt
-
-          PULSEAUDIO_BIN="$(command -v pulseaudio || true)"
-          if [ -n "$PULSEAUDIO_BIN" ]; then
-            cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"
-            cygcheck -v "$PULSEAUDIO_BIN" | sed -n 's/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p' | sort -u > padlls.txt || true
-            while IFS= read -r f; do
-              if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi
-            done < padlls.txt
-          fi
-
-          MINTTY_BIN="$(command -v mintty || true)"
-          if [ -n "$MINTTY_BIN" ]; then
-            cp -f "$MINTTY_BIN" "$STAGE/bin/"
-            cygcheck -v "$MINTTY_BIN" | sed -n 's/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p' | sort -u > mtdlls.txt || true
-            while IFS= read -r f; do
-              if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi
-            done < mtdlls.txt
-          fi
-
-          cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"
-          cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true
-          cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"
-
-          if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then
-            mkdir -p "$STAGE/etc/pulse"
-            cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"
-          fi
-          '@
-          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc $cmd
+          & "C:\\tools\\cygwin\\bin\\bash.exe" -lc 'EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"; \
+            test -f "$EXE"; \
+            STAGE="dist/dsd-neo-cygwin"; \
+            mkdir -p "$STAGE/bin" "$STAGE/etc"; \
+            cp -f "$EXE" "$STAGE/bin/"; \
+            cygcheck -v "$EXE" | sed -n '"'"'s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p'"'"' | sort -u > dlls.txt || true; \
+            while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < dlls.txt; \
+            PULSEAUDIO_BIN="$(command -v pulseaudio || true)"; \
+            if [ -n "$PULSEAUDIO_BIN" ]; then \
+              cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"; \
+              cygcheck -v "$PULSEAUDIO_BIN" | sed -n '"'"'s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p'"'"' | sort -u > padlls.txt || true; \
+              while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < padlls.txt; \
+            fi; \
+            MINTTY_BIN="$(command -v mintty || true)"; \
+            if [ -n "$MINTTY_BIN" ]; then \
+              cp -f "$MINTTY_BIN" "$STAGE/bin/"; \
+              cygcheck -v "$MINTTY_BIN" | sed -n '"'"'s/^ *\([A-Za-z]:\\\\[^ ]*\.dll\).*/\1/p'"'"' | sort -u > mtdlls.txt || true; \
+              while IFS= read -r f; do if [ -f "$f" ]; then cp -n "$f" "$STAGE/bin/" || true; fi; done < mtdlls.txt; \
+            fi; \
+            cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"; \
+            cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true; \
+            cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"; \
+            if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then \
+              mkdir -p "$STAGE/etc/pulse"; \
+              cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"; \
+            fi'
 
           # Export STAGE path for next steps
           Add-Content -Path $env:GITHUB_OUTPUT -Value "stage_dir=dist/dsd-neo-cygwin"
