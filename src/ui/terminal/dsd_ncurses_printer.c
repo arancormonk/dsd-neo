@@ -21,7 +21,9 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -42,6 +44,50 @@ static int snr_hist_head_qpsk = 0;
 static double snr_hist_gfsk[SNR_HIST_N];
 static int snr_hist_len_gfsk = 0;
 static int snr_hist_head_gfsk = 0;
+
+/* UI helpers: dynamic headers and horizontal rules sized to terminal width */
+static void
+ui_print_hr(void) {
+    int rows = 0, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    if (cols < 1) {
+        cols = 80;
+    }
+    int y = 0, x = 0;
+    getyx(stdscr, y, x);
+    mvhline(y, 0, '-', cols);
+    if (y + 1 < rows) {
+        move(y + 1, 0);
+    } else {
+        addch('\n');
+    }
+}
+
+static void
+ui_print_header(const char* title) {
+    int rows = 0, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    if (cols < 4) {
+        cols = 80;
+    }
+    const char* t = (title && *title) ? title : "";
+    int y = 0, x = 0;
+    getyx(stdscr, y, x);
+    addstr("--");
+    addstr(t);
+    int used = 2 + (int)strlen(t);
+    if (used < cols) {
+        mvhline(y, used, '-', cols - used);
+    }
+    if (y + 1 < rows) {
+        move(y + 1, 0);
+    } else {
+        addch('\n');
+    }
+}
+
+/* Forward declaration for int ascending comparator (used by qsort for percentiles) */
+static int cmp_int_asc(const void* a, const void* b);
 
 static void
 snr_hist_push(int mod, double snr) {
@@ -306,10 +352,10 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     int16_t buf[(size_t)MAXP * 2];
     int n = rtl_stream_constellation_get(buf, MAXP);
 
-    printw("--Constellation---------------------------------------------------------------\n");
+    ui_print_header("Constellation");
     if (n <= 0) {
         printw("| (no samples yet)\n");
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         return;
     }
 
@@ -320,7 +366,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     if (W < 32) {
         W = 32;
     }
-    int H = rows / 3;
+    /* Make the constellation a bit taller by default for readability */
+    int H = rows / 2; /* previously rows/3 */
     if (H < 12) {
         H = 12;
     }
@@ -363,33 +410,42 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     unsigned short* den = (unsigned short*)calloc(den_sz, sizeof(unsigned short));
     if (!den) {
         printw("| (constellation: out of memory)\n");
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         return;
     }
 
-    /* Dynamic scale from data with smoothing */
-    static int s_maxI = 256, s_maxQ = 256; /* smoothed maxima */
-    int maxI = 1, maxQ = 1;
+    /* Dynamic scale from data using high-percentile (robust to outliers), then smooth */
+    static int s_maxI = 256, s_maxQ = 256; /* smoothed scale (approximately 99th percentile) */
+    /* Collect absolute I/Q values for percentile computation */
+    static int absI[(size_t)MAXP];
+    static int absQ[(size_t)MAXP];
     for (int k = 0; k < n; k++) {
         int i = buf[(size_t)(k << 1) + 0];
         int q = buf[(size_t)(k << 1) + 1];
-        int a = i < 0 ? -i : i;
-        int b = q < 0 ? -q : q;
-        if (a > maxI) {
-            maxI = a;
-        }
-        if (b > maxQ) {
-            maxQ = b;
-        }
+        absI[k] = (i < 0) ? -i : i;
+        absQ[k] = (q < 0) ? -q : q;
     }
-    if (maxI < 64) {
-        maxI = 64; /* avoid zooming into noise */
+    qsort(absI, (size_t)n, sizeof(int), cmp_int_asc);
+    qsort(absQ, (size_t)n, sizeof(int), cmp_int_asc);
+    /* Use 99th percentile (index ~ 0.99*(n-1)) to ignore rare spikes */
+    int idxP = (int)lrint(0.99 * (double)(n - 1));
+    if (idxP < 0) {
+        idxP = 0;
     }
-    if (maxQ < 64) {
-        maxQ = 64;
+    if (idxP >= n) {
+        idxP = n - 1;
     }
-    s_maxI = (int)(0.8 * (double)s_maxI + 0.2 * (double)maxI);
-    s_maxQ = (int)(0.8 * (double)s_maxQ + 0.2 * (double)maxQ);
+    int pI = absI[idxP];
+    int pQ = absQ[idxP];
+    if (pI < 64) {
+        pI = 64; /* avoid zooming into noise */
+    }
+    if (pQ < 64) {
+        pQ = 64;
+    }
+    /* EMA smoothing (alpha ~0.2) */
+    s_maxI = (int)(0.8 * (double)s_maxI + 0.2 * (double)pI);
+    s_maxQ = (int)(0.8 * (double)s_maxQ + 0.2 * (double)pQ);
     if (s_maxI < 64) {
         s_maxI = 64;
     }
@@ -412,6 +468,23 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 
     /* Accumulate density */
     int cx = W / 2, cy = H / 2;
+    /* Use equal scale on both axes so circles stay round on wide terminals. */
+    int halfX = (W / 2) - 1;
+    int halfY = (H / 2) - 1;
+    if (halfX < 1) {
+        halfX = 1;
+    }
+    if (halfY < 1) {
+        halfY = 1;
+    }
+    int scale_eq = (halfX < halfY) ? halfX : halfY;
+    /* Add a small headroom margin so dense clusters don't pin to the border */
+    const double outer_margin = 0.92; /* 92% of the square radius */
+    /* Define a centered square plotting region so each quadrant is square in rows/cols */
+    int x0 = cx - scale_eq;
+    int x1 = cx + scale_eq;
+    int y0 = cy - scale_eq;
+    int y1 = cy + scale_eq;
     unsigned short dmax = 0;
     for (int k = 0; k < n; k++) {
         int i = buf[(size_t)(k << 1) + 0];
@@ -422,8 +495,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         if (r2 < gate2) {
             continue;
         }
-        int x = cx + (int)lrint(nx * (W / 2 - 1));
-        int y = cy - (int)lrint(ny * (H / 2 - 1));
+        int x = cx + (int)lrint(nx * (double)scale_eq * outer_margin);
+        int y = cy - (int)lrint(ny * (double)scale_eq * outer_margin);
         if (x < 0) {
             x = 0;
         }
@@ -453,15 +526,16 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         printw("|");
         int last_pair = -1;
         for (int x = 0; x < W; x++) {
-            /* Determine overlays */
-            int is_haxis = (y == cy);
-            int is_vaxis = (x == cx);
+            /* Determine overlays (restricted to the centered square region) */
+            int inside_sq = (x >= x0 && x <= x1 && y >= y0 && y <= y1);
+            int is_haxis = inside_sq && (y == cy);
+            int is_vaxis = inside_sq && (x == cx);
             int is_diag = 0;
-            if (opts && (opts->mod_qpsk == 1)) {
-                int dy = (int)lrint(((double)(H - 1) / (double)(W - 1)) * (double)(x - cx));
-                int y1 = cy + dy;
-                int y2 = cy - dy;
-                is_diag = (y == y1) || (y == y2);
+            if (inside_sq && opts && (opts->mod_qpsk == 1)) {
+                /* With a square plotting region, slope-1 diagonals are 45° */
+                int y_d1 = cy + (x - cx);
+                int y_d2 = cy - (x - cx);
+                is_diag = (y == y_d1) || (y == y_d2);
             }
 
             unsigned short d = den[(size_t)y * (size_t)W + (size_t)x];
@@ -488,7 +562,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                     attron(COLOR_PAIR(gp));
                     used_guide = gp;
                 }
-            } else if (d > 0) {
+            } else if (inside_sq && d > 0) {
                 /* Density glyph + color */
                 double f = (double)d / (double)dmax;
                 if (f < 0.0) {
@@ -550,7 +624,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             }
 
             /* Reference cluster centers + quadrant labels (QPSK only) */
-            if (opts && (opts->mod_qpsk == 1)) {
+            if (inside_sq && opts && (opts->mod_qpsk == 1)) {
                 /* Reference points near ~70% radius */
                 double refI = 0.70 * (double)s_maxI;
                 double refQ = 0.70 * (double)s_maxQ;
@@ -559,8 +633,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                 for (int r = 0; r < 4; r++) {
                     double ii = ref_ix[r] * refI;
                     double qq = ref_qx[r] * refQ;
-                    int xr = cx + (int)lrint((ii / (double)s_maxI) * (W / 2 - 1));
-                    int yr = cy - (int)lrint((qq / (double)s_maxQ) * (H / 2 - 1));
+                    int xr = cx + (int)lrint((ii / (double)s_maxI) * (double)scale_eq * outer_margin);
+                    int yr = cy - (int)lrint((qq / (double)s_maxQ) * (double)scale_eq * outer_margin);
                     if (xr == x && yr == y) {
                         ch = 'o';
                         if (opts->eye_color && has_colors()) {
@@ -677,12 +751,12 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         }
         printw("100%%\n");
     }
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
     free(den);
 #else
-    printw("--Constellation---------------------------------------------------------------\n");
+    ui_print_header("Constellation");
     printw("| (RTL disabled in this build)\n");
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
 #endif
 }
 
@@ -698,7 +772,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     static int16_t buf[(size_t)MAXS];
     int sps = 0;
     int n = rtl_stream_eye_get(buf, MAXS, &sps);
-    printw("--Eye Diagram (C4FM/FSK)-----------------------------------------------------\n");
+    ui_print_header("Eye Diagram (C4FM/FSK)");
     /* Auto-fallback to ASCII if Unicode likely unsupported */
     static int s_unicode_ready = -1;
     static int s_unicode_warned = 0;
@@ -718,7 +792,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     }
     if (n <= 0 || sps <= 0) {
         printw("| (no samples or SPS)\n");
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         return;
     }
     /* Grid size adaptive */
@@ -737,7 +811,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     unsigned short* den = (unsigned short*)calloc(den_sz, sizeof(unsigned short));
     if (!den) {
         printw("| (eye: out of memory)\n");
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         return;
     }
     int mid = H / 2;
@@ -1162,12 +1236,12 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     } else {
         printw("| Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=n/a\n", yq1, yq2, yq3, sps);
     }
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
     free(den);
 #else
-    printw("--Eye Diagram-----------------------------------------------------------------\n");
+    ui_print_header("Eye Diagram");
     printw("| (RTL disabled in this build)\n");
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
 #endif
 }
 
@@ -1187,10 +1261,10 @@ print_fsk_hist_view(void) {
     static int16_t buf[(size_t)MAXS];
     int sps = 0;
     int n = rtl_stream_eye_get(buf, MAXS, &sps);
-    printw("--FSK 4-Level Histogram-------------------------------------------------------\n");
+    ui_print_header("FSK 4-Level Histogram");
     if (n <= 0) {
         printw("| (no samples)\n");
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         return;
     }
     /* Compute peak and mean DC offset */
@@ -1315,11 +1389,11 @@ print_fsk_hist_view(void) {
         }
         printw(" %lld\n", (long long)bin[i]);
     }
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
 #else
-    printw("--FSK 4-Level Histogram-------------------------------------------------------\n");
+    ui_print_header("FSK 4-Level Histogram");
     printw("| (RTL disabled in this build)\n");
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
 #endif
 }
 
@@ -1400,15 +1474,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     //Start Printing Section
     erase();
     if (opts->ncurses_compact == 1) {
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
     }
     if (opts->ncurses_compact == 0) {
         attron(COLOR_PAIR(6));
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
-        printw("------------------------------------------------------------------------------\n");
+        ui_print_hr();
         attroff(COLOR_PAIR(6));
         attron(COLOR_PAIR(4));
     }
@@ -1418,7 +1492,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         attron(COLOR_PAIR(4));
     }
 
-    printw("--Input Output----------------------------------------------------------------\n");
+    ui_print_header("Input Output");
     if (opts->audio_in_type == 0) {
         printw("| Pulse Signal Input:  %i kHz; %i Ch; ", opts->pulse_digi_rate_in / 1000, opts->pulse_digi_in_channels);
         if (opts->pa_input_idx[0] != 0) {
@@ -1960,7 +2034,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
     // if (opts->call_alert == 1)   printw ("| Call Alert Tone Enabled\n");
 
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
     if (opts->constellation == 1) {
         print_constellation_view(opts, state);
     }
@@ -1988,7 +2062,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         level = 0;
     }
 
-    printw("--Audio Decode----------------------------------------------------------------\n");
+    ui_print_header("Audio Decode");
     if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
         printw("| Tuner state: Busy");
     }
@@ -2183,9 +2257,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw("\n");
     }
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
 
-    printw("--Call Info-------------------------------------------------------------------\n");
+    ui_print_header("Call Info");
 
     //DSTAR
     if (lls == 6 || lls == 7 || lls == 18 || lls == 19) {
@@ -3246,14 +3320,19 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     //fence bottom
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
     //colors off
     if (state->carrier == 1) { //same as above
         attroff(COLOR_PAIR(3));
     }
     //only print event history if enabled
     attron(COLOR_PAIR(4)); //cyan for history
-    printw("--Latest Event History ([|])---Slot %d (\\)---Cycle (h)-Short/Long/Off----------\n", state->eh_slot + 1);
+    {
+        char hdr[160];
+        snprintf(hdr, sizeof(hdr), "Latest Event History ([|])  Slot %d (\\)  Cycle (h): Short/Long/Off",
+                 state->eh_slot + 1);
+        ui_print_header(hdr);
+    }
     if (opts->ncurses_history != 0) {
         for (uint16_t i = (state->eh_index + 1); i < (state->eh_index + 11); i++) {
             uint16_t string_size = 71; //short uniform size that doesn't exceed the fence
@@ -3312,7 +3391,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    printw("------------------------------------------------------------------------------\n");
+    ui_print_hr();
     attroff(COLOR_PAIR(4)); //cyan for history
 
     refresh();
