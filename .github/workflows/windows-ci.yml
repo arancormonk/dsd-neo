@@ -66,8 +66,7 @@ jobs:
             ninja
             pkg-config
             libsndfile-devel
-            libncursesw-devel
-            libpanelw-devel
+            libncurses-devel
             libpulse-devel
             pulseaudio
             pulseaudio-utils
