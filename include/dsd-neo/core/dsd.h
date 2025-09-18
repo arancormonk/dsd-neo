@@ -278,9 +278,10 @@ typedef struct {
     FILE* mbe_in_f;
     int errorbars;
     int datascope;
-    int constellation;      //ncurses ASCII constellation view (0=off, 1=on)
-    float const_gate_qpsk;  //constellation magnitude gate for QPSK
-    float const_gate_other; //constellation gate for non-QPSK (FSK)
+    int constellation;       //ncurses ASCII constellation view (0=off, 1=on)
+    float const_gate_qpsk;   //constellation magnitude gate for QPSK
+    float const_gate_other;  //constellation gate for non-QPSK (FSK)
+    uint8_t const_norm_mode; //0=radial (percentile) norm, 1=unit-circle norm
     int symboltiming;
     int verbose;
     int p25enc;

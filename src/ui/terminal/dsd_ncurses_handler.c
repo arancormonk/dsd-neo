@@ -204,6 +204,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
+    if (c == 110 || c == 78) //'n' or 'N' key, toggle constellation normalization
+    {
+        opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+    }
+
     if (c == 60) //'<' key, decrease constellation gate
     {
         float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;

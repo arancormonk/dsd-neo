@@ -602,6 +602,7 @@ initOpts(dsd_opts* opts) {
     opts->constellation = 0;
     opts->const_gate_qpsk = 0.25f;
     opts->const_gate_other = 0.05f;
+    opts->const_norm_mode = 0; // default: radial percentile normalization
     opts->eye_view = 0;
     opts->fsk_hist_view = 0;
     opts->eye_unicode = 1; //default ON for clearer rendering

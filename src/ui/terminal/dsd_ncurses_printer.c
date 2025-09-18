@@ -414,19 +414,29 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    /* Dynamic scale from data using high-percentile (robust to outliers), then smooth */
-    static int s_maxI = 256, s_maxQ = 256; /* smoothed scale (approximately 99th percentile) */
-    /* Collect absolute I/Q values for percentile computation */
+    /* Dynamic radial scale using high-percentile magnitude (robust to outliers), then smooth. */
+    static int s_maxR = 256; /* smoothed scale for radius (~99th percentile of |IQ|) */
+    /* Collect absolute I/Q and magnitude values for percentile computation */
     static int absI[(size_t)MAXP];
     static int absQ[(size_t)MAXP];
+    static int magR[(size_t)MAXP];
     for (int k = 0; k < n; k++) {
         int i = buf[(size_t)(k << 1) + 0];
         int q = buf[(size_t)(k << 1) + 1];
-        absI[k] = (i < 0) ? -i : i;
-        absQ[k] = (q < 0) ? -q : q;
+        int ai = (i < 0) ? -i : i;
+        int aq = (q < 0) ? -q : q;
+        absI[k] = ai;
+        absQ[k] = aq;
+        /* Approximate magnitude without floating point: sqrt(i*i + q*q). */
+        long ii = (long)i;
+        long qq = (long)q;
+        long r2 = ii * ii + qq * qq;
+        int r = (int)lrint(sqrt((double)r2));
+        magR[k] = r;
     }
     qsort(absI, (size_t)n, sizeof(int), cmp_int_asc);
     qsort(absQ, (size_t)n, sizeof(int), cmp_int_asc);
+    qsort(magR, (size_t)n, sizeof(int), cmp_int_asc);
     /* Use 99th percentile (index ~ 0.99*(n-1)) to ignore rare spikes */
     int idxP = (int)lrint(0.99 * (double)(n - 1));
     if (idxP < 0) {
@@ -435,22 +445,15 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     if (idxP >= n) {
         idxP = n - 1;
     }
-    int pI = absI[idxP];
-    int pQ = absQ[idxP];
-    if (pI < 64) {
-        pI = 64; /* avoid zooming into noise */
-    }
-    if (pQ < 64) {
-        pQ = 64;
+    int pR = magR[idxP];
+    /* Avoid zooming into noise; also keep a sane lower bound */
+    if (pR < 64) {
+        pR = 64;
     }
     /* EMA smoothing (alpha ~0.2) */
-    s_maxI = (int)(0.8 * (double)s_maxI + 0.2 * (double)pI);
-    s_maxQ = (int)(0.8 * (double)s_maxQ + 0.2 * (double)pQ);
-    if (s_maxI < 64) {
-        s_maxI = 64;
-    }
-    if (s_maxQ < 64) {
-        s_maxQ = 64;
+    s_maxR = (int)(0.8 * (double)s_maxR + 0.2 * (double)pR);
+    if (s_maxR < 64) {
+        s_maxR = 64;
     }
 
     /* Magnitude gate to reduce near-origin clutter */
@@ -478,6 +481,9 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         halfY = 1;
     }
     int scale_eq = (halfX < halfY) ? halfX : halfY;
+    /* Terminal cell aspect compensation: rows are visually taller than columns.
+       Compress vertical mapping to counteract oval appearance (empirical factor). */
+    const double y_aspect = 0.55; /* 0.5–0.6 typical; adjust if needed */
     /* Add a small headroom margin so dense clusters don't pin to the border */
     const double outer_margin = 0.92; /* 92% of the square radius */
     /* Define a centered square plotting region so each quadrant is square in rows/cols */
@@ -489,14 +495,29 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     for (int k = 0; k < n; k++) {
         int i = buf[(size_t)(k << 1) + 0];
         int q = buf[(size_t)(k << 1) + 1];
-        double nx = (double)i / (double)s_maxI;
-        double ny = (double)q / (double)s_maxQ;
-        double r2 = nx * nx + ny * ny;
-        if (r2 < gate2) {
+        /* Compute raw magnitude for gating and optional unit-circle normalization */
+        double ii = (double)i;
+        double qq = (double)q;
+        double r = sqrt(ii * ii + qq * qq);
+        double rn = r / (double)s_maxR; /* normalized radius for gating */
+        if ((rn * rn) < gate2) {
             continue;
         }
+        double nx, ny;
+        if (opts && opts->const_norm_mode == 1) {
+            /* Unit-circle normalization (direction only) */
+            if (r <= 1e-9) {
+                continue; /* skip degenerate */
+            }
+            nx = ii / r;
+            ny = qq / r;
+        } else {
+            /* Radial (percentile) normalization */
+            nx = ii / (double)s_maxR;
+            ny = qq / (double)s_maxR;
+        }
         int x = cx + (int)lrint(nx * (double)scale_eq * outer_margin);
-        int y = cy - (int)lrint(ny * (double)scale_eq * outer_margin);
+        int y = cy - (int)lrint(ny * (double)scale_eq * outer_margin * y_aspect);
         if (x < 0) {
             x = 0;
         }
@@ -532,9 +553,10 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             int is_vaxis = inside_sq && (x == cx);
             int is_diag = 0;
             if (inside_sq && opts && (opts->mod_qpsk == 1)) {
-                /* With a square plotting region, slope-1 diagonals are 45° */
-                int y_d1 = cy + (x - cx);
-                int y_d2 = cy - (x - cx);
+                /* Adjust diagonals to preserve ~45° visually under aspect correction */
+                int dx = x - cx;
+                int y_d1 = cy + (int)lrint((double)dx * y_aspect);
+                int y_d2 = cy - (int)lrint((double)dx * y_aspect);
                 is_diag = (y == y_d1) || (y == y_d2);
             }
 
@@ -625,16 +647,24 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 
             /* Reference cluster centers + quadrant labels (QPSK only) */
             if (inside_sq && opts && (opts->mod_qpsk == 1)) {
-                /* Reference points near ~70% radius */
-                double refI = 0.70 * (double)s_maxI;
-                double refQ = 0.70 * (double)s_maxQ;
+                /* Reference points near ~70% radius (independent of mode) */
+                double refR = 0.70 * (double)s_maxR;
                 int ref_ix[4] = {+1, -1, -1, +1};
                 int ref_qx[4] = {+1, +1, -1, -1};
                 for (int r = 0; r < 4; r++) {
-                    double ii = ref_ix[r] * refI;
-                    double qq = ref_qx[r] * refQ;
-                    int xr = cx + (int)lrint((ii / (double)s_maxI) * (double)scale_eq * outer_margin);
-                    int yr = cy - (int)lrint((qq / (double)s_maxQ) * (double)scale_eq * outer_margin);
+                    double rii = ref_ix[r] * refR;
+                    double rqq = ref_qx[r] * refR;
+                    double rx, ry;
+                    if (opts->const_norm_mode == 1) {
+                        /* In unit-circle mode, map 0.70 radius directly */
+                        rx = (rii / (double)s_maxR);
+                        ry = (rqq / (double)s_maxR);
+                    } else {
+                        rx = (rii / (double)s_maxR);
+                        ry = (rqq / (double)s_maxR);
+                    }
+                    int xr = cx + (int)lrint(rx * (double)scale_eq * outer_margin);
+                    int yr = cy - (int)lrint(ry * (double)scale_eq * outer_margin * y_aspect);
                     if (xr == x && yr == y) {
                         ch = 'o';
                         if (opts->eye_color && has_colors()) {
@@ -716,6 +746,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                (opts && opts->eye_color && has_colors()) ? "; colored" : "");
     }
     /* Color bar legend (consistent with Eye Diagram) */
+    printw("| Norm: %s (toggle with 'N')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
     if (opts && opts->eye_color && has_colors()) {
         printw("|\n");
         printw("| Color:   ");
@@ -2080,10 +2111,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("[GFSK]");
     }
     printw("[%d] \n", (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
-    printw("| Const View:  %s (O)  Gate: %.02f (</>)  Eye: %s (E) Uni: %s (U) Col: %s (C)  Hist: %s (K)\n",
-           opts->constellation ? "ON" : "off", (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-           opts->eye_view ? "ON" : "off", opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off",
-           opts->fsk_hist_view ? "ON" : "off");
+    printw(
+        "| Const View:  %s (O)  Gate: %.02f (</>)  Norm: %s (N)  Eye: %s (E) Uni: %s (U) Col: %s (C)  Hist: %s (K)\n",
+        opts->constellation ? "ON" : "off", (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
+        opts->const_norm_mode ? "unit" : "radial", opts->eye_view ? "ON" : "off", opts->eye_unicode ? "ON" : "off",
+        opts->eye_color ? "ON" : "off", opts->fsk_hist_view ? "ON" : "off");
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
     }
