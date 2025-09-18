@@ -399,7 +399,7 @@ generic_fir(int16_t* data, int length, int* fir, int16_t* hist) {
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
  */
 void
-fm_demod(struct demod_state* fm) {
+dsd_fm_demod(struct demod_state* fm) {
     int i, pcm;
     int16_t* lp = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
     int16_t* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
@@ -893,7 +893,7 @@ full_demod(struct demod_state* d) {
         cqpsk_process_block(d);
     }
     /* Lightweight timing error correction (optional, avoid for analog FM demod) */
-    if (d->ted_enabled && (d->mode_demod != &fm_demod || d->ted_force)) {
+    if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
     }
     /* Power squelch (sqrt-free): compare pair power mean (I^2+Q^2) against a threshold.

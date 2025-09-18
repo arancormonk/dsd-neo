@@ -663,7 +663,7 @@ optimal_settings(int freq, int rate) {
     if (dm->output_scale < 1) {
         dm->output_scale = 1;
     }
-    if (dm->mode_demod == &fm_demod) {
+    if (dm->mode_demod == &dsd_fm_demod) {
         dm->output_scale = 1;
     }
     /* Update the effective discriminator output sample rate based on current settings.
@@ -1001,7 +1001,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     s->custom_atan = 2;
     s->deemph = 0;
     s->rate_out2 = -1;
-    s->mode_demod = &fm_demod;
+    s->mode_demod = &dsd_fm_demod;
     s->pre_j = s->pre_r = s->now_r = s->now_j = 0;
     s->prev_lpr_index = 0;
     s->deemph_a = 0;

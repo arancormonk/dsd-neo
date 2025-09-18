@@ -76,7 +76,8 @@ void generic_fir(int16_t* data, int length, int* fir, int16_t* hist);
  *
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
  */
-void fm_demod(struct demod_state* fm);
+/* Renamed to avoid collision with codec2's fm_demod symbol on Windows */
+void dsd_fm_demod(struct demod_state* fm);
 
 /**
  * Pass-through demodulator: copies low-passed samples to output unchanged.
