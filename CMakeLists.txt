@@ -135,6 +135,9 @@ if(mbe-neo_FOUND)
     set(USE_MBELIB_NEO TRUE)
     if(WIN32 OR CYGWIN)
         set(MBE_LINK_TARGET mbe_neo::mbe_static)
+        # When consuming the static mbelib-neo on Windows/Cygwin, ensure
+        # headers don't apply __declspec(dllimport) decorations.
+        add_compile_definitions(MBE_STATIC)
     else()
         set(MBE_LINK_TARGET mbe_neo::mbe_shared)
     endif()
