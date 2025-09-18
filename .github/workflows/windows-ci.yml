@@ -165,6 +165,13 @@ jobs:
         run: |
           C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -e; : "${DEPS_PREFIX:?}"; mkdir -p "$DEPS_PREFIX"; mf="$DEPS_PREFIX/.manifest"; : > "$mf"; echo "mbe_sha=$MBE_SHA" >> "$mf"; echo "codec2_sha=$CODEC2_SHA" >> "$mf"; echo "itpp_sha=$ITPP_SHA" >> "$mf"; echo "rtlsdr_sha=$RTLSDR_SHA" >> "$mf"; echo "updated=$(date -u +%FT%TZ)" >> "$mf"; echo "Wrote $mf"'
 
+      - name: Save cygdeps cache (explicit)
+        if: steps.cygdeps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4.2.4
+        with:
+          path: .cygdeps
+          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+
       - name: Configure (Release)
         shell: pwsh
         run: |
