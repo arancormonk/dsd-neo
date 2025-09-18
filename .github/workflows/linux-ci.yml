@@ -1,16 +1,16 @@
-name: CI (Linux)
+name: linux-ci
 
 on:
   push:
     branches: [main, master]
     paths-ignore:
-      - '.github/workflows/*.yml'
-      - '.github/workflows/*.yaml'
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
   pull_request:
     branches: [main, master]
     paths-ignore:
-      - '.github/workflows/*.yml'
-      - '.github/workflows/*.yaml'
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
 
 jobs:
   build-linux:
