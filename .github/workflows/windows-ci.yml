@@ -190,6 +190,8 @@ jobs:
         run: |
           # Be robust if pipefail isn't available (should be in bash)
           set -euo pipefail 2>/dev/null || set -eu
+          # Avoid glob failures when no matches (used below)
+          shopt -s nullglob
           cd "$(cygpath -u "$GITHUB_WORKSPACE")"
 
           EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
@@ -243,9 +245,9 @@ jobs:
           # Closure: resolve dependencies until fixed point (cap at 10 passes)
           pass=1
           while true; do
-            before=$(ls -1 "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
+            before=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
             collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll
-            after=$(ls -1 "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
+            after=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
             [ "$after" -le "$before" ] && break
             pass=$((pass+1))
             [ "$pass" -gt 10 ] && break
