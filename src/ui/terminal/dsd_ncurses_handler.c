@@ -271,6 +271,34 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
+    if (c == 83 || c == 115) //'S' or 's' key, toggle spectrum analyzer view
+    {
+        if (opts->audio_in_type == 3) {
+            opts->spectrum_view = opts->spectrum_view ? 0 : 1;
+        }
+    }
+
+#ifdef USE_RTLSDR
+    if (c == 91) //'[' key, decrease FFT size
+    {
+        if (opts->audio_in_type == 3) {
+            int n = rtl_stream_spectrum_get_size();
+            if (n > 64) {
+                n = rtl_stream_spectrum_set_size(n / 2);
+            }
+        }
+    }
+    if (c == 93) //']' key, increase FFT size
+    {
+        if (opts->audio_in_type == 3) {
+            int n = rtl_stream_spectrum_get_size();
+            if (n < 1024) {
+                n = rtl_stream_spectrum_set_size(n * 2);
+            }
+        }
+    }
+#endif
+
     if (c == 85) //'U' key, toggle Unicode blocks in eye view
     {
         if (opts->audio_in_type == 3) {

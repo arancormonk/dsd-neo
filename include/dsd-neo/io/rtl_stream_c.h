@@ -270,6 +270,26 @@ void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_del
  */
 int rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 
+/**
+ * @brief Get a snapshot of the current baseband power spectrum (magnitude, dBFS-like).
+ *
+ * Returns up to max_bins bins in out_db, equally spaced across the complex
+ * baseband Nyquist span, with DC-centered ordering (i.e., out_db[0] ~ -Fs/2,
+ * mid ~ DC, last ~ +Fs/2). Values are smoothed and approximately in dBFS.
+ * Optionally returns the current demod output sample rate via out_rate.
+ *
+ * @param out_db Destination buffer for spectrum bins (float dB). Must not be NULL.
+ * @param max_bins Maximum number of bins to write.
+ * @param out_rate Optional pointer to receive current output sample rate in Hz.
+ * @return Number of bins written (0 if unavailable).
+ */
+int rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
+
+/** Set desired spectrum FFT size (power-of-two, clamped to allowed range). */
+int rtl_stream_spectrum_set_size(int n);
+/** Get current spectrum FFT size. */
+int rtl_stream_spectrum_get_size(void);
+
 #ifdef __cplusplus
 }
 #endif

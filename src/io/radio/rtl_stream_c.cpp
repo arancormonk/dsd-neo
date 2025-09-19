@@ -38,6 +38,9 @@ int dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms
 int dsd_rtl_stream_cqpsk_get_dqpsk(int* onoff);
 int dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
 int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
+int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
+int dsd_rtl_stream_spectrum_set_size(int n);
+int dsd_rtl_stream_spectrum_get_size(void);
 /* Auto-DSP config accessors (implemented in rtl_sdr_fm.cpp) */
 void dsd_rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out);
 void dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
@@ -285,6 +288,21 @@ rtl_stream_cqpsk_get_dqpsk(int* onoff) {
 extern "C" int
 rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
     return dsd_rtl_stream_constellation_get(out_xy, max_points);
+}
+
+extern "C" int
+rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
+    return dsd_rtl_stream_spectrum_get(out_db, max_bins, out_rate);
+}
+
+extern "C" int
+rtl_stream_spectrum_set_size(int n) {
+    return dsd_rtl_stream_spectrum_set_size(n);
+}
+
+extern "C" int
+rtl_stream_spectrum_get_size(void) {
+    return dsd_rtl_stream_spectrum_get_size();
 }
 
 extern "C" int

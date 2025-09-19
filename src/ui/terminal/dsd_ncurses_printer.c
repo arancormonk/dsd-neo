@@ -1472,6 +1472,179 @@ print_fsk_hist_view(void) {
 #endif
 }
 
+static void
+print_spectrum_view(dsd_opts* opts) {
+#ifdef USE_RTLSDR
+    int nfft = rtl_stream_spectrum_get_size();
+    if (nfft < 64) {
+        nfft = 64;
+    }
+    if (nfft > 1024) {
+        nfft = 1024;
+    }
+    float* bins = (float*)malloc((size_t)nfft * sizeof(float));
+    if (!bins) {
+        ui_print_header("Spectrum Analyzer");
+        printw("| (out of memory)\n");
+        ui_print_hr();
+        return;
+    }
+    int rate = 0;
+    int n = rtl_stream_spectrum_get(bins, nfft, &rate);
+    ui_print_header("Spectrum Analyzer");
+    if (n <= 0) {
+        printw("| (no spectrum yet)\n");
+        ui_print_hr();
+        free(bins);
+        return;
+    }
+    int rows = 24, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    int W = cols - 4;
+    if (W < 32) {
+        W = 32;
+    }
+    int H = rows / 3;
+    if (H < 10) {
+        H = 10;
+    }
+    /* Downsample or upsample bins to match width W */
+    static float col[(size_t)2048];
+    if (W > (int)(sizeof col / sizeof col[0])) {
+        W = (int)(sizeof col / sizeof col[0]);
+    }
+    if (n >= W) {
+        for (int x = 0; x < W; x++) {
+            int i0 = (int)((long long)x * n / W);
+            int i1 = (int)((long long)(x + 1) * n / W);
+            if (i1 <= i0) {
+                i1 = i0 + 1;
+            }
+            if (i1 > n) {
+                i1 = n;
+            }
+            /* Use max within the column to preserve narrow peaks */
+            float s = -1e9f;
+            for (int i = i0; i < i1; i++) {
+                if (bins[i] > s) {
+                    s = bins[i];
+                }
+            }
+            col[x] = s;
+        }
+    } else {
+        for (int x = 0; x < W; x++) {
+            int src = (int)((long long)x * n / W);
+            if (src < 0) {
+                src = 0;
+            }
+            if (src >= n) {
+                src = n - 1;
+            }
+            col[x] = bins[src];
+        }
+    }
+    /* Auto-scale dB floor to 60 dB span around recent max */
+    float vmax = -1e9f;
+    for (int x = 0; x < W; x++) {
+        if (col[x] > vmax) {
+            vmax = col[x];
+        }
+    }
+    float vmin = vmax - 60.0f;
+    float span = (vmax - vmin);
+    if (span < 1.0f) {
+        span = 1.0f;
+    }
+
+    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+#ifdef PRETTY_COLORS
+    const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
+#endif
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            float v = col[x];
+            if (v < vmin) {
+                v = vmin;
+            }
+            if (v > vmax) {
+                v = vmax;
+            }
+            float t = (v - vmin) / span; /* 0..1 */
+            int h = (int)lrint(t * (H - 1));
+            int filled = (H - 1 - y) <= h;
+#ifdef PRETTY_COLORS
+            /* Color by relative height bands */
+            short cp = (t < 0.33f) ? C_POOR : (t < 0.66f) ? C_MOD : C_GOOD;
+            if (opts && opts->eye_color && has_colors()) {
+                attron(COLOR_PAIR(cp));
+            }
+#endif
+            if (filled) {
+                if (use_unicode) {
+                    addstr("█");
+                } else {
+                    addch('#');
+                }
+            } else {
+                addch(' ');
+            }
+#ifdef PRETTY_COLORS
+            if (opts && opts->eye_color && has_colors()) {
+                attroff(COLOR_PAIR(cp));
+            }
+#endif
+        }
+        addch('\n');
+    }
+    /* Legend */
+    float span_hz = (float)rate;
+    int nfft2 = rtl_stream_spectrum_get_size();
+    printw("| Span: %.1f kHz  \u0394f(FFT): %.1f Hz  \u0394f(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f,
+           (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, (rate > 0 && W > 0) ? (span_hz / (float)W) : 0.0f,
+           nfft2, use_unicode ? "Unicode" : "ASCII", (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+    /* Frequency ticks around DC */
+    printw("| Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
+    /* Amplitude scale relative to current peak */
+    printw("| Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
+#ifdef PRETTY_COLORS
+    if (opts && opts->eye_color && has_colors()) {
+        printw("| Color:   ");
+        attron(COLOR_PAIR(C_POOR));
+        if (use_unicode) {
+            addstr("██");
+        } else {
+            addstr("##");
+        }
+        attroff(COLOR_PAIR(C_POOR));
+        printw(" low  ");
+        attron(COLOR_PAIR(C_MOD));
+        if (use_unicode) {
+            addstr("██");
+        } else {
+            addstr("##");
+        }
+        attroff(COLOR_PAIR(C_MOD));
+        printw(" mid  ");
+        attron(COLOR_PAIR(C_GOOD));
+        if (use_unicode) {
+            addstr("██");
+        } else {
+            addstr("##");
+        }
+        attroff(COLOR_PAIR(C_GOOD));
+        printw(" high\n");
+    }
+#endif
+    ui_print_hr();
+    free(bins);
+#else
+    ui_print_header("Spectrum Analyzer");
+    printw("| (RTL disabled in this build)\n");
+    ui_print_hr();
+#endif
+}
+
 static int
 compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) {
     int len = s->p25_p1_voice_err_hist_len;
@@ -2170,6 +2343,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (opts->fsk_hist_view == 1) {
             print_fsk_hist_view();
         }
+        if (opts->spectrum_view == 1) {
+            print_spectrum_view(opts);
+        }
     }
 #endif
     attroff(COLOR_PAIR(4));
@@ -2210,12 +2386,14 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     printw("[%d] \n", (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
 #ifdef USE_RTLSDR
     if (opts->audio_in_type == 3) {
+        int nfft = rtl_stream_spectrum_get_size();
         printw("| Const View:  %s (O)  Gate: %.02f (</>)  Norm: %s (N)  Eye: %s (E) Uni: %s (U) Col: %s (C)  Hist: %s "
-               "(K)\n",
+               "(K)  Spec: %s (S)  FFT:%d ([/])\n",
                opts->constellation ? "ON" : "off",
                (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
                opts->const_norm_mode ? "unit" : "radial", opts->eye_view ? "ON" : "off",
-               opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off", opts->fsk_hist_view ? "ON" : "off");
+               opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off", opts->fsk_hist_view ? "ON" : "off",
+               opts->spectrum_view ? "ON" : "off", nfft);
     }
 #endif
     if (opts->m17encoder == 1) {

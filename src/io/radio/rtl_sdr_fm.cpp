@@ -383,6 +383,9 @@ static std::atomic<double> g_snr_c4fm_db{-100.0};
 static std::atomic<double> g_snr_qpsk_db{-100.0};
 static std::atomic<double> g_snr_gfsk_db{-100.0};
 
+/* Forward decl: spectrum updater used in demod thread */
+static void update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz);
+
 static void*
 demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
@@ -403,6 +406,8 @@ demod_thread_fn(void* arg) {
         constellation_ring_append(d->lowpassed, d->lp_len, d->ted_sps);
         /* Capture I-channel for eye diagram */
         eye_ring_append_i_chan(d->lowpassed, d->lp_len);
+        /* Update spectrum snapshot from post-filter complex baseband */
+        update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
 
         /* Estimate SNR per modulation using post-filter samples */
         const int16_t* iq = d->lowpassed;
@@ -940,6 +945,168 @@ dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
         out[k] = g_eye_buf[idx];
     }
     return n;
+}
+
+/* ---------------- Spectrum capture (lightweight FFT over recent I/Q) ---------------- */
+static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
+static float g_spec_db[kSpecMaxN];
+static std::atomic<int> g_spec_rate_hz{0};
+static std::atomic<int> g_spec_ready{0};
+static std::atomic<int> g_spec_N{256}; /* default N */
+
+static inline void
+fft_rad2(float* xr, float* xi, int N) {
+    /* In-place radix-2 Cooley-Tukey FFT (iterative). N must be power of two. */
+    /* Bit-reversal permutation */
+    int j = 0;
+    for (int i = 1; i < N; i++) {
+        int bit = N >> 1;
+        for (; j & bit; bit >>= 1) {
+            j &= ~bit;
+        }
+        j |= bit;
+        if (i < j) {
+            float tr = xr[i];
+            float ti = xi[i];
+            xr[i] = xr[j];
+            xi[i] = xi[j];
+            xr[j] = tr;
+            xi[j] = ti;
+        }
+    }
+    for (int len = 2; len <= N; len <<= 1) {
+        float ang = -2.0f * (float)M_PI / (float)len;
+        float wlen_r = cosf(ang);
+        float wlen_i = sinf(ang);
+        for (int i = 0; i < N; i += len) {
+            float wr = 1.0f, wi = 0.0f;
+            int half = len >> 1;
+            for (int k = 0; k < half; k++) {
+                int j0 = i + k;
+                int j1 = j0 + half;
+                float ur = xr[j0], ui = xi[j0];
+                float vr = xr[j1] * wr - xi[j1] * wi;
+                float vi = xr[j1] * wi + xi[j1] * wr;
+                xr[j0] = ur + vr;
+                xi[j0] = ui + vi;
+                xr[j1] = ur - vr;
+                xi[j1] = ui - vi;
+                float nwr = wr * wlen_r - wi * wlen_i;
+                wi = wr * wlen_i + wi * wlen_r;
+                wr = nwr;
+            }
+        }
+    }
+}
+
+static void
+update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz) {
+    if (!iq_interleaved || len_interleaved < 2) {
+        return;
+    }
+    const int pairs = len_interleaved >> 1;
+    /* Use current FFT size; clamp to bounds */
+    int N = g_spec_N.load(std::memory_order_relaxed);
+    if (N < 64) {
+        N = 64;
+    }
+    if (N > kSpecMaxN) {
+        N = kSpecMaxN;
+    }
+    /* Prepare last N complex samples (I/Q) with Hann window */
+    static float xr[kSpecMaxN];
+    static float xi[kSpecMaxN];
+    int take = (pairs >= N) ? N : pairs;
+    int start = (pairs - take);
+    for (int n = 0; n < N; n++) {
+        xr[n] = 0.0f;
+        xi[n] = 0.0f;
+    }
+    for (int n = 0; n < take; n++) {
+        float w = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(N - 1)));
+        int idx = start + n;
+        int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
+        int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
+        xr[n] = w * (float)I;
+        xi[n] = w * (float)Q;
+    }
+    fft_rad2(xr, xi, N);
+    /* Magnitude-squared and center-DC reordering */
+    const float eps = 1e-12f;
+    for (int k = 0; k < N; k++) {
+        int kk = (k + (N >> 1)) & (N - 1);
+        float re = xr[kk];
+        float im = xi[kk];
+        float mag2 = re * re + im * im;
+        float db = 10.0f * log10f(mag2 + eps);
+        /* Smooth to reduce flicker */
+        float prev = g_spec_db[k];
+        if (g_spec_ready.load(std::memory_order_relaxed) == 0) {
+            g_spec_db[k] = db;
+        } else {
+            g_spec_db[k] = 0.8f * prev + 0.2f * db;
+        }
+    }
+    g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
+    g_spec_ready.store(1, std::memory_order_release);
+}
+
+extern "C" int
+dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
+    if (!out_db || max_bins <= 0) {
+        return 0;
+    }
+    if (g_spec_ready.load(std::memory_order_acquire) == 0) {
+        return 0;
+    }
+    int N = g_spec_N.load(std::memory_order_relaxed);
+    if (N < 64) {
+        N = 64;
+    }
+    if (N > kSpecMaxN) {
+        N = kSpecMaxN;
+    }
+    int n = (max_bins < N) ? max_bins : N;
+    for (int i = 0; i < n; i++) {
+        out_db[i] = g_spec_db[i];
+    }
+    if (out_rate) {
+        *out_rate = g_spec_rate_hz.load(std::memory_order_relaxed);
+    }
+    return n;
+}
+
+extern "C" int
+dsd_rtl_stream_spectrum_set_size(int n) {
+    /* clamp to 64..1024 and to nearest power of two */
+    if (n < 64) {
+        n = 64;
+    }
+    if (n > kSpecMaxN) {
+        n = kSpecMaxN;
+    }
+    /* round to power of two */
+    int p = 64;
+    while (p < n) {
+        p <<= 1;
+    }
+    if (p > kSpecMaxN) {
+        p = kSpecMaxN;
+    }
+    g_spec_N.store(p, std::memory_order_relaxed);
+    return p;
+}
+
+extern "C" int
+dsd_rtl_stream_spectrum_get_size(void) {
+    int N = g_spec_N.load(std::memory_order_relaxed);
+    if (N < 64) {
+        N = 64;
+    }
+    if (N > kSpecMaxN) {
+        N = kSpecMaxN;
+    }
+    return N;
 }
 
 /* ---------------- SNR export (smoothed) ---------------- */
