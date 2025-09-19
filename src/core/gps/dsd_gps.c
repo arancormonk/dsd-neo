@@ -82,14 +82,23 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     from 28 km/h onwards using equation: v = C × (1 + x)^(K-A) + B where:
   */
     float v = 0.0f;
-    float C = 16.0f;
-    float x = 0.038f;
-    float A = 13.0f;
-    float K = (float)hor_vel;
-    float B = 0.0f;
-
     if (hor_vel > 28) {
-        v = C * (pow(1 + x, K - A)) + B; //I think this pow function is set up correctly
+        /* Precomputed LUT for v = 16 * (1.038)^(K-13), K in [0,127] */
+        static int lut_init = 0;
+        static float v_lut[128];
+        if (!lut_init) {
+            /* Fill formula values from K=13 upward using iterative multiply to avoid powf */
+            const float f = 1.038f;
+            for (int k = 0; k < 128; k++) {
+                v_lut[k] = 0.0f;
+            }
+            v_lut[13] = 16.0f; /* (K-13)==0 */
+            for (int k = 14; k < 128; k++) {
+                v_lut[k] = v_lut[k - 1] * f;
+            }
+            lut_init = 1;
+        }
+        v = v_lut[hor_vel];
     } else {
         v = (float)hor_vel;
     }
