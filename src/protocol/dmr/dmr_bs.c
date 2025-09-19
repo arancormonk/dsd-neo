@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
  * dmr_bs.c
  * DMR BS Voice Handling and Data Gathering Routines - "DMR STEREO"
@@ -94,7 +97,11 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             cleanupAndExit(opts, state);
         }
 
-        timestr = getTimeC();
+        {
+            char tbuf[9];
+            getTimeC_buf(tbuf);
+            timestr = strdup(tbuf);
+        }
 
         memset(ambe_fr, 0, sizeof(ambe_fr));
         memset(ambe_fr2, 0, sizeof(ambe_fr2));

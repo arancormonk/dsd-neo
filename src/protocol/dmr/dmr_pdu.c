@@ -2,7 +2,6 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
-
 /*-------------------------------------------------------------------------------
  * dmr_bs.c
  * DMR Data (1/2, 3/4, 1) PDU Decoding
@@ -784,8 +783,10 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
 
             //write to LRRP file, if a lat/lon is present
             if (opts->lrrp_file_output == 1 && lat_fin != 0.0f && lon_fin != 0.0f) {
-                char* timestr = getTimeC();
-                char* datestr = getDateS();
+                char timestr[9];
+                char datestr[11];
+                getTimeC_buf(timestr);
+                getDateS_buf(datestr);
 
                 //open file by name that is supplied in the ncurses terminal, or cli
                 FILE* pFile; //file pointer
@@ -815,15 +816,7 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                             source); //add source form decoded audio if available, else its from the header
                 }
 
-                if (timestr != NULL) {
-                    free(timestr);
-                    timestr = NULL;
-                }
-
-                if (datestr != NULL) {
-                    free(datestr);
-                    datestr = NULL;
-                }
+                /* stack buffers; no free */
 
                 fprintf(pFile, "%.5lf\t", lat_fin);
                 fprintf(pFile, "%.5lf\t", lon_fin);
@@ -1010,8 +1003,10 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
 
         //write to LRRP file
         if (opts->lrrp_file_output == 1) {
-            char* timestr = getTimeC();
-            char* datestr = getDateS();
+            char timestr[9];
+            char datestr[11];
+            getTimeC_buf(timestr);
+            getDateS_buf(datestr);
 
             //open file by name that is supplied in the ncurses terminal, or cli
             FILE* pFile; //file pointer
@@ -1031,15 +1026,7 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
             //write data header source from data header
             fprintf(pFile, "%08lld\t", state->dmr_lrrp_source[state->currentslot]);
 
-            if (timestr != NULL) {
-                free(timestr);
-                timestr = NULL;
-            }
-
-            if (datestr != NULL) {
-                free(datestr);
-                datestr = NULL;
-            }
+            /* stack buffers; no free */
 
             fprintf(pFile, "%.5lf\t", latitude);
             fprintf(pFile, "%.5lf\t", longitude);

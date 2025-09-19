@@ -316,8 +316,13 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = rand() & 0xFFFF;
 
-    timestr = getTime();
-    datestr = getDate();
+    {
+        char tbuf[7], dbuf[9];
+        getTime_buf(tbuf);
+        getDate_buf(dbuf);
+        timestr = strdup(tbuf);
+        datestr = strdup(dbuf);
+    }
 
     //phase 1 and provoice
     if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
@@ -356,14 +361,7 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     fprintf(opts->mbe_out_f, "%s", ext);
 
     fflush(opts->mbe_out_f);
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
-    if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
-    }
+    /* stack buffers; no free */
 }
 
 void
@@ -377,8 +375,13 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = rand() & 0xFFFF;
 
-    timestr = getTime();
-    datestr = getDate();
+    {
+        char tbuf[7], dbuf[9];
+        getTime_buf(tbuf);
+        getDate_buf(dbuf);
+        timestr = strdup(tbuf);
+        datestr = strdup(dbuf);
+    }
 
     //phase 1 and provoice
     if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
@@ -417,22 +420,17 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     fprintf(opts->mbe_out_fR, "%s", ext);
 
     fflush(opts->mbe_out_fR);
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
-    if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
-    }
+    /* stack buffers; no free */
 }
 
 //temp filename should not have the .wav extension, will be renamed with one after event is closed
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext) {
     uint16_t random_number = rand();
-    char* datestr = getDate();
-    char* timestr = getTime();
+    char datestr[9];
+    char timestr[7];
+    getDate_buf(datestr);
+    getTime_buf(timestr);
 
     if (ext == 0) {
         sprintf(temp_filename, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
@@ -440,14 +438,7 @@ open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext)
         sprintf(temp_filename, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr, random_number);
     }
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
-    if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
-    }
+    /* stack buffers; no free */
 
     SNDFILE* wav;
     SF_INFO info;
@@ -476,8 +467,10 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
     sf_close(wav_file);
 
     time_t event_time = event_struct->Event_History_Items[0].event_time;
-    char* datestr = getDateF(event_time);
-    char* timestr = getTimeF(event_time);
+    char datestr[9];
+    char timestr[7];
+    getDateF_buf(event_time, datestr);
+    getTimeF_buf(event_time, timestr);
     uint16_t random_number = rand();
 
     uint32_t source_id = event_struct->Event_History_Items[0].source_id;
@@ -525,14 +518,7 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
                 gi_str, target_id, source_id);
     }
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
-    if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
-    }
+    /* stack buffers; no free */
 
     rename(wav_out_filename, new_filename);
 
@@ -701,8 +687,10 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
         {
             //basically just lift the close and open from ncurses handler for 'r' and then 'R'
             // closeSymbolOutFile (opts, state); //open also does this, so don't need to do it twice
-            char* timestr = getTime();
-            char* datestr = getDate();
+            char timestr[7];
+            char datestr[9];
+            getTime_buf(timestr);
+            getDate_buf(datestr);
             sprintf(opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
             openSymbolOutFile(opts, state);
 
@@ -717,15 +705,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             watchdog_event_history(opts, state, 0);
             watchdog_event_current(opts, state, 0);
 
-            //allocated memory pointer needs to be free'd
-            if (timestr != NULL) {
-                free(timestr);
-                timestr = NULL;
-            }
-            if (datestr != NULL) {
-                free(datestr);
-                datestr = NULL;
-            }
+            // stack buffers; no free needed
             opts->symbol_out_file_creation_time = time(NULL);
             // opts->symbol_out_file_is_auto = 1;
         }
@@ -1560,22 +1540,17 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr, " Time(NULL): %ld;", time(NULL));
 
             //convert to legible time and date format
-            char* timestr = getTimeN(event_time);
-            char* datestr = getDateN(event_time);
+            char timestr[9];
+            char datestr[11];
+            getTimeN_buf(event_time, timestr);
+            getDateN_buf(event_time, datestr);
 
             //user legible time
             if (show_time == 1) {
                 fprintf(stderr, " Date: %s Time: %s", datestr, timestr);
             }
 
-            if (timestr != NULL) {
-                free(timestr);
-                timestr = NULL;
-            }
-            if (datestr != NULL) {
-                free(datestr);
-                datestr = NULL;
-            }
+            /* stack buffers; no free */
 
             show_time = 0;
 

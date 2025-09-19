@@ -20,7 +20,8 @@
 void
 dmrMS(dsd_opts* opts, dsd_state* state) {
 
-    char* timestr = getTimeC();
+    char timestr[9];
+    getTimeC_buf(timestr);
 
     int i, j, dibit;
     char ambe_fr[4][24];
@@ -362,10 +363,7 @@ END:
     state->dmr_ms_mode = 0;
     state->directmode = 0; //flag off
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
+    /* stack buffer; no free */
 
     //reset static ks counter
     state->static_ks_counter[0] = 0;
@@ -375,7 +373,8 @@ END:
 void
 dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
-    char* timestr = getTimeC();
+    char timestr[9];
+    getTimeC_buf(timestr);
 
     //reset static ks counter
     state->static_ks_counter[0] = 0;
@@ -592,10 +591,7 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     //errors due to skipping other slot
     // cach_err = dmr_cach (opts, state, cachdata);
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
+    /* stack buffer; no free */
 
     skipDibit(opts, state, 144); //skip to next TDMA slot
     dmrMS(opts, state);          //bootstrap into full TDMA frame
@@ -605,7 +601,8 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 void
 dmrMSData(dsd_opts* opts, dsd_state* state) {
 
-    char* timestr = getTimeC();
+    char timestr[9];
+    getTimeC_buf(timestr);
 
     int i;
     int dibit;
@@ -671,8 +668,5 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
             1; ////set to one so first frame will fail intentionally instead of zero fill
     }
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
+    /* stack buffer; no free */
 }

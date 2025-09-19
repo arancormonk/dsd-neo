@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 /*-------------------------------------------------------------------------------
 * dsd_events.c
 * DSD-FME event history init, watchdog, push, and related functions
@@ -664,8 +667,10 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     }
 
     //date and time strings
-    char* timestr = getTimeN(time(NULL));
-    char* datestr = getDateN(time(NULL));
+    char timestr[9];
+    char datestr[11];
+    getTimeN_buf(time(NULL), timestr);
+    getDateN_buf(time(NULL), datestr);
 
     if (source_id != 0) {
         event_struct->Event_History_Items[0].write = 0;
@@ -921,14 +926,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     sprintf(event_struct->Event_History_Items[0].event_string, "%s", event_string);
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
-    if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
-    }
+    /* stack buffers; no free */
 }
 
 void

@@ -606,10 +606,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
     state->edacs_f_mask = (1 << state->edacs_f_bits) - 1;
     state->edacs_s_mask = (1 << state->edacs_s_bits) - 1;
 
-    char* timestr = NULL;
-    char* datestr = NULL;
-    timestr = getTime();
-    datestr = getDate();
+    char timestr[7];
+    char datestr[9];
+    getTime_buf(timestr);
+    getDate_buf(datestr);
 
     state->edacs_vc_lcn = -1; //init on negative for ncurses and tuning
 
@@ -2538,12 +2538,12 @@ edacs(dsd_opts* opts, dsd_state* state) {
 EDACS_END:
 
     if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
+        /* stack buffers; no free */
+        /* stack buffers; no free */
     }
     if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
+        /* stack buffers; no free */
+        /* stack buffers; no free */
     }
 
     fprintf(stderr, "\n");

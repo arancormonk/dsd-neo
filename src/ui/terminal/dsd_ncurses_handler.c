@@ -429,8 +429,10 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     if (c == 82) //'R', save symbol capture bin with date/time string as name
     {
         //for filenames (no colons, etc)
-        char* timestr = getTime();
-        char* datestr = getDate();
+        char timestr[7];
+        char datestr[9];
+        getTime_buf(timestr);
+        getDate_buf(datestr);
         sprintf(opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
         openSymbolOutFile(opts, state);
 
@@ -444,15 +446,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         watchdog_event_history(opts, state, 0);
         watchdog_event_current(opts, state, 0);
 
-        //allocated memory pointer needs to be free'd
-        if (timestr != NULL) {
-            free(timestr);
-            timestr = NULL;
-        }
-        if (datestr != NULL) {
-            free(datestr);
-            datestr = NULL;
-        }
+        // stack buffers; no free needed
         opts->symbol_out_file_creation_time = time(NULL);
         opts->symbol_out_file_is_auto = 1;
     }

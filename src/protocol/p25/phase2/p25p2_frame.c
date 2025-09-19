@@ -916,16 +916,9 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         }
         duid_decoded = duid_lookup[p2_duid_complete];
 
-        char* timestr = getTimeC();
-
-        fprintf(stderr, "\n");
-        fprintf(stderr, "%s ", timestr);
-        fprintf(stderr, "       P25p2 ");
-
-        if (timestr != NULL) {
-            free(timestr);
-            timestr = NULL;
-        }
+        char timestr[9];
+        getTimeC_buf(timestr);
+        fprintf(stderr, "\n%s        P25p2 ", timestr);
 
         if (state->currentslot == 0 && duid_decoded != 3 && duid_decoded != 12 && duid_decoded != 13
             && duid_decoded != 4) {
