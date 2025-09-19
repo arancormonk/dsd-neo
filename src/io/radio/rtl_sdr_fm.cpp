@@ -12,6 +12,7 @@
  * and exposes a consumer API for audio samples and tuning.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <dsd-neo/core/dsd.h>
@@ -460,11 +461,9 @@ demod_thread_fn(void* arg) {
                         t2_sum += ti * ti + tq * tq;
                     }
                     if (t2_sum > 1e-9) {
-                        double evm = sqrt(e2_sum / (double)n) / sqrt(t2_sum / (double)n);
-                        if (evm < 1e-6) {
-                            evm = 1e-6;
-                        }
-                        double snr = 20.0 * log10(1.0 / evm);
+                        /* 20*log10(1/evm) == 10*log10(t2_sum/e2_sum); avoid sqrt */
+                        double ratio = (e2_sum <= 1e-12) ? 1e12 : (t2_sum / e2_sum);
+                        double snr = 10.0 * log10(ratio);
                         static double ema = -100.0;
                         if (ema < -50.0) {
                             ema = snr;
@@ -491,14 +490,16 @@ demod_thread_fn(void* arg) {
                     }
                 }
                 if (m > 32) {
-                    auto cmp_int = [](const void* a, const void* b) {
-                        int ia = *(const int*)a, ib = *(const int*)b;
-                        return (ia > ib) - (ia < ib);
-                    };
-                    qsort(vals, (size_t)m, sizeof(int), cmp_int);
-                    int q1 = vals[(size_t)m / 4];
-                    int q2 = vals[(size_t)m / 2];
-                    int q3 = vals[(size_t)(3 * (size_t)m) / 4];
+                    /* Compute quartiles in O(n) using nth_element */
+                    int idx1 = (int)((size_t)m / 4);
+                    int idx2 = (int)((size_t)m / 2);
+                    int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
+                    std::nth_element(vals, vals + idx2, vals + m);
+                    int q2 = vals[idx2];
+                    std::nth_element(vals, vals + idx1, vals + idx2);
+                    int q1 = vals[idx1];
+                    std::nth_element(vals + idx2 + 1, vals + idx3, vals + m);
+                    int q3 = vals[idx3];
                     /* 4-level (C4FM-like) */
                     {
                         double sum[4] = {0, 0, 0, 0};
@@ -1039,14 +1040,16 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
     if (mct < 8) {
         return -100.0;
     }
-    auto cmp_int = [](const void* a, const void* b) {
-        int ia = *(const int*)a, ib = *(const int*)b;
-        return (ia > ib) - (ia < ib);
-    };
-    qsort(qv, (size_t)mct, sizeof(int), cmp_int);
-    int q1 = qv[(size_t)mct / 4];
-    int q2 = qv[(size_t)mct / 2];
-    int q3 = qv[(size_t)(3 * (size_t)mct) / 4];
+    /* Quartiles via nth_element (O(n)) */
+    int idx1 = (int)((size_t)mct / 4);
+    int idx2 = (int)((size_t)mct / 2);
+    int idx3 = (int)((size_t)(3 * (size_t)mct) / 4);
+    std::nth_element(qv, qv + idx2, qv + mct);
+    int q2 = qv[idx2];
+    std::nth_element(qv, qv + idx1, qv + idx2);
+    int q1 = qv[idx1];
+    std::nth_element(qv + idx2 + 1, qv + idx3, qv + mct);
+    int q3 = qv[idx3];
     long long cnt[4] = {0, 0, 0, 0};
     double sum[4] = {0, 0, 0, 0};
     for (int i = 0; i < nfb; i++) {
@@ -1135,11 +1138,9 @@ dsd_rtl_stream_estimate_snr_qpsk_const(void) {
     if (t2_sum <= 1e-9) {
         return -100.0;
     }
-    double evm = sqrt(e2_sum / (double)n) / sqrt(t2_sum / (double)n);
-    if (evm < 1e-6) {
-        evm = 1e-6;
-    }
-    return 20.0 * log10(1.0 / evm);
+    /* 20*log10(1/evm) == 10*log10(t2_sum/e2_sum); avoid sqrt */
+    double ratio = (e2_sum <= 1e-12) ? 1e12 : (t2_sum / e2_sum);
+    return 10.0 * log10(ratio);
 }
 
 /* ---------------- Eye-based SNR estimation (GFSK fallback, 2-level) ---------------- */
@@ -1175,12 +1176,10 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     if (mct < 8) {
         return -100.0;
     }
-    auto cmp_int = [](const void* a, const void* b) {
-        int ia = *(const int*)a, ib = *(const int*)b;
-        return (ia > ib) - (ia < ib);
-    };
-    qsort(qv, (size_t)mct, sizeof(int), cmp_int);
-    int q2 = qv[(size_t)mct / 2]; /* median split */
+    /* Median via nth_element (O(n)) */
+    int idx2 = (int)((size_t)mct / 2);
+    std::nth_element(qv, qv + idx2, qv + mct);
+    int q2 = qv[idx2]; /* median split */
     double sumL = 0.0, sumH = 0.0;
     int cntL = 0, cntH = 0;
     for (int i = 0; i < nfb; i++) {

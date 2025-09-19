@@ -676,9 +676,7 @@ mf5_complex_interleaved(struct demod_state* d) {
         out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
     }
     /* swap buffers */
-    for (int i = 0; i < (N << 1); i++) {
-        d->lowpassed[i] = out[i];
-    }
+    memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
 }
 
 /* RRC matched filter on interleaved I/Q using current TED SPS and configured alpha/span. */
@@ -800,9 +798,7 @@ mf_rrc_complex_interleaved(struct demod_state* d) {
         out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
     }
     /* swap buffers */
-    for (int i = 0; i < (N << 1); i++) {
-        d->lowpassed[i] = out[i];
-    }
+    memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
 }
 
 /**
