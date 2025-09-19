@@ -628,7 +628,9 @@ dB_to_pwr(double dB) {
         dB = -200.0; /* avoid denormals */
     }
     const double full_scale_sq = 32768.0 * 32768.0;
-    double ratio = pow(10.0, dB / 10.0);
+    /* Use exp(dB * ln(10)/10) instead of pow(10, dB/10) to avoid generic pow overhead */
+    const double kLn10_over_10 = 2.302585092994046 / 10.0; /* ln(10)/10 */
+    double ratio = exp(dB * kLn10_over_10);
     double pwr = ratio * full_scale_sq;
     if (pwr < 0.0) {
         pwr = 0.0;
