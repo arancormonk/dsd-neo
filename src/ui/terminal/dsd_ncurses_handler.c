@@ -433,14 +433,14 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         char datestr[9];
         getTime_buf(timestr);
         getDate_buf(datestr);
-        sprintf(opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
+        snprintf(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
         openSymbolOutFile(opts, state);
 
         //add a system event to echo in the event history
         state->event_history_s[0].Event_History_Items[0].color_pair = 4;
         char event_str[2000];
         memset(event_str, 0, sizeof(event_str));
-        sprintf(event_str, "DSD-neo Dibit Capture File Started: %s;", opts->symbol_out_file);
+        snprintf(event_str, sizeof event_str, "DSD-neo Dibit Capture File Started: %s;", opts->symbol_out_file);
         watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
         state->lastsrc = 0; //this could wipe a call src if they hit 'R' while call in slot 1 in progress
         watchdog_event_history(opts, state, 0);
@@ -455,13 +455,13 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     {
         if (opts->symbol_out_f) {
             closeSymbolOutFile(opts, state);
-            sprintf(opts->audio_in_dev, "%s", opts->symbol_out_file);
+            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opts->symbol_out_file);
 
             //add a system event to echo in the event history
             state->event_history_s[0].Event_History_Items[0].color_pair = 4;
             char event_str[2000];
             memset(event_str, 0, sizeof(event_str));
-            sprintf(event_str, "DSD-neo Dibit Capture File  Closed: %s;", opts->symbol_out_file);
+            snprintf(event_str, sizeof event_str, "DSD-neo Dibit Capture File  Closed: %s;", opts->symbol_out_file);
             watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
             state->lastsrc = 0; //this could wipe a call src if they hit 'R' while call in slot 1 in progress
             watchdog_event_history(opts, state, 0);
@@ -491,7 +491,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     if (c == 80) //'P' key - start per call wav files //TODO: Fix
     {
         char wav_file_directory[1024];
-        sprintf(wav_file_directory, "%s", opts->wav_out_dir);
+        snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
         wav_file_directory[1023] = '\0';
         if (stat(wav_file_directory, &st_wav) == -1) {
             fprintf(stderr, "%s wav file directory does not exist\n", wav_file_directory);
@@ -549,14 +549,17 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         && c == 33) //SHIFT+'1' key (exclamation point), lockout slot 1 or conventional tg from tuning/playback during session
     {
         state->group_array[state->group_tally].groupNumber = state->lasttg;
-        sprintf(state->group_array[state->group_tally].groupMode, "%s", "B");
-        sprintf(state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
+        snprintf(state->group_array[state->group_tally].groupMode,
+                 sizeof state->group_array[state->group_tally].groupMode, "%s", "B");
+        snprintf(state->group_array[state->group_tally].groupName,
+                 sizeof state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
         state->group_tally++;
 
-        sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                "Target: %d; has been locked out; User Lock Out.", state->lasttg);
+        snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                 sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                 "Target: %d; has been locked out; User Lock Out.", state->lasttg);
         watchdog_event_current(opts, state, 0);
-        sprintf(state->call_string[0], "%s", "                     "); //21 spaces
+        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
 
         //if we have an opened group file, let's write a group lock out into it to make it permanent
         if (opts->group_in_file[0] != 0) //file is available
@@ -628,14 +631,17 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         && c == 64) //SHIFT+'2' key (@ at sign), lockout slot 2 tdma tgR from tuning/playback during session
     {
         state->group_array[state->group_tally].groupNumber = state->lasttgR;
-        sprintf(state->group_array[state->group_tally].groupMode, "%s", "B");
-        sprintf(state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
+        snprintf(state->group_array[state->group_tally].groupMode,
+                 sizeof state->group_array[state->group_tally].groupMode, "%s", "B");
+        snprintf(state->group_array[state->group_tally].groupName,
+                 sizeof state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
         state->group_tally++;
 
-        sprintf(state->event_history_s[1].Event_History_Items[0].internal_str,
-                "Target: %d; has been locked out; User Lock Out.", state->lasttgR);
+        snprintf(state->event_history_s[1].Event_History_Items[0].internal_str,
+                 sizeof state->event_history_s[1].Event_History_Items[0].internal_str,
+                 "Target: %d; has been locked out; User Lock Out.", state->lasttgR);
         watchdog_event_current(opts, state, 1);
-        sprintf(state->call_string[1], "%s", "                     "); //21 spaces
+        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
 
         //if we have an opened group file, let's write a group lock out into it to make it permanent
         if (opts->group_in_file[0] != 0) //file is available

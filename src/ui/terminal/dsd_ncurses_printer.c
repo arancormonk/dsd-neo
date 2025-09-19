@@ -37,6 +37,41 @@ swap_int_local(int* a, int* b) {
     *b = t;
 }
 
+/* Gamma LUT for density→glyph mapping (sqrt gamma 0.5) */
+static int s_gamma_ready = 0;
+static float s_gamma_lut[256];
+
+static inline void
+gamma_init_once(void) {
+    if (s_gamma_ready) {
+        return;
+    }
+    for (int i = 0; i < 256; i++) {
+        float x = (float)i / 255.0f;
+        s_gamma_lut[i] = sqrtf(x); /* gamma 0.5 */
+    }
+    s_gamma_ready = 1;
+}
+
+static inline double
+gamma_map01(double f) {
+    if (f <= 0.0) {
+        return 0.0;
+    }
+    if (f >= 1.0) {
+        return 1.0;
+    }
+    gamma_init_once();
+    int idx = (int)lrint(f * 255.0);
+    if (idx < 0) {
+        idx = 0;
+    }
+    if (idx > 255) {
+        idx = 255;
+    }
+    return (double)s_gamma_lut[idx];
+}
+
 static int
 select_k_int_local(int* a, int n, int k) {
     int lo = 0, hi = n - 1;
@@ -692,7 +727,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                 if (f > 1.0) {
                     f = 1.0;
                 }
-                double g = sqrt(f); /* gamma brighten */
+                double g = gamma_map01(f); /* gamma brighten via LUT */
                 if (opts && opts->eye_color && has_colors()) {
                     int ci = (int)lrint(g * (double)(color_len - 1));
                     if (ci < 0) {
@@ -807,7 +842,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                         if (f > 1.0) {
                             f = 1.0;
                         }
-                        double g = sqrt(f);
+                        double g = gamma_map01(f);
                         int ci = (int)lrint(g * (double)(color_len - 1));
                         if (ci < 0) {
                             ci = 0;
@@ -1133,7 +1168,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 if (f > 1.0) {
                     f = 1.0;
                 }
-                double g = sqrt(f); /* gamma = 0.5 */
+                double g = gamma_map01(f); /* gamma = 0.5 via LUT */
                 if (opts->eye_unicode) {
                     int idx = (int)lrint(g * (double)(uni_len - 1));
                     if (idx < 0) {
@@ -1229,7 +1264,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 if (f2 > 1.0) {
                     f2 = 1.0;
                 }
-                double g2 = sqrt(f2);
+                double g2 = gamma_map01(f2);
                 int uidx = (int)lrint(g2 * (double)(uni_len - 1));
                 if (uidx < 0) {
                     uidx = 0;
@@ -1255,7 +1290,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                     if (f > 1.0) {
                         f = 1.0;
                     }
-                    double g = sqrt(f);
+                    double g = gamma_map01(f);
                     int ci = (int)lrint(g * (double)(color_len - 1));
                     if (ci < 0) {
                         ci = 0;
