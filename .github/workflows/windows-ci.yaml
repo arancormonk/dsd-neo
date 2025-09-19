@@ -376,8 +376,6 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: nightly
-          release_name: dsd-neo portable (Cygwin) nightly
-          body: Latest nightly build
           prerelease: true
           file: ${{ steps.zip.outputs.ZIP_PATH }}
           asset_name: dsd-neo-cygwin-nightly.zip
