@@ -391,10 +391,10 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     size_t nsam;
     nsam = 320;
 
-    //converted to using allocated memory pointers to prevent the overflow issues
-    short* samp1 = malloc(sizeof(short) * nsam);
-    short* upsamp = malloc(sizeof(short) * nsam * 6);
-    short* out = malloc(sizeof(short) * 6);
+    /* Use fixed-size stack buffers to avoid per-frame heap churn */
+    short samp1[320];
+    short upsamp[320 * 6];
+    short out[6];
     short prev;
     int j;
 
@@ -449,10 +449,9 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     } else if (opts->wav_out_f != NULL && state->m17_enc == 0 && opts->static_wav_file == 1) //Static Wav File
     {
         //convert to stereo for new static wav file setup
-        short ss[nsam * 2];
-        memset(ss, 0, sizeof(ss));
+        short ss[320 * 2];
 
-        for (i = 0; i < nsam; i++) {
+        for (i = 0; i < 320; i++) {
             ss[(i * 2) + 0] = samp1[i];
             ss[(i * 2) + 1] = samp1[i];
         }
@@ -466,9 +465,7 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
     // }
 
-    free(samp1);
-    free(upsamp);
-    free(out);
+    /* stack buffers */
 
 #endif
 
@@ -522,11 +519,11 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     size_t nsam;
     nsam = 160;
 
-    //converted to using allocated memory pointers to prevent the overflow issues
-    short* samp1 = malloc(sizeof(short) * nsam);
-    short* samp2 = malloc(sizeof(short) * nsam);
-    short* upsamp = malloc(sizeof(short) * nsam * 6);
-    short* out = malloc(sizeof(short) * 6);
+    /* Use fixed-size stack buffers to avoid per-frame heap churn */
+    short samp1[160];
+    short samp2[160];
+    short upsamp[160 * 6];
+    short out[6];
     short prev;
     int j;
 
@@ -596,19 +593,16 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     } else if (opts->wav_out_f != NULL && state->m17_enc == 0 && opts->static_wav_file == 1) //Static Wav File
     {
         //convert to stereo for new static wav file setup
-        short ss[nsam * 2];
-        memset(ss, 0, sizeof(ss));
+        short ss[160 * 2];
 
-        for (i = 0; i < nsam; i++) {
+        for (i = 0; i < 160; i++) {
             ss[(i * 2) + 0] = samp1[i];
             ss[(i * 2) + 1] = samp1[i];
         }
 
         sf_write_short(opts->wav_out_f, ss, nsam * 2);
 
-        memset(ss, 0, sizeof(ss));
-
-        for (i = 0; i < nsam; i++) {
+        for (i = 0; i < 160; i++) {
             ss[(i * 2) + 0] = samp2[i];
             ss[(i * 2) + 1] = samp2[i];
         }
@@ -622,10 +616,7 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
     // }
 
-    free(samp1);
-    free(samp2);
-    free(upsamp);
-    free(out);
+    /* stack buffers */
 
 #endif
 }
