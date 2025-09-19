@@ -158,9 +158,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         uint8_t p_sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[0], 4);
         uint8_t p_mfid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8);
 
-        fprintf(stderr, "%s ", KGRN);
-        fprintf(stderr, "\n");
-        fprintf(stderr, " Slot %d Data Header - ", slot + 1);
+        fprintf(stderr, "%s \n Slot %d Data Header - ", KGRN, slot + 1);
 
         if (gi == 1 && dpf != 15) {
             fprintf(stderr, "Group - ");

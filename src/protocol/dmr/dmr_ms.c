@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /*-------------------------------------------------------------------------------
  * dmr_ms.c
  * DMR MS/Simplex/Direct Mode Voice Handling and Data Gathering Routines
@@ -519,19 +523,15 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
         fclose(pFile);
     }
 
-    fprintf(stderr, "%s ", timestr);
-    if (opts->inverted_dmr == 0) {
-        fprintf(stderr, "Sync: +DMR MS/DM MODE/MONO ");
-    } else {
-        fprintf(stderr, "Sync: -DMR MS/DM MODE/MONO ");
+    {
+        const char* sign = (opts->inverted_dmr == 0) ? "+" : "-";
+        if (state->dmr_color_code != 16) {
+            fprintf(stderr, "%s Sync: %sDMR MS/DM MODE/MONO | Color Code=%02d | VC* \n", timestr, sign,
+                    state->dmr_color_code);
+        } else {
+            fprintf(stderr, "%s Sync: %sDMR MS/DM MODE/MONO | Color Code=XX | VC* \n", timestr, sign);
+        }
     }
-    if (state->dmr_color_code != 16) {
-        fprintf(stderr, "| Color Code=%02d ", state->dmr_color_code);
-    } else {
-        fprintf(stderr, "| Color Code=XX ");
-    }
-    fprintf(stderr, "| VC* ");
-    fprintf(stderr, "\n");
 
     //alg reset
     //dmr_alg_reset (opts, state);
