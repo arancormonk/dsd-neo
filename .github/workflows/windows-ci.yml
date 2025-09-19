@@ -185,7 +185,7 @@ jobs:
       - name: Stage portable tree
         id: stage
         # Use Cygwin bash directly to avoid pwsh quoting issues
-        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -leo pipefail -O igncr {0}'
+        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -leo pipefail {0}'
         run: |
           set -euo pipefail
           cd "$(cygpath -u "$GITHUB_WORKSPACE")"
