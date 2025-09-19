@@ -12,6 +12,7 @@ REM Resolve script directory and expected layout
 set "ROOT=%~dp0"
 set "BIN=%ROOT%bin"
 set "ETC=%ROOT%etc"
+set "SHARE=%ROOT%share"
 
 REM If invoked from repository layout (packaging\windows-cygwin), hop two levels up
 if not exist "%BIN%\dsd-neo.exe" (
@@ -33,6 +34,10 @@ if not exist "%BIN%\dsd-neo.exe" (
 
 REM Ensure our bin comes first in PATH so cyg*.dll are resolved
 set "PATH=%BIN%;%PATH%"
+
+REM Ensure ncurses can find terminfo in portable tree; default TERM if unset
+if not defined TERM set "TERM=xterm"
+if exist "%SHARE%\terminfo" set "TERMINFO=%SHARE%\terminfo"
 
 REM Start PulseAudio server if available; ignore errors if already running
 if exist "%BIN%\pulseaudio.exe" (

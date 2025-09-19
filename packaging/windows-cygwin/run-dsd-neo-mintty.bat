@@ -4,6 +4,7 @@ setlocal ENABLEDELAYEDEXPANSION
 REM Resolve script directory
 set "ROOT=%~dp0"
 set "BIN=%ROOT%bin"
+set "SHARE=%ROOT%share"
 REM If invoked from repository layout (packaging\windows-cygwin), hop two levels up for bin
 if not exist "%BIN%\mintty.exe" (
   if exist "%ROOT%..\..\bin\mintty.exe" (
@@ -13,6 +14,10 @@ if not exist "%BIN%\mintty.exe" (
 )
 
 set "PATH=%BIN%;%PATH%"
+
+REM Ensure ncurses can find terminfo in portable tree; default TERM if unset
+if not defined TERM set "TERM=xterm"
+if exist "%SHARE%\terminfo" set "TERMINFO=%SHARE%\terminfo"
 
 if exist "%BIN%\mintty.exe" (
   echo Launching in mintty...

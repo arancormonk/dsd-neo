@@ -273,6 +273,12 @@ jobs:
             cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"
           fi
 
+          # Include terminfo database for ncurses so portable UI works
+          if [ -d "/usr/share/terminfo" ]; then
+            mkdir -p "$STAGE/share"
+            cp -R "/usr/share/terminfo" "$STAGE/share/" 2>/dev/null || true
+          fi
+
           # Emit a manifest of included DLLs for debugging/auditing
           (cd "$STAGE/bin" && ls -1 *.dll 2>/dev/null | sort -f) > "$STAGE/dlls-manifest.txt" || true
 

@@ -26,6 +26,9 @@ Examples
 - List PulseAudio devices (from within dsd-neo):
   run-dsd-neo.bat -O
 
+- Use PulseAudio output explicitly (recommended on Windows):
+  run-dsd-neo.bat -o pulse
+
 RTL-SDR Support
 If this ZIP includes RTL-SDR support, you will also need to install WinUSB
 drivers for your dongle (Zadig). See the RTL-SDR project documentation.
