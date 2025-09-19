@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 #include <dsd-neo/core/dsd.h>
 
 //M17 Filter -- RRC Alpha = 0.5 S/s 48000 with 81 taps
 #define M17ZEROS 80
 float m17gain = 3.16227766f; //sqrt of 10.0f
 static float m17xv[81];
+static int m17xv_head = 0; /* circular history head (most recent index) */
 
 //sample RRC filter for 48kHz sample rate
 //alpha=0.5, span=8, sps=10, gain=sqrt(sps)
@@ -35,6 +40,7 @@ float m17coeffs[81] = //replaced old ones with ones from libm17
 #define NZEROS 60
 float ngain = 7.423339364f;
 static float xv[NZEROS + 1];
+static int xv_head = 0; /* circular history head */
 float xcoeffs[61] = {
     -0.0083649323f, -0.0265444850f, -0.0428141462f, -0.0537571943f, -0.0564141052f, -0.0489161045f, -0.0310068662f,
     -0.0043393881f, +0.0275375106f, +0.0595423283f, +0.0857543325f, +0.1003565948f, +0.0986944931f, +0.0782804830f,
@@ -52,6 +58,7 @@ float xcoeffs[61] = {
 #define NXZEROS 134
 float nxgain = 15.95930463f;
 static float nxv[NXZEROS + 1];
+static int nxv_head = 0; /* circular history head */
 
 float nxcoeffs[135] = {
     +0.031462429f, +0.031747267f, +0.030401148f, +0.027362877f, +0.022653298f, +0.016379869f, +0.008737200f,
@@ -84,6 +91,7 @@ const float dmrgain = 6.82973073748f;
 
 // DMR filter F4EXB
 static float dxv[DMRNZEROS + 1];
+static int dxv_head = 0; /* circular history head */
 
 // DMR filter F4EXB - root raised cosine alpha=0.7 Ts = 6650 S/s Fc = 48kHz
 const float dmrcoeffs[61] = {
@@ -99,6 +107,7 @@ const float dmrcoeffs[61] = {
 
 // dPMR filter, version of F4EXB
 static float dpmrxv[NXZEROS + 1];
+static int dpmrxv_head = 0; /* circular history head */
 
 // dPMR filter, version of F4EXB
 #define DPMRNZEROS 134
@@ -159,30 +168,35 @@ dsd_input_filter(short sample, int mode) {
     float gain;
     int zeros;
     float *v, *coeffs;
+    int* headp = NULL;
     switch (mode) {
         case 1:
             gain = ngain;
             v = xv;
             coeffs = xcoeffs;
             zeros = NZEROS;
+            headp = &xv_head;
             break;
         case 2:
             gain = nxgain;
             v = nxv;
             coeffs = (float*)nxcoeffs;
             zeros = NXZEROS;
+            headp = &nxv_head;
             break;
         case 3:
             gain = dmrgain;
             v = dxv;
             coeffs = (float*)dmrcoeffs;
             zeros = DMRNZEROS;
+            headp = &dxv_head;
             break;
         case 4:
             gain = dpmrgain;
             v = dpmrxv;
             coeffs = (float*)dpmrcoeffs;
             zeros = DPMRNZEROS;
+            headp = &dpmrxv_head;
             break;
 
         case 5:
@@ -190,20 +204,30 @@ dsd_input_filter(short sample, int mode) {
             v = m17xv;
             coeffs = (float*)m17coeffs;
             zeros = M17ZEROS;
+            headp = &m17xv_head;
             break;
 
         default: return sample;
     }
 
-    for (i = 0; i < zeros; i++) {
-        v[i] = v[i + 1];
+    /* Circular buffer update: write newest sample at head and convolve
+       in the same logical order as the legacy linear buffer (oldest->newest). */
+    const int cap = zeros + 1;
+    int head = *headp;
+    head++;
+    if (head >= cap) {
+        head = 0;
     }
+    v[head] = (float)sample; /* most recent */
+    *headp = head;
 
-    v[zeros] = (float)sample; // unfiltered sample in
     sum = 0.0f;
-
     for (i = 0; i <= zeros; i++) {
-        sum += (coeffs[i] * v[i]);
+        int idx = head - (zeros - i);
+        if (idx < 0) {
+            idx += cap;
+        }
+        sum += coeffs[i] * v[idx];
     }
 
     return (short)(sum / gain); // filtered sample out
@@ -212,8 +236,13 @@ dsd_input_filter(short sample, int mode) {
 void
 init_rrc_filter_memory() {
     memset(m17xv, 0, 81 * sizeof(float));
+    m17xv_head = 0;
     memset(xv, 0, 61 * sizeof(float));
+    xv_head = 0;
     memset(dxv, 0, 61 * sizeof(float));
+    dxv_head = 0;
     memset(nxv, 0, 135 * sizeof(float));
+    nxv_head = 0;
     memset(dpmrxv, 0, 135 * sizeof(float));
+    dpmrxv_head = 0;
 }

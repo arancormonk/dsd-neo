@@ -43,7 +43,6 @@ saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
         }
         fputc(b, opts->mbe_out_f);
     }
-    fflush(opts->mbe_out_f);
 }
 
 void
@@ -67,7 +66,6 @@ saveAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     }
     b = ambe_d[48];
     fputc(b, opts->mbe_out_f);
-    fflush(opts->mbe_out_f);
 }
 
 void
@@ -91,7 +89,6 @@ saveAmbe2450DataR(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     }
     b = ambe_d[48];
     fputc(b, opts->mbe_out_fR);
-    fflush(opts->mbe_out_fR);
 }
 
 void
@@ -355,12 +352,13 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "\nError, couldn't open %s for slot 1\n", opts->mbe_out_path);
     } else {
         opts->mbe_out = 1;
+        /* Fully buffered output to reduce syscall overhead */
+        setvbuf(opts->mbe_out_f, NULL, _IOFBF, 64 * 1024);
     }
 
     //
     fprintf(opts->mbe_out_f, "%s", ext);
-
-    fflush(opts->mbe_out_f);
+    /* header write will be flushed later on close */
     /* stack buffers; no free */
 }
 
@@ -414,12 +412,13 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "\nError, couldn't open %s for slot 2\n", opts->mbe_out_path);
     } else {
         opts->mbe_outR = 1;
+        /* Fully buffered output to reduce syscall overhead */
+        setvbuf(opts->mbe_out_fR, NULL, _IOFBF, 64 * 1024);
     }
 
     //
     fprintf(opts->mbe_out_fR, "%s", ext);
-
-    fflush(opts->mbe_out_fR);
+    /* header write will be flushed later on close */
     /* stack buffers; no free */
 }
 
