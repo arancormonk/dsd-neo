@@ -1,4 +1,4 @@
-# dsd-neo
+# DSD-neo
 
 A modular and performance‑enhanced version of the well-known Digital Speech Decoder (DSD) with a modern CMake build, split into focused libraries (runtime, DSP, IO, FEC, crypto, protocol, core) and a thin CLI.
 
