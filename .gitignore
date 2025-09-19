@@ -14,3 +14,9 @@ Thumbs.db
 # Ignore all markdown files in root directory except README.md
 /*.md
 !/README.md
+
+# GDB files
+*.gdb
+
+# Log files
+*.log

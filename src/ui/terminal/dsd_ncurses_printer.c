@@ -29,6 +29,41 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+/* Local quickselect helpers for int arrays (k-th smallest in O(n)) */
+static inline void
+swap_int_local(int* a, int* b) {
+    int t = *a;
+    *a = *b;
+    *b = t;
+}
+
+static int
+select_k_int_local(int* a, int n, int k) {
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        int pivot = a[mid];
+        int lt = lo, i = lo, gt = hi;
+        while (i <= gt) {
+            if (a[i] < pivot) {
+                swap_int_local(&a[i++], &a[lt++]);
+            } else if (a[i] > pivot) {
+                swap_int_local(&a[i], &a[gt--]);
+            } else {
+                i++;
+            }
+        }
+        if (k < lt) {
+            hi = lt - 1;
+        } else if (k > gt) {
+            lo = gt + 1;
+        } else {
+            return a[k];
+        }
+    }
+    return a[k];
+}
+
 char mbeversionstr[25]; //MBElib version string
 static unsigned long long int edacs_channel_tree[33][6];
 
@@ -416,14 +451,25 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         color_inited = 1;
     }
 
-    /* Density buffer */
+    /* Density buffer (reused across frames to avoid malloc/free churn) */
     size_t den_sz = (size_t)H * (size_t)W;
-    unsigned short* den = (unsigned short*)calloc(den_sz, sizeof(unsigned short));
-    if (!den) {
-        printw("| (constellation: out of memory)\n");
-        ui_print_hr();
-        return;
+    static unsigned short* s_den = NULL;
+    static size_t s_den_cap = 0;
+    if (s_den_cap < den_sz) {
+        void* nb = realloc(s_den, den_sz * sizeof(unsigned short));
+        if (!nb) {
+            free(s_den);
+            s_den = NULL;
+            s_den_cap = 0;
+            printw("| (constellation: out of memory)\n");
+            ui_print_hr();
+            return;
+        }
+        s_den = (unsigned short*)nb;
+        s_den_cap = den_sz;
     }
+    unsigned short* den = s_den;
+    memset(den, 0, den_sz * sizeof(unsigned short));
 
     /* Dynamic radial scale using high-percentile magnitude (robust to outliers), then smooth. */
     static int s_maxR = 256; /* smoothed scale for radius (~99th percentile of |IQ|) */
@@ -445,9 +491,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         int r = (int)lrint(sqrt((double)r2));
         magR[k] = r;
     }
-    qsort(absI, (size_t)n, sizeof(int), cmp_int_asc);
-    qsort(absQ, (size_t)n, sizeof(int), cmp_int_asc);
-    qsort(magR, (size_t)n, sizeof(int), cmp_int_asc);
+    /* Compute 99th percentile radius via quickselect (avoid full sort) */
     /* Use 99th percentile (index ~ 0.99*(n-1)) to ignore rare spikes */
     int idxP = (int)lrint(0.99 * (double)(n - 1));
     if (idxP < 0) {
@@ -456,7 +500,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     if (idxP >= n) {
         idxP = n - 1;
     }
-    int pR = magR[idxP];
+    int pR = select_k_int_local(magR, n, idxP);
     /* Avoid zooming into noise; also keep a sane lower bound */
     if (pR < 64) {
         pR = 64;
@@ -851,7 +895,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
     attroff(COLOR_PAIR(4));
     attroff(COLOR_PAIR(4));
-    free(den);
+    /* s_den reused; no free */
 #else
     ui_print_header("Constellation");
     printw("| (RTL disabled in this build)\n");
@@ -908,14 +952,25 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     if (H < 12) {
         H = 12;
     }
-    /* Density buffer sized to current grid */
+    /* Density buffer sized to current grid (reuse across frames) */
     size_t den_sz = (size_t)H * (size_t)W;
-    unsigned short* den = (unsigned short*)calloc(den_sz, sizeof(unsigned short));
-    if (!den) {
-        printw("| (eye: out of memory)\n");
-        ui_print_hr();
-        return;
+    static unsigned short* s_den_eye = NULL;
+    static size_t s_den_eye_cap = 0;
+    if (s_den_eye_cap < den_sz) {
+        void* nb = realloc(s_den_eye, den_sz * sizeof(unsigned short));
+        if (!nb) {
+            free(s_den_eye);
+            s_den_eye = NULL;
+            s_den_eye_cap = 0;
+            printw("| (eye: out of memory)\n");
+            ui_print_hr();
+            return;
+        }
+        s_den_eye = (unsigned short*)nb;
+        s_den_eye_cap = den_sz;
     }
+    unsigned short* den = s_den_eye;
+    memset(den, 0, den_sz * sizeof(unsigned short));
     int mid = H / 2;
     /* Normalize peak with EMA for stability */
     static int s_peak = 256;
@@ -951,10 +1006,13 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         qvals[1] = s_peak;
         m = 2;
     }
-    qsort(qvals, (size_t)m, sizeof(int), cmp_int_asc);
-    int q1 = qvals[(size_t)m / 4];
-    int q2 = qvals[(size_t)m / 2];
-    int q3 = qvals[(size_t)(3 * (size_t)m) / 4];
+    /* Quartiles via quickselect */
+    int idx1 = (int)((size_t)m / 4);
+    int idx2 = (int)((size_t)m / 2);
+    int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
+    int q2 = select_k_int_local(qvals, m, idx2);
+    int q1 = select_k_int_local(qvals, idx2, idx1); /* select within lower half */
+    int q3 = select_k_int_local(qvals + idx2 + 1, m - (idx2 + 1), idx3 - (idx2 + 1));
     /* Accumulate density by folding modulo 2 symbols */
     int two_sps = 2 * sps;
     if (two_sps < 8) {
@@ -1350,7 +1408,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     attron(COLOR_PAIR(4));
     ui_print_hr();
     attroff(COLOR_PAIR(4));
-    free(den);
+    /* den buffer reused across frames; do not free here */
 #else
     ui_print_header("Eye Diagram");
     printw("| (RTL disabled in this build)\n");
@@ -1416,11 +1474,13 @@ print_fsk_hist_view(void) {
         vals[vi++] = (int)buf[i];
     }
     m = vi;
-    /* Sort ascending */
-    qsort(vals, (size_t)m, sizeof(int), cmp_int_asc);
-    int q1 = vals[(size_t)m / 4];
-    int q2 = vals[(size_t)m / 2];
-    int q3 = vals[(size_t)(3 * (size_t)m) / 4];
+    /* Quartiles via quickselect */
+    int idx1 = (int)((size_t)m / 4);
+    int idx2 = (int)((size_t)m / 2);
+    int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
+    int q2 = select_k_int_local(vals, m, idx2);
+    int q1 = select_k_int_local(vals, idx2, idx1);
+    int q3 = select_k_int_local(vals + idx2 + 1, m - (idx2 + 1), idx3 - (idx2 + 1));
     /* Bin using quartile boundaries */
     int64_t bin[4] = {0, 0, 0, 0};
     for (int i = 0; i < n; i++) {
@@ -1528,20 +1588,14 @@ print_spectrum_view(dsd_opts* opts) {
     if (nfft > 1024) {
         nfft = 1024;
     }
-    float* bins = (float*)malloc((size_t)nfft * sizeof(float));
-    if (!bins) {
-        ui_print_header("Spectrum Analyzer");
-        printw("| (out of memory)\n");
-        ui_print_hr();
-        return;
-    }
+    static float bins_static[1024];
+    float* bins = bins_static; /* nfft clamped to <= 1024 above */
     int rate = 0;
     int n = rtl_stream_spectrum_get(bins, nfft, &rate);
     ui_print_header("Spectrum Analyzer");
     if (n <= 0) {
         printw("| (no spectrum yet)\n");
         ui_print_hr();
-        free(bins);
         return;
     }
     int rows = 24, cols = 80;
@@ -1686,7 +1740,6 @@ print_spectrum_view(dsd_opts* opts) {
     }
 #endif
     ui_print_hr();
-    free(bins);
 #else
     ui_print_header("Spectrum Analyzer");
     printw("| (RTL disabled in this build)\n");
