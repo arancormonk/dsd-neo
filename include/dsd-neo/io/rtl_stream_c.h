@@ -143,6 +143,32 @@ double rtl_stream_get_snr_c4fm(void);
 double rtl_stream_get_snr_cqpsk(void);
 double rtl_stream_get_snr_gfsk(void);
 
+/**
+ * @brief Estimate C4FM SNR from the eye buffer as a lightweight fallback.
+ *
+ * Uses quartile clustering over eye-diagram I-channel samples near symbol
+ * centers to approximate signal and noise variances, returning SNR in dB.
+ * Returns a negative value (<= -50 dB) when insufficient data is available.
+ */
+double rtl_stream_estimate_snr_c4fm_eye(void);
+
+/**
+ * @brief Estimate QPSK SNR from the constellation snapshot as a fallback.
+ *
+ * Uses recent equalized I/Q points to estimate amplitude and EVM vs ideal
+ * QPSK targets; returns SNR in dB. Returns <= -50 dB when insufficient data.
+ */
+double rtl_stream_estimate_snr_qpsk_const(void);
+
+/**
+ * @brief Estimate GFSK SNR from the eye buffer as a fallback.
+ *
+ * Uses a two-level (median split) clustering on eye-diagram I-channel
+ * samples near symbol centers; returns SNR in dB. Returns <= -50 dB when
+ * insufficient data.
+ */
+double rtl_stream_estimate_snr_gfsk_eye(void);
+
 /* Runtime DSP adjustments and feedback hooks */
 /**
  * @brief Set CQPSK path parameters at runtime; pass -1 to leave any field unchanged.

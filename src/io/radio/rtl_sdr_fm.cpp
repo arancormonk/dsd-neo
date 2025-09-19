@@ -383,6 +383,12 @@ static std::atomic<double> g_snr_c4fm_db{-100.0};
 static std::atomic<double> g_snr_qpsk_db{-100.0};
 static std::atomic<double> g_snr_gfsk_db{-100.0};
 
+/* Fwd decl: eye-based C4FM SNR fallback */
+extern "C" double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
+/* Fwd decl: QPSK and GFSK fallbacks */
+extern "C" double dsd_rtl_stream_estimate_snr_qpsk_const(void);
+extern "C" double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
+
 /* Forward decl: spectrum updater used in demod thread */
 static void update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz);
 
@@ -410,6 +416,9 @@ demod_thread_fn(void* arg) {
         update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
 
         /* Estimate SNR per modulation using post-filter samples */
+        static int c4fm_missed = 0; /* counts loops without C4FM SNR update */
+        static int qpsk_missed = 0; /* counts loops without QPSK SNR update */
+        static int gfsk_missed = 0; /* counts loops without GFSK SNR update */
         const int16_t* iq = d->lowpassed;
         const int n_iq = d->lp_len;
         const int sps = d->ted_sps;
@@ -424,6 +433,7 @@ demod_thread_fn(void* arg) {
                 win = mid;
             }
             /* QPSK/CQPSK: EVM-based SNR from equalizer symbol outputs */
+            bool qpsk_updated = false;
             if (d->cqpsk_enable) {
                 enum { MAXP = 2048 };
 
@@ -462,9 +472,12 @@ demod_thread_fn(void* arg) {
                             ema = 0.8 * ema + 0.2 * snr;
                         }
                         g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
+                        qpsk_updated = true;
                     }
                 }
             }
+            bool c4fm_updated = false;
+            bool gfsk_updated = false;
             if (sps >= 6 && sps <= 12) {
                 /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
                 enum { MAXS = 8192 };
@@ -531,6 +544,7 @@ demod_thread_fn(void* arg) {
                                         ema = 0.8 * ema + 0.2 * snr;
                                     }
                                     g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
+                                    c4fm_updated = true;
                                 }
                             }
                         }
@@ -573,12 +587,57 @@ demod_thread_fn(void* arg) {
                                             ema = 0.8 * ema + 0.2 * snr;
                                         }
                                         g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
+                                        gfsk_updated = true;
                                     }
                                 }
                             }
                         }
                     }
+                    /* Record that we updated C4FM within this loop */
+                    c4fm_updated = true;
                 }
+            }
+            /* If no C4FM update occurred for a while, synthesize a value from the eye buffer */
+            if (!c4fm_updated) {
+                if (++c4fm_missed >= 50) { /* ~guard against long stalls */
+                    double fb = dsd_rtl_stream_estimate_snr_c4fm_eye();
+                    if (fb > -50.0) {
+                        double prev = g_snr_c4fm_db.load(std::memory_order_relaxed);
+                        double blended = (prev < -50.0) ? fb : (0.9 * prev + 0.1 * fb);
+                        g_snr_c4fm_db.store(blended, std::memory_order_relaxed);
+                    }
+                    c4fm_missed = 0;
+                }
+            } else {
+                c4fm_missed = 0;
+            }
+            /* If no QPSK update, synthesize from the constellation snapshot */
+            if (!qpsk_updated) {
+                if (++qpsk_missed >= 50) {
+                    double fb = dsd_rtl_stream_estimate_snr_qpsk_const();
+                    if (fb > -50.0) {
+                        double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
+                        double blended = (prev < -50.0) ? fb : (0.9 * prev + 0.1 * fb);
+                        g_snr_qpsk_db.store(blended, std::memory_order_relaxed);
+                    }
+                    qpsk_missed = 0;
+                }
+            } else {
+                qpsk_missed = 0;
+            }
+            /* If no GFSK update, synthesize from the eye buffer */
+            if (!gfsk_updated) {
+                if (++gfsk_missed >= 50) {
+                    double fb = dsd_rtl_stream_estimate_snr_gfsk_eye();
+                    if (fb > -50.0) {
+                        double prev = g_snr_gfsk_db.load(std::memory_order_relaxed);
+                        double blended = (prev < -50.0) ? fb : (0.9 * prev + 0.1 * fb);
+                        g_snr_gfsk_db.store(blended, std::memory_order_relaxed);
+                    }
+                    gfsk_missed = 0;
+                }
+            } else {
+                gfsk_missed = 0;
             }
         }
         if (d->exit_flag) {
@@ -945,6 +1004,228 @@ dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
         out[k] = g_eye_buf[idx];
     }
     return n;
+}
+
+/* ---------------- Eye-based SNR estimation (C4FM fallback) ---------------- */
+extern "C" double
+dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
+    enum { MAXS = 4096 };
+
+    static int16_t eb[(size_t)MAXS];
+    int sps_fb = 0;
+    int nfb = dsd_rtl_stream_eye_get(eb, MAXS, &sps_fb);
+    if (nfb <= 100 || sps_fb <= 0) {
+        return -100.0;
+    }
+    int two_sps = 2 * sps_fb;
+    int c1 = sps_fb / 2;
+    int c2 = (3 * sps_fb) / 2;
+    int win = sps_fb / 10;
+    if (win < 1) {
+        win = 1;
+    }
+    /* Quartiles over a downsampled set */
+    int step_ds = (nfb > 4096) ? (nfb / 4096) : 1;
+    int mct = (nfb + step_ds - 1) / step_ds;
+    if (mct > 4096) {
+        mct = 4096;
+    }
+    static int qv[4096];
+    int vi = 0;
+    for (int i = 0; i < nfb && vi < mct; i += step_ds) {
+        qv[vi++] = (int)eb[i];
+    }
+    mct = vi;
+    if (mct < 8) {
+        return -100.0;
+    }
+    auto cmp_int = [](const void* a, const void* b) {
+        int ia = *(const int*)a, ib = *(const int*)b;
+        return (ia > ib) - (ia < ib);
+    };
+    qsort(qv, (size_t)mct, sizeof(int), cmp_int);
+    int q1 = qv[(size_t)mct / 4];
+    int q2 = qv[(size_t)mct / 2];
+    int q3 = qv[(size_t)(3 * (size_t)mct) / 4];
+    long long cnt[4] = {0, 0, 0, 0};
+    double sum[4] = {0, 0, 0, 0};
+    for (int i = 0; i < nfb; i++) {
+        int phase = i % two_sps;
+        int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
+        if (!inwin) {
+            continue;
+        }
+        int v = (int)eb[i];
+        int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
+        cnt[b]++;
+        sum[b] += (double)v;
+    }
+    long long total = cnt[0] + cnt[1] + cnt[2] + cnt[3];
+    if (!(total > 50 && cnt[0] && cnt[1] && cnt[2] && cnt[3])) {
+        return -100.0;
+    }
+    double mu[4];
+    for (int b = 0; b < 4; b++) {
+        mu[b] = sum[b] / (double)cnt[b];
+    }
+    double nsum = 0.0;
+    for (int i = 0; i < nfb; i++) {
+        int phase = i % two_sps;
+        int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
+        if (!inwin) {
+            continue;
+        }
+        int v = (int)eb[i];
+        int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
+        double e = (double)v - mu[b];
+        nsum += e * e;
+    }
+    double noise_var = nsum / (double)total;
+    if (noise_var <= 1e-9) {
+        return -100.0;
+    }
+    double mu_all = 0.0;
+    for (int b = 0; b < 4; b++) {
+        mu_all += mu[b] * (double)cnt[b] / (double)total;
+    }
+    double ssum = 0.0;
+    for (int b = 0; b < 4; b++) {
+        double d = mu[b] - mu_all;
+        ssum += (double)cnt[b] * d * d;
+    }
+    double sig_var = ssum / (double)total;
+    if (sig_var <= 1e-9) {
+        return -100.0;
+    }
+    return 10.0 * log10(sig_var / noise_var);
+}
+
+/* ---------------- Constellation-based SNR estimation (QPSK fallback) ---------------- */
+extern "C" double
+dsd_rtl_stream_estimate_snr_qpsk_const(void) {
+    enum { MAXP = 4096 };
+
+    static int16_t xy[(size_t)MAXP * 2];
+    int n = dsd_rtl_stream_constellation_get(xy, MAXP);
+    if (n <= 64) {
+        return -100.0;
+    }
+    double sum_r = 0.0;
+    for (int i = 0; i < n; i++) {
+        double I = (double)xy[(size_t)(i << 1) + 0];
+        double Q = (double)xy[(size_t)(i << 1) + 1];
+        sum_r += sqrt(I * I + Q * Q);
+    }
+    double r_mean = sum_r / (double)n;
+    if (!(r_mean > 1e-6)) {
+        return -100.0;
+    }
+    double a = r_mean / 1.41421356237; /* per-axis target amplitude */
+    double e2_sum = 0.0, t2_sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        double I = (double)xy[(size_t)(i << 1) + 0];
+        double Q = (double)xy[(size_t)(i << 1) + 1];
+        double ti = (I >= 0.0) ? a : -a;
+        double tq = (Q >= 0.0) ? a : -a;
+        double ei = I - ti;
+        double eq = Q - tq;
+        e2_sum += ei * ei + eq * eq;
+        t2_sum += ti * ti + tq * tq;
+    }
+    if (t2_sum <= 1e-9) {
+        return -100.0;
+    }
+    double evm = sqrt(e2_sum / (double)n) / sqrt(t2_sum / (double)n);
+    if (evm < 1e-6) {
+        evm = 1e-6;
+    }
+    return 20.0 * log10(1.0 / evm);
+}
+
+/* ---------------- Eye-based SNR estimation (GFSK fallback, 2-level) ---------------- */
+extern "C" double
+dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
+    enum { MAXS = 4096 };
+
+    static int16_t eb[(size_t)MAXS];
+    int sps_fb = 0;
+    int nfb = dsd_rtl_stream_eye_get(eb, MAXS, &sps_fb);
+    if (nfb <= 100 || sps_fb <= 0) {
+        return -100.0;
+    }
+    int two_sps = 2 * sps_fb;
+    int c1 = sps_fb / 2;
+    int c2 = (3 * sps_fb) / 2;
+    int win = sps_fb / 10;
+    if (win < 1) {
+        win = 1;
+    }
+    /* Downsample */
+    int step_ds = (nfb > 4096) ? (nfb / 4096) : 1;
+    int mct = (nfb + step_ds - 1) / step_ds;
+    if (mct > 4096) {
+        mct = 4096;
+    }
+    static int qv[4096];
+    int vi = 0;
+    for (int i = 0; i < nfb && vi < mct; i += step_ds) {
+        qv[vi++] = (int)eb[i];
+    }
+    mct = vi;
+    if (mct < 8) {
+        return -100.0;
+    }
+    auto cmp_int = [](const void* a, const void* b) {
+        int ia = *(const int*)a, ib = *(const int*)b;
+        return (ia > ib) - (ia < ib);
+    };
+    qsort(qv, (size_t)mct, sizeof(int), cmp_int);
+    int q2 = qv[(size_t)mct / 2]; /* median split */
+    double sumL = 0.0, sumH = 0.0;
+    int cntL = 0, cntH = 0;
+    for (int i = 0; i < nfb; i++) {
+        int phase = i % two_sps;
+        int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
+        if (!inwin) {
+            continue;
+        }
+        int v = (int)eb[i];
+        if (v <= q2) {
+            sumL += v;
+            cntL++;
+        } else {
+            sumH += v;
+            cntH++;
+        }
+    }
+    if (cntL == 0 || cntH == 0) {
+        return -100.0;
+    }
+    double muL = sumL / (double)cntL, muH = sumH / (double)cntH;
+    int total = cntL + cntH;
+    double nsum = 0.0;
+    for (int i = 0; i < nfb; i++) {
+        int phase = i % two_sps;
+        int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
+        if (!inwin) {
+            continue;
+        }
+        int v = (int)eb[i];
+        double mu = (v <= q2) ? muL : muH;
+        double e = (double)v - mu;
+        nsum += e * e;
+    }
+    double noise_var = nsum / (double)total;
+    if (noise_var <= 1e-9) {
+        return -100.0;
+    }
+    double mu_all = (muL * (double)cntL + muH * (double)cntH) / (double)total;
+    double ssum = (double)cntL * (muL - mu_all) * (muL - mu_all) + (double)cntH * (muH - mu_all) * (muH - mu_all);
+    double sig_var = ssum / (double)total;
+    if (sig_var <= 1e-9) {
+        return -100.0;
+    }
+    return 10.0 * log10(sig_var / noise_var);
 }
 
 /* ---------------- Spectrum capture (lightweight FFT over recent I/Q) ---------------- */

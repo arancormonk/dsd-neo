@@ -47,6 +47,10 @@ void dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
 void dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
 /* Gain query helper implemented in rtl_sdr_fm.cpp */
 int dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
+/* Eye-based SNR fallback */
+double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
+double dsd_rtl_stream_estimate_snr_qpsk_const(void);
+double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -308,6 +312,21 @@ rtl_stream_spectrum_get_size(void) {
 extern "C" int
 rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
+}
+
+extern "C" double
+rtl_stream_estimate_snr_c4fm_eye(void) {
+    return dsd_rtl_stream_estimate_snr_c4fm_eye();
+}
+
+extern "C" double
+rtl_stream_estimate_snr_qpsk_const(void) {
+    return dsd_rtl_stream_estimate_snr_qpsk_const();
+}
+
+extern "C" double
+rtl_stream_estimate_snr_gfsk_eye(void) {
+    return dsd_rtl_stream_estimate_snr_gfsk_eye();
 }
 
 extern "C" void

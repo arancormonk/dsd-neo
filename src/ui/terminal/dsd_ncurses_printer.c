@@ -2468,107 +2468,95 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     {
         double snr = -100.0;
         const char* m = "";
+        /* Simple stale detection for cases where SNR stops updating */
+        static double last_c4_snr = -999.0; /* C4FM */
+        static int last_c4_stable = 0;
         if (state->rf_mod == 0) {
             snr = rtl_stream_get_snr_c4fm();
             m = "C4FM";
-            /* If unavailable, compute a quick fallback from eye buffer */
+            /* If missing or appears stale, compute a quick fallback from the eye buffer */
             if (snr <= -50.0) {
-                enum { MAXS = 4096 };
-
-                static int16_t eb[(size_t)MAXS];
-                int sps_fb = 0;
-                int nfb = rtl_stream_eye_get(eb, MAXS, &sps_fb);
-                if (nfb > 100 && sps_fb > 0) {
-                    int two_sps = 2 * sps_fb;
-                    int c1 = sps_fb / 2;
-                    int c2 = (3 * sps_fb) / 2;
-                    int win = sps_fb / 10;
-                    if (win < 1) {
-                        win = 1;
-                    }
-                    /* Build quartiles over sampled values */
-                    int step_ds = (nfb > 4096) ? (nfb / 4096) : 1;
-                    int mct = (nfb + step_ds - 1) / step_ds;
-                    if (mct > 4096) {
-                        mct = 4096;
-                    }
-                    static int qv[4096];
-                    int vi = 0;
-                    for (int i = 0; i < nfb && vi < mct; i += step_ds) {
-                        qv[vi++] = (int)eb[i];
-                    }
-                    mct = vi;
-                    if (mct >= 8) {
-                        qsort(qv, (size_t)mct, sizeof(int), cmp_int_asc);
-                        int q1 = qv[(size_t)mct / 4];
-                        int q2 = qv[(size_t)mct / 2];
-                        int q3 = qv[(size_t)(3 * (size_t)mct) / 4];
-                        long long cnt[4] = {0, 0, 0, 0};
-                        double sum[4] = {0, 0, 0, 0};
-                        for (int i = 0; i < nfb; i++) {
-                            int phase = i % two_sps;
-                            int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
-                            if (!inwin) {
-                                continue;
-                            }
-                            int v = (int)eb[i];
-                            int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-                            cnt[b]++;
-                            sum[b] += (double)v;
-                        }
-                        long long total = cnt[0] + cnt[1] + cnt[2] + cnt[3];
-                        if (total > 50 && cnt[0] && cnt[1] && cnt[2] && cnt[3]) {
-                            double mu[4];
-                            for (int b = 0; b < 4; b++) {
-                                mu[b] = sum[b] / (double)cnt[b];
-                            }
-                            double nsum = 0.0;
-                            for (int i = 0; i < nfb; i++) {
-                                int phase = i % two_sps;
-                                int inwin = (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
-                                if (!inwin) {
-                                    continue;
-                                }
-                                int v = (int)eb[i];
-                                int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-                                double e = (double)v - mu[b];
-                                nsum += e * e;
-                            }
-                            double noise_var = nsum / (double)total;
-                            if (noise_var > 1e-9) {
-                                double mu_all = 0.0;
-                                for (int b = 0; b < 4; b++) {
-                                    mu_all += mu[b] * (double)cnt[b] / (double)total;
-                                }
-                                double ssum = 0.0;
-                                for (int b = 0; b < 4; b++) {
-                                    double d = mu[b] - mu_all;
-                                    ssum += (double)cnt[b] * d * d;
-                                }
-                                double sig_var = ssum / (double)total;
-                                if (sig_var > 1e-9) {
-                                    snr = 10.0 * log10(sig_var / noise_var);
-                                }
-                            }
-                        }
-                    }
+                double fb = rtl_stream_estimate_snr_c4fm_eye();
+                if (fb > -50.0) {
+                    snr = fb;
+                    last_c4_stable = 0;
                 }
+            } else {
+                double delta = fabs(snr - last_c4_snr);
+                if (delta < 0.05) {
+                    if (++last_c4_stable >= 40) { /* ~couple seconds of no change */
+                        double fb = rtl_stream_estimate_snr_c4fm_eye();
+                        if (fb > -50.0) {
+                            snr = fb;
+                        }
+                        last_c4_stable = 0;
+                    }
+                } else {
+                    last_c4_stable = 0;
+                }
+                last_c4_snr = snr;
             }
         } else if (state->rf_mod == 1) {
             snr = rtl_stream_get_snr_cqpsk();
             m = "QPSK";
-            /* Fallback: when CQPSK estimator is disabled, approximate with C4FM/GFSK estimator */
+            /* Fallback: prefer constellation-based QPSK estimator; else use best of C4FM/GFSK */
+            static double last_qp_snr = -999.0;
+            static int last_qp_stable = 0;
             if (snr <= -50.0) {
-                double snr_c = rtl_stream_get_snr_c4fm();
-                double snr_g = rtl_stream_get_snr_gfsk();
-                double snr_fb = (snr_c > snr_g) ? snr_c : snr_g;
-                if (snr_fb > -50.0) {
-                    snr = snr_fb; /* keep label as QPSK but show usable estimate */
+                double fb = rtl_stream_estimate_snr_qpsk_const();
+                if (fb > -50.0) {
+                    snr = fb;
+                    last_qp_stable = 0;
+                } else {
+                    double snr_c = rtl_stream_get_snr_c4fm();
+                    double snr_g = rtl_stream_get_snr_gfsk();
+                    double snr_fb = (snr_c > snr_g) ? snr_c : snr_g;
+                    if (snr_fb > -50.0) {
+                        snr = snr_fb;
+                    }
                 }
+            } else {
+                double delta = fabs(snr - last_qp_snr);
+                if (delta < 0.05) {
+                    if (++last_qp_stable >= 40) {
+                        double fb = rtl_stream_estimate_snr_qpsk_const();
+                        if (fb > -50.0) {
+                            snr = fb;
+                        }
+                        last_qp_stable = 0;
+                    }
+                } else {
+                    last_qp_stable = 0;
+                }
+                last_qp_snr = snr;
             }
         } else if (state->rf_mod == 2) {
             snr = rtl_stream_get_snr_gfsk();
             m = "GFSK";
+            /* Stale/NA fallback: estimate from eye buffer (2-level) */
+            static double last_gf_snr = -999.0;
+            static int last_gf_stable = 0;
+            if (snr <= -50.0) {
+                double fb = rtl_stream_estimate_snr_gfsk_eye();
+                if (fb > -50.0) {
+                    snr = fb;
+                    last_gf_stable = 0;
+                }
+            } else {
+                double delta = fabs(snr - last_gf_snr);
+                if (delta < 0.05) {
+                    if (++last_gf_stable >= 40) {
+                        double fb = rtl_stream_estimate_snr_gfsk_eye();
+                        if (fb > -50.0) {
+                            snr = fb;
+                        }
+                        last_gf_stable = 0;
+                    }
+                } else {
+                    last_gf_stable = 0;
+                }
+                last_gf_snr = snr;
+            }
         }
         if (snr > -50.0) {
             /* Show current SNR as a compact, colorized meter */
