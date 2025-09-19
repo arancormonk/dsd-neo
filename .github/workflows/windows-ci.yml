@@ -227,53 +227,28 @@ jobs:
             done < "$out"
           }
 
-          # Initial pass: exe + any DLLs we built in .cygdeps/bin
-          collect_deps dlls.txt "$EXE"
-          if [ -d "$DEPS_PREFIX/bin" ]; then
-            cp -n "$DEPS_PREFIX"/bin/*.dll "$STAGE/bin/" 2>/dev/null || true
-          fi
-
-          # Ensure key cygwin/toolchain runtimes are present even if cygcheck misses them
-          for rt in /bin/cygwin1.dll /bin/cyggcc_s-*.dll /bin/cygstdc++-*.dll /bin/libwinpthread-1.dll; do
-            for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" 2>/dev/null || true; done
-          done
-
-          # Known runtime dependencies for our stack (fallbacks): audio, curses, sndfile, gettext, ltdl
-          for rt in \
-              /bin/cygpulse-*.dll \
-              /bin/cygpulsecommon-*.dll \
-              /bin/cygpulse-simple-*.dll \
-              /bin/cygncursesw-*.dll \
-              /bin/cygformw-*.dll \
-              /bin/cygpanelw-*.dll \
-              /bin/cygsndfile-*.dll \
-              /bin/cygogg-*.dll \
-              /bin/cygvorbis-*.dll \
-              /bin/cygvorbisenc-*.dll \
-              /bin/cygFLAC-*.dll \
-              /bin/cygintl-*.dll \
-              /bin/cygiconv-*.dll \
-              /bin/cygltdl-*.dll \
-              /bin/cygdbus-1-*.dll; do
-            for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" 2>/dev/null || true; done
-          done
+          # Rely on closure (below) to harvest all required DLLs.
 
           # Optional tools: include exe and their DLLs if present
           if command -v pulseaudio >/dev/null 2>&1; then
             PULSEAUDIO_BIN="$(command -v pulseaudio)"
             cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"
-            collect_deps padlls.txt "$PULSEAUDIO_BIN"
           fi
 
           if command -v mintty >/dev/null 2>&1; then
             MINTTY_BIN="$(command -v mintty)"
             cp -f "$MINTTY_BIN" "$STAGE/bin/"
-            collect_deps mtdlls.txt "$MINTTY_BIN"
           fi
 
-          # Closure: resolve dependencies of everything we have staged (3 passes)
-          for pass in 1 2 3; do
+          # Closure: resolve dependencies until fixed point (cap at 10 passes)
+          pass=1
+          while true; do
+            before=$(ls -1 "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
             collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll
+            after=$(ls -1 "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
+            [ "$after" -le "$before" ] && break
+            pass=$((pass+1))
+            [ "$pass" -gt 10 ] && break
           done
 
           # Copy launchers and config
@@ -283,6 +258,32 @@ jobs:
           if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then
             mkdir -p "$STAGE/etc/pulse"
             cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"
+          fi
+
+          # Emit a manifest of included DLLs for debugging/auditing
+          (cd "$STAGE/bin" && ls -1 *.dll 2>/dev/null | sort -f) > "$STAGE/dlls-manifest.txt" || true
+
+      - name: Validate portable dependencies
+        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -lc "set -o igncr; __f=$(cygpath -u ''{0}''); source \"$__f\""'
+        run: |
+          set -eu
+          STAGE="dist/dsd-neo-cygwin"
+          test -f "$STAGE/bin/dsd-neo.exe"
+          export PATH="$STAGE/bin"
+          # Ensure cygcheck reports no missing DLLs for all staged executables
+          miss=0
+          for exe in "$STAGE"/bin/*.exe; do
+            [ -f "$exe" ] || continue
+            echo "Validating dependencies for: $exe"
+            if cygcheck -v "$exe" | grep -E "^  Not Found: " -q; then
+              echo "Missing dependencies for $exe:" >&2
+              cygcheck -v "$exe" | sed -n 's/^  Not Found: //p' >&2 || true
+              miss=1
+            fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "Validation failed: missing DLLs detected." >&2
+            exit 1
           fi
 
       - name: Archive ZIP
