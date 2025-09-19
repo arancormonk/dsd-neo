@@ -206,23 +206,32 @@ jobs:
           # Helper: collect DLL dependencies of the given files and copy them into $STAGE/bin
           # Use robust parsing of cygcheck output to grab actual file paths.
           collect_deps() {
-            local out dll file fn
+            local out dll file fn name cand
             out="$1"; shift
             : > "$out"
             for file in "$@"; do
               [ -f "$file" ] || continue
-              cygcheck -v "$file" 2>/dev/null | tr -d '\r' | \
-                grep -iE -o '([A-Za-z]:\\\\[^ ]*|/[^ ]*)\\.dll' >> "$out" || true
+              /usr/bin/cygcheck -v "$file" 2>/dev/null | /usr/bin/tr -d '\r' | \
+                /usr/bin/grep -iE -o '([A-Za-z]:\\\\[^ ]*|/[^ ]*)\\.dll' >> "$out" || true
               # Also try ldd as a secondary source (formats differ)
-              ldd "$file" 2>/dev/null | tr -d '\r' | \
-                grep -iE -o '([A-Za-z]:\\\\[^ ]*|/[^ ]*)\\.dll' >> "$out" || true
+              /usr/bin/ldd "$file" 2>/dev/null | /usr/bin/tr -d '\r' | \
+                /usr/bin/grep -iE -o '([A-Za-z]:\\\\[^ ]*|/[^ ]*)\\.dll' >> "$out" || true
+              # Fallback: ask objdump for DLL names and resolve from known locations
+              while IFS= read -r name; do
+                for cand in \
+                  "/bin/$name" \
+                  "/usr/bin/$name" \
+                  "$DEPS_PREFIX/bin/$name"; do
+                  [ -f "$cand" ] && echo "$cand" >> "$out" && break || true
+                done
+              done < <(/usr/bin/objdump -p "$file" 2>/dev/null | /usr/bin/sed -n 's/^\tDLL Name: \(.*\.dll\)$/\1/p')
             done
             sort -u -o "$out" "$out" || true
             while IFS= read -r dll; do
               [ -z "$dll" ] && continue
               fn=$(cygpath -u "$dll" 2>/dev/null || echo "$dll")
               # Skip Windows system DLLs; copy Cygwin and third-party only
-              if echo "$fn" | grep -qiE '^/cygdrive/[a-z]/windows/'; then
+              if echo "$fn" | /usr/bin/grep -qiE '^/cygdrive/[a-z]/windows/'; then
                 continue
               fi
               if [ -f "$fn" ]; then
@@ -273,15 +282,16 @@ jobs:
           set -eu
           STAGE="dist/dsd-neo-cygwin"
           test -f "$STAGE/bin/dsd-neo.exe"
+          # Restrict runtime search to staged bin, but call Cygwin tools via absolute paths
           export PATH="$STAGE/bin"
           # Ensure cygcheck reports no missing DLLs for all staged executables
           miss=0
           for exe in "$STAGE"/bin/*.exe; do
             [ -f "$exe" ] || continue
             echo "Validating dependencies for: $exe"
-            if cygcheck -v "$exe" | grep -E "^  Not Found: " -q; then
+            if /usr/bin/cygcheck -v "$exe" | /usr/bin/grep -E "^  Not Found: " -q; then
               echo "Missing dependencies for $exe:" >&2
-              cygcheck -v "$exe" | sed -n 's/^  Not Found: //p' >&2 || true
+              /usr/bin/cygcheck -v "$exe" | /usr/bin/sed -n 's/^  Not Found: //p' >&2 || true
               miss=1
             fi
           done
