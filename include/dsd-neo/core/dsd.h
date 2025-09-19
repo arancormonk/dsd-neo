@@ -1558,6 +1558,18 @@ char* getDateS();
 char* getDateN(time_t t);
 char* getDateF(time_t t);
 
+/* Buffer-based, non-allocating variants (sizes include NUL): */
+void getTime_buf(char out[7]);  /* HHmmss */
+void getTimeC_buf(char out[9]); /* HH:MM:SS */
+void getTimeN_buf(time_t t, char out[9]);
+void getTimeF_buf(time_t t, char out[7]);
+
+void getDate_buf(char out[9]);   /* YYYYMMDD */
+void getDateH_buf(char out[11]); /* YYYY-MM-DD */
+void getDateS_buf(char out[11]); /* YYYY/MM/DD */
+void getDateN_buf(time_t t, char out[11]);
+void getDateF_buf(time_t t, char out[9]);
+
 //event history functions
 void init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop);
 void push_event_history(Event_History_I* event_struct);

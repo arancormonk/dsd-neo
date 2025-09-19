@@ -154,8 +154,10 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
         FILE* pFile; //file pointer
         if (opts->lrrp_file_output == 1) {
 
-            char* datestr = getDate();
-            char* timestr = getTime();
+            char datestr[9];
+            char timestr[7];
+            getDate_buf(datestr);
+            getTime_buf(timestr);
 
             //open file by name that is supplied in the ncurses terminal, or cli
             pFile = fopen(opts->lrrp_out_file, "a");
@@ -169,14 +171,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
             fprintf(pFile, "\n");
             fclose(pFile);
 
-            if (timestr != NULL) {
-                free(timestr);
-                timestr = NULL;
-            }
-            if (datestr != NULL) {
-                free(datestr);
-                datestr = NULL;
-            }
+            /* stack buffers; no free */
         }
 
     } else {
@@ -280,8 +275,10 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     FILE* pFile; //file pointer
     if (opts->lrrp_file_output == 1) {
 
-        char* datestr = getDate();
-        char* timestr = getTime();
+        char datestr[9];
+        char timestr[7];
+        getDate_buf(datestr);
+        getTime_buf(timestr);
 
         int s = (int)fkph; //rounded interger format for the log report
         int a = 0;
@@ -300,14 +297,7 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
         fprintf(pFile, "\n");
         fclose(pFile);
 
-        if (timestr != NULL) {
-            free(timestr);
-            timestr = NULL;
-        }
-        if (datestr != NULL) {
-            free(datestr);
-            datestr = NULL;
-        }
+        /* stack buffers; no free */
     }
 }
 
@@ -707,8 +697,10 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
             FILE* pFile; //file pointer
             if (opts->lrrp_file_output == 1) {
 
-                char* datestr = getDate();
-                char* timestr = getTime();
+                char datestr[9];
+                char timestr[7];
+                getDate_buf(datestr);
+                getTime_buf(timestr);
 
                 //open file by name that is supplied in the ncurses terminal, or cli
                 pFile = fopen(opts->lrrp_out_file, "a");
