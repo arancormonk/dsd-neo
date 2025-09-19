@@ -208,14 +208,14 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     if (c == 110 || c == 78) //'n' or 'N' key, toggle constellation normalization
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->constellation == 1) {
             opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
         }
     }
 
     if (c == 60) //'<' key, decrease constellation gate
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->constellation == 1) {
             float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
             *g -= 0.02f;
             if (*g < 0.0f) {
@@ -226,7 +226,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     if (c == 62) //'>' key, increase constellation gate
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->constellation == 1) {
             float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
             *g += 0.02f;
             if (*g > 0.90f) {
@@ -279,18 +279,18 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
 #ifdef USE_RTLSDR
-    if (c == 91) //'[' key, decrease FFT size
+    if (c == 44) //',' key, decrease FFT size
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
             int n = rtl_stream_spectrum_get_size();
             if (n > 64) {
                 n = rtl_stream_spectrum_set_size(n / 2);
             }
         }
     }
-    if (c == 93) //']' key, increase FFT size
+    if (c == 46) //'.' key, increase FFT size
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
             int n = rtl_stream_spectrum_get_size();
             if (n < 1024) {
                 n = rtl_stream_spectrum_set_size(n * 2);
@@ -301,14 +301,14 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     if (c == 85) //'U' key, toggle Unicode blocks in eye view
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->eye_view == 1) {
             opts->eye_unicode = opts->eye_unicode ? 0 : 1;
         }
     }
 
     if (c == 67) //'C' key, toggle colorized eye view
     {
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == 3 && opts->eye_view == 1) {
             opts->eye_color = opts->eye_color ? 0 : 1;
         }
     }

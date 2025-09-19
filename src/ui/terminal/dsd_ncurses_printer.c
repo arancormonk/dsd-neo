@@ -86,6 +86,14 @@ ui_print_header(const char* title) {
     }
 }
 
+/* Print a single left border '|' using the primary UI color (pair 4) */
+static inline void
+ui_print_lborder(void) {
+    attron(COLOR_PAIR(4));
+    addch('|');
+    attroff(COLOR_PAIR(4));
+}
+
 /* Forward declaration for int ascending comparator (used by qsort for percentiles) */
 static int cmp_int_asc(const void* a, const void* b);
 
@@ -354,8 +362,11 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 
     ui_print_header("Constellation");
     if (n <= 0) {
-        printw("| (no samples yet)\n");
+        ui_print_lborder();
+        printw(" (no samples yet)\n");
+        attron(COLOR_PAIR(4));
         ui_print_hr();
+        attroff(COLOR_PAIR(4));
         return;
     }
 
@@ -588,7 +599,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         y_end = y_bot;
     }
     for (int y = y_start; y <= y_end; y++) {
-        printw("|");
+        ui_print_lborder();
         int last_pair = -1;
         for (int x = 0; x < W; x++) {
             /* Determine overlays (restricted to the centered square region) */
@@ -776,24 +787,31 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     }
 
     /* Legend */
-    printw("| Ref: axes '+', '/'\\'\\' slicer; 'o' cluster refs\n");
+    ui_print_lborder();
+    printw(" Ref: axes '+', '/'\\'\\' slicer; 'o' cluster refs\n");
     if (use_unicode) {
         if (use_dots) {
-            printw("| Density: · • ● ⬤  (low -> high)%s\n",
+            ui_print_lborder();
+            printw(" Density: · • ● ⬤  (low -> high)%s\n",
                    (opts && opts->eye_color && has_colors()) ? "; colored" : "");
         } else {
-            printw("| Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n",
+            ui_print_lborder();
+            printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n",
                    (opts && opts->eye_color && has_colors()) ? "; colored" : "");
         }
     } else {
-        printw("| Density: . : - = + * # @  (low -> high)%s\n",
+        ui_print_lborder();
+        printw(" Density: . : - = + * # @  (low -> high)%s\n",
                (opts && opts->eye_color && has_colors()) ? "; colored" : "");
     }
     /* Color bar legend (consistent with Eye Diagram) */
-    printw("| Norm: %s (toggle with 'N')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
+    ui_print_lborder();
+    printw(" Norm: %s (toggle with 'N')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
     if (opts && opts->eye_color && has_colors()) {
-        printw("|\n");
-        printw("| Color:   ");
+        ui_print_lborder();
+        addch('\n');
+        ui_print_lborder();
+        printw(" Color:   ");
         for (int i = 0; i < color_len; i++) {
             attron(COLOR_PAIR((short)(color_base + i)));
             if (use_unicode) {
@@ -804,7 +822,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             attroff(COLOR_PAIR((short)(color_base + i)));
         }
         printw("  low -> high\n");
-        printw("|          ");
+        ui_print_lborder();
+        printw("          ");
         int barw = color_len * 2;
         for (int x = 0; x < barw; x++) {
             if (x == 0 || x == barw / 2 || x == barw - 1) {
@@ -814,7 +833,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             }
         }
         printw("\n");
-        printw("|          0%%");
+        ui_print_lborder();
+        printw("          0%%");
         int pad_mid = barw / 2 - 2;
         for (int i = 0; i < pad_mid; i++) {
             addch(' ');
@@ -826,7 +846,11 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         }
         printw("100%%\n");
     }
+    attron(COLOR_PAIR(4));
+    attron(COLOR_PAIR(4));
     ui_print_hr();
+    attroff(COLOR_PAIR(4));
+    attroff(COLOR_PAIR(4));
     free(den);
 #else
     ui_print_header("Constellation");
@@ -866,8 +890,11 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         }
     }
     if (n <= 0 || sps <= 0) {
-        printw("| (no samples or SPS)\n");
+        ui_print_lborder();
+        printw(" (no samples or SPS)\n");
+        attron(COLOR_PAIR(4));
         ui_print_hr();
+        attroff(COLOR_PAIR(4));
         return;
     }
     /* Grid size adaptive */
@@ -1034,7 +1061,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
 
     /* Draw with overlays */
     for (int y = 0; y < H; y++) {
-        printw("|");
+        ui_print_lborder();
         int last_pair = -1;
         for (int x = 0; x < W; x++) {
             unsigned short d = den[(size_t)y * (size_t)W + (size_t)x];
@@ -1189,19 +1216,24 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 attroff(COLOR_PAIR(last_pair));
             }
         }
-        printw("\n");
+        addch('\n');
     }
     /* Legend + reference info */
-    printw("| Ref: '-' Q1/Q3, '=' median; '|' edges; '+' crossings\n");
+    ui_print_lborder();
+    printw(" Ref: '-' Q1/Q3, '=' median; '|' edges; '+' crossings\n");
     if (opts->eye_unicode) {
-        printw("| Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
+        ui_print_lborder();
+        printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
     } else {
-        printw("| Density: . : - = + * # @  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
+        ui_print_lborder();
+        printw(" Density: . : - = + * # @  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
     }
     if (opts->eye_color && has_colors()) {
-        printw("|\n");
+        ui_print_lborder();
+        addch('\n');
         /* Show a color bar legend for density mapping */
-        printw("| Color:   ");
+        ui_print_lborder();
+        printw(" Color:   ");
         for (int i = 0; i < color_len; i++) {
             attron(COLOR_PAIR((short)(color_base + i)));
             if (opts->eye_unicode) {
@@ -1213,7 +1245,8 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         }
         printw("  low -> high\n");
         /* Ticks under the color bar: 0%, 50%, 100% */
-        printw("|          ");
+        ui_print_lborder();
+        printw("          ");
         int barw = color_len * 2;
         for (int x = 0; x < barw; x++) {
             if (x == 0 || x == barw / 2 || x == barw - 1) {
@@ -1223,7 +1256,8 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
             }
         }
         printw("\n");
-        printw("|          0%%");
+        ui_print_lborder();
+        printw("          0%%");
         int pad_mid = barw / 2 - 2;
         for (int i = 0; i < pad_mid; i++) {
             addch(' ');
@@ -1307,11 +1341,15 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         }
     }
     if (is_c4fm && snr_db >= 0.0) {
-        printw("| Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=%.1f dB\n", yq1, yq2, yq3, sps, snr_db);
+        ui_print_lborder();
+        printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=%.1f dB\n", yq1, yq2, yq3, sps, snr_db);
     } else {
-        printw("| Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=n/a\n", yq1, yq2, yq3, sps);
+        ui_print_lborder();
+        printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=n/a\n", yq1, yq2, yq3, sps);
     }
+    attron(COLOR_PAIR(4));
     ui_print_hr();
+    attroff(COLOR_PAIR(4));
     free(den);
 #else
     ui_print_header("Eye Diagram");
@@ -1338,8 +1376,11 @@ print_fsk_hist_view(void) {
     int n = rtl_stream_eye_get(buf, MAXS, &sps);
     ui_print_header("FSK 4-Level Histogram");
     if (n <= 0) {
-        printw("| (no samples)\n");
+        ui_print_lborder();
+        printw(" (no samples)\n");
+        attron(COLOR_PAIR(4));
         ui_print_hr();
+        attroff(COLOR_PAIR(4));
         return;
     }
     /* Compute peak and mean DC offset */
@@ -1431,7 +1472,8 @@ print_fsk_hist_view(void) {
     ruler[p1] = '|';
     ruler[p2] = '+'; /* median */
     ruler[p3] = '|';
-    printw("| Ruler:  ");
+    ui_print_lborder();
+    printw(" Ruler:  ");
     for (int x = 0; x < WR; x++) {
         addch(ruler[x]);
     }
@@ -1446,7 +1488,8 @@ print_fsk_hist_view(void) {
         }
     }
     const char* labels[4] = {"L3(-)", "L1(-)", "L1(+)", "L3(+)"};
-    printw("| DC Offset: %+0.2f%% of full-scale\n", dc_norm * 100.0);
+    ui_print_lborder();
+    printw(" DC Offset: %+0.2f%% of full-scale\n", dc_norm * 100.0);
     for (int i = 0; i < 4; i++) {
         int w = (int)((double)bin[i] / (double)maxc * (double)W + 0.5);
         if (w < 0) {
@@ -1455,7 +1498,8 @@ print_fsk_hist_view(void) {
         if (w > W) {
             w = W;
         }
-        printw("| %-6s ", labels[i]);
+        ui_print_lborder();
+        printw(" %-6s ", labels[i]);
         for (int x = 0; x < w; x++) {
             addch('#');
         }
@@ -1464,7 +1508,9 @@ print_fsk_hist_view(void) {
         }
         printw(" %lld\n", (long long)bin[i]);
     }
+    attron(COLOR_PAIR(4));
     ui_print_hr();
+    attroff(COLOR_PAIR(4));
 #else
     ui_print_header("FSK 4-Level Histogram");
     printw("| (RTL disabled in this build)\n");
@@ -1600,13 +1646,16 @@ print_spectrum_view(dsd_opts* opts) {
     /* Legend */
     float span_hz = (float)rate;
     int nfft2 = rtl_stream_spectrum_get_size();
-    printw("| Span: %.1f kHz  \u0394f(FFT): %.1f Hz  \u0394f(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f,
+    ui_print_lborder();
+    printw(" Span: %.1f kHz  \u0394f(FFT): %.1f Hz  \u0394f(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f,
            (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, (rate > 0 && W > 0) ? (span_hz / (float)W) : 0.0f,
            nfft2, use_unicode ? "Unicode" : "ASCII", (opts && opts->eye_color && has_colors()) ? "; colored" : "");
     /* Frequency ticks around DC */
-    printw("| Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
+    ui_print_lborder();
+    printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
     /* Amplitude scale relative to current peak */
-    printw("| Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
+    ui_print_lborder();
+    printw(" Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
 #ifdef PRETTY_COLORS
     if (opts && opts->eye_color && has_colors()) {
         printw("| Color:   ");
@@ -2332,8 +2381,29 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     ui_print_hr();
 #ifdef USE_RTLSDR
-    /* Only render RTL-driven visualizers when RTL input is active */
+    /* Only show RTL-SDR section and render visualizers when RTL input is active */
     if (opts->audio_in_type == 3) {
+        ui_print_header("RTL-SDR Visual Aids");
+        int nfft = rtl_stream_spectrum_get_size();
+        /* Controls/status line: only show controls relevant to active views */
+        printw("| Const View:  %s (O)", opts->constellation ? "ON" : "off");
+        if (opts->constellation == 1) {
+            printw("  Gate: %.02f (</>)  Norm: %s (N)",
+                   (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
+                   opts->const_norm_mode ? "unit" : "radial");
+        }
+        printw("  Eye: %s (E)", opts->eye_view ? "ON" : "off");
+        if (opts->eye_view == 1) {
+            printw("  Uni: %s (U) Col: %s (C)", opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off");
+        }
+        printw("  Hist: %s (K)", opts->fsk_hist_view ? "ON" : "off");
+        printw("  Spec: %s (S)", opts->spectrum_view ? "ON" : "off");
+        if (opts->spectrum_view == 1) {
+            printw("  FFT:%d (,/.)", nfft);
+        }
+        addch('\n');
+        ui_print_hr();
+
         if (opts->constellation == 1) {
             print_constellation_view(opts, state);
         }
@@ -2348,7 +2418,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 #endif
-    attroff(COLOR_PAIR(4));
+    /* Ensure our primary UI color remains active after visual aids */
+    attron(COLOR_PAIR(4));
 
     if (state->carrier == 1) {
         attron(COLOR_PAIR(3));
@@ -2384,18 +2455,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("[GFSK]");
     }
     printw("[%d] \n", (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
-#ifdef USE_RTLSDR
-    if (opts->audio_in_type == 3) {
-        int nfft = rtl_stream_spectrum_get_size();
-        printw("| Const View:  %s (O)  Gate: %.02f (</>)  Norm: %s (N)  Eye: %s (E) Uni: %s (U) Col: %s (C)  Hist: %s "
-               "(K)  Spec: %s (S)  FFT:%d ([/])\n",
-               opts->constellation ? "ON" : "off",
-               (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-               opts->const_norm_mode ? "unit" : "radial", opts->eye_view ? "ON" : "off",
-               opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off", opts->fsk_hist_view ? "ON" : "off",
-               opts->spectrum_view ? "ON" : "off", nfft);
-    }
-#endif
+    /* (RTL-SDR controls moved to dedicated section above) */
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
     }
