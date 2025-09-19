@@ -3,8 +3,10 @@ name: windows-ci
 on:
   workflow_dispatch: {}
   push:
-    tags:
-      - "v*"
+    branches: [main, master]
+    paths-ignore:
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
 
 jobs:
   build-portable-zip:
@@ -15,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5.0.0
 
-      - name: Gate on CI success (ci.yml) [disabled]
+      - name: Gate on Linux CI success (linux-ci.yaml) [disabled]
         if: ${{ false }}
         uses: actions/github-script@v8
         with:
@@ -27,17 +29,17 @@ jobs:
             const res = await github.rest.actions.listWorkflowRuns({
               owner,
               repo,
-              workflow_id: 'ci.yml',
+              workflow_id: 'linux-ci.yaml',
               head_sha: sha,
               per_page: 1
             });
             const run = res.data.workflow_runs[0];
             if (!run) {
-              core.setFailed(`No CI (ci.yml) run found for commit ${sha}.`);
+              core.setFailed(`No Linux CI (linux-ci.yaml) run found for commit ${sha}.`);
             } else if (run.status !== 'completed' || run.conclusion !== 'success') {
-              core.setFailed(`CI (ci.yml) not successful for ${sha}. status=${run.status} conclusion=${run.conclusion}`);
+              core.setFailed(`Linux CI (linux-ci.yaml) not successful for ${sha}. status=${run.status} conclusion=${run.conclusion}`);
             } else {
-              core.info(`CI passed: ${run.html_url}`);
+              core.info(`Linux CI passed: ${run.html_url}`);
             }
 
       - name: Compute dependency SHAs

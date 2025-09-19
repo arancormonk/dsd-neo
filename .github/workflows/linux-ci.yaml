@@ -14,7 +14,6 @@ on:
 
 jobs:
   build-linux:
-    needs: [format-check, clang-tidy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -194,7 +193,6 @@ jobs:
           git push --force origin refs/tags/nightly
 
   sanitize-linux:
-    needs: [format-check, clang-tidy]
     name: Linux • Debug • sanitizers
     runs-on: ubuntu-latest
     timeout-minutes: 30

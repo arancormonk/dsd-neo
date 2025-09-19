@@ -374,10 +374,14 @@ demod_reset_on_retune(struct demod_state* s) {
  * @param arg Pointer to `demod_state`.
  * @return NULL on exit.
  */
-/* SNR buffers for different modulations */
-static double g_snr_c4fm_db = -100.0;
-static double g_snr_qpsk_db = -100.0;
-static double g_snr_gfsk_db = -100.0;
+/* SNR buffers for different modulations
+ * NOTE: These are updated from the demod thread and read from the UI thread.
+ * Use atomics to avoid data races and stale reads. Relaxed ordering is
+ * sufficient because we only need value coherence, not synchronization. */
+#include <atomic>
+static std::atomic<double> g_snr_c4fm_db{-100.0};
+static std::atomic<double> g_snr_qpsk_db{-100.0};
+static std::atomic<double> g_snr_gfsk_db{-100.0};
 
 static void*
 demod_thread_fn(void* arg) {
@@ -452,7 +456,7 @@ demod_thread_fn(void* arg) {
                         } else {
                             ema = 0.8 * ema + 0.2 * snr;
                         }
-                        g_snr_qpsk_db = ema;
+                        g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
                     }
                 }
             }
@@ -521,7 +525,7 @@ demod_thread_fn(void* arg) {
                                     } else {
                                         ema = 0.8 * ema + 0.2 * snr;
                                     }
-                                    g_snr_c4fm_db = ema;
+                                    g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
                                 }
                             }
                         }
@@ -563,7 +567,7 @@ demod_thread_fn(void* arg) {
                                         } else {
                                             ema = 0.8 * ema + 0.2 * snr;
                                         }
-                                        g_snr_gfsk_db = ema;
+                                        g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
                                     }
                                 }
                             }
@@ -941,17 +945,17 @@ dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
 /* ---------------- SNR export (smoothed) ---------------- */
 extern "C" double
 rtl_stream_get_snr_c4fm(void) {
-    return g_snr_c4fm_db;
+    return g_snr_c4fm_db.load(std::memory_order_relaxed);
 }
 
 extern "C" double
 rtl_stream_get_snr_cqpsk(void) {
-    return g_snr_qpsk_db;
+    return g_snr_qpsk_db.load(std::memory_order_relaxed);
 }
 
 extern "C" double
 rtl_stream_get_snr_gfsk(void) {
-    return g_snr_gfsk_db;
+    return g_snr_gfsk_db.load(std::memory_order_relaxed);
 }
 
 /**
