@@ -185,8 +185,8 @@ jobs:
       - name: Stage portable tree
         id: stage
         # Run script via Cygwin bash with CRLF ignoring enabled
-        # Using -lc "set -o igncr; source {0}" ensures igncr is set before reading the temp script file
-        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -lc "set -o igncr; source {0}"'
+        # Convert the runner temp script path to a POSIX path before sourcing to avoid backslash escaping issues
+        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -lc "set -o igncr; __f=$(cygpath -u ''{0}''); source \"$__f\""'
         run: |
           # Be robust if pipefail isn't available (should be in bash)
           set -euo pipefail 2>/dev/null || set -eu
