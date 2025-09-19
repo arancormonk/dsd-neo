@@ -4,7 +4,8 @@ A modular and performance‑enhanced version of the well-known Digital Speech De
 
 Project homepage: https://github.com/arancormonk/dsd-neo
 
-[![CI](https://github.com/arancormonk/dsd-neo/actions/workflows/ci.yml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/ci.yml)
+[![linux-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml)
+[![windows-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml)
 
 ## Project Status
 

@@ -6,11 +6,13 @@ on:
     paths-ignore:
       - ".github/workflows/*.yml"
       - ".github/workflows/*.yaml"
+      - "**/*.md"
   pull_request:
     branches: [main, master]
     paths-ignore:
       - ".github/workflows/*.yml"
       - ".github/workflows/*.yaml"
+      - "**/*.md"
 
 jobs:
   build-linux:

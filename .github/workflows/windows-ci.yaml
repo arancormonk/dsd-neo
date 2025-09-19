@@ -7,6 +7,7 @@ on:
     paths-ignore:
       - ".github/workflows/*.yml"
       - ".github/workflows/*.yaml"
+      - "**/*.md"
 
 jobs:
   build-portable-zip:
@@ -58,7 +59,6 @@ jobs:
       - name: Setup Cygwin
         uses: egor-tensin/setup-cygwin@v4.0.1
         with:
-          platform: x64
           packages: >-
             git
             gcc-g++
@@ -87,7 +87,6 @@ jobs:
           key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             cygdeps-${{ runner.os }}-
-          save-always: true
 
       - name: Show Cygwin versions
         shell: pwsh
@@ -339,11 +338,11 @@ jobs:
           $stage = 'dist/dsd-neo-cygwin'
           $defaultZip = "$stage.zip"
           if ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME) {
-            $zip = "dist/dsd-neo-cygwin-$($env:REF_NAME).zip"
-            $artName = "dsd-neo-cygwin-portable-$($env:REF_NAME)"
+            $zip = "dist/dsd-neo-cygwin-x86_64-portable-$($env:REF_NAME).zip"
+            $artName = "dsd-neo-cygwin-x86_64-portable-$($env:REF_NAME)"
           } else {
-            $zip = "dist/dsd-neo-cygwin-nightly.zip"
-            $artName = "dsd-neo-cygwin-portable-nightly"
+            $zip = "dist/dsd-neo-cygwin-x86_64-portable-nightly.zip"
+            $artName = "dsd-neo-cygwin-x86_64-portable-nightly"
           }
           $zipDir = Split-Path -Parent $zip
           if ($zipDir -and !(Test-Path $zipDir)) { New-Item -Type Directory -Force -Path $zipDir | Out-Null }
@@ -367,7 +366,7 @@ jobs:
         uses: softprops/action-gh-release@v2.3.3
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
-          name: dsd-neo portable (Cygwin) ${{ github.ref_name }}
+          name: dsd-neo-cygwin-x86_64-portable-${{ github.ref_name }}
           generate_release_notes: true
 
       - name: Upload nightly asset (overwrite)
@@ -378,5 +377,5 @@ jobs:
           tag: nightly
           prerelease: true
           file: ${{ steps.zip.outputs.ZIP_PATH }}
-          asset_name: dsd-neo-cygwin-nightly.zip
+          asset_name: dsd-neo-cygwin-x86_64-portable-nightly.zip
           overwrite: true
