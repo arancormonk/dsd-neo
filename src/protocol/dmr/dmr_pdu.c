@@ -738,7 +738,6 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
             }
 
             if (lat) {
-                fprintf(stderr, "\n");
                 //need to check these new calcs for accuracy accross the globe, both lat and lon
 
                 //two's compliment-ish testing on these bytes
@@ -757,28 +756,22 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                 lat_fin = (double)lat * lat_unit * lat_sign;
                 lon_fin = (double)lon * lon_unit * lon_sign;
 
-                fprintf(stderr, " Lat: %.5lf", lat_fin);
-                fprintf(stderr, " Lon: %.5lf", lon_fin);
-                fprintf(stderr, " (%.5lf, %.5lf)", lat_fin, lon_fin);
+                fprintf(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat_fin, lon_fin, lat_fin, lon_fin);
             }
 
             if (rad) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, " Radius: %dm", rad); //unsure of 'units' or calculation for radius (meters?)
+                fprintf(stderr, "\n Radius: %dm", rad); //unsure of 'units' or calculation for radius (meters?)
             }
             if (alt) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, " Altitude: %dm", alt); //unsure of 'units' or calculation for alt (meters?)
+                fprintf(stderr, "\n Altitude: %dm", alt); //unsure of 'units' or calculation for alt (meters?)
             }
             if (vel_set) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, " Speed: %.4lf m/s %.4lf km/h %.4lf mph", velocity, (3.6 * velocity),
+                fprintf(stderr, "\n Speed: %.4lf m/s %.4lf km/h %.4lf mph", velocity, (3.6 * velocity),
                         (2.2369 * velocity));
             }
 
             if (deg_set) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, " Track: %d%s", degrees, deg_glyph);
+                fprintf(stderr, "\n Track: %d%s", degrees, deg_glyph);
             }
 
             //write to LRRP file, if a lat/lon is present
