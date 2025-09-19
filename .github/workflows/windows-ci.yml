@@ -211,18 +211,20 @@ jobs:
             : > "$out"
             for file in "$@"; do
               [ -f "$file" ] || continue
-              # Prefer explicit "Found:" lines; also fall back to matching absolute paths that end in .dll
-              cygcheck -v "$file" 2>/dev/null | \
-                sed -nE \
-                  -e 's/^Found: (.*\\.dll)$/\1/p' \
-                  -e 's@^ *([A-Za-z]:\\\\[^ ]*\\.dll).*$@\1@p' \
-                  -e 's@^ *(/[^ ]*\\.dll).*$@\1@p' >> "$out" || true
+              cygcheck -v "$file" 2>/dev/null | tr -d '\r' | \
+                grep -iE -o '([A-Za-z]:\\\\[^ ]*|/[^ ]*)\\.dll' >> "$out" || true
+              # Also try ldd as a secondary source (formats differ)
+              ldd "$file" 2>/dev/null | tr -d '\r' | \
+                grep -iE -o '([A-Za-z]:\\\\[^ ]*|/[^ ]*)\\.dll' >> "$out" || true
             done
-            # Unique and copy
             sort -u -o "$out" "$out" || true
             while IFS= read -r dll; do
               [ -z "$dll" ] && continue
               fn=$(cygpath -u "$dll" 2>/dev/null || echo "$dll")
+              # Skip Windows system DLLs; copy Cygwin and third-party only
+              if echo "$fn" | grep -qiE '^/cygdrive/[a-z]/windows/'; then
+                continue
+              fi
               if [ -f "$fn" ]; then
                 cp -n "$fn" "$STAGE/bin/" 2>/dev/null || true
               fi
