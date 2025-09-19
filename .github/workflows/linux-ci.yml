@@ -167,6 +167,32 @@ jobs:
         if: always()
         run: ccache -s
 
+  update-nightly-tag:
+    name: Update nightly tag
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Move nightly tag to current commit
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          ts=$(date -u +%FT%TZ)
+          if git rev-parse -q --verify refs/tags/nightly >/dev/null; then
+            git tag -fa nightly -m "nightly $ts" HEAD
+          else
+            git tag -a nightly -m "nightly $ts" HEAD
+          fi
+          git push --force origin refs/tags/nightly
+
   sanitize-linux:
     needs: [format-check, clang-tidy]
     name: Linux • Debug • sanitizers
