@@ -184,46 +184,77 @@ jobs:
 
       - name: Stage portable tree
         id: stage
-        shell: pwsh
+        # Use Cygwin bash directly to avoid pwsh quoting issues
+        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -leo pipefail -O igncr {0}'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"; test -f "$EXE"; STAGE="dist/dsd-neo-cygwin"; mkdir -p "$STAGE/bin" "$STAGE/etc"; cp -f "$EXE" "$STAGE/bin/";
-            : "${DEPS_PREFIX:?DEPS_PREFIX not set}";
-            # Collect dependent DLLs via cygcheck; capture both Windows and POSIX paths
-            cygcheck -v "$EXE" | awk '/\\.dll/ {print}' | sed -E "s/^ *//" | awk '{print $1}' | sort -u > dlls.txt || true;
-            while IFS= read -r f; do 
-              [ -z "$f" ] && continue;
-              # Convert Windows path to POSIX if needed
-              fn=$(cygpath -u "$f" 2>/dev/null || echo "$f");
-              if [ -f "$fn" ]; then cp -n "$fn" "$STAGE/bin/" || true; fi;
-            done < dlls.txt;
-            # Also stage any dependency DLLs we built into .cygdeps/bin
-            if [ -d "$DEPS_PREFIX/bin" ]; then cp -n "$DEPS_PREFIX"/bin/*.dll "$STAGE/bin/" 2>/dev/null || true; fi;
-            # Ensure Cygwin runtime and common toolchain DLLs are included even if cygcheck misses them
-            for rt in /bin/cygwin1.dll /bin/cyggcc_s-*.dll /bin/cygstdc++-*.dll /bin/libwinpthread-1.dll; do
-              for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" || true; done;
-            done;
-            # Bundle PulseAudio server (optional) and its DLLs
-            PULSEAUDIO_BIN="$(command -v pulseaudio || true)"; if [ -n "$PULSEAUDIO_BIN" ]; then 
-              cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"; 
-              cygcheck -v "$PULSEAUDIO_BIN" | awk '/\\.dll/ {print}' | sed -E "s/^ *//" | awk '{print $1}' | sort -u > padlls.txt || true;
-              while IFS= read -r f; do 
-                [ -z "$f" ] && continue;
-                fn=$(cygpath -u "$f" 2>/dev/null || echo "$f");
-                if [ -f "$fn" ]; then cp -n "$fn" "$STAGE/bin/" || true; fi;
-              done < padlls.txt; 
-            fi;
-            # Bundle mintty (optional) and its DLLs
-            MINTTY_BIN="$(command -v mintty || true)"; if [ -n "$MINTTY_BIN" ]; then 
-              cp -f "$MINTTY_BIN" "$STAGE/bin/"; 
-              cygcheck -v "$MINTTY_BIN" | awk '/\\.dll/ {print}' | sed -E "s/^ *//" | awk '{print $1}' | sort -u > mtdlls.txt || true; 
-              while IFS= read -r f; do 
-                [ -z "$f" ] && continue;
-                fn=$(cygpath -u "$f" 2>/dev/null || echo "$f");
-                if [ -f "$fn" ]; then cp -n "$fn" "$STAGE/bin/" || true; fi; 
-              done < mtdlls.txt; 
-            fi;
-            # Copy launchers and config
-            cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"; cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true; cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"; if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then mkdir -p "$STAGE/etc/pulse"; cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"; fi'
+          set -euo pipefail
+          cd "$(cygpath -u "$GITHUB_WORKSPACE")"
+
+          EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
+          test -f "$EXE"
+
+          STAGE="dist/dsd-neo-cygwin"
+          mkdir -p "$STAGE/bin" "$STAGE/etc"
+          cp -f "$EXE" "$STAGE/bin/"
+
+          : "${DEPS_PREFIX:?DEPS_PREFIX not set}"
+
+          # Helper: collect DLL dependencies of the given files and copy them into $STAGE/bin
+          collect_deps() {
+            local out dll file fn
+            out="$1"; shift
+            : > "$out"
+            for file in "$@"; do
+              [ -f "$file" ] || continue
+              cygcheck -v "$file" | awk '/\\.dll/ {print}' | sed -E 's/^ *//' | awk '{print $1}' >> "$out" || true
+            done
+            sort -u -o "$out" "$out" || true
+            while IFS= read -r dll; do
+              [ -z "$dll" ] && continue
+              fn=$(cygpath -u "$dll" 2>/dev/null || echo "$dll")
+              if [ -f "$fn" ]; then
+                cp -n "$fn" "$STAGE/bin/" 2>/dev/null || true
+              fi
+            done < "$out"
+          }
+
+          # Initial pass: exe + any DLLs we built in .cygdeps/bin
+          collect_deps dlls.txt "$EXE"
+          if [ -d "$DEPS_PREFIX/bin" ]; then
+            cp -n "$DEPS_PREFIX"/bin/*.dll "$STAGE/bin/" 2>/dev/null || true
+          fi
+
+          # Ensure key cygwin/toolchain runtimes are present even if cygcheck misses them
+          for rt in /bin/cygwin1.dll /bin/cyggcc_s-*.dll /bin/cygstdc++-*.dll /bin/libwinpthread-1.dll; do
+            for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" 2>/dev/null || true; done
+          done
+
+          # Optional tools: include exe and their DLLs if present
+          if command -v pulseaudio >/dev/null 2>&1; then
+            PULSEAUDIO_BIN="$(command -v pulseaudio)"
+            cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"
+            collect_deps padlls.txt "$PULSEAUDIO_BIN"
+          fi
+
+          if command -v mintty >/dev/null 2>&1; then
+            MINTTY_BIN="$(command -v mintty)"
+            cp -f "$MINTTY_BIN" "$STAGE/bin/"
+            collect_deps mtdlls.txt "$MINTTY_BIN"
+          fi
+
+          # Closure: resolve dependencies of everything we have staged (2 extra passes)
+          for pass in 1 2; do
+            collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll
+          done
+
+          # Copy launchers and config
+          cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"
+          cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true
+          cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"
+          if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then
+            mkdir -p "$STAGE/etc/pulse"
+            cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"
+          fi
 
       - name: Archive ZIP
         shell: pwsh
