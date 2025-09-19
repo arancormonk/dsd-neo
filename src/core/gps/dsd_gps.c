@@ -434,8 +434,10 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     FILE* pFile; //file pointer
     if (opts->lrrp_file_output == 1) {
 
-        char* datestr = getDate();
-        char* timestr = getTime();
+        char datestr[9];
+        char timestr[7];
+        getDate_buf(datestr);
+        getTime_buf(timestr);
 
         //rounded interger formats for the log report
         int s = (int)fkph;
@@ -453,14 +455,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
         fprintf(pFile, "\n");
         fclose(pFile);
 
-        if (timestr != NULL) {
-            free(timestr);
-            timestr = NULL;
-        }
-        if (datestr != NULL) {
-            free(datestr);
-            datestr = NULL;
-        }
+        /* stack buffers; no free */
     }
 
     //NOTE: There seems to be a few more octets left undecoded in this PDU

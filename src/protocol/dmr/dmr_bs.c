@@ -730,10 +730,7 @@ END:
     }
 
     //
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
+    /* stack buffer; no free */
 
     //reset static ks counter
     state->static_ks_counter[0] = 0;
@@ -770,7 +767,8 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     uint8_t cachdata[25];
     int cachInterleave[24] = {0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23};
 
-    char* timestr = getTimeC();
+    char timestr[9];
+    getTimeC_buf(timestr);
 
     //payload buffer
     //CACH + First Half Payload + Sync = 12 + 54 + 24
@@ -1065,8 +1063,5 @@ END:
         dmr_reset_blocks(opts, state);
     }
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
+    /* stack buffer; no free */
 }

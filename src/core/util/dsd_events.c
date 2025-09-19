@@ -952,8 +952,10 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     state->event_history_s[slot].Event_History_Items[0].event_time = time(NULL);
 
     //date and time strings //getTimeN(time(NULL)); //getDateN(time(NULL));
-    char* timestr = getTimeN(time(NULL));
-    char* datestr = getDateN(time(NULL));
+    char timestr[9];
+    char datestr[11];
+    getTimeN_buf(time(NULL), timestr);
+    getDateN_buf(time(NULL), datestr);
 
     char event_string[2000];
     memset(event_string, 0, sizeof(event_string));
@@ -962,14 +964,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     sprintf(state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
             event_string); //could change this to a strncpy to prevent potential overflow
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
-    if (datestr != NULL) {
-        free(datestr);
-        datestr = NULL;
-    }
+    /* stack buffers; no free */
 
     //call alert on data calls
     if (opts->call_alert) {

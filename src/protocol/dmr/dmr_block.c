@@ -403,8 +403,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
             if (dpf == 2) {
                 fprintf(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - FSN %d", sap, sap_string, f, bf,
                         poc, fsn);
-            }
-            if (dpf == 3) {
+            } else { /* dpf == 3 */
                 fprintf(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN %d", sap,
                         sap_string, f, bf, poc, s, ns, fsn);
             }

@@ -34,7 +34,8 @@ void
 printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation) {
     UNUSED3(state, offset, modulation);
 
-    char* timestr = getTimeC();
+    char timestr[9];
+    getTimeC_buf(timestr);
     if (opts->verbose > 0) {
         fprintf(stderr, "%s ", timestr);
         fprintf(stderr, "Sync: %s ", frametype);
@@ -50,10 +51,7 @@ printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, ch
     // if (opts->verbose > 2)
     //fprintf (stderr,"g: %f ", state->aout_gain);
 
-    if (timestr != NULL) {
-        free(timestr);
-        timestr = NULL;
-    }
+    /* stack buffer; no free */
 }
 
 int
