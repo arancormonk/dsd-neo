@@ -22,7 +22,7 @@
 #ifndef DSD_H
 #define DSD_H
 
-//ANSII Color Characters in Terminal -- Disable by using cmake -DCOLORSLOGS=OFF ..
+//ANSII Color Characters in Terminal -- Disable by using cmake -DCOLORSLOGS=Off ..
 #ifdef PRETTY_COLORS_LOGS
 #define KNRM "\x1B[0m"
 #define KRED "\x1B[31m"

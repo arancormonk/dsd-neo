@@ -251,7 +251,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             if (opts->audio_out == 0) {
                 snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: Muted");
             } else {
-                snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: ON");
+                snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: On");
             }
             state->ui_msg_expire = time(NULL) + 3; // show ~3 seconds
         }

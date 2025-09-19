@@ -606,8 +606,8 @@ initOpts(dsd_opts* opts) {
     opts->const_norm_mode = 0; // default: radial percentile normalization
     opts->eye_view = 0;
     opts->fsk_hist_view = 0;
-    opts->eye_unicode = 1; //default ON for clearer rendering
-    opts->eye_color = 1;   //default ON when terminal supports color
+    opts->eye_unicode = 1; //default On for clearer rendering
+    opts->eye_color = 1;   //default On when terminal supports color
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;
@@ -1685,7 +1685,7 @@ usage() {
            "enabled with Data Calls \n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
-    printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - OFF)\n");
+    printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
     printf(
         "                 P25 - 12000; NXDN48 - 7000; NXDN96: 12000; DMR - 7000-12000; EDACS/PV - 12000-24000;\n"); //redo this, or check work, or whatever
     printf("                 May vary based on system stregnth, etc.\n");
@@ -2054,7 +2054,7 @@ main(int argc, char** argv) {
                 break;
             case '^':
                 opts.p25_prefer_candidates = 1;
-                fprintf(stderr, "P25: Prefer CC candidates during hunt: ON.\n");
+                fprintf(stderr, "P25: Prefer CC candidates during hunt: On.\n");
                 break;
 
             //rc4 enforcement on DMR (due to missing the PI header)

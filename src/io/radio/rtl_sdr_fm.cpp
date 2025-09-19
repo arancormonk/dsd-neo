@@ -1507,6 +1507,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     /* Input ring does not require double-buffer init */
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 0;
+    /* Reset IQ balance EMA */
+    s->iqbal_alpha_ema_r_q15 = 0;
+    s->iqbal_alpha_ema_i_q15 = 0;
     pthread_cond_init(&s->ready, NULL);
     pthread_mutex_init(&s->ready_m, NULL);
     s->output_target = &output;
@@ -1551,6 +1554,13 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
                                                : &polar_disc_lut;
     /* Init minimal worker pool (env-gated) */
     demod_mt_init(s);
+
+    /* Generic IQ balance defaults */
+    s->iqbal_enable = 1;    /* engage by default; mode-aware guards will disable for CQPSK */
+    s->iqbal_thr_q15 = 655; /* ~0.02 */
+    s->iqbal_alpha_ema_r_q15 = 0;
+    s->iqbal_alpha_ema_i_q15 = 0;
+    s->iqbal_alpha_ema_a_q15 = 6553; /* ~0.2 */
 }
 
 /**
@@ -1762,7 +1772,7 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.ted_mu_q20 = 0;
     demod.ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
-    /* Default all DSP handles OFF unless explicitly requested via env/CLI. */
+    /* Default all DSP handles Off unless explicitly requested via env/CLI. */
     demod.cqpsk_enable = 0;
     const char* ev_cq = getenv("DSD_NEO_CQPSK");
     if (ev_cq && (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T')) {
@@ -1784,7 +1794,7 @@ configure_from_env_and_opts(dsd_opts* opts) {
         demod.cqpsk_update_stride = 4;
     }
 
-    /* Matched filter pre-EQ default OFF; allow env to enable */
+    /* Matched filter pre-EQ default Off; allow env to enable */
     demod.cqpsk_mf_enable = 0;
     const char* mf = getenv("DSD_NEO_CQPSK_MF");
     if (mf && (*mf == '1' || *mf == 'y' || *mf == 'Y' || *mf == 't' || *mf == 'T')) {
@@ -2588,8 +2598,9 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
 }
 
 /* Runtime DSP tuning entrypoints (C shim) */
-static std::atomic<int> g_auto_dsp_enable{0}; /* default OFF */
-static int g_manual_dsp_override = 0;         /* default OFF: allow auto toggles */
+static std::atomic<int> g_auto_dsp_enable{1}; /* default On */
+static std::atomic<int> g_auto_dsp_simple{1}; /* simplified: only mode-aware toggles */
+static int g_manual_dsp_override = 0;         /* default Off: allow auto toggles */
 
 /* Auto-DSP configuration with sensible defaults and light validation */
 struct AutoDspConfig {
@@ -2729,7 +2740,7 @@ extern "C" void
 dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                 int sacch_err_delta, int voice_err_delta) {
     (void)slot; /* reserved for future per-slot tuning */
-    if (!g_auto_dsp_enable.load()) {
+    if (!g_auto_dsp_enable.load() || g_auto_dsp_simple.load()) {
         return;
     }
 
@@ -2860,7 +2871,7 @@ rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, in
 
 extern "C" void
 rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
-    if (!g_auto_dsp_enable.load()) {
+    if (!g_auto_dsp_enable.load() || g_auto_dsp_simple.load()) {
         return; /* auto-DSP disabled: ignore BER-driven tuning */
     }
     static int64_t ok_acc = 0;
@@ -2976,6 +2987,17 @@ rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_stride
     }
     return cqpsk_runtime_get_params(lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps,
                                     cma_warmup_remaining);
+}
+
+/* Toggle generic IQ balance prefilter */
+extern "C" void
+dsd_rtl_stream_toggle_iq_balance(int onoff) {
+    demod.iqbal_enable = onoff ? 1 : 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_iq_balance(void) {
+    return demod.iqbal_enable ? 1 : 0;
 }
 
 /* Coarse DSP feature toggles and snapshot */

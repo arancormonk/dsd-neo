@@ -343,3 +343,18 @@ extern "C" void
 rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
     dsd_rtl_stream_auto_dsp_get_status(out);
 }
+
+/* IQ balance prefilter toggle/get */
+extern "C" void
+rtl_stream_toggle_iq_balance(int onoff) {
+    /* implemented in rtl_sdr_fm.cpp */
+    extern void dsd_rtl_stream_toggle_iq_balance(int onoff);
+    dsd_rtl_stream_toggle_iq_balance(onoff);
+}
+
+extern "C" int
+rtl_stream_get_iq_balance(void) {
+    /* implemented in rtl_sdr_fm.cpp as dsd_rtl_stream_get_iq_balance */
+    extern int dsd_rtl_stream_get_iq_balance(void);
+    return dsd_rtl_stream_get_iq_balance();
+}

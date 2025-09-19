@@ -1454,7 +1454,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             if (opts->payload == 0 && opts->slot1_on == 1) {
                 fprintf(stderr, " *MUTED*");
             } else if (opts->payload == 0 && opts->slot1_on == 0) {
-                fprintf(stderr, " *OFF*");
+                fprintf(stderr, " *Off*");
             }
         }
 
@@ -1535,7 +1535,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             if (opts->payload == 0 && opts->slot2_on == 1) {
                 fprintf(stderr, " *MUTED*");
             } else if (opts->payload == 0 && opts->slot2_on == 0) {
-                fprintf(stderr, " *OFF*");
+                fprintf(stderr, " *Off*");
             }
         }
 

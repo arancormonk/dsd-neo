@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <dsd-neo/dsp/cqpsk_equalizer.h>
+#include <math.h>
 #include <stdint.h>
 
 static inline int64_t
@@ -92,6 +93,18 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->have_last_sym = 0;
     st->last_y_i_q14 = 0;
     st->last_y_q_q14 = 0;
+
+    /* WL stability defaults */
+    st->wl_leak_shift = 12;         /* ~1/4096 per update */
+    st->wl_gate_thr_q15 = 655;      /* ~0.02 impropriety ratio */
+    st->wl_mu_q15 = 1;              /* smaller than FFE by default */
+    st->wl_improp_ema_q15 = 0;      /* start at 0 */
+    st->wl_improp_alpha_q15 = 8192; /* ~0.25 */
+    /* Decoupled adaptation defaults */
+    st->adapt_mode = 0; /* start adapting FFE */
+    st->adapt_hold = 0;
+    st->adapt_min_hold = 64;                            /* hold ~64 update ticks by default */
+    st->wl_thr_off_q15 = (st->wl_gate_thr_q15 * 3) / 4; /* 25% hysteresis */
 }
 
 void
@@ -197,11 +210,12 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
             accI_q14 += (int32_t)xkI * ckI - (int32_t)xkQ * ckQ;
             accQ_q14 += (int32_t)xkI * ckQ + (int32_t)xkQ * ckI;
             if (st->wl_enable) {
-                /* conj branch: cw * conj(x) */
+                /* Proper WL branch: y += W * conj(x), with W = cwI + j*cwQ */
                 int16_t cwI = st->cw_i[k];
                 int16_t cwQ = st->cw_q[k];
+                /* Re += a*xr + b*xq;  Im += b*xr - a*xq */
                 accI_q14 += (int32_t)xkI * cwI + (int32_t)xkQ * cwQ;
-                accQ_q14 += -(int32_t)xkI * cwQ + (int32_t)xkQ * cwI;
+                accQ_q14 += (int32_t)xkI * cwQ - (int32_t)xkQ * cwI;
             }
             idx--;
         }
@@ -330,6 +344,34 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                 j--;
             }
             st->cma_warmup--;
+            /* During CMA warmup, freeze WL adaptation but gently leak WL toward zero at symbol ticks */
+            if (st->wl_enable && sym_tick) {
+                int leak = (st->wl_leak_shift > 0) ? st->wl_leak_shift : 12;
+                for (int k = 0; k < T; k++) {
+                    int32_t wi = st->cw_i[k];
+                    int32_t wq = st->cw_q[k];
+                    wi -= (wi >> leak);
+                    wq -= (wq >> leak);
+                    int maxc_loc = st->max_abs_q14;
+                    if (wi > maxc_loc) {
+                        wi = maxc_loc;
+                    }
+                    if (wi < -maxc_loc) {
+                        wi = -maxc_loc;
+                    }
+                    if (wq > maxc_loc) {
+                        wq = maxc_loc;
+                    }
+                    if (wq < -maxc_loc) {
+                        wq = -maxc_loc;
+                    }
+                    st->cw_i[k] = (int16_t)wi;
+                    st->cw_q[k] = (int16_t)wq;
+                }
+            }
+            /* Force adaptation mode to FFE during CMA */
+            st->adapt_mode = 0;
+            st->adapt_hold = (st->adapt_min_hold > 0) ? st->adapt_min_hold : 32;
             continue; /* skip DD update this sample */
         }
 
@@ -363,6 +405,68 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                     denom_q15 = eps;
                 }
 
+                /* WL impropriety gate: EMA(|E[x^2]|/E[|x|^2]) vs threshold to avoid rapid toggling */
+                int allow_wl_update = 0;
+                if (st->wl_enable) {
+                    double sx2_re = 0.0, sx2_im = 0.0, sp2 = 0.0;
+                    int jj = h;
+                    for (int k = 0; k < T; k++) {
+                        if (jj < 0) {
+                            jj += T;
+                        }
+                        double xr = (double)st->x_i[jj];
+                        double xj = (double)st->x_q[jj];
+                        sx2_re += xr * xr - xj * xj;
+                        sx2_im += 2.0 * xr * xj;
+                        sp2 += xr * xr + xj * xj;
+                        jj--;
+                    }
+                    if (sp2 < 1e-12) {
+                        sp2 = 1e-12;
+                    }
+                    double improp = sqrt(sx2_re * sx2_re + sx2_im * sx2_im) / sp2;
+                    int meas_q15 = (int)(improp * 32768.0 + 0.5);
+                    if (meas_q15 < 0) {
+                        meas_q15 = 0;
+                    }
+                    if (meas_q15 > 32767) {
+                        meas_q15 = 32767;
+                    }
+                    int ema = st->wl_improp_ema_q15;
+                    int alpha = st->wl_improp_alpha_q15;
+                    /* ema += alpha * (meas - ema) >> 15 */
+                    int delta = meas_q15 - ema;
+                    int adj = (int)(((int64_t)alpha * (int64_t)delta) >> 15);
+                    ema += adj;
+                    if (ema < 0) {
+                        ema = 0;
+                    }
+                    if (ema > 32767) {
+                        ema = 32767;
+                    }
+                    st->wl_improp_ema_q15 = ema;
+                    /* Mode switching with hysteresis and minimum hold time */
+                    if (st->adapt_hold > 0) {
+                        st->adapt_hold--;
+                    }
+                    int thr_on = st->wl_gate_thr_q15;
+                    int thr_off = (st->wl_thr_off_q15 > 0) ? st->wl_thr_off_q15 : ((st->wl_gate_thr_q15 * 3) / 4);
+                    if (st->adapt_hold == 0) {
+                        if (st->adapt_mode == 0) {
+                            if (ema >= thr_on) {
+                                st->adapt_mode = 1; /* switch to WL */
+                                st->adapt_hold = (st->adapt_min_hold > 0) ? st->adapt_min_hold : 32;
+                            }
+                        } else {
+                            if (ema < thr_off) {
+                                st->adapt_mode = 0; /* switch to FFE */
+                                st->adapt_hold = (st->adapt_min_hold > 0) ? st->adapt_min_hold : 32;
+                            }
+                        }
+                    }
+                    allow_wl_update = (st->adapt_mode == 1);
+                }
+
                 /* Update each tap: c_k += (mu * e * conj(x_k)) / denom */
                 int j = h;
                 for (int k = 0; k < T; k++) {
@@ -377,12 +481,12 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                     /* Apply mu (Q15): -> Q29 */
                     int64_t gi_q29 = gi_q14 * (int64_t)mu;
                     int64_t gq_q29 = gq_q14 * (int64_t)mu;
-                    /* Normalize by denom_q15 (Q15). Keep guard shift to control step: */
+                    /* Normalize by denom_q15 (Q15). Keep guard shift to control step. */
                     int32_t dci = (int32_t)(gi_q29 / (int64_t)denom_q15); /* ~Q14 after div */
                     int32_t dcq = (int32_t)(gq_q29 / (int64_t)denom_q15);
-                    /* Additional gentle scaling to keep stable at small mu */
-                    dci >>= 8;
-                    dcq >>= 8;
+                    int ffe_shift = 8;
+                    dci >>= ffe_shift;
+                    dcq >>= ffe_shift;
                     int32_t nci = (int32_t)st->c_i[k] + dci;
                     int32_t ncq = (int32_t)st->c_q[k] + dcq;
                     if (nci > maxc) {
@@ -397,39 +501,73 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                     if (ncq < -maxc) {
                         ncq = -maxc;
                     }
-                    st->c_i[k] = (int16_t)nci;
-                    st->c_q[k] = (int16_t)ncq;
-                    if (st->wl_enable) {
+                    /* Apply FFE update only when FFE mode is active */
+                    if (st->adapt_mode == 0) {
+                        st->c_i[k] = (int16_t)nci;
+                        st->c_q[k] = (int16_t)ncq;
+                    }
+                    if (st->wl_enable && allow_wl_update) {
                         /* conj-branch update: e * x_k */
                         int64_t giw_q14 = (int64_t)ei * xr - (int64_t)eq * xj2;
                         int64_t gqw_q14 = (int64_t)eq * xr + (int64_t)ei * xj2;
-                        int64_t giw_q29 = giw_q14 * (int64_t)mu;
-                        int64_t gqw_q29 = gqw_q14 * (int64_t)mu;
+                        int wl_mu = (st->wl_mu_q15 > 0) ? st->wl_mu_q15 : 1;
+                        int64_t giw_q29 = giw_q14 * (int64_t)wl_mu;
+                        int64_t gqw_q29 = gqw_q14 * (int64_t)wl_mu;
                         int32_t dwi = (int32_t)(giw_q29 / (int64_t)denom_q15);
                         int32_t dwq = (int32_t)(gqw_q29 / (int64_t)denom_q15);
                         dwi >>= 8;
                         dwq >>= 8;
                         int32_t nwi = (int32_t)st->cw_i[k] + dwi;
                         int32_t nwq = (int32_t)st->cw_q[k] + dwq;
-                        if (nwi > maxc) {
-                            nwi = maxc;
+                        /* Stronger cap for WL taps: keep within ~1/8 of max */
+                        int wl_cap = maxc >> 3;
+                        if (wl_cap < 1) {
+                            wl_cap = 1;
                         }
-                        if (nwi < -maxc) {
-                            nwi = -maxc;
+                        if (nwi > wl_cap) {
+                            nwi = wl_cap;
                         }
-                        if (nwq > maxc) {
-                            nwq = maxc;
+                        if (nwi < -wl_cap) {
+                            nwi = -wl_cap;
                         }
-                        if (nwq < -maxc) {
-                            nwq = -maxc;
+                        if (nwq > wl_cap) {
+                            nwq = wl_cap;
+                        }
+                        if (nwq < -wl_cap) {
+                            nwq = -wl_cap;
                         }
                         st->cw_i[k] = (int16_t)nwi;
                         st->cw_q[k] = (int16_t)nwq;
+                    } else if (st->wl_enable) {
+                        /* Apply small leakage toward zero when WL is disabled by gate */
+                        int leak = (st->wl_leak_shift > 0) ? st->wl_leak_shift : 12;
+                        int32_t wi = st->cw_i[k];
+                        int32_t wq = st->cw_q[k];
+                        wi -= (wi >> leak);
+                        wq -= (wq >> leak);
+                        int wl_cap = maxc >> 3;
+                        if (wl_cap < 1) {
+                            wl_cap = 1;
+                        }
+                        if (wi > wl_cap) {
+                            wi = wl_cap;
+                        }
+                        if (wi < -wl_cap) {
+                            wi = -wl_cap;
+                        }
+                        if (wq > wl_cap) {
+                            wq = wl_cap;
+                        }
+                        if (wq < -wl_cap) {
+                            wq = -wl_cap;
+                        }
+                        st->cw_i[k] = (int16_t)wi;
+                        st->cw_q[k] = (int16_t)wq;
                     }
                     j--;
                 }
                 /* DFE update against decision history */
-                if (st->dfe_enable && st->dfe_taps > 0 && sym_tick) {
+                if (st->dfe_enable && st->dfe_taps > 0 && sym_tick && st->adapt_mode == 0) {
                     /*
              * DFE branch uses y = y_ff - b^H d_past. With this sign convention,
              * the LMS update for b must be the negative of the FFE rule:
@@ -494,6 +632,30 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                     st->c_i[0] = (int16_t)n0i;
                     st->c_q[0] = (int16_t)n0q;
                 }
+            }
+        } else if (st->wl_enable && sym_tick) {
+            /* LMS disabled: still apply a tiny WL leakage at symbol ticks to keep WL near zero */
+            int leak = (st->wl_leak_shift > 0) ? st->wl_leak_shift : 12;
+            for (int k = 0; k < T; k++) {
+                int32_t wi = st->cw_i[k];
+                int32_t wq = st->cw_q[k];
+                wi -= (wi >> leak);
+                wq -= (wq >> leak);
+                int maxc = st->max_abs_q14;
+                if (wi > maxc) {
+                    wi = maxc;
+                }
+                if (wi < -maxc) {
+                    wi = -maxc;
+                }
+                if (wq > maxc) {
+                    wq = maxc;
+                }
+                if (wq < -maxc) {
+                    wq = -maxc;
+                }
+                st->cw_i[k] = (int16_t)wi;
+                st->cw_q[k] = (int16_t)wq;
             }
         }
 

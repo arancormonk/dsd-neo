@@ -874,6 +874,81 @@ full_demod(struct demod_state* d) {
     } else {
         low_pass(d);
     }
+    /* Mode-aware generic IQ balance (image suppression): engage for non-QPSK paths */
+    if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {
+        /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */
+        double s2r = 0.0, s2i = 0.0, p2 = 0.0;
+        int N = d->lp_len >> 1; /* complex pairs */
+        const int16_t* iq = d->lowpassed;
+        for (int n = 0; n < N; n++) {
+            double I = (double)iq[(size_t)(n << 1) + 0];
+            double Q = (double)iq[(size_t)(n << 1) + 1];
+            /* z^2 = (I^2 - Q^2) + j*2IQ; |z|^2 = I^2 + Q^2 */
+            s2r += I * I - Q * Q;
+            s2i += 2.0 * I * Q;
+            p2 += I * I + Q * Q;
+        }
+        if (p2 <= 1e-9) {
+            p2 = 1e-9;
+        }
+        double ar = s2r / p2;
+        double ai = s2i / p2;
+        /* Smooth alpha via EMA in Q15 */
+        int a_q15 = d->iqbal_alpha_ema_a_q15 > 0 ? d->iqbal_alpha_ema_a_q15 : 6553; /* ~0.2 */
+        int r_q15 = (int)(ar * 32768.0 + 0.5);
+        int i_q15 = (int)(ai * 32768.0 + 0.5);
+        if (r_q15 > 32767) {
+            r_q15 = 32767;
+        }
+        if (r_q15 < -32768) {
+            r_q15 = -32768;
+        }
+        if (i_q15 > 32767) {
+            i_q15 = 32767;
+        }
+        if (i_q15 < -32768) {
+            i_q15 = -32768;
+        }
+        int er = d->iqbal_alpha_ema_r_q15;
+        int ei = d->iqbal_alpha_ema_i_q15;
+        er += (int)(((int64_t)a_q15 * (int64_t)(r_q15 - er)) >> 15);
+        ei += (int)(((int64_t)a_q15 * (int64_t)(i_q15 - ei)) >> 15);
+        d->iqbal_alpha_ema_r_q15 = er;
+        d->iqbal_alpha_ema_i_q15 = ei;
+        /* Gate by magnitude threshold */
+        int thr = d->iqbal_thr_q15 > 0 ? d->iqbal_thr_q15 : 655; /* ~0.02 */
+        int mag2 = (er * er + ei * ei) >> 15;                    /* approximate with Q15 scaling */
+        int thr2 = (thr * thr) >> 15;
+        if (mag2 >= thr2) {
+            /* Apply y = z - alpha * conj(z) with alpha = er/ei (Q15) */
+            int ar_q15 = er;
+            int ai_q15 = ei;
+            int16_t* out = d->lowpassed;
+            for (int n = 0; n < N; n++) {
+                int32_t I = out[(size_t)(n << 1) + 0];
+                int32_t Q = out[(size_t)(n << 1) + 1];
+                /* tI = ar*I + ai*Q; tQ = -ar*Q + ai*I (Q15) */
+                int32_t tI = (int32_t)(((int64_t)ar_q15 * I + (int64_t)ai_q15 * Q) >> 15);
+                int32_t tQ = (int32_t)((-(int64_t)ar_q15 * Q + (int64_t)ai_q15 * I) >> 15);
+                int32_t yI = I - tI;
+                int32_t yQ = Q - tQ;
+                if (yI > 32767) {
+                    yI = 32767;
+                }
+                if (yI < -32768) {
+                    yI = -32768;
+                }
+                if (yQ > 32767) {
+                    yQ = 32767;
+                }
+                if (yQ < -32768) {
+                    yQ = -32768;
+                }
+                out[(size_t)(n << 1) + 0] = (int16_t)yI;
+                out[(size_t)(n << 1) + 1] = (int16_t)yQ;
+            }
+        }
+    }
     /* Residual CFO loop: estimate error then rotate */
     fll_update_error(d);
     fll_mix_and_update(d);

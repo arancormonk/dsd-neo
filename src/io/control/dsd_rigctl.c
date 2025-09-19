@@ -533,7 +533,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     state->p25_p2_active_slot = -1;
-    // Do not alter user slot ON/OFF toggles here; UI controls own persistence.
+    // Do not alter user slot On/Off toggles here; UI controls own persistence.
 
     //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
     //RIGCTL

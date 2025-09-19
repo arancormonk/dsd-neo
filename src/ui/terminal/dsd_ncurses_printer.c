@@ -379,6 +379,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     init_pair(11, COLOR_GREEN, COLOR_BLACK);  //good
     init_pair(12, COLOR_YELLOW, COLOR_BLACK); //moderate
     init_pair(13, COLOR_RED, COLOR_BLACK);    //poor
+    init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status (explicit yellow)
 #else
     init_pair(1, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
     init_pair(2, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
@@ -393,6 +394,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     init_pair(11, COLOR_WHITE, COLOR_BLACK); //fallback
     init_pair(12, COLOR_WHITE, COLOR_BLACK);
     init_pair(13, COLOR_WHITE, COLOR_BLACK);
+    init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status stays yellow even on white card scheme
 #endif
 
     noecho();
@@ -420,6 +422,54 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 }
 
 static int lls = -1;
+
+/* Print a compact DSP status summary (which blocks are active). */
+static void
+print_dsp_status(void) {
+#ifdef USE_RTLSDR
+    /* Preserve current color pair so our colored header/HR won't force default */
+#ifdef PRETTY_COLORS
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    attr_get(&saved_attrs, &saved_pair, NULL);
+#endif
+    int cq = 0, fll = 0, ted = 0, auto_on = 0;
+    rtl_stream_dsp_get(&cq, &fll, &ted, &auto_on);
+    int lms = 0, taps = 0, mu = 0, stride = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
+    rtl_stream_cqpsk_get(&lms, &taps, &mu, &stride, &wl, &dfe, &dft, &mf, &cma);
+    int rrc_en = 0, rrc_a = 0, rrc_s = 0;
+    rtl_stream_cqpsk_get_rrc(&rrc_en, &rrc_a, &rrc_s);
+    int iqb = rtl_stream_get_iq_balance();
+
+    ui_print_header("DSP");
+    ui_print_lborder();
+    attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
+    printw(" Auto: %s ", auto_on ? "On" : "Off");
+    printw(" IQ BAL: %s ", iqb ? "On" : "Off");
+    printw(" FLL: %s ", fll ? "On" : "Off");
+    printw(" TED: %s ", ted ? "On" : "Off");
+    printw(" CQPSK: %s", cq ? "On" : "Off");
+    if (cq) {
+        printw(" [LMS: %s WL: %s DFE: %s MF: %s", lms ? "On" : "Off", wl ? "On" : "Off", dfe ? "On" : "Off",
+               mf ? (rrc_en ? "RRC" : "On") : "Off");
+        if (rrc_en) {
+            printw(" a: %d%% s: %d", rrc_a, rrc_s);
+        }
+        printw("]");
+        attroff(COLOR_PAIR(14));
+    }
+    printw("\n");
+    attron(COLOR_PAIR(4));
+    ui_print_hr();
+    attroff(COLOR_PAIR(4));
+    /* Restore previously active color pair (e.g., banner color) */
+#ifdef PRETTY_COLORS
+    if (saved_pair >= 0) {
+        attron(COLOR_PAIR(saved_pair));
+    }
+#endif
+#endif
+}
 
 static void
 print_constellation_view(dsd_opts* opts, dsd_state* state) {
@@ -1992,6 +2042,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("\n| External RTL Tuning on UDP Port: %i", opts->rtl_udp_port);
         }
         printw("\n");
+        /* Show compact DSP status directly above audio sections */
+        print_dsp_status();
         /* Signal quality is shown inline above; no duplicate line here. */
     }
 
@@ -2158,10 +2210,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->m17encoder == 1) {
         printw("| M17 Encoder:");
         if (state->m17encoder_tx == 1 && state->m17_vox == 0) {
-            printw(" Toggle TX (\\) ON ;");
+            printw(" Toggle TX (\\) On ;");
         }
         if (state->m17encoder_tx == 0 && state->m17_vox == 0) {
-            printw(" Toggle TX (\\) OFF;");
+            printw(" Toggle TX (\\) Off;");
         }
         if (state->m17_vox == 1) {
             printw(" Vox Mode;");
@@ -2474,18 +2526,18 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         ui_print_header("RTL-SDR Visual Aids");
         int nfft = rtl_stream_spectrum_get_size();
         /* Controls/status line: only show controls relevant to active views */
-        printw("| Const View:  %s (O)", opts->constellation ? "ON" : "off");
+        printw("| Const View:  %s (O)", opts->constellation ? "On" : "Off");
         if (opts->constellation == 1) {
             printw("  Gate: %.02f (</>)  Norm: %s (N)",
                    (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
                    opts->const_norm_mode ? "unit" : "radial");
         }
-        printw("  Eye: %s (E)", opts->eye_view ? "ON" : "off");
+        printw("  Eye: %s (E)", opts->eye_view ? "On" : "Off");
         if (opts->eye_view == 1) {
-            printw("  Uni: %s (U) Col: %s (C)", opts->eye_unicode ? "ON" : "off", opts->eye_color ? "ON" : "off");
+            printw("  Uni: %s (U) Col: %s (C)", opts->eye_unicode ? "On" : "off", opts->eye_color ? "On" : "Off");
         }
-        printw("  Hist: %s (K)", opts->fsk_hist_view ? "ON" : "off");
-        printw("  Spec: %s (S)", opts->spectrum_view ? "ON" : "off");
+        printw("  Hist: %s (K)", opts->fsk_hist_view ? "On" : "Off");
+        printw("  Spec: %s (S)", opts->spectrum_view ? "On" : "Off");
         if (opts->spectrum_view == 1) {
             printw("  FFT:%d (,/.)", nfft);
         }
@@ -2666,7 +2718,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     printw("\n");
     printw("| In Level:    [%02d%%] \n", level);
     /* Quick hint for output mute toggle */
-    printw("| Output:      [%s] (x to toggle)\n", (opts->audio_out == 0) ? "Muted" : "ON");
+    printw("| Output:      [%s] (x to toggle)\n", (opts->audio_out == 0) ? "Muted" : "On");
 
     if (opts->dmr_stereo == 0) {
         printw("| Voice Error: [%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
@@ -2675,10 +2727,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw(" Avg:%4.1f%%", avgv);
         }
         if (opts->slot1_on == 0) {
-            printw(" OFF");
+            printw(" Off");
         }
         if (opts->slot1_on == 1) {
-            printw(" ON");
+            printw(" On");
         }
         printw("\n");
     }
@@ -2686,10 +2738,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->dmr_stereo == 1) {
         printw("| Voice Error: [%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
         if (opts->slot1_on == 0) {
-            printw(" OFF");
+            printw(" Off");
         }
         if (opts->slot1_on == 1) {
-            printw(" ON");
+            printw(" On");
         }
         if (opts->slot_preference == 0) {
             printw(" *Preferred (3)");
@@ -2697,10 +2749,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
         printw("| Voice Error: [%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
         if (opts->slot2_on == 0) {
-            printw(" OFF");
+            printw(" Off");
         }
         if (opts->slot2_on == 1) {
-            printw(" ON");
+            printw(" On");
         }
         if (opts->slot_preference == 1) {
             printw(" *Preferred (3)");

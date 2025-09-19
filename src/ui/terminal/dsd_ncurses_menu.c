@@ -48,6 +48,7 @@ typedef struct {
     int lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps, mf_enable, cma;
     int rrc_enable, rrc_alpha_percent, rrc_span_syms;
     int dqpsk_enable;
+    int iqbal_enable;
 } DspMenuSnapshot;
 
 static void
@@ -63,6 +64,7 @@ dsp_capture_snapshot(DspMenuSnapshot* s) {
                          &s->dfe_taps, &s->mf_enable, &s->cma);
     rtl_stream_cqpsk_get_rrc(&s->rrc_enable, &s->rrc_alpha_percent, &s->rrc_span_syms);
     rtl_stream_cqpsk_get_dqpsk(&s->dqpsk_enable);
+    s->iqbal_enable = rtl_stream_get_iq_balance();
 }
 
 static void
@@ -83,6 +85,8 @@ dsp_apply_snapshot(const DspMenuSnapshot* s) {
     // Matched filter / RRC and DQPSK decision
     rtl_stream_cqpsk_set_rrc(s->rrc_enable, s->rrc_alpha_percent, s->rrc_span_syms);
     rtl_stream_cqpsk_set_dqpsk(s->dqpsk_enable);
+    // IQ balance (mode-aware)
+    rtl_stream_toggle_iq_balance(s->iqbal_enable);
 }
 #endif
 

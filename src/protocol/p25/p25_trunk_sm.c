@@ -82,7 +82,7 @@ p25_sm_try_load_cache(dsd_opts* opts, dsd_state* state) {
     if (!state || state->p25_cc_cache_loaded) {
         return;
     }
-    // Optional opt-in via env flag; default ON
+    // Optional opt-in via env flag; default On
     int enable = 1;
     const char* env = getenv("DSD_NEO_CC_CACHE");
     if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
@@ -147,7 +147,7 @@ p25_sm_persist_cache(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
-    // Optional opt-in via env flag; default ON
+    // Optional opt-in via env flag; default On
     int enable = 1;
     const char* env = getenv("DSD_NEO_CC_CACHE");
     if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {

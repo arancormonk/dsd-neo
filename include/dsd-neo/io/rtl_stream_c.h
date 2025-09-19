@@ -193,6 +193,10 @@ void rtl_stream_cqpsk_set_dqpsk(int onoff);
 int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 /** Get DQPSK decision mode; returns 0 on success. */
 int rtl_stream_cqpsk_get_dqpsk(int* onoff);
+/** Toggle generic IQ balance prefilter (mode-aware image cancel). */
+void rtl_stream_toggle_iq_balance(int onoff);
+/** Get generic IQ balance prefilter state; returns 1 if enabled. */
+int rtl_stream_get_iq_balance(void);
 /**
  * @brief Provide P25P1 FEC OK/ERR deltas to drive BER-adaptive tuning.
  * Call with positive deltas (not totals). No-ops when RTL stream inactive.

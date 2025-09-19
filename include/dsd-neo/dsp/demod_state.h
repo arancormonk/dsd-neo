@@ -178,4 +178,10 @@ struct demod_state {
     int cqpsk_rrc_enable;    /* use RRC matched filter instead of 5-tap MF */
     int cqpsk_rrc_alpha_q15; /* RRC roll-off (Q15), e.g., 0.20 -> 0.20*32768 */
     int cqpsk_rrc_span_syms; /* half-span in symbols on each side (total span ~ 2*span) */
+    /* Generic mode-aware IQ balance (image suppression) */
+    int iqbal_enable;          /* 0/1 gate */
+    int iqbal_thr_q15;         /* |alpha| threshold in Q15 for enable (~0.02->655) */
+    int iqbal_alpha_ema_r_q15; /* EMA of alpha real (Q15) */
+    int iqbal_alpha_ema_i_q15; /* EMA of alpha imag (Q15) */
+    int iqbal_alpha_ema_a_q15; /* EMA alpha (Q15), e.g., 6553 ~ 0.2 */
 };

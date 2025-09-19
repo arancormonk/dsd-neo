@@ -65,6 +65,18 @@ typedef struct cqpsk_eq_state_s {
     int have_last_sym;    /* whether previous symbol output is valid */
     int16_t last_y_i_q14; /* previous symbol output (Q14) */
     int16_t last_y_q_q14; /* previous symbol output (Q14) */
+
+    /* WL stability helpers */
+    int wl_leak_shift;       /* leakage shift for WL taps (e.g., 12 => ~1/4096 per update) */
+    int wl_gate_thr_q15;     /* impropriety gate threshold in Q15 for |E[x^2]|/E[|x|^2] (e.g., 0.02->~655) */
+    int wl_mu_q15;           /* WL step size (Q15), separate from FFE mu */
+    int wl_improp_ema_q15;   /* EMA of impropriety ratio in Q15 */
+    int wl_improp_alpha_q15; /* EMA alpha in Q15 (e.g., 8192 ~ 0.25) */
+    /* Phase decoupling between FFE and WL */
+    int adapt_mode;     /* 0 = FFE adapting, 1 = WL adapting */
+    int adapt_hold;     /* countdown ticks before a mode switch is allowed */
+    int adapt_min_hold; /* min ticks to hold a mode once switched */
+    int wl_thr_off_q15; /* WL off threshold (hysteresis), Q15 */
 } cqpsk_eq_state_t;
 
 /* Initialize equalizer state with identity response. */

@@ -445,9 +445,9 @@ io_toggle_cc_candidates(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     c->opts->p25_prefer_candidates = !c->opts->p25_prefer_candidates;
     if (c->opts->p25_prefer_candidates) {
-        fprintf(stderr, "\n P25: Prefer CC Candidates: ON\n");
+        fprintf(stderr, "\n P25: Prefer CC Candidates: On\n");
     } else {
-        fprintf(stderr, "\n P25: Prefer CC Candidates: OFF\n");
+        fprintf(stderr, "\n P25: Prefer CC Candidates: Off\n");
     }
 }
 
@@ -699,7 +699,7 @@ switch_out_udp(void* vctx) {
 static const char*
 lbl_out_mute(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    snprintf(b, n, "Mute Output [%s]", (c->opts->audio_out == 0) ? "ON" : "OFF");
+    snprintf(b, n, "Mute Output [%s]", (c->opts->audio_out == 0) ? "On" : "Off");
     return b;
 }
 
@@ -707,7 +707,7 @@ static void
 switch_out_toggle_mute(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     c->opts->audio_out = (c->opts->audio_out == 0) ? 1 : 0;
-    ui_statusf("Output: %s", c->opts->audio_out ? "ON" : "Muted");
+    ui_statusf("Output: %s", c->opts->audio_out ? "On" : "Muted");
 }
 
 static void
@@ -1726,6 +1726,13 @@ lbl_onoff_ted(void* v, char* b, size_t n) {
 }
 
 static const char*
+lbl_onoff_iqbal(void* v, char* b, size_t n) {
+    int on = rtl_stream_get_iq_balance();
+    snprintf(b, n, "Toggle IQ Balance [%s]", on ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
 lbl_ted_sps(void* v, char* b, size_t n) {
     int sps = rtl_stream_get_ted_sps();
     snprintf(b, n, "TED SPS: %d (+1/-1)", sps);
@@ -1773,6 +1780,20 @@ act_ted_gain_dn(void* v) {
         g -= 8;
     }
     rtl_stream_set_ted_gain(g);
+}
+
+static void
+act_toggle_iqbal(void* v) {
+    int on = rtl_stream_get_iq_balance();
+    /* If Auto-DSP is active and Manual Override is off, enable Manual Override so the user's
+       choice isn't immediately overwritten by auto toggling. */
+    int cq = 0, f = 0, t = 0, a = 0;
+    rtl_stream_dsp_get(&cq, &f, &t, &a);
+    int man = rtl_stream_get_manual_dsp();
+    if (a && !man) {
+        rtl_stream_set_manual_dsp(1);
+    }
+    rtl_stream_toggle_iq_balance(on ? 0 : 1);
 }
 
 static const char*
@@ -2092,28 +2113,28 @@ lbl_p1_win(void* v, char* b, size_t n) {
 static const char*
 lbl_p1_mod_on(void* v, char* b, size_t n) {
     cfg_refresh();
-    snprintf(b, n, "P25P1 Moderate ON %%: %d", g_auto_cfg_cache.p25p1_moderate_on_pct);
+    snprintf(b, n, "P25P1 Moderate On %%: %d", g_auto_cfg_cache.p25p1_moderate_on_pct);
     return b;
 }
 
 static const char*
 lbl_p1_mod_off(void* v, char* b, size_t n) {
     cfg_refresh();
-    snprintf(b, n, "P25P1 Moderate OFF %%: %d", g_auto_cfg_cache.p25p1_moderate_off_pct);
+    snprintf(b, n, "P25P1 Moderate Off %%: %d", g_auto_cfg_cache.p25p1_moderate_off_pct);
     return b;
 }
 
 static const char*
 lbl_p1_hvy_on(void* v, char* b, size_t n) {
     cfg_refresh();
-    snprintf(b, n, "P25P1 Heavy ON %%: %d", g_auto_cfg_cache.p25p1_heavy_on_pct);
+    snprintf(b, n, "P25P1 Heavy On %%: %d", g_auto_cfg_cache.p25p1_heavy_on_pct);
     return b;
 }
 
 static const char*
 lbl_p1_hvy_off(void* v, char* b, size_t n) {
     cfg_refresh();
-    snprintf(b, n, "P25P1 Heavy OFF %%: %d", g_auto_cfg_cache.p25p1_heavy_off_pct);
+    snprintf(b, n, "P25P1 Heavy Off %%: %d", g_auto_cfg_cache.p25p1_heavy_off_pct);
     return b;
 }
 
@@ -2134,14 +2155,14 @@ lbl_p2_okmin(void* v, char* b, size_t n) {
 static const char*
 lbl_p2_margin_on(void* v, char* b, size_t n) {
     cfg_refresh();
-    snprintf(b, n, "P25P2 Err margin ON: %d", g_auto_cfg_cache.p25p2_err_margin_on);
+    snprintf(b, n, "P25P2 Err margin On: %d", g_auto_cfg_cache.p25p2_err_margin_on);
     return b;
 }
 
 static const char*
 lbl_p2_margin_off(void* v, char* b, size_t n) {
     cfg_refresh();
-    snprintf(b, n, "P25P2 Err margin OFF: %d", g_auto_cfg_cache.p25p2_err_margin_off);
+    snprintf(b, n, "P25P2 Err margin Off: %d", g_auto_cfg_cache.p25p2_err_margin_off);
     return b;
 }
 
@@ -2350,20 +2371,20 @@ ui_menu_auto_dsp_config(dsd_opts* opts, dsd_state* state) {
         {.id = "p1_win+", .label = "P25P1 Window +50", .help = "Increase window.", .on_select = inc_p1_win},
         {.id = "p1_win-", .label = "P25P1 Window -50", .help = "Decrease window.", .on_select = dec_p1_win},
         {.id = "p1_mon",
-         .label = "P25P1 Moderate ON%",
+         .label = "P25P1 Moderate On%",
          .label_fn = lbl_p1_mod_on,
          .help = "Engage moderate threshold."},
-        {.id = "p1_mon+", .label = "Moderate ON% +1", .on_select = inc_p1_mod_on},
-        {.id = "p1_mon-", .label = "Moderate ON% -1", .on_select = dec_p1_mod_on},
-        {.id = "p1_moff", .label = "P25P1 Moderate OFF%", .label_fn = lbl_p1_mod_off, .help = "Relax to clean."},
-        {.id = "p1_moff+", .label = "Moderate OFF% +1", .on_select = inc_p1_mod_off},
-        {.id = "p1_moff-", .label = "Moderate OFF% -1", .on_select = dec_p1_mod_off},
-        {.id = "p1_hon", .label = "P25P1 Heavy ON%", .label_fn = lbl_p1_hvy_on, .help = "Engage heavy threshold."},
-        {.id = "p1_hon+", .label = "Heavy ON% +1", .on_select = inc_p1_hvy_on},
-        {.id = "p1_hon-", .label = "Heavy ON% -1", .on_select = dec_p1_hvy_on},
-        {.id = "p1_hoff", .label = "P25P1 Heavy OFF%", .label_fn = lbl_p1_hvy_off, .help = "Relax from heavy."},
-        {.id = "p1_hoff+", .label = "Heavy OFF% +1", .on_select = inc_p1_hvy_off},
-        {.id = "p1_hoff-", .label = "Heavy OFF% -1", .on_select = dec_p1_hvy_off},
+        {.id = "p1_mon+", .label = "Moderate On% +1", .on_select = inc_p1_mod_on},
+        {.id = "p1_mon-", .label = "Moderate On% -1", .on_select = dec_p1_mod_on},
+        {.id = "p1_moff", .label = "P25P1 Moderate Off%", .label_fn = lbl_p1_mod_off, .help = "Relax to clean."},
+        {.id = "p1_moff+", .label = "Moderate Off% +1", .on_select = inc_p1_mod_off},
+        {.id = "p1_moff-", .label = "Moderate Off% -1", .on_select = dec_p1_mod_off},
+        {.id = "p1_hon", .label = "P25P1 Heavy On%", .label_fn = lbl_p1_hvy_on, .help = "Engage heavy threshold."},
+        {.id = "p1_hon+", .label = "Heavy On% +1", .on_select = inc_p1_hvy_on},
+        {.id = "p1_hon-", .label = "Heavy On% -1", .on_select = dec_p1_hvy_on},
+        {.id = "p1_hoff", .label = "P25P1 Heavy Off%", .label_fn = lbl_p1_hvy_off, .help = "Relax from heavy."},
+        {.id = "p1_hoff+", .label = "Heavy Off% +1", .on_select = inc_p1_hvy_off},
+        {.id = "p1_hoff-", .label = "Heavy Off% -1", .on_select = dec_p1_hvy_off},
         {.id = "p1_cool",
          .label = "P25P1 Cooldown (status)",
          .label_fn = lbl_p1_cool,
@@ -2374,14 +2395,14 @@ ui_menu_auto_dsp_config(dsd_opts* opts, dsd_state* state) {
         {.id = "p2_ok+", .label = "OK min +1", .on_select = inc_p2_okmin},
         {.id = "p2_ok-", .label = "OK min -1", .on_select = dec_p2_okmin},
         {.id = "p2_mon",
-         .label = "P25P2 Err margin ON",
+         .label = "P25P2 Err margin On",
          .label_fn = lbl_p2_margin_on,
          .help = "Err > OK + margin -> heavy."},
-        {.id = "p2_mon+", .label = "Margin ON +1", .on_select = inc_p2_m_on},
-        {.id = "p2_mon-", .label = "Margin ON -1", .on_select = dec_p2_m_on},
-        {.id = "p2_moff", .label = "P25P2 Err margin OFF", .label_fn = lbl_p2_margin_off, .help = "Relax heavy."},
-        {.id = "p2_moff+", .label = "Margin OFF +1", .on_select = inc_p2_m_off},
-        {.id = "p2_moff-", .label = "Margin OFF -1", .on_select = dec_p2_m_off},
+        {.id = "p2_mon+", .label = "Margin On +1", .on_select = inc_p2_m_on},
+        {.id = "p2_mon-", .label = "Margin On -1", .on_select = dec_p2_m_on},
+        {.id = "p2_moff", .label = "P25P2 Err margin Off", .label_fn = lbl_p2_margin_off, .help = "Relax heavy."},
+        {.id = "p2_moff+", .label = "Margin Off +1", .on_select = inc_p2_m_off},
+        {.id = "p2_moff-", .label = "Margin Off -1", .on_select = dec_p2_m_off},
         {.id = "p2_cool",
          .label = "P25P2 Cooldown (status)",
          .label_fn = lbl_p2_cool,
@@ -2434,6 +2455,11 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_onoff_ted,
          .help = "Enable/disable TED.",
          .on_select = act_toggle_ted},
+        {.id = "iqbal",
+         .label = "Toggle IQ Balance",
+         .label_fn = lbl_onoff_iqbal,
+         .help = "Enable/disable mode-aware image cancellation.",
+         .on_select = act_toggle_iqbal},
         {.id = "ted_sps_status",
          .label = "TED SPS (status)",
          .label_fn = lbl_ted_sps,

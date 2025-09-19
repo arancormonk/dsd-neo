@@ -98,6 +98,107 @@ cqpsk_init(struct demod_state* s) {
     if (wl && (*wl == '1' || *wl == 'y' || *wl == 'Y' || *wl == 't' || *wl == 'T')) {
         g_cqpsk_ctx.eq.wl_enable = 1;
     }
+    /* WL stability knobs: leakage and impropriety gate threshold */
+    const char* wl_leak = getenv("DSD_NEO_CQPSK_WL_LEAK");
+    if (wl_leak) {
+        int v = atoi(wl_leak);
+        if (v < 4) {
+            v = 4; /* min */
+        }
+        if (v > 16) {
+            v = 16; /* max */
+        }
+        g_cqpsk_ctx.eq.wl_leak_shift = v;
+    }
+    const char* wl_thr = getenv("DSD_NEO_CQPSK_WL_THR");
+    if (wl_thr) {
+        /* Accept either fraction (e.g., 0.02) or percent (e.g., 2.0) */
+        double tv = atof(wl_thr);
+        if (tv > 0.0) {
+            if (tv >= 1.0) {
+                tv = tv / 100.0; /* interpret as percent */
+            }
+            if (tv < 0.0001) {
+                tv = 0.0001; /* clamp */
+            }
+            if (tv > 0.5) {
+                tv = 0.5;
+            }
+            int thr_q15 = (int)(tv * 32768.0 + 0.5);
+            if (thr_q15 < 1) {
+                thr_q15 = 1;
+            }
+            if (thr_q15 > 32767) {
+                thr_q15 = 32767;
+            }
+            g_cqpsk_ctx.eq.wl_gate_thr_q15 = thr_q15;
+        }
+    }
+    const char* wl_mu = getenv("DSD_NEO_CQPSK_WL_MU");
+    if (wl_mu) {
+        int v = atoi(wl_mu);
+        if (v >= 1 && v <= 64) {
+            g_cqpsk_ctx.eq.wl_mu_q15 = v;
+        }
+    }
+    const char* hold = getenv("DSD_NEO_CQPSK_ADAPT_HOLD");
+    if (hold) {
+        int v = atoi(hold);
+        if (v < 8) {
+            v = 8;
+        }
+        if (v > 1024) {
+            v = 1024;
+        }
+        g_cqpsk_ctx.eq.adapt_min_hold = v;
+    }
+    const char* thr_off = getenv("DSD_NEO_CQPSK_WL_THR_OFF");
+    if (thr_off) {
+        double tv = atof(thr_off);
+        if (tv > 0.0) {
+            if (tv >= 1.0) {
+                tv = tv / 100.0;
+            }
+            if (tv < 0.0001) {
+                tv = 0.0001;
+            }
+            if (tv > 0.9) {
+                tv = 0.9;
+            }
+            int toff = (int)(tv * 32768.0 + 0.5);
+            if (toff < 1) {
+                toff = 1;
+            }
+            if (toff > 32767) {
+                toff = 32767;
+            }
+            g_cqpsk_ctx.eq.wl_thr_off_q15 = toff;
+        }
+    }
+    const char* wl_ema = getenv("DSD_NEO_CQPSK_WL_EMA");
+    if (wl_ema) {
+        /* Fraction or percent */
+        double tv = atof(wl_ema);
+        if (tv > 0.0) {
+            if (tv >= 1.0) {
+                tv = tv / 100.0;
+            }
+            if (tv < 0.01) {
+                tv = 0.01;
+            }
+            if (tv > 0.9) {
+                tv = 0.9;
+            }
+            int a = (int)(tv * 32768.0 + 0.5);
+            if (a < 1) {
+                a = 1;
+            }
+            if (a > 32767) {
+                a = 32767;
+            }
+            g_cqpsk_ctx.eq.wl_improp_alpha_q15 = a;
+        }
+    }
     const char* dfe = getenv("DSD_NEO_CQPSK_DFE");
     if (dfe && (*dfe == '1' || *dfe == 'y' || *dfe == 'Y' || *dfe == 't' || *dfe == 'T')) {
         g_cqpsk_ctx.eq.dfe_enable = 1;
