@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 //DMR CRC/Utility Functions
 //Original File - dmr_sync.c
 //ConvertBitIntoBytes, ComputeCrcCCITT, ComputeCrc5Bit, ComputeAndCorrectFullLinkControlCrc, CRC32, CRC9
@@ -302,17 +306,31 @@ ComputeCrc5Bit(uint8_t* DMRData) {
     return CRC;
 } /* End ComputeCrc5Bit() */
 
+/* Pack 8 single-bit elements (MSB first) into a byte value */
+static inline uint64_t
+dsd_pack8_bits_msb(const uint8_t* b) {
+    return ((uint64_t)(b[0] & 1) << 7) | ((uint64_t)(b[1] & 1) << 6) | ((uint64_t)(b[2] & 1) << 5)
+           | ((uint64_t)(b[3] & 1) << 4) | ((uint64_t)(b[4] & 1) << 3) | ((uint64_t)(b[5] & 1) << 2)
+           | ((uint64_t)(b[6] & 1) << 1) | ((uint64_t)(b[7] & 1) << 0);
+}
+
 uint64_t
 ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t Output = 0;
-    uint32_t i;
+    uint64_t out = 0;
+    const uint8_t* p = BufferIn;
+    uint32_t n = BitLength;
 
-    for (i = 0; i < BitLength; i++) {
-        Output <<= 1;
-        Output |= (uint64_t)(BufferIn[i] & 1);
+    /* Fast path: process full bytes (8 bits) at a time */
+    while (n >= 8) {
+        out = (out << 8) | dsd_pack8_bits_msb(p);
+        p += 8;
+        n -= 8;
     }
-
-    return Output;
+    /* Remainder bits */
+    while (n--) {
+        out = (out << 1) | (uint64_t)(*p++ & 1);
+    }
+    return out;
 } /* End ConvertBitIntoBytes() */
 
 /*
