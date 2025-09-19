@@ -184,10 +184,12 @@ jobs:
 
       - name: Stage portable tree
         id: stage
-        # Use Cygwin bash directly to avoid pwsh quoting issues
-        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -leo pipefail {0}'
+        # Run script via Cygwin bash with CRLF ignoring enabled
+        # Using -lc "set -o igncr; source {0}" ensures igncr is set before reading the temp script file
+        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -lc "set -o igncr; source {0}"'
         run: |
-          set -euo pipefail
+          # Be robust if pipefail isn't available (should be in bash)
+          set -euo pipefail 2>/dev/null || set -eu
           cd "$(cygpath -u "$GITHUB_WORKSPACE")"
 
           EXE="build/dev-release/apps/dsd-cli/dsd-neo.exe"
