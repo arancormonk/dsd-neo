@@ -202,14 +202,21 @@ jobs:
           : "${DEPS_PREFIX:?DEPS_PREFIX not set}"
 
           # Helper: collect DLL dependencies of the given files and copy them into $STAGE/bin
+          # Use robust parsing of cygcheck output to grab actual file paths.
           collect_deps() {
             local out dll file fn
             out="$1"; shift
             : > "$out"
             for file in "$@"; do
               [ -f "$file" ] || continue
-              cygcheck -v "$file" | awk '/\\.dll/ {print}' | sed -E 's/^ *//' | awk '{print $1}' >> "$out" || true
+              # Prefer explicit "Found:" lines; also fall back to matching absolute paths that end in .dll
+              cygcheck -v "$file" 2>/dev/null | \
+                sed -nE \
+                  -e 's/^Found: (.*\\.dll)$/\1/p' \
+                  -e 's@^ *([A-Za-z]:\\\\[^ ]*\\.dll).*$@\1@p' \
+                  -e 's@^ *(/[^ ]*\\.dll).*$@\1@p' >> "$out" || true
             done
+            # Unique and copy
             sort -u -o "$out" "$out" || true
             while IFS= read -r dll; do
               [ -z "$dll" ] && continue
@@ -231,6 +238,26 @@ jobs:
             for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" 2>/dev/null || true; done
           done
 
+          # Known runtime dependencies for our stack (fallbacks): audio, curses, sndfile, gettext, ltdl
+          for rt in \
+              /bin/cygpulse-*.dll \
+              /bin/cygpulsecommon-*.dll \
+              /bin/cygpulse-simple-*.dll \
+              /bin/cygncursesw-*.dll \
+              /bin/cygformw-*.dll \
+              /bin/cygpanelw-*.dll \
+              /bin/cygsndfile-*.dll \
+              /bin/cygogg-*.dll \
+              /bin/cygvorbis-*.dll \
+              /bin/cygvorbisenc-*.dll \
+              /bin/cygFLAC-*.dll \
+              /bin/cygintl-*.dll \
+              /bin/cygiconv-*.dll \
+              /bin/cygltdl-*.dll \
+              /bin/cygdbus-1-*.dll; do
+            for f in $rt; do [ -f "$f" ] && cp -n "$f" "$STAGE/bin/" 2>/dev/null || true; done
+          done
+
           # Optional tools: include exe and their DLLs if present
           if command -v pulseaudio >/dev/null 2>&1; then
             PULSEAUDIO_BIN="$(command -v pulseaudio)"
@@ -244,8 +271,8 @@ jobs:
             collect_deps mtdlls.txt "$MINTTY_BIN"
           fi
 
-          # Closure: resolve dependencies of everything we have staged (2 extra passes)
-          for pass in 1 2; do
+          # Closure: resolve dependencies of everything we have staged (3 passes)
+          for pass in 1 2 3; do
             collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll
           done
 
