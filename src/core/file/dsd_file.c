@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -1151,7 +1154,8 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, char* imbe_str, uint8_t* ks
 void
 read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
-    char* source_str = calloc(0x100000, sizeof(char));
+    /* Allocate raw buffer + 1 for NUL terminator; no need to zero-fill */
+    char* source_str = (char*)malloc(0x100000 + 1);
     size_t source_size;
 
     int8_t protocol = -1;
@@ -1194,14 +1198,13 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     int imbe_counter = 0;    //count IMBE frames for when to skip 2 bytes of ks and juggle keystreams
 
     source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
+    source_str[source_size] = '\0'; /* ensure C-string for strtok/strncmp */
 
     //debug
     // fprintf (stderr, " Source Size: %d.\n", source_size);
     // fprintf (stderr, "\n");
 
-    char* str_buffer = calloc(source_size, sizeof(char));
-
-    str_buffer = strtok(source_str, "{ \""); //value after initial { open bracket
+    char* str_buffer = strtok(source_str, "{ \""); //value after initial { open bracket
 
     //debug print current str_buffer
     // fprintf (stderr, "%s", str_buffer);
