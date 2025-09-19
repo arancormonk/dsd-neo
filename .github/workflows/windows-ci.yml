@@ -273,10 +273,19 @@ jobs:
             cp -f packaging/windows-cygwin/etc/pulse/default.pa "$STAGE/etc/pulse/"
           fi
 
-          # Include terminfo database for ncurses so portable UI works
-          if [ -d "/usr/share/terminfo" ]; then
-            mkdir -p "$STAGE/share"
-            cp -R "/usr/share/terminfo" "$STAGE/share/" 2>/dev/null || true
+          # Provide a minimal terminfo set (avoid copying symlinks in full tree)
+          if [ -x "/usr/bin/tic" ] && [ -x "/usr/bin/infocmp" ]; then
+            mkdir -p "$STAGE/share/terminfo"
+            tmp_src=$(mktemp)
+            # Common terminals for Windows/mintty/console
+            for ent in xterm xterm-256color vt100 vt220 screen cygwin; do
+              /usr/bin/infocmp -x -A /usr/share/terminfo "$ent" >> "$tmp_src" 2>/dev/null || true
+              echo >> "$tmp_src"
+            done
+            if [ -s "$tmp_src" ]; then
+              /usr/bin/tic -x -o "$STAGE/share/terminfo" "$tmp_src" || true
+            fi
+            rm -f "$tmp_src"
           fi
 
           # Emit a manifest of included DLLs for debugging/auditing
