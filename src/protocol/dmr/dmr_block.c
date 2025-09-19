@@ -158,45 +158,43 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         uint8_t p_sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[0], 4);
         uint8_t p_mfid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8);
 
-        fprintf(stderr, "%s \n Slot %d Data Header - ", KGRN, slot + 1);
-
-        if (gi == 1 && dpf != 15) {
-            fprintf(stderr, "Group - ");
-        }
-        if (gi == 0 && dpf != 15) {
-            fprintf(stderr, "Indiv - ");
-        }
-
-        if (dpf == 0) {
-            fprintf(stderr, "Unified Data Transport (UDT) ");
-        } else if (dpf == 1) {
-            fprintf(stderr, "Response Packet ");
-        } else if (dpf == 2) {
-            fprintf(stderr, "Unconfirmed Delivery ");
-        } else if (dpf == 3) {
-            fprintf(stderr, "Confirmed Delivery ");
-        } else if (dpf == 13) {
-            fprintf(stderr, "Short Data: Defined ");
-        } else if (dpf == 14) {
-            fprintf(stderr, "Short Data: Raw or S/P ");
-        }
-        // else if (dpf == 15) fprintf (stderr, "Proprietary Packet Data");
-        else if (dpf == 15) {
-            fprintf(stderr, "Extended"); //
-        } else {
-            fprintf(stderr, "Reserved/Unknown DPF %X ", dpf);
-        }
-
-        if (a == 1 && dpf != 15) {
-            fprintf(stderr, "- Response Requested ");
-        }
-        if (dpf != 15) {
-            fprintf(stderr, "- Source: %d Target: %d ", source, target);
-        }
-
-        //include the hash value if this is an XPT and if its IND data
-        if (dpf != 15 && is_xpt == 1 && gi == 0) {
-            fprintf(stderr, "Hash: %d ", tg_hash);
+        {
+            char hdr[512];
+            int off = 0;
+            off += snprintf(hdr + off, sizeof(hdr) - off, "%s \n Slot %d Data Header - ", KGRN, slot + 1);
+            if (dpf != 15) {
+                if (gi == 1) {
+                    off += snprintf(hdr + off, sizeof(hdr) - off, "Group - ");
+                } else if (gi == 0) {
+                    off += snprintf(hdr + off, sizeof(hdr) - off, "Indiv - ");
+                }
+            }
+            const char* dpf_str = NULL;
+            switch (dpf) {
+                case 0: dpf_str = "Unified Data Transport (UDT) "; break;
+                case 1: dpf_str = "Response Packet "; break;
+                case 2: dpf_str = "Unconfirmed Delivery "; break;
+                case 3: dpf_str = "Confirmed Delivery "; break;
+                case 13: dpf_str = "Short Data: Defined "; break;
+                case 14: dpf_str = "Short Data: Raw or S/P "; break;
+                case 15: dpf_str = "Extended"; break;
+                default: dpf_str = NULL; break;
+            }
+            if (dpf_str) {
+                off += snprintf(hdr + off, sizeof(hdr) - off, "%s", dpf_str);
+            } else {
+                off += snprintf(hdr + off, sizeof(hdr) - off, "Reserved/Unknown DPF %X ", dpf);
+            }
+            if (a == 1 && dpf != 15) {
+                off += snprintf(hdr + off, sizeof(hdr) - off, "- Response Requested ");
+            }
+            if (dpf != 15) {
+                off += snprintf(hdr + off, sizeof(hdr) - off, "- Source: %d Target: %d ", source, target);
+            }
+            if (dpf != 15 && is_xpt == 1 && gi == 0) {
+                off += snprintf(hdr + off, sizeof(hdr) - off, "Hash: %d ", tg_hash);
+            }
+            fprintf(stderr, "%s", hdr);
         }
 
         //sap string handling
