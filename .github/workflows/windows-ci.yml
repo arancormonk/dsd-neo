@@ -284,6 +284,18 @@ jobs:
             done
             if [ -s "$tmp_src" ]; then
               /usr/bin/tic -x -o "$STAGE/share/terminfo" "$tmp_src" || true
+              # Dereference any symlinks created for aliases (e.g., vt100-am)
+              # .NET ZipFile chokes on reparse points; replace links with plain files
+              if [ -d "$STAGE/share/terminfo" ]; then
+                /usr/bin/find "$STAGE/share/terminfo" -type l -print0 | \
+                  while IFS= read -r -d '' link; do
+                    tgt=$(/usr/bin/readlink -f "$link" 2>/dev/null || true)
+                    if [ -n "$tgt" ] && [ -f "$tgt" ]; then
+                      rm -f "$link" || true
+                      cp -f "$tgt" "$link" || true
+                    fi
+                  done
+              fi
             fi
             rm -f "$tmp_src"
           fi
