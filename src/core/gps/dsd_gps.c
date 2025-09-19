@@ -47,10 +47,11 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 
     //NOTE: May need to use double instead of float to avoid rounding errors
     double latitude, longitude = 0.0f;
-    double lat_unit = (double)180 / pow(2.0, 24); //180 divided by 2^24 -- 6.3.30
-    double lon_unit = (double)360 / pow(2.0, 25); //360 divided by 2^25 -- 6.3.50
-    double lon_sf = 1.0f;                         //float value we can multiple longitude with
-    double lat_sf = 1.0f;                         //float value we can multiple latitude with
+    /* Avoid pow(2, n): use exact constants for 2^24 and 2^25 */
+    double lat_unit = 180.0 / 16777216.0; // 180 / (2^24)
+    double lon_unit = 360.0 / 33554432.0; // 360 / (2^25)
+    double lon_sf = 1.0f;                 //float value we can multiple longitude with
+    double lat_sf = 1.0f;                 //float value we can multiple latitude with
 
     char latstr[3];
     char lonstr[3];
@@ -105,8 +106,9 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
                 add_hash, latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr, lat_sf * latitude,
                 lon_sf * longitude, vt, dt, deg_glyph);
 
-        //6.3.63 Position Error
-        uint16_t position_error = 2 * pow(10, pos_err); //2 * 10^pos_err
+        //6.3.63 Position Error (2 * 10^pos_err) via tiny LUT
+        static const uint32_t pow10_lut[8] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u};
+        unsigned int position_error = (unsigned int)(2u * pow10_lut[pos_err & 7]);
         if (pos_err == 0x7) {
             fprintf(stderr, "\n  Position Error: Unknown or Invalid;");
         } else {
@@ -634,8 +636,8 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     double lon_sf = 1.0f; //float value we can multiple longitude with
     double lat_sf = 1.0f; //float value we can multiple latitude with
 
-    double lat_unit = (double)180 / pow(2.0, 24); //180 divided by 2^24
-    double lon_unit = (double)360 / pow(2.0, 25); //360 divided by 2^25
+    double lat_unit = 180.0 / 16777216.0; // 180 / (2^24)
+    double lon_unit = 360.0 / 33554432.0; // 360 / (2^25)
 
     char latstr[3];
     char lonstr[3];
@@ -670,8 +672,9 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
             fprintf(stderr, " Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf)", latitude, deg_glyph, latstr, longitude,
                     deg_glyph, lonstr, lat_sf * latitude, lon_sf * longitude);
 
-            //7.2.15 Position Error
-            uint16_t position_error = 2 * pow(10, pos_err); //2 * 10^pos_err
+            //7.2.15 Position Error: 2 * 10^pos_err via LUT
+            static const uint32_t pow10_lut[8] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u};
+            unsigned int position_error = (unsigned int)(2u * pow10_lut[pos_err & 7]);
             if (pos_err == 0x7) {
                 fprintf(stderr, "\n  Position Error: Unknown or Invalid");
             } else {
