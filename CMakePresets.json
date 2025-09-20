@@ -1,6 +1,10 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "dev-debug",
@@ -35,19 +39,88 @@
         "DSD_ENABLE_ASAN": "ON",
         "DSD_ENABLE_UBSAN": "ON"
       }
+    },
+    {
+      "name": "coverage-debug",
+      "displayName": "Debug + Coverage",
+      "description": "Debug build with GCC/Clang coverage instrumentation",
+      "binaryDir": "${sourceDir}/build/coverage-debug",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "--coverage -O0",
+        "CMAKE_CXX_FLAGS": "--coverage -O0",
+        "CMAKE_EXE_LINKER_FLAGS": "--coverage",
+        "CMAKE_SHARED_LINKER_FLAGS": "--coverage"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev-debug",   "configurePreset": "dev-debug",   "configuration": "Debug" },
-    { "name": "dev-debug-clean",   "configurePreset": "dev-debug",   "configuration": "Debug", "cleanFirst": true },
-    { "name": "dev-release", "configurePreset": "dev-release", "configuration": "Release" },
-    { "name": "dev-release-clean", "configurePreset": "dev-release", "configuration": "Release", "cleanFirst": true },
-    { "name": "asan-ubsan-debug", "configurePreset": "asan-ubsan-debug", "configuration": "Debug" },
-    { "name": "asan-ubsan-debug-clean", "configurePreset": "asan-ubsan-debug", "configuration": "Debug", "cleanFirst": true }
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "dev-debug-clean",
+      "configurePreset": "dev-debug",
+      "configuration": "Debug",
+      "cleanFirst": true
+    },
+    {
+      "name": "dev-release",
+      "configurePreset": "dev-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "dev-release-clean",
+      "configurePreset": "dev-release",
+      "configuration": "Release",
+      "cleanFirst": true
+    },
+    {
+      "name": "asan-ubsan-debug",
+      "configurePreset": "asan-ubsan-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "asan-ubsan-debug-clean",
+      "configurePreset": "asan-ubsan-debug",
+      "configuration": "Debug",
+      "cleanFirst": true
+    },
+    {
+      "name": "coverage-debug",
+      "configurePreset": "coverage-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "coverage-debug-clean",
+      "configurePreset": "coverage-debug",
+      "configuration": "Debug",
+      "cleanFirst": true
+    }
   ],
   "testPresets": [
-    { "name": "dev-debug",   "configurePreset": "dev-debug",   "configuration": "Debug" },
-    { "name": "dev-release", "configurePreset": "dev-release", "configuration": "Release" },
-    { "name": "asan-ubsan-debug", "configurePreset": "asan-ubsan-debug", "configuration": "Debug" }
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "dev-release",
+      "configurePreset": "dev-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "asan-ubsan-debug",
+      "configurePreset": "asan-ubsan-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "coverage-debug",
+      "configurePreset": "coverage-debug",
+      "configuration": "Debug"
+    }
   ]
 }

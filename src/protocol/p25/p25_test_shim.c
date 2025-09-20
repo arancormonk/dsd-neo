@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include <dsd-neo/core/dsd.h>
+void processTDULC(dsd_opts* opts, dsd_state* state);
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.
 // Returns 0 on success.
@@ -134,6 +135,25 @@ p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded) {
     return 0;
 }
 
+// Simplified P25p2 audio gating decision helper matching the logic in
+// process_SACCH_MAC_PDU (ACTIVE/PTT handling):
+//  - ALGID 0 or 0x80 (clear)
+//  - RC4/DES/DES-XL (0xAA/0x81/0x9F) require non-zero key
+//  - AES-256/AES-128 (0x84/0x89) require aes_loaded
+int
+p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded) {
+    if (algid == 0 || algid == 0x80) {
+        return 1;
+    }
+    if ((algid == 0xAA || algid == 0x81 || algid == 0x9F) && key != 0ULL) {
+        return 1;
+    }
+    if ((algid == 0x84 || algid == 0x89) && aes_loaded == 1) {
+        return 1;
+    }
+    return 0;
+}
+
 // Compute a channel→frequency mapping with explicit iden parameters.
 // If map_override > 0, preload trunk_chan_map[chan16] with that frequency to
 // test direct mapping behavior.
@@ -163,6 +183,8 @@ p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int ch
     return 0;
 }
 
+/* (P25p1 PDU data EVH test wrapper is provided in tests/) */
+
 // Extended MAC VPDU test entry allowing LCCH flag and slot control.
 void
 p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot) {
@@ -180,3 +202,72 @@ p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_l
     }
     process_MAC_VPDU(&opts, &state, type, MAC);
 }
+
+// Invoke MAC VPDU with a pre-seeded trunking state for tests that need
+// valid channel→frequency mapping and/or trunking grant gating.
+// - p25_trunk: enable trunking decisions (1 to allow grants)
+// - p25_cc_freq: non-zero to satisfy grant tuning guard
+// - iden/type/tdma/spac/base: seed IDEN parameters used by process_channel_to_freq
+void
+p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
+                                    int iden, int type, int tdma, long base, int spac) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    opts.p25_trunk = p25_trunk ? 1 : 0;
+    opts.p25_is_tuned = 0;
+    opts.trunk_tune_group_calls = 1; // enable group call tuning in tests
+    state.p25_cc_freq = p25_cc_freq;
+    state.p25_chan_iden = iden & 0xF;
+    state.p25_chan_type[state.p25_chan_iden] = type & 0xF;
+    state.p25_chan_tdma[state.p25_chan_iden] = tdma & 0x1;
+    state.p25_chan_spac[state.p25_chan_iden] = spac;
+    state.p25_base_freq[state.p25_chan_iden] = base;
+    state.synctype = 0; // P1 FDMA context
+
+    unsigned long long int MAC[24] = {0};
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+}
+
+// Invoke MAC VPDU and capture tuned flag and VC frequency for assertions.
+void
+p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq, int iden,
+                                 int type, int tdma, long base, int spac, long* out_vc0, int* out_tuned) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    opts.p25_trunk = p25_trunk ? 1 : 0;
+    opts.p25_is_tuned = 0;
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    state.p25_cc_freq = p25_cc_freq;
+    state.p25_chan_iden = iden & 0xF;
+    state.p25_chan_type[state.p25_chan_iden] = type & 0xF;
+    state.p25_chan_tdma[state.p25_chan_iden] = tdma & 0x1;
+    state.p25_chan_spac[state.p25_chan_iden] = spac;
+    state.p25_base_freq[state.p25_chan_iden] = base;
+
+    unsigned long long int MAC[24] = {0};
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+
+    if (out_vc0) {
+        *out_vc0 = state.p25_vc_freq[0];
+    }
+    if (out_tuned) {
+        *out_tuned = opts.p25_is_tuned;
+    }
+}
+
+/* (xcch test wrapper provided as a separate TU in tests/) */

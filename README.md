@@ -113,23 +113,6 @@ cmake --build build/dev-release --target uninstall
 
 If `help2man` is available during build, a `dsd-neo(1)` man page is generated and installed from the binary’s `-h` output.
 
-## Windows (MSVC) Quickstart
-
-- Windows support is possible but requires satisfying dependencies (ncurses‑w, libsndfile, ITPP; optional librtlsdr/Codec2). For a smoother experience, MSYS2/MinGW is recommended.
-- From a "x64 Native Tools" prompt (with dependencies available on the PATH/include/lib):
-
-```
-cmake --preset dev-release
-cmake --build --preset dev-release --config Release -j
-ctest --preset dev-release -C Release
-cmake --install build/dev-release --config Release
-```
-
-Notes
-
-- On Windows, prefer linking mbelib‑neo statically (the build auto‑selects `mbe_neo::mbe_static`).
-- If building with MSYS2/MinGW, install dependencies via `pacman` and use the MinGW generator.
-
 ## Tests and Examples
 
 - Run: `ctest --preset dev-debug -V`.
