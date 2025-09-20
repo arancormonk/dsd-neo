@@ -109,7 +109,10 @@ process_Frame_Scramble(dsd_opts* opts, dsd_state* state) {
     unsigned long long int bit = 1; //temp bit for storage during LFSR operation
 
     for (int i = 0; i < 4320; i++) {
-        //External LFSR in figure 7.1 BBAC
+        // External LFSR per TIA‑102 BBAC Fig. 7.1 (TDMA frame scrambler)
+        // 44‑bit Fibonacci LFSR with feedback polynomial:
+        //   x^44 + x^34 + x^20 + x^15 + x^9 + x^4 + 1
+        // Seed composition (MSB→LSB): WACN[20] | SYSID[12] | NAC(CC)[12]
 
         //assign our scramble bit to the array
         p2lbit[i] = (seed >> 43) & 0x1;
