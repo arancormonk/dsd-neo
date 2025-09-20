@@ -73,14 +73,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         }
     }
     if (state->p2_is_lcch == 1) {
-        int len = 164;
-        // Compute CRC16 span when MCO is present: header (16 bits) + mco_a octets, bounded by 164
-        if (mco_a > 0) {
-            int bits = 16 + (mco_a * 8);
-            if (bits > 0 && bits <= 164) {
-                len = bits;
-            }
-        }
+        // Per TIA-102 Phase 2 LCCH, CRC16 covers the full fixed data span
+        // preceding the 16-bit CRC (total ACCH block is 180 bits). Do not
+        // derive the span from MCO; vendors may leave unused octets as 0s
+        // yet CRC still spans the full region. Thus, use 164 data bits.
+        const int len = 164; // 164 data + 16 CRC = 180 bits
         err = crc16_lb_bridge(payload, len);
         if (err != 0) //CRC Failure, warn or skip.
         {
