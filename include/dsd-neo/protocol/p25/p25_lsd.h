@@ -13,13 +13,15 @@ extern "C" {
 #endif
 
 /*
- * P25p1 Low Speed Data FEC (16,8) — scaffold API.
+ * P25p1 Low Speed Data FEC (16,8).
  *
- * bits16: array of 16 bits stored as bytes 0/1 (MSB first). The function may
- * correct single-bit errors and return 1 for valid/corrected frames, or 0 for
- * uncorrectable.
+ * bits16: array of 16 bits stored as bytes 0/1 (MSB-first):
+ *   bits16[0..7]   = data bits (MSB..LSB)
+ *   bits16[8..15]  = parity bits (MSB..LSB)
  *
- * This is a placeholder to be replaced with a spec-accurate cyclic decoder.
+ * Performs syndrome-based single-bit correction across the full 16-bit codeword
+ * (data and parity). Returns 1 if the codeword is valid after optional single-
+ * bit correction, or 0 if uncorrectable (e.g., multi-bit errors).
  */
 int p25_lsd_fec_16x8(uint8_t* bits16);
 

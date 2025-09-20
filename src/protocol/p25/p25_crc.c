@@ -144,25 +144,3 @@ uint8_t lsd_parity[256] = {
     0x8B, 0xC0, 0xF9, 0x56, 0x6F, 0x24, 0x1D, 0x43, 0x7A, 0x31, 0x08, 0xA7, 0x9E, 0xD5, 0xEC, 0xE6, 0xDF, 0x94, 0xAD,
     0x02, 0x3B, 0x70, 0x49, 0x17, 0x2E, 0x65, 0x5C, 0xF3, 0xCA, 0x81, 0xB8, 0x3D, 0x04, 0x4F, 0x76, 0xD9, 0xE0, 0xAB,
     0x92, 0xCC, 0xF5, 0xBE, 0x87, 0x28, 0x11, 0x5A, 0x63};
-
-int
-p25p1_lsd_fec(uint8_t* input) {
-    // Expect 16 bits: [0..7] = data bits, [8..15] = parity bits; bits are 0/1 values
-    uint8_t lsd = (uint8_t)ConvertBitIntoBytes(&input[0], 8);
-    uint8_t par = (uint8_t)ConvertBitIntoBytes(&input[8], 8);
-    uint8_t chk = lsd_parity[lsd];
-    if (chk == par) {
-        return 1; // valid
-    }
-    // Attempt single-bit correction in data bits only
-    for (int pos = 0; pos < 8; pos++) {
-        // Flip bit MSB-first: input[0] is MSB
-        uint8_t cand = (uint8_t)(lsd ^ (uint8_t)(1u << (7 - pos)));
-        if (lsd_parity[cand] == par) {
-            // Write back corrected bit to the bit buffer (toggle 0/1)
-            input[pos] = (uint8_t)(1 - (input[pos] & 1));
-            return 1;
-        }
-    }
-    return 0; // uncorrectable
-}

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 
+#include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
@@ -510,9 +511,9 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         lsd_hex2 = 0;
     }
 
-    //WIP: LSD FEC
-    lsd1_okay = p25p1_lsd_fec(lowspeeddata + 0);
-    lsd2_okay = p25p1_lsd_fec(lowspeeddata + 16);
+    // LSD FEC (16,8) — correct single-bit errors in full codeword
+    lsd1_okay = p25_lsd_fec_16x8(lowspeeddata + 0);
+    lsd2_okay = p25_lsd_fec_16x8(lowspeeddata + 16);
 
     if (opts->payload == 1) {
         fprintf(stderr, "%s", KCYN);
