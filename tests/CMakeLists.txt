@@ -40,3 +40,15 @@ add_executable(dsd-neo_test_p25_iden_bridge test_p25_iden_bridge.c)
 target_include_directories(dsd-neo_test_p25_iden_bridge PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_iden_bridge PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_BRIDGE COMMAND dsd-neo_test_p25_iden_bridge)
+
+# CRC12/16 combined smoke test
+add_executable(dsd-neo_test_p25_crc12_16 test_p25_crc12_16.c)
+target_include_directories(dsd-neo_test_p25_crc12_16 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_crc12_16 PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_CRC12_16 COMMAND dsd-neo_test_p25_crc12_16)
+
+# RS parity regen smoke tests (uses proto wrappers and ezpwd)
+add_executable(dsd-neo_test_p25_rs test_p25_rs.cpp)
+target_include_directories(dsd-neo_test_p25_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_rs PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_RS COMMAND dsd-neo_test_p25_rs)
