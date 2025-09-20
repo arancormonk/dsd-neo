@@ -3094,7 +3094,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (state->carrier == 1) {
                 attron(COLOR_PAIR(3));
             } else {
-                attroff(COLOR_PAIR(4));
+                /* When no active call, keep UI in idle cyan instead of default white */
+                attron(COLOR_PAIR(4));
             }
         }
 
@@ -3370,7 +3371,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (state->carrier == 1) {
             attron(COLOR_PAIR(3));
         } else {
-            attroff(COLOR_PAIR(4));
+            /* Restore idle cyan after extras when carrier drops */
+            attron(COLOR_PAIR(4));
         }
 
         printw("\n");
@@ -3561,7 +3563,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (state->carrier == 1) {
                 attron(COLOR_PAIR(3));
             } else {
-                attroff(COLOR_PAIR(4));
+                /* Keep cyan when idle to avoid white fallback */
+                attron(COLOR_PAIR(4));
             }
 
             printw("\n");
@@ -3582,7 +3585,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (state->carrier == 1) {
                     attron(COLOR_PAIR(3));
                 } else {
-                    attroff(COLOR_PAIR(4));
+                    /* Keep cyan when idle to avoid white fallback */
+                    attron(COLOR_PAIR(4));
                 }
                 printw("\n");
             }
@@ -3605,7 +3609,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (state->carrier == 1) {
                     attron(COLOR_PAIR(3));
                 } else {
-                    attroff(COLOR_PAIR(4));
+                    /* Keep cyan when idle to avoid white fallback */
+                    attron(COLOR_PAIR(4));
                 }
                 printw("\n");
             }
