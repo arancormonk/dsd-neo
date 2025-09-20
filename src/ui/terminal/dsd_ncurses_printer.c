@@ -2586,12 +2586,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     ui_print_header("Audio Decode");
     if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-        printw("| Tuner state: Busy");
+        printw("| Tuner state: Busy\n");
     }
     if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0) {
-        printw("| Tuner state: Free");
+        printw("| Tuner state: Free\n");
     }
-    printw("\n| Demod/Rate:  ");
+    printw("| Demod/Rate:  ");
     if (opts->mod_qpsk == 1) {
         printw("[QPSK]");
     }
