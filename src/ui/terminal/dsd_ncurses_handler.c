@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/ui/keymap.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -30,7 +31,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     //this is primarly a fix for scroll wheel activatign the menu
     //and Windows Powershell right-click doing a copy and paste
     //and sendign tons of garbage getch chars here and changing things
-    if (c == '\033') {
+    if (c == DSD_KEY_ESC) {
         //TODO: Find way to getch all the chars immediately after, or just
         //run getch in a loop in case of somebody copying and pasting a ton of things accidentally
         for (int i = 0; i < 100000; i++) { //wonder how slow this will be
@@ -41,7 +42,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //keyboard shortcuts - codes same as ascii codes
-    if (c == 10) //Return / Enter key, open menu
+    if (c == DSD_KEY_ENTER) //Return / Enter key, open menu
     {
         if (opts->m17encoder == 0) { //don't allow menu if using M17 encoder
             ncursesMenu(opts, state);
@@ -49,7 +50,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //use k and l keys to test tg hold toggles on slots 1 and slots 2
-    if (c == 107) //'k' key, hold tg on slot 1 for trunking purposes, or toggle clear
+    if (c == DSD_KEY_TG_HOLD1) //'k' key, hold tg on slot 1 for trunking purposes, or toggle clear
     {
         if (state->tg_hold == 0) {
             state->tg_hold = state->lasttg;
@@ -66,7 +67,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 108) //'l' key, hold tg on slot 2 for trunking purposes, or toggle clear
+    if (c == DSD_KEY_TG_HOLD2) //'l' key, hold tg on slot 2 for trunking purposes, or toggle clear
     {
         if (state->tg_hold == 0) {
             state->tg_hold = state->lasttgR;
@@ -76,7 +77,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //toggling when 48k/1 OSS still has some lag -- needed to clear out the buffer when switching
-    if (c == 49) // '1' key, toggle slot1 on
+    if (c == DSD_KEY_SLOT1_TOGGLE) // '1' key, toggle slot1 on
     {
         //switching, but want to control each seperately plz
         if (opts->slot1_on == 1) {
@@ -102,7 +103,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 50) // '2' key, toggle slot2 on
+    if (c == DSD_KEY_SLOT2_TOGGLE) // '2' key, toggle slot2 on
     {
         //switching, but want to control each seperately plz
         if (opts->slot2_on == 1) {
@@ -131,7 +132,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     //   else opts->slot_preference = 1;
     // }
 
-    if (c == 51) //'3' key, cycle slot preference
+    if (c == DSD_KEY_SLOT_PREF) //'3' key, cycle slot preference
     {
         if (opts->slot_preference == 0 || opts->slot_preference == 1) {
             opts->slot_preference++;
@@ -140,7 +141,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 43) //+ key, increment audio_gain
+    if (c == DSD_KEY_GAIN_PLUS) //+ key, increment audio_gain
     {
 
         if (opts->audio_gain < 50) {
@@ -153,7 +154,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->audio_gainR = opts->audio_gain;
     }
 
-    if (c == 45) //- key, decrement audio_gain
+    if (c == DSD_KEY_GAIN_MINUS) //- key, decrement audio_gain
     {
 
         if (opts->audio_gain > 0) {
@@ -172,21 +173,21 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->audio_gainR = opts->audio_gain;
     }
 
-    if (c == 42) // * key, increment audio_gainA
+    if (c == DSD_KEY_AGAIN_PLUS) // * key, increment audio_gainA
     {
         if (opts->audio_gainA < 100) {
             opts->audio_gainA++;
         }
     }
 
-    if (c == 47) // / key, decrement audio_gainA
+    if (c == DSD_KEY_AGAIN_MINUS) // / key, decrement audio_gainA
     {
         if (opts->audio_gainA > 0) {
             opts->audio_gainA--;
         }
     }
 
-    if (c == 122) //'z' key, toggle payload to console
+    if (c == DSD_KEY_PAYLOAD_TOGGLE) //'z' key, toggle payload to console
     {
         if (opts->payload == 1) {
             opts->payload = 0;
@@ -195,7 +196,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 111 || c == 79) //'o' or 'O' key, toggle constellation view
+    if (c == DSD_KEY_CONST_VIEW_LOWER || c == DSD_KEY_CONST_VIEW_UPPER) //'o' or 'O' key, toggle constellation view
     {
         if (opts->audio_in_type == 3) {
             if (opts->constellation == 1) {
@@ -206,14 +207,15 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 110 || c == 78) //'n' or 'N' key, toggle constellation normalization
+    // normalization: use lowercase 'n' only to avoid conflict with 'N' PBF filter
+    if (c == DSD_KEY_CONST_NORM) //'n' key, toggle constellation normalization
     {
         if (opts->audio_in_type == 3 && opts->constellation == 1) {
             opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
         }
     }
 
-    if (c == 60) //'<' key, decrease constellation gate
+    if (c == DSD_KEY_CONST_GATE_DEC) //'<' key, decrease constellation gate
     {
         if (opts->audio_in_type == 3 && opts->constellation == 1) {
             float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
@@ -224,7 +226,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 62) //'>' key, increase constellation gate
+    if (c == DSD_KEY_CONST_GATE_INC) //'>' key, increase constellation gate
     {
         if (opts->audio_in_type == 3 && opts->constellation == 1) {
             float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
@@ -235,7 +237,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 99) //'c' key, toggle compact mode
+    if (c == DSD_KEY_COMPACT) //'c' key, toggle compact mode
     {
         if (opts->ncurses_compact == 1) {
             opts->ncurses_compact = 0;
@@ -244,7 +246,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 120 || c == 88) //'x' or 'X' key, toggle audio mute
+    if (c == DSD_KEY_MUTE_LOWER || c == DSD_KEY_MUTE_UPPER) //'x' or 'X' key, toggle audio mute
     {
         opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
         if (state) {
@@ -257,21 +259,22 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 69) //'E' key, toggle eye view
+    if (c == DSD_KEY_EYE_VIEW) //'E' key, toggle eye view
     {
         if (opts->audio_in_type == 3) {
             opts->eye_view = opts->eye_view ? 0 : 1;
         }
     }
 
-    if (c == 75) //'K' key, toggle FSK histogram view
+    if (c == DSD_KEY_FSK_HIST) //'K' key, toggle FSK histogram view
     {
         if (opts->audio_in_type == 3) {
             opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
         }
     }
 
-    if (c == 83 || c == 115) //'S' or 's' key, toggle spectrum analyzer view
+    // spectrum: move to lowercase 'f' (FFT) to avoid 's' conflicts
+    if (c == DSD_KEY_SPECTRUM) //'f' key, toggle spectrum analyzer view
     {
         if (opts->audio_in_type == 3) {
             opts->spectrum_view = opts->spectrum_view ? 0 : 1;
@@ -279,7 +282,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
 #ifdef USE_RTLSDR
-    if (c == 44) //',' key, decrease FFT size
+    if (c == DSD_KEY_SPEC_DEC) //',' key, decrease FFT size
     {
         if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
             int n = rtl_stream_spectrum_get_size();
@@ -288,7 +291,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             }
         }
     }
-    if (c == 46) //'.' key, increase FFT size
+    if (c == DSD_KEY_SPEC_INC) //'.' key, increase FFT size
     {
         if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
             int n = rtl_stream_spectrum_get_size();
@@ -299,21 +302,22 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 #endif
 
-    if (c == 85) //'U' key, toggle Unicode blocks in eye view
+    if (c == DSD_KEY_EYE_UNICODE) //'U' key, toggle Unicode blocks in eye view
     {
         if (opts->audio_in_type == 3 && opts->eye_view == 1) {
             opts->eye_unicode = opts->eye_unicode ? 0 : 1;
         }
     }
 
-    if (c == 67) //'C' key, toggle colorized eye view
+    // eye color: move to 'L' to avoid conflict with trunk 'Return to CC' (also 'C')
+    if (c == DSD_KEY_EYE_COLOR) //'L' key, toggle colorized eye view
     {
         if (opts->audio_in_type == 3 && opts->eye_view == 1) {
             opts->eye_color = opts->eye_color ? 0 : 1;
         }
     }
 
-    if (c == 116) //'t' key, toggle trunking
+    if (c == DSD_KEY_TRUNK_TOGGLE) //'t' key, toggle trunking
     {
         if (opts->p25_trunk == 1) {
             opts->p25_trunk = 0;
@@ -322,7 +326,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 121) //'y' key, toggle scanner mode
+    if (c == DSD_KEY_SCANNER_TOGGLE) //'y' key, toggle scanner mode
     {
         if (opts->scanner_mode == 1) {
             opts->scanner_mode = 0;
@@ -332,7 +336,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->p25_trunk = 0; //turn off trunking mode
     }
 
-    if (c == 97) //'a' key, toggle call alert beep
+    if (c == DSD_KEY_CALL_ALERT) //'a' key, toggle call alert beep
     {
         if (opts->call_alert == 1) {
             opts->call_alert = 0;
@@ -341,18 +345,23 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 104) //'h' key, cycle history off, short, long
+    if (c == DSD_KEY_HISTORY) //'h' key, cycle history off, short, long
     {
         opts->ncurses_history++;
         opts->ncurses_history %= 3;
     }
 
-    if (c == 113) //'q' key, quit
+    // Compile-time conflict guards for commonly-confused keys
+    _Static_assert(DSD_KEY_SPECTRUM != DSD_KEY_STOP_PLAYBACK, "UI key conflict: spectrum vs stop playback");
+    _Static_assert(DSD_KEY_EYE_COLOR != 'C', "UI key conflict: eye color vs Return-to-CC");
+    _Static_assert(DSD_KEY_CONST_NORM != 'N', "UI key conflict: normalization vs PBF");
+
+    if (c == DSD_KEY_QUIT) //'q' key, quit
     {
         exitflag = 1;
     }
 
-    if (c == 52) // '4' key, toggle force privacy key over fid and svc (dmr)
+    if (c == DSD_KEY_FORCE_PRIV) // '4' key, toggle force privacy key over fid and svc (dmr)
     {
         if (state->M == 1 || state->M == 0x21) {
             state->M = 0;
@@ -361,7 +370,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 54) // '6' key, toggle force rc4 key over missing pi header/late entry
+    if (c == DSD_KEY_FORCE_RC4) // '6' key, toggle force rc4 key over missing pi header/late entry
     {
         if (state->M == 1 || state->M == 0x21) {
             state->M = 0;
@@ -370,7 +379,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 105) //'i' key, toggle signal inversion on inverted types
+    if (c == DSD_KEY_INVERT) //'i' key, toggle signal inversion on inverted types
     {
         //Set all signal for inversion or uninversion
         if (opts->inverted_dmr == 0) {
@@ -388,7 +397,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 109) //'m' key, toggle qpsk/c4fm - everything but phase 2
+    if (c == DSD_KEY_MOD_TOGGLE) //'m' key, toggle qpsk/c4fm - everything but phase 2
     {
         if (state->rf_mod == 0) {
             opts->mod_c4fm = 0;
@@ -407,7 +416,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 77) //'M' key, toggle qpsk - phase 2 6000 sps
+    if (c == DSD_KEY_MOD_P2) //'M' key, toggle qpsk - phase 2 6000 sps
     {
         if (state->rf_mod == 0) {
             opts->mod_c4fm = 0;
@@ -426,7 +435,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 82) //'R', save symbol capture bin with date/time string as name
+    if (c == DSD_KEY_SYMCAP_SAVE) //'R', save symbol capture bin with date/time string as name
     {
         //for filenames (no colons, etc)
         char timestr[7];
@@ -451,7 +460,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->symbol_out_file_is_auto = 1;
     }
 
-    if (c == 114) //'r' key, stop capturing symbol capture bin file
+    if (c == DSD_KEY_SYMCAP_STOP) //'r' key, stop capturing symbol capture bin file
     {
         if (opts->symbol_out_f) {
             closeSymbolOutFile(opts, state);
@@ -473,7 +482,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 #ifdef __CYGWIN__
 //do nothing
 #else
-    if (c == 32) //'space bar' replay last bin file (rework to do wav files too?)
+    if (c == DSD_KEY_REPLAY_LAST) //'space bar' replay last bin file (rework to do wav files too?)
     {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
@@ -488,7 +497,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 #endif
 
-    if (c == 80) //'P' key - start per call wav files //TODO: Fix
+    if (c == DSD_KEY_WAV_START) //'P' key - start per call wav files //TODO: Fix
     {
         char wav_file_directory[1024];
         snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
@@ -506,7 +515,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         opts->dmr_stereo_wav = 1;
     }
 
-    if (c == 112) //'p' key - stop all per call wav files //TODO: Fix
+    if (c == DSD_KEY_WAV_STOP) //'p' key - stop all per call wav files //TODO: Fix
     {
         //TODO: Add Closing of RAW files as well?
         opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir,
@@ -522,7 +531,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 #ifdef __CYGWIN__ //this might be okay on Aero as well, will need to look into and/or test
 //
 #else
-    if (c == 115) //'s' key, stop playing wav or symbol in files
+    if (c == DSD_KEY_STOP_PLAYBACK) //'s' key, stop playing wav or symbol in files
     {
         if (opts->symbolfile != NULL) {
             if (opts->audio_in_type == 4) {
@@ -709,7 +718,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->p25_trunk == 1 && c == 119) //'w' key, toggle white list/black list mode
+    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_WLIST) //'w' key, toggle white list/black list mode
     {
         if (opts->trunk_use_allow_list == 1) {
             opts->trunk_use_allow_list = 0;
@@ -718,7 +727,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->p25_trunk == 1 && c == 117) //'u' key, toggle tune private calls
+    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_PRIV) //'u' key, toggle tune private calls
     {
         if (opts->trunk_tune_private_calls == 1) {
             opts->trunk_tune_private_calls = 0;
@@ -727,7 +736,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->p25_trunk == 1 && c == 100) //'d' key, toggle tune data calls
+    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_DATA) //'d' key, toggle tune data calls
     {
         if (opts->trunk_tune_data_calls == 1) {
             opts->trunk_tune_data_calls = 0;
@@ -736,7 +745,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->p25_trunk == 1 && c == 101) //'e' key, toggle tune enc calls (P25 only on certain grants)
+    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_ENC) //'e' key, toggle tune enc calls (P25 only on certain grants)
     {
         if (opts->trunk_tune_enc_calls == 1) {
             // Enable ENC lockout
@@ -769,7 +778,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 70) //'F' key - toggle agressive sync/crc failure/ras
+    if (c == DSD_KEY_AGGR_SYNC) //'F' key - toggle agressive sync/crc failure/ras
     {
         if (opts->aggressive_framesync == 0) {
             opts->aggressive_framesync = 1;
@@ -778,7 +787,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 68) //'D' key - Reset DMR Site Parms/Call Strings, etc.
+    if (c == DSD_KEY_DMR_RESET) //'D' key - Reset DMR Site Parms/Call Strings, etc.
     {
         //dmr trunking/ncurses stuff
         state->dmr_rest_channel = -1; //init on -1
@@ -808,7 +817,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //Debug/Troubleshooting Option
-    if (c == 90) //'Z' key - Simulate NoCarrier/No VC/CC sync to zero out more stuff (capital Z)
+    if (c == DSD_KEY_SIM_NOCAR) //'Z' key - Simulate NoCarrier/No VC/CC sync to zero out more stuff (capital Z)
     {
         // opts->p25_is_tuned = 0;
         state->last_cc_sync_time = 0;
@@ -816,17 +825,22 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         noCarrier(opts, state);
     }
 
-    if (c == 93) //']' key - increment event history indexer
+    if (c == DSD_KEY_EH_NEXT) //']' key - increment event history indexer
     {
         state->eh_index++;
     }
 
-    if (c == 91) //'[' key - decrement event history indexer
+    if (c == DSD_KEY_EH_PREV) //'[' key - decrement event history indexer
     {
         state->eh_index--;
     }
 
-    if (c == 92) //'\' key - toggle events for slot displayed, and reset eh_index
+    // Avoid conflict with M17 encoder toggle which also uses '\\'
+    if (opts->m17encoder == 1 && c == DSD_KEY_EH_TOGGLE) {
+        c = -1; // consume so event-slot toggle below does not fire
+    }
+
+    if (c == DSD_KEY_EH_TOGGLE) //'\' key - toggle events for slot displayed, and reset eh_index
     {
         state->eh_slot ^= 1;
         state->eh_index = 0;
@@ -862,7 +876,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 57) //'9' key, try rigctl connection with default values
+    if (c == DSD_KEY_RIGCTL_CONN) //'9' key, try rigctl connection with default values
     {
         //use same or last specified host for TCP audio sink for connection
         memcpy(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
@@ -875,7 +889,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //if trunking and user wants to just go back to the control channel and skip this call
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && c == 67) //Capital C key - Return to CC
+    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && c == DSD_KEY_RETURN_CC) //Capital C key - Return to CC
     {
 
         //extra safeguards due to sync issues with NXDN
@@ -940,7 +954,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     //if trunking or scanning, manually cycle forward through channels loaded (can be run without trunking or scanning enabled)
     if ((opts->use_rigctl == 1 || opts->audio_in_type == 3)
-        && c == 76) //Capital L key - Cycle Channels Forward / P25 CC candidates
+        && c == DSD_KEY_CHANNEL_CYCLE) //Capital L key - Cycle Channels Forward / P25 CC candidates
     {
 
         //extra safeguards due to sync issues with NXDN
@@ -1052,7 +1066,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 118 && opts->audio_in_type == 3) //'v' key, cycle rtl volume multiplier, when active
+    if (c == DSD_KEY_RTL_VOL_CYCLE && opts->audio_in_type == 3) //'v' key, cycle rtl volume multiplier, when active
     {
         if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
             opts->rtl_volume_multiplier++;
@@ -1061,7 +1075,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 86) // 'V' Key, toggle LPF
+    if (c == DSD_KEY_LPF_TOGGLE) // 'V' Key, toggle LPF
     {
         if (opts->use_lpf == 0) {
             opts->use_lpf = 1;
@@ -1070,7 +1084,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 66) // 'B' Key, toggle HPF
+    if (c == DSD_KEY_HPF_TOGGLE) // 'B' Key, toggle HPF
     {
         if (opts->use_hpf == 0) {
             opts->use_hpf = 1;
@@ -1079,7 +1093,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 78) // 'N' Key, toggle PBF
+    if (c == DSD_KEY_PBF_TOGGLE) // 'N' Key, toggle PBF
     {
         if (opts->use_pbf == 0) {
             opts->use_pbf = 1;
@@ -1088,7 +1102,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == 72) // 'H' Key, toggle HPF on digital
+    if (c == DSD_KEY_HPF_DIG_TOGGLE) // 'H' Key, toggle HPF on digital
     {
         if (opts->use_hpf_d == 0) {
             opts->use_hpf_d = 1;
@@ -1097,7 +1111,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->m17encoder == 1 && c == 92) //'\' key - toggle M17 encoder Encode + TX
+    if (opts->m17encoder == 1 && c == DSD_KEY_EH_TOGGLE) //'\' key - toggle M17 encoder Encode + TX
     {
         if (state->m17encoder_tx == 0) {
             state->m17encoder_tx = 1;
@@ -1111,7 +1125,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->frame_provoice == 1 && c == 65) //'A' Key, toggle ESK mask 0xA0
+    if (opts->frame_provoice == 1 && c == 'A') //'A' Key, toggle ESK mask 0xA0
     {
         if (state->esk_mask == 0) {
             state->esk_mask = 0xA0;
@@ -1120,7 +1134,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (opts->frame_provoice == 1 && c == 83) //'S' Key, toggle STD or EA mode and reset
+    if (opts->frame_provoice == 1 && c == 'S') //'S' Key, toggle STD or EA mode and reset
     {
         if (state->ea_mode == -1) {
             state->ea_mode = 0;
@@ -1144,11 +1158,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //RTL PPM Manual Adjustment
-    if (c == 125) {
+    if (c == DSD_KEY_PPM_UP) {
         opts->rtlsdr_ppm_error++;
     }
 
-    if (c == 123) {
+    if (c == DSD_KEY_PPM_DOWN) {
         opts->rtlsdr_ppm_error--;
     }
 

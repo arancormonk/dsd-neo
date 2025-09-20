@@ -20,6 +20,7 @@
 #include <dsd-neo/core/synctype.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/ui/keymap.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -935,7 +936,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     }
     /* Color bar legend (consistent with Eye Diagram) */
     ui_print_lborder();
-    printw(" Norm: %s (toggle with 'N')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
+    printw(" Norm: %s (toggle with 'n')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
     if (opts && opts->eye_color && has_colors()) {
         ui_print_lborder();
         addch('\n');
@@ -2528,20 +2529,21 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         ui_print_header("RTL-SDR Visual Aids");
         int nfft = rtl_stream_spectrum_get_size();
         /* Controls/status line: only show controls relevant to active views */
-        printw("| Const View:  %s (O)", opts->constellation ? "On" : "Off");
+        printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
         if (opts->constellation == 1) {
-            printw("  Gate: %.02f (</>)  Norm: %s (N)",
+            printw("  Gate: %.02f (</>)  Norm: %s (%c)",
                    (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-                   opts->const_norm_mode ? "unit" : "radial");
+                   opts->const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
         }
-        printw("  Eye: %s (E)", opts->eye_view ? "On" : "Off");
+        printw("  Eye: %s (%c)", opts->eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
         if (opts->eye_view == 1) {
-            printw("  Uni: %s (U) Col: %s (C)", opts->eye_unicode ? "On" : "off", opts->eye_color ? "On" : "Off");
+            printw("  Uni: %s (%c) Col: %s (%c)", opts->eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
+                   opts->eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
         }
-        printw("  Hist: %s (K)", opts->fsk_hist_view ? "On" : "Off");
-        printw("  Spec: %s (S)", opts->spectrum_view ? "On" : "Off");
+        printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
+        printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
         if (opts->spectrum_view == 1) {
-            printw("  FFT:%d (,/.)", nfft);
+            printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
         }
         addch('\n');
         ui_print_hr();

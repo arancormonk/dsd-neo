@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/unicode.h>
+#include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 
 #include <ctype.h>
@@ -127,8 +128,11 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
         mvwprintw(menu_win, y++, x, "%s", lab);
         wattroff(menu_win, A_REVERSE);
     }
-    // footer help
-    mvwprintw(menu_win, mh - 3, x, "Arrows: move  Enter: select  h: help  q: back");
+    // ensure a blank spacer line above footer to avoid looking like an item
+    mvwhline(menu_win, mh - 5, 1, ' ', mw - 2);
+    // footer help (split across two lines to avoid overflow)
+    mvwprintw(menu_win, mh - 4, x, "Arrows: move  Enter: select");
+    mvwprintw(menu_win, mh - 3, x, "h: help  Esc/q: back");
     // transient status
     time_t now = time(NULL);
     if (g_status_msg[0] != '\0' && now < g_status_expire) {
@@ -152,7 +156,17 @@ ui_show_help(const NcMenuItem* it) {
     if (w < 40) {
         w = 40;
     }
-    WINDOW* hw = ui_make_window(h, w, 3, 6);
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    int hy = (scr_h - h) / 2;
+    int hx = (scr_w - w) / 2;
+    if (hy < 0) {
+        hy = 0;
+    }
+    if (hx < 0) {
+        hx = 0;
+    }
+    WINDOW* hw = ui_make_window(h, w, hy, hx);
     mvwprintw(hw, 1, 2, "Help:");
     mvwprintw(hw, 3, 2, "%s", help);
     mvwprintw(hw, h - 2, 2, "Press any key to continue...");
@@ -166,22 +180,160 @@ ui_show_help(const NcMenuItem* it) {
 
 static void
 ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
-    int height = (int)(n + 6);
-    if (height < 10) {
-        height = 10;
+    // Determine number of visible items and the maximum rendered label length
+    int vis = 0;
+    int maxlab = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!ui_is_enabled(&items[i], ctx)) {
+            continue;
+        }
+        const char* lab = items[i].label ? items[i].label : items[i].id;
+        char dyn[128];
+        if (items[i].label_fn) {
+            const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
+            if (got && *got) {
+                lab = got;
+            }
+        }
+        int L = (int)strlen(lab);
+        if (L > maxlab) {
+            maxlab = L;
+        }
+        vis++;
     }
-    int width = 50;
+
+    // Footer lines (keep in sync with ui_draw_menu)
+    const char* f1 = "Arrows: move  Enter: select";
+    const char* f2 = "h: help  Esc/q: back";
+
+    // Layout constants
+    int pad_x = 2;  // left margin inside box
+    int border = 2; // left+right borders
+
+    // Compute minimal width to hold content and footer
+    int width = pad_x + ((maxlab > 0) ? maxlab : 1);
+    int f1w = pad_x + (int)strlen(f1);
+    int f2w = pad_x + (int)strlen(f2);
+    if (f1w > width) {
+        width = f1w;
+    }
+    if (f2w > width) {
+        width = f2w;
+    }
+    width += 2; // account for borders
+
+    // Compute minimal height: items + blank gap(1) + footer(2) + status(1) + borders(2)
+    // Footer at mh-4 (line1), mh-3 (line2), status at mh-2, blank line at mh-5 above footer.
+    int height = vis + 6;
+    if (height < 8) {
+        height = 8;
+    }
+
+    // Clamp to terminal size
+    int term_h = 24, term_w = 80;
+    getmaxyx(stdscr, term_h, term_w);
+    if (width > term_w - 2) {
+        width = term_w - 2;
+        if (width < 10) {
+            width = 10;
+        }
+    }
+    if (height > term_h - 2) {
+        height = term_h - 2;
+        if (height < 7) {
+            height = 7;
+        }
+    }
+
     // Redraw underlying stdscr so base application remains visible beneath menu
     redrawwin(stdscr);
     refresh();
-    WINDOW* menu_win = ui_make_window(height, width, 1, 2);
+    int my = (term_h - height) / 2;
+    int mx = (term_w - width) / 2;
+    if (my < 0) {
+        my = 0;
+    }
+    if (mx < 0) {
+        mx = 0;
+    }
+    WINDOW* menu_win = ui_make_window(height, width, my, mx);
     keypad(menu_win, TRUE);
 
     int hi = 0;
     while (1) {
         ui_draw_menu(menu_win, items, n, hi, ctx);
         int c = wgetch(menu_win);
-        if (c == KEY_UP) {
+        if (c == KEY_RESIZE) {
+            // Terminal resized: recompute geometry and re-center the window
+            // Recompute visible items and longest label (content-driven width)
+            int vis = 0;
+            int maxlab = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (!ui_is_enabled(&items[i], ctx)) {
+                    continue;
+                }
+                const char* lab = items[i].label ? items[i].label : items[i].id;
+                char dyn[128];
+                if (items[i].label_fn) {
+                    const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
+                    if (got && *got) {
+                        lab = got;
+                    }
+                }
+                int L = (int)strlen(lab);
+                if (L > maxlab) {
+                    maxlab = L;
+                }
+                vis++;
+            }
+            const char* f1 = "Arrows: move  Enter: select";
+            const char* f2 = "h: help  Esc/q: back";
+            int pad_x = 2;
+            int width = pad_x + ((maxlab > 0) ? maxlab : 1);
+            int f1w = pad_x + (int)strlen(f1);
+            int f2w = pad_x + (int)strlen(f2);
+            if (f1w > width) {
+                width = f1w;
+            }
+            if (f2w > width) {
+                width = f2w;
+            }
+            width += 2;           // borders
+            int height = vis + 6; // items + blank + footer(2) + status(1) + borders
+            if (height < 8) {
+                height = 8;
+            }
+
+            // Clamp to current terminal and re-center
+            getmaxyx(stdscr, term_h, term_w);
+            if (width > term_w - 2) {
+                width = term_w - 2;
+            }
+            if (width < 10) {
+                width = 10;
+            }
+            if (height > term_h - 2) {
+                height = term_h - 2;
+            }
+            if (height < 7) {
+                height = 7;
+            }
+            int my = (term_h - height) / 2;
+            int mx = (term_w - width) / 2;
+            if (my < 0) {
+                my = 0;
+            }
+            if (mx < 0) {
+                mx = 0;
+            }
+
+            // Recreate the window at the new centered position
+            ui_destroy_window(&menu_win);
+            menu_win = ui_make_window(height, width, my, mx);
+            keypad(menu_win, TRUE);
+            // Skip other key handling this iteration
+            continue;
+        } else if (c == KEY_UP) {
             do {
                 hi = (hi - 1 + (int)n) % (int)n;
             } while (!ui_is_enabled(&items[hi], ctx));
@@ -191,7 +343,8 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
             } while (!ui_is_enabled(&items[hi], ctx));
         } else if (c == 'h' || c == 'H') {
             ui_show_help(&items[hi]);
-        } else if (c == 'q' || c == 'Q') {
+        } else if (c == DSD_KEY_ESC || c == 'q' || c == 'Q') {
+            // Back out of current menu (no program exit)
             break;
         } else if (c == 10 || c == KEY_ENTER || c == '\r') {
             const NcMenuItem* it = &items[hi];
@@ -242,13 +395,23 @@ ui_prompt_common_prefill(const char* title, char* buf, size_t cap, const char* p
     if (w < 54) {
         w = 54;
     }
-    WINDOW* win = ui_make_window(h, w, 4, 4);
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    int py = (scr_h - h) / 2;
+    int px = (scr_w - w) / 2;
+    if (py < 0) {
+        py = 0;
+    }
+    if (px < 0) {
+        px = 0;
+    }
+    WINDOW* win = ui_make_window(h, w, py, px);
     keypad(win, TRUE);
     noecho();
     curs_set(1);
     mvwprintw(win, 1, 2, "%s", title);
     mvwprintw(win, 3, 2, "> ");
-    mvwprintw(win, h - 2, 2, "Enter=OK  Esc=Cancel");
+    mvwprintw(win, h - 2, 2, "Enter=OK  Esc/q=Cancel");
     if (prefill && *prefill) {
         // copy prefill and render it
         strncpy(buf, prefill, cap - 1);
@@ -263,7 +426,7 @@ ui_prompt_common_prefill(const char* title, char* buf, size_t cap, const char* p
 
     while (1) {
         int ch = wgetch(win);
-        if (ch == 27) { // ESC
+        if (ch == 27 || ch == 'q' || ch == 'Q') { // ESC/q
             len = 0;
             buf[0] = '\0';
             ui_destroy_window(&win);
@@ -385,9 +548,19 @@ ui_prompt_confirm(const char* title) {
     if (w < 48) {
         w = 48;
     }
-    WINDOW* win = ui_make_window(h, w, 5, 5);
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    int cy = (scr_h - h) / 2;
+    int cx = (scr_w - w) / 2;
+    if (cy < 0) {
+        cy = 0;
+    }
+    if (cx < 0) {
+        cx = 0;
+    }
+    WINDOW* win = ui_make_window(h, w, cy, cx);
     mvwprintw(win, 1, 2, "%s", title);
-    mvwprintw(win, 3, 2, "y = Yes, n = No, Esc = Cancel");
+    mvwprintw(win, 3, 2, "y = Yes, n = No, Esc/q = Cancel");
     wrefresh(win);
     int res = 0;
     while (1) {
@@ -396,7 +569,7 @@ ui_prompt_confirm(const char* title) {
             res = 1;
             break;
         }
-        if (c == 'n' || c == 'N' || c == 27) {
+        if (c == 'n' || c == 'N' || c == 27 || c == 'q' || c == 'Q') {
             res = 0;
             break;
         }
@@ -525,15 +698,47 @@ ui_choose_from_strings(const char* title, const char* const* items, int count) {
     if (!items || count <= 0) {
         return -1;
     }
-    int h = count + 6;
-    if (h < 10) {
-        h = 10;
+    // Compute width from title and item strings
+    int max_item = 0;
+    for (int i = 0; i < count; i++) {
+        int L = (int)strlen(items[i]);
+        if (L > max_item) {
+            max_item = L;
+        }
     }
-    if (h > 28) {
-        h = 28;
+    const char* footer = "Arrows = Move   Enter = Select   Esc/q = Cancel";
+    int w = 4 /*padding*/ + (int)strlen(title);
+    int need = 4 + max_item;
+    if (need > w) {
+        w = need;
     }
-    int w = 76;
-    WINDOW* win = ui_make_window(h, w, 3, 4);
+    need = 4 + (int)strlen(footer);
+    if (need > w) {
+        w = need;
+    }
+    w += 2;            // borders
+    int h = count + 5; // title + gap + items + footer + borders
+    if (h < 7) {
+        h = 7;
+    }
+    // clamp and center
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    if (w > scr_w - 2) {
+        w = scr_w - 2;
+    }
+    if (h > scr_h - 2) {
+        h = scr_h - 2;
+    }
+    int wy = (scr_h - h) / 2;
+    int wx = (scr_w - w) / 2;
+    if (wy < 0) {
+        wy = 0;
+    }
+    if (wx < 0) {
+        wx = 0;
+    }
+    WINDOW* win = ui_make_window(h, w, wy, wx);
     keypad(win, TRUE);
     int sel = 0;
     while (1) {
@@ -550,7 +755,7 @@ ui_choose_from_strings(const char* title, const char* const* items, int count) {
                 wattroff(win, A_REVERSE);
             }
         }
-        mvwprintw(win, h - 2, 2, "Arrows = Move   Enter = Select   q = Cancel");
+        mvwprintw(win, h - 2, 2, "%s", footer);
         wrefresh(win);
         int c = wgetch(win);
         if (c == KEY_UP) {
