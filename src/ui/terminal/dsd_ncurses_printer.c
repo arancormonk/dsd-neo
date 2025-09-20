@@ -2042,8 +2042,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("\n| External RTL Tuning on UDP Port: %i", opts->rtl_udp_port);
         }
         printw("\n");
-        /* Show compact DSP status directly above audio sections */
-        print_dsp_status();
+        /* Show compact DSP status directly above audio sections (optional) */
+        if (opts->show_dsp_panel) {
+            print_dsp_status();
+        }
         /* Signal quality is shown inline above; no duplicate line here. */
     }
 

@@ -606,8 +606,9 @@ initOpts(dsd_opts* opts) {
     opts->const_norm_mode = 0; // default: radial percentile normalization
     opts->eye_view = 0;
     opts->fsk_hist_view = 0;
-    opts->eye_unicode = 1; //default On for clearer rendering
-    opts->eye_color = 1;   //default On when terminal supports color
+    opts->eye_unicode = 1;    //default On for clearer rendering
+    opts->eye_color = 1;      //default On when terminal supports color
+    opts->show_dsp_panel = 0; // hide compact DSP panel by default
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;

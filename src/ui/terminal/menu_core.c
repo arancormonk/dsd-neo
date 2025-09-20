@@ -1796,6 +1796,25 @@ act_toggle_iqbal(void* v) {
     rtl_stream_toggle_iq_balance(on ? 0 : 1);
 }
 
+#ifdef USE_RTLSDR
+// Toggle for showing/hiding compact DSP panel in the main ncurses UI
+static const char*
+lbl_dsp_panel(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show DSP Panel [%s]", (c && c->opts && c->opts->show_dsp_panel) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_dsp_panel(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_dsp_panel = c->opts->show_dsp_panel ? 0 : 1;
+}
+#endif
+
 static const char*
 lbl_ted_force(void* v, char* b, size_t n) {
     int f = rtl_stream_get_ted_force();
@@ -2435,6 +2454,13 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
         {.id = "hint",
          .label = "Hint: Labels show live; Manual Override pins.",
          .help = "Status rows reflect live runtime; Manual Override keeps your settings."},
+#ifdef USE_RTLSDR
+        {.id = "dsp_panel",
+         .label = "Show DSP Panel",
+         .label_fn = lbl_dsp_panel,
+         .help = "Toggle compact DSP status panel in main UI.",
+         .on_select = act_toggle_dsp_panel},
+#endif
         {.id = "manual",
          .label = "Manual DSP Override",
          .label_fn = lbl_manual_dsp,
