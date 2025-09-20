@@ -49,6 +49,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
     // Bridge Identifier Updates (MBT -> MAC layout) so iden tables are populated on P1, too
     // Use the existing MAC decoder to normalize parsing and state updates.
+    // Note: Standard Identifier Update MAC formats do not carry an MFID octet; payload starts
+    // immediately after the opcode. Populate MAC[] accordingly so downstream parsers align.
     if ((opcode == 0x74 || opcode == 0x7D || opcode == 0x73 || opcode == 0xF3 || opcode == 0x34 || opcode == 0x3D
          || opcode == 0x33) // accept both MAC-coded and MBT/TSBK-coded values
         && MFID < 2) {
@@ -58,11 +60,15 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         int payload_off = op_idx + 1;
         int total_len = (12 * (blks + 1));
         unsigned long long int MAC[24] = {0};
-        MAC[1] = opcode; // opcode
-        MAC[2] = MFID;   // mfid
+        // Convert MBT/TSBK-coded opcodes (0x3x) to MAC-coded (set 0x40) when needed
+        uint8_t mac_opcode = opcode;
+        if ((mac_opcode & 0xC0) == 0x00) {
+            mac_opcode |= 0x40;
+        }
+        MAC[1] = mac_opcode; // opcode
 
         // Copy as many bytes as we have room for and are available in this MBT
-        int mac_i = 3;
+        int mac_i = 2; // payload begins at MAC[2] for standard formats
         for (int i = payload_off; i < total_len && mac_i < 24; i++, mac_i++) {
             MAC[mac_i] = mpdu_byte[i];
         }

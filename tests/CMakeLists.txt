@@ -34,3 +34,9 @@ add_executable(dsd-neo_test_p25_mac_lengths test_p25_mac_lengths.c)
 target_include_directories(dsd-neo_test_p25_mac_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_mac_lengths PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_MAC_LENGTHS COMMAND dsd-neo_test_p25_mac_lengths)
+
+# P25 P1 MBT → MAC bridging: Identifier Update
+add_executable(dsd-neo_test_p25_iden_bridge test_p25_iden_bridge.c)
+target_include_directories(dsd-neo_test_p25_iden_bridge PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_bridge PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_BRIDGE COMMAND dsd-neo_test_p25_iden_bridge)
