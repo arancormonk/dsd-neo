@@ -24,6 +24,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   p25_lsd.c
   phase1/p25p1_mbf34.c
   phase2/p25p2_frame.c
+  phase2/p25p2_mac_table.c
   phase2/p25p2_vpdu.c
   phase2/p25p2_xcch.c
   ${PROJECT_SOURCE_DIR}/src/ez.cpp

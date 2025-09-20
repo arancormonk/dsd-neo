@@ -17,66 +17,13 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
-//MAC message lengths
-static const uint8_t mac_msg_len[256] = {
-    0,  7,  8,  7,  0,  16, 0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0, //0F
-    0,  0,  0,  0,  0,  0,  0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0, //1F
-    0,  14, 15, 0,  0,  15, 0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0, //2F
-    5,  7,  0,  0,  0,  0,  0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0, //3F
-    9,  7,  9,  0,  9,  8,  9,  0,
-    10, 10, 9,  0,  10, 0,  0,  0, //4F
-    0,  0,  0,  0,  9,  7,  0,  0,
-    10, 0,  7,  0,  10, 8,  14, 7, //5F //reverted previous changes here
-    9,  9,  0,  0,  9,  0,  0,  9,
-    10, 0,  7,  10, 10, 7,  0,  9, //6F
-    9,  29, 9,  9,  9,  9,  10, 13,
-    9,  9,  9,  11, 9,  9,  0,  0, //7F
-    8,  18, 0,  7,  11, 0,  0,  0,
-    0,  0,  0,  0,  0,  0,  0,  7, //8F (needed to add 81 and 8f for Harris)
-    0,  17, 0,  0,  0,  17, 0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0, //9F // 0x91 and 0x95 manualy set to 17 (moto)
-    16, 0,  0,  11, 13, 11, 11, 11,
-    10, 0,  0,  0,  0,  0,  0,  0, //AF
-    17, 0,  0,  0,  0,  5,  0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0, //BF, B0 was 0, set to 17 (Harris again), B5 Tait 0, set to 5
-    11, 0,  0,  8,  15, 12, 15, 32,
-    12, 12, 0,  27, 14, 29, 29, 32, //CF
-    0,  0,  0,  0,  0,  0,  9,  0,
-    14, 29, 11, 27, 14, 0,  40, 11, //DF
-    28, 0,  0,  14, 17, 14, 0,  0,
-    16, 8,  11, 0,  13, 19, 0,  0, //EF
-    0,  0,  16, 14, 0,  0,  12, 0,
-    22, 0,  11, 13, 11, 0,  15, 0}; //FF
+// Expose a small query helper for tests and diagnostics.
+#include <dsd-neo/protocol/p25/p25_mac.h>
 
 // Base length lookup with a few observed vendor overrides when the table yields zero.
 static inline int
 mac_len_for(uint8_t mfid, uint8_t opcode) {
-    int base = mac_msg_len[opcode];
-    if (base != 0) {
-        return base;
-    }
-    // Vendor overrides observed in the wild when base table is zero
-    // Motorola
-    if (mfid == 0x90 && (opcode == 0x91 || opcode == 0x95)) {
-        return 17;
-    }
-    // Harris
-    if (mfid == 0xB0) {
-        return 17;
-    }
-    // Tait
-    if (mfid == 0xB5) {
-        return 5;
-    }
-    // Harris additional
-    if (mfid == 0x81 || mfid == 0x8F) {
-        return 7;
-    }
-    return base; // zero if unknown; caller will guard
+    return p25p2_mac_len_for(mfid, opcode);
 }
 
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
@@ -131,12 +78,42 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
     int len_b = mac_len_for((uint8_t)MAC[2], (uint8_t)MAC[1]);
     int len_c = 0;
 
+    // Compute per-channel capacity for message-carrying octets (excludes opcode byte itself).
+    // Empirically: SACCH allows up to 19, FACCH up to 16 (matches existing checks below).
+    const int capacity = (type == 1) ? 19 : 16;
+
+    // If table/override gives no guidance, try deriving from MCO when header is present.
+    // MCO represents message-carrying octets including the opcode; our len excludes the opcode.
+    if (len_b == 0 || len_b > capacity) {
+        // Heuristic: when coming from SACCH/FACCH, MAC[1]'s low 6 bits carry MCO.
+        // For bridged MBT (P1 alt/unc) callers, MAC[0] is typically 0 and there is no header → skip MCO.
+        int mco = (int)(MAC[1] & 0x3F);
+        if ((MAC[0] != 0 || type == 1) && mco > 0) {
+            int guess = mco - 1; // subtract opcode byte to match table semantics
+            if (guess > capacity) {
+                guess = capacity;
+            }
+            if (guess < 0) {
+                guess = 0;
+            }
+            len_b = guess;
+        }
+    }
+
     //sanity check
     if (len_b < 19 && type == 1) {
         len_c = mac_len_for((uint8_t)MAC[3 + len_a], (uint8_t)MAC[1 + len_b]);
     }
     if (len_b < 16 && type == 0) {
         len_c = mac_len_for((uint8_t)MAC[3 + len_a], (uint8_t)MAC[1 + len_b]);
+    }
+
+    // If the second message length is unknown, fill with remaining capacity as a last resort.
+    if ((type == 1 && len_b < 19 && len_c == 0) || (type == 0 && len_b < 16 && len_c == 0)) {
+        int remain = capacity - len_b;
+        if (remain > 0) {
+            len_c = remain;
+        }
     }
 
     int slot = 9;
@@ -187,8 +164,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         //without it stuttering during actual voice
     }
 
-    // One-time diagnostics for unknown vendor/opcode MAC lengths to aid future coverage
-    if (len_b == 0 || len_b > 18) {
+    // One-time diagnostics for unknown vendor/opcode MAC lengths to aid future coverage.
+    // Only emit if we failed both table/override and MCO-based fallback.
+    if (len_b == 0) {
         static struct {
             uint8_t mfid;
             uint8_t opcode;
@@ -210,8 +188,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             seen[seen_count].opcode = opcode;
             seen_count++;
             fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "\n P25p2 MAC length unknown/unsupported: MFID=%02X OPCODE=%02X (len=0). Please report.\n",
-                    mfid, opcode);
+            int mco_dbg = (int)(MAC[1] & 0x3F);
+            fprintf(stderr,
+                    "\n P25p2 MAC length unknown/unsupported: MFID=%02X OPCODE=%02X (len=0, MCO=%d). Please report.\n",
+                    mfid, opcode, mco_dbg);
             fprintf(stderr, "%s", KNRM);
         }
         goto END_PDU;

@@ -29,3 +29,8 @@ add_executable(dsd-neo_test_p25_p2_lfsr test_p25_p2_lfsr.c)
 target_include_directories(dsd-neo_test_p25_p2_lfsr PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_p2_lfsr PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_LFSR COMMAND dsd-neo_test_p25_p2_lfsr)
+
+add_executable(dsd-neo_test_p25_mac_lengths test_p25_mac_lengths.c)
+target_include_directories(dsd-neo_test_p25_mac_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mac_lengths PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MAC_LENGTHS COMMAND dsd-neo_test_p25_mac_lengths)
