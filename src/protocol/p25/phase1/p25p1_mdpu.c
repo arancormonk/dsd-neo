@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -152,7 +153,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             //debug
             // fprintf (stderr, " J:%d;", j); //use this with the P_ERR inside of 34 rate decoder to see where the failures occur
 
-            ec[j] = dmr_34(tsbk_dibit, r34byte_b);
+            ec[j] = p25_mbf34_decode(tsbk_dibit, r34byte_b);
 
             //shuffle 34 rate data into array
             if (j != 0) { //should never happen, but just in case

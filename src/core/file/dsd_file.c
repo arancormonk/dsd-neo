@@ -723,6 +723,9 @@ convert_bits_into_output(uint8_t* input, int len) {
     return output;
 }
 
+/* Note: ConvertBitIntoBytes() is provided in DMR utils (dmr_utils.c).
+ * Do not duplicate here to avoid multiple definition at link time. */
+
 void
 pack_bit_array_into_byte_array(uint8_t* input, uint8_t* output, int len) {
     int i;

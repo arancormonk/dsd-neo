@@ -20,6 +20,9 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   phase1/p25p1_check_ldu.cpp
   phase1/p25p1_check_nid.cpp
   phase1/p25p1_heuristics.c
+  # New scaffolding modules
+  p25_lsd.c
+  phase1/p25p1_mbf34.c
   phase2/p25p2_frame.c
   phase2/p25p2_vpdu.c
   phase2/p25p2_xcch.c
