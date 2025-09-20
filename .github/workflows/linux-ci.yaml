@@ -329,7 +329,7 @@ jobs:
         run: cmake --build --preset asan-ubsan-debug --parallel
 
       - name: Test (asan-ubsan-debug)
-        run: ctest --preset asan-ubsan-debug -V || true
+        run: ctest --preset asan-ubsan-debug -V
 
       - name: Show ccache stats
         if: always()
