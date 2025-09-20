@@ -520,12 +520,12 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int svc = MAC[2 + len_a + k];
             int channel = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
             int timer = (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
-            int target = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
+            uint32_t target = (uint32_t)((MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k]);
             long int freq = 0;
             if (MAC[1 + len_a] & 0x80) //vPDU only
             {
                 timer = (MAC[8 + len_a] << 8) | MAC[9 + len_a];
-                target = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | MAC[12 + len_a];
+                target = (uint32_t)((MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | MAC[12 + len_a]);
             }
 
             fprintf(stderr, "\n");
@@ -566,7 +566,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             freq = process_channel_to_freq(opts, state, channel);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "Active Tele Ch: %04X TGT: %d; ", channel, target);
+            if (channel != 0 && channel != 0xFFFF) {
+                sprintf(state->active_channel[0], "Active Tele Ch: %04X TGT: %u; ", channel, target);
+            }
             state->last_active_time = time(NULL);
 
             //Skip tuning private calls if private calls is disabled (are telephone int calls private, or talkgroup?)
@@ -2246,6 +2248,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_cc_is_tdma = 1;  //flag on for CC tuning purposes when system is qpsk
             if (state->p2_hardset == 0) //state->p2_is_lcch == 1 shim until CRC is working, prevent bogus data
             {
+                if ((state->p2_wacn != 0 || state->p2_sysid != 0)
+                    && (state->p2_wacn != (unsigned long long)lwacn || state->p2_sysid != (unsigned long long)lsysid)) {
+                    p25_reset_iden_tables(state);
+                }
                 state->p2_wacn = lwacn;
                 state->p2_sysid = lsysid;
                 state->p2_cc = lcolorcode;
@@ -2278,6 +2284,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_cc_is_tdma = 1;  //flag on for CC tuning purposes when system is qpsk
             if (state->p2_hardset == 0) //state->p2_is_lcch == 1 shim until CRC is working, prevent bogus data
             {
+                if ((state->p2_wacn != 0 || state->p2_sysid != 0)
+                    && (state->p2_wacn != (unsigned long long)lwacn || state->p2_sysid != (unsigned long long)lsysid)) {
+                    p25_reset_iden_tables(state);
+                }
                 state->p2_wacn = lwacn;
                 state->p2_sysid = lsysid;
                 state->p2_cc = lcolorcode;

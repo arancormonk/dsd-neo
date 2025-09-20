@@ -52,3 +52,33 @@ add_executable(dsd-neo_test_p25_rs test_p25_rs.cpp)
 target_include_directories(dsd-neo_test_p25_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_rs PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_RS COMMAND dsd-neo_test_p25_rs)
+
+# P25 P2 MAC decode (JSON len derivation via MCO fallback)
+add_executable(dsd-neo_test_p25_p2_mac_decode test_p25_p2_mac_decode.c)
+target_include_directories(dsd-neo_test_p25_p2_mac_decode PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_mac_decode PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_MAC_DECODE COMMAND dsd-neo_test_p25_p2_mac_decode)
+
+# P25 P1 MBT decode sanity (NET_STS_BCST → CC freq/sysid/wacn)
+add_executable(dsd-neo_test_p25_mbt_decode test_p25_mbt_decode.c)
+target_include_directories(dsd-neo_test_p25_mbt_decode PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mbt_decode PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MBT_DECODE COMMAND dsd-neo_test_p25_mbt_decode)
+
+# P25 P1 FEC boundaries: Hamming, Golay, RS correction limits
+add_executable(dsd-neo_test_p25_p1_fec_boundaries test_p25_p1_fec_boundaries.c)
+target_include_directories(dsd-neo_test_p25_p1_fec_boundaries PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_fec_boundaries PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_FEC_BOUNDS COMMAND dsd-neo_test_p25_p1_fec_boundaries)
+
+# P25 P2 MAC vendor length overrides
+add_executable(dsd-neo_test_p25_p2_mac_vendor_lengths test_p25_p2_mac_vendor_lengths.c)
+target_include_directories(dsd-neo_test_p25_p2_mac_vendor_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_mac_vendor_lengths PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_MAC_VENDOR_LENGTHS COMMAND dsd-neo_test_p25_p2_mac_vendor_lengths)
+
+# P25 P1 PDU JSON emission (RegAuth, SysCfg)
+add_executable(dsd-neo_test_p25_p1_pdu_json test_p25_p1_pdu_json.c p25_p1_pdu_json_shim.c)
+target_include_directories(dsd-neo_test_p25_p1_pdu_json PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests)
+target_link_libraries(dsd-neo_test_p25_p1_pdu_json PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_PDU_JSON COMMAND dsd-neo_test_p25_p1_pdu_json)

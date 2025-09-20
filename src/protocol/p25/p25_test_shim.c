@@ -51,3 +51,61 @@ p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, 
     }
     return 0;
 }
+
+// Decode a single MBT PDU with pre-seeded IDEN parameters and report key fields.
+// - iden/type/tdma/spac/base configure the channel table used by the frequency calculator.
+// - Returns 0 on success and fills out_cc (control channel Hz), out_wacn (20-bit), out_sysid (12-bit).
+int
+p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base, int spac,
+                              long* out_cc, long* out_wacn, int* out_sysid) {
+    (void)mbt_len;
+
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    if (iden < 0 || iden > 15) {
+        return -2;
+    }
+    state.p25_chan_iden = iden & 0xF;
+    state.p25_chan_type[iden] = type & 0xF;
+    state.p25_chan_tdma[iden] = tdma & 0x1;
+    state.p25_chan_spac[iden] = spac;
+    state.p25_base_freq[iden] = base;
+
+    p25_decode_pdu_trunking(&opts, &state, (unsigned char*)mbt);
+
+    if (out_cc) {
+        *out_cc = state.p25_cc_freq;
+    }
+    if (out_wacn) {
+        *out_wacn = (long)state.p2_wacn;
+    }
+    if (out_sysid) {
+        *out_sysid = state.p2_sysid;
+    }
+    return 0;
+}
+
+/* (intentionally empty) */
+
+// Lightweight wrapper to invoke the Phase 2 MAC VPDU handler from tests.
+// Accepts a byte-oriented MAC buffer (up to 24 bytes) and channel type
+// (0=FACCH, 1=SACCH). Emits JSON to stderr when DSD_NEO_PDU_JSON=1.
+void
+p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    unsigned long long int MAC[24] = {0};
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+
+    // Let the VPDU handler compute lengths and optionally emit JSON
+    process_MAC_VPDU(&opts, &state, type, MAC);
+}

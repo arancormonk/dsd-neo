@@ -110,6 +110,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
         //only set IF these values aren't already hard set by the user
         if (state->p2_hardset == 0) {
+            if ((state->p2_wacn != 0 || state->p2_sysid != 0)
+                && (state->p2_wacn != (unsigned long long)wacn || state->p2_sysid != (unsigned long long)sysid)) {
+                p25_reset_iden_tables(state);
+            }
             state->p2_wacn = wacn;
             state->p2_sysid = sysid;
         }
@@ -306,7 +310,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         freq2 = process_channel_to_freq(opts, state, channelr); //optional!
 
         //add active channel to string for ncurses display
-        sprintf(state->active_channel[0], "Active Ch: %04X TGT: %ld; ", channelt, target);
+        sprintf(state->active_channel[0], "Active Ch: %04X TGT: %u; ", channelt, (uint32_t)target);
 
         for (int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == target) {
@@ -348,7 +352,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         int svc = mpdu_byte[8];
         int channel = (mpdu_byte[12] << 8) | mpdu_byte[13];
         int timer = (mpdu_byte[16] << 8) | mpdu_byte[17];
-        int target = (mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5];
+        uint32_t target = (uint32_t)((mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5]);
         long int freq = 0;
         fprintf(stderr, "\n");
         if (svc & 0x80) {
@@ -379,12 +383,14 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             fprintf(stderr, " Update");
         }
         fprintf(stderr, " Extended");
-        fprintf(stderr, "\n  CHAN: %04X; Timer: %f Seconds; Target: %d;", channel, (float)timer * 0.1f,
+        fprintf(stderr, "\n  CHAN: %04X; Timer: %f Seconds; Target: %u;", channel, (float)timer * 0.1f,
                 target); //timer unit is 100 ms, or 0.1 seconds
         freq = process_channel_to_freq(opts, state, channel);
 
         //add active channel to string for ncurses display
-        sprintf(state->active_channel[0], "Active Tele Ch: %04X TGT: %d; ", channel, target);
+        if (channel != 0 && channel != 0xFFFF) {
+            sprintf(state->active_channel[0], "Active Tele Ch: %04X TGT: %u; ", channel, target);
+        }
         state->last_active_time = time(NULL);
 
         //Skip tuning private calls if private calls is disabled (are telephone int calls private, or talkgroup?)

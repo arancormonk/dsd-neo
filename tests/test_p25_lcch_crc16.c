@@ -54,6 +54,25 @@ main(void) {
         }
     }
 
+    // Vector 1b: zero-length payload (header-only), CRC over 0 bits
+    {
+        int bits[190];
+        memset(bits, 0, sizeof(bits));
+        set_crc16_on_frame(bits, 0);
+        int rc = crc16_lb_bridge(bits, 0);
+        if (rc != 0) {
+            fprintf(stderr, "LCCH CRC16 zero-length payload failed (rc=%d)\n", rc);
+            return 11;
+        }
+        // Tamper one CRC bit and expect failure
+        bits[0] ^= 1;
+        rc = crc16_lb_bridge(bits, 0);
+        if (rc == 0) {
+            fprintf(stderr, "LCCH CRC16 zero-length tamper unexpectedly passed\n");
+            return 12;
+        }
+    }
+
     // Vector 2: non-zero header and patterned payload, expect pass
     {
         int bits[190];
@@ -86,6 +105,35 @@ main(void) {
         if (rc == 0) {
             fprintf(stderr, "LCCH CRC16 tamper check unexpectedly passed\n");
             return 3;
+        }
+    }
+
+    // Vector 3: short payload span (48 bits) with alternating header
+    {
+        int bits[190];
+        memset(bits, 0, sizeof(bits));
+        // Header bits: opcode=001, offset=000, res=00, b=10, mco=000000
+        int p = 0;
+        int hdr[16] = {0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 16; i++) {
+            bits[p++] = hdr[i];
+        }
+        // 48 data bits
+        for (int i = 0; i < 48; i++) {
+            bits[p++] = (i & 1);
+        }
+        set_crc16_on_frame(bits, 16 + 48);
+        int rc = crc16_lb_bridge(bits, 16 + 48);
+        if (rc != 0) {
+            fprintf(stderr, "LCCH CRC16 short span failed (rc=%d)\n", rc);
+            return 4;
+        }
+        // Tamper and expect failure
+        bits[20] ^= 1;
+        rc = crc16_lb_bridge(bits, 16 + 48);
+        if (rc == 0) {
+            fprintf(stderr, "LCCH CRC16 short span tamper unexpectedly passed\n");
+            return 5;
         }
     }
 

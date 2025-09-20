@@ -59,14 +59,20 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     int type = state->p25_chan_type[iden] & 0xF;
     // OP25-derived slots-per-carrier by channel type
     static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-    if (type < 0 || type > 15) {
-        fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
-        return 0;
-    }
-    int denom = slots_per_carrier[type];
-    if (denom <= 0) {
-        fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
-        return 0;
+    // Derive division only when TDMA iden is known. This matches OP25, which
+    // only divides the channel by tdma when an IDEN_UP_TDMA has populated the
+    // table. Without that knowledge, treat channel as FDMA (denom=1).
+    int denom = 1;
+    if ((state->p25_chan_tdma[iden] & 0x1) != 0) {
+        if (type < 0 || type > 15) {
+            fprintf(stderr, "\n  P25 FREQ: unknown iden type %d (iden %d)", type, iden);
+            return 0;
+        }
+        denom = slots_per_carrier[type];
+        if (denom <= 0) {
+            fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
+            return 0;
+        }
     }
     int step = (chan16 & 0xFFF) / denom;
 
@@ -89,7 +95,24 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
         freq = (base * 5) + (step * spac * 125);
         fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
                 (double)freq / 1000000.0);
+        if (opts && opts->verbose > 1) {
+            fprintf(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
+        }
         return freq;
+    }
+}
+
+void
+p25_reset_iden_tables(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    for (int i = 0; i < 16; i++) {
+        state->p25_chan_tdma[i] = 0;
+        state->p25_chan_type[i] = 0;
+        state->p25_chan_spac[i] = 0;
+        state->p25_base_freq[i] = 0;
+        state->p25_trans_off[i] = 0;
     }
 }
 

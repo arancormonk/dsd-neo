@@ -1660,6 +1660,8 @@ void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]);
 
 //P25 Channel to Frequency
 long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
+// Reset all P25 IDEN tables (type/tdma/spacing/base/offset) when system identity changes
+void p25_reset_iden_tables(dsd_state* state);
 
 //P25 CRC Functions
 int crc16_lb_bridge(int payload[190], int len);
