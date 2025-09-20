@@ -2307,16 +2307,16 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         // Only show P25-specific voice/RS metrics when decoding P25
         int is_p25p1 = (lls == 0 || lls == 1);
         int is_p25p2 = (lls == 35 || lls == 36);
-        if (is_p25p1) {
+        if (is_p25p1 || is_p25p2) {
             // P25p1 voice error snapshot (IMBE ECC) + moving average
             double avgv = 0.0;
             if (compute_p25p1_voice_avg_err(state, &avgv)) {
                 printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
             } else {
-                printw("| P1 Voice: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
+                printw("| P1: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
             }
         }
-        if (is_p25p2) {
+        if (is_p25p2 || (is_p25p1 && opts->p25_trunk == 1)) {
             // P25p2 voice avg (per slot)
             double avgl = 0.0, avgr = 0.0;
             int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
@@ -2330,10 +2330,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
                 }
             }
-            // P25p2 RS summary line
-            printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
-                   state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
-                   state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
+
+            if ((state->p25_p2_rs_facch_ok | state->p25_p2_rs_facch_err | state->p25_p2_rs_sacch_ok
+                 | state->p25_p2_rs_sacch_err | state->p25_p2_rs_ess_ok | state->p25_p2_rs_ess_err)
+                != 0) {
+                // P25p2 RS summary line
+                printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
+                       state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
+                       state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
+            }
         }
     }
 #else //set on to UPPER CASE, off to lower case
