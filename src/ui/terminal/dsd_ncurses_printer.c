@@ -2304,8 +2304,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         /* printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
                state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
                state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early); */
-        // P25p1 voice error snapshot (IMBE ECC) + moving average
-        {
+        // Only show P25-specific voice/RS metrics when decoding P25
+        int is_p25p1 = (lls == 0 || lls == 1);
+        int is_p25p2 = (lls == 35 || lls == 36);
+        if (is_p25p1) {
+            // P25p1 voice error snapshot (IMBE ECC) + moving average
             double avgv = 0.0;
             if (compute_p25p1_voice_avg_err(state, &avgv)) {
                 printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
@@ -2313,8 +2316,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("| P1 Voice: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
             }
         }
-        // P25p2 voice avg (per slot)
-        {
+        if (is_p25p2) {
+            // P25p2 voice avg (per slot)
             double avgl = 0.0, avgr = 0.0;
             int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
             int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
@@ -2327,11 +2330,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
                 }
             }
+            // P25p2 RS summary line
+            printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
+                   state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
+                   state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
         }
-        // P25p2 RS summary line
-        printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
-               state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
-               state->p25_p2_rs_ess_err);
     }
 #else //set on to UPPER CASE, off to lower case
     if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
@@ -2366,8 +2369,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         /* printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
                state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
                state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early); */
-        // P25p1 voice error snapshot (IMBE ECC) + moving average
-        {
+        // Only show P25-specific voice/RS metrics when decoding P25
+        int is_p25p1_n = (lls == 0 || lls == 1);
+        int is_p25p2_n = (lls == 35 || lls == 36);
+        if (is_p25p1_n) {
             double avgv = 0.0;
             if (compute_p25p1_voice_avg_err(state, &avgv)) {
                 printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
@@ -2375,8 +2380,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("| P1 Voice: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
             }
         }
-        // P25p2 voice avg (per slot)
-        {
+        if (is_p25p2_n) {
             double avgl = 0.0, avgr = 0.0;
             int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
             int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
@@ -2389,11 +2393,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
                 }
             }
+            printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
+                   state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
+                   state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
         }
-        // P25p2 RS summary line
-        printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok, state->p25_p2_rs_facch_err,
-               state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err, state->p25_p2_rs_ess_ok,
-               state->p25_p2_rs_ess_err);
     }
 #endif
 //print additional information for EDACS modes and toggles
