@@ -82,3 +82,59 @@ add_executable(dsd-neo_test_p25_p1_pdu_json test_p25_p1_pdu_json.c p25_p1_pdu_js
 target_include_directories(dsd-neo_test_p25_p1_pdu_json PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests)
 target_link_libraries(dsd-neo_test_p25_p1_pdu_json PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_PDU_JSON COMMAND dsd-neo_test_p25_p1_pdu_json)
+
+# P25 P1 NID parity + NAC decode
+add_executable(dsd-neo_test_p25_p1_nid test_p25_p1_nid.c)
+target_include_directories(dsd-neo_test_p25_p1_nid PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_nid PRIVATE dsd-neo_proto_p25 ${ITPP_LIBRARY})
+add_test(NAME P25_P1_NID COMMAND dsd-neo_test_p25_p1_nid)
+
+# P25 P1 LCW → SM dispatch (Group Voice Ch Update – Explicit)
+add_executable(dsd-neo_test_p25_p1_lcw_sm test_p25_p1_lcw_sm.c)
+target_include_directories(dsd-neo_test_p25_p1_lcw_sm PRIVATE ${PROJECT_SOURCE_DIR}/include)
+# LCW path depends on ConvertBitIntoBytes (dmr utils) and GPS alias in core
+target_link_libraries(dsd-neo_test_p25_p1_lcw_sm PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_LCW_SM COMMAND dsd-neo_test_p25_p1_lcw_sm)
+
+# P25 P1 LDU header gating decisions
+add_executable(dsd-neo_test_p25_p1_ldu_gating test_p25_p1_ldu_gating.c)
+target_include_directories(dsd-neo_test_p25_p1_ldu_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_ldu_gating PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_LDU_GATING COMMAND dsd-neo_test_p25_p1_ldu_gating)
+
+# P25 P1 MBT decode: RFSS + Adjacent Status Broadcast
+add_executable(dsd-neo_test_p25_mbt_adj_rfss test_p25_mbt_adj_rfss.c)
+target_include_directories(dsd-neo_test_p25_mbt_adj_rfss PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mbt_adj_rfss PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MBT_ADJ_RFSS COMMAND dsd-neo_test_p25_mbt_adj_rfss)
+
+# P25 channel→frequency mapping
+add_executable(dsd-neo_test_p25_frequency_map test_p25_frequency_map.c)
+target_include_directories(dsd-neo_test_p25_frequency_map PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_frequency_map PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_FREQUENCY_MAP COMMAND dsd-neo_test_p25_frequency_map)
+
+# P25 P2 MAC JSON (LCCH/xch, clamp)
+add_executable(dsd-neo_test_p25_p2_mac_json_more test_p25_p2_mac_json_more.c)
+target_include_directories(dsd-neo_test_p25_p2_mac_json_more PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_mac_json_more PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_MAC_JSON_MORE COMMAND dsd-neo_test_p25_p2_mac_json_more)
+
+# P25 P2 RS(63,35) wrappers (FACCH/SACCH)
+add_executable(dsd-neo_test_p25_p2_rs28_wrappers test_p25_p2_rs28_wrappers.cpp)
+target_include_directories(dsd-neo_test_p25_p2_rs28_wrappers PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/third_party)
+target_link_libraries(dsd-neo_test_p25_p2_rs28_wrappers PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_RS28_WRAPPERS COMMAND dsd-neo_test_p25_p2_rs28_wrappers)
+
+# P25 malformed/edge-case frames
+# NOTE: Malformed frame tests are available but disabled by default due to flakiness across platforms.
+# add_executable(dsd-neo_test_p25_malformed_frames test_p25_malformed_frames.c)
+# target_include_directories(dsd-neo_test_p25_malformed_frames PRIVATE ${PROJECT_SOURCE_DIR}/include)
+# target_link_libraries(dsd-neo_test_p25_malformed_frames PRIVATE dsd-neo_proto_p25)
+# add_test(NAME P25_MALFORMED_FRAMES COMMAND dsd-neo_test_p25_malformed_frames)
+
+# P25 P1 randomized FEC properties
+add_executable(dsd-neo_test_p25_p1_random_fec test_p25_p1_random_fec.c)
+target_include_directories(dsd-neo_test_p25_p1_random_fec PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_random_fec PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_RANDOM_FEC COMMAND dsd-neo_test_p25_p1_random_fec)

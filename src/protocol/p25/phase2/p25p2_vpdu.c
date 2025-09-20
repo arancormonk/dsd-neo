@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
+
 /*-------------------------------------------------------------------------------
  * p25p2_vpdu.c
  * Phase 2 Variable PDU (and TSBK PDU) Handling
@@ -2242,25 +2243,37 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n Network Status Broadcast - Abbreviated \n");
             fprintf(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X]", lra, lwacn, lsysid,
                     lcolorcode, channel);
-            state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
-            long neigh_a[1] = {state->p25_cc_freq};
-            p25_sm_on_neighbor_update(opts, state, neigh_a, 1);
-            state->p25_cc_is_tdma = 1;  //flag on for CC tuning purposes when system is qpsk
-            if (state->p2_hardset == 0) //state->p2_is_lcch == 1 shim until CRC is working, prevent bogus data
-            {
-                if ((state->p2_wacn != 0 || state->p2_sysid != 0)
-                    && (state->p2_wacn != (unsigned long long)lwacn || state->p2_sysid != (unsigned long long)lsysid)) {
-                    p25_reset_iden_tables(state);
-                }
-                state->p2_wacn = lwacn;
-                state->p2_sysid = lsysid;
-                state->p2_cc = lcolorcode;
-            }
+            long int cc_freq = process_channel_to_freq(opts, state, channel);
+            if (cc_freq > 0) {
+                state->p25_cc_freq = cc_freq;
+                long neigh_a[1] = {state->p25_cc_freq};
+                p25_sm_on_neighbor_update(opts, state, neigh_a, 1);
+                state->p25_cc_is_tdma = 1; // flag on for CC tuning purposes when system is qpsk
 
-            //place the cc freq into the list at index 0 if 0 is empty, or not the same,
-            //so we can hunt for rotating CCs without user LCN list
-            if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-                state->trunk_lcn_freq[0] = state->p25_cc_freq;
+                // Only update system identity and potentially reset IDEN tables when
+                // values are sane (non-zero) and we have a valid frequency mapping.
+                if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
+                    if ((lwacn != 0 || lsysid != 0)
+                        && ((state->p2_wacn != 0 || state->p2_sysid != 0)
+                            && (state->p2_wacn != (unsigned long long)lwacn
+                                || state->p2_sysid != (unsigned long long)lsysid))) {
+                        p25_reset_iden_tables(state);
+                    }
+                    if (lwacn != 0 || lsysid != 0) {
+                        state->p2_wacn = lwacn;
+                        state->p2_sysid = lsysid;
+                        state->p2_cc = lcolorcode;
+                    }
+                }
+
+                //place the cc freq into the list at index 0 if 0 is empty, or not the same,
+                //so we can hunt for rotating CCs without user LCN list
+                if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+                    state->trunk_lcn_freq[0] = state->p25_cc_freq;
+                }
+            } else {
+                // Invalid/unknown channel mapping: ignore to avoid wiping IDEN tables from bogus frames
+                fprintf(stderr, "\n  P25 NSB: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
             }
         }
         //network status broadcast, extended
@@ -2278,19 +2291,26 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     lsysid, lcolorcode, channelt, channelr);
             long int nf1 = process_channel_to_freq(opts, state, channelt);
             long int nf2 = process_channel_to_freq(opts, state, channelr);
-            state->p25_cc_freq = nf1;
-            long neigh_b[2] = {nf1, nf2};
-            p25_sm_on_neighbor_update(opts, state, neigh_b, 2);
-            state->p25_cc_is_tdma = 1;  //flag on for CC tuning purposes when system is qpsk
-            if (state->p2_hardset == 0) //state->p2_is_lcch == 1 shim until CRC is working, prevent bogus data
-            {
-                if ((state->p2_wacn != 0 || state->p2_sysid != 0)
-                    && (state->p2_wacn != (unsigned long long)lwacn || state->p2_sysid != (unsigned long long)lsysid)) {
-                    p25_reset_iden_tables(state);
+            if (nf1 > 0) {
+                state->p25_cc_freq = nf1;
+                long neigh_b[2] = {nf1, nf2};
+                p25_sm_on_neighbor_update(opts, state, neigh_b, 2);
+                state->p25_cc_is_tdma = 1;    //flag on for CC tuning purposes when system is qpsk
+                if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
+                    if ((lwacn != 0 || lsysid != 0)
+                        && ((state->p2_wacn != 0 || state->p2_sysid != 0)
+                            && (state->p2_wacn != (unsigned long long)lwacn
+                                || state->p2_sysid != (unsigned long long)lsysid))) {
+                        p25_reset_iden_tables(state);
+                    }
+                    if (lwacn != 0 || lsysid != 0) {
+                        state->p2_wacn = lwacn;
+                        state->p2_sysid = lsysid;
+                        state->p2_cc = lcolorcode;
+                    }
                 }
-                state->p2_wacn = lwacn;
-                state->p2_sysid = lsysid;
-                state->p2_cc = lcolorcode;
+            } else {
+                fprintf(stderr, "\n  P25 NSB-EXT: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
             }
         }
 

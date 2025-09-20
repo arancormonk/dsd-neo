@@ -109,3 +109,74 @@ p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len)
     // Let the VPDU handler compute lengths and optionally emit JSON
     process_MAC_VPDU(&opts, &state, type, MAC);
 }
+
+// Note: LCW test helper moved to a dedicated TU to avoid dragging LCW dependencies
+// into callers that only use other helpers from this file.
+
+// Simplified P25p1 LDU audio gating decision helper.
+// Returns 1 when audio should be allowed under the current encryption state,
+// or 0 when audio should remain muted. Mirrors the policy in p25p1_ldu2.c:
+//  - ALGID 0 or 0x80 (clear) => allow
+//  - ALGID RC4/DES/DES-XL (0xAA/0x81/0x9F) => allow only when R != 0
+//  - ALGID AES-256/AES-128 (0x84/0x89) => allow only when aes_loaded != 0
+//  - Any other non-zero ALGID => mute
+int
+p25_test_p1_ldu_gate(int algid, unsigned long long R, int aes_loaded) {
+    if (algid == 0 || algid == 0x80) {
+        return 1; // clear
+    }
+    if ((algid == 0xAA || algid == 0x81 || algid == 0x9F)) {
+        return (R != 0) ? 1 : 0;
+    }
+    if (algid == 0x84 || algid == 0x89) {
+        return (aes_loaded != 0) ? 1 : 0;
+    }
+    return 0;
+}
+
+// Compute a channel→frequency mapping with explicit iden parameters.
+// If map_override > 0, preload trunk_chan_map[chan16] with that frequency to
+// test direct mapping behavior.
+int
+p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
+                       long* out_freq) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+
+    if (iden < 0 || iden > 15) {
+        return -1;
+    }
+    state.p25_chan_type[iden] = type & 0xF;
+    state.p25_chan_tdma[iden] = tdma & 0x1;
+    state.p25_chan_spac[iden] = spac;
+    state.p25_base_freq[iden] = base;
+    if (map_override > 0) {
+        uint16_t c = (uint16_t)chan16;
+        state.trunk_chan_map[c] = map_override;
+    }
+    long f = process_channel_to_freq(&opts, &state, chan16);
+    if (out_freq) {
+        *out_freq = f;
+    }
+    return 0;
+}
+
+// Extended MAC VPDU test entry allowing LCCH flag and slot control.
+void
+p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof(opts));
+    memset(&state, 0, sizeof(state));
+    state.p2_is_lcch = (is_lcch != 0) ? 1 : 0;
+    state.currentslot = currentslot & 1;
+
+    unsigned long long int MAC[24] = {0};
+    int n = mac_len < 24 ? mac_len : 24;
+    for (int i = 0; i < n; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU(&opts, &state, type, MAC);
+}

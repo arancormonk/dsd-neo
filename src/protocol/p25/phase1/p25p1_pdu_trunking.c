@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
+
 /*-------------------------------------------------------------------------------
  * p25p1_pdu_trunking.c
  * P25p1 PDU Alt Format Trunking
@@ -99,27 +100,33 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         long int cr_freq = process_channel_to_freq(opts, state, channelr);
         UNUSED(cr_freq);
 
-        state->p25_cc_freq = ct_freq;
-        state->p25_cc_is_tdma = 0; //flag off for CC tuning purposes when system is qpsk
+        if (ct_freq > 0) {
+            state->p25_cc_freq = ct_freq;
+            state->p25_cc_is_tdma = 0; //flag off for CC tuning purposes when system is qpsk
 
-        //place the cc freq into the list at index 0 if 0 is empty, or not the same,
-        //so we can hunt for rotating CCs without user LCN list
-        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-            state->trunk_lcn_freq[0] = state->p25_cc_freq;
-        }
-
-        //only set IF these values aren't already hard set by the user
-        if (state->p2_hardset == 0) {
-            if ((state->p2_wacn != 0 || state->p2_sysid != 0)
-                && (state->p2_wacn != (unsigned long long)wacn || state->p2_sysid != (unsigned long long)sysid)) {
-                p25_reset_iden_tables(state);
+            //place the cc freq into the list at index 0 if 0 is empty, or not the same,
+            //so we can hunt for rotating CCs without user LCN list
+            if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+                state->trunk_lcn_freq[0] = state->p25_cc_freq;
             }
-            state->p2_wacn = wacn;
-            state->p2_sysid = sysid;
-        }
 
-        long neigh[2] = {ct_freq, cr_freq};
-        p25_sm_on_neighbor_update(opts, state, neigh, 2);
+            //only set IF these values aren't already hard set by the user
+            if (state->p2_hardset == 0) {
+                if ((state->p2_wacn != 0 || state->p2_sysid != 0)
+                    && (state->p2_wacn != (unsigned long long)wacn || state->p2_sysid != (unsigned long long)sysid)) {
+                    p25_reset_iden_tables(state);
+                }
+                if (wacn != 0 || sysid != 0) {
+                    state->p2_wacn = wacn;
+                    state->p2_sysid = sysid;
+                }
+            }
+
+            long neigh[2] = {ct_freq, cr_freq};
+            p25_sm_on_neighbor_update(opts, state, neigh, 2);
+        } else {
+            fprintf(stderr, "\n  P25 MBT NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
+        }
     }
     //RFSS Status Broadcast - Extended 6.2.15.2
     else if (opcode == 0x3A) {
