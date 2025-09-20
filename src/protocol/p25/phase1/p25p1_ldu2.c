@@ -195,7 +195,13 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     analog_signal_array[12 * 5].sequence_broken = 1;
 
     // Early extract of ALGID/KID/MI after IMBE 5 so we can gate audio for the
-    // remainder of this LDU if encrypted. Keep prints later; just set state.
+    // remainder of this LDU if encrypted. Policy: allow clear (ALGID 0/0x80).
+    // For encrypted payloads, allow audio only when a key is present for a
+    // recognized algorithm:
+    //  - RC4 (0xAA), DES-OFB (0x81), DES-XL (0x9F): require R != 0
+    //  - AES-256 (0x84), AES-128 (0x89): require aes_key_loaded[slot] == 1
+    // If keys are absent, keep audio muted and (if trunking ENC lockout is
+    // enabled) return to CC early. Keep prints later; just set state here.
     if (state->payload_algid == 0) {
         char algid_b[9] = {0};
         char kid_b[17] = {0};
