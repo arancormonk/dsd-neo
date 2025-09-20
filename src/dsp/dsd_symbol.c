@@ -573,6 +573,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 sample = m17_filter(sample);
             }
 
+            // Apply matched filter to P25 Phase 1 (C4FM) using legacy C4FM kernel
+            else if (state->lastsynctype == 0 || state->lastsynctype == 1) {
+                sample = p25_c4fm_filter(sample);
+            }
+
             else if (state->lastsynctype == 20 || state->lastsynctype == 21 || state->lastsynctype == 22
                      || state->lastsynctype == 23 || state->lastsynctype == 24 || state->lastsynctype == 25
                      || state->lastsynctype == 26 || state->lastsynctype == 27 || state->lastsynctype == 28

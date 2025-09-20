@@ -1357,6 +1357,7 @@ short dmr_filter(short sample);
 short nxdn_filter(short sample);
 short dpmr_filter(short sample);
 short m17_filter(short sample);
+short p25_c4fm_filter(short sample);
 
 //utility functions
 uint64_t ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength);
