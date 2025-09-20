@@ -37,18 +37,21 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
 	(Channel Spacing) x (0.125 kHz).
 	*/
 
+    // Sanitize to 16-bit channel (iden:4 | chan:12)
+    uint16_t chan16 = (uint16_t)channel;
+
     //return 0 if channel value is 0 or 0xFFFF
-    if (channel == 0) {
+    if (chan16 == 0) {
         return 0;
     }
-    if (channel == 0xFFFF) {
+    if (chan16 == 0xFFFF) {
         return 0;
     }
 
     //Note: Base Frequency is calculated as (Base Frequency) x (0.000005 MHz) from the IDEN_UP message.
 
     long int freq = 0;
-    int iden = (channel >> 12) & 0xF;
+    int iden = (chan16 >> 12) & 0xF;
     if (iden < 0 || iden > 15) {
         fprintf(stderr, "\n  P25 FREQ: invalid iden %d", iden);
         return 0;
@@ -65,12 +68,12 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
         fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
         return 0;
     }
-    int step = (channel & 0xFFF) / denom;
+    int step = (chan16 & 0xFFF) / denom;
 
     //first, check channel map
-    if (state->trunk_chan_map[channel] != 0) {
-        freq = state->trunk_chan_map[channel];
-        fprintf(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", channel, (double)freq / 1000000.0);
+    if (state->trunk_chan_map[chan16] != 0) {
+        freq = state->trunk_chan_map[chan16];
+        fprintf(stderr, "\n  P25 FREQ: map ch=0x%04X -> %.6lf MHz", chan16, (double)freq / 1000000.0);
         return freq;
     }
 
@@ -84,7 +87,7 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
             return 0;
         }
         freq = (base * 5) + (step * spac * 125);
-        fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, channel,
+        fprintf(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
                 (double)freq / 1000000.0);
         return freq;
     }
