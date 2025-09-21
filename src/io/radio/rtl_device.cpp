@@ -33,8 +33,14 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#ifdef __linux__
+/* For TCP options like TCP_NODELAY on POSIX platforms */
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)    \
+    || defined(__CYGWIN__)
 #include <netinet/tcp.h>
+#endif
+/* Some platforms (e.g. non-glibc) may not define MSG_NOSIGNAL */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
 #endif
 
 // Forward declarations from main file
