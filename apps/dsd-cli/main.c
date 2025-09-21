@@ -3330,20 +3330,22 @@ main(int argc, char** argv) {
     {
         fprintf(stderr, "M17 UDP IP Frame Input: ");
         char* curr;
+        char* saveptr = NULL;
+        char inbuf[1024];
+        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_in_dev, ":"); //should be 'm17'
-        if (curr != NULL)
-            ; //continue
-        else {
+        curr = strtok_r(inbuf, ":", &saveptr); //should be 'm17'
+        if (curr == NULL) {
             goto M17ENDIN; //end early with preset values
         }
 
-        curr = strtok(NULL, ":"); //host address
+        curr = strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
             strncpy(opts.m17_hostname, curr, 1023);
         }
 
-        curr = strtok(NULL, ":"); //host port
+        curr = strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
             opts.m17_portno = atoi(curr);
         }
@@ -3357,19 +3359,23 @@ main(int argc, char** argv) {
     {
         fprintf(stderr, "UDP Direct Input: ");
         char* curr;
+        char* saveptr = NULL;
+        char inbuf[1024];
+        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_in_dev, ":"); // 'udp'
+        curr = strtok_r(inbuf, ":", &saveptr); // 'udp'
         if (curr == NULL) {
             goto UDPINEND;
         }
 
-        curr = strtok(NULL, ":"); // bind address
+        curr = strtok_r(NULL, ":", &saveptr); // bind address
         if (curr != NULL) {
             strncpy(opts.udp_in_bindaddr, curr, 1023);
             opts.udp_in_bindaddr[1023] = '\0';
         }
 
-        curr = strtok(NULL, ":"); // bind port
+        curr = strtok_r(NULL, ":", &saveptr); // bind port
         if (curr != NULL) {
             opts.udp_in_portno = atoi(curr);
         }
@@ -3388,20 +3394,22 @@ main(int argc, char** argv) {
     {
         fprintf(stderr, "M17 UDP IP Frame Output: ");
         char* curr;
+        char* saveptr = NULL;
+        char outbuf[1024];
+        strncpy(outbuf, opts.audio_out_dev, sizeof(outbuf) - 1);
+        outbuf[sizeof(outbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_out_dev, ":"); //should be 'm17'
-        if (curr != NULL)
-            ; //continue
-        else {
+        curr = strtok_r(outbuf, ":", &saveptr); //should be 'm17'
+        if (curr == NULL) {
             goto M17ENDOUT; //end early with preset values
         }
 
-        curr = strtok(NULL, ":"); //host address
+        curr = strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
             strncpy(opts.m17_hostname, curr, 1023);
         }
 
-        curr = strtok(NULL, ":"); //host port
+        curr = strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
             opts.m17_portno = atoi(curr);
         }
@@ -3417,15 +3425,17 @@ main(int argc, char** argv) {
     {
         fprintf(stderr, "TCP Direct Link: ");
         char* curr;
+        char* saveptr = NULL;
+        char inbuf[1024];
+        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_in_dev, ":"); //should be 'tcp'
-        if (curr != NULL)
-            ; //continue
-        else {
+        curr = strtok_r(inbuf, ":", &saveptr); //should be 'tcp'
+        if (curr == NULL) {
             goto TCPEND; //end early with preset values
         }
 
-        curr = strtok(NULL, ":"); //host address
+        curr = strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
             strncpy(opts.tcp_hostname, curr, 1023);
             //shim to tie the hostname of the tcp input to the rigctl hostname (probably covers a vast majority of use cases)
@@ -3433,7 +3443,7 @@ main(int argc, char** argv) {
             memcpy(opts.rigctlhostname, opts.tcp_hostname, sizeof(opts.rigctlhostname));
         }
 
-        curr = strtok(NULL, ":"); //host port
+        curr = strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
             opts.tcp_portno = atoi(curr);
         }
@@ -3480,45 +3490,49 @@ main(int argc, char** argv) {
     {
         fprintf(stderr, "RTL_TCP Input: ");
         char* curr;
+        char* saveptr = NULL;
+        char inbuf[1024];
+        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_in_dev, ":"); // 'rtltcp'
+        curr = strtok_r(inbuf, ":", &saveptr); // 'rtltcp'
         if (curr == NULL) {
             goto RTLTCPEND;
         }
 
-        curr = strtok(NULL, ":"); // host
+        curr = strtok_r(NULL, ":", &saveptr); // host
         if (curr != NULL) {
             strncpy(opts.rtltcp_hostname, curr, 1023);
         }
 
-        curr = strtok(NULL, ":"); // port
+        curr = strtok_r(NULL, ":", &saveptr); // port
         if (curr != NULL) {
             opts.rtltcp_portno = atoi(curr);
         }
 
         // Optional: freq:gain:ppm:bw:sql:vol (mirrors rtl: string semantics)
-        curr = strtok(NULL, ":"); // freq
+        curr = strtok_r(NULL, ":", &saveptr); // freq
         if (curr != NULL) {
             opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
         } else {
             goto RTLTCPEND;
         }
 
-        curr = strtok(NULL, ":"); // gain
+        curr = strtok_r(NULL, ":", &saveptr); // gain
         if (curr != NULL) {
             opts.rtl_gain_value = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
 
-        curr = strtok(NULL, ":"); // ppm
+        curr = strtok_r(NULL, ":", &saveptr); // ppm
         if (curr != NULL) {
             opts.rtlsdr_ppm_error = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
 
-        curr = strtok(NULL, ":"); // bw (kHz)
+        curr = strtok_r(NULL, ":", &saveptr); // bw (kHz)
         if (curr != NULL) {
             int bw = atoi(curr);
             if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24) {
@@ -3530,7 +3544,7 @@ main(int argc, char** argv) {
             goto RTLTCPEND;
         }
 
-        curr = strtok(NULL, ":"); // sql (dB if negative; else linear)
+        curr = strtok_r(NULL, ":", &saveptr); // sql (dB if negative; else linear)
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
@@ -3542,7 +3556,7 @@ main(int argc, char** argv) {
             goto RTLTCPEND;
         }
 
-        curr = strtok(NULL, ":"); // vol (1..3)
+        curr = strtok_r(NULL, ":", &saveptr); // vol (1..3)
         if (curr != NULL) {
             opts.rtl_volume_multiplier = atoi(curr);
         } else {
@@ -3573,43 +3587,45 @@ main(int argc, char** argv) {
 #ifdef USE_RTLSDR
         fprintf(stderr, "RTL Input: ");
         char* curr;
+        char* saveptr = NULL;
+        char inbuf[1024];
+        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_in_dev, ":"); //should be 'rtl'
-        if (curr != NULL)
-            ; //continue
-        else {
+        curr = strtok_r(inbuf, ":", &saveptr); //should be 'rtl'
+        if (curr == NULL) {
             goto RTLEND; //end early with preset values
         }
 
-        curr = strtok(NULL, ":"); //rtl device number "-D"
+        curr = strtok_r(NULL, ":", &saveptr); //rtl device number "-D"
         if (curr != NULL) {
             opts.rtl_dev_index = atoi(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl freq "-c"
+        curr = strtok_r(NULL, ":", &saveptr); //rtl freq "-c"
         if (curr != NULL) {
             opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl gain value "-G"
+        curr = strtok_r(NULL, ":", &saveptr); //rtl gain value "-G"
         if (curr != NULL) {
             opts.rtl_gain_value = atoi(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl ppm err "-P"
+        curr = strtok_r(NULL, ":", &saveptr); //rtl ppm err "-P"
         if (curr != NULL) {
             opts.rtlsdr_ppm_error = atoi(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl bandwidth "-Y"
+        curr = strtok_r(NULL, ":", &saveptr); //rtl bandwidth "-Y"
         if (curr != NULL) {
             int bw = 0;
             bw = atoi(curr);
@@ -3625,7 +3641,7 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
-        curr = strtok(NULL, ":"); //rtl squelch threshold (dB if negative; else linear)
+        curr = strtok_r(NULL, ":", &saveptr); //rtl squelch threshold (dB if negative; else linear)
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
@@ -3637,11 +3653,11 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
-        // curr = strtok(NULL, ":"); //rtl udp port "-U"
+        // curr = strtok_r(NULL, ":", &saveptr); //rtl udp port "-U"
         // if (curr != NULL) opts.rtl_udp_port = atoi (curr);
         // else goto RTLEND;
 
-        curr = strtok(NULL, ":"); //rtl sample / volume multiplier
+        curr = strtok_r(NULL, ":", &saveptr); //rtl sample / volume multiplier
         if (curr != NULL) {
             opts.rtl_volume_multiplier = atoi(curr);
         } else {
@@ -3725,20 +3741,22 @@ main(int argc, char** argv) {
         //read in values
         fprintf(stderr, "UDP Blaster Output: ");
         char* curr;
+        char* saveptr = NULL;
+        char outbuf[1024];
+        strncpy(outbuf, opts.audio_out_dev, sizeof(outbuf) - 1);
+        outbuf[sizeof(outbuf) - 1] = '\0';
 
-        curr = strtok(opts.audio_out_dev, ":"); //should be 'udp'
-        if (curr != NULL)
-            ; //continue
-        else {
+        curr = strtok_r(outbuf, ":", &saveptr); //should be 'udp'
+        if (curr == NULL) {
             goto UDPEND; //end early with preset values
         }
 
-        curr = strtok(NULL, ":"); //udp blaster hostname
+        curr = strtok_r(NULL, ":", &saveptr); //udp blaster hostname
         if (curr != NULL) {
             strncpy(opts.udp_hostname, curr, 1023); //set address to blast to
         }
 
-        curr = strtok(NULL, ":"); //udp blaster port
+        curr = strtok_r(NULL, ":", &saveptr); //udp blaster port
         if (curr != NULL) {
             opts.udp_portno = atoi(curr);
         }
