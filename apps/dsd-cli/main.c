@@ -30,6 +30,7 @@
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/git_ver.h>
 
+#include <limits.h>
 #include <signal.h>
 #include <stdlib.h>
 
@@ -79,7 +80,7 @@ pretty_colors() {
 #include <dsd-neo/io/pa_devs.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
-int
+inline int
 comp(const void* a, const void* b) {
     if (*((const int*)a) == *((const int*)b)) {
         return 0;
@@ -88,6 +89,19 @@ comp(const void* a, const void* b) {
     } else {
         return 1;
     }
+}
+
+// Small helpers to efficiently set fixed-width strings
+static inline void
+set_spaces(char* buf, size_t count) {
+    memset(buf, ' ', count);
+    buf[count] = '\0';
+}
+
+static inline void
+set_underscores(char* buf, size_t count) {
+    memset(buf, '_', count);
+    buf[count] = '\0';
 }
 
 //struct for checking existence of directory to write to
@@ -274,10 +288,10 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->max = 15000;
     state->min = -15000;
     state->center = 0;
-    state->err_str[0] = 0;
-    state->err_strR[0] = 0;
-    sprintf(state->fsubtype, "              ");
-    sprintf(state->ftype, "             ");
+    state->err_str[0] = '\0';
+    state->err_strR[0] = '\0';
+    set_spaces(state->fsubtype, 14);
+    set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
 
@@ -303,7 +317,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
         //zero out nxdn site/srv/cch info if not trunking
         state->nxdn_location_site_code = 0;
         state->nxdn_location_sys_code = 0;
-        sprintf(state->nxdn_location_category, "%s", " ");
+        set_spaces(state->nxdn_location_category, 1);
 
         //channel access information
         state->nxdn_rcn = 0;
@@ -337,8 +351,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->repeat = 0;
     state->nac = 0;
     state->numtdulc = 0;
-    sprintf(state->slot1light, "%s", "");
-    sprintf(state->slot2light, "%s", "");
+    state->slot1light[0] = '\0';
+    state->slot2light[0] = '\0';
     state->firstframe = 0;
     memset(state->aout_max_buf, 0, sizeof(float) * 200);
     state->aout_max_buf_p = state->aout_max_buf;
@@ -348,8 +362,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->aout_max_buf_pR = state->aout_max_bufR;
     state->aout_max_buf_idxR = 0;
 
-    sprintf(state->algid, "________");
-    sprintf(state->keyid, "________________");
+    set_underscores(state->algid, 8);
+    set_underscores(state->keyid, 16);
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     mbe_initMbeParms(state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2);
 
@@ -446,7 +460,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     state->nxdn_alias_block_number = 0;
     memset(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
-    sprintf(state->nxdn_call_type, "%s", "");
+    state->nxdn_call_type[0] = '\0';
 
     //unload keys when using keylaoder
     if (state->keyloader == 1) {
@@ -526,8 +540,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     // memset(state->active_channel, 0, sizeof(state->active_channel));
 
     //REMUS! multi-purpose call_string
-    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
+    set_spaces(state->call_string[0], 21);
+    set_spaces(state->call_string[1], 21);
 
     if (now - state->last_cc_sync_time > 10) //ten seconds of no carrier
     {
@@ -550,30 +564,30 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     memset(state->dPMRVoiceFS2Frame.CallingID, 0, 8);
     memset(state->dPMRVoiceFS2Frame.Version, 0, 8);
 
-    sprintf(state->dpmr_caller_id, "%s", "      ");
-    sprintf(state->dpmr_target_id, "%s", "      ");
+    set_spaces(state->dpmr_caller_id, 6);
+    set_spaces(state->dpmr_target_id, 6);
 
     //YSF Fusion Call Strings
-    sprintf(state->ysf_tgt, "%s", "          "); //10 spaces
-    sprintf(state->ysf_src, "%s", "          "); //10 spaces
-    sprintf(state->ysf_upl, "%s", "          "); //10 spaces
-    sprintf(state->ysf_dnl, "%s", "          "); //10 spaces
-    sprintf(state->ysf_rm1, "%s", "     ");      //5 spaces
-    sprintf(state->ysf_rm2, "%s", "     ");      //5 spaces
-    sprintf(state->ysf_rm3, "%s", "     ");      //5 spaces
-    sprintf(state->ysf_rm4, "%s", "     ");      //5 spaces
+    set_spaces(state->ysf_tgt, 10);
+    set_spaces(state->ysf_src, 10);
+    set_spaces(state->ysf_upl, 10);
+    set_spaces(state->ysf_dnl, 10);
+    set_spaces(state->ysf_rm1, 5);
+    set_spaces(state->ysf_rm2, 5);
+    set_spaces(state->ysf_rm3, 5);
+    set_spaces(state->ysf_rm4, 5);
     memset(state->ysf_txt, 0, sizeof(state->ysf_txt));
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
 
     //DSTAR Call Strings
-    sprintf(state->dstar_rpt1, "%s", "        "); //8 spaces
-    sprintf(state->dstar_rpt2, "%s", "        "); //8 spaces
-    sprintf(state->dstar_dst, "%s", "        ");  //8 spaces
-    sprintf(state->dstar_src, "%s", "        ");  //8 spaces
-    sprintf(state->dstar_txt, "%s", "        ");  //8 spaces
-    sprintf(state->dstar_gps, "%s", "        ");  //8 spaces
+    set_spaces(state->dstar_rpt1, 8);
+    set_spaces(state->dstar_rpt2, 8);
+    set_spaces(state->dstar_dst, 8);
+    set_spaces(state->dstar_src, 8);
+    set_spaces(state->dstar_txt, 8);
+    set_spaces(state->dstar_gps, 8);
 
     //M17 Storage
     memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
@@ -586,8 +600,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->m17_can = 0;
     memset(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
     memset(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
-    sprintf(state->m17_dst_str, "%s", "");
-    sprintf(state->m17_src_str, "%s", "");
+    state->m17_dst_str[0] = '\0';
+    state->m17_src_str[0] = '\0';
 
     state->m17_enc = 0;
     state->m17_enc_st = 0;
@@ -1025,10 +1039,10 @@ initState(dsd_state* state) {
         state->minbuf[i] = -15000;
     }
     state->midx = 0;
-    state->err_str[0] = 0;
-    state->err_strR[0] = 0;
-    sprintf(state->fsubtype, "              ");
-    sprintf(state->ftype, "             ");
+    state->err_str[0] = '\0';
+    state->err_strR[0] = '\0';
+    set_spaces(state->fsubtype, 14);
+    set_spaces(state->ftype, 13);
     state->symbolcnt = 0;
     state->symbolc = 0; //
     state->rf_mod = 0;
@@ -1073,8 +1087,8 @@ initState(dsd_state* state) {
 
     state->samplesPerSymbol = 10;
     state->symbolCenter = 4;
-    sprintf(state->algid, "________");
-    sprintf(state->keyid, "________________");
+    set_underscores(state->algid, 8);
+    set_underscores(state->keyid, 16);
     state->currentslot = 0;
     state->cur_mp = malloc(sizeof(mbe_parms));
     state->prev_mp = malloc(sizeof(mbe_parms));
@@ -1099,7 +1113,7 @@ initState(dsd_state* state) {
     state->nxdn_last_tg = 0;
     state->nxdn_cipher_type = 0;
     state->nxdn_key = 0;
-    sprintf(state->nxdn_call_type, "%s", "");
+    state->nxdn_call_type[0] = '\0';
     state->payload_miN = 0;
 
     state->dpmr_color_code = -1;
@@ -1318,7 +1332,7 @@ initState(dsd_state* state) {
     //site/srv/cch info
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;
-    sprintf(state->nxdn_location_category, "%s", " ");
+    set_spaces(state->nxdn_location_category, 1);
 
     //channel access information
     state->nxdn_rcn = 0;
@@ -1334,9 +1348,9 @@ initState(dsd_state* state) {
     state->dmr_end_alert[0] = 0;
     state->dmr_end_alert[1] = 0;
 
-    sprintf(state->dmr_branding, "%s", "");
-    sprintf(state->dmr_branding_sub, "%s", "");
-    sprintf(state->dmr_site_parms, "%s", "");
+    state->dmr_branding[0] = '\0';
+    state->dmr_branding_sub[0] = '\0';
+    state->dmr_site_parms[0] = '\0';
 
     //initialize unified dmr pdu 'superframe'
     memset(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
@@ -1371,8 +1385,8 @@ initState(dsd_state* state) {
     state->generic_talker_alias_src[1] = 0;
 
     //REMUS! multi-purpose call_string
-    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
+    set_spaces(state->call_string[0], 21);
+    set_spaces(state->call_string[1], 21);
 
     //late entry mi fragments
     memset(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
@@ -1386,30 +1400,30 @@ initState(dsd_state* state) {
     memset(state->dPMRVoiceFS2Frame.CallingID, 0, 8);
     memset(state->dPMRVoiceFS2Frame.Version, 0, 8);
 
-    sprintf(state->dpmr_caller_id, "%s", "      ");
-    sprintf(state->dpmr_target_id, "%s", "      ");
+    set_spaces(state->dpmr_caller_id, 6);
+    set_spaces(state->dpmr_target_id, 6);
 
     //YSF Fusion Call Strings
-    sprintf(state->ysf_tgt, "%s", "          "); //10 spaces
-    sprintf(state->ysf_src, "%s", "          "); //10 spaces
-    sprintf(state->ysf_upl, "%s", "          "); //10 spaces
-    sprintf(state->ysf_dnl, "%s", "          "); //10 spaces
-    sprintf(state->ysf_rm1, "%s", "     ");      //5 spaces
-    sprintf(state->ysf_rm2, "%s", "     ");      //5 spaces
-    sprintf(state->ysf_rm3, "%s", "     ");      //5 spaces
-    sprintf(state->ysf_rm4, "%s", "     ");      //5 spaces
+    set_spaces(state->ysf_tgt, 10); //10 spaces
+    set_spaces(state->ysf_src, 10); //10 spaces
+    set_spaces(state->ysf_upl, 10); //10 spaces
+    set_spaces(state->ysf_dnl, 10); //10 spaces
+    set_spaces(state->ysf_rm1, 5);  //5 spaces
+    set_spaces(state->ysf_rm2, 5);  //5 spaces
+    set_spaces(state->ysf_rm3, 5);  //5 spaces
+    set_spaces(state->ysf_rm4, 5);  //5 spaces
     memset(state->ysf_txt, 0, sizeof(state->ysf_txt));
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
 
     //DSTAR Call Strings
-    sprintf(state->dstar_rpt1, "%s", "        "); //8 spaces
-    sprintf(state->dstar_rpt2, "%s", "        "); //8 spaces
-    sprintf(state->dstar_dst, "%s", "        ");  //8 spaces
-    sprintf(state->dstar_src, "%s", "        ");  //8 spaces
-    sprintf(state->dstar_txt, "%s", "        ");  //8 spaces
-    sprintf(state->dstar_gps, "%s", "        ");  //8 spaces
+    set_spaces(state->dstar_rpt1, 8); //8 spaces
+    set_spaces(state->dstar_rpt2, 8); //8 spaces
+    set_spaces(state->dstar_dst, 8);  //8 spaces
+    set_spaces(state->dstar_src, 8);  //8 spaces
+    set_spaces(state->dstar_txt, 8);  //8 spaces
+    set_spaces(state->dstar_gps, 8);  //8 spaces
 
     //M17 Storage
     memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
@@ -1422,7 +1436,7 @@ initState(dsd_state* state) {
     memset(state->str50b, 0, 50 * sizeof(char));
     memset(state->str50c, 0, 50 * sizeof(char));
     memset(state->m17sms, 0, 800 * sizeof(char));
-    sprintf(state->m17dat, "%s", "");
+    state->m17dat[0] = '\0';
 
     state->m17_dst = 0;
     state->m17_src = 0;
@@ -1432,8 +1446,8 @@ initState(dsd_state* state) {
     state->m17_vox = 0;      //vox mode enabled on M17 encoder
     memset(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
     memset(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
-    sprintf(state->m17_dst_str, "%s", "");
-    sprintf(state->m17_src_str, "%s", "");
+    state->m17_dst_str[0] = '\0';
+    state->m17_src_str[0] = '\0';
 
     state->m17_enc = 0;
     state->m17_enc_st = 0;
@@ -1787,6 +1801,9 @@ usage() {
 
 void
 liveScanner(dsd_opts* opts, dsd_state* state) {
+    // Cache previous thresholds to avoid redundant recalculation
+    static int last_max = INT_MIN;
+    static int last_min = INT_MAX;
 
     if (opts->floating_point == 1) {
 
@@ -1866,10 +1883,14 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
         noCarrier(opts, state);
         if (state->menuopen == 0) {
             state->synctype = getFrameSync(opts, state);
-            // recalibrate center/umid/lmid
-            state->center = ((state->max) + (state->min)) / 2;
-            state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-            state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
+            // Recompute thresholds only when extrema change
+            if (state->max != last_max || state->min != last_min) {
+                state->center = ((state->max) + (state->min)) / 2;
+                state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
+                state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
+                last_max = state->max;
+                last_min = state->min;
+            }
         }
 
         while (state->synctype != -1) {
@@ -1891,10 +1912,14 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
             // state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
             if (state->menuopen == 0) {
                 state->synctype = getFrameSync(opts, state);
-                // recalibrate center/umid/lmid
-                state->center = ((state->max) + (state->min)) / 2;
-                state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-                state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
+                // Recompute thresholds only when extrema change
+                if (state->max != last_max || state->min != last_min) {
+                    state->center = ((state->max) + (state->min)) / 2;
+                    state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
+                    state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
+                    last_max = state->max;
+                    last_min = state->min;
+                }
             }
         }
     }
