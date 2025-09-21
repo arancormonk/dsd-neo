@@ -27,6 +27,15 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+/* Networking for rtl_tcp backend */
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#ifdef __linux__
+#include <netinet/tcp.h>
+#endif
 
 // Forward declarations from main file
 extern volatile uint8_t exitflag;
@@ -47,6 +56,24 @@ struct rtl_device {
     int thread_started;
     struct input_ring_state* input_ring;
     int combine_rotate_enabled;
+    /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp */
+    int backend;
+    /* rtl_tcp connection */
+    int sockfd;
+    char host[1024];
+    int port;
+    std::atomic<int> run;
+    int agc_mode; /* cached for TCP backend */
+    /* TCP stats (optional) */
+    uint64_t tcp_bytes_total;
+    uint64_t tcp_bytes_window;
+    uint64_t reserve_full_events;
+    int stats_enabled;
+    struct timespec stats_last_ts;
+    /* TCP reassembly to uniform chunk size */
+    unsigned char* tcp_pending;
+    size_t tcp_pending_len;
+    size_t tcp_pending_cap;
 };
 
 /**
@@ -216,6 +243,315 @@ dongle_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
     rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
+    return 0;
+}
+
+/* ---- rtl_tcp backend helpers ---- */
+
+/* Connect to rtl_tcp server */
+static int
+tcp_connect_host(const char* host, int port) {
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        fprintf(stderr, "rtl_tcp: ERROR opening socket\n");
+        return -1;
+    }
+    struct hostent* server = gethostbyname(host);
+    if (!server) {
+        fprintf(stderr, "rtl_tcp: ERROR, no such host as %s\n", host);
+        close(sockfd);
+        return -1;
+    }
+    struct sockaddr_in serveraddr;
+    bzero((char*)&serveraddr, sizeof(serveraddr));
+    serveraddr.sin_family = AF_INET;
+    bcopy((char*)server->h_addr, (char*)&serveraddr.sin_addr.s_addr, server->h_length);
+    serveraddr.sin_port = htons((uint16_t)port);
+    if (connect(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr)) < 0) {
+        fprintf(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
+        close(sockfd);
+        return -1;
+    }
+    return sockfd;
+}
+
+/* Send rtl_tcp command: 1 byte id + 4 byte big-endian value */
+static int
+rtl_tcp_send_cmd(int sockfd, uint8_t cmd, uint32_t param) {
+    uint8_t buf[5];
+    buf[0] = cmd;
+    buf[1] = (uint8_t)((param >> 24) & 0xFF);
+    buf[2] = (uint8_t)((param >> 16) & 0xFF);
+    buf[3] = (uint8_t)((param >> 8) & 0xFF);
+    buf[4] = (uint8_t)(param & 0xFF);
+    ssize_t n = send(sockfd, buf, 5, MSG_NOSIGNAL);
+    return (n == 5) ? 0 : -1;
+}
+
+static int
+env_agc_want(void) {
+    const char* e = getenv("DSD_NEO_RTL_AGC");
+    int want = 1; /* default enable AGC for auto gain */
+    if (e && (*e == '0' || *e == 'n' || *e == 'N' || *e == 'f' || *e == 'F')) {
+        want = 0;
+    }
+    return want;
+}
+
+/* Read and discard rtl_tcp header: 'RTL0' + tuner(4) + ngains(4) + ngains*4 */
+static void
+rtl_tcp_skip_header(int sockfd) {
+    uint8_t hdr[12];
+    ssize_t n = recv(sockfd, hdr, sizeof(hdr), MSG_WAITALL);
+    if (n != (ssize_t)sizeof(hdr)) {
+        return;
+    }
+    if (!(hdr[0] == 'R' && hdr[1] == 'T' && hdr[2] == 'L' && hdr[3] == '0')) {
+        return;
+    }
+    /* Parse ngains (last 4 bytes) as big-endian per rtl_tcp */
+    uint32_t ngains =
+        ((uint32_t)hdr[8] << 24) | ((uint32_t)hdr[9] << 16) | ((uint32_t)hdr[10] << 8) | (uint32_t)hdr[11];
+    if (ngains > 0 && ngains < 4096) {
+        size_t to_discard = (size_t)ngains * 4U;
+        uint8_t buf[1024];
+        while (to_discard > 0) {
+            size_t chunk = to_discard > sizeof(buf) ? sizeof(buf) : to_discard;
+            ssize_t r = recv(sockfd, buf, chunk, MSG_WAITALL);
+            if (r <= 0) {
+                break;
+            }
+            to_discard -= (size_t)r;
+        }
+    }
+}
+
+/* TCP reader thread: read u8 IQ, widen to s16, push to ring */
+static void*
+tcp_thread_fn(void* arg) {
+    struct rtl_device* s = static_cast<rtl_device*>(arg);
+    maybe_set_thread_realtime_and_affinity("DONGLE");
+    /* Default read size: for rtl_tcp prefer small (16 KiB) chunks for higher cadence.
+       For USB, derive ~20 ms to reduce burstiness. */
+    size_t BUFSZ = 0;
+    if (s->backend == 1) {
+        BUFSZ = 16384; /* ~5 ms @ 1.536 Msps */
+    } else {
+        if (s->rate > 0) {
+            double bytes_per_sec = (double)s->rate * 2.0;   /* 2 bytes per complex sample (u8 I, u8 Q) */
+            size_t target = (size_t)(bytes_per_sec * 0.02); /* ~20 ms */
+            if (target < 16384) {
+                target = 16384; /* lower bound */
+            }
+            if (target > 262144) {
+                target = 262144; /* upper bound */
+            }
+            BUFSZ = target;
+        } else {
+            BUFSZ = 65536; /* safe fallback when rate isn't known yet */
+        }
+    }
+    if (const char* es = getenv("DSD_NEO_TCP_BUFSZ")) {
+        long v = atol(es);
+        if (v > 4096 && v < (32 * 1024 * 1024)) {
+            BUFSZ = (size_t)v;
+        }
+    }
+    unsigned char* u8 = (unsigned char*)malloc(BUFSZ);
+    if (!u8) {
+        s->run.store(0);
+        return 0;
+    }
+    /* Discard server capability header so following bytes are pure IQ */
+    rtl_tcp_skip_header(s->sockfd);
+    int waitall = (s->backend == 1) ? 0 : 1; /* rtl_tcp default off; USB default on */
+    if (const char* ew = getenv("DSD_NEO_TCP_WAITALL")) {
+        if (ew[0] == '0' || ew[0] == 'f' || ew[0] == 'F' || ew[0] == 'n' || ew[0] == 'N') {
+            waitall = 0;
+        }
+    }
+    while (s->run.load() && exitflag == 0) {
+        ssize_t r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
+        if (r <= 0) {
+            break;
+        }
+        uint32_t len = (uint32_t)r;
+        /* Stats: bytes in */
+        if (s->stats_enabled) {
+            s->tcp_bytes_total += (uint64_t)len;
+            s->tcp_bytes_window += (uint64_t)len;
+        }
+        /* Reassemble into uniform slices matching device buf_len to stabilize cadence */
+        int use_two_pass = (!s->offset_tuning && !s->combine_rotate_enabled);
+        const size_t SLICE = (s->buf_len > 0 ? (size_t)s->buf_len : 16384);
+
+        /* Fill pending if it exists to complete one slice */
+        size_t consumed = 0;
+        if (s->tcp_pending_len > 0) {
+            size_t missing = (SLICE > s->tcp_pending_len) ? (SLICE - s->tcp_pending_len) : 0;
+            size_t take = (missing < len) ? missing : len;
+            if (take > 0) {
+                if (!s->tcp_pending || s->tcp_pending_cap < SLICE) {
+                    size_t cap = (SLICE + 4095) & ~((size_t)4095);
+                    unsigned char* nb = (unsigned char*)realloc(s->tcp_pending, cap);
+                    if (nb) {
+                        s->tcp_pending = nb;
+                        s->tcp_pending_cap = cap;
+                    }
+                }
+                if (s->tcp_pending && s->tcp_pending_cap >= (s->tcp_pending_len + take)) {
+                    memcpy(s->tcp_pending + s->tcp_pending_len, u8, take);
+                    s->tcp_pending_len += take;
+                    consumed += take;
+                }
+            }
+            if (s->tcp_pending_len == SLICE) {
+                unsigned char* src = s->tcp_pending;
+                if (use_two_pass) {
+                    rotate_90(src, (uint32_t)SLICE);
+                }
+                int16_t *p1 = NULL, *p2 = NULL;
+                size_t n1 = 0, n2 = 0;
+                input_ring_reserve(s->input_ring, SLICE, &p1, &n1, &p2, &n2);
+                if (n1 == 0 && n2 == 0) {
+                    if (s->input_ring) {
+                        s->input_ring->producer_drops.fetch_add((uint64_t)SLICE);
+                    }
+                    s->reserve_full_events++;
+                } else {
+                    if (n1 & 1) {
+                        n1--;
+                    }
+                    size_t w1 = (n1 < SLICE) ? n1 : SLICE;
+                    size_t rem_after_w1 = SLICE - w1;
+                    if (n2 & 1) {
+                        n2--;
+                    }
+                    size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
+                    if (!s->offset_tuning && s->combine_rotate_enabled) {
+                        if (w1) {
+                            widen_rotate90_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                        }
+                        if (w2) {
+                            widen_rotate90_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                        }
+                    } else if (use_two_pass) {
+                        if (w1) {
+                            widen_u8_to_s16_bias128_scalar(src, p1, (uint32_t)w1);
+                        }
+                        if (w2) {
+                            widen_u8_to_s16_bias128_scalar(src + w1, p2, (uint32_t)w2);
+                        }
+                    } else {
+                        if (w1) {
+                            widen_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                        }
+                        if (w2) {
+                            widen_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                        }
+                    }
+                    input_ring_commit(s->input_ring, w1 + w2);
+                }
+                s->tcp_pending_len = 0;
+            }
+        }
+
+        /* Process full slices directly from current buffer */
+        while ((len - consumed) >= SLICE) {
+            unsigned char* src = u8 + consumed;
+            if (use_two_pass) {
+                rotate_90(src, (uint32_t)SLICE);
+            }
+            int16_t *p1 = NULL, *p2 = NULL;
+            size_t n1 = 0, n2 = 0;
+            input_ring_reserve(s->input_ring, SLICE, &p1, &n1, &p2, &n2);
+            if (n1 == 0 && n2 == 0) {
+                if (s->input_ring) {
+                    s->input_ring->producer_drops.fetch_add((uint64_t)SLICE);
+                }
+                s->reserve_full_events++;
+                break;
+            }
+            if (n1 & 1) {
+                n1--;
+            }
+            size_t w1 = (n1 < SLICE) ? n1 : SLICE;
+            size_t rem_after_w1 = SLICE - w1;
+            if (n2 & 1) {
+                n2--;
+            }
+            size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
+            if (!s->offset_tuning && s->combine_rotate_enabled) {
+                if (w1) {
+                    widen_rotate90_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                }
+                if (w2) {
+                    widen_rotate90_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                }
+            } else if (use_two_pass) {
+                if (w1) {
+                    widen_u8_to_s16_bias128_scalar(src, p1, (uint32_t)w1);
+                }
+                if (w2) {
+                    widen_u8_to_s16_bias128_scalar(src + w1, p2, (uint32_t)w2);
+                }
+            } else {
+                if (w1) {
+                    widen_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                }
+                if (w2) {
+                    widen_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                }
+            }
+            input_ring_commit(s->input_ring, w1 + w2);
+            consumed += SLICE;
+        }
+
+        /* Save remainder (<SLICE) into pending */
+        size_t rem = len - consumed;
+        if (rem > 0) {
+            if (!s->tcp_pending || s->tcp_pending_cap < rem) {
+                size_t cap = (rem + 4095) & ~((size_t)4095);
+                unsigned char* nb = (unsigned char*)realloc(s->tcp_pending, cap);
+                if (nb) {
+                    s->tcp_pending = nb;
+                    s->tcp_pending_cap = cap;
+                } else {
+                    rem = 0;
+                }
+            }
+            if (rem > 0) {
+                memcpy(s->tcp_pending, u8 + consumed, rem);
+                s->tcp_pending_len = rem;
+            }
+        }
+
+        if (s->stats_enabled) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long sec = (long)(now.tv_sec - s->stats_last_ts.tv_sec);
+            long nsec = (long)(now.tv_nsec - s->stats_last_ts.tv_nsec);
+            if (nsec < 0) {
+                sec -= 1;
+                nsec += 1000000000L;
+            }
+            if (sec >= 1) {
+                double dt = (double)sec + (double)nsec / 1e9;
+                double mbps = (double)s->tcp_bytes_window / dt / (1024.0 * 1024.0);
+                double exp_bps = (s->rate > 0) ? (double)(s->rate * 2ULL) : 0.0;
+                double exp_mbps = exp_bps / (1024.0 * 1024.0);
+                uint64_t drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
+                uint64_t rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
+                fprintf(stderr, "rtl_tcp: %.2f MiB/s (exp %.2f), drops=%llu, res_full=%llu, read_timeouts=%llu\n", mbps,
+                        exp_mbps, (unsigned long long)drops, (unsigned long long)s->reserve_full_events,
+                        (unsigned long long)rdto);
+                s->tcp_bytes_window = 0ULL;
+                s->stats_last_ts = now;
+            }
+        }
+    }
+    free(u8);
+    s->run.store(0);
     return 0;
 }
 
@@ -469,6 +805,12 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->thread_started = 0;
     dev->mute = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled_param;
+    dev->backend = 0;
+    dev->sockfd = -1;
+    dev->host[0] = '\0';
+    dev->port = 0;
+    dev->run.store(0);
+    dev->agc_mode = 1;
 
     int r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
     if (r < 0) {
@@ -477,6 +819,64 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
         return NULL;
     }
 
+    return dev;
+}
+
+struct rtl_device*
+rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
+                      int combine_rotate_enabled_param) {
+    if (!input_ring || !host || port <= 0) {
+        return NULL;
+    }
+    struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
+    if (!dev) {
+        return NULL;
+    }
+    dev->dev = NULL;
+    dev->dev_index = -1;
+    dev->input_ring = input_ring;
+    dev->thread_started = 0;
+    dev->mute = 0;
+    dev->combine_rotate_enabled = combine_rotate_enabled_param;
+    dev->backend = 1;
+    dev->sockfd = -1;
+    snprintf(dev->host, sizeof(dev->host), "%s", host);
+    dev->port = port;
+    dev->run.store(0);
+    dev->agc_mode = 1;
+    dev->offset_tuning = 0;
+    dev->tcp_pending = NULL;
+    dev->tcp_pending_len = 0;
+    dev->tcp_pending_cap = 0;
+
+    int sfd = tcp_connect_host(host, port);
+    if (sfd < 0) {
+        free(dev);
+        return NULL;
+    }
+    /* Increase socket receive buffer to tolerate brief processing stalls */
+    {
+        int rcvbuf = 4 * 1024 * 1024; /* 4 MB */
+        if (const char* eb = getenv("DSD_NEO_TCP_RCVBUF")) {
+            int v = atoi(eb);
+            if (v > 0) {
+                rcvbuf = v;
+            }
+        }
+        (void)setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+        int nodelay = 1;
+        (void)setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    }
+    dev->sockfd = sfd;
+    fprintf(stderr, "rtl_tcp: Connected to %s:%d\n", host, port);
+    /* Optional TCP stats: enable with DSD_NEO_TCP_STATS=1 */
+    if (const char* es = getenv("DSD_NEO_TCP_STATS")) {
+        if (es[0] != '\0' && es[0] != '0' && es[0] != 'f' && es[0] != 'F' && es[0] != 'n' && es[0] != 'N') {
+            dev->stats_enabled = 1;
+            clock_gettime(CLOCK_MONOTONIC, &dev->stats_last_ts);
+            fprintf(stderr, "rtl_tcp: stats enabled.\n");
+        }
+    }
     return dev;
 }
 
@@ -493,15 +893,31 @@ rtl_device_destroy(struct rtl_device* dev) {
 
     if (dev->thread_started) {
         /* Ensure async read is cancelled before joining to avoid blocking */
-        if (dev->dev) {
-            rtlsdr_cancel_async(dev->dev);
+        if (dev->backend == 0) {
+            if (dev->dev) {
+                rtlsdr_cancel_async(dev->dev);
+            }
+        } else if (dev->backend == 1) {
+            dev->run.store(0);
+            if (dev->sockfd >= 0) {
+                shutdown(dev->sockfd, SHUT_RDWR);
+            }
         }
         pthread_join(dev->thread, NULL);
         dev->thread_started = 0;
     }
 
-    if (dev->dev) {
+    if (dev->backend == 0 && dev->dev) {
         rtlsdr_close(dev->dev);
+    }
+    if (dev->backend == 1 && dev->sockfd >= 0) {
+        close(dev->sockfd);
+    }
+    if (dev->tcp_pending) {
+        free(dev->tcp_pending);
+        dev->tcp_pending = NULL;
+        dev->tcp_pending_len = 0;
+        dev->tcp_pending_cap = 0;
     }
 
     free(dev);
@@ -516,11 +932,18 @@ rtl_device_destroy(struct rtl_device* dev) {
  */
 int
 rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
     dev->freq = frequency;
-    return verbose_set_frequency(dev->dev, frequency);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_set_frequency(dev->dev, frequency);
+    } else {
+        return rtl_tcp_send_cmd(dev->sockfd, 0x01, frequency);
+    }
 }
 
 /**
@@ -532,11 +955,18 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
  */
 int
 rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
     dev->rate = samp_rate;
-    return verbose_set_sample_rate(dev->dev, samp_rate);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_set_sample_rate(dev->dev, samp_rate);
+    } else {
+        return rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
+    }
 }
 
 /**
@@ -548,26 +978,58 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
  */
 int
 rtl_device_set_gain(struct rtl_device* dev, int gain) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
 
 #define AUTO_GAIN -100
     dev->gain = gain;
-    if (gain == AUTO_GAIN) {
-        return verbose_auto_gain(dev->dev);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        if (gain == AUTO_GAIN) {
+            return verbose_auto_gain(dev->dev);
+        } else {
+            int nearest = nearest_gain(dev->dev, gain);
+            return verbose_gain_set(dev->dev, nearest);
+        }
     } else {
-        int nearest = nearest_gain(dev->dev, gain);
-        return verbose_gain_set(dev->dev, nearest);
+        if (gain == AUTO_GAIN) {
+            dev->agc_mode = 1;
+            int r = rtl_tcp_send_cmd(dev->sockfd, 0x03, 0); /* tuner auto */
+            if (r < 0) {
+                return r;
+            }
+            /* Mirror USB path: set RTL2832 digital AGC according to env */
+            r = rtl_tcp_send_cmd(dev->sockfd, 0x08, (uint32_t)env_agc_want());
+            return r;
+        } else {
+            dev->agc_mode = 0;
+            int r = rtl_tcp_send_cmd(dev->sockfd, 0x03, 1);
+            if (r < 0) {
+                return r;
+            }
+            return rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)gain);
+        }
     }
 }
 
 int
 rtl_device_get_tuner_gain(struct rtl_device* dev) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
-    return rtlsdr_get_tuner_gain(dev->dev);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return rtlsdr_get_tuner_gain(dev->dev);
+    }
+    if (dev->agc_mode) {
+        return 0;
+    }
+    return dev->gain;
 }
 
 int
@@ -575,8 +1037,12 @@ rtl_device_is_auto_gain(struct rtl_device* dev) {
     if (!dev) {
         return -1;
     }
-    /* We track AUTO vs manual in the requested field. */
-    return (dev->gain == AUTO_GAIN) ? 1 : 0;
+    if (dev->backend == 0) {
+        /* We track AUTO vs manual in the requested field. */
+        return (dev->gain == AUTO_GAIN) ? 1 : 0;
+    } else {
+        return dev->agc_mode ? 1 : 0;
+    }
 }
 
 /**
@@ -588,11 +1054,18 @@ rtl_device_is_auto_gain(struct rtl_device* dev) {
  */
 int
 rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
     dev->ppm_error = ppm_error;
-    return verbose_ppm_set(dev->dev, ppm_error);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_ppm_set(dev->dev, ppm_error);
+    } else {
+        return rtl_tcp_send_cmd(dev->sockfd, 0x05, (uint32_t)ppm_error);
+    }
 }
 
 /**
@@ -604,11 +1077,18 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
  */
 int
 rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
     dev->direct_sampling = on;
-    return verbose_direct_sampling(dev->dev, on);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_direct_sampling(dev->dev, on);
+    } else {
+        return rtl_tcp_send_cmd(dev->sockfd, 0x09, (uint32_t)on);
+    }
 }
 
 /**
@@ -619,19 +1099,35 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
  */
 int
 rtl_device_set_offset_tuning(struct rtl_device* dev) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
     dev->offset_tuning = 1;
-    return verbose_offset_tuning(dev->dev);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_offset_tuning(dev->dev);
+    } else {
+        return rtl_tcp_send_cmd(dev->sockfd, 0x0A, 1);
+    }
 }
 
 int
 rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
-    return verbose_set_tuner_bandwidth(dev->dev, bw_hz);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_set_tuner_bandwidth(dev->dev, bw_hz);
+    } else {
+        /* Not universally supported by rtl_tcp; ignore */
+        (void)bw_hz;
+        return 0;
+    }
 }
 
 /**
@@ -642,10 +1138,18 @@ rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
  */
 int
 rtl_device_reset_buffer(struct rtl_device* dev) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
         return -1;
     }
-    return verbose_reset_buffer(dev->dev);
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return verbose_reset_buffer(dev->dev);
+    } else {
+        /* No explicit reset; treat as success */
+        return 0;
+    }
 }
 
 /**
@@ -657,19 +1161,26 @@ rtl_device_reset_buffer(struct rtl_device* dev) {
  */
 int
 rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
-    if (!dev || !dev->dev || dev->thread_started) {
+    if (!dev || dev->thread_started) {
         return -1;
     }
-
     dev->buf_len = buf_len;
     dev->thread_started = 1;
-
-    int r = pthread_create(&dev->thread, NULL, dongle_thread_fn, dev);
+    int r = 0;
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            dev->thread_started = 0;
+            return -1;
+        }
+        r = pthread_create(&dev->thread, NULL, dongle_thread_fn, dev);
+    } else {
+        dev->run.store(1);
+        r = pthread_create(&dev->thread, NULL, tcp_thread_fn, dev);
+    }
     if (r != 0) {
         dev->thread_started = 0;
         return -1;
     }
-
     return 0;
 }
 
@@ -684,14 +1195,18 @@ rtl_device_stop_async(struct rtl_device* dev) {
     if (!dev || !dev->thread_started) {
         return -1;
     }
-
-    /* Signal the asynchronous reader to stop, then join the thread */
-    if (dev->dev) {
-        rtlsdr_cancel_async(dev->dev);
+    if (dev->backend == 0) {
+        if (dev->dev) {
+            rtlsdr_cancel_async(dev->dev);
+        }
+    } else {
+        dev->run.store(0);
+        if (dev->sockfd >= 0) {
+            shutdown(dev->sockfd, SHUT_RDWR);
+        }
     }
     pthread_join(dev->thread, NULL);
     dev->thread_started = 0;
-
     return 0;
 }
 

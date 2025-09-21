@@ -791,6 +791,11 @@ initOpts(dsd_opts* opts) {
     opts->tcp_portno = 7355; //default favored by SDR++
     sprintf(opts->tcp_hostname, "%s", "localhost");
 
+    // rtl_tcp defaults
+    opts->rtltcp_enabled = 0;
+    opts->rtltcp_portno = 1234;
+    sprintf(opts->rtltcp_hostname, "%s", "127.0.0.1");
+
     // UDP direct input defaults
     opts->udp_in_sockfd = 0;
     opts->udp_in_portno = 7355;
@@ -1445,6 +1450,8 @@ usage() {
            "-O) \n");
     printf("                rtl for rtl dongle (Default Values -- see below)\n");
     printf("                rtl:dev:freq:gain:ppm:bw:sql:vol for rtl dongle (see below)\n");
+    printf("                rtltcp for rtl_tcp (default 127.0.0.1:1234)\n");
+    printf("                rtltcp:host:port for rtl_tcp server address\n");
     printf("                tcp for tcp client SDR++/GNURadio Companion/Other (Port 7355)\n");
     printf("                tcp:192.168.7.5:7355 for custom address and port \n");
     printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
@@ -1528,6 +1535,12 @@ usage() {
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
     printf(" Example: dsd-neo -fp -i rtl:0:851.375M:22:-2:24:0:2\n");
+    printf("\n");
+    printf("RTL-TCP options:\n");
+    printf(" Usage: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol]]\n");
+    printf("  host: default 127.0.0.1; port: default 1234\n");
+    printf("  Remaining fields mirror rtl: string semantics.\n");
+    printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 -N\n");
     printf("\n");
     printf("UDP examples:\n");
     printf(" Example: dsd-neo -i udp -o pulse -N\n");
@@ -3461,6 +3474,88 @@ main(int argc, char** argv) {
             fprintf(stderr, "RIGCTL Connection Failure - RIGCTL Features Disabled\n");
             opts.use_rigctl = 0;
         }
+    }
+
+    if ((strncmp(opts.audio_in_dev, "rtltcp", 6) == 0)) // rtl_tcp networked RTL-SDR
+    {
+        fprintf(stderr, "RTL_TCP Input: ");
+        char* curr;
+
+        curr = strtok(opts.audio_in_dev, ":"); // 'rtltcp'
+        if (curr == NULL) {
+            goto RTLTCPEND;
+        }
+
+        curr = strtok(NULL, ":"); // host
+        if (curr != NULL) {
+            strncpy(opts.rtltcp_hostname, curr, 1023);
+        }
+
+        curr = strtok(NULL, ":"); // port
+        if (curr != NULL) {
+            opts.rtltcp_portno = atoi(curr);
+        }
+
+        // Optional: freq:gain:ppm:bw:sql:vol (mirrors rtl: string semantics)
+        curr = strtok(NULL, ":"); // freq
+        if (curr != NULL) {
+            opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
+        } else {
+            goto RTLTCPEND;
+        }
+
+        curr = strtok(NULL, ":"); // gain
+        if (curr != NULL) {
+            opts.rtl_gain_value = atoi(curr);
+        } else {
+            goto RTLTCPEND;
+        }
+
+        curr = strtok(NULL, ":"); // ppm
+        if (curr != NULL) {
+            opts.rtlsdr_ppm_error = atoi(curr);
+        } else {
+            goto RTLTCPEND;
+        }
+
+        curr = strtok(NULL, ":"); // bw (kHz)
+        if (curr != NULL) {
+            int bw = atoi(curr);
+            if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24) {
+                opts.rtl_bandwidth = bw;
+            } else {
+                opts.rtl_bandwidth = 12;
+            }
+        } else {
+            goto RTLTCPEND;
+        }
+
+        curr = strtok(NULL, ":"); // sql (dB if negative; else linear)
+        if (curr != NULL) {
+            double sq_val = atof(curr);
+            if (sq_val < 0.0) {
+                opts.rtl_squelch_level = (int)dB_to_pwr(sq_val);
+            } else {
+                opts.rtl_squelch_level = (int)sq_val;
+            }
+        } else {
+            goto RTLTCPEND;
+        }
+
+        curr = strtok(NULL, ":"); // vol (1..3)
+        if (curr != NULL) {
+            opts.rtl_volume_multiplier = atoi(curr);
+        } else {
+            goto RTLTCPEND;
+        }
+
+    RTLTCPEND:
+        if (opts.rtltcp_portno == 0) {
+            opts.rtltcp_portno = 1234;
+        }
+        fprintf(stderr, "%s:%d\n", opts.rtltcp_hostname, opts.rtltcp_portno);
+        opts.rtltcp_enabled = 1;
+        opts.audio_in_type = 3; // use RTL pipeline
     }
 
     if ((strncmp(opts.audio_in_dev, "rtl", 3) == 0)) //rtl dongle input

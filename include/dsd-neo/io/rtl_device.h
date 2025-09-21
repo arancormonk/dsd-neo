@@ -27,14 +27,30 @@ extern "C" {
 struct rtl_device;
 
 /**
- * @brief Create and initialize an RTL-SDR device.
+ * @brief Create and initialize a local RTL-SDR device over USB (librtlsdr).
  *
  * @param dev_index Device index to open.
- * @param input_ring Pointer to input ring for USB data.
+ * @param input_ring Pointer to input ring for incoming I/Q data.
  * @param combine_rotate_enabled Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combine_rotate_enabled);
+
+/**
+ * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
+ *
+ * Connects to an rtl_tcp server (default port 1234) and configures the
+ * receiver via protocol commands. Sample bytes from the TCP stream are
+ * widened and pushed into the same input ring used by the USB backend.
+ *
+ * @param host Remote hostname or IP (e.g., "127.0.0.1").
+ * @param port Remote TCP port (e.g., 1234).
+ * @param input_ring Pointer to input ring for incoming I/Q data.
+ * @param combine_rotate_enabled Whether to use combined rotate+widen when offset tuning is disabled.
+ * @return Pointer to rtl_device handle, or NULL on failure.
+ */
+struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
+                                         int combine_rotate_enabled);
 
 /**
  * @brief Destroy an RTL-SDR device and free resources.

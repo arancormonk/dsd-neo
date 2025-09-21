@@ -104,6 +104,7 @@ cmake --build build/dev-release --target uninstall
   - PulseAudio input: `-i pulse` (default). List devices: `-O`.
   - WAV input (48 kHz mono): `-i file.wav` or with custom rate `-s 96000`.
   - RTL‑SDR: `-i rtl` for defaults, or `-i rtl:dev:freq:gain:ppm:bw:sql:vol`.
+  - RTL‑TCP: `-i rtltcp[:host:port]` (default 127.0.0.1:1234).
   - TCP (SDR++ / GRC): `-i tcp[:host:port]` (default port 7355).
   - M17 UDP/IP: `-i m17udp[:bind_addr:port]` and/or `-o m17udp[:host:port]`.
 - Quick examples:

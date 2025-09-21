@@ -461,6 +461,11 @@ typedef struct {
     char tcp_hostname[1024];
     SNDFILE* tcp_file_in;
 
+    //rtl_tcp (networked RTL-SDR IQ over TCP)
+    int rtltcp_enabled; // 1 when using rtl_tcp backend
+    int rtltcp_portno;  // default 1234
+    char rtltcp_hostname[1024];
+
     //wav file sample rate, interpolator and decimator
     int wav_sample_rate;
     int wav_interpolator;

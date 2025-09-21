@@ -1746,6 +1746,16 @@ configure_from_env_and_opts(dsd_opts* opts) {
         disable_fs4_shift = (cfg->fs4_shift_disable != 0);
     }
 
+    /* rtltcp-specific sane defaults unless explicitly overridden via env/config */
+    if (opts && opts->rtltcp_enabled) {
+        if (!cfg->combine_rot_is_set) {
+            combine_rotate_enabled = 0; /* DSD_NEO_COMBINE_ROT default off for rtltcp */
+        }
+        if (!cfg->fs4_shift_disable_is_set) {
+            disable_fs4_shift = 1; /* default disable fs/4 shift for rtltcp */
+        }
+    }
+
     int enable_resamp = 1;
     int target = 48000;
     if (cfg->resamp_is_set) {
@@ -2117,12 +2127,23 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* Ensure async read uses a valid, explicit buffer length */
     dongle.buf_len = (uint32_t)ACTUAL_BUF_LENGTH;
 
-    rtl_device_handle = rtl_device_create(dongle.dev_index, &input_ring, combine_rotate_enabled);
-    if (!rtl_device_handle) {
-        LOG_ERROR("Failed to open rtlsdr device %d.\n", dongle.dev_index);
-        return -1;
+    if (opts && opts->rtltcp_enabled) {
+        rtl_device_handle =
+            rtl_device_create_tcp(opts->rtltcp_hostname, opts->rtltcp_portno, &input_ring, combine_rotate_enabled);
+        if (!rtl_device_handle) {
+            LOG_ERROR("Failed to connect rtl_tcp at %s:%d.\n", opts->rtltcp_hostname, opts->rtltcp_portno);
+            return -1;
+        } else {
+            LOG_INFO("Using rtl_tcp source %s:%d.\n", opts->rtltcp_hostname, opts->rtltcp_portno);
+        }
     } else {
-        LOG_INFO("Using RTLSDR Device Index: %d. \n", dongle.dev_index);
+        rtl_device_handle = rtl_device_create(dongle.dev_index, &input_ring, combine_rotate_enabled);
+        if (!rtl_device_handle) {
+            LOG_ERROR("Failed to open rtlsdr device %d.\n", dongle.dev_index);
+            return -1;
+        } else {
+            LOG_INFO("Using RTLSDR Device Index: %d. \n", dongle.dev_index);
+        }
     }
 
     if (demod.deemph) {
@@ -2271,8 +2292,58 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         g_stream->should_exit.store(0);
     }
 
-    /* Start controller/demod threads and async */
-    start_threads_and_async();
+    /* For rtl_tcp sources, optionally prebuffer before starting demod/controller
+       to reduce initial under-runs and jitter on the consumer side. */
+    if (opts && opts->rtltcp_enabled) {
+        int pre_ms = 200; /* default deeper prebuffer for rtltcp */
+        if (const char* e = getenv("DSD_NEO_TCP_PREBUF_MS")) {
+            int v = atoi(e);
+            if (v >= 5 && v <= 500) {
+                pre_ms = v;
+            }
+        }
+        size_t target = (size_t)((double)dongle.rate * 2.0 * ((double)pre_ms / 1000.0));
+        /* Guard against unreasonable target */
+        if (target < 16384) {
+            target = 16384;
+        }
+        if (target > (input_ring.capacity / 2)) {
+            target = input_ring.capacity / 2;
+        }
+
+        /* Begin async capture first, then wait for ring to accumulate */
+        LOG_INFO("Starting RTL async read (rtltcp prebuffer %d ms)...\n", pre_ms);
+        rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH);
+
+        /* Wait up to ~2 seconds to reach target; exit early if flagged */
+        {
+            int waited_ms = 0;
+            while (!exitflag && input_ring_used(&input_ring) < target && waited_ms < 2000) {
+                usleep(2000); /* 2 ms */
+                waited_ms += 2;
+            }
+            LOG_INFO("rtltcp prebuffer filled: %zu/%zu samples in ring.\n", input_ring_used(&input_ring), target);
+        }
+
+        /* Launch controller and demod threads after prebuffer */
+        pthread_create(&controller.thread, NULL, controller_thread_fn, (void*)(&controller));
+        pthread_create(&demod.thread, NULL, demod_thread_fn, (void*)(&demod));
+        if (port != 0) {
+            g_udp_ctrl = udp_control_start(
+                port,
+                [](uint32_t new_freq_hz, void* /*user_data*/) {
+                    pthread_mutex_lock(&controller.hop_m);
+                    controller.manual_retune_freq = new_freq_hz;
+                    controller.manual_retune_pending.store(1);
+                    pthread_cond_signal(&controller.hop);
+                    pthread_mutex_unlock(&controller.hop_m);
+                },
+                NULL);
+        }
+    } else {
+        /* Start controller/demod threads and async (USB path and defaults) */
+        start_threads_and_async();
+    }
 
     /* If resampler is enabled, update output.rate for downstream consumers */
     if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
