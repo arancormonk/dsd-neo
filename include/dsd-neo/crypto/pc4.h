@@ -8,7 +8,7 @@
 #define nbround      254
 #define n1           264
 
-#define UNUSEDPC4(x) ((void)x)
+#define UNUSEDPC4(x) (void)(x)
 
 /* Structure holding all PC4 state variables */
 typedef struct {

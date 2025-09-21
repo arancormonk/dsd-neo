@@ -351,11 +351,7 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     //checkdown to see if we can lift the 'mute' if a key is available
     if (encL) {
-        if (state->payload_algid == 0xAA) {
-            if (state->R != 0) {
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x81) {
+        if (state->payload_algid == 0xAA || state->payload_algid == 0x81) {
             if (state->R != 0) {
                 encL = 0;
             }
@@ -1314,21 +1310,15 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     if (encR) {
         memset(state->s_r4, 0, sizeof(state->s_r4));
     }
-    //this is for playing single voice over both channels, or when to keep them seperated
-    if (opts->slot1_on == 0 && opts->slot2_on == 1 && encR == 0) {        //slot 1 is hard off and slot 2 is on
-        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4));            //copy right to left
-    } else if (opts->slot1_on == 1 && opts->slot2_on == 0 && encL == 0) { //slot 2 is hard off and slot 1 is on
-        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4));            //copy left to right
-    } else if (opts->slot_preference == 0 && state->dmrburstL == 16
-               && encL == 0) {                                 //slot 1 is preferred, and voice in slot 1
-        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4)); //copy left to right
-    } else if (opts->slot_preference == 1 && state->dmrburstR == 16
-               && encR == 0) {                                 //slot 2 is preferred, and voice in slot 2
-        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4)); //copy right to left
-    } else if (state->dmrburstL == 16 && state->dmrburstR != 16 && encL == 0) { //voice in left, no voice in right
-        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4));                  //copy left to right
-    } else if (state->dmrburstR == 16 && state->dmrburstL != 16 && encR == 0) { //voice in right, no voice in left
-        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4));                  //copy right to left
+    //this is for playing single voice over both channels, or when to keep them separated
+    if ((opts->slot1_on == 0 && opts->slot2_on == 1 && encR == 0)                     //slot 1 off, slot 2 on
+        || (opts->slot_preference == 1 && state->dmrburstR == 16 && encR == 0)        //prefer slot 2, voice right
+        || (state->dmrburstR == 16 && state->dmrburstL != 16 && encR == 0)) {         //voice right only
+        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4));                        //copy right to left
+    } else if ((opts->slot1_on == 1 && opts->slot2_on == 0 && encL == 0)              //slot 2 off, slot 1 on
+               || (opts->slot_preference == 0 && state->dmrburstL == 16 && encL == 0) //prefer slot 1, voice left
+               || (state->dmrburstL == 16 && state->dmrburstR != 16 && encL == 0)) {  //voice left only
+        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4));                        //copy left to right
     }
     //else if voice in both, and both slots on, and no preference on slot, then regular stereo interleave (left and right channels)
 
@@ -1501,11 +1491,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
 
     //checkdown to see if we can lift the 'mute' if a key is available
     if (encL) {
-        if (state->payload_algid == 0xAA) {
-            if (state->R != 0) {
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x81) {
+        if (state->payload_algid == 0xAA || state->payload_algid == 0x81) {
             if (state->R != 0) {
                 encL = 0;
             }
@@ -1920,21 +1906,15 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     if (encR) {
         memset(state->s_r4, 0, sizeof(state->s_r4));
     }
-    //this is for playing single voice over both channels, or when to keep them seperated
-    if (opts->slot1_on == 0 && opts->slot2_on == 1 && encR == 0) {        //slot 1 is hard off and slot 2 is on
-        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4));            //copy right to left
-    } else if (opts->slot1_on == 1 && opts->slot2_on == 0 && encL == 0) { //slot 2 is hard off and slot 1 is on
-        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4));            //copy left to right
-    } else if (opts->slot_preference == 0 && state->dmrburstL == 21
-               && encL == 0) {                                 //slot 1 is preferred, and voice in slot 1
-        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4)); //copy left to right
-    } else if (opts->slot_preference == 1 && state->dmrburstR == 21
-               && encR == 0) {                                 //slot 2 is preferred, and voice in slot 2
-        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4)); //copy right to left
-    } else if (state->dmrburstL == 21 && state->dmrburstR != 21 && encL == 0) { //voice in left, no voice in right
-        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4));                  //copy left to right
-    } else if (state->dmrburstR == 21 && state->dmrburstL != 21 && encR == 0) { //voice in right, no voice in left
-        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4));                  //copy right to left
+    //this is for playing single voice over both channels, or when to keep them separated
+    if ((opts->slot1_on == 0 && opts->slot2_on == 1 && encR == 0)                     //slot 1 off, slot 2 on
+        || (opts->slot_preference == 1 && state->dmrburstR == 21 && encR == 0)        //prefer slot 2, voice right
+        || (state->dmrburstR == 21 && state->dmrburstL != 21 && encR == 0)) {         //voice right only
+        memcpy(state->s_l4, state->s_r4, sizeof(state->s_l4));                        //copy right to left
+    } else if ((opts->slot1_on == 1 && opts->slot2_on == 0 && encL == 0)              //slot 2 off, slot 1 on
+               || (opts->slot_preference == 0 && state->dmrburstL == 21 && encL == 0) //prefer slot 1, voice left
+               || (state->dmrburstL == 21 && state->dmrburstR != 21 && encL == 0)) {  //voice left only
+        memcpy(state->s_r4, state->s_l4, sizeof(state->s_r4));                        //copy left to right
     }
     //else if voice in both, and both slots on, and no preference on slot, then regular stereo interleave (left and right channels)
 
@@ -2181,7 +2161,7 @@ agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
     //NOTE: This seems to be doing better now that I got it worked out properly
     //This may produce a mild buzz sound though on the low end
 
-    float avg = 0.0f;    //average of 20 samples
+    // float avg = 0.0f;    //average of 20 samples (unused)
     float coeff = 0.0f;  //gain coeffiecient
     float max = 0.0f;    //the highest sample value
     float nom = 4800.0f; //nominator value for 48k
@@ -2199,11 +2179,7 @@ agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
         }
     }
 
-    for (i = 0; i < len; i++) {
-        avg += (float)samp[i];
-    }
-
-    avg /= (float)len;
+    /* average not used; remove to avoid dead store */
 
     coeff = fabsf(nom / max);
 

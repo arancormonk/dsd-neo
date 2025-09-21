@@ -1112,7 +1112,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         if (v < -1.0) {
             v = -1.0;
         }
-        int y = mid - (int)lrint(v * (H / 2 - 1));
+        int y = mid - (int)lrint(v * ((double)H / 2.0 - 1.0));
         if (y < 0) {
             y = 0;
         }
@@ -1171,21 +1171,21 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     }
 
     /* Compute reference rows for quartiles (approximate C4FM levels) */
-    int yq1 = mid - (int)lrint(((double)q1 / (double)s_peak) * (H / 2 - 1));
+    int yq1 = mid - (int)lrint(((double)q1 / (double)s_peak) * ((double)H / 2.0 - 1.0));
     if (yq1 < 0) {
         yq1 = 0;
     }
     if (yq1 >= H) {
         yq1 = H - 1;
     }
-    int yq2 = mid - (int)lrint(((double)q2 / (double)s_peak) * (H / 2 - 1));
+    int yq2 = mid - (int)lrint(((double)q2 / (double)s_peak) * ((double)H / 2.0 - 1.0));
     if (yq2 < 0) {
         yq2 = 0;
     }
     if (yq2 >= H) {
         yq2 = H - 1;
     }
-    int yq3 = mid - (int)lrint(((double)q3 / (double)s_peak) * (H / 2 - 1));
+    int yq3 = mid - (int)lrint(((double)q3 / (double)s_peak) * ((double)H / 2.0 - 1.0));
     if (yq3 < 0) {
         yq3 = 0;
     }

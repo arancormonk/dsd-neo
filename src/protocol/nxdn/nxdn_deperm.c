@@ -98,8 +98,8 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
         trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
         trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
         trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc12f(trellis_buf, 84); //80
@@ -116,8 +116,6 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     if (crc != check) {
         //debug
         // fprintf (stderr, " Pass 2 ");
-        crc = 1;
-        check = 0;
         memset(trellis_buf, 0, sizeof(trellis_buf));
         memset(m_data, 0, sizeof(m_data));
         trellis_decode(trellis_buf, depunc, 92);
@@ -204,8 +202,8 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
 
     CNXDNConvolution_start();
     for (int i = 0; i < 36; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -214,14 +212,14 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     CNXDNConvolution_chainback(m_data, 32);
 
     for (int i = 0; i < 4; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc6(trellis_buf, 26); //32
@@ -238,8 +236,7 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     if (crc != check) {
         //debug
         // fprintf (stderr, " Pass 2 ");
-        crc = 1;
-        check = 0;
+
         memset(trellis_buf, 0, sizeof(trellis_buf));
         memset(m_data, 0, sizeof(m_data));
         trellis_decode(trellis_buf, depunc, 32);
@@ -485,8 +482,8 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
 
     CNXDNConvolution_start();
     for (int i = 0; i < 36; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -495,14 +492,14 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     CNXDNConvolution_chainback(m_data, 32);
 
     for (int i = 0; i < 4; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc6(trellis_buf, 26);
@@ -516,8 +513,7 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     if (crc != check) {
         //debug
         // fprintf (stderr, " Pass 2 ");
-        crc = 1;
-        check = 0;
+
         memset(trellis_buf, 0, sizeof(trellis_buf));
         memset(m_data, 0, sizeof(m_data));
         trellis_decode(trellis_buf, depunc, 32);
@@ -658,7 +654,7 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         if (sf_num == sf_end) {
             fprintf(stderr, "\n DCR SFULL ");
             for (int i = 0; i < 9; i++) {
-                fprintf(stderr, "[%02X]", (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + (i * 8), 8));
+                fprintf(stderr, "[%02X]", (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + ((size_t)i * 8), 8));
             }
         }
     }
@@ -711,8 +707,8 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
 
     CNXDNConvolution_start();
     for (int i = 0; i < 96; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -720,14 +716,14 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     CNXDNConvolution_chainback(m_data, 92);
 
     for (int i = 0; i < 12; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc12f(trellis_buf, 84); //80
@@ -744,8 +740,7 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     if (crc != check) {
         //debug
         // fprintf (stderr, " Pass 2 ");
-        crc = 1;
-        check = 0;
+
         memset(trellis_buf, 0, sizeof(trellis_buf));
         memset(m_data, 0, sizeof(m_data));
         trellis_decode(trellis_buf, depunc, 92);
@@ -873,8 +868,8 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
 
     CNXDNConvolution_start();
     for (int i = 0; i < 203; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -883,14 +878,14 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
     CNXDNConvolution_chainback(m_data, 199);
 
     for (int i = 0; i < 26; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc15(trellis_buf, 199);
@@ -907,8 +902,7 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
     if (crc != check) {
         //debug
         // fprintf (stderr, " Pass 2 ");
-        crc = 1;
-        check = 0;
+
         memset(trellis_buf, 0, sizeof(trellis_buf));
         memset(m_data, 0, sizeof(m_data));
         trellis_decode(trellis_buf, depunc, 199);
@@ -1065,8 +1059,8 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     CNXDNConvolution_start();
     for (int i = 0; i < 175; i++) //179
     {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -1074,14 +1068,14 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     CNXDNConvolution_chainback(m_data, 171); //175
 
     for (int i = 0; i < 22; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc16cac(trellis_buf, 171);
@@ -1259,8 +1253,8 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
 
     CNXDNConvolution_start();
     for (int i = 0; i < 36; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -1268,14 +1262,14 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     CNXDNConvolution_chainback(m_data, 32);
 
     for (int i = 0; i < 4; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     crc = crc7_scch(trellis_buf, 25);
@@ -1292,8 +1286,7 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     if (crc != check) {
         //debug
         // fprintf (stderr, " Pass 2 ");
-        crc = 1;
-        check = 0;
+
         memset(trellis_buf, 0, sizeof(trellis_buf));
         memset(m_data, 0, sizeof(m_data));
         trellis_decode(trellis_buf, depunc, 32); //32?
@@ -1421,8 +1414,8 @@ nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], ui
 
         CNXDNConvolution_start();
         for (int i = 0; i < 96; i++) {
-            s0 = temp[(2 * i)];
-            s1 = temp[(2 * i) + 1];
+            s0 = temp[((size_t)2 * i)];
+            s1 = temp[((size_t)2 * i) + 1];
 
             CNXDNConvolution_decode(s0, s1);
         }
@@ -1430,14 +1423,14 @@ nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], ui
         CNXDNConvolution_chainback(m_data, 92);
 
         for (int i = 0; i < 12; i++) {
-            trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-            trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-            trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-            trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-            trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-            trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-            trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-            trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+            trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+            trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+            trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+            trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+            trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+            trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+            trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+            trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
         }
 
         crc[j] = crc12f(trellis_buf, 84); //84

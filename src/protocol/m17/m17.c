@@ -66,9 +66,7 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
     memset(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
     if (dst == 0xFFFFFFFFFFFF) {
         fprintf(stderr, " DST: BROADCAST");
-    } else if (dst == 0) {
-        fprintf(stderr, " DST: RESERVED %012llx", dst);
-    } else if (dst >= 0xEE6B28000000) {
+    } else if (dst == 0 || dst >= 0xEE6B28000000) {
         fprintf(stderr, " DST: RESERVED %012llx", dst);
     } else {
         fprintf(stderr, " DST: ");
@@ -92,9 +90,7 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
 
     if (src == 0xFFFFFFFFFFFF) {
         fprintf(stderr, " SRC:  UNKNOWN FFFFFFFFFFFF");
-    } else if (src == 0) {
-        fprintf(stderr, " SRC: RESERVED %012llx", src);
-    } else if (src >= 0xEE6B28000000) {
+    } else if (src == 0 || src >= 0xEE6B28000000) {
         fprintf(stderr, " SRC: RESERVED %012llx", src);
     } else {
         fprintf(stderr, " SRC: ");
@@ -202,7 +198,7 @@ M17decodeLSF(dsd_state* state) {
 
     //pack meta bits into 14 bytes
     for (i = 0; i < 14; i++) {
-        state->m17_meta[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[(i * 8) + 112], 8);
+        state->m17_meta[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[((size_t)i * 8) + 112], 8);
     }
 
     //using meta_sum in case some byte fields, particularly meta[0], are zero
@@ -279,6 +275,7 @@ M17processLICH(dsd_state* state, dsd_opts* opts, uint8_t* lich_bits) {
 
     lich_counter = (uint8_t)ConvertBitIntoBytes(&lich_decoded[40], 3); //lich_cnt
     lich_reserve = (uint8_t)ConvertBitIntoBytes(&lich_decoded[43], 5); //lich_reserved
+    (void)lich_reserve; // currently unused; reserved for future use/display
 
     //sanity check to prevent out of bounds
     if (lich_counter > 5) {
@@ -329,9 +326,7 @@ M17processLICH(dsd_state* state, dsd_opts* opts, uint8_t* lich_bits) {
             crc_err = 1;
         }
 
-        if (crc_err == 0) {
-            M17decodeLSF(state);
-        } else if (opts->aggressive_framesync == 0) {
+        if (crc_err == 0 || opts->aggressive_framesync == 0) {
             M17decodeLSF(state);
         }
 
@@ -410,12 +405,12 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 0 && state->m17_enc == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, samp1, (size_t)nsam * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, samp1, nsam * sizeof(short), NULL);
         }
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
         {
-            udp_socket_blaster(opts, state, (size_t)nsam * sizeof(short), samp1);
+            udp_socket_blaster(opts, state, nsam * sizeof(short), samp1);
         }
 
         if (opts->audio_out_type == 5 && state->m17_enc == 0) //OSS 48k/1
@@ -428,17 +423,17 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
                     upsamp[((size_t)i * 6) + j] = out[j];
                 }
             }
-            write(opts->audio_out_fd, upsamp, (size_t)nsam * 6 * sizeof(short));
+            write(opts->audio_out_fd, upsamp, nsam * 6 * sizeof(short));
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) //STDOUT
         {
-            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
+            write(opts->audio_out_fd, samp1, nsam * sizeof(short));
         }
 
         if (opts->audio_out_type == 2 && state->m17_enc == 0) //OSS 8k/1
         {
-            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
+            write(opts->audio_out_fd, samp1, nsam * sizeof(short));
         }
     }
 
@@ -491,8 +486,8 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     unsigned char voice2[8];
 
     for (i = 0; i < 8; i++) {
-        voice1[i] = (unsigned char)ConvertBitIntoBytes(&payload[i * 8 + 0], 8);
-        voice2[i] = (unsigned char)ConvertBitIntoBytes(&payload[i * 8 + 64], 8);
+        voice1[i] = (unsigned char)ConvertBitIntoBytes(&payload[((size_t)i * 8) + 0], 8);
+        voice2[i] = (unsigned char)ConvertBitIntoBytes(&payload[((size_t)i * 8) + 64], 8);
     }
 
     //TODO: Add some decryption methods
@@ -541,14 +536,14 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 0 && state->m17_enc == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, samp1, (size_t)nsam * sizeof(short), NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, samp2, (size_t)nsam * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, samp1, nsam * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, samp2, nsam * sizeof(short), NULL);
         }
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
         {
-            udp_socket_blaster(opts, state, (size_t)nsam * sizeof(short), samp1);
-            udp_socket_blaster(opts, state, (size_t)nsam * sizeof(short), samp2);
+            udp_socket_blaster(opts, state, nsam * sizeof(short), samp1);
+            udp_socket_blaster(opts, state, nsam * sizeof(short), samp2);
         }
 
         if (opts->audio_out_type == 5 && state->m17_enc == 0) //OSS 48k/1
@@ -561,7 +556,7 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
                     upsamp[(i * 6) + j] = out[j];
                 }
             }
-            write(opts->audio_out_fd, upsamp, (size_t)nsam * 6 * sizeof(short));
+            write(opts->audio_out_fd, upsamp, nsam * 6 * sizeof(short));
             prev = samp2[0];
             for (i = 0; i < 160; i++) {
                 upsampleS(samp2[i], prev, out);
@@ -569,19 +564,19 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
                     upsamp[(i * 6) + j] = out[j];
                 }
             }
-            write(opts->audio_out_fd, upsamp, (size_t)nsam * 6 * sizeof(short));
+            write(opts->audio_out_fd, upsamp, nsam * 6 * sizeof(short));
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) //STDOUT
         {
-            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
-            write(opts->audio_out_fd, samp2, (size_t)nsam * sizeof(short));
+            write(opts->audio_out_fd, samp1, nsam * sizeof(short));
+            write(opts->audio_out_fd, samp2, nsam * sizeof(short));
         }
 
         if (opts->audio_out_type == 2 && state->m17_enc == 0) //OSS 8k/1
         {
-            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
-            write(opts->audio_out_fd, samp2, (size_t)nsam * sizeof(short));
+            write(opts->audio_out_fd, samp1, nsam * sizeof(short));
+            write(opts->audio_out_fd, samp2, nsam * sizeof(short));
         }
     }
 
@@ -937,9 +932,7 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
         crc_err = 1;
     }
 
-    if (crc_err == 0) {
-        M17decodeLSF(state);
-    } else if (opts->aggressive_framesync == 0) {
+    if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(state);
     }
 
@@ -1043,8 +1036,8 @@ processM17LSF_debug(dsd_opts* opts, dsd_state* state, uint8_t* m17_rnd_bits) {
 
     CNXDNConvolution_start();
     for (i = 0; i < 244; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * (size_t)i)];
+        s1 = temp[((size_t)2 * (size_t)i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -1082,9 +1075,7 @@ processM17LSF_debug(dsd_opts* opts, dsd_state* state, uint8_t* m17_rnd_bits) {
         crc_err = 1;
     }
 
-    if (crc_err == 0) {
-        M17decodeLSF(state);
-    } else if (opts->aggressive_framesync == 0) {
+    if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(state);
     }
 
@@ -1168,6 +1159,7 @@ processM17LSF_debug2(dsd_opts* opts, dsd_state* state, uint8_t* m17_rnd_bits) {
     //use the libM17 Viterbi Decoder
     uint16_t len = 488;
     v_err = viterbi_decode(lsf_bytes, m17_depunc, len);
+    (void)v_err; // cost metric not used here
     // v_err -= 3932040; //cost negation (double check this as well as unit, meaning, etc)
 
     //debug
@@ -1289,7 +1281,7 @@ simple_conv_encoder(uint8_t* input, uint8_t* output, int len) {
 }
 
 //dibits-symbols map
-const int8_t symbol_map[4] = {+1, +3, -1, -3};
+const int symbol_map[4] = {+1, +3, -1, -3};
 
 //sample RRC filter for 48kHz sample rate
 //alpha=0.5, span=8, sps=10, gain=sqrt(sps)
@@ -1422,10 +1414,10 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
 
     //upsample 10x
     int output_up[192 * 10];
-    memset(output_up, 0, 192 * 10 * sizeof(int));
+    memset(output_up, 0, sizeof(output_up));
     for (i = 0; i < 192; i++) {
         for (j = 0; j < 10; j++) {
-            output_up[(i * 10) + j] = output_symbols[i];
+            output_up[((size_t)i * 10) + j] = output_symbols[i];
         }
     }
 
@@ -1502,17 +1494,17 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
     if (opts->monitor_input_audio == 1 && opts->audio_out == 1) {
         //Pulse Audio
         if (opts->audio_out_type == 0) {
-            pa_simple_write(opts->pulse_raw_dev_out, baseband, (size_t)1920u * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_raw_dev_out, baseband, sizeof(baseband), NULL);
         }
 
         //UDP
         if (opts->audio_out_type == 8) {
-            udp_socket_blasterA(opts, state, 1920 * 2, baseband);
+            udp_socket_blasterA(opts, state, sizeof(baseband), baseband);
         }
 
         //STDOUT or OSS 48k/1
         if (opts->audio_out_type == 1 || opts->audio_out_type == 5) {
-            write(opts->audio_out_fd, baseband, (size_t)1920u * sizeof(short));
+            write(opts->audio_out_fd, baseband, sizeof(baseband));
         }
     }
 
@@ -1786,6 +1778,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     //SEND CONN to reflector
     if (use_ip == 1) {
         udp_return = m17_socket_blaster(opts, state, 11, conn);
+        (void)udp_return; // optionally inspect for ACK/NACK later
     }
 
     //TODO: Read UDP ACKN/NACK value, disable use_ip if NULL or nack return
@@ -2166,7 +2159,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
         //Fill vc2_bytes with arbitrary data, UTF-8 chars (up to 48)
         if (st == 3) {
-            memcpy(vc2_bytes, state->m17sms + (lich_cnt * 8), 8);
+            memcpy(vc2_bytes, state->m17sms + ((size_t)lich_cnt * 8), 8);
         }
 
         //initialize and start assembling the completed frame
@@ -2448,7 +2441,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //Send packed IP frame to UDP port if enabled
             if (use_ip == 1) {
-                udp_return = m17_socket_blaster(opts, state, 54, m17_ip_packed);
+                (void)m17_socket_blaster(opts, state, 54, m17_ip_packed);
             }
 
             //increment lich_cnt, reset on 6
@@ -2660,12 +2653,12 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
                 //send IP Frame with EOT bit
                 if (use_ip == 1) {
-                    udp_return = m17_socket_blaster(opts, state, 54, m17_ip_packed);
+                    (void)m17_socket_blaster(opts, state, 54, m17_ip_packed);
                 }
 
                 //SEND EOTX to reflector
                 if (use_ip == 1) {
-                    udp_return = m17_socket_blaster(opts, state, 10, eotx);
+                    (void)m17_socket_blaster(opts, state, 10, eotx);
                 }
 
                 //reset indicators
@@ -2700,7 +2693,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     //SEND DISC to reflector
     if (use_ip == 1) {
-        udp_return = m17_socket_blaster(opts, state, 10, disc);
+        (void)m17_socket_blaster(opts, state, 10, disc);
     }
 
     //free allocated memory
@@ -3316,7 +3309,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //pack CRC into the byte array as well
     for (i = x + 34 + 1, j = 0; i < (x + 34 + 3); i++, j++) { //double check this
-        m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&crc_bits[j * 8], 8);
+        m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&crc_bits[(size_t)j * 8], 8);
     }
 
     //NOTE: Fixed recvfrom limitation, MSG_WAITALL seems to be 256
@@ -3334,12 +3327,12 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //SEND EOTX to reflector
     if (use_ip == 1) {
-        udp_return = m17_socket_blaster(opts, state, 10, eotx);
+        (void)m17_socket_blaster(opts, state, 10, eotx);
     }
 
     //SEND DISC to reflector
     if (use_ip == 1) {
-        udp_return = m17_socket_blaster(opts, state, 10, disc);
+        (void)m17_socket_blaster(opts, state, 10, disc);
     }
 
     //flag to determine if we send a new LSF frame for new encode
@@ -3699,7 +3692,7 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //use the libM17 Viterbi Decoder
     uint16_t len = 420;
-    v_err = viterbi_decode(pkt_bytes, m17_depunc, len);
+    (void)viterbi_decode(pkt_bytes, m17_depunc, len);
     // v_err -= 3932040; //cost negation (double check this as well as unit, meaning, etc)
 
     //debug

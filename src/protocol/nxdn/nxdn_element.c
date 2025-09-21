@@ -38,7 +38,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 
     /* Reconstitute the full 72 bits SACCH */
     for (i = 0; i < 4; i++) {
-        memcpy(&SACCH[i * 18], state->nxdn_sacch_frame_segment[i], 18);
+        memcpy(&SACCH[(size_t)i * 18], state->nxdn_sacch_frame_segment[i], 18);
 
         /* Check CRC */
         if (state->nxdn_sacch_frame_segcrc[i] != 0) {
@@ -61,7 +61,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "\n");
         fprintf(stderr, " Full SACCH Payload ");
         for (i = 0; i < 9; i++) {
-            sacch_bytes[i] = (uint8_t)ConvertBitIntoBytes(&SACCH[i * 8], 8);
+            sacch_bytes[i] = (uint8_t)ConvertBitIntoBytes(&SACCH[(size_t)i * 8], 8);
             fprintf(stderr, "[%02X]", sacch_bytes[i]);
         }
     }

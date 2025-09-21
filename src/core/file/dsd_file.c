@@ -147,6 +147,7 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
     if (opts->payload == 1) {
         fprintf(stderr, "\n IMBE ");
     }
+    x = 0;
     for (i = 0; i < 11; i++) {
         b = fgetc(opts->mbe_in_f);
         if (feof(opts->mbe_in_f)) {
@@ -187,6 +188,7 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
         fprintf(stderr, "\n AMBE ");
     }
 
+    x = 0;
     for (i = 0; i < 6; i++) //breaks backwards compatablilty with 6 files
     {
         b = fgetc(opts->mbe_in_f);

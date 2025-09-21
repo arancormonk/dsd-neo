@@ -432,11 +432,8 @@ getDibit(dsd_opts* opts, dsd_state* state) {
 void
 skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 
-    short sample;
     int i;
-    UNUSED(sample);
-
     for (i = 0; i < (count); i++) {
-        sample = getDibit(opts, state);
+        (void)getDibit(opts, state);
     }
 }

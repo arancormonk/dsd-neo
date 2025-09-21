@@ -80,7 +80,7 @@
 #include <locale.h>
 #include <ncurses.h>
 
-#define UNUSED(x)                   ((void)x)
+#define UNUSED(x)                   (void)(x)
 #define UNUSED2(x1, x2)             (UNUSED(x1), UNUSED(x2))
 #define UNUSED3(x1, x2, x3)         (UNUSED(x1), UNUSED(x2), UNUSED(x3))
 #define UNUSED4(x1, x2, x3, x4)     (UNUSED(x1), UNUSED(x2), UNUSED(x3), UNUSED(x4))

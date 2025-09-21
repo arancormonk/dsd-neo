@@ -201,7 +201,6 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
         }
         fprintf(stderr, "Key [%03lld] [%05lld]", keynumber, state->rkey_array[keynumber]);
         fprintf(stderr, "\n");
-        hash = 0;
     }
     fclose(fp);
     return 0;

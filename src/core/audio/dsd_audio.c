@@ -297,10 +297,8 @@ openOSSOutput(dsd_opts* opts) {
             }
 
             //TODO: Multiple output returns based on 8k/1, 8k/2, or maybe 48k/1? (2,3,5)??
-            if (opts->pulse_digi_out_channels == 2) {
+            if (opts->pulse_digi_out_channels == 2 || opts->frame_m17 == 1) {
                 opts->audio_out_type = 2; //2 for 2 channel 8k OSS 16-bit short output
-            } else if (opts->frame_m17 == 1) {
-                opts->audio_out_type = 2;
             } else {
                 opts->audio_out_type = 5;
             }
@@ -633,8 +631,6 @@ writeRawSample(dsd_opts* opts, dsd_state* state, short sample) {
 
 void
 playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
-    ssize_t result;
-    UNUSED(result);
 
     //don't synthesize voice if slot is turned off
     if (opts->slot1_on == 0) {
@@ -652,8 +648,8 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         if (opts->audio_out == 1 && (opts->audio_out_type == 5 || opts->audio_out_type == 1)) //OSS
         {
             //OSS 48k/1
-            result = write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
-                           (size_t)state->audio_out_idx * sizeof(short));
+            (void)write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
+                        (size_t)state->audio_out_idx * sizeof(short));
             state->audio_out_idx = 0;
         } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
             pa_simple_write(opts->pulse_digi_dev_out, (state->audio_out_buf_p - state->audio_out_idx),
@@ -683,16 +679,14 @@ end_psv:
 
 void
 playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
-    ssize_t result;
-    UNUSED(result);
 
     if (state->audio_out_idxR > opts->delay) {
         // output synthesized speech to sound card
         if (opts->audio_out == 1 && opts->audio_out_type == 5) //OSS
         {
             //OSS 48k/1
-            result = write(opts->audio_out_fd, (state->audio_out_buf_pR - state->audio_out_idxR),
-                           (size_t)state->audio_out_idxR * sizeof(short));
+            (void)write(opts->audio_out_fd, (state->audio_out_buf_pR - state->audio_out_idxR),
+                        (size_t)state->audio_out_idxR * sizeof(short));
             state->audio_out_idxR = 0;
         } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
             pa_simple_write(opts->pulse_digi_dev_outR, (state->audio_out_buf_pR - state->audio_out_idxR),

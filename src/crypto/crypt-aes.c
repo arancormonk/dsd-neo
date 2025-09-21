@@ -300,8 +300,8 @@ MixColumns(state_t* state) {
 }
 
 #define Multiply(x, y)                                                                                                 \
-    (((y & 1) * x) ^ ((y >> 1 & 1) * xtime(x)) ^ ((y >> 2 & 1) * xtime(xtime(x)))                                      \
-     ^ ((y >> 3 & 1) * xtime(xtime(xtime(x)))) ^ ((y >> 4 & 1) * xtime(xtime(xtime(xtime(x))))))
+    ((((y) & 1) * (x)) ^ (((y) >> 1 & 1) * xtime((x))) ^ (((y) >> 2 & 1) * xtime(xtime((x))))                          \
+     ^ (((y) >> 3 & 1) * xtime(xtime(xtime((x))))) ^ (((y) >> 4 & 1) * xtime(xtime(xtime(xtime((x)))))))
 
 #define getSBoxInvert(num) (rsbox[(num)])
 
