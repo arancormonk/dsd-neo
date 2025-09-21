@@ -157,6 +157,10 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
     }
     fseek(rf, 0, SEEK_END);
     long sz = ftell(rf);
+    if (sz < 0) {
+        fclose(rf);
+        return 102;
+    }
     fseek(rf, 0, SEEK_SET);
     char* buf = (char*)malloc((size_t)sz + 1);
     if (!buf) {

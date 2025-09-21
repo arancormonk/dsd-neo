@@ -32,8 +32,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     char info[196];
     unsigned char SlotType[20];
     unsigned int SlotTypeOk;
-    uint8_t cach_err = 0;
-    UNUSED(cach_err);
+    // CACH handler called for side effects; ignore return
 
     int cachInterleave[24] = {0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23};
 
@@ -273,7 +272,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     //don't run cach on simplex or mono
     if (state->dmr_ms_mode == 0 && opts->dmr_mono == 0) {
-        cach_err = dmr_cach(opts, state, cachdata);
+        (void)dmr_cach(opts, state, cachdata);
     }
 
     //ending line break

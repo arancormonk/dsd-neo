@@ -104,33 +104,7 @@ use_symbol(dsd_opts* opts, dsd_state* state, int symbol) {
     // Continuous update of min/max
     // - QPSK: always (as before)
     // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
-    if (state->rf_mod == 1) {
-        lmin = (sbuf2[0] + sbuf2[1]) / 2;
-        lmax = (sbuf2[(opts->ssize - 1)] + sbuf2[(opts->ssize - 2)]) / 2;
-        state->minbuf[state->midx] = lmin;
-        state->maxbuf[state->midx] = lmax;
-        if (state->midx == (opts->msize - 1)) {
-            state->midx = 0;
-        } else {
-            state->midx++;
-        }
-        lsum = 0;
-        for (i = 0; i < opts->msize; i++) {
-            lsum += state->minbuf[i];
-        }
-        state->min = lsum / opts->msize;
-        lsum = 0;
-        for (i = 0; i < opts->msize; i++) {
-            lsum += state->maxbuf[i];
-        }
-        state->max = lsum / opts->msize;
-        state->center = ((state->max) + (state->min)) / 2;
-        state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-        state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-        state->maxref = (int)((state->max) * 0.80F);
-        state->minref = (int)((state->min) * 0.80F);
-    } else if (state->rf_mod == 0 && (state->lastsynctype == 0 || state->lastsynctype == 1)) {
-        // Adaptive thresholds for P25p1 C4FM while decoding
+    if (state->rf_mod == 1 || (state->rf_mod == 0 && (state->lastsynctype == 0 || state->lastsynctype == 1))) {
         lmin = (sbuf2[0] + sbuf2[1]) / 2;
         lmax = (sbuf2[(opts->ssize - 1)] + sbuf2[(opts->ssize - 2)]) / 2;
         state->minbuf[state->midx] = lmin;

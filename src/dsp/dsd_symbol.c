@@ -37,11 +37,9 @@ select_window_c4fm(const dsd_state* state, int* l_edge, int* r_edge, int freeze_
     int l = 2;
     int r = 2;
     if (!freeze_window) {
-        if (state->synctype == 30 || state->synctype == 31) {
-            l = 1; // YSF
-        } else if ((state->lastsynctype >= 10 && state->lastsynctype <= 13) || state->lastsynctype == 32
-                   || state->lastsynctype == 33) {
-            l = 1; // DMR and some NXDN cases
+        if (state->synctype == 30 || state->synctype == 31 || (state->lastsynctype >= 10 && state->lastsynctype <= 13)
+            || state->lastsynctype == 32 || state->lastsynctype == 33) {
+            l = 1; // YSF, DMR, some NXDN cases
         } else {
             l = 2; // P25 and NXDN96 prefer wider left window
         }
@@ -685,47 +683,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     state->debug_sample_right_edge = state->debug_sample_index - 1;
                 }
 #endif
-            } else if (state->rf_mod == 1) //QPSK
-            {
-                // Two-sample window: one left, two right (precomputed)
+            } else { // QPSK or GFSK share the same 2-sample window
+                // Use symmetric two-sample window (precomputed)
                 if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
                     sum += sample;
                     count++;
                 }
-            } else //GFSK
-            {
-                // 1: QPSK modulation
-                // 2: GFSK modulation
-                // Note: this has been changed to use an additional symbol to the left
-                // On the p25_raw_unencrypted.flac it is evident that the timing
-                // comes one sample too late.
-                // This change makes a significant improvement in the BER, at least for
-                // this file.
-                // if ((i == state->symbolCenter) || (i == state->symbolCenter + 1))
-                // GFSK should ideally be symmetric (precomputed)
-                if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
-                    sum += sample;
-                    count++;
-                }
-
-                //MISC Notes: When using RTL input, NXDN96 at BW:16 NXDN48 at BW:12
-                //I am beginning to suspect that RTL input is halfing the bandwidth, which
-                //is my original consclusion back when I was working on it last, unsure
-                //or the best course on that, could just be a rtl_fm flaw
-                //P25 may also work better at 16 as well now, hard to tell the difference since both are good
-                //DMR may not be any different on 12 or 16
-                //most likely though, this all will just depend on signal stregth more than anything
-                //as to how much BW you should set
-
-#ifdef TRACE_DSD
-                //if (i == state->symbolCenter) {
-                if (i == state->symbolCenter - 1) {
-                    state->debug_sample_left_edge = state->debug_sample_index - 1;
-                }
-                if (i == state->symbolCenter + 1) {
-                    state->debug_sample_right_edge = state->debug_sample_index - 1;
-                }
-#endif
             }
         }
 

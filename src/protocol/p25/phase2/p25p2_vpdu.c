@@ -754,9 +754,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 }
                 fprintf(stderr, " Priority %d", svc1 & 0x7); //call priority
             }
-            freq1t = process_channel_to_freq(opts, state, channelt1);
+            (void)process_channel_to_freq(opts, state, channelt1);
             if (channelr1 != 0 && channelr1 != 0xFFFF) {
-                freq1r = process_channel_to_freq(opts, state, channelr1);
+                (void)process_channel_to_freq(opts, state, channelr1);
             }
 
             fprintf(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc2, channelt2, channelr2,
@@ -782,9 +782,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 }
                 fprintf(stderr, " Priority %d", svc2 & 0x7); //call priority
             }
-            freq1t = process_channel_to_freq(opts, state, channelt2);
+            (void)process_channel_to_freq(opts, state, channelt2);
             if (channelr2 != 0 && channelr2 != 0xFFFF) {
-                freq1r = process_channel_to_freq(opts, state, channelr2);
+                (void)process_channel_to_freq(opts, state, channelr2);
             }
 
             //add active channel to string for ncurses display
@@ -1201,7 +1201,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     group, group);
             freq1 = process_channel_to_freq(opts, state, channelt);
             if (channelr != 0 && channelr != 0xFFFF) {
-                freq2 = process_channel_to_freq(
+                (void)process_channel_to_freq(
                     opts, state,
                     channelr); //one system had this as channel 0xFFFF -- look up any particular meaning for that
             }
@@ -1367,10 +1367,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int freq = 0;
             UNUSED(freq);
             if (channelt != 0) {
-                freq = process_channel_to_freq(opts, state, channelt);
+                (void)process_channel_to_freq(opts, state, channelt);
             }
             if (channelr != 0) {
-                freq = process_channel_to_freq(opts, state, channelt);
+                (void)process_channel_to_freq(opts, state, channelt);
             }
         }
 
@@ -1652,9 +1652,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             //calculate local time (on system) by looking at offset and subtracting 30 minutes increments, or divide by 2 for hourly
             if (sign == 1) {
-                offhour = -((ltoff & 0b11111) / 2);
+                offhour = -((float)(ltoff & 0b11111) / 2.0f);
             } else {
-                offhour = ((ltoff & 0b11111) / 2);
+                offhour = ((float)(ltoff & 0b11111) / 2.0f);
             }
 
             int seconds = slots / 135; //very rough estimation, but may be close enough for grins

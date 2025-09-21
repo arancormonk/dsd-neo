@@ -59,11 +59,8 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     int i, j, dibit;
     char duid[3];
     char nac[13];
-    int level;
-    UNUSED2(nac, level);
+    UNUSED(nac);
 
-    char status_0;
-    UNUSED(status_0);
     char bch_code[63];
     int index_bch_code;
     unsigned char parity;
@@ -74,7 +71,6 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
     nac[12] = 0;
     duid[2] = 0;
-    j = 0;
 
     if (state->rf_mod == 1) {
         state->maxref = (int)(state->max * 0.80F);
@@ -144,8 +140,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
         if (opts->errorbars == 1) {
             if (opts->verbose > 0) {
-                level = (int)state->max / 164;
-                //fprintf (stderr,"inlvl: %2i%% ", level);
+                //fprintf (stderr,"inlvl: %2i%% ", (int)state->max / 164);
             }
         }
         if ((state->synctype == 11) || (state->synctype == 12) || (state->synctype == 32)) //DMR Voice Modes
@@ -252,8 +247,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     } else if ((state->synctype == 14) || (state->synctype == 15)) {
         if (opts->errorbars == 1) {
             if (opts->verbose > 0) {
-                level = (int)state->max / 164;
-                //fprintf (stderr,"inlvl: %2i%% ", level);
+                //fprintf (stderr,"inlvl: %2i%% ", (int)state->max / 164);
             }
         }
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
@@ -315,11 +309,6 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->nac = 0;
         state->lastsrc = 0;
         state->lasttg = 0;
-        if (opts->errorbars == 1) {
-            if (opts->verbose > 0) {
-                level = (int)state->max / 164;
-            }
-        }
         state->nac = 0;
 
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
@@ -387,8 +376,8 @@ processFrame(dsd_opts* opts, dsd_state* state) {
             bch_code[index_bch_code] = 1 & dibit; // bit 0
             index_bch_code++;
         }
-        // Intermission: read the status dibit
-        status_0 = getDibit(opts, state) + '0';
+        // Intermission: read and discard the status dibit
+        (void)getDibit(opts, state);
         // ... continue reading the BCH error correction data
         for (i = 0; i < 20; i++) {
             dibit = getDibit(opts, state);

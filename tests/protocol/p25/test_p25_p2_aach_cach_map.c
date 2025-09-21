@@ -101,7 +101,6 @@ extract_fields(const char* buf, int len, char* out_xch, size_t xch_cap, int* out
     const char* p = buf + len;
     const char* line_start = NULL;
     while (p > buf) {
-        // move to start of previous line
         const char* q = p - 1;
         while (q > buf && *(q - 1) != '\n') {
             q--;
@@ -194,6 +193,10 @@ run_case(int type, int is_lcch, int currentslot, const char* want_xch) {
     }
     fseek(rf, 0, SEEK_END);
     long sz = ftell(rf);
+    if (sz < 0) {
+        fclose(rf);
+        return 103;
+    }
     fseek(rf, 0, SEEK_SET);
     char* buf = (char*)malloc((size_t)sz + 1);
     if (!buf) {

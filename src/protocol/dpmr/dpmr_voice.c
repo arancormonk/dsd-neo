@@ -60,7 +60,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     UNUSED(PartOfSuperFrame);
 
     /* First CCH (Control CHannel) - 72 bit */
-    k = 0;
+    // k initialized later when used
 
     for (i = 0; i < 36; i++) {
         dibit = getDibit(opts, state);
@@ -74,7 +74,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     }
 
     /* 4 TCH (Traffic CHannel) = 4 x 72 bit voice playload */
-    k = 0;
+    // k initialized per block below
     for (j = 0; j < 4; j++) {
         w = dPmrW;
         x = dPmrX;
@@ -101,7 +101,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     }
 
     /* First CC (Channel Code) - 24 bit */
-    k = 0;
+    // k initialized per block below
     for (i = 0; i < 12; i++) {
         dibit = getDibit(opts, state);
 
@@ -117,7 +117,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)GetdPmrColorCode(CC[0]);
 
     /* Second CCH (Control CHannel) - 72 bit */
-    k = 0;
+    // k initialized per inner loop
     for (i = 0; i < 36; i++) {
         dibit = getDibit(opts, state);
 
@@ -131,7 +131,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
 
     /* 4 TCH (Traffic CHannel) = 4 x 72 bit voice playload */
 
-    k = 0;
     for (j = 0; j < 4; j++) {
         w = dPmrW;
         x = dPmrX;
@@ -257,7 +256,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     if (((CrcOk[0] || HammingCorrectable[0][0]) && (CCH_FrameNumber[0] == 0))
         || ((CrcOk[1] || HammingCorrectable[1][0]) && (CCH_FrameNumber[1] == 1))) {
         /* First part of the super frame */
-        PartOfSuperFrame = 1;
 
         /* The next part will normally be the second part */
         opts->dPMR_next_part_of_superframe = 2;
@@ -295,7 +293,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     else if (((CrcOk[0] || HammingCorrectable[0][0]) && (CCH_FrameNumber[0] == 2))
              || ((CrcOk[1] || HammingCorrectable[1][0]) && (CCH_FrameNumber[1] == 3))) {
         /* Second part of the super frame */
-        PartOfSuperFrame = 2;
 
         /* The next part will normally be the first part */
         opts->dPMR_next_part_of_superframe = 1;
@@ -331,7 +328,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
 
         /* Unknown part of superframe => We suppose
      * it is the next part of the previous frame received */
-        PartOfSuperFrame = opts->dPMR_next_part_of_superframe;
 
         /* Set the next part of the superframe to receive */
         if (opts->dPMR_next_part_of_superframe == 1) {

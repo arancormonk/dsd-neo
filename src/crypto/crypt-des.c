@@ -769,9 +769,6 @@ tdea_multi_keystream_output(unsigned long long int mi, uint8_t* key, uint8_t* ou
     //   fprintf (stderr, "%02X", iv[i]);
 
     //type 1 = TDEA TOFB //TODO: Add more types like 2DES?
-    if (type == 1) {
-        tdea_tofb_keystream_output(key, key + 8, key + 16, iv, output, 1, len);
-    } else {
-        tdea_tofb_keystream_output(key, key + 8, key + 16, iv, output, 1, len);
-    }
+    (void)type; // currently only TOFB supported
+    tdea_tofb_keystream_output(key, key + 8, key + 16, iv, output, 1, len);
 }

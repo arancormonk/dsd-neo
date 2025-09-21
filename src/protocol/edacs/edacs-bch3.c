@@ -101,44 +101,27 @@ read_p()
         p[i] = 0;
     }
     p[0] = p[m] = 1;
-    if (m == 2) {
-        p[1] = 1;
-    } else if (m == 3) {
-        p[1] = 1;
-    } else if (m == 4) {
-        p[1] = 1;
-    } else if (m == 5) {
-        p[2] = 1;
-    } else if (m == 6) {
-        p[1] = 1;
-    } else if (m == 7) {
-        p[1] = 1;
-    } else if (m == 8) {
-        p[4] = p[5] = p[6] = 1;
-    } else if (m == 9) {
-        p[4] = 1;
-    } else if (m == 10) {
-        p[3] = 1;
-    } else if (m == 11) {
-        p[2] = 1;
-    } else if (m == 12) {
-        p[3] = p[4] = p[7] = 1;
-    } else if (m == 13) {
-        p[1] = p[3] = p[4] = 1;
-    } else if (m == 14) {
-        p[1] = p[11] = p[12] = 1;
-    } else if (m == 15) {
-        p[1] = 1;
-    } else if (m == 16) {
-        p[2] = p[3] = p[5] = 1;
-    } else if (m == 17) {
-        p[3] = 1;
-    } else if (m == 18) {
-        p[7] = 1;
-    } else if (m == 19) {
-        p[1] = p[5] = p[6] = 1;
-    } else if (m == 20) {
-        p[3] = 1;
+    switch (m) {
+        case 2:
+        case 3:
+        case 4:
+        case 6:
+        case 7:
+        case 15: p[1] = 1; break;
+        case 5: p[2] = 1; break;
+        case 8: p[4] = p[5] = p[6] = 1; break;
+        case 9: p[4] = 1; break;
+        case 10:
+        case 17:
+        case 20: p[3] = 1; break;
+        case 11: p[2] = 1; break;
+        case 12: p[3] = p[4] = p[7] = 1; break;
+        case 13: p[1] = p[3] = p[4] = 1; break;
+        case 14: p[1] = p[11] = p[12] = 1; break;
+        case 16: p[2] = p[3] = p[5] = 1; break;
+        case 18: p[7] = 1; break;
+        case 19: p[1] = p[5] = p[6] = 1; break;
+        default: break;
     }
 
     n = 1;

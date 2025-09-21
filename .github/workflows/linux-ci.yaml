@@ -391,7 +391,7 @@ jobs:
       - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy build-essential cmake ninja-build pkg-config git ccache \
+          sudo apt-get install -y clang-tidy ripgrep build-essential cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev \
             libfftw3-dev libblas-dev liblapack-dev gfortran
 
@@ -484,12 +484,9 @@ jobs:
       - name: Configure (dev-debug)
         run: cmake --preset dev-debug
 
-      - name: Run clang-tidy
+      - name: Run clang-tidy (curated)
         run: |
-          files=$(git ls-files '*.c' '*.cc' '*.cxx' '*.cpp' ':!:build/**')
-          if [ -z "$files" ]; then echo "No C/C++ files to analyze"; exit 0; fi
-          echo "Analyzing: $files"
-          clang-tidy -p build/dev-debug $files
+          tools/clang_tidy.sh
 
       - name: Show ccache stats
         if: always()

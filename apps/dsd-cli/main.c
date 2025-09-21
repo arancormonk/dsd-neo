@@ -2029,30 +2029,28 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
 
 double
 atofs(char* s) {
-    char last;
-    int len;
-    double suff = 1.0;
-    len = strlen(s);
-    last = s[len - 1];
-    s[len - 1] = '\0';
+    size_t len = strlen(s);
+    if (len == 0) {
+        return 0.0;
+    }
+
+    char last = s[len - 1];
+    double factor = 1.0;
+
     switch (last) {
         case 'g':
-        case 'G':
-            suff *= 1e3;
-            /* fall through */
+        case 'G': factor = 1e9; break;
         case 'm':
-        case 'M':
-            suff *= 1e3;
-            /* fall through */
+        case 'M': factor = 1e6; break;
         case 'k':
-        case 'K':
-            suff *= 1e3;
-            suff *= atof(s);
-            s[len - 1] = last;
-            return suff;
+        case 'K': factor = 1e3; break;
+        default: return atof(s);
     }
+
+    s[len - 1] = '\0';
+    double val = atof(s);
     s[len - 1] = last;
-    return atof(s);
+    return val * factor;
 }
 
 int

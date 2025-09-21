@@ -112,7 +112,7 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
     int row_count = 0;
     int field_count = 0;
 
-    long int chan_number;
+    long int chan_number = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
         field_count = 0;
@@ -128,16 +128,24 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
             }
 
             if (field_count == 1) {
-                sscanf(field, "%ld", &state->trunk_chan_map[chan_number]);
-                //adding this should be compatible with EDACS, test and obsolete the LCN Import function if desired
-                sscanf(field, "%ld", &state->trunk_lcn_freq[state->lcn_freq_count]);
-                state->lcn_freq_count++; //keep tally of number of Frequencies imported
+                if (chan_number >= 0 && chan_number < 0xFFFF) {
+                    sscanf(field, "%ld", &state->trunk_chan_map[chan_number]);
+                }
+                // adding this should be compatible with EDACS, test and obsolete the LCN Import function if desired
+                if (state->lcn_freq_count >= 0
+                    && state->lcn_freq_count
+                           < (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]))) {
+                    sscanf(field, "%ld", &state->trunk_lcn_freq[state->lcn_freq_count]);
+                    state->lcn_freq_count++; // keep tally of number of Frequencies imported
+                }
             }
 
             field = strtok(NULL, ",");
             field_count++;
         }
-        fprintf(stderr, "Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
+        if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
+            fprintf(stderr, "Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
+        }
         fprintf(stderr, "\n");
     }
     fclose(fp);
@@ -193,7 +201,9 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
 
             if (field_count == 1) {
                 sscanf(field, "%lld", &keyvalue);
-                state->rkey_array[keynumber] = keyvalue & 0xFFFFFFFFFF; //doesn't exceed 40-bit value
+                if (keynumber >= 0 && keynumber < 0x1FFFF) {
+                    state->rkey_array[keynumber] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
+                }
             }
 
             field = strtok(NULL, ",");
@@ -221,7 +231,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
     }
     int row_count = 0;
     int field_count = 0;
-    unsigned long long int keynumber;
+    unsigned long long int keynumber = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
         field_count = 0;
@@ -237,33 +247,47 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
             }
 
             if (field_count == 1) {
-                sscanf(field, "%llX", &state->rkey_array[keynumber]);
+                if (keynumber >= 0 && keynumber < 0x1FFFF) {
+                    sscanf(field, "%llX", &state->rkey_array[keynumber]);
+                }
             }
 
             //this could also theoretically nuke other keys that are at the same offset
             if (field_count == 2) {
-                sscanf(field, "%llX", &state->rkey_array[keynumber + 0x101]);
+                if (keynumber + 0x101 < 0x1FFFF) {
+                    sscanf(field, "%llX", &state->rkey_array[keynumber + 0x101]);
+                }
             }
 
             if (field_count == 3) {
-                sscanf(field, "%llX", &state->rkey_array[keynumber + 0x201]);
+                if (keynumber + 0x201 < 0x1FFFF) {
+                    sscanf(field, "%llX", &state->rkey_array[keynumber + 0x201]);
+                }
             }
 
             if (field_count == 4) {
-                sscanf(field, "%llX", &state->rkey_array[keynumber + 0x301]);
+                if (keynumber + 0x301 < 0x1FFFF) {
+                    sscanf(field, "%llX", &state->rkey_array[keynumber + 0x301]);
+                }
             }
 
             field = strtok(NULL, ",");
             field_count++;
         }
 
-        fprintf(stderr, "Key [%04llX] [%016llX]", keynumber, state->rkey_array[keynumber]);
+        if (keynumber >= 0 && keynumber < 0x1FFFF) {
+            fprintf(stderr, "Key [%04llX] [%016llX]", keynumber, state->rkey_array[keynumber]);
+        } else {
+            fprintf(stderr, "Key [%04llX] [out-of-range]", keynumber);
+        }
 
         //if longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset, then print the full key listing)
-        if ((state->rkey_array[keynumber + 0x101] != 0) || (state->rkey_array[keynumber + 0x201] != 0)
-            || (state->rkey_array[keynumber + 0x301] != 0)) {
-            fprintf(stderr, " [%016llX] [%016llX] [%016llX]", state->rkey_array[keynumber + 0x101],
-                    state->rkey_array[keynumber + 0x201], state->rkey_array[keynumber + 0x301]);
+        if ((keynumber + 0x301) < 0x1FFFF) {
+            if ((state->rkey_array[keynumber + 0x101] != 0) || (state->rkey_array[keynumber + 0x201] != 0)
+                || (state->rkey_array[keynumber + 0x301] != 0)) {
+                fprintf(stderr, " [%016llX] [%016llX] [%016llX]", state->rkey_array[keynumber + 0x101],
+                        state->rkey_array[keynumber + 0x201], state->rkey_array[keynumber + 0x301]);
+            }
         }
         fprintf(stderr, "\n");
     }

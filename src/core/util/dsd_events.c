@@ -110,30 +110,33 @@ write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t 
     FILE* event_log_file;
     event_log_file = fopen(opts->event_out_file, "a");
 
-    fprintf(event_log_file, "%s ", event_string);
-    if (swrite == 1) {
-        fprintf(event_log_file, "Slot %d; ", slot + 1);
-    }
-    fprintf(event_log_file, "\n");
+    if (event_log_file != NULL) {
+        fprintf(event_log_file, "%s ", event_string);
+        if (swrite == 1) {
+            fprintf(event_log_file, "Slot %d; ", slot + 1);
+        }
+        fprintf(event_log_file, "\n");
 
-    char text_string[2000];
-    sprintf(text_string, "%s", "BUMBLEBEETUNA");
-    if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].text_message, 13) != 0) {
-        fprintf(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
-    }
-    if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].alias, 13) != 0) {
-        fprintf(event_log_file, " Talker Alias: %s \n", state->event_history_s[slot].Event_History_Items[0].alias);
-    }
-    if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].gps_s, 13) != 0) {
-        fprintf(event_log_file, " GPS: %s \n", state->event_history_s[slot].Event_History_Items[0].gps_s);
-    }
-    if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].internal_str, 13) != 0) {
-        fprintf(event_log_file, " DSD-neo: %s \n", state->event_history_s[slot].Event_History_Items[0].internal_str);
-    }
+        char text_string[2000];
+        sprintf(text_string, "%s", "BUMBLEBEETUNA");
+        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].text_message, 13) != 0) {
+            fprintf(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
+        }
+        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].alias, 13) != 0) {
+            fprintf(event_log_file, " Talker Alias: %s \n", state->event_history_s[slot].Event_History_Items[0].alias);
+        }
+        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].gps_s, 13) != 0) {
+            fprintf(event_log_file, " GPS: %s \n", state->event_history_s[slot].Event_History_Items[0].gps_s);
+        }
+        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].internal_str, 13) != 0) {
+            fprintf(event_log_file, " DSD-neo: %s \n",
+                    state->event_history_s[slot].Event_History_Items[0].internal_str);
+        }
 
-    //flush and close log file
-    fflush(event_log_file);
-    fclose(event_log_file);
+        //flush and close log file
+        fflush(event_log_file);
+        fclose(event_log_file);
+    }
 }
 
 // run once per loop to check for and push and update event history
@@ -159,12 +162,8 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     }
 
     //if DMR BS or P25P2, then flag the swrite, so write can append slot value to event history log //|| state->lastsynctype == 32 || state->lastsynctype == 33 || state->lastsynctype == 34　MS
-    if (state->lastsynctype == 10 || state->lastsynctype == 11 || state->lastsynctype == 12
-        || state->lastsynctype == 13) {
-        swrite = 1;
-    }
-
-    else if (state->lastsynctype == 35 || state->lastsynctype == 36) {
+    if (state->lastsynctype == 10 || state->lastsynctype == 11 || state->lastsynctype == 12 || state->lastsynctype == 13
+        || state->lastsynctype == 35 || state->lastsynctype == 36) {
         swrite = 1;
     }
 
@@ -285,12 +284,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     Event_History_I* event_struct = &state->event_history_s[slot];
 
     //ncurses color pairs
-    uint8_t color_pair = 4; //default voice color (unknown gi)
-    if (state->gi[slot] == 1) {
-        color_pair = 4; //default private voice color
-    } else if (state->gi[slot] == 0) {
-        color_pair = 4; //default group voice color
-    }
+    uint8_t color_pair = 4; //default voice color
 
     //TODO: Flesh out more later on.
     uint32_t source_id = 0;
@@ -454,14 +448,12 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
             //set src string as a non-spaced non-garbo char string
             for (uint8_t i = 0; i < 10; i++) {
-                if (state->ysf_src[i] == 0x20) { //spaces to underscore
-                    temp_str[i] = 0x5F;
-                } else if (state->ysf_src[i] > 0x20 && state->ysf_src[i] < 0x7F) { //copy normal ascii range characters
+                if (state->ysf_src[i] == 0) {
+                    break; // terminator
+                } else if (state->ysf_src[i] > 0x20 && state->ysf_src[i] < 0x7F) {
                     temp_str[i] = state->ysf_src[i];
-                } else if (state->ysf_src[i] == 0) {
-                    break; //hit the terminator, so stop
-                } else {
-                    temp_str[i] = 0x5F; //unknown to underscore
+                } else { // spaces and non-ascii
+                    temp_str[i] = 0x5F;
                 }
             }
             sprintf(src_str, "%s", temp_str);
@@ -469,14 +461,12 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             //same for tgt str
             memset(temp_str, 0, sizeof(temp_str));
             for (uint8_t i = 0; i < 10; i++) {
-                if (state->ysf_tgt[i] == 0x20) { //spaces to underscore
-                    temp_str[i] = 0x5F;
-                } else if (state->ysf_tgt[i] > 0x20 && state->ysf_tgt[i] < 0x7F) { //copy normal ascii range characters
+                if (state->ysf_tgt[i] == 0) {
+                    break; // terminator
+                } else if (state->ysf_tgt[i] > 0x20 && state->ysf_tgt[i] < 0x7F) {
                     temp_str[i] = state->ysf_tgt[i];
-                } else if (state->ysf_tgt[i] == 0) {
-                    break; //hit the terminator, so stop
-                } else {
-                    temp_str[i] = 0x5F; //unknown to underscore
+                } else { // spaces and non-ascii
+                    temp_str[i] = 0x5F;
                 }
             }
             sprintf(tgt_str, "%s", temp_str);
@@ -513,15 +503,12 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
             //set src string as a non-spaced non-garbo char string
             for (uint8_t i = 0; i < 12; i++) {
-                if (state->dstar_src[i] == 0x20) { //spaces to underscore
-                    temp_str[i] = 0x5F;
-                } else if (state->dstar_src[i] > 0x20
-                           && state->dstar_src[i] < 0x7F) { //copy normal ascii range characters
+                if (state->dstar_src[i] == 0) {
+                    break; // terminator
+                } else if (state->dstar_src[i] > 0x20 && state->dstar_src[i] < 0x7F) {
                     temp_str[i] = state->dstar_src[i];
-                } else if (state->dstar_src[i] == 0) {
-                    break; //hit the terminator, so stop
-                } else {
-                    temp_str[i] = 0x5F; //unknown to underscore
+                } else { // spaces and non-ascii
+                    temp_str[i] = 0x5F;
                 }
             }
             sprintf(src_str, "%s", temp_str);
@@ -529,15 +516,12 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             //same for tgt str
             memset(temp_str, 0, sizeof(temp_str));
             for (uint8_t i = 0; i < 8; i++) {
-                if (state->dstar_dst[i] == 0x20) { //spaces to underscore
-                    temp_str[i] = 0x5F;
-                } else if (state->dstar_dst[i] > 0x20
-                           && state->dstar_dst[i] < 0x7F) { //copy normal ascii range characters
+                if (state->dstar_dst[i] == 0) {
+                    break; // terminator
+                } else if (state->dstar_dst[i] > 0x20 && state->dstar_dst[i] < 0x7F) {
                     temp_str[i] = state->dstar_dst[i];
-                } else if (state->dstar_dst[i] == 0) {
-                    break; //hit the terminator, so stop
-                } else {
-                    temp_str[i] = 0x5F; //unknown to underscore
+                } else { // spaces and non-ascii
+                    temp_str[i] = 0x5F;
                 }
             }
             sprintf(tgt_str, "%s", temp_str);

@@ -471,7 +471,6 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
                 utf16_to_text(state, 1, tms_len, input + tms_ptr);
 
                 input[tms_ptr] = temp; //restore byte
-                tms_ptr += 2;
             } else {
                 dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "Acknowledgment;");
                 fprintf(stderr, "Acknowledgment;");
@@ -706,7 +705,6 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
             case 0x70: //speed-virt
             case 0x6C: //speed-hor
                 if (message_len > 0 && vel_set == 0) {
-                    vel = (DMR_PDU[i + 1] << 8) + DMR_PDU[i + 2];                                       //raw value
                     velocity = (((double)((DMR_PDU[i + 1] << 8) + DMR_PDU[i + 2])) / ((double)255.0f)); //mps
                     vel_set = 1;
                     i += 2;
@@ -788,40 +786,41 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                 //open file by name that is supplied in the ncurses terminal, or cli
                 FILE* pFile; //file pointer
                 pFile = fopen(opts->lrrp_out_file, "a");
+                if (pFile != NULL) {
+                    //write current date/time if not present in LRRP data
+                    if (!year) {
+                        fprintf(pFile, "%s\t",
+                                datestr); //current date, only add this IF no included timestamp in LRRP data?
+                    }
+                    if (!year) {
+                        fprintf(pFile, "%s\t",
+                                timestr); //current timestamp, only add this IF no included timestamp in LRRP data?
+                    }
+                    if (year) {
+                        fprintf(pFile, "%04d/%02d/%02d\t%02d:%02d:%02d\t", year, month, day, hour, minute,
+                                second); //add timestamp from decoded audio if available
+                    }
 
-                //write current date/time if not present in LRRP data
-                if (!year) {
-                    fprintf(pFile, "%s\t",
-                            datestr); //current date, only add this IF no included timestamp in LRRP data?
-                }
-                if (!year) {
-                    fprintf(pFile, "%s\t",
-                            timestr); //current timestamp, only add this IF no included timestamp in LRRP data?
-                }
-                if (year) {
-                    fprintf(pFile, "%04d/%02d/%02d\t%02d:%02d:%02d\t", year, month, day, hour, minute,
-                            second); //add timestamp from decoded audio if available
-                }
+                    //write data header source if not available in lrrp data
+                    if (!source) {
+                        fprintf(pFile, "%08lld\t",
+                                state->dmr_lrrp_source[state->currentslot]); //source address from data header
+                    }
+                    if (source) {
+                        fprintf(pFile, "%08d\t",
+                                source); //add source form decoded audio if available, else its from the header
+                    }
 
-                //write data header source if not available in lrrp data
-                if (!source) {
-                    fprintf(pFile, "%08lld\t",
-                            state->dmr_lrrp_source[state->currentslot]); //source address from data header
+                    /* stack buffers; no free */
+
+                    fprintf(pFile, "%.5lf\t", lat_fin);
+                    fprintf(pFile, "%.5lf\t", lon_fin);
+                    fprintf(pFile, "%.3lf\t ", (velocity * 3.6));
+                    fprintf(pFile, "%d\t", degrees);
+
+                    fprintf(pFile, "\n");
+                    fclose(pFile);
                 }
-                if (source) {
-                    fprintf(pFile, "%08d\t",
-                            source); //add source form decoded audio if available, else its from the header
-                }
-
-                /* stack buffers; no free */
-
-                fprintf(pFile, "%.5lf\t", lat_fin);
-                fprintf(pFile, "%.5lf\t", lon_fin);
-                fprintf(pFile, "%.3lf\t ", (velocity * 3.6));
-                fprintf(pFile, "%d\t", degrees);
-
-                fprintf(pFile, "\n");
-                fclose(pFile);
             }
 
             //save to string for ncurses
@@ -1008,30 +1007,31 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
             //open file by name that is supplied in the ncurses terminal, or cli
             FILE* pFile; //file pointer
             pFile = fopen(opts->lrrp_out_file, "a");
+            if (pFile != NULL) {
+                //write current date/time if not present in LOCN data
+                if (!time) {
+                    fprintf(pFile, "%s\t", datestr);
+                }
+                if (!time) {
+                    fprintf(pFile, "%s\t", timestr);
+                }
+                if (time) {
+                    fprintf(pFile, "20%02X/%02X/%02X\t%02X:%02X:%02X\t", year, month, day, hour, minute, second);
+                }
 
-            //write current date/time if not present in LOCN data
-            if (!time) {
-                fprintf(pFile, "%s\t", datestr);
+                //write data header source from data header
+                fprintf(pFile, "%08lld\t", state->dmr_lrrp_source[state->currentslot]);
+
+                /* stack buffers; no free */
+
+                fprintf(pFile, "%.5lf\t", latitude);
+                fprintf(pFile, "%.5lf\t", longitude);
+                fprintf(pFile, "%.3lf\t ", (velocity * 3.6));
+                fprintf(pFile, "%d\t", degrees);
+
+                fprintf(pFile, "\n");
+                fclose(pFile);
             }
-            if (!time) {
-                fprintf(pFile, "%s\t", timestr);
-            }
-            if (time) {
-                fprintf(pFile, "20%02X/%02X/%02X\t%02X:%02X:%02X\t", year, month, day, hour, minute, second);
-            }
-
-            //write data header source from data header
-            fprintf(pFile, "%08lld\t", state->dmr_lrrp_source[state->currentslot]);
-
-            /* stack buffers; no free */
-
-            fprintf(pFile, "%.5lf\t", latitude);
-            fprintf(pFile, "%.5lf\t", longitude);
-            fprintf(pFile, "%.3lf\t ", (velocity * 3.6));
-            fprintf(pFile, "%d\t", degrees);
-
-            fprintf(pFile, "\n");
-            fclose(pFile);
         }
     }
 }

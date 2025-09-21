@@ -189,7 +189,11 @@ main(void) {
     }
     if (!freopen(tmpl, "w+", stderr)) {
         fprintf(stderr, "freopen stderr failed\n");
+        fclose(fp);
         return 102;
+    } else {
+        /* close the original stream associated with fd */
+        fclose(fp);
     }
 
     // Case 1: FACCH, unknown opcode → derive from MCO; expect lenB=9 (mco=10), lenC=(16-9)=7
@@ -223,6 +227,11 @@ main(void) {
     }
     fseek(rf, 0, SEEK_END);
     long sz = ftell(rf);
+    if (sz < 0) {
+        fprintf(stderr, "ftell failed\n");
+        fclose(rf);
+        return 104;
+    }
     fseek(rf, 0, SEEK_SET);
     char* buf = (char*)malloc((size_t)sz + 1);
     if (!buf) {

@@ -109,7 +109,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[9][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[8][0]), &status_count, analog_signal_array, &analog_signal_index);
-    analog_signal_array[0 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)0 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 3
 #ifdef TRACE_DSD
@@ -134,7 +137,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     read_and_correct_hex_word(opts, state, &(hex_data[6][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[5][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[4][0]), &status_count, analog_signal_array, &analog_signal_index);
-    analog_signal_array[4 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)4 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 4
 #ifdef TRACE_DSD
@@ -159,7 +165,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     read_and_correct_hex_word(opts, state, &(hex_data[2][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[1][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[0][0]), &status_count, analog_signal_array, &analog_signal_index);
-    analog_signal_array[8 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)8 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 5
 #ifdef TRACE_DSD
@@ -188,7 +197,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_parity[8][0]), &status_count, analog_signal_array,
                               &analog_signal_index);
-    analog_signal_array[12 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)12 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 6
 #ifdef TRACE_DSD
@@ -217,7 +229,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_parity[4][0]), &status_count, analog_signal_array,
                               &analog_signal_index);
-    analog_signal_array[16 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)16 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 7
 #ifdef TRACE_DSD
@@ -246,7 +261,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_parity[0][0]), &status_count, analog_signal_array,
                               &analog_signal_index);
-    analog_signal_array[20 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)20 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 8
 #ifdef TRACE_DSD
@@ -365,7 +383,8 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         encode_reedsolomon_24_12_13((char*)hex_data, fixed_parity);
 
         // Correct the dibits that we read according with the fixed parity values
-        correct_hamming_dibits(fixed_parity, 12, analog_signal_array + 12 * (3 + 2));
+        ptrdiff_t hoff = (ptrdiff_t)12 * (3 + 2);
+        correct_hamming_dibits(fixed_parity, 12, analog_signal_array + hoff);
 
         // Once corrected, contribute this information to the heuristics module
         contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array,
@@ -479,7 +498,8 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     LCW_bytes[0] = (uint8_t)ConvertBitIntoBytes(&lcformat[0], 8);
     LCW_bytes[1] = (uint8_t)ConvertBitIntoBytes(&mfid[0], 8);
     for (i = 0; i < 7; i++) {
-        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[i * 8], 8);
+        ptrdiff_t o = (ptrdiff_t)i * 8;
+        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[o], 8);
     }
 
     //load as bit array next (easier to process data in bit form)

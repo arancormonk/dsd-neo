@@ -214,10 +214,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     }
     //if Phase 2, then only 19
     else if (state->lastsynctype == 35 || state->lastsynctype == 36) {
-        t_max = 19;                    //Phase 2 S-ISCH is only 19
-    } else if (opts->analog_only == 1) //shim to make sure this is set to a reasonable value
-    {
-        t_max = 24;
+        t_max = 19; //Phase 2 S-ISCH is only 19
     } else {
         t_max = 24; //24 for everything else
     }
@@ -244,8 +241,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     synctest_pos = 0;
     synctest_p = synctest_buf + 10;
     sync = 0;
-    lmin = 0;
-    lmax = 0;
+    // lmin/lmax initialized later before use
     lidx = 0;
     lastt = 0;
     state->numflips = 0;

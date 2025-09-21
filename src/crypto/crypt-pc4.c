@@ -115,11 +115,12 @@ md2_hashing(PC4Context* ctx, unsigned char t1[], size_t b6) {
         107, 76,  85,  95,  194, 142, 50,  49,  134, 23,  135, 169, 221, 210, 203, 63,  165, 82,  161, 202, 53,  14,
         206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113};
 
-    int b1, b2, b3, b4, b5;
-    b4 = 0;
-    while (b6) {
-        for (; b6 && ctx->x2 < n1; b6--, ctx->x2++) {
-            b5 = t1[b4++];
+    int b1, b2, b3, b5;
+    size_t t1_len = b6;
+    size_t idx = 0;
+    while (idx < t1_len) {
+        for (; idx < t1_len && ctx->x2 < n1; ctx->x2++) {
+            b5 = t1[idx++];
             ctx->h1[ctx->x2 + n1] = (unsigned char)b5;
             ctx->h1[ctx->x2 + (n1 * 2)] = (unsigned char)(b5 ^ ctx->h1[ctx->x2]);
             ctx->x1 = ctx->h2[ctx->x2] ^= s4[b5 ^ ctx->x1];

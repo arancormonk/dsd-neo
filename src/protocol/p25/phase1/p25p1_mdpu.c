@@ -144,12 +144,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        //send header to p25_12 and return tsbk_byte
-        if (j == 0) {
-            ec[j] = p25_12(tsbk_dibit, tsbk_byte);
-        }
-
-        else if (r34) {
+        if (r34 && j != 0) {
             //debug
             // fprintf (stderr, " J:%d;", j); //use this with the P_ERR inside of 34 rate decoder to see where the failures occur
 
@@ -254,9 +249,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if (err[0] == 0) {
-        p25_decode_pdu_header(opts, state, mpdu_byte);
-    } else if (opts->aggressive_framesync == 0) {
+    if (err[0] == 0 || opts->aggressive_framesync == 0) {
         p25_decode_pdu_header(opts, state, mpdu_byte);
     }
 
@@ -266,7 +259,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, " P25 Data Header CRC Error");
         fprintf(stderr, "%s", KNRM);
         if (opts->aggressive_framesync != 0) {
-            end = 1; //go ahead and end after this loop
+            // already gathered; nothing more to do here for MDPU
         }
     }
 
@@ -374,9 +367,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
 
         //minus 1 to offset the last rounds mpdu_idx++
-        if (err[1] == 0 && blks != 0) {
-            p25_decode_pdu_data(opts, state, mpdu_byte, mpdu_idx - 1);
-        } else if (opts->aggressive_framesync == 0 && blks != 0) {
+        if ((err[1] == 0 || opts->aggressive_framesync == 0) && blks != 0) {
             p25_decode_pdu_data(opts, state, mpdu_byte, mpdu_idx - 1);
         }
 
@@ -446,9 +437,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             err[1] = 0; //No CRC32 on a lonely header
         }
 
-        if (err[1] == 0 && blks != 0) {
-            p25_decode_pdu_data(opts, state, mpdu_byte, len);
-        } else if (opts->aggressive_framesync == 0 && blks != 0) {
+        if ((err[1] == 0 || opts->aggressive_framesync == 0) && blks != 0) {
             p25_decode_pdu_data(opts, state, mpdu_byte, len);
         }
 

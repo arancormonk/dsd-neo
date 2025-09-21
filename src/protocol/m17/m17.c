@@ -1186,9 +1186,7 @@ processM17LSF_debug2(dsd_opts* opts, dsd_state* state, uint8_t* m17_rnd_bits) {
         crc_err = 1;
     }
 
-    if (crc_err == 0) {
-        M17decodeLSF(state);
-    } else if (opts->aggressive_framesync == 0) {
+    if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(state);
     }
 
@@ -3766,10 +3764,7 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
         uint16_t crc_ext =
             (state->m17_pkt[total + 1] << 8) + state->m17_pkt[total + 2]; //immediately after the terminating byte
 
-        if (crc_cmp == crc_ext) {
-            // decodeM17PKT(opts, state, state->m17_pkt, end-2);
-            decodeM17PKT(opts, state, state->m17_pkt, total); //end-2 if CRC at the end, total if CRC after term
-        } else if (opts->aggressive_framesync == 0) {         //CRC Bypass, check anyways (if enabled)
+        if (crc_cmp == crc_ext || opts->aggressive_framesync == 0) {
             // decodeM17PKT(opts, state, state->m17_pkt, end-2);
             decodeM17PKT(opts, state, state->m17_pkt, total); //end-2 if CRC at the end, total if CRC after term
         }
@@ -3972,9 +3967,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             if (src == 0xFFFFFFFFFFFF) {
                 fprintf(stderr, "UNKNOWN FFFFFFFFFFFF");
-            } else if (src == 0) {
-                fprintf(stderr, "RESERVED %012llx", src);
-            } else if (src >= 0xEE6B28000000) {
+            } else if (src == 0 || src >= 0xEE6B28000000) {
                 fprintf(stderr, "RESERVED %012llx", src);
             } else {
                 for (i = 0; i < 9; i++) {
@@ -4002,9 +3995,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             if (src == 0xFFFFFFFFFFFF) {
                 fprintf(stderr, "UNKNOWN FFFFFFFFFFFF");
-            } else if (src == 0) {
-                fprintf(stderr, "RESERVED %012llx", src);
-            } else if (src >= 0xEE6B28000000) {
+            } else if (src == 0 || src >= 0xEE6B28000000) {
                 fprintf(stderr, "RESERVED %012llx", src);
             } else {
                 for (i = 0; i < 9; i++) {
@@ -4032,9 +4023,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             if (src == 0xFFFFFFFFFFFF) {
                 fprintf(stderr, "UNKNOWN FFFFFFFFFFFF");
-            } else if (src == 0) {
-                fprintf(stderr, "RESERVED %012llx", src);
-            } else if (src >= 0xEE6B28000000) {
+            } else if (src == 0 || src >= 0xEE6B28000000) {
                 fprintf(stderr, "RESERVED %012llx", src);
             } else {
                 for (i = 0; i < 9; i++) {
@@ -4063,9 +4052,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             if (src == 0xFFFFFFFFFFFF) {
                 fprintf(stderr, "UNKNOWN FFFFFFFFFFFF");
-            } else if (src == 0) {
-                fprintf(stderr, "RESERVED %012llx", src);
-            } else if (src >= 0xEE6B28000000) {
+            } else if (src == 0 || src >= 0xEE6B28000000) {
                 fprintf(stderr, "RESERVED %012llx", src);
             } else {
                 for (i = 0; i < 9; i++) {
@@ -4088,9 +4075,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             if (src == 0xFFFFFFFFFFFF) {
                 fprintf(stderr, "UNKNOWN FFFFFFFFFFFF");
-            } else if (src == 0) {
-                fprintf(stderr, "RESERVED %012llx", src);
-            } else if (src >= 0xEE6B28000000) {
+            } else if (src == 0 || src >= 0xEE6B28000000) {
                 fprintf(stderr, "RESERVED %012llx", src);
             } else {
                 for (i = 0; i < 9; i++) {

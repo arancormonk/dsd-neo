@@ -415,7 +415,8 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
         if (devnull) {
             fflush(stderr);
             dup2(fileno(devnull), fileno(stderr));
-            // keep devnull open; stderr now points to it
+            // close the redundant FILE*; stderr now points to /dev/null
+            fclose(devnull);
             stderr_suppressed = 1;
         }
 #endif
@@ -555,7 +556,12 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         s_den_cap = den_sz;
     }
     unsigned short* den = s_den;
-    memset(den, 0, den_sz * sizeof(unsigned short));
+    if (den_sz > 0 && den != NULL) {
+        memset(den, 0, den_sz * sizeof(unsigned short));
+    }
+    if (den == NULL) {
+        return;
+    }
 
     /* Dynamic radial scale using high-percentile magnitude (robust to outliers), then smooth. */
     static int s_maxR = 256; /* smoothed scale for radius (~99th percentile of |IQ|) */
@@ -839,15 +845,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                 for (int r = 0; r < 4; r++) {
                     double rii = ref_ix[r] * refR;
                     double rqq = ref_qx[r] * refR;
-                    double rx, ry;
-                    if (opts->const_norm_mode == 1) {
-                        /* In unit-circle mode, map 0.70 radius directly */
-                        rx = (rii / (double)s_maxR);
-                        ry = (rqq / (double)s_maxR);
-                    } else {
-                        rx = (rii / (double)s_maxR);
-                        ry = (rqq / (double)s_maxR);
-                    }
+                    double rx = (rii / (double)s_maxR);
+                    double ry = (rqq / (double)s_maxR);
                     int xr = cx + (int)lrint(rx * (double)scale_eq * outer_margin);
                     int yr = cy - (int)lrint(ry * (double)scale_eq * outer_margin * y_aspect);
                     if (xr == x && yr == y) {
@@ -881,7 +880,6 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
             }
             if (used_guide) {
                 attroff(COLOR_PAIR(used_guide));
-                used_guide = 0;
                 /* Restore density color if active */
                 if (opts && opts->eye_color && has_colors()) {
                     /* Recompute density pair for this cell */
@@ -1056,7 +1054,12 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         s_den_eye_cap = den_sz;
     }
     unsigned short* den = s_den_eye;
-    memset(den, 0, den_sz * sizeof(unsigned short));
+    if (den_sz > 0 && den != NULL) {
+        memset(den, 0, den_sz * sizeof(unsigned short));
+    }
+    if (den == NULL) {
+        return;
+    }
     int mid = H / 2;
     /* Normalize peak with EMA for stability */
     static int s_peak = 256;
@@ -1228,6 +1231,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                     if (idx >= uni_len) {
                         idx = uni_len - 1;
                     }
+                    (void)idx; // reserve for overlays using density index
                     /* Color mapping (based on g) */
                     if (opts->eye_color && has_colors()) {
                         int ci = (int)lrint(g * (double)(color_len - 1));
@@ -1330,7 +1334,6 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
             /* If we used guide color, restore previous density color */
             if (used_guide) {
                 attroff(COLOR_PAIR(used_guide));
-                used_guide = 0;
                 /* Re-enable density color if was active */
                 if (opts->eye_color && has_colors()) {
                     /* recompute f to restore approximate density color */
@@ -3808,13 +3811,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     }
                 }
                 for (int k = 0; k < state->group_tally; k++) {
-                    if (state->group_array[k].groupNumber == edacs_channel_tree[i][2]
-                        && edacs_channel_tree[i][2] != 0) {
-                        printw(" [%s]", state->group_array[k].groupName);
-                        printw("[%s]", state->group_array[k].groupMode);
-                        break;
-                    } else if (state->group_array[k].groupNumber == edacs_channel_tree[i][3]
-                               && edacs_channel_tree[i][3] != 0) {
+                    if ((state->group_array[k].groupNumber == edacs_channel_tree[i][2] && edacs_channel_tree[i][2] != 0)
+                        || (state->group_array[k].groupNumber == edacs_channel_tree[i][3]
+                            && edacs_channel_tree[i][3] != 0)) {
                         printw(" [%s]", state->group_array[k].groupName);
                         printw("[%s]", state->group_array[k].groupMode);
                         break;

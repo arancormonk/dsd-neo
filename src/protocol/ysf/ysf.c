@@ -927,7 +927,6 @@ processYSF(dsd_opts* opts, dsd_state* state) {
 
             //VeCH
             k = 0;
-            l = 0;
             memset(vech_bits, 0, sizeof(vech_bits));
             memset(temp, 0, sizeof(temp));
 

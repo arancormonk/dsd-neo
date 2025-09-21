@@ -45,8 +45,6 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
     uint8_t emb_ok = 0;
     uint8_t tact_okay = 0;
-    uint8_t cach_err = 0;
-    UNUSED(cach_err);
 
     uint8_t internalslot;
     uint8_t vc1;
@@ -55,8 +53,6 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
     //assign as nonsensical numbers
     uint8_t cc = 25;
     uint8_t power = 9; //power and pre-emption indicator
-    uint8_t lcss = 9;
-    UNUSED2(cc, lcss);
 
     //would be ideal to grab all dibits and break them into bits to pass to new data handler?
     uint8_t dummy_bits[196];
@@ -109,7 +105,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
         memset(emb_pdu, 0, sizeof(emb_pdu));
         memset(syncdata, 0, sizeof(syncdata));
 
-        internalslot = -1; //reset here so we know if this value is being set properly
+        // internalslot is set from tact bits before use
         for (i = 0; i < 12; i++) {
             dibit = getDibit(opts, state);
             state->dmr_stereo_payload[i] = dibit;
@@ -428,7 +424,6 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             } else if (emb_ok == 1) {
                 cc = ((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
                 power = emb_pdu[4];
-                lcss = ((emb_pdu[5] << 1) + emb_pdu[6]);
                 state->dmr_color_code = state->color_code = cc;
             }
 
@@ -582,7 +577,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 dmr_sbrc(opts, state, power);
             }
 
-            cach_err = dmr_cach(opts, state, cachdata);
+            (void)dmr_cach(opts, state, cachdata);
             if (opts->payload == 0) {
                 fprintf(stderr, "\n");
             }
@@ -621,14 +616,10 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             }
 
             //reset err checks
-            cach_err = 1;
             tact_okay = 0;
             emb_ok = 0;
 
-            //reset emb components
-            cc = 25;
-            power = 9;
-            lcss = 9;
+            //reset emb components not needed here; next frames will set
 
             //Extra safeguards to break loop
             // if ( (vc1 > 7 && vc2 > 7) ) goto END;
@@ -651,8 +642,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
         if (skipcount
             > 3) //after 3 onsecutive data frames, drop back to getFrameSync and process with dmr_data_sync (need one more in order to push last voice on slot 2 only voice)
         {
-            //set tests to all good so we don't get a bogus/redundant voice error
-            cach_err = 0;
+            //set tests to good so we don't get a bogus/redundant voice error
             tact_okay = 1;
             emb_ok = 1;
             goto END;
@@ -1017,7 +1007,7 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         dmr_late_entry_mi_fragment(opts, state, 1, m1, m2, m3);
     }
 
-    cach_err = dmr_cach(opts, state, cachdata);
+    (void)dmr_cach(opts, state, cachdata);
     if (opts->payload == 0) {
         fprintf(stderr, "\n");
     }

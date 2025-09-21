@@ -254,11 +254,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " Status Query");
             }
 
-            else if (lc_format == 0x54) {
-                fprintf(stderr, " Status Update");
-            }
-
-            else if (lc_format == 0x55) {
+            else if (lc_format == 0x54 || lc_format == 0x55) {
                 fprintf(stderr, " Status Update");
             }
 

@@ -52,7 +52,7 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
     enum { MAX_LCN = 4094 };
 
     int first_lcn = 0, last_lcn = 0;
-    long first_freq = 0, last_freq = 0;
+    long first_freq = 0;
     long long sum_df = 0; // sum of frequency deltas
     long long sum_dl = 0; // sum of LCN deltas
     int prev_lcn = 0;
@@ -70,7 +70,6 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
             first_freq = f;
         }
         last_lcn = l;
-        last_freq = f;
         anchors++;
         if (have_prev) {
             int dl = l - prev_lcn;
@@ -102,9 +101,6 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
     // Validate: ensure deviations of each anchor from modeled line are small
     // Model: f(l) = first_freq + (l - first_lcn) * step
     long max_err = 0;
-    have_prev = 0;
-    prev_lcn = 0;
-    prev_freq = 0;
     for (int l = 1; l <= MAX_LCN; l++) {
         long f = state->trunk_chan_map[l];
         if (f == 0) {
@@ -355,15 +351,20 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(
                         &cs_pdu_bits[112], 4); //see 7.2.19.7 = 0 for channel parms, 1 through FFFF reserved
                     mbc_res2 = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[116], 2);
-                    long long int mbc_cdefparms =
-                        (unsigned long long int)ConvertBitIntoBytes(&cs_pdu_bits[118], 58); //see 7.2.19.7.1
+                    mbc_cdefparms = (unsigned long long int)ConvertBitIntoBytes(&cs_pdu_bits[118], 58); //see 7.2.19.7.1
+
+                    // mark assigned-but-optional fields as used in this context
+                    (void)mbc_lb;
+                    (void)mbc_pf;
+                    (void)mbc_csbko;
+                    (void)mbc_res;
+                    (void)mbc_cc;
+                    (void)mbc_res2;
 
                     //this is how you read the 58 parm bits according to the appendix 7.2.19.7.1
                     if (mbc_cdeftype == 0) //if 0, then absolute channel parms
                     {
                         mbc_lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-                        mbc_abs_tx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[130], 10);
-                        mbc_abs_tx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[140], 13);
                         mbc_abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
                         mbc_abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
 
@@ -1973,53 +1974,25 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                     //start position;
                     start = 0;
-                    if (bank_one & 0xF0) {
+                    if ((bank_one & 0xF0) || (rest_channel < 5)) {
                         start = 0;
-                    } else if (rest_channel < 5) {
-                        start = 0;
-                    }
-
-                    else if (bank_one & 0xF) {
+                    } else if ((bank_one & 0xF) || (rest_channel > 4 && rest_channel < 9)) {
                         start = 4;
-                    } else if (rest_channel > 4 && rest_channel < 9) {
-                        start = 4;
-                    }
-
-                    else if (bank_two & 0xF0) {
+                    } else if ((bank_two & 0xF0) || (rest_channel > 8 && rest_channel < 13)) {
                         start = 8;
-                    } else if (rest_channel > 8 && rest_channel < 13) {
-                        start = 8;
-                    }
-
-                    else if (bank_two & 0xF) {
-                        start = 12;
-                    } else if (rest_channel > 12) {
+                    } else if ((bank_two & 0xF) || (rest_channel > 12)) {
                         start = 12;
                     }
 
                     //end position;
                     end = 16;
-                    if (bank_two & 0xF) {
+                    if ((bank_two & 0xF) || (rest_channel > 12)) {
                         end = 16;
-                    } else if (rest_channel > 12) {
-                        end = 16;
-                    }
-
-                    else if (bank_two & 0xF0) {
+                    } else if ((bank_two & 0xF0) || (rest_channel > 9 && rest_channel < 13)) {
                         end = 12;
-                    } else if (rest_channel > 9 && rest_channel < 13) {
-                        end = 12;
-                    }
-
-                    else if (bank_one & 0xF) {
+                    } else if ((bank_one & 0xF) || (rest_channel > 4 && rest_channel < 9)) {
                         end = 8;
-                    } else if (rest_channel > 4 && rest_channel < 9) {
-                        end = 8;
-                    }
-
-                    else if (bank_one & 0xF0) {
-                        end = 4;
-                    } else if (rest_channel < 5) {
+                    } else if ((bank_one & 0xF0) || (rest_channel < 5)) {
                         end = 4;
                     }
 
@@ -2251,7 +2224,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     if (fl == 1 && opts->payload == 1) {
                         fprintf(stderr, "%s\n", KYEL);
                         fprintf(stderr, " CAP+ Multi Block PDU \n  ");
-                        fl_bytes = 0;
+                        /* fl_bytes will be set per-iteration below */
                         for (i = 0; i < (10 + (block_num * 7)); i++) {
                             fl_bytes = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][((size_t)i * 8)], 8);
                             fprintf(stderr, "[%02X]", fl_bytes);
@@ -2605,11 +2578,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                 //Run p_clear to decide whether or not to return to the control channel
                 uint8_t dummy[12];
-                uint8_t* dbits;
+                uint8_t dbits_local[1] = {0};
                 memset(dummy, 0, sizeof(dummy));
                 dummy[0] = 46;
                 dummy[1] = 12;
-                dmr_cspdu(opts, state, dbits, dummy, 1, 0);
+                dmr_cspdu(opts, state, dbits_local, dummy, 1, 0);
 
                 state->dmr_mfid = 0x06;
                 sprintf(state->dmr_branding, "%s", "Motorola");

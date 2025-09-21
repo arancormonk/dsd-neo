@@ -195,7 +195,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
                 off += snprintf(hdr + off, sizeof(hdr) - off, "- Source: %d Target: %d ", source, target);
             }
             if (dpf != 15 && is_xpt == 1 && gi == 0) {
-                off += snprintf(hdr + off, sizeof(hdr) - off, "Hash: %d ", tg_hash);
+                (void)snprintf(hdr + off, sizeof(hdr) - off, "Hash: %d ", tg_hash);
             }
             fprintf(stderr, "%s", hdr);
         }
@@ -231,9 +231,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
                 sprintf(mfid_string, "%s", "Moto"); //could just also be a generic catch all for DMRA
             } else if (p_mfid == 0x58) {
                 sprintf(mfid_string, "%s", "Tait");
-            } else if (p_mfid == 0x68) {
-                sprintf(mfid_string, "%s", "Hytera");
-            } else if (p_mfid == 0x08) {
+            } else if (p_mfid == 0x68 || p_mfid == 0x08) {
                 sprintf(mfid_string, "%s", "Hytera");
             } else if (p_mfid == 0x06) {
                 sprintf(mfid_string, "%s", "Trid/Mot");
@@ -262,9 +260,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
                 sprintf(udtf_string, "%s", "IP Addr");
             } else if (udt_format == 0x07) {
                 sprintf(udtf_string, "%s", "UTF-16"); //16-bit Unicode Chars
-            } else if (udt_format == 0x08) {
-                sprintf(udtf_string, "%s", "Manu Spec"); //Manufacturer Specific
-            } else if (udt_format == 0x09) {
+            } else if (udt_format == 0x08 || udt_format == 0x09) {
                 sprintf(udtf_string, "%s", "Manu Spec"); //Manufacturer Specific
             } else if (udt_format == 0x0A) {
                 sprintf(udtf_string, "%s", "Mixed UTF"); //Appended block contains addr and 16-bit UTF-16BE
@@ -463,11 +459,11 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
             //p_sap 1 on mfid 10 (moto) has been observed as the first block of LRRP data (unique fixed format?)
             if (p_mfid == 0x10 && p_sap == 1) {
                 //add the header to the first 10 bytes of the storage (sans this header's CRC)
-                int8_t start = 0;
-                int8_t len = 10 - start;
+                size_t start = 0;
+                size_t len = 10U - start;
                 memcpy(state->dmr_pdu_sf[slot], dheader + start, len * sizeof(uint8_t));
                 state->data_block_counter[slot]++;
-                state->data_byte_ctr[slot] = len;
+                state->data_byte_ctr[slot] = (uint16_t)len;
                 state->data_p_head[slot] = 1;
 
                 //my observation on chained p_head is that the enc header will come first, and then
@@ -1048,9 +1044,8 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
     uint8_t pf = 0; //mbc protect flag
 
     uint8_t slot = state->currentslot;
-    int blocks;
+    int blocks = 1;
     uint8_t blockcounter = state->data_block_counter[slot];
-    int block_num = state->data_header_blocks[slot];
 
     uint32_t CRCCorrect = 0;
     uint32_t CRCComputed = 0;
@@ -1120,10 +1115,7 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                 dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
             }
 
-            //sanity check to prevent a negative or zero block_num or sending a negative value into the bit array
-            if (block_num < 1 || block_num == 0) {
-                block_num = 1;
-            }
+            // block_num is not used below for indexing; ensure future uses validate separately if needed
 
             CRCExtracted = (state->dmr_pdu_sf[slot][ctr - 4] << 24) | (state->dmr_pdu_sf[slot][ctr - 3] << 16)
                            | (state->dmr_pdu_sf[slot][ctr - 2] << 8) | (state->dmr_pdu_sf[slot][ctr - 1] << 0);
@@ -1165,24 +1157,16 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
             //confirmed working now!
             CRCComputed = (uint32_t)ComputeCrc32Bit(dmr_pdu_sf_bits, (ctr * 8) - 32);
 
-            //if the CRC32 is correct, I think its fair to assume we don't need to worry about if the
-            //individual CRC9s are correct on confirmed data blocks (but we can confirm now that they are all good)
-            if (CRCComputed == CRCExtracted) {
-                CRCCorrect = 1;
-            }
-
-            //If MNIS data with bad checksum, proceed anyways (not elegant, but other headers most likely RAS enabled anyways)
-            else if (state->data_header_format[slot] == 0xF && state->data_header_sap[slot] == 1) {
+            // Consider CRC correct when CRC matches, or for MNIS data (format 0xF, SAP 1)
+            if (CRCComputed == CRCExtracted
+                || (state->data_header_format[slot] == 0xF && state->data_header_sap[slot] == 1)) {
                 CRCCorrect = 1;
             }
 
             //check for encryption on PDU
             uint8_t enc_check = 0;
             uint8_t decrypted_pdu = 1;
-            if (slot == 0 && state->dmr_so == 0x100) {
-                enc_check = 1;
-                decrypted_pdu = 0;
-            } else if (slot == 1 && state->dmr_soR == 0x100) {
+            if ((slot == 0 && state->dmr_so == 0x100) || (slot == 1 && state->dmr_soR == 0x100)) {
                 enc_check = 1;
                 decrypted_pdu = 0;
             }
@@ -1330,21 +1314,7 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
                 //NOTE: Observed that keystream should not be applied to pad bytes or CRC
                 //apply keystream here, only if alg is 1 or 4 AND key is available!
-                if (alg == 1 && R != 0) {
-                    for (i = 0; i < end; i++) {
-                        state->dmr_pdu_sf[slot][i + start] ^= ob[i % 3096];
-                    }
-                }
-
-                else if (alg == 2 && R != 0) {
-                    for (i = 0; i < end; i++) {
-                        state->dmr_pdu_sf[slot][i + start] ^= ob[i % 3096];
-                    }
-                } else if (alg == 4 && akl != 0) {
-                    for (i = 0; i < end; i++) {
-                        state->dmr_pdu_sf[slot][i + start] ^= ob[i % 3096];
-                    }
-                } else if (alg == 5 && akl != 0) {
+                if ((alg == 1 && R != 0) || (alg == 2 && R != 0) || (alg == 4 && akl != 0) || (alg == 5 && akl != 0)) {
                     for (i = 0; i < end; i++) {
                         state->dmr_pdu_sf[slot][i + start] ^= ob[i % 3096];
                     }

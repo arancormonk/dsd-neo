@@ -170,15 +170,17 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 
             //open file by name that is supplied in the ncurses terminal, or cli
             pFile = fopen(opts->lrrp_out_file, "a");
-            fprintf(pFile, "%s\t", datestr);
-            fprintf(pFile, "%s\t", timestr);
-            fprintf(pFile, "%08d\t", add_hash);
-            fprintf(pFile, "%.5lf\t", latitude);
-            fprintf(pFile, "%.5lf\t", longitude);
-            fprintf(pFile, "%d\t", vt); //speed in km/h
-            fprintf(pFile, "%d\t", dt); //direction of travel
-            fprintf(pFile, "\n");
-            fclose(pFile);
+            if (pFile != NULL) {
+                fprintf(pFile, "%s\t", datestr);
+                fprintf(pFile, "%s\t", timestr);
+                fprintf(pFile, "%08d\t", add_hash);
+                fprintf(pFile, "%.5lf\t", latitude);
+                fprintf(pFile, "%.5lf\t", longitude);
+                fprintf(pFile, "%d\t", vt); //speed in km/h
+                fprintf(pFile, "%d\t", dt); //direction of travel
+                fprintf(pFile, "\n");
+                fclose(pFile);
+            }
 
             /* stack buffers; no free */
         }
@@ -296,15 +298,17 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
         }
         //open file by name that is supplied in the ncurses terminal, or cli
         pFile = fopen(opts->lrrp_out_file, "a");
-        fprintf(pFile, "%s\t", datestr);
-        fprintf(pFile, "%s\t", timestr); //could switch to UTC time if desired, but would require local user offset
-        fprintf(pFile, "%08d\t", src);
-        fprintf(pFile, "%.6lf\t", latitude);
-        fprintf(pFile, "%.6lf\t", longitude);
-        fprintf(pFile, "%d\t ", s);
-        fprintf(pFile, "%d\t ", a);
-        fprintf(pFile, "\n");
-        fclose(pFile);
+        if (pFile != NULL) {
+            fprintf(pFile, "%s\t", datestr);
+            fprintf(pFile, "%s\t", timestr); //could switch to UTC time if desired, but would require local user offset
+            fprintf(pFile, "%08d\t", src);
+            fprintf(pFile, "%.6lf\t", latitude);
+            fprintf(pFile, "%.6lf\t", longitude);
+            fprintf(pFile, "%d\t ", s);
+            fprintf(pFile, "%d\t ", a);
+            fprintf(pFile, "\n");
+            fclose(pFile);
+        }
 
         /* stack buffers; no free */
     }
@@ -445,15 +449,17 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 
         //open file by name that is supplied in the ncurses terminal, or cli
         pFile = fopen(opts->lrrp_out_file, "a");
-        fprintf(pFile, "%s\t", datestr);
-        fprintf(pFile, "%s\t", timestr); //could switch to UTC time on PDU if desired
-        fprintf(pFile, "%08d\t", src);
-        fprintf(pFile, "%.6lf\t", latitude);
-        fprintf(pFile, "%.6lf\t", longitude);
-        fprintf(pFile, "%d\t ", s);
-        fprintf(pFile, "%d\t ", a);
-        fprintf(pFile, "\n");
-        fclose(pFile);
+        if (pFile != NULL) {
+            fprintf(pFile, "%s\t", datestr);
+            fprintf(pFile, "%s\t", timestr); //could switch to UTC time on PDU if desired
+            fprintf(pFile, "%08d\t", src);
+            fprintf(pFile, "%.6lf\t", latitude);
+            fprintf(pFile, "%.6lf\t", longitude);
+            fprintf(pFile, "%d\t ", s);
+            fprintf(pFile, "%d\t ", a);
+            fprintf(pFile, "\n");
+            fclose(pFile);
+        }
 
         /* stack buffers; no free */
     }
@@ -582,15 +588,17 @@ harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input) {
 
         //open file by name that is supplied in the ncurses terminal, or cli
         pFile = fopen(opts->lrrp_out_file, "a");
-        fprintf(pFile, "%s\t", datestr);
-        fprintf(pFile, "%s\t", timestr);
-        fprintf(pFile, "%08d\t", src);
-        fprintf(pFile, "%.6lf\t", lat_dec);
-        fprintf(pFile, "%.6lf\t", lon_dec);
-        fprintf(pFile, "%d\t ", s);
-        fprintf(pFile, "%d\t ", a);
-        fprintf(pFile, "\n");
-        fclose(pFile);
+        if (pFile != NULL) {
+            fprintf(pFile, "%s\t", datestr);
+            fprintf(pFile, "%s\t", timestr);
+            fprintf(pFile, "%08d\t", src);
+            fprintf(pFile, "%.6lf\t", lat_dec);
+            fprintf(pFile, "%.6lf\t", lon_dec);
+            fprintf(pFile, "%d\t ", s);
+            fprintf(pFile, "%d\t ", a);
+            fprintf(pFile, "\n");
+            fclose(pFile);
+        }
 
         if (timestr != NULL) {
             free(timestr);
@@ -708,15 +716,18 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
                 //open file by name that is supplied in the ncurses terminal, or cli
                 pFile = fopen(opts->lrrp_out_file, "a");
-                fprintf(pFile, "%s\t", datestr);
-                fprintf(pFile, "%s\t", timestr);
-                fprintf(pFile, "%08d\t", src);
-                fprintf(pFile, "%.5lf\t", latitude);
-                fprintf(pFile, "%.5lf\t", longitude);
-                fprintf(pFile, "0\t "); //zero for velocity
-                fprintf(pFile, "0\t "); //zero for azimuth
-                fprintf(pFile, "\n");
-                fclose(pFile);
+                if (pFile != NULL) {
+                    fprintf(pFile, "%s\t", datestr);
+                    fprintf(pFile, "%s\t", timestr);
+                    fprintf(pFile, "%08d\t", src);
+                    fprintf(pFile, "%.5lf\t", latitude);
+                    fprintf(pFile, "%.5lf\t", longitude);
+                    fprintf(pFile, "0\t "); //zero for velocity
+                    fprintf(pFile, "0\t "); //zero for azimuth
+                    fprintf(pFile, "\n");
+                    fclose(pFile);
+                }
+                // pFile is closed above when non-NULL
             }
         }
     }
@@ -818,15 +829,18 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
                 //open file by name that is supplied in the ncurses terminal, or cli
                 pFile = fopen(opts->lrrp_out_file, "a");
-                fprintf(pFile, "%s\t", datestr);
-                fprintf(pFile, "%s\t", timestr);
-                fprintf(pFile, "%08d\t", src);
-                fprintf(pFile, "%.5lf\t", latitude);
-                fprintf(pFile, "%.5lf\t", longitude);
-                fprintf(pFile, "0\t "); //zero for velocity
-                fprintf(pFile, "0\t "); //zero for azimuth
-                fprintf(pFile, "\n");
-                fclose(pFile);
+                if (pFile != NULL) {
+                    fprintf(pFile, "%s\t", datestr);
+                    fprintf(pFile, "%s\t", timestr);
+                    fprintf(pFile, "%08d\t", src);
+                    fprintf(pFile, "%.5lf\t", latitude);
+                    fprintf(pFile, "%.5lf\t", longitude);
+                    fprintf(pFile, "0\t "); //zero for velocity
+                    fprintf(pFile, "0\t "); //zero for azimuth
+                    fprintf(pFile, "\n");
+                    fclose(pFile);
+                }
+                // pFile is closed above when non-NULL
 
                 if (timestr != NULL) {
                     free(timestr);

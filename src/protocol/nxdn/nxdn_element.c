@@ -423,9 +423,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     uint8_t VoiceCallOption = 0;
     uint16_t SourceUnitID = 0;
     uint16_t DestinationID = 0;
-    uint8_t CallTimer = 0;
+    // uint8_t CallTimer = 0; // unused
     uint16_t Channel = 0;
-    UNUSED(CallTimer);
 
     uint8_t DuplexMode[32] = {0};
     uint8_t TransmissionMode[32] = {0};
@@ -439,14 +438,10 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     MessageType |= (Message[6] & 1) << 1;
     MessageType |= (Message[7] & 1) << 0;
 
-    if (MessageType == 0x4) {
-        fprintf(stderr, "%s", KGRN); //VCALL_ASSGN
-    } else if (MessageType == 0x05) {
-        fprintf(stderr, "%s", KGRN); //VCALL_ASSGN_DUP
-    } else if (MessageType == 0x0E) {
-        fprintf(stderr, "%s", KCYN); //DCALL_ASSGN
-    } else if (MessageType == 0x0D) {
-        fprintf(stderr, "%s", KCYN); //DCALL_ASSGN_DUP
+    if (MessageType == 0x04 || MessageType == 0x05) {
+        fprintf(stderr, "%s", KGRN); // VCALL_ASSGN / VCALL_ASSGN_DUP
+    } else if (MessageType == 0x0E || MessageType == 0x0D) {
+        fprintf(stderr, "%s", KCYN); // DCALL_ASSGN / DCALL_ASSGN_DUP
     }
 
     //DFA specific variables
@@ -475,17 +470,16 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     DestinationID = (uint16_t)ConvertBitIntoBytes(&Message[40], 16);
     state->NxdnElementsContent.DestinationID = DestinationID;
 
-    /* Decode "Call Timer" */ //unsure of format of call timer, not required info for trunking
-    CallTimer = (uint8_t)ConvertBitIntoBytes(&Message[56], 6);
+    /* Decode "Call Timer" */ // not used
 
     /* Decode "Channel" */
     Channel = (uint16_t)ConvertBitIntoBytes(&Message[62], 10);
 
     /* Decode DFA-only variables*/
     if (state->nxdn_rcn == 1) {
-        bw = (uint8_t)ConvertBitIntoBytes(&Message[62], 2);
+        // bw unused
         OFN = (uint16_t)ConvertBitIntoBytes(&Message[64], 16);
-        IFN = (uint16_t)ConvertBitIntoBytes(&Message[80], 16);
+        // IFN unused
     }
 
     //Part 1-E Common Air Interface Ver.1.3 - 6.4.1.23. Voice Call Assignment (VCALL_ASSGN)
@@ -653,16 +647,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     }
 
     for (int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == DestinationID && DestinationID != 0) //destination, if it isn't 0
-        {
-            fprintf(stderr, " [%s]", state->group_array[i].groupName);
-            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-            mode[sizeof(mode) - 1] = '\0';
-            break;
-        }
-        //might not be ideal if both source and group/target are both in the array
-        else if (state->group_array[i].groupNumber == SourceUnitID && DestinationID == 0) //source, if destination is 0
-        {
+        if ((state->group_array[i].groupNumber == DestinationID && DestinationID != 0)
+            || (state->group_array[i].groupNumber == SourceUnitID && DestinationID == 0)) {
             fprintf(stderr, " [%s]", state->group_array[i].groupName);
             strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
             mode[sizeof(mode) - 1] = '\0';
@@ -943,7 +929,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     location_id = (uint32_t)ConvertBitIntoBytes(&Message[8], 24);
     channel1sts = (uint8_t)ConvertBitIntoBytes(&Message[32], 6);
     channel1 = (uint16_t)ConvertBitIntoBytes(&Message[38], 10);
-    channel2sts = (uint8_t)ConvertBitIntoBytes(&Message[48], 6);
+    // channel2sts unused
     channel2 = (uint16_t)ConvertBitIntoBytes(&Message[54], 10);
 
     fprintf(stderr, "%s", KYEL);
@@ -968,8 +954,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         if (channel1sts & 0x04) {
             fprintf(stderr, "Candidate Deleted ");
         }
-        freq1 = nxdn_channel_to_frequency(opts, state, channel1);
-        freq2 = nxdn_channel_to_frequency(opts, state, channel2);
+        // frequencies not used here
     }
 
     //DFA version
@@ -982,7 +967,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 IFN1);
 
         //facch1 will not have the below items -- should be NULL or 0 if not available
-        bw2 = (uint8_t)ConvertBitIntoBytes(&Message[78], 2);
+        // bw2 unused
         OFN2 = (uint16_t)ConvertBitIntoBytes(&Message[80], 16);
         IFN2 = (uint16_t)ConvertBitIntoBytes(&Message[96], 16);
 
@@ -1133,11 +1118,11 @@ NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     if (state->nxdn_rcn == 0) {
         if (channel1 != 0) {
             fprintf(stderr, "\n Control Channel 1 [%03X][%04d] ", channel1, channel1);
-            freq1 = nxdn_channel_to_frequency(opts, state, channel1);
+            // freq1 not used
         }
         if (channel2 != 0) {
             fprintf(stderr, "\n Control Channel 2 [%03X][%04d] ", channel2, channel2);
-            freq2 = nxdn_channel_to_frequency(opts, state, channel2);
+            // freq2 not used
         }
     } else {
         ; //DFA version does not carry an OFN/IFN value, so no freqs
@@ -1297,14 +1282,12 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     MessageType |= (Message[6] & 1) << 1;
     MessageType |= (Message[7] & 1) << 0;
 
-    if (MessageType == 0x1) {
-        fprintf(stderr, "%s", KGRN); //VCALL
-    } else if (MessageType == 0x07) {
-        fprintf(stderr, "%s", KYEL); //TX_REL_EXT
-    } else if (MessageType == 0x08) {
-        fprintf(stderr, "%s", KYEL); //TX_REL
+    if (MessageType == 0x01) {
+        fprintf(stderr, "%s", KGRN); // VCALL
+    } else if (MessageType == 0x07 || MessageType == 0x08) {
+        fprintf(stderr, "%s", KYEL); // TX_REL_EXT / TX_REL
     } else if (MessageType == 0x11) {
-        fprintf(stderr, "%s", KRED); //DISC
+        fprintf(stderr, "%s", KRED); // DISC
     }
 
     /* Decode "CC Option" */
@@ -1338,7 +1321,7 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     }
     if (idas) {
         rep1 = (SourceUnitID >> 11) & 0x1F;
-        rep2 = (DestinationID >> 11) & 0x1F;
+        // rep2 not used
         SourceUnitID = SourceUnitID & 0x7FF;
         DestinationID = DestinationID & 0x7FF;
     }
@@ -1767,12 +1750,10 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                 fprintf(stderr, "Narrow; ");
             }
             fprintf(stderr, "Site Code: %d ", rep2);
-            if (rep2 == 0) {
+            if (rep2 == 0 || rep2 >= 251) {
                 fprintf(stderr, "Reserved; ");
-            } else if (rep2 < 251) {
-                fprintf(stderr, "Open Access; "); //Usable voluntary every TRS...?
-            } else {
-                fprintf(stderr, "Reserved; ");
+            } else {                              // rep2 < 251
+                fprintf(stderr, "Open Access; "); // Usable voluntary every TRS...?
             }
             state->nxdn_location_site_code = sitet;
             state->nxdn_location_sys_code = sitet;

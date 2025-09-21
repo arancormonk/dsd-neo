@@ -157,7 +157,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         if (type == 1 && fid == 0x10 && (flco == 0x04 || flco == 0x07)) //0x07 appears to be a cap+ txi private call
         {
             is_cap_plus = 1;
-            capsite = (uint8_t)ConvertBitIntoBytes(&lc_bits[48], 4); //don't believe so
+            (void)ConvertBitIntoBytes(&lc_bits[48], 4);              //don't believe so
             restchannel = (int)ConvertBitIntoBytes(&lc_bits[52], 4); //
             source = (uint32_t)ConvertBitIntoBytes(&lc_bits[56], 16);
             if (flco == 0x07) {
@@ -265,10 +265,10 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             source = (uint32_t)ConvertBitIntoBytes(&lc_bits[56], 16); //16-bit allocation
 
             //the bits that are left behind
-            xpt_res_a = (uint8_t)ConvertBitIntoBytes(
+            (void)ConvertBitIntoBytes(
                 &lc_bits[20],
                 4); //after the xpt_int channel, before the free repeater channel -- call being established = 7; call connected = 0; ??
-            xpt_res_b = (uint8_t)ConvertBitIntoBytes(&lc_bits[48], 8); //where the first 8 bits of the SRC would be
+            (void)ConvertBitIntoBytes(&lc_bits[48], 8); //where the first 8 bits of the SRC would be
 
             //the crc8 hash is the value represented in the CSBK when dealing with private calls
             for (int i = 0; i < 16; i++) {
@@ -348,7 +348,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             //add string for ncurses terminal display
             sprintf(state->dmr_site_parms, "Free LCN - %d ", xpt_free);
 
-            is_xpt = 1;
+            // is_xpt already implied; no need to set here
             goto END_FLCO;
         }
 
@@ -647,12 +647,12 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
 
                 //Craft a fake CSBK pdu send it to run as a p_clear to return to CC if available
                 uint8_t dummy[12];
-                uint8_t* dbits;
+                uint8_t dbits_local[1] = {0};
                 memset(dummy, 0, sizeof(dummy));
                 dummy[0] = 46;
                 dummy[1] = 255;
                 if ((strcmp(gm, "B") == 0) && (strcmp(gn, "ENC LO") == 0)) { //&& (opts->trunk_tune_data_calls == 0)
-                    dmr_cspdu(opts, state, dbits, dummy, 1, 0);
+                    dmr_cspdu(opts, state, dbits_local, dummy, 1, 0);
                 }
             }
         }
@@ -894,12 +894,12 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
 
     //run hamming 7_4 on the tact_bits (redundant, since we do it earlier, but need the lcss)
     if (Hamming_7_4_decode(tact_bits)) {
-        at = tact_bits[0];   //any useful tricks with this? csbk on/off etc?
-        slot = tact_bits[1]; //
+        (void)tact_bits[0]; //any useful tricks with this? csbk on/off etc?
+        (void)tact_bits[1]; //
         lcss = (tact_bits[2] << 1) | tact_bits[3];
-        tact_valid = 1; //set to 1 for valid, else remains 0.
-                        //fprintf (stderr, "AT=%d LCSS=%d - ", at, lcss); //debug print
-    } else              //probably skip/memset/zeroes with else statement?
+        // tact_valid set but not used elsewhere
+        //fprintf (stderr, "AT=%d LCSS=%d - ", at, lcss); //debug print
+    } else //probably skip/memset/zeroes with else statement?
     {
         //do something?
         err = 1;
@@ -958,7 +958,6 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
     if (state->dmr_cach_counter > 3) //marginal/shaky/bad signal or tuned away
     {
         //zero out complete fragment array
-        lcss = 5; //toss away value
         state->dmr_cach_counter = 0;
         memset(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
         err = 1;
@@ -1014,22 +1013,19 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
         if (h1 && h2 && h3 && crc) {
             dmr_slco(opts, state, slco_bits);
         } else {
-            //this line break issue is wracking on my OCD for clean line breaks
-            if (opts->payload == 1 && state->dmrburstL == 16 && state->currentslot == 0)
-                ; //no line break if current slot is voice with payload enabled
-            else if (opts->payload == 1 && state->dmrburstR == 16 && state->currentslot == 1)
-                ; //no line break if current slot is voice with payload enabled
-            else {
+            // avoid extra line breaks when voice payload is active on current slot
+            if (!(opts->payload == 1
+                  && ((state->dmrburstL == 16 && state->currentslot == 0)
+                      || (state->dmrburstR == 16 && state->currentslot == 1)))) {
                 fprintf(stderr, "\n");
             }
             fprintf(stderr, "%s", KRED);
             fprintf(stderr, " SLCO CRC ERR");
             fprintf(stderr, "%s", KNRM);
-            if (opts->payload == 1 && state->dmrburstL == 16
-                && state->currentslot == 0) { //if current slot is voice with payload enabled
-                fprintf(stderr, "\n");
-            } else if (opts->payload == 1 && state->dmrburstR == 16
-                       && state->currentslot == 1) { //if current slot is voice with payload enabled
+            // keep output tidy for active-voice cases
+            if (opts->payload == 1
+                && ((state->dmrburstL == 16 && state->currentslot == 0)
+                    || (state->dmrburstR == 16 && state->currentslot == 1))) {
                 fprintf(stderr, "\n");
             }
         }

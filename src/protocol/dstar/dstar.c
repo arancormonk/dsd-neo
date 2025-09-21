@@ -14,8 +14,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     char ambe_fr[4][24];
     const int *w, *x;
     memset(ambe_fr, 0, sizeof(ambe_fr));
-    w = dW;
-    x = dX;
+    // w and x are initialized per frame below
 
     //20 voice and 19 slow data frames (20th is frame sync)
     for (j = 0; j < 21; j++) {
@@ -173,17 +172,13 @@ processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd) {
 
     //safety check, don't want to load nasty values into the strings
     for (i = 1; i < 60; i++) {
-        //substitue non-ascii characters for spaces
-        if (sd_bytes[i] < 0x20) {
-            sd_bytes[i] = 0x20;
-        } else if (sd_bytes[i] > 0x7E) {
+        // substitute non-ASCII characters for spaces
+        if (sd_bytes[i] < 0x20 || sd_bytes[i] > 0x7E) {
             sd_bytes[i] = 0x20;
         }
 
-        //substitue non-ascii characters for spaces
-        if (hd_bytes[i] < 0x20) {
-            hd_bytes[i] = 0x20;
-        } else if (hd_bytes[i] > 0x7E) {
+        // substitute non-ASCII characters for spaces
+        if (hd_bytes[i] < 0x20 || hd_bytes[i] > 0x7E) {
             hd_bytes[i] = 0x20;
         }
 

@@ -312,6 +312,9 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     opts->rtlsdr_center_freq = new_freq; //for ncurses terminal display after rtl is started up
 
     handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (handle < 0) {
+        return; // failed to create socket
+    }
 
     data[0] = 0;
     data[1] = new_freq & 0xFF;
@@ -323,7 +326,7 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = inet_addr("127.0.0.1"); //make user configurable later
     address.sin_port = htons(udp_port);
-    sendto(handle, data, 5, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
+    (void)sendto(handle, data, 5, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
 
     close(handle); //close socket after sending.
     s_last_udp_freq = frequency;

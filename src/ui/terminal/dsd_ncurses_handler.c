@@ -41,7 +41,6 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         for (int i = 0; i < 100000; i++) { //wonder how slow this will be
             getch();
         }
-        c = -1;
         return 1;
     }
 
@@ -291,7 +290,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
             int n = rtl_stream_spectrum_get_size();
             if (n > 64) {
-                n = rtl_stream_spectrum_set_size(n / 2);
+                (void)rtl_stream_spectrum_set_size(n / 2);
             }
         }
     }
@@ -300,7 +299,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
             int n = rtl_stream_spectrum_get_size();
             if (n < 1024) {
-                n = rtl_stream_spectrum_set_size(n * 2);
+                (void)rtl_stream_spectrum_set_size(n * 2);
             }
         }
     }
@@ -580,8 +579,10 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             FILE* pFile; //file pointer
             //open file by name that is supplied in the ncurses terminal, or cli
             pFile = fopen(opts->group_in_file, "a");
-            fprintf(pFile, "%d,B,LOCKOUT,%02X\n", state->lasttg, state->payload_algid);
-            fclose(pFile);
+            if (pFile != NULL) {
+                fprintf(pFile, "%d,B,LOCKOUT,%02X\n", state->lasttg, state->payload_algid);
+                fclose(pFile);
+            }
         }
 
         //extra safeguards due to sync issues with NXDN
@@ -662,8 +663,10 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             FILE* pFile; //file pointer
             //open file by name that is supplied in the ncurses terminal, or cli
             pFile = fopen(opts->group_in_file, "a");
-            fprintf(pFile, "%d,B,LOCKOUT,%02X\n", state->lasttgR, state->payload_algidR);
-            fclose(pFile);
+            if (pFile != NULL) {
+                fprintf(pFile, "%d,B,LOCKOUT,%02X\n", state->lasttgR, state->payload_algidR);
+                fclose(pFile);
+            }
         }
 
         //extra safeguards due to sync issues with NXDN
@@ -1140,13 +1143,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
     if (opts->frame_provoice == 1 && c == 'S') //'S' Key, toggle STD or EA mode and reset
     {
-        if (state->ea_mode == -1) {
-            state->ea_mode = 0;
-        } else if (state->ea_mode == 0) {
-            state->ea_mode = 1;
-        } else {
-            state->ea_mode = 0;
-        }
+        state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
 
         //reset -- test to make sure these don't do weird things when reset
         state->edacs_site_id = 0;

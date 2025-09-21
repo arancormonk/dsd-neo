@@ -596,11 +596,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        //reset for next rep
-        ec = -2;
-        err = -2;
-        protectbit = 0;
-        MFID = 0xFF;
+        // reset not needed; variables are overwritten on next iteration
 
         //check for last block bit
         if (lb) {

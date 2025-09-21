@@ -36,8 +36,8 @@ read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, in
         state->debug_prefix = 's';
 #endif
 
-        // Status bits now
-        status = getDibit(opts, state);
+        // Status bits now (unused)
+        (void)getDibit(opts, state);
         // TODO: do something useful with the status bits...
         if (did_read_status != NULL) {
             *did_read_status = 1;
@@ -175,7 +175,8 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
         }
 
         // Calculate the Golay 24 parity for the corrected hex word
-        encode_golay_24_6(corrected_hex_data + i * 6, parity);
+        ptrdiff_t off = (ptrdiff_t)i * 6;
+        encode_golay_24_6(corrected_hex_data + off, parity);
 
         // Now we know the parity we should have read from the signal. Use this information
         for (j = 0; j < 12; j += 2) // 6 iterations -> 6 dibits
@@ -278,7 +279,8 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         encode_reedsolomon_36_20_17((char*)hex_data, fixed_parity);
 
         // Correct the dibits that we read according with the corrected parity values
-        correct_golay_dibits_6(fixed_parity, 16, analog_signal_array + 20 * (3 + 6));
+        ptrdiff_t hoff = (ptrdiff_t)20 * (3 + 6);
+        correct_golay_dibits_6(fixed_parity, 16, analog_signal_array + hoff);
 
         // Now we have a bunch of dibits (composed of data and parity of different kinds) that we trust are all
         // correct. We also keep a record of the analog values from where each dibit is coming from.
@@ -438,7 +440,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25kid = strtol(kid, NULL, 2);
 
     skipDibit(opts, state, 5);
-    status = getDibit(opts, state);
+    (void)getDibit(opts, state);
     //TODO: Do something useful with the status bits...
 
     algidhex = strtol(algid, NULL, 2);
@@ -462,13 +464,8 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         if (mihex3) {
             fprintf(stderr, "-%02llX", mihex3);
         }
-        if (state->R != 0 && state->payload_algid == 0xAA) {
-            fprintf(stderr, " Key: %010llX", state->R);
-            opts->unmute_encrypted_p25 = 1;
-        } else if (state->R != 0 && state->payload_algid == 0x81) {
-            fprintf(stderr, " Key: %010llX", state->R);
-            opts->unmute_encrypted_p25 = 1;
-        } else if (state->R != 0 && state->payload_algid == 0x9F) {
+        if (state->R != 0
+            && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
             fprintf(stderr, " Key: %010llX", state->R);
             opts->unmute_encrypted_p25 = 1;
         } else if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {

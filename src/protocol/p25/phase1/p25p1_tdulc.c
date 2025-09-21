@@ -35,8 +35,8 @@ static void
 swap_hex_words_bits(char* dodeca) {
     int j;
     for (j = 0; j < 6; j++) {
-        int swap;
-        swap = dodeca[j];
+        unsigned char swap;
+        swap = (unsigned char)dodeca[j];
         dodeca[j] = dodeca[j + 6];
         dodeca[j + 6] = swap;
     }

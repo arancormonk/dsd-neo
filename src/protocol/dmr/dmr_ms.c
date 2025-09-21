@@ -181,12 +181,9 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
             emb_pdu[i + 8] = syncdata[i + 40];
         }
 
-        emb_ok = -1;
+        /* emb_ok unused */
         if (QR_16_7_6_decode(emb_pdu)) {
-            emb_ok = 1;
             cc = ((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
-            power = emb_pdu[4];
-            lcss = ((emb_pdu[5] << 1) + emb_pdu[6]);
             state->dmr_color_code = state->color_code = cc;
         }
 
@@ -323,10 +320,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
         vc++;
 
-        //reset emb components
-        cc = 25;
-        power = 9; //power and pre-emption indicator
-        lcss = 9;
+        //reset emb components (no-op values previously assigned were unused)
 
         //this is necessary because we need to skip and collect dibits, not just skip them
         if (vc > 6) {
@@ -657,15 +651,13 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
 
     //should just be loaded in the dmr_payload_buffer instead now
     //but we want to run getDibit so the buffer has actual good values in it
-    for (i = 0; i < 144; i++) //66
-    {
-        dibit = getDibit(opts, state);
-        state->dmr_stereo_payload[i] = 1; //set to one so first frame will fail intentionally instead of zero fill
+    for (i = 0; i < 144; i++) { // 66
+        (void)getDibit(opts, state);
+        state->dmr_stereo_payload[i] = 1; // set to one so first frame will fail intentionally instead of zero fill
     }
     //CACH + First Half Payload = 12 + 54
-    for (i = 0; i < 66; i++) //66
-    {
-        dibit = getDibit(opts, state);
+    for (i = 0; i < 66; i++) { // 66
+        (void)getDibit(opts, state);
         state->dmr_stereo_payload[i + 66] =
             1; ////set to one so first frame will fail intentionally instead of zero fill
     }

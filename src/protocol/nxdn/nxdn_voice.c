@@ -36,7 +36,7 @@ const int nZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 
 void
 nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182]) {
     int i;
-    int start, stop;
+    int start = 0, stop = 0;
     char ambe_fr[4][24];
 
     const int *w, *x, *y, *z;

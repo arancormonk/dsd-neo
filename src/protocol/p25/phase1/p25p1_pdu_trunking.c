@@ -227,7 +227,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         fprintf(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, channelt, channelr, group,
                 group);
         freq1 = process_channel_to_freq(opts, state, channelt);
-        freq2 = process_channel_to_freq(opts, state, channelr);
+        (void)process_channel_to_freq(opts, state, channelr);
 
         //add active channel to string for ncurses display
         sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; ", channelt, group);
@@ -315,7 +315,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 "%08lX-%08ld;",
                 svc, channelt, channelr, source, target, src_nid, src_sid, tgt_nid, tgt_sid);
         freq1 = process_channel_to_freq(opts, state, channelt);
-        freq2 = process_channel_to_freq(opts, state, channelr); //optional!
+        (void)process_channel_to_freq(opts, state, channelr); //optional!
 
         //add active channel to string for ncurses display
         sprintf(state->active_channel[0], "Active Ch: %04X TGT: %u; ", channelt, (uint32_t)target);
@@ -481,7 +481,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             fprintf(stderr, "\n  RES/P [%02X] CHAN-T [%04X] CHAN-R [%04X] SG [%d][%04X]", svc, channelt, channelr,
                     group, group);
             freq1 = process_channel_to_freq(opts, state, channelt);
-            freq2 = process_channel_to_freq(opts, state, channelr);
+            (void)process_channel_to_freq(opts, state, channelr);
 
             //add active channel to string for ncurses display
             sprintf(state->active_channel[0], "MFID90 Ch: %04X SG: %d ", channelt, group);

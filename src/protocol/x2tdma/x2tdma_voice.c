@@ -51,9 +51,7 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     mfid[8] = 0;
     lcinfo[56] = 0;
     // Initialize on demand below before first use; avoid dead store
-    eeei = 0;
-    aiei = 0;
-    burstd = 0;
+    // defer init until use; remove dead stores
     mutecurrentslot = 0;
     msMode = 0;
 
@@ -62,12 +60,12 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
         // 2nd half of previous slot
         for (i = 0; i < 54; i++) {
             if (j > 0) {
-                dibit = getDibit(opts, state);
+                (void)getDibit(opts, state);
             } else {
-                dibit = *dibit_p;
+                // skip one dibit from buffer
                 dibit_p++;
                 if (opts->inverted_x2tdma == 1) {
-                    dibit = (dibit ^ 2);
+                    // inverted dibit not used in this section
                 }
             }
         }
@@ -226,7 +224,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[26] = (1 & (syncdata[6] >> 1)) + 48;   // bit 1
                 lcinfo[36] = (1 & syncdata[6]) + 48;          // bit 0
                 lcinfo[46] = (1 & (syncdata[7] >> 1)) + 48;   // bit 1
-                parity = (1 & syncdata[7]) + 48;              // bit 0
                 lcformat[1] = (1 & (syncdata[8] >> 1)) + 48;  // bit 1
                 mfid[4] = (1 & syncdata[8]) + 48;             // bit 0
                 lcinfo[7] = (1 & (syncdata[9] >> 1)) + 48;    // bit 1
@@ -234,7 +231,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[27] = (1 & (syncdata[10] >> 1)) + 48;  // bit 1
                 lcinfo[37] = (1 & syncdata[10]) + 48;         // bit 0
                 lcinfo[47] = (1 & (syncdata[11] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[11]) + 48;             // bit 0
                 lcformat[2] = (1 & (syncdata[12] >> 1)) + 48; // bit 1
                 mfid[5] = (1 & syncdata[12]) + 48;            // bit 0
                 lcinfo[8] = (1 & (syncdata[13] >> 1)) + 48;   // bit 1
@@ -242,7 +238,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[28] = (1 & (syncdata[14] >> 1)) + 48;  // bit 1
                 lcinfo[38] = (1 & syncdata[14]) + 48;         // bit 0
                 lcinfo[48] = (1 & (syncdata[15] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[15]) + 48;             // bit 0
                 lcformat[3] = (1 & (syncdata[16] >> 1)) + 48; // bit 1
                 mfid[6] = (1 & syncdata[16]) + 48;            // bit 0
                 lcinfo[9] = (1 & (syncdata[17] >> 1)) + 48;   // bit 1
@@ -250,7 +245,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[29] = (1 & (syncdata[18] >> 1)) + 48;  // bit 1
                 lcinfo[39] = (1 & syncdata[18]) + 48;         // bit 0
                 lcinfo[49] = (1 & (syncdata[19] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[19]) + 48;             // bit 0
             } else {
                 mi[0] = (1 & (syncdata[4] >> 1)) + 48;   // bit 1
                 mi[11] = (1 & syncdata[4]) + 48;         // bit 0
@@ -259,7 +253,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[42] = (1 & (syncdata[6] >> 1)) + 48;  // bit 1
                 mi[52] = (1 & syncdata[6]) + 48;         // bit 0
                 mi[62] = (1 & (syncdata[7] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[7]) + 48;         // bit 0
                 mi[1] = (1 & (syncdata[8] >> 1)) + 48;   // bit 1
                 mi[12] = (1 & syncdata[8]) + 48;         // bit 0
                 mi[23] = (1 & (syncdata[9] >> 1)) + 48;  // bit 1
@@ -267,7 +260,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[43] = (1 & (syncdata[10] >> 1)) + 48; // bit 1
                 mi[53] = (1 & syncdata[10]) + 48;        // bit 0
                 mi[63] = (1 & (syncdata[11] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[11]) + 48;        // bit 0
                 mi[2] = (1 & (syncdata[12] >> 1)) + 48;  // bit 1
                 mi[13] = (1 & syncdata[12]) + 48;        // bit 0
                 mi[24] = (1 & (syncdata[13] >> 1)) + 48; // bit 1
@@ -275,7 +267,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[44] = (1 & (syncdata[14] >> 1)) + 48; // bit 1
                 mi[54] = (1 & syncdata[14]) + 48;        // bit 0
                 mi[64] = (1 & (syncdata[15] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[15]) + 48;        // bit 0
                 mi[3] = (1 & (syncdata[16] >> 1)) + 48;  // bit 1
                 mi[14] = (1 & syncdata[16]) + 48;        // bit 0
                 mi[25] = (1 & (syncdata[17] >> 1)) + 48; // bit 1
@@ -283,7 +274,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[45] = (1 & (syncdata[18] >> 1)) + 48; // bit 1
                 mi[55] = (1 & syncdata[18]) + 48;        // bit 0
                 mi[65] = (1 & (syncdata[19] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[19]) + 48;        // bit 0
             }
         } else if (j == 2) {
             if ((eeei == 0) && (aiei == 0)) {
@@ -294,7 +284,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[30] = (1 & (syncdata[6] >> 1)) + 48;   // bit 1
                 lcinfo[40] = (1 & syncdata[6]) + 48;          // bit 0
                 lcinfo[50] = (1 & (syncdata[7] >> 1)) + 48;   // bit 1
-                parity = (1 & syncdata[7]) + 48;              // bit 0
                 lcformat[5] = (1 & (syncdata[8] >> 1)) + 48;  // bit 1
                 lcinfo[0] = (1 & syncdata[8]) + 48;           // bit 0
                 lcinfo[11] = (1 & (syncdata[9] >> 1)) + 48;   // bit 1
@@ -302,7 +291,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[31] = (1 & (syncdata[10] >> 1)) + 48;  // bit 1
                 lcinfo[41] = (1 & syncdata[10]) + 48;         // bit 0
                 lcinfo[51] = (1 & (syncdata[11] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[11]) + 48;             // bit 0
                 lcformat[6] = (1 & (syncdata[12] >> 1)) + 48; // bit 1
                 lcinfo[1] = (1 & syncdata[12]) + 48;          // bit 0
                 lcinfo[12] = (1 & (syncdata[13] >> 1)) + 48;  // bit 1
@@ -310,7 +298,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[32] = (1 & (syncdata[14] >> 1)) + 48;  // bit 1
                 lcinfo[42] = (1 & syncdata[14]) + 48;         // bit 0
                 lcinfo[52] = (1 & (syncdata[15] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[15]) + 48;             // bit 0
                 lcformat[7] = (1 & (syncdata[16] >> 1)) + 48; // bit 1
                 lcinfo[2] = (1 & syncdata[16]) + 48;          // bit 0
                 lcinfo[13] = (1 & (syncdata[17] >> 1)) + 48;  // bit 1
@@ -318,7 +305,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[33] = (1 & (syncdata[18] >> 1)) + 48;  // bit 1
                 lcinfo[43] = (1 & syncdata[18]) + 48;         // bit 0
                 lcinfo[53] = (1 & (syncdata[19] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[19]) + 48;             // bit 0
             } else {
                 mi[4] = (1 & (syncdata[4] >> 1)) + 48;   // bit 1
                 mi[15] = (1 & syncdata[4]) + 48;         // bit 0
@@ -327,7 +313,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[46] = (1 & (syncdata[6] >> 1)) + 48;  // bit 1
                 mi[56] = (1 & syncdata[6]) + 48;         // bit 0
                 mi[66] = (1 & (syncdata[7] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[7]) + 48;         // bit 0
                 mi[5] = (1 & (syncdata[8] >> 1)) + 48;   // bit 1
                 mi[16] = (1 & syncdata[8]) + 48;         // bit 0
                 mi[27] = (1 & (syncdata[9] >> 1)) + 48;  // bit 1
@@ -335,7 +320,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[47] = (1 & (syncdata[10] >> 1)) + 48; // bit 1
                 mi[57] = (1 & syncdata[10]) + 48;        // bit 0
                 mi[67] = (1 & (syncdata[11] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[11]) + 48;        // bit 0
                 mi[6] = (1 & (syncdata[12] >> 1)) + 48;  // bit 1
                 mi[17] = (1 & syncdata[12]) + 48;        // bit 0
                 mi[28] = (1 & (syncdata[13] >> 1)) + 48; // bit 1
@@ -343,7 +327,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[48] = (1 & (syncdata[14] >> 1)) + 48; // bit 1
                 mi[58] = (1 & syncdata[14]) + 48;        // bit 0
                 mi[68] = (1 & (syncdata[15] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[15]) + 48;        // bit 0
                 mi[7] = (1 & (syncdata[16] >> 1)) + 48;  // bit 1
                 mi[18] = (1 & syncdata[16]) + 48;        // bit 0
                 mi[29] = (1 & (syncdata[17] >> 1)) + 48; // bit 1
@@ -351,7 +334,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[49] = (1 & (syncdata[18] >> 1)) + 48; // bit 1
                 mi[59] = (1 & syncdata[18]) + 48;        // bit 0
                 mi[69] = (1 & (syncdata[19] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[19]) + 48;        // bit 0
             }
         } else if (j == 3) {
             burstd = (1 & syncdata[1]); // bit 0
@@ -395,7 +377,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[34] = (1 & (syncdata[6] >> 1)) + 48;  // bit 1
                 lcinfo[44] = (1 & syncdata[6]) + 48;         // bit 0
                 lcinfo[54] = (1 & (syncdata[7] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[7]) + 48;             // bit 0
                 mfid[1] = (1 & (syncdata[8] >> 1)) + 48;     // bit 1
                 lcinfo[4] = (1 & syncdata[8]) + 48;          // bit 0
                 lcinfo[15] = (1 & (syncdata[9] >> 1)) + 48;  // bit 1
@@ -403,7 +384,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 lcinfo[35] = (1 & (syncdata[10] >> 1)) + 48; // bit 1
                 lcinfo[45] = (1 & syncdata[10]) + 48;        // bit 0
                 lcinfo[55] = (1 & (syncdata[11] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[11]) + 48;            // bit 0
                 mfid[2] = (1 & (syncdata[12] >> 1)) + 48;    // bit 1
                 lcinfo[5] = (1 & syncdata[12]) + 48;         // bit 0
             } else {
@@ -414,7 +394,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[50] = (1 & (syncdata[6] >> 1)) + 48;  // bit 1
                 mi[60] = (1 & syncdata[6]) + 48;         // bit 0
                 mi[70] = (1 & (syncdata[7] >> 1)) + 48;  // bit 1
-                parity = (1 & syncdata[7]) + 48;         // bit 0
                 mi[9] = (1 & (syncdata[8] >> 1)) + 48;   // bit 1
                 mi[20] = (1 & syncdata[8]) + 48;         // bit 0
                 mi[31] = (1 & (syncdata[9] >> 1)) + 48;  // bit 1
@@ -422,7 +401,6 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
                 mi[51] = (1 & (syncdata[10] >> 1)) + 48; // bit 1
                 mi[61] = (1 & syncdata[10]) + 48;        // bit 0
                 mi[71] = (1 & (syncdata[11] >> 1)) + 48; // bit 1
-                parity = (1 & syncdata[11]) + 48;        // bit 0
                 mi[10] = (1 & (syncdata[12] >> 1)) + 48; // bit 1
                 mi[21] = (1 & syncdata[12]) + 48;        // bit 0
             }

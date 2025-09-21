@@ -283,6 +283,10 @@ main(void) {
     }
     fseek(rf, 0, SEEK_END);
     long sz = ftell(rf);
+    if (sz <= 0) {
+        fclose(rf);
+        return 103;
+    }
     fseek(rf, 0, SEEK_SET);
     char* buf = (char*)malloc((size_t)sz + 1);
     fread(buf, 1, (size_t)sz, rf);
@@ -302,8 +306,8 @@ main(void) {
     rc |= expect_eq_int("FACCH clamp lenC", lenC, 0);
     rc |= expect_eq_int("FACCH clamp slot", slot, 1);
 
-    // First line should be Case A or earlier; specifically check LCCH label via reading first line after rewind
-    rewind(rf);
+    // First line should be Case A or earlier; specifically check LCCH label via reading first line after moving to start
+    fseek(rf, 0, SEEK_SET);
     char fxch[8] = {0}, fsum[32] = {0};
     if (extract_first_fields(rf, fxch, sizeof fxch, fsum, sizeof fsum) != 0) {
         fclose(rf);

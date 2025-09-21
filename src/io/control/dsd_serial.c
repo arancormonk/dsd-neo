@@ -20,9 +20,9 @@ openSerial(dsd_opts* opts, dsd_state* state) {
 
     baud = B115200;
     switch (opts->serial_baud) {
-        case 1200: baud = B1200;
-        case 2400: baud = B2400;
-        case 4800: baud = B4800;
+        case 1200: baud = B1200; break;
+        case 2400: baud = B2400; break;
+        case 4800: baud = B4800; break;
         case 9600: baud = B9600; break;
         case 19200: baud = B19200; break;
         case 38400: baud = B38400; break;
@@ -53,19 +53,17 @@ void
 resumeScan(dsd_opts* opts, dsd_state* state) {
 
     char cmd[16];
-    ssize_t result;
-    UNUSED(result);
 
     if (opts->serial_fd > 0) {
         sprintf(cmd, "\rKEY00\r");
-        result = write(opts->serial_fd, cmd, 7);
+        (void)write(opts->serial_fd, cmd, 7);
         cmd[0] = 2;
         cmd[1] = 75;
         cmd[2] = 15;
         cmd[3] = 3;
         cmd[4] = 93;
         cmd[5] = 0;
-        result = write(opts->serial_fd, cmd, 5);
+        (void)write(opts->serial_fd, cmd, 5);
         state->numtdulc = 0;
     }
 }

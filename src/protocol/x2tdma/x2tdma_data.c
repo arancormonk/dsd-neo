@@ -98,7 +98,7 @@ processX2TDMAdata(dsd_opts* opts, dsd_state* state) {
         dibit = (dibit ^ 2);
     }
     cc[2] = (1 & (dibit >> 1)) + 48; // bit 1
-    aiei = (1 & dibit);              // bit 0
+    (void)(1 & dibit);               // bit 0 (unused)
 
     dibit = *dibit_p;
     dibit_p++;

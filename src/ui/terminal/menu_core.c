@@ -431,7 +431,6 @@ ui_prompt_common_prefill(const char* title, char* buf, size_t cap, const char* p
     while (1) {
         int ch = wgetch(win);
         if (ch == 27 || ch == 'q' || ch == 'Q') { // ESC/q
-            len = 0;
             buf[0] = '\0';
             ui_destroy_window(&win);
             curs_set(0);
@@ -868,7 +867,7 @@ io_set_udp_out(void* vctx) {
 static const char*
 lbl_current_output(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    const char* name = "Unknown";
+    const char* name;
     switch (c->opts->audio_out_type) {
         case 0: name = "Pulse Digital"; break;
         case 2: name = "OSS (8k/2)"; break;
@@ -1124,7 +1123,7 @@ io_tcp_direct_link(void* vctx) {
 static const char*
 lbl_current_input(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    const char* name = "Unknown";
+    const char* name;
     switch (c->opts->audio_in_type) {
         case 0: name = "Pulse"; break;
         case 1: name = "STDIN"; break;

@@ -115,7 +115,10 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[12][0]), &status_count, analog_signal_array,
                               &analog_signal_index);
-    analog_signal_array[0 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)0 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 3
 #ifdef TRACE_DSD
@@ -142,7 +145,10 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[9][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[8][0]), &status_count, analog_signal_array, &analog_signal_index);
-    analog_signal_array[4 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)4 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 4
 #ifdef TRACE_DSD
@@ -167,7 +173,10 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     read_and_correct_hex_word(opts, state, &(hex_data[6][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[5][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[4][0]), &status_count, analog_signal_array, &analog_signal_index);
-    analog_signal_array[8 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)8 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // IMBE 5
 #ifdef TRACE_DSD
@@ -192,7 +201,10 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     read_and_correct_hex_word(opts, state, &(hex_data[2][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[1][0]), &status_count, analog_signal_array, &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_data[0][0]), &status_count, analog_signal_array, &analog_signal_index);
-    analog_signal_array[12 * 5].sequence_broken = 1;
+    {
+        size_t idx = (size_t)12 * 5u;
+        analog_signal_array[idx].sequence_broken = 1;
+    }
 
     // Early extract of ALGID/KID/MI after IMBE 5 so we can gate audio for the
     // remainder of this LDU if encrypted. Policy: allow clear (ALGID 0/0x80).
@@ -695,13 +707,8 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         if (mihex3) {
             fprintf(stderr, "-%02llX", mihex3);
         }
-        if (state->R != 0 && state->payload_algid == 0xAA) {
-            fprintf(stderr, " Key: %010llX", state->R);
-            opts->unmute_encrypted_p25 = 1;
-        } else if (state->R != 0 && state->payload_algid == 0x81) {
-            fprintf(stderr, " Key: %010llX", state->R);
-            opts->unmute_encrypted_p25 = 1;
-        } else if (state->R != 0 && state->payload_algid == 0x9F) {
+        if (state->R != 0
+            && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
             fprintf(stderr, " Key: %010llX", state->R);
             opts->unmute_encrypted_p25 = 1;
         }

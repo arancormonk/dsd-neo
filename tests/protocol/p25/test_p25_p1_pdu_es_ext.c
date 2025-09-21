@@ -230,6 +230,10 @@ main(void) {
     }
     fseek(rf, 0, SEEK_END);
     long sz = ftell(rf);
+    if (sz < 0) {
+        fclose(rf);
+        return 103;
+    }
     fseek(rf, 0, SEEK_SET);
     char* buf = (char*)malloc((size_t)sz + 1);
     fread(buf, 1, (size_t)sz, rf);

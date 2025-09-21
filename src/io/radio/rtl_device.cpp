@@ -104,7 +104,6 @@ struct rtl_device {
  * @param role Optional role label (e.g. "DEMOD", "DONGLE") used to look up
  *             per-role environment variables.
  */
-/* moved to runtime/rt_sched.cpp */
 
 /**
  * @brief Rotate IQ data by 90 degrees in-place.

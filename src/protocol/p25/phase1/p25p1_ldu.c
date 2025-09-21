@@ -74,7 +74,7 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
 #ifdef TRACE_DSD
             state->debug_prefix = 's';
 #endif
-            status = getDibit(opts, state);
+            (void)getDibit(opts, state);
             // TODO: do something useful with the status bits...
             *status_count = 1;
 
@@ -231,7 +231,7 @@ correct_hamming_dibits(char* data, int count, AnalogSignal* analog_signal_array)
         }
 
         // The next two dibits are calculated has the hamming parity of the hex word
-        encode_hamming_10_6_3(data + i * 6, parity);
+        encode_hamming_10_6_3(data + ((size_t)i * 6), parity);
 
         for (j = 0; j < 4; j += 2) // 2 iterations -> 2 dibits
         {

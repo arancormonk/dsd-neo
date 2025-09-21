@@ -513,10 +513,12 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
             FILE* pFile; //file pointer
             //open file by name that is supplied in the ncurses terminal, or cli
             pFile = fopen(opts->group_in_file, "a");
-            fprintf(pFile, "%d,D,", rid); //may want to not use this one
-            fprintf(pFile, "%s", str);
-            fprintf(pFile, ",FQS:%05X.%03X.%06X(%d),Moto\n", wacn, sys, rid, rid);
-            fclose(pFile);
+            if (pFile != NULL) {
+                fprintf(pFile, "%d,D,", rid); //may want to not use this one
+                fprintf(pFile, "%s", str);
+                fprintf(pFile, ",FQS:%05X.%03X.%06X(%d),Moto\n", wacn, sys, rid, rid);
+                fclose(pFile);
+            }
         }
     }
 }
@@ -621,11 +623,13 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
                 FILE* pFile; //file pointer
                 //open file by name that is supplied in the ncurses terminal, or cli
                 pFile = fopen(opts->group_in_file, "a");
-                fprintf(pFile, "%d,D,", tsrc);
-                fprintf(pFile, "%s", str);
-                fprintf(pFile, ",TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris\n", ttg, state->p2_sysid, state->p2_rfssid,
-                        state->p2_siteid);
-                fclose(pFile);
+                if (pFile != NULL) {
+                    fprintf(pFile, "%d,D,", tsrc);
+                    fprintf(pFile, "%s", str);
+                    fprintf(pFile, ",TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris\n", ttg, state->p2_sysid,
+                            state->p2_rfssid, state->p2_siteid);
+                    fclose(pFile);
+                }
             }
         }
     }
@@ -683,12 +687,14 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
                 FILE* pFile; //file pointer
                 //open file by name that is supplied in the ncurses terminal, or cli
                 pFile = fopen(opts->group_in_file, "a");
-                fprintf(pFile, "%d,D,", rid); //may want to not use this one
-                fprintf(pFile, "%s,", alias);
-                fprintf(pFile, "%03X,",
-                        nac); //if we find this on a trunking system, may want to add the site and rfss id
-                fprintf(pFile, "%s", ",Tait\n");
-                fclose(pFile);
+                if (pFile != NULL) {
+                    fprintf(pFile, "%d,D,", rid); //may want to not use this one
+                    fprintf(pFile, "%s,", alias);
+                    fprintf(pFile, "%03X,",
+                            nac); // if we find this on a trunking system, may want to add the site and rfss id
+                    fprintf(pFile, "%s", ",Tait\n");
+                    fclose(pFile);
+                }
             }
         }
     }
@@ -715,9 +721,7 @@ dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     //load into dmr_pdu_sf as bit wise values for this since iso7 has 49 bits in this header, otherwise, load with 48?
     if (char_size == 7) {
         memcpy(state->dmr_pdu_sf[slot], lc_bits + 23, 49 * sizeof(uint8_t));
-    } else if (char_size == 8) {
-        memcpy(state->dmr_pdu_sf[slot], lc_bits + 24, 48 * sizeof(uint8_t));
-    } else if (char_size == 16) {
+    } else if (char_size == 8 || char_size == 16) {
         memcpy(state->dmr_pdu_sf[slot], lc_bits + 24, 48 * sizeof(uint8_t));
     }
 
@@ -756,12 +760,10 @@ dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
   */
 
     //set the pointer to the current index of the dmr_pdu_sf
-    if (char_size == 16) {
-        ptr = 48 + (block_num * 56);
-    } else if (char_size == 8) {
-        ptr = 48 + (block_num * 56);
-    } else if (char_size == 7) {
+    if (char_size == 7) {
         ptr = 49 + (block_num * 56);
+    } else if (char_size == 8 || char_size == 16) {
+        ptr = 48 + (block_num * 56);
     }
 
     if (char_size == 0) { //unset, no header received

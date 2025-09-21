@@ -292,11 +292,11 @@ dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
     //The signalling observed here was actually TXI information, not Cap+ Specifically
 
     //check to see if this a TXI system
-    if (slot == 0 && state->dmr_so & 0x20) {
-        txi = 1;
+    if (slot == 0 && (state->dmr_so & 0x20)) {
+        /* TXI present on slot 0 */
     }
-    if (slot == 1 && state->dmr_soR & 0x20) {
-        txi = 1;
+    if (slot == 1 && (state->dmr_soR & 0x20)) {
+        /* TXI present on slot 1 */
     }
 
     // 9.3.2 Pre-emption and power control Indicator (PI)

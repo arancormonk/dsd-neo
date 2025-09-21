@@ -909,7 +909,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
                 short frame1_cipher[49];
                 for (int i = 0; i < 49; i++) {
-                    frame1_cipher[i] = ambe_d[i];
+                    frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
                 }
                 decrypt_frame_49(frame1_cipher);
 
@@ -1319,7 +1319,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
                 short frame1_cipher[49];
                 for (int i = 0; i < 49; i++) {
-                    frame1_cipher[i] = ambe_d[i];
+                    frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
                 }
                 decrypt_frame_49(frame1_cipher);
 
@@ -1406,12 +1406,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         && state->currentslot == 0) //all mono traffic routed through 'left'
     {
         enc_bit = (state->dmr_so >> 6) & 0x1;
-        if (enc_bit == 1) {
-            state->dmr_encL = 1;
-        }
-
-        //checkdown for P25 1 and 2
-        else if (state->payload_algid != 0 && state->payload_algid != 0x80) {
+        // Check enc bit or P25 alg IDs
+        if (enc_bit == 1 || (state->payload_algid != 0 && state->payload_algid != 0x80)) {
             state->dmr_encL = 1;
         } else {
             state->dmr_encL = 0;
@@ -1487,12 +1483,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
     if (opts->dmr_stereo == 1 && state->currentslot == 1) {
         enc_bit = (state->dmr_soR >> 6) & 0x1;
-        if (enc_bit == 0x1) {
-            state->dmr_encR = 1;
-        }
-
-        //checkdown for P25 1 and 2
-        else if (state->payload_algidR != 0 && state->payload_algidR != 0x80) {
+        // Check enc bit or P25 alg IDs
+        if (enc_bit == 1 || (state->payload_algidR != 0 && state->payload_algidR != 0x80)) {
             state->dmr_encR = 1;
         } else {
             state->dmr_encR = 0;
@@ -1605,7 +1597,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
     if (preempt == 1) {
         opts->audio_out = 1;
-        preempt = 0;
+        // preempt is a local; no need to reset before return
     }
 
     //reset audio out flag for next repitition --disabled for now

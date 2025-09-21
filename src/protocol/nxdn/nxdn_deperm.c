@@ -279,10 +279,8 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         }
 
         fprintf(stderr, "PF 1/1");
-        if (state->nxdn_cipher_type == 1 && state->R != 0) {
-            state->payload_miN = state->R; //reset scrambler seed
-        } else if (state->M == 1 && state->R != 0) {
-            state->payload_miN = state->R; //force reset scrambler seed
+        if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+            state->payload_miN = state->R; // reset/force reset scrambler seed
         }
 
         if (crc == check) {
@@ -322,16 +320,12 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         //sf (structure field) and RAN will always exist in first 8 bits of each SACCH, then the next 18 bits are the fragment of the superframe
         sf = (trellis_buf[0] << 1) | trellis_buf[1];
 
-        if (sf == 3) {
-            part_of_frame = 0;
-        } else if (sf == 2) {
-            part_of_frame = 1;
-        } else if (sf == 1) {
-            part_of_frame = 2;
-        } else if (sf == 0) {
-            part_of_frame = 3;
-        } else {
-            part_of_frame = 0;
+        part_of_frame = 0; // default
+        switch (sf) {
+            case 2: part_of_frame = 1; break;
+            case 1: part_of_frame = 2; break;
+            case 0: part_of_frame = 3; break;
+            default: break;
         }
 
         //needed for DES and AES
@@ -347,10 +341,8 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
 
         fprintf(stderr, "PF %d/4", part_of_frame + 1);
         if (part_of_frame == 0) {
-            if (state->nxdn_cipher_type == 1 && state->R != 0) {
-                state->payload_miN = state->R; //reset scrambler seed
-            } else if (state->M == 1 && state->R != 0) {
-                state->payload_miN = state->R; //force reset scrambler seed
+            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+                state->payload_miN = state->R; // reset/force reset scrambler seed
             }
         }
 
@@ -366,18 +358,14 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
 
         //reset scrambler seed to key value on new superframe
         if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-            if (state->nxdn_cipher_type == 1 && state->R != 0) {
-                state->payload_miN = state->R; //reset scrambler seed
-            } else if (state->M == 1 && state->R != 0) {
-                state->payload_miN = state->R; //force reset scrambler seed
+            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+                state->payload_miN = state->R; // reset/force reset scrambler seed
             }
         }
         //this seems to work much better now
         else if (part_of_frame != 0 && state->nxdn_cipher_type == 0x1) {
-            if (state->nxdn_cipher_type == 1 && state->R != 0) {
-                state->payload_miN = state->R; //reset scrambler seed
-            } else if (state->M == 1 && state->R != 0) {
-                state->payload_miN = state->R; //force reset scrambler seed
+            if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+                state->payload_miN = state->R; // reset/force reset scrambler seed
             }
 
             //advance seed by required number of turns depending on the current pf value
@@ -1303,16 +1291,12 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
 
     //check the sf early for scrambler reset, if required
     sf = (trellis_buf[0] << 1) | trellis_buf[1];
-    if (sf == 3) {
-        part_of_frame = 0;
-    } else if (sf == 2) {
-        part_of_frame = 1;
-    } else if (sf == 1) {
-        part_of_frame = 2;
-    } else if (sf == 0) {
-        part_of_frame = 3;
-    } else {
-        part_of_frame = 0;
+    part_of_frame = 0; // default
+    switch (sf) {
+        case 2: part_of_frame = 1; break;
+        case 1: part_of_frame = 2; break;
+        case 0: part_of_frame = 3; break;
+        default: break;
     }
 
     //reset scrambler seed to key value on new superframe
@@ -1320,10 +1304,8 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
 
     //reset scrambler seed to key value on new superframe
     if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-        if (state->nxdn_cipher_type == 1 && state->R != 0) {
-            state->payload_miN = state->R; //reset scrambler seed
-        } else if (state->M == 1 && state->R != 0) {
-            state->payload_miN = state->R; //force reset scrambler seed
+        if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+            state->payload_miN = state->R; // reset/force reset scrambler seed
         }
     }
 

@@ -131,7 +131,6 @@ p25_12(uint8_t* input, uint8_t treturn[12]) {
             tdibits[i] = state = min;
 
             memset(hd, 0, sizeof(hd));
-            min = 0;
         }
     }
 

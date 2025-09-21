@@ -219,28 +219,29 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         if (opts->use_dsp_output == 1) {
             FILE* pFile; //file pointer
             pFile = fopen(opts->dsp_out_file, "a");
-            fprintf(pFile, "\n%d 98 ", slot + 1); //'98' is CACH designation value
-            for (i = 0; i < 6; i++)               //3 byte CACH
-            {
-                int cach_byte =
-                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                fprintf(pFile, "%X",
-                        cach_byte); //nibble, not a byte, next time I look at this and wonder why its not %02X
+            if (pFile != NULL) {
+                fprintf(pFile, "\n%d 98 ", slot + 1); //'98' is CACH designation value
+                for (i = 0; i < 6; i++)               //3 byte CACH
+                {
+                    int cach_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
+                                    | state->dmr_stereo_payload[((size_t)i * 2) + 1];
+                    fprintf(pFile, "%X",
+                            cach_byte); //nibble, not a byte, next time I look at this and wonder why its not %02X
+                }
+                fprintf(pFile, "\n%d %02X ", slot + 1, databurst); //use hex value of current data burst type
+                for (i = 6; i < 72; i++)                           //33 bytes, no CACH
+                {
+                    int dsp_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
+                                   | state->dmr_stereo_payload[((size_t)i * 2) + 1];
+                    fprintf(pFile, "%X", dsp_byte);
+                }
+                fclose(pFile);
             }
-            fprintf(pFile, "\n%d %02X ", slot + 1, databurst); //use hex value of current data burst type
-            for (i = 6; i < 72; i++)                           //33 bytes, no CACH
-            {
-                int dsp_byte =
-                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                fprintf(pFile, "%X", dsp_byte);
-            }
-            fclose(pFile);
         }
     }
 
     //Most Data Sync Burst types will use the bptc 196x96
     if (is_bptc) {
-        CRCExtracted = 0;
         CRCComputed = 0;
         IrrecoverableErrors = 0;
 
@@ -285,14 +286,13 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         //set CRC to correct on unconfirmed 1/2 data blocks (for reporting due to no CRC available on these)
         else if (state->data_conf_data[slot] == 0 && databurst == 0x7) {
             CRCComputed = 0;
-            CRCExtracted = 0;
             CRCCorrect = 1;
         }
 
         //run CRC9 on intermediate and last 1/2 confirmed data blocks
         else if (state->data_conf_data[slot] == 1 && databurst == 0x7) {
-            blockcounter = state->data_block_counter[slot]; //current block number according to the counter
-            dbsn = (uint32_t)ConvertBitIntoBytes(&BPTCDmrDataBit[0], 7) + 1;     //recover data block serial number
+            blockcounter = state->data_block_counter[slot];   //current block number according to the counter
+            (void)ConvertBitIntoBytes(&BPTCDmrDataBit[0], 7); //recover data block serial number (unused)
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&BPTCDmrDataBit[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 
@@ -390,7 +390,6 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     //Embedded Signalling will use BPTC 128x77
     if (is_emb) {
 
-        CRCExtracted = 0;
         CRCComputed = 0;
         IrrecoverableErrors = 0;
 
@@ -438,7 +437,6 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
 
     //the sexy one
     if (is_trellis) {
-        CRCExtracted = 0;
         CRCComputed = 0;
         IrrecoverableErrors = 1;
 
@@ -480,7 +478,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         //run CRC9 on intermediate and last 3/4 data blocks
         else if (state->data_conf_data[slot] == 1) {
             blockcounter = state->data_block_counter[slot]; //current block number according to the counter
-            dbsn = (uint32_t)ConvertBitIntoBytes(&DMR_PDU_bits[0], 7) + 1;     //recover data block serial number
+            (void)ConvertBitIntoBytes(&DMR_PDU_bits[0], 7); //recover data block serial number (unused)
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&DMR_PDU_bits[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 
@@ -519,7 +517,6 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     {
         //assembly (w/ confirmed data) on a working Tier III Tait System
 
-        CRCExtracted = 0;
         CRCComputed = 0;
         IrrecoverableErrors = 0; //implicit, since there is no encoding
 
@@ -541,7 +538,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         //run CRC9 on intermediate and last 1 rate data blocks
         else if (state->data_conf_data[slot] == 1) {
             blockcounter = state->data_block_counter[slot];            //current block number according to the counter
-            dbsn = (uint32_t)ConvertBitIntoBytes(&info[0], 7) + 1;     //recover data block serial number
+            (void)ConvertBitIntoBytes(&info[0], 7);                    //recover data block serial number (unused)
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&info[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 

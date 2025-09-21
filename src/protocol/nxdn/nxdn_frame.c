@@ -291,7 +291,6 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
             memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
             state->lastsynctype = -1; //set to -1 so we don't jump back here too quickly
-            voice = 0;
             goto END;
             break;
     } // end of switch(lich)
@@ -342,9 +341,10 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_descramble(dbuf, 182); //sizeof(dbuf)
 
     //seperate our dbuf (dibit_buffer) into individual bit array
-    for (int i = 0; i < 182; i++) {
-        nxdn_bit_buffer[i * 2] = dbuf[i] >> 1;
-        nxdn_bit_buffer[i * 2 + 1] = dbuf[i] & 1;
+    for (size_t i = 0; i < 182; i++) {
+        size_t idx = i * 2;
+        nxdn_bit_buffer[idx] = dbuf[i] >> 1;
+        nxdn_bit_buffer[idx + 1] = dbuf[i] & 1;
     }
 
     //sacch or scch bits
@@ -378,8 +378,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
     //Add advanced decoding of LICH (RF, FC, OPT, and Direction
     lich_rf = (lich >> 5) & 0x3;
-    lich_fc = (lich >> 3) & 0x3;
-    lich_op = (lich >> 1) & 0x3;
+    // lich_fc and lich_op not used
     if (lich % 2 == 0) {
         direction = 0;
     } else {
@@ -518,7 +517,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
         //correct the bit counter if NXDN96 Data Frames (or double FACCH1 steal)
         if (state->nxdn_cipher_type == 0x2 || state->nxdn_cipher_type == 0x3) {
-            state->bit_counterL += (49 * 4);
+            state->bit_counterL += 49L * 4;
         }
     }
 
@@ -543,7 +542,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
         //correct the bit counter if FACCH1 steal)
         if (state->nxdn_cipher_type == 0x2 || state->nxdn_cipher_type == 0x3) {
-            state->bit_counterL += 49 * 2;
+            state->bit_counterL += 49L * 2;
         }
     }
 
@@ -648,13 +647,11 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
         //correct the bit counter if FACCH1 steal)
         if (state->nxdn_cipher_type == 0x2 || state->nxdn_cipher_type == 0x3) {
-            state->bit_counterL += 49 * 2;
+            state->bit_counterL += 49L * 2;
         }
     }
 
-    if (opts->payload == 1 && !voice) {
-        fprintf(stderr, "\n");
-    } else if (opts->payload == 0) {
+    if ((opts->payload == 1 && !voice) || opts->payload == 0) {
         fprintf(stderr, "\n");
     }
 
