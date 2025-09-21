@@ -40,7 +40,10 @@ ui_statusfv(const char* fmt, va_list ap) {
     if (!fmt) {
         return;
     }
-    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap);
+    va_list ap_copy;
+    va_copy(ap_copy, ap);
+    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap_copy);
+    va_end(ap_copy);
 }
 
 void
