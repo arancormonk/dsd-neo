@@ -28,33 +28,33 @@ void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
 // Stubs required by linked decoder units
 void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, int enc) {
+watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)src;
     (void)dst;
     (void)str;
-    (void)enc;
+    (void)slot;
 }
 
 void
-watchdog_event_history(dsd_opts* opts, dsd_state* state, int slot) {
+watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
 }
 
 void
-watchdog_event_current(dsd_opts* opts, dsd_state* state, int slot) {
+watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
 }
 
 void
-utf8_to_text(dsd_state* state, int print, int len, const uint8_t* input) {
+utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
-    (void)print;
+    (void)wr;
     (void)len;
     (void)input;
 }
@@ -80,7 +80,7 @@ ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
 }
 
 void
-decode_ip_pdu(dsd_opts* opts, dsd_state* state, int len, uint8_t* input) {
+decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
     (void)len;

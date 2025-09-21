@@ -15,7 +15,7 @@
 #include <dsd-neo/runtime/ring.h>
 #include <time.h>
 
-extern int exitflag; // defined in rtl_sdr_fm.cpp
+extern volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
 
 /**
  * @brief Write up to count samples, blocking until space is available.

@@ -14,7 +14,7 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <time.h>
 
-extern int exitflag; // defined in rtl_sdr_fm.cpp
+extern volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
 
 /**
  * @brief Reserve writable regions in the input ring buffer.
