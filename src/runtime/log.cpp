@@ -12,11 +12,11 @@
  * runtime level control, timestamps, and file sinks.
  */
 
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
 
 /**
  * @brief Write a formatted log message to the logging sink.
@@ -32,7 +32,11 @@ void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     (void)level; /* Currently unused, but available for future runtime gating */
 
-    va_list args;
+    if (format == nullptr) {
+        return;
+    }
+
+    std::va_list args;
     va_start(args, format);
     /* Format into a temporary buffer first so we can apply ASCII fallback if needed. */
     char buf[4096];

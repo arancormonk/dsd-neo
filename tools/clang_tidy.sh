@@ -39,6 +39,8 @@ fi
 
 echo "Using compilation database: $PDB_DIR"
 echo "Analyzing ${#FILES[@]} files with clang-tidy..."
+echo "clang-tidy version:"
+clang-tidy --version | sed -n '1,2p'
 
 # Run clang-tidy with project config and capture output
 LOG_FILE=".clang-tidy.local.out"
@@ -52,6 +54,13 @@ if [[ ${1-} == "--strict" ]]; then
   else
     echo "Strict mode requested, but .clang-tidy.strict not found; falling back to $CONFIG_FILE"
   fi
+fi
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  CFG_PATH=$(readlink -f "$CONFIG_FILE" 2>/dev/null || echo "$CONFIG_FILE")
+  echo "Using config file: $CFG_PATH"
+else
+  echo "Config file not found: $CONFIG_FILE (clang-tidy will use built-in defaults)"
 fi
 
 clang-tidy -p "$PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" >/dev/null || true
