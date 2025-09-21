@@ -1,6 +1,8 @@
 Checks: >
   clang-analyzer-*,
+  clang-analyzer-optin.performance.Padding,
   bugprone-*,
+  bugprone-unsafe-functions,
   performance-*,
   portability-*,
   security-*,
@@ -12,7 +14,14 @@ Checks: >
   -readability-isolate-declaration,
   -readability-non-const-parameter,
   -bugprone-easily-swappable-parameters,
-  -bugprone-narrowing-conversions
+  -bugprone-narrowing-conversions,
+  -performance-move-const-arg,
+  -performance-noexcept-move-constructor
 WarningsAsErrors: ''
-HeaderFilterRegex: '^(src|include)/'
+HeaderFilterRegex: '^(src|include|apps)/'
 FormatStyle: none
+CheckOptions:
+  - key: bugprone-branch-clone.MinLines
+    value: '5'
+  - key: bugprone-branch-clone.MinStructuralSimilarity
+    value: '0.9'

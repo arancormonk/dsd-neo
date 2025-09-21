@@ -240,25 +240,25 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_out == 1) {
         if (opts->audio_out_type == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 4, NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, 320 * 4, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * 4u, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, (size_t)320u * 4u, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, (size_t)320u * 4u, NULL);
         }
 
         if (opts->audio_out_type == 8) //UDP Audio
         {
-            udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
-            udp_socket_blaster(opts, state, 320 * 4, stereo_samp2);
-            udp_socket_blaster(opts, state, 320 * 4, stereo_samp3);
+            udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp1);
+            udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp2);
+            udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp3);
         }
 
         //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
 
         if (opts->audio_out_type == 1) //STDOUT (still need these seperated? or not really?)
         {
-            write(opts->audio_out_fd, stereo_samp1, 320 * 4);
-            write(opts->audio_out_fd, stereo_samp2, 320 * 4);
-            write(opts->audio_out_fd, stereo_samp3, 320 * 4);
+            write(opts->audio_out_fd, stereo_samp1, (size_t)320u * 4u);
+            write(opts->audio_out_fd, stereo_samp2, (size_t)320u * 4u);
+            write(opts->audio_out_fd, stereo_samp3, (size_t)320u * 4u);
         }
     }
 
@@ -488,27 +488,28 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
     {
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, 320 * 4, NULL); //switch to sizeof(stereo_samp1) * 2?
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, 320 * 4, NULL);
+        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * 4u,
+                        NULL); //switch to sizeof(stereo_samp1) * 2?
+        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, (size_t)320u * 4u, NULL);
         //only play these two if not a single 2v or double 2v (minor skip can still occur on a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, 320 * 4, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, (size_t)320u * 4u, NULL);
         }
         if (memcmp(empty, stereo_samp4, sizeof(empty)) != 0) {
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp4, 320 * 4, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp4, (size_t)320u * 4u, NULL);
         }
     }
 
     if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
-        udp_socket_blaster(opts, state, 320 * 4, stereo_samp1);
-        udp_socket_blaster(opts, state, 320 * 4, stereo_samp2);
+        udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp1);
+        udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp2);
         //only play these two if not a single 2v or double 2v (minor skip can still occur on a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
-            udp_socket_blaster(opts, state, 320 * 4, stereo_samp3);
+            udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp3);
         }
         if (memcmp(empty, stereo_samp4, sizeof(empty)) != 0) {
-            udp_socket_blaster(opts, state, 320 * 4, stereo_samp4);
+            udp_socket_blaster(opts, state, (size_t)320u * 4u, stereo_samp4);
         }
     }
 
@@ -516,14 +517,14 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_out == 1 && opts->audio_out_type == 1) //STDOUT
     {
-        write(opts->audio_out_fd, stereo_samp1, 320 * 4);
-        write(opts->audio_out_fd, stereo_samp2, 320 * 4);
+        write(opts->audio_out_fd, stereo_samp1, (size_t)320u * 4u);
+        write(opts->audio_out_fd, stereo_samp2, (size_t)320u * 4u);
         //only play these two if not a single 2v or double 2v (minor skip can still occur on  a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
-            write(opts->audio_out_fd, stereo_samp3, 320 * 4);
+            write(opts->audio_out_fd, stereo_samp3, (size_t)320u * 4u);
         }
         if (memcmp(empty, stereo_samp4, sizeof(empty)) != 0) {
-            write(opts->audio_out_fd, stereo_samp4, 320 * 4);
+            write(opts->audio_out_fd, stereo_samp4, (size_t)320u * 4u);
         }
     }
 
@@ -2270,19 +2271,19 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
             if (opts->audio_out_type == 0) //Pulse Audio
             {
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 1) {
-                    pa_simple_write(opts->pulse_digi_dev_out, samp_fs, 320 * 4, NULL);
+                    pa_simple_write(opts->pulse_digi_dev_out, samp_fs, (size_t)320u * 4u, NULL);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 1) {
-                    pa_simple_write(opts->pulse_digi_dev_out, samp_f, 160 * 4, NULL);
+                    pa_simple_write(opts->pulse_digi_dev_out, samp_f, (size_t)160u * 4u, NULL);
                 }
 
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 0) {
-                    pa_simple_write(opts->pulse_digi_dev_out, samp_ss, 320 * 2, NULL);
+                    pa_simple_write(opts->pulse_digi_dev_out, samp_ss, (size_t)320u * 2u, NULL);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
-                    pa_simple_write(opts->pulse_digi_dev_out, samp_s, 160 * 2, NULL);
+                    pa_simple_write(opts->pulse_digi_dev_out, samp_s, (size_t)160u * 2u, NULL);
                 }
 
             }
@@ -2290,19 +2291,19 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
             else if (opts->audio_out_type == 8) //UDP Audio
             {
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 1) {
-                    udp_socket_blaster(opts, state, 320 * 4, samp_fs);
+                    udp_socket_blaster(opts, state, (size_t)320u * 4u, samp_fs);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 1) {
-                    udp_socket_blaster(opts, state, 160 * 4, samp_f);
+                    udp_socket_blaster(opts, state, (size_t)160u * 4u, samp_f);
                 }
 
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 0) {
-                    udp_socket_blaster(opts, state, 320 * 2, samp_ss);
+                    udp_socket_blaster(opts, state, (size_t)320u * 2u, samp_ss);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
-                    udp_socket_blaster(opts, state, 160 * 2, samp_s);
+                    udp_socket_blaster(opts, state, (size_t)160u * 2u, samp_s);
                 }
 
             }
@@ -2310,19 +2311,19 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
             else if (opts->audio_out_type == 1) //STDOUT
             {
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 1) {
-                    write(opts->audio_out_fd, samp_fs, 320 * 4);
+                    write(opts->audio_out_fd, samp_fs, (size_t)320u * 4u);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 1) {
-                    write(opts->audio_out_fd, samp_f, 160 * 4);
+                    write(opts->audio_out_fd, samp_f, (size_t)160u * 4u);
                 }
 
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 0) {
-                    write(opts->audio_out_fd, samp_ss, 320 * 2);
+                    write(opts->audio_out_fd, samp_ss, (size_t)320u * 2u);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
-                    write(opts->audio_out_fd, samp_s, 160 * 2);
+                    write(opts->audio_out_fd, samp_s, (size_t)160u * 2u);
                 }
             }
 
@@ -2351,7 +2352,7 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
                     samp_su[(i * 6) + 5] = outbuf[5];
                 }
 
-                write(opts->audio_out_fd, samp_su, 960 * 2);
+                write(opts->audio_out_fd, samp_su, (size_t)960u * 2u);
             }
         }
     }

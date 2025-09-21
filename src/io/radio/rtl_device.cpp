@@ -269,9 +269,9 @@ tcp_connect_host(const char* host, int port) {
         return -1;
     }
     struct sockaddr_in serveraddr;
-    bzero((char*)&serveraddr, sizeof(serveraddr));
+    memset((char*)&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
-    bcopy((char*)server->h_addr, (char*)&serveraddr.sin_addr.s_addr, server->h_length);
+    memcpy((char*)&serveraddr.sin_addr.s_addr, (char*)server->h_addr, server->h_length);
     serveraddr.sin_port = htons((uint16_t)port);
     if (connect(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr)) < 0) {
         fprintf(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);

@@ -65,9 +65,9 @@ Connect(char* hostname, int portno) {
     }
 
     /* build the server's Internet address */
-    bzero((char*)&serveraddr, sizeof(serveraddr));
+    memset((char*)&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
-    bcopy((char*)server->h_addr, (char*)&serveraddr.sin_addr.s_addr, server->h_length);
+    memcpy((char*)&serveraddr.sin_addr.s_addr, (char*)server->h_addr, server->h_length);
     serveraddr.sin_port = htons(portno);
 
     /* connect: create a connection with the server */
@@ -276,7 +276,7 @@ UDPBind(char* hostname, int portno) {
     }
 
     /* build the server's Internet address */
-    bzero((char*)&serveraddr, sizeof(serveraddr));
+    memset((char*)&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_addr.s_addr = INADDR_ANY; //INADDR_ANY
     serveraddr.sin_port = htons(portno);
