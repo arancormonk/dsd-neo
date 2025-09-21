@@ -3558,7 +3558,12 @@ main(int argc, char** argv) {
         opts.audio_in_type = 3; // use RTL pipeline
     }
 
-    if ((strncmp(opts.audio_in_dev, "rtl", 3) == 0)) //rtl dongle input
+    // NOTE: Guard against matching "rtltcp" here; it shares the "rtl" prefix
+    // and opts.audio_in_dev has been tokenized by strtok above. Without this
+    // guard, selecting rtltcp would also fall through to the local RTL path
+    // and erroneously require a USB device, causing an early exit.
+    if ((strncmp(opts.audio_in_dev, "rtl", 3) == 0)
+        && (strncmp(opts.audio_in_dev, "rtltcp", 6) != 0)) //rtl dongle input
     {
         uint8_t rtl_ok = 0;
         //use to list out all detected RTL dongles
