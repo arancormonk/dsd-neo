@@ -42,7 +42,8 @@ ui_statusf(const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap);
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
+    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap); // NOLINT
     va_end(ap);
     g_status_expire = time(NULL) + 3; // show ~3 seconds
 }
