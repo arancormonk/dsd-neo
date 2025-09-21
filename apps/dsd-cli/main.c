@@ -879,10 +879,10 @@ initOpts(dsd_opts* opts) {
     //DMR TIII heuristic LCN fill (opt-in)
     opts->dmr_t3_heuristic_fill = 0;
     {
-        const char* env = getenv("DSD_T3_HEUR");
+        const char* env = getenv("DSD_NEO_DMR_T3_HEUR");
         if (env && (env[0] == '1' || env[0] == 't' || env[0] == 'T' || env[0] == 'y' || env[0] == 'Y')) {
             opts->dmr_t3_heuristic_fill = 1;
-            fprintf(stderr, "DMR TIII: Heuristic LCN fill enabled via DSD_T3_HEUR.\n");
+            fprintf(stderr, "DMR TIII: Heuristic LCN fill enabled via DSD_NEO_DMR_T3_HEUR.\n");
         }
     }
 
@@ -2025,7 +2025,7 @@ main(int argc, char** argv) {
 
     // One-shot: DMR TIII LCN calculator via command line or environment
     {
-        const char* calc_csv_env = getenv("DSD_T3_CALC_CSV");
+        const char* calc_csv_env = getenv("DSD_NEO_DMR_T3_CALC_CSV");
 
         // Parse long-style CLI args before getopt
         const char* calc_csv_cli = NULL;
@@ -2059,18 +2059,18 @@ main(int argc, char** argv) {
 
         // If CLI present, set env vars and run calculator
         if (calc_csv_cli) {
-            setenv("DSD_T3_CALC_CSV", calc_csv_cli, 1);
+            setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);
             if (calc_step_cli) {
-                setenv("DSD_T3_STEP_HZ", calc_step_cli, 1);
+                setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);
             }
             if (calc_ccf_cli) {
-                setenv("DSD_T3_CC_FREQ", calc_ccf_cli, 1);
+                setenv("DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli, 1);
             }
             if (calc_ccl_cli) {
-                setenv("DSD_T3_CC_LCN", calc_ccl_cli, 1);
+                setenv("DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli, 1);
             }
             if (calc_start_cli) {
-                setenv("DSD_T3_START_LCN", calc_start_cli, 1);
+                setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
             }
             int rc = run_t3_lcn_calc_from_csv(calc_csv_cli);
             return rc;
@@ -4166,7 +4166,7 @@ run_t3_lcn_calc_from_csv(const char* path) {
     nf = m;
     if (nf == 1) {
         long start_lcn = 1;
-        const char* s = getenv("DSD_T3_START_LCN");
+        const char* s = getenv("DSD_NEO_DMR_T3_START_LCN");
         if (s && *s) {
             start_lcn = strtol(s, NULL, 10);
         }
@@ -4175,7 +4175,7 @@ run_t3_lcn_calc_from_csv(const char* path) {
     }
     // Infer step or take from env
     long step = 0;
-    const char* sstep = getenv("DSD_T3_STEP_HZ");
+    const char* sstep = getenv("DSD_NEO_DMR_T3_STEP_HZ");
     if (sstep && *sstep) {
         step = strtol(sstep, NULL, 10);
     }
@@ -4183,14 +4183,14 @@ run_t3_lcn_calc_from_csv(const char* path) {
         step = infer_step_125(freqs, nf);
     }
     if (step <= 0) {
-        fprintf(stderr, "LCN calc: could not infer channel step. Provide DSD_T3_STEP_HZ.\n");
+        fprintf(stderr, "LCN calc: could not infer channel step. Provide DSD_NEO_DMR_T3_STEP_HZ.\n");
         return 3;
     }
     // Anchors
     long cc_freq = 0;
     long cc_lcn = 0;
-    const char* sccf = getenv("DSD_T3_CC_FREQ");
-    const char* sccl = getenv("DSD_T3_CC_LCN");
+    const char* sccf = getenv("DSD_NEO_DMR_T3_CC_FREQ");
+    const char* sccl = getenv("DSD_NEO_DMR_T3_CC_LCN");
     if (sccf && *sccf) {
         double v = strtod(sccf, NULL);
         if (v < 1e5) {
@@ -4204,7 +4204,7 @@ run_t3_lcn_calc_from_csv(const char* path) {
     }
 
     long start_lcn = 1;
-    const char* sstart = getenv("DSD_T3_START_LCN");
+    const char* sstart = getenv("DSD_NEO_DMR_T3_START_LCN");
     if (sstart && *sstart) {
         start_lcn = strtol(sstart, NULL, 10);
     }
