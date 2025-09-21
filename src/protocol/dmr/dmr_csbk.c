@@ -19,6 +19,161 @@
 #endif
 #define PCLEAR_TUNE_AWAY //disable if slower return is preferred
 
+// Forward decls for event helpers
+void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
+void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
+void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,
+                             uint8_t slot);
+
+// Attempt to fill missing LCNs heuristically from learned anchors.
+static void
+dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (!opts->dmr_t3_heuristic_fill) {
+        return; // opt-in only
+    }
+
+    // Collect anchors (LCN,freq) for a reasonable Tier III range (1..4094)
+    enum { MAX_LCN = 4094 };
+
+    int first_lcn = 0, last_lcn = 0;
+    long first_freq = 0, last_freq = 0;
+    long long sum_df = 0; // sum of frequency deltas
+    long long sum_dl = 0; // sum of LCN deltas
+    int prev_lcn = 0;
+    long prev_freq = 0;
+    int have_prev = 0;
+    int anchors = 0;
+
+    for (int l = 1; l <= MAX_LCN; l++) {
+        long f = state->trunk_chan_map[l];
+        if (f == 0) {
+            continue;
+        }
+        if (first_lcn == 0) {
+            first_lcn = l;
+            first_freq = f;
+        }
+        last_lcn = l;
+        last_freq = f;
+        anchors++;
+        if (have_prev) {
+            int dl = l - prev_lcn;
+            long df = f - prev_freq;
+            if (dl > 0) {
+                sum_dl += dl;
+                sum_df += df;
+            }
+        }
+        prev_lcn = l;
+        prev_freq = f;
+        have_prev = 1;
+    }
+
+    if (anchors < 2) {
+        return; // need at least two anchors
+    }
+    if (sum_dl <= 0) {
+        return;
+    }
+
+    // Estimate step (Hz per LCN) and snap to nearest 125 Hz grid
+    double slope = (double)sum_df / (double)sum_dl;
+    long step = (long)llround(slope / 125.0) * 125L;
+    if (step <= 0) {
+        return;
+    }
+
+    // Validate: ensure deviations of each anchor from modeled line are small
+    // Model: f(l) = first_freq + (l - first_lcn) * step
+    long max_err = 0;
+    have_prev = 0;
+    prev_lcn = 0;
+    prev_freq = 0;
+    for (int l = 1; l <= MAX_LCN; l++) {
+        long f = state->trunk_chan_map[l];
+        if (f == 0) {
+            continue;
+        }
+        long model = first_freq + (long)(l - first_lcn) * step;
+        long err = labs(f - model);
+        if (err > max_err) {
+            max_err = err;
+        }
+    }
+    // Tolerance: 500 Hz max deviation to accept a single linear plan
+    if (max_err > 500) {
+        return;
+    }
+
+    // Fill between anchors
+    int filled = 0;
+    for (int l = first_lcn; l <= last_lcn; l++) {
+        if (state->trunk_chan_map[l] != 0) {
+            continue;
+        }
+        long f = first_freq + (long)(l - first_lcn) * step;
+        if (f <= 0) {
+            continue;
+        }
+        state->trunk_chan_map[l] = f;
+        filled++;
+    }
+
+    if (filled > 0) {
+        char msg[160];
+        double mhz0 = (double)first_freq / 1000000.0;
+        double step_khz = (double)step / 1000.0;
+        snprintf(msg, sizeof(msg), "DMR TIII: Heuristic filled %d LCNs (%0.3f kHz step) from %04d@%0.6f MHz;", filled,
+                 step_khz, first_lcn, mhz0);
+        int prev_alert = opts->call_alert;
+        opts->call_alert = 0;
+        watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, msg, 0);
+        opts->call_alert = prev_alert;
+        watchdog_event_history(opts, state, 0);
+        watchdog_event_current(opts, state, 0);
+    }
+}
+
+// Conservative auto-learn helper: record LCN -> frequency if empty and announce in event history
+static inline void
+dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq) {
+    if (!state) {
+        return;
+    }
+    // DMR Tier III logical/physical channel numbers are 12-bit (1..4094 typical)
+    if (lpcn == 0 || lpcn >= 0xFFFF) {
+        return;
+    }
+    if (freq <= 0) {
+        return;
+    }
+    if (state->trunk_chan_map[lpcn] != 0) {
+        return;
+    }
+
+    state->trunk_chan_map[lpcn] = freq;
+
+    // Emit a one-line event so users can see learning progress in ncurses
+    if (opts) {
+        char msg[160];
+        // Print in MHz with 6 decimal places
+        double mhz = (double)freq / 1000000.0;
+        snprintf(msg, sizeof(msg), "DMR TIII: Learned LCN %04u -> %010.6f MHz;", lpcn, mhz);
+        int prev_alert = opts->call_alert;
+        opts->call_alert = 0; // suppress beeper for system-status events
+        watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, msg, 0);
+        opts->call_alert = prev_alert;
+        watchdog_event_history(opts, state, 0);
+        watchdog_event_current(opts, state, 0);
+    }
+
+    // Try heuristic gap fill after learning a new anchor
+    dmr_try_heuristic_fill(opts, state);
+}
+
 //function for handling Control Signalling PDUs (CSBK, MBC) messages
 void
 dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
@@ -206,6 +361,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                 mbc_abs_rx_step);
                         //The Frequency we want to tune is the RX Frequency
                         freq = (mbc_abs_rx_int * 1000000) + (mbc_abs_rx_step * 125);
+                        // Auto-learn mapping for this absolute (APCN/LPCN) to frequency
+                        dmr_learn_chan_map(opts, state, mbc_lpchannum, freq);
                     } else {
                         fprintf(stderr, "\n  MBC Channel Grant - Unknown Parms: %015llX",
                                 mbc_cdefparms); //for any reserved values
@@ -928,6 +1085,16 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     if (ch2_flag == 1) {
                         fprintf(stderr, " Remove;");
                     }
+
+                    // Learn control channel LCNs if current CC frequency is known
+                    if (state->p25_cc_freq != 0) {
+                        if (ch1_flag == 0) {
+                            dmr_learn_chan_map(opts, state, bcast_ch1, state->p25_cc_freq);
+                        }
+                        if (ch2_flag == 0) {
+                            dmr_learn_chan_map(opts, state, bcast_ch2, state->p25_cc_freq);
+                        }
+                    }
                 }
 
                 //CallTimer_parms
@@ -1142,6 +1309,9 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                 fprintf(stderr, "\n            "); //12 spaces
                                 fprintf(stderr, " TX Base: %d; TX Step: %d; TX Freq: %ld;", mbc_abs_tx_int * 1000000,
                                         mbc_abs_tx_step * 125, freqt);
+
+                                // Learn mapping from absolute parameters when announced here
+                                dmr_learn_chan_map(opts, state, mbc_lpchannum, freqr);
 
                             } else {
                                 fprintf(stderr, "\n Unknown CDEFType: %X; CDEFParms: %015llX", mbc_cdeftype,

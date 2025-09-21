@@ -533,6 +533,9 @@ typedef struct {
     //Use P25p1 heuristics
     uint8_t use_heuristics;
 
+    //DMR TIII: heuristic fill of LCNs from anchors (opt-in)
+    uint8_t dmr_t3_heuristic_fill;
+
     //Use floating point audio output
     int floating_point;
 

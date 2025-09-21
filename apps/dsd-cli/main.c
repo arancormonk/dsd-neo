@@ -43,6 +43,9 @@ volatile uint8_t exitflag; //fix for issue #136
 struct RtlSdrContext* g_rtl_ctx = NULL; /* global orchestrator context */
 #endif
 
+// Forward declaration for env-triggered LCN calculator
+static int run_t3_lcn_calc_from_csv(const char* path);
+
 void
 handler(int sgnl) {
     UNUSED(sgnl);
@@ -867,6 +870,16 @@ initOpts(dsd_opts* opts) {
 
     //Use P25p1 heuristics
     opts->use_heuristics = 0;
+
+    //DMR TIII heuristic LCN fill (opt-in)
+    opts->dmr_t3_heuristic_fill = 0;
+    {
+        const char* env = getenv("DSD_T3_HEUR");
+        if (env && (env[0] == '1' || env[0] == 't' || env[0] == 'T' || env[0] == 'y' || env[0] == 'Y')) {
+            opts->dmr_t3_heuristic_fill = 1;
+            fprintf(stderr, "DMR TIII: Heuristic LCN fill enabled via DSD_T3_HEUR.\n");
+        }
+    }
 
 } //initopts
 
@@ -1696,6 +1709,15 @@ usage() {
     printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> "
            "log.txt\n");
     printf("\n");
+
+    printf("DMR TIII Tools:\n");
+    printf("  --calc-lcn <file>           Calculate LCNs from a CSV of frequencies (Hz or MHz).\n");
+    printf("  --calc-cc-freq <freq>       Anchor CC frequency (Hz or MHz).\n");
+    printf("  --calc-cc-lcn <int>         Anchor CC LCN number.\n");
+    printf("  --calc-step <hz>            Override inferred channel step (Hz, e.g., 12500).\n");
+    printf("  --calc-start-lcn <int>      Starting LCN when no anchor (default 1).\n");
+    printf(" Example: dsd-neo --calc-lcn freqs.csv --calc-cc-freq 451.2375 --calc-cc-lcn 50\n");
+    printf("\n");
     exit(0);
 }
 
@@ -1987,6 +2009,66 @@ main(int argc, char** argv) {
     CNXDNConvolution_init();
 
     exitflag = 0;
+
+    // One-shot: DMR TIII LCN calculator via command line or environment
+    {
+        const char* calc_csv_env = getenv("DSD_T3_CALC_CSV");
+
+        // Parse long-style CLI args before getopt
+        const char* calc_csv_cli = NULL;
+        const char* calc_step_cli = NULL;
+        const char* calc_ccf_cli = NULL;
+        const char* calc_ccl_cli = NULL;
+        const char* calc_start_cli = NULL;
+
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {
+                calc_csv_cli = argv[++i];
+                continue;
+            }
+            if (strcmp(argv[i], "--calc-step") == 0 && i + 1 < argc) {
+                calc_step_cli = argv[++i];
+                continue;
+            }
+            if (strcmp(argv[i], "--calc-cc-freq") == 0 && i + 1 < argc) {
+                calc_ccf_cli = argv[++i];
+                continue;
+            }
+            if (strcmp(argv[i], "--calc-cc-lcn") == 0 && i + 1 < argc) {
+                calc_ccl_cli = argv[++i];
+                continue;
+            }
+            if (strcmp(argv[i], "--calc-start-lcn") == 0 && i + 1 < argc) {
+                calc_start_cli = argv[++i];
+                continue;
+            }
+        }
+
+        // If CLI present, set env vars and run calculator
+        if (calc_csv_cli) {
+            setenv("DSD_T3_CALC_CSV", calc_csv_cli, 1);
+            if (calc_step_cli) {
+                setenv("DSD_T3_STEP_HZ", calc_step_cli, 1);
+            }
+            if (calc_ccf_cli) {
+                setenv("DSD_T3_CC_FREQ", calc_ccf_cli, 1);
+            }
+            if (calc_ccl_cli) {
+                setenv("DSD_T3_CC_LCN", calc_ccl_cli, 1);
+            }
+            if (calc_start_cli) {
+                setenv("DSD_T3_START_LCN", calc_start_cli, 1);
+            }
+            int rc = run_t3_lcn_calc_from_csv(calc_csv_cli);
+            return rc;
+        }
+
+        // Environment fallback remains
+        if (calc_csv_env && *calc_csv_env) {
+            int rc = run_t3_lcn_calc_from_csv(calc_csv_env);
+            return rc;
+        }
+    }
 
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
@@ -3878,4 +3960,177 @@ main(int argc, char** argv) {
     cleanupAndExit(&opts, &state);
 
     return (0);
+}
+
+// --- DMR TIII LCN calculator (env-triggered utility) ---
+static int
+cmp_long(const void* a, const void* b) {
+    long aa = *(const long*)a;
+    long bb = *(const long*)b;
+    if (aa < bb) {
+        return -1;
+    }
+    if (aa > bb) {
+        return 1;
+    }
+    return 0;
+}
+
+static long
+nearest_125(long hz) {
+    // round to nearest 125 Hz
+    long q = (hz + (hz >= 0 ? 62 : -62)) / 125;
+    return q * 125;
+}
+
+static long
+infer_step_125(const long* f, int n) {
+    // Infer channel spacing, snapped to 125 Hz grid.
+    // Use the smallest positive rounded diff as conservative step.
+    long best = 0;
+    for (int i = 1; i < n; i++) {
+        long d = f[i] - f[i - 1];
+        if (d <= 0) {
+            continue;
+        }
+        long r = nearest_125(d);
+        if (r <= 0) {
+            continue;
+        }
+        if (best == 0 || r < best) {
+            best = r;
+        }
+    }
+    return best;
+}
+
+static int
+run_t3_lcn_calc_from_csv(const char* path) {
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        fprintf(stderr, "LCN calc: unable to open '%s'\n", path);
+        return 1;
+    }
+    // Parse first numeric field per line as frequency in Hz (accept raw or with separators)
+    long freqs[4096];
+    int nf = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        // Skip empty/comment/header
+        int has_digit = 0;
+        for (char* p = line; *p; ++p) {
+            if ((*p >= '0' && *p <= '9')) {
+                has_digit = 1;
+                break;
+            }
+        }
+        if (!has_digit) {
+            continue;
+        }
+        // Extract first field
+        char* p = line;
+        // Skip leading non-digit (allow +/-)
+        while (*p && !((*p >= '0' && *p <= '9') || *p == '+' || *p == '-')) {
+            p++;
+        }
+        if (!*p) {
+            continue;
+        }
+        // Read as double to accept MHz; if < 1e6 assume MHz
+        double val = 0.0;
+        char* end = p;
+        val = strtod(p, &end);
+        if (end == p) {
+            continue;
+        }
+        long hz = (long)llround(val);
+        if (val < 1e5) {
+            // probably MHz; convert
+            hz = (long)llround(val * 1000000.0);
+        }
+        if (hz <= 0) {
+            continue;
+        }
+        if (nf < (int)(sizeof(freqs) / sizeof(freqs[0]))) {
+            freqs[nf++] = hz;
+        }
+    }
+    fclose(fp);
+    if (nf < 1) {
+        fprintf(stderr, "LCN calc: no frequencies parsed from '%s'\n", path);
+        return 2;
+    }
+    qsort(freqs, nf, sizeof(long), cmp_long);
+    // Unique
+    int m = 0;
+    for (int i = 0; i < nf; i++) {
+        if (m == 0 || freqs[i] != freqs[m - 1]) {
+            freqs[m++] = freqs[i];
+        }
+    }
+    nf = m;
+    if (nf == 1) {
+        long start_lcn = 1;
+        const char* s = getenv("DSD_T3_START_LCN");
+        if (s && *s) {
+            start_lcn = strtol(s, NULL, 10);
+        }
+        printf("lcn,freq\n%ld,%ld\n", start_lcn, freqs[0]);
+        return 0;
+    }
+    // Infer step or take from env
+    long step = 0;
+    const char* sstep = getenv("DSD_T3_STEP_HZ");
+    if (sstep && *sstep) {
+        step = strtol(sstep, NULL, 10);
+    }
+    if (step <= 0) {
+        step = infer_step_125(freqs, nf);
+    }
+    if (step <= 0) {
+        fprintf(stderr, "LCN calc: could not infer channel step. Provide DSD_T3_STEP_HZ.\n");
+        return 3;
+    }
+    // Anchors
+    long cc_freq = 0;
+    long cc_lcn = 0;
+    const char* sccf = getenv("DSD_T3_CC_FREQ");
+    const char* sccl = getenv("DSD_T3_CC_LCN");
+    if (sccf && *sccf) {
+        double v = strtod(sccf, NULL);
+        if (v < 1e5) {
+            cc_freq = (long)llround(v * 1000000.0);
+        } else {
+            cc_freq = (long)llround(v);
+        }
+    }
+    if (sccl && *sccl) {
+        cc_lcn = strtol(sccl, NULL, 10);
+    }
+
+    long start_lcn = 1;
+    const char* sstart = getenv("DSD_T3_START_LCN");
+    if (sstart && *sstart) {
+        start_lcn = strtol(sstart, NULL, 10);
+    }
+
+    long base_freq = freqs[0];
+    long base_lcn = start_lcn;
+    if (cc_freq > 0 && cc_lcn > 0) {
+        // Align base so that cc maps to cc_lcn
+        // base_lcn = cc_lcn - round((cc_freq - base_freq)/step)
+        long delta = cc_freq - base_freq;
+        long idx = (long)llround((double)delta / (double)step);
+        base_lcn = cc_lcn - idx;
+    }
+
+    // Emit mapping sorted by LCN
+    printf("lcn,freq\n");
+    for (int i = 0; i < nf; i++) {
+        long delta = freqs[i] - base_freq;
+        long idx = (long)llround((double)delta / (double)step);
+        long lcn = base_lcn + idx;
+        printf("%ld,%ld\n", lcn, freqs[i]);
+    }
+    return 0;
 }
