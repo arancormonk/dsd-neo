@@ -133,6 +133,11 @@ GetCurrentFreq(int sockfd) {
 
 bool
 SetFreq(int sockfd, long int freq) {
+    static int s_last_sockfd = -1;
+    static long int s_last_freq = LONG_MIN;
+    if (sockfd == s_last_sockfd && freq == s_last_freq) {
+        return true; // no change; skip I/O
+    }
     char buf[BUFSIZE];
 
     sprintf(buf, "F %ld\n", freq);
@@ -143,11 +148,18 @@ SetFreq(int sockfd, long int freq) {
         return false;
     }
 
+    s_last_sockfd = sockfd;
+    s_last_freq = freq;
     return true;
 }
 
 bool
 SetModulation(int sockfd, int bandwidth) {
+    static int s_last_sockfd = -1;
+    static int s_last_bw = INT_MIN;
+    if (sockfd == s_last_sockfd && bandwidth == s_last_bw) {
+        return true; // unchanged
+    }
     char buf[BUFSIZE];
     //the bandwidth is now a user/system based configurable variable
     sprintf(
@@ -168,6 +180,8 @@ SetModulation(int sockfd, int bandwidth) {
         return false;
     }
 
+    s_last_sockfd = sockfd;
+    s_last_bw = bandwidth;
     return true;
 }
 
@@ -285,7 +299,10 @@ UDPBind(char* hostname, int portno) {
 void
 rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     UNUSED(state);
-
+    static long int s_last_udp_freq = LONG_MIN;
+    if (frequency == s_last_udp_freq) {
+        return; // unchanged
+    }
     int handle;
     unsigned short udp_port = opts->rtl_udp_port;
     char data[5] = {0}; //data buffer size is 5 for UDP frequency tuning
@@ -309,6 +326,7 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     sendto(handle, data, 5, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
 
     close(handle); //close socket after sending.
+    s_last_udp_freq = frequency;
 }
 
 void
@@ -503,6 +521,7 @@ udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
 
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
+    const time_t now = time(NULL);
     //extra safeguards due to sync issues with NXDN
     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
@@ -539,32 +558,40 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     //RIGCTL
     if (opts->p25_trunk == 1 && opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
-            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+            SetModulation(opts->rigctl_sockfd, opts->setmod_bw); // cached internally
         }
-        SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+        SetFreq(opts->rigctl_sockfd, state->p25_cc_freq); // cached internally
     }
 
 //rtl
 #ifdef USE_RTLSDR
     if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
         if (g_rtl_ctx) {
-            rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+            rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq); // cached internally
         }
     }
 #endif
 
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = now;
 
     //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
     if (state->p25_cc_is_tdma == 0) {
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;
+        // keep TED SPS consistent with symbol rate (internal cache avoids repeats)
+#ifdef USE_RTLSDR
+        rtl_stream_set_ted_sps(10);
+#endif
     }
 
     //if P25p1 Data Revert on P25p2 TDMA CC, flip symbolrate
     if (state->p25_cc_is_tdma == 1) {
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
+        // keep TED SPS consistent with symbol rate (internal cache avoids repeats)
+#ifdef USE_RTLSDR
+        rtl_stream_set_ted_sps(8);
+#endif
     }
 
     // fprintf (stderr, "\n User Activated Return to CC; \n ");

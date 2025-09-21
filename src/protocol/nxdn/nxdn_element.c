@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
  ============================================================================
  Name        : nxdn_element.c (formerly nxdn_lib)
  Author      :
@@ -64,6 +68,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 
 void
 NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent) {
+    const time_t now = time(NULL);
     uint8_t MessageType;
     /* Get the "Message Type" field */
     MessageType = (ElementsContent[2] & 1) << 5;
@@ -192,7 +197,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
 #endif
                 }
 
-                state->last_cc_sync_time = time(NULL); //allow tuners a second to catch up, particularly rtl input
+                state->last_cc_sync_time = now; //allow tuners a second to catch up, particularly rtl input
             }
 
             // #endif
@@ -409,6 +414,7 @@ nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info) {
 
 void
 NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+    const time_t now = time(NULL);
     //just using 'short form' M only data, not the optional data
     uint8_t CCOption = 0;
     uint8_t CallType = 0;
@@ -550,7 +556,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     //test VCALL_ASSGN_DUP, if no voice sync activity (by trunk_hangtime), then convert to assgn and allow tuning
     //VCALL_ASSGN_DUP has been seen in the middle of calls, but also on the tail end instead of a TX_REL or DISC
     if (MessageType == 0x5 && opts->p25_is_tuned == 1 && opts->p25_trunk == 1) {
-        if ((time(NULL) - state->last_vc_sync_time) > opts->trunk_hangtime) {
+        if ((now - state->last_vc_sync_time) > opts->trunk_hangtime) {
             MessageType = 0x04;     //convert to VCALL
             opts->p25_is_tuned = 0; //open tuning back up to tune
         }
@@ -578,7 +584,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         sprintf(state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ", OFN, DestinationID, SourceUnitID);
     }
 
-    state->last_active_time = time(NULL);
+    state->last_active_time = now;
 
     //Add support for tuning data and group/private calls on trunking systems
     uint8_t tune = 0;
@@ -693,8 +699,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
                 memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
                 state->lastsynctype = -1;
-                state->last_cc_sync_time = time(NULL);
-                state->last_vc_sync_time = time(NULL);
+                state->last_cc_sync_time = now;
+                state->last_vc_sync_time = now;
                 //
 
                 if (opts->setmod_bw != 0) {
@@ -747,8 +753,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
                 memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
                 state->lastsynctype = -1;
-                state->last_cc_sync_time = time(NULL);
-                state->last_vc_sync_time = time(NULL);
+                state->last_cc_sync_time = now;
+                state->last_vc_sync_time = now;
                 //
 
                 if (g_rtl_ctx) {
@@ -1021,6 +1027,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
 void
 NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+    const time_t now = time(NULL);
     uint32_t location_id = 0;
     uint16_t svc_info = 0; //service information
     uint32_t rst_info = 0; //restriction information
@@ -1070,7 +1077,7 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     }
 
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
-    if ((time(NULL) - state->last_active_time) > 3) {
+    if ((now - state->last_active_time) > 3) {
         memset(state->active_channel, 0, sizeof(state->active_channel));
     }
 }
@@ -1648,6 +1655,7 @@ NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 //can also (mostly) be decoded seperately, except an enc IV
 void
 NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction) {
+    const time_t now = time(NULL);
     uint8_t sf = (uint8_t)ConvertBitIntoBytes(&Message[0], 2);
     uint8_t opcode = (direction << 2 | sf);
 
@@ -1709,14 +1717,14 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
 
     state->nxdn_last_ran = area;
 
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = now;
 
     //OSM messages
     if (opcode == 0x4 || opcode == 0x0) //INFO 4
     {
         //clear stale active channel listing -- consider best placement for this (NXDN Type D Trunking -- inside a particular OSM Message?)
         //may not be entirely necessary here in this context
-        if ((time(NULL) - state->last_active_time) > 3) {
+        if ((now - state->last_active_time) > 3) {
             memset(state->active_channel, 0, sizeof(state->active_channel));
         }
 

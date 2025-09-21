@@ -896,6 +896,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
     //DUID exist on all P25p2 frames, need to check this so we can process the TS frame properly
     vc_counter = 0;
     int err_counter = 0;
+    const time_t now = time(NULL);
 
     for (ts_counter = 0; ts_counter < 4; ts_counter++) //12
     {
@@ -970,7 +971,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         //this is primarily a fix for TDMA control channels that carry voice (Duke P25)
         //but may also allow for chain tuning without returning to the control channel <--may be problematic since we can assign a p25_cc_freq from the pdu
         if (duid_decoded == 13 && opts->p25_is_tuned == 1
-            && ((time(NULL) - state->last_vc_sync_time) > opts->trunk_hangtime)) // MAC_SIGNAL hangtime expiry
+            && ((now - state->last_vc_sync_time) > opts->trunk_hangtime)) // MAC_SIGNAL hangtime expiry
         {
             if (opts->p25_trunk == 1) {
                 // Prefer centralized release logic
@@ -985,7 +986,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
                 memset(state->s_r4, 0, sizeof(state->s_r4));
                 opts->p25_is_tuned = 0;
             }
-        } else if (duid_decoded == 13 && ((time(NULL) - state->last_active_time) > 2)
+        } else if (duid_decoded == 13 && ((now - state->last_active_time) > 2)
                    && opts->p25_is_tuned == 0) //should we use && opts->p25_is_tuned == 1?
         {
             memset(state->active_channel, 0, sizeof(state->active_channel)); //zero out here? I think this will be fine
@@ -1002,7 +1003,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr, " DUID: %d", p2_duid_complete);
             if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0 && state->p2_wacn != 0xFFFFF
                 && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF) {
-                state->last_vc_sync_time = time(NULL);
+                state->last_vc_sync_time = now;
                 process_4V(opts, state);
             }
         } else if (duid_decoded == 6) {
@@ -1011,7 +1012,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr, " DUID: %d", p2_duid_complete);
             if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0 && state->p2_wacn != 0xFFFFF
                 && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF) {
-                state->last_vc_sync_time = time(NULL);
+                state->last_vc_sync_time = now;
                 process_2V(opts, state);
             }
         } else if (duid_decoded == 3) {

@@ -56,6 +56,7 @@ printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, ch
 
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
+    const time_t now = time(NULL);
     /* detects frame sync and returns frame type
    *  0 = +P25p1
    *  1 = -P25p1
@@ -101,7 +102,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     //start control channel hunting if using trunking, time needs updating on each successful sync
     //will need to assign frequencies to a CC array for P25 since that isn't imported from CSV
     if (state->dmr_rest_channel == -1 && opts->p25_is_tuned == 0 && opts->p25_trunk == 1
-        && ((time(NULL) - state->last_cc_sync_time) > (opts->trunk_hangtime + 0))) //was 3, go to hangtime value
+        && ((now - state->last_cc_sync_time) > (opts->trunk_hangtime + 0))) //was 3, go to hangtime value
     {
         int tuned_by_candidate = 0;
         long cand_freq = 0;
@@ -126,7 +127,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, "\n  P25 SM: CC cand used=%u/%u tunes=%u releases=%u\n", state->p25_cc_cand_used,
                         state->p25_cc_cand_added, state->p25_sm_tune_count, state->p25_sm_release_count);
             }
-            state->last_cc_sync_time = time(NULL);
+            state->last_cc_sync_time = now;
             tuned_by_candidate = 1;
         }
 
@@ -180,7 +181,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         (double)state->trunk_lcn_freq[state->lcn_freq_roll] / 1000000);
             }
             state->lcn_freq_roll++;
-            state->last_cc_sync_time = time(NULL); //set again to give another x seconds
+            state->last_cc_sync_time = now; //set again to give another x seconds
         }
     }
 
@@ -492,7 +493,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "+P25p1", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 0;
-                    state->last_cc_sync_time = time(NULL);
+                    state->last_cc_sync_time = now;
                     return (0);
                 }
                 if (strcmp(synctest, INV_P25P1_SYNC) == 0) {
@@ -509,7 +510,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "-P25p1 ", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 1;
-                    state->last_cc_sync_time = time(NULL);
+                    state->last_cc_sync_time = now;
                     return (1);
                 }
             }
@@ -1066,7 +1067,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 strncpy(synctest32, (synctest_p - 31), 32);
                 strncpy(synctest48, (synctest_p - 47), 48);
                 if ((strcmp(synctest32, PROVOICE_SYNC) == 0) || (strcmp(synctest32, PROVOICE_EA_SYNC) == 0)) {
-                    state->last_cc_sync_time = time(NULL);
+                    state->last_cc_sync_time = now;
                     state->carrier = 1;
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
@@ -1079,7 +1080,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     return (14);
                 } else if ((strcmp(synctest32, INV_PROVOICE_SYNC) == 0)
                            || (strcmp(synctest32, INV_PROVOICE_EA_SYNC) == 0)) {
-                    state->last_cc_sync_time = time(NULL);
+                    state->last_cc_sync_time = now;
                     state->carrier = 1;
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
@@ -1185,7 +1186,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     if (state->lastsynctype == 28) {
-                        state->last_cc_sync_time = time(NULL);
+                        state->last_cc_sync_time = now;
                         return (28);
                     }
                     state->lastsynctype = 28;
@@ -1203,7 +1204,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     if (state->lastsynctype == 29) {
-                        state->last_cc_sync_time = time(NULL);
+                        state->last_cc_sync_time = now;
                         return (29);
                     }
                     state->lastsynctype = 29;

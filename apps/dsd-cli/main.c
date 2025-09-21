@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/git_ver.h>
 
 #include <signal.h>
+#include <stdlib.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -42,6 +43,14 @@ volatile uint8_t exitflag; //fix for issue #136
 #ifdef USE_RTLSDR
 struct RtlSdrContext* g_rtl_ctx = NULL; /* global orchestrator context */
 #endif
+
+// Local caches to avoid redundant device I/O in hot paths
+static long int s_last_rigctl_freq = -1;
+static int s_last_rigctl_bw = -12345;
+#ifdef USE_RTLSDR
+static uint32_t s_last_rtl_freq = 0;
+#endif
+static int s_last_ted_sps = 0;
 
 // Forward declaration for env-triggered LCN calculator
 static int run_t3_lcn_calc_from_csv(const char* path);
@@ -93,10 +102,12 @@ int slotson = 3;
 
 void
 noCarrier(dsd_opts* opts, dsd_state* state) {
+    const time_t now = time(NULL);
 
     //when no carrier sync, rotate the symbol out file every hour, if enabled
-    rotate_symbol_out_file(
-        opts, state); //this should handle any conventional system where no sync conditions occur when no activity
+    if (opts->symbol_out_f && opts->symbol_out_file_is_auto == 1) {
+        rotate_symbol_out_file(opts, state);
+    }
 
     if (opts->floating_point == 1) {
         state->aout_gain = opts->audio_gain;
@@ -117,7 +128,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 #endif
 
     //experimental conventional frequency scanner mode
-    if (opts->scanner_mode == 1 && ((time(NULL) - state->last_cc_sync_time) > opts->trunk_hangtime)) {
+    if (opts->scanner_mode == 1 && ((now - state->last_cc_sync_time) > opts->trunk_hangtime)) {
 
         //always do these -- makes sense during scanning
         state->nxdn_last_ran = -1; //
@@ -131,28 +142,36 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
         if (state->trunk_lcn_freq[state->lcn_freq_roll] != 0) {
             //rigctl
             if (opts->use_rigctl == 1) {
-                if (opts->setmod_bw != 0) {
+                if (opts->setmod_bw != 0 && opts->setmod_bw != s_last_rigctl_bw) {
                     SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+                    s_last_rigctl_bw = opts->setmod_bw;
                 }
-                SetFreq(opts->rigctl_sockfd, state->trunk_lcn_freq[state->lcn_freq_roll]);
+                long int f = state->trunk_lcn_freq[state->lcn_freq_roll];
+                if (f != s_last_rigctl_freq) {
+                    SetFreq(opts->rigctl_sockfd, f);
+                    s_last_rigctl_freq = f;
+                }
             }
             //rtl
             if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
                 if (g_rtl_ctx) {
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
+                    uint32_t rf = (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll];
+                    if (rf != s_last_rtl_freq) {
+                        rtl_stream_tune(g_rtl_ctx, rf);
+                        s_last_rtl_freq = rf;
+                    }
                 }
 #endif
             }
         }
         state->lcn_freq_roll++;
-        state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time = now;
     }
     //end experimental conventional frequency scanner mode
 
     //tune back to last known CC when using trunking after x second hangtime
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1
-        && ((time(NULL) - state->last_cc_sync_time) > opts->trunk_hangtime)) {
+    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && ((now - state->last_cc_sync_time) > opts->trunk_hangtime)) {
         if (state->p25_cc_freq != 0) {
 
             //cap+ rest channel - redundant?
@@ -164,17 +183,25 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
             if (opts->use_rigctl == 1) //rigctl tuning
             {
-                if (opts->setmod_bw != 0) {
+                if (opts->setmod_bw != 0 && opts->setmod_bw != s_last_rigctl_bw) {
                     SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+                    s_last_rigctl_bw = opts->setmod_bw;
                 }
-                SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+                if (state->p25_cc_freq != s_last_rigctl_freq) {
+                    SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+                    s_last_rigctl_freq = state->p25_cc_freq;
+                }
                 state->dmr_rest_channel = -1; //maybe?
             }
             //rtl
             else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
                 if (g_rtl_ctx) {
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                    uint32_t rf = (uint32_t)state->p25_cc_freq;
+                    if (rf != s_last_rtl_freq) {
+                        rtl_stream_tune(g_rtl_ctx, rf);
+                        s_last_rtl_freq = rf;
+                    }
                 }
                 state->dmr_rest_channel = -1;
 #endif
@@ -183,7 +210,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
             opts->p25_is_tuned = 0;
             state->edacs_tuned_lcn = -1;
 
-            state->last_cc_sync_time = time(NULL);
+            state->last_cc_sync_time = now;
             //test to switch back to 10/4 P1 QPSK for P25 FDMA CC
 
             //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
@@ -192,7 +219,10 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 state->samplesPerSymbol = 10;
                 state->symbolCenter = 4;
 #ifdef USE_RTLSDR
-                rtl_stream_set_ted_sps(10);
+                if (s_last_ted_sps != 10) {
+                    rtl_stream_set_ted_sps(10);
+                    s_last_ted_sps = 10;
+                }
 #endif
                 //re-enable both slots
                 opts->slot1_on = 1;
@@ -203,7 +233,10 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 state->samplesPerSymbol = 8;
                 state->symbolCenter = 3;
 #ifdef USE_RTLSDR
-                rtl_stream_set_ted_sps(8);
+                if (s_last_ted_sps != 8) {
+                    rtl_stream_set_ted_sps(8);
+                    s_last_ted_sps = 8;
+                }
 #endif
                 //re-enable both slots (in case of late entry voice, MAC_SIGNAL can turn them back off)
                 opts->slot1_on = 1;
@@ -279,9 +312,9 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
         state->nxdn_bw = 0;
 
         //dmr mfid branding and site parms
-        sprintf(state->dmr_branding_sub, "%s", "");
-        sprintf(state->dmr_branding, "%s", "");
-        sprintf(state->dmr_site_parms, "%s", "");
+        state->dmr_branding_sub[0] = '\0';
+        state->dmr_branding[0] = '\0';
+        state->dmr_site_parms[0] = '\0';
     }
 
     //The new event history should not require this, but revert if other random issues suddenly come up
@@ -496,15 +529,15 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     sprintf(state->call_string[0], "%s", "                     "); //21 spaces
     sprintf(state->call_string[1], "%s", "                     "); //21 spaces
 
-    if (time(NULL) - state->last_cc_sync_time > 10) //ten seconds of no carrier
+    if (now - state->last_cc_sync_time > 10) //ten seconds of no carrier
     {
         state->dmr_rest_channel = -1;
         state->p25_vc_freq[0] = 0;
         state->p25_vc_freq[1] = 0;
         state->dmr_mfid = -1;
-        sprintf(state->dmr_branding_sub, "%s", "");
-        sprintf(state->dmr_branding, "%s", "");
-        sprintf(state->dmr_site_parms, "%s", "");
+        state->dmr_branding_sub[0] = '\0';
+        state->dmr_branding[0] = '\0';
+        state->dmr_site_parms[0] = '\0';
         opts->p25_is_tuned = 0;
         memset(state->active_channel, 0, sizeof(state->active_channel));
     }
@@ -888,17 +921,35 @@ initOpts(dsd_opts* opts) {
 
 } //initopts
 
+static void*
+aligned_alloc_64(size_t size) {
+    void* p = NULL;
+#if defined(_ISOC11_SOURCE)
+    // aligned_alloc requires size to be multiple of alignment; we pass 64 and large sizes so OK
+    p = aligned_alloc(64, (size + 63) & ~((size_t)63));
+    if (!p) {
+        return malloc(size);
+    }
+    return p;
+#else
+    if (posix_memalign(&p, 64, size) != 0 || !p) {
+        return malloc(size);
+    }
+    return p;
+#endif
+}
+
 void
 initState(dsd_state* state) {
 
     int i, j;
     // state->testcounter = 0;
     state->last_dibit = 0;
-    state->dibit_buf = malloc(sizeof(int) * 1000000);
+    state->dibit_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dibit_buf_p = state->dibit_buf + 200;
     memset(state->dibit_buf, 0, sizeof(int) * 200);
     //dmr buffer -- double check this set up
-    state->dmr_payload_buf = malloc(sizeof(int) * 1000000);
+    state->dmr_payload_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dmr_payload_p = state->dmr_payload_buf + 200;
     memset(state->dmr_payload_buf, 0, sizeof(int) * 200);
     memset(state->dmr_stereo_payload, 1, sizeof(int) * 144);
@@ -930,8 +981,8 @@ initState(dsd_state* state) {
     memset(state->s_l4u, 0, sizeof(state->s_l4u));
     memset(state->s_r4u, 0, sizeof(state->s_r4u));
 
-    state->audio_out_buf = malloc(sizeof(short) * 1000000);
-    state->audio_out_bufR = malloc(sizeof(short) * 1000000);
+    state->audio_out_buf = aligned_alloc_64(sizeof(short) * 1000000);
+    state->audio_out_bufR = aligned_alloc_64(sizeof(short) * 1000000);
     memset(state->audio_out_buf, 0, 100 * sizeof(short));
     memset(state->audio_out_bufR, 0, 100 * sizeof(short));
     //analog/raw signal audio buffers
@@ -940,8 +991,8 @@ initState(dsd_state* state) {
     //
     state->audio_out_buf_p = state->audio_out_buf + 100;
     state->audio_out_buf_pR = state->audio_out_bufR + 100;
-    state->audio_out_float_buf = malloc(sizeof(float) * 1000000);
-    state->audio_out_float_bufR = malloc(sizeof(float) * 1000000);
+    state->audio_out_float_buf = aligned_alloc_64(sizeof(float) * 1000000);
+    state->audio_out_float_bufR = aligned_alloc_64(sizeof(float) * 1000000);
     memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
     memset(state->audio_out_float_bufR, 0, 100 * sizeof(float));
     state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
@@ -1007,8 +1058,8 @@ initState(dsd_state* state) {
     state->optind = 0;
     state->numtdulc = 0;
     state->firstframe = 0;
-    sprintf(state->slot1light, "%s", "");
-    sprintf(state->slot2light, "%s", "");
+    state->slot1light[0] = '\0';
+    state->slot2light[0] = '\0';
     state->aout_gain = 25.0f;
     state->aout_gainR = 25.0f;
     state->aout_gainA = 0.0f; //use purely as a display or internal value, no user setting

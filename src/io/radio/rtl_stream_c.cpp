@@ -156,7 +156,16 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     if (!ctx || !ctx->stream) {
         return -1;
     }
-    return ctx->stream->tune(center_freq_hz);
+    // simple process-level cache; safe since single tuner is typical
+    static uint32_t s_last_freq = 0U;
+    if (center_freq_hz == s_last_freq) {
+        return 0; // no-op
+    }
+    int rc = ctx->stream->tune(center_freq_hz);
+    if (rc == 0) {
+        s_last_freq = center_freq_hz;
+    }
+    return rc;
 }
 
 /**
@@ -234,7 +243,12 @@ rtl_stream_set_resampler_target(int target_hz) {
 
 extern "C" void
 rtl_stream_set_ted_sps(int sps) {
+    static int s_last_sps = 0;
+    if (sps == s_last_sps) {
+        return; // no change
+    }
     dsd_rtl_stream_set_ted_sps(sps);
+    s_last_sps = sps;
 }
 
 extern "C" int

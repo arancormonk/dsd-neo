@@ -38,7 +38,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     sprintf(state->call_string[1], "%s", "                     "); //21 spaces
 
     //clear stale Active Channel messages here
-    if ((time(NULL) - state->last_active_time) > 3) {
+    const time_t now = time(NULL);
+    if ((now - state->last_active_time) > 3) {
         memset(state->active_channel, 0, sizeof(state->active_channel));
     }
 
