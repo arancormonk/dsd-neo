@@ -30,6 +30,17 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+#ifdef __unix__
+#include <unistd.h> // dup, dup2, close
+#endif
+
+/* When ncurses UI is active, we temporarily suppress stderr to avoid stdio
+ * mixed with the curses screen. Keep track so we can restore on close. */
+#ifdef __unix__
+static int s_stderr_suppressed = 0;
+static int s_saved_stderr_fd = -1;
+#endif
+
 /* Local quickselect helpers for int arrays (k-th smallest in O(n)) */
 static inline void
 swap_int_local(int* a, int* b) {
@@ -407,20 +418,25 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     // When ncurses UI is active, suppress direct stderr logging to prevent
     // screen corruption from background fprintf calls in protocol paths.
     // This avoids mixed ncurses/stdio output overwriting the UI until resize.
-    // If console logs are needed, consider adding a file logger later.
-    static int stderr_suppressed = 0;
-    if (!stderr_suppressed) {
 #ifdef __unix__
-        FILE* devnull = fopen("/dev/null", "w");
-        if (devnull) {
-            fflush(stderr);
-            dup2(fileno(devnull), fileno(stderr));
-            // close the redundant FILE*; stderr now points to /dev/null
-            fclose(devnull);
-            stderr_suppressed = 1;
+    if (!s_stderr_suppressed) {
+        // Backup current stderr FD, then redirect to /dev/null.
+        int backup_fd = dup(fileno(stderr));
+        if (backup_fd >= 0) {
+            FILE* devnull = fopen("/dev/null", "w");
+            if (devnull) {
+                fflush(stderr);
+                dup2(fileno(devnull), fileno(stderr));
+                fclose(devnull);
+                s_saved_stderr_fd = backup_fd;
+                s_stderr_suppressed = 1;
+            } else {
+                // If we cannot open /dev/null, discard backup.
+                close(backup_fd);
+            }
         }
-#endif
     }
+#endif
 }
 
 static int lls = -1;
@@ -3920,5 +3936,17 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
 void
 ncursesClose() {
+#ifdef __unix__
+    // Restore stderr so exit-time logs (e.g., ring stats) are visible.
+    if (s_stderr_suppressed) {
+        fflush(stderr);
+        if (s_saved_stderr_fd >= 0) {
+            dup2(s_saved_stderr_fd, fileno(stderr));
+            close(s_saved_stderr_fd);
+            s_saved_stderr_fd = -1;
+        }
+        s_stderr_suppressed = 0;
+    }
+#endif
     endwin();
 }
