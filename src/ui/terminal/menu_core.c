@@ -35,17 +35,6 @@ ui_make_window(int h, int w, int y, int x) {
 static char g_status_msg[256];
 static time_t g_status_expire = 0;
 
-static void
-ui_statusfv(const char* fmt, va_list ap) {
-    if (!fmt) {
-        return;
-    }
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap_copy);
-    va_end(ap_copy);
-}
-
 void
 ui_statusf(const char* fmt, ...) {
     if (!fmt) {
@@ -53,7 +42,7 @@ ui_statusf(const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    ui_statusfv(fmt, ap);
+    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap);
     va_end(ap);
     g_status_expire = time(NULL) + 3; // show ~3 seconds
 }
