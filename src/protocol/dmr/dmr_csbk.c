@@ -471,7 +471,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         for (int i = 0; i < state->group_tally; i++) {
                             if (state->group_array[i].groupNumber == target) {
                                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                strcpy(mode, state->group_array[i].groupMode);
+                                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                                mode[sizeof(mode) - 1] = '\0';
                                 break;
                             }
                         }
@@ -2124,7 +2125,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             for (int i = 0; i < state->group_tally; i++) {
                                 if (state->group_array[i].groupNumber == t_tg[j]) {
                                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                    strcpy(mode, state->group_array[i].groupMode);
+                                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                                    mode[sizeof(mode) - 1] = '\0';
                                     break;
                                 }
                             }
@@ -2399,7 +2401,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == grpAddr) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -2516,7 +2519,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == dtarget) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -2782,7 +2786,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         for (int i = 0; i < state->group_tally; i++) {
                             if (state->group_array[i].groupNumber == t_tg[j + xpt_bank]) {
                                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                                strcpy(mode, state->group_array[i].groupMode);
+                                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                                mode[sizeof(mode) - 1] = '\0';
                                 break;
                             }
                         }

@@ -229,7 +229,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == sgroup) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
@@ -286,7 +287,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == sgroup) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
@@ -385,7 +387,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -466,7 +469,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == group) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
@@ -586,7 +590,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == target) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
@@ -671,7 +676,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == source || state->group_array[i].groupNumber == target) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                    mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
@@ -830,7 +836,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -1019,7 +1026,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -1115,7 +1123,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }

@@ -579,42 +579,84 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             char sup_str[200];
             memset(sup_str, 0, sizeof(sup_str));
             sprintf(sup_str, "%s", "_");
+            size_t rem;
             if (svc_opts & 0x02) {
-                strcat(sup_str, "Digital_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "Digital_", rem);
+                }
             } else {
-                strcat(sup_str, "Analog_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "Analog_", rem);
+                }
             }
             if (svc_opts & 0x04) {
-                strcat(sup_str, "Emergency_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "Emergency_", rem);
+                }
             }
             if (svc_opts & 0x08) {
-                strcat(sup_str, "Group_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "Group_", rem);
+                }
             }
             if (svc_opts & 0x10) {
-                strcat(sup_str, "I_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "I_", rem);
+                }
             }
             if (svc_opts & 0x20) {
-                strcat(sup_str, "ALL_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "ALL_", rem);
+                }
             }
             if (svc_opts & 0x40) {
-                strcat(sup_str, "INTER_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "INTER_", rem);
+                }
             }
             if (svc_opts & 0x80) {
-                strcat(sup_str, "TEST_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "TEST_", rem);
+                }
             }
             if (svc_opts & 0x100) {
-                strcat(sup_str, "AGENCY_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "AGENCY_", rem);
+                }
             }
             if (svc_opts & 0x200) {
-                strcat(sup_str, "FLEET_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "FLEET_", rem);
+                }
             }
             if (svc_opts & 0x01) {
-                strcat(sup_str, "Voice_");
+                rem = sizeof(sup_str) - strlen(sup_str) - 1;
+                if (rem > 0) {
+                    strncat(sup_str, "Voice_", rem);
+                }
             }
-            strcat(sup_str, "Call");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "Call", rem);
+            }
 
             sprintf(sysid_string, "EDACS_SITE_%03d", sys_id1);
-            strcat(sysid_string, sup_str);
+            {
+                size_t rem2 = sizeof(sysid_string) - strlen(sysid_string) - 1;
+                if (rem2 > 0) {
+                    strncat(sysid_string, sup_str, rem2);
+                }
+            }
 
             if (state->ea_mode == 0) {
                 int afs = state->lasttg;
@@ -745,7 +787,10 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         sprintf(event_string, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
                 state->dpmr_color_code, state->dpmr_target_id, state->dpmr_caller_id);
         if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
-            strcat(event_string, "Scrambler Enc; ");
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, "Scrambler Enc; ", rem);
+            }
         }
     } else if (state->lastsynctype == 14 || state->lastsynctype == 15 || state->lastsynctype == 37
                || state->lastsynctype == 38) //EDACS Calls
@@ -754,39 +799,76 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         char sup_str[200];
         memset(sup_str, 0, sizeof(sup_str));
         sprintf(sup_str, "%s", "");
+        size_t rem;
         if (svc_opts & 0x02) {
-            strcat(sup_str, "Digital ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "Digital ", rem);
+            }
         } else {
-            strcat(sup_str, "Analog ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "Analog ", rem);
+            }
         }
         if (svc_opts & 0x04) {
-            strcat(sup_str, "Emergency ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "Emergency ", rem);
+            }
         }
         if (svc_opts & 0x08) {
-            strcat(sup_str, "Group ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "Group ", rem);
+            }
         }
         if (svc_opts & 0x10) {
-            strcat(sup_str, "I ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "I ", rem);
+            }
         }
         if (svc_opts & 0x20) {
-            strcat(sup_str, "ALL ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "ALL ", rem);
+            }
         }
         if (svc_opts & 0x40) {
-            strcat(sup_str, "INTER ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "INTER ", rem);
+            }
         }
         if (svc_opts & 0x80) {
-            strcat(sup_str, "TEST ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "TEST ", rem);
+            }
         }
         if (svc_opts & 0x100) {
-            strcat(sup_str, "AGENCY ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "AGENCY ", rem);
+            }
         }
         if (svc_opts & 0x200) {
-            strcat(sup_str, "FLEET ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "FLEET ", rem);
+            }
         }
         if (svc_opts & 0x01) {
-            strcat(sup_str, "Voice ");
+            rem = sizeof(sup_str) - strlen(sup_str) - 1;
+            if (rem > 0) {
+                strncat(sup_str, "Voice ", rem);
+            }
         }
-        strcat(sup_str, "Call");
+        rem = sizeof(sup_str) - strlen(sup_str) - 1;
+        if (rem > 0) {
+            strncat(sup_str, "Call", rem);
+        }
 
         if (state->ea_mode == 1) {
             sprintf(event_string, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; SITE: %d:%d.%04X; %s;", datestr, timestr,
@@ -822,47 +904,91 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     source_id, sys_id2);
         }
         if (enc) {
-            strcat(event_string, "ENC; ");
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, "ENC; ", rem);
+            }
         }
         if (alg_id != 0) {
             char ess_str[30];
             sprintf(ess_str, "ALG: %02X; KID: %02X; ", alg_id, key_id);
-            strcat(event_string, ess_str);
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, ess_str, rem);
+                }
+            }
         }
 
         //monitor for misc link control that may set a SO without having SO inside of it,
         //those could cause misc issues here, will need to observe and make adjustments
         if (svc_opts & 0x80) {
-            strcat(event_string, "Emergency; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Emergency; ", rem);
+                }
+            }
         }
 
         if (svc_opts & 0x08) {
-            strcat(event_string, "Broadcast; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Broadcast; ", rem);
+                }
+            }
         }
 
         if (svc_opts & 0x04) {
-            strcat(event_string, "OVCM; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "OVCM; ", rem);
+                }
+            }
         }
 
         if (state->gi[slot] == 0) {
-            strcat(event_string, "Group; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Group; ", rem);
+                }
+            }
         } else if (state->gi[slot] == 1) {
-            strcat(event_string, "Private; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Private; ", rem);
+                }
+            }
         }
 
         if (mfid == 0x10) {
             if (svc_opts & 0x20) {
-                strcat(event_string, "TXI; ");
+                {
+                    size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                    if (rem > 0) {
+                        strncat(event_string, "TXI; ", rem);
+                    }
+                }
             } else if (svc_opts & 0x10) {
-                strcat(
-                    event_string,
-                    "TXI; "); //this is the svc opt bit that tells you when the next VC6 will be pre-empted, but not helpful here
+                {
+                    size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                    if (rem > 0) {
+                        strncat(event_string, "TXI; ", rem);
+                    }
+                }
             }
 
             if (svc_opts & 0x03) {
-                strcat(
-                    event_string,
-                    "PRIORITY; "); //need to break this apart into each one, but need to double check the decoded value is accurate
+                {
+                    size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                    if (rem > 0) {
+                        strncat(event_string, "PRIORITY; ", rem);
+                    }
+                }
             }
         }
 
@@ -878,15 +1004,35 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         if (alg_id != 0 && alg_id != 0x80) {
             char ess_str[30];
             sprintf(ess_str, "ENC; ALG: %02X; KID: %04X; ", alg_id, key_id);
-            strcat(event_string, ess_str);
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, ess_str, rem);
+                }
+            }
         }
         if (svc_opts & 0x80) {
-            strcat(event_string, "Emergency; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Emergency; ", rem);
+                }
+            }
         }
         if (state->gi[slot] == 0) {
-            strcat(event_string, "Group; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Group; ", rem);
+                }
+            }
         } else if (state->gi[slot] == 1) {
-            strcat(event_string, "Private; ");
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, "Private; ", rem);
+                }
+            }
         }
     }
 
@@ -899,29 +1045,53 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     source_id, sys_id3);
         }
         if (enc) {
-            strcat(event_string, "ENC; ");
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, "ENC; ", rem);
+            }
         }
         if (alg_id != 0) {
             char ess_str[30];
             sprintf(ess_str, "ALG: %d; KID: %02X; ", alg_id, key_id);
-            strcat(event_string, ess_str);
+            {
+                size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+                if (rem > 0) {
+                    strncat(event_string, ess_str, rem);
+                }
+            }
         }
         if (state->gi[slot] == 0) {
-            strcat(event_string, "Group; ");
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, "Group; ", rem);
+            }
         } else if (state->gi[slot] == 1) {
-            strcat(event_string, "Private; ");
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, "Private; ", rem);
+            }
         }
     }
 
     if (t_name_loaded) {
         char group[420];
         sprintf(group, "TName: %s; Mode: %s; ", t_name, t_mode);
-        strcat(event_string, group);
+        {
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, group, rem);
+            }
+        }
     }
     if (s_name_loaded) {
         char private[420];
         sprintf(private, "SName: %s; Mode: %s; ", s_name, s_mode);
-        strcat(event_string, private);
+        {
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, private, rem);
+            }
+        }
     }
 
     sprintf(event_struct->Event_History_Items[0].event_string, "%s", event_string);
@@ -960,7 +1130,12 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     char event_string[2000];
     memset(event_string, 0, sizeof(event_string));
     sprintf(event_string, "%s %s ", datestr, timestr);
-    strcat(event_string, data_string); //may need to check for potential overflow of this
+    {
+        size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+        if (rem > 0) {
+            strncat(event_string, data_string, rem);
+        }
+    }
     sprintf(state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
             event_string); //could change this to a strncpy to prevent potential overflow
 

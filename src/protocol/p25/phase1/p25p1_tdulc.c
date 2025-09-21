@@ -385,7 +385,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     LCW_bytes[0] = (uint8_t)ConvertBitIntoBytes(&lcformat[0], 8);
     LCW_bytes[1] = (uint8_t)ConvertBitIntoBytes(&mfid[0], 8);
     for (i = 0; i < 7; i++) {
-        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[i * 8], 8);
+        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[(size_t)i * 8u], 8);
     }
 
     //load as bit array next (easier to process data in bit form)

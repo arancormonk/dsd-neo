@@ -349,7 +349,7 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
         }
 
         // move information bits
-        memcpy(&decodedBits[8 * ic], &rxBits[12 * ic], 8);
+        memcpy(&decodedBits[(size_t)ic * 8u], &rxBits[(size_t)ic * 12u], (size_t)8u);
     }
 
     return correctable;
@@ -437,7 +437,7 @@ Hamming_13_9_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
 
         // move information bits
         if (decodedBits) {
-            memcpy(&decodedBits[9 * ic], &rxBits[13 * ic], 9);
+            memcpy(&decodedBits[(size_t)ic * 9u], &rxBits[(size_t)ic * 13u], (size_t)9u);
         }
     }
 
@@ -530,7 +530,7 @@ Hamming_15_11_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCo
 
         // move information bits
         if (decodedBits) {
-            memcpy(&decodedBits[11 * ic], &rxBits[15 * ic], 11);
+            memcpy(&decodedBits[(size_t)ic * 11u], &rxBits[(size_t)ic * 15u], (size_t)11u);
         }
     }
 
@@ -623,7 +623,7 @@ Hamming_16_11_4_decode(unsigned char* rxBits, unsigned char* decodedBits, int nb
 
         // move information bits
         if (decodedBits) {
-            memcpy(&decodedBits[11 * ic], &rxBits[16 * ic], 11);
+            memcpy(&decodedBits[(size_t)ic * 11u], &rxBits[(size_t)ic * 16u], (size_t)11u);
         }
     }
 

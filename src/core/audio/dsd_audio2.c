@@ -163,11 +163,13 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     for (i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
         if (state->group_array[i].groupNumber == TGR) {
-            strcpy(modeR, state->group_array[i].groupMode);
+            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+            modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
     }
@@ -393,11 +395,13 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     for (i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
         if (state->group_array[i].groupNumber == TGR) {
-            strcpy(modeR, state->group_array[i].groupMode);
+            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+            modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
     }
@@ -610,7 +614,8 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 
     for (int i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             break;
         }
     }
@@ -748,7 +753,8 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
 
     for (int i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             break;
         }
     }
@@ -1019,7 +1025,8 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
 
     for (int i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             break;
         }
     }
@@ -1191,11 +1198,13 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 
     for (i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
         if (state->group_array[i].groupNumber == TGR) {
-            strcpy(modeR, state->group_array[i].groupMode);
+            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+            modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
     }
@@ -1537,11 +1546,13 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
 
     for (i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
         if (state->group_array[i].groupNumber == TGR) {
-            strcpy(modeR, state->group_array[i].groupMode);
+            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+            modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
     }
@@ -1796,11 +1807,13 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
 
     for (i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == TGL) {
-            strcpy(modeL, state->group_array[i].groupMode);
+            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+            modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
         if (state->group_array[i].groupNumber == TGR) {
-            strcpy(modeR, state->group_array[i].groupMode);
+            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+            modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
     }

@@ -286,7 +286,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -361,7 +362,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
                     for (int i = 0; i < state->group_tally; i++) {
                         if (state->group_array[i].groupNumber == tempg) {
                             fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                            strcpy(mode, state->group_array[i].groupMode);
+                            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                            mode[sizeof(mode) - 1] = '\0';
                             break;
                         }
                     }

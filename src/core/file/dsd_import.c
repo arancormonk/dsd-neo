@@ -34,11 +34,13 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, "%ld, ", state->group_array[i].groupNumber);
             }
             if (field_count == 1) {
-                strcpy(state->group_array[i].groupMode, field);
+                strncpy(state->group_array[i].groupMode, field, sizeof(state->group_array[i].groupMode) - 1);
+                state->group_array[i].groupMode[sizeof(state->group_array[i].groupMode) - 1] = '\0';
                 fprintf(stderr, "%s, ", state->group_array[i].groupMode);
             }
             if (field_count == 2) {
-                strcpy(state->group_array[i].groupName, field);
+                strncpy(state->group_array[i].groupName, field, sizeof(state->group_array[i].groupName) - 1);
+                state->group_array[i].groupName[sizeof(state->group_array[i].groupName) - 1] = '\0';
                 fprintf(stderr, "%s ", state->group_array[i].groupName);
             }
 

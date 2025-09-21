@@ -223,7 +223,7 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         raw_bits[k++] = getDibit(opts, state);
     }
 
-    bf = (uint16_t)ConvertBitIntoBytes(&raw_bits[54 * 8], 16);
+    bf = (uint16_t)ConvertBitIntoBytes(&raw_bits[(size_t)54u * 8u], 16);
 
     if (opts->payload == 1) {
         fprintf(stderr, "\n BF: %04X ", bf);

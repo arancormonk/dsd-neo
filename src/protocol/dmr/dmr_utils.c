@@ -412,7 +412,6 @@ ComputeCrc32Bit(uint8_t* DMRData, uint32_t NbData) {
 
     //for whatever reason, we get the CRC returned in a reversed byte order (MSO LSO b***s***)
     uint32_t a, b, c, d;
-    a = b = c = d = 0;
     a = (CRC & 0xFF) << 24;
     b = (CRC & 0xFF00) >> 8;
     b = b << 16;

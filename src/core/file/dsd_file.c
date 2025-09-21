@@ -1155,7 +1155,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     int rc4_db = 256;
     int rc4_mod = 13;
 
-    time_t event_time = time(NULL);
+    time_t event_time = 0; // set after parsing; 0 indicates unset
 
     //for event history items
     state->dmr_color_code = 0;
@@ -1295,7 +1295,6 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
             //reset other enc variables (filled in later on if available)
             alg_id = 0;
             key_id = 0;
-            iv_hex = 0;
 
             //debug set value
             // fprintf (stderr, " ENC: %d;", is_enc);

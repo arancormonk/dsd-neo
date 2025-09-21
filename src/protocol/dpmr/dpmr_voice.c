@@ -171,8 +171,8 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
         correctable = true;
         for (j = 0; j < 6; j++) {
             /* Apply the Hamming(12,8) correction - Input 72 bit => Output 48 bit */
-            HammingCorrectable[i][j] =
-                Hamming_12_8_decode(&CCHDeInterleaved[i][j * 12], &CCHDataHammingCorrected[i][j * 8], 1);
+            HammingCorrectable[i][j] = Hamming_12_8_decode(&CCHDeInterleaved[i][(size_t)j * 12u],
+                                                           &CCHDataHammingCorrected[i][(size_t)j * 8u], 1);
             if (HammingCorrectable[i][j] == false) {
                 correctable = false;
             }
@@ -239,11 +239,13 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     } /* End for(i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) */
 
     /* Get the last TG */
-    strcpy((char*)CalledID, (char*)state->dPMRVoiceFS2Frame.CalledID);
+    strncpy((char*)CalledID, (char*)state->dPMRVoiceFS2Frame.CalledID, sizeof(CalledID) - 1);
+    CalledID[sizeof(CalledID) - 1] = '\0';
     CalledID[7] = '\0';
 
     /* Get the last source ID */
-    strcpy((char*)CallingID, (char*)state->dPMRVoiceFS2Frame.CallingID);
+    strncpy((char*)CallingID, (char*)state->dPMRVoiceFS2Frame.CallingID, sizeof(CallingID) - 1);
+    CallingID[sizeof(CallingID) - 1] = '\0';
     CallingID[7] = '\0';
 
     /* To determine the part of the payload frame, we need to check the
@@ -279,7 +281,9 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
         }
 
         /* BUGFIX : Copy in all case the TG ID */
-        strcpy((char*)state->dPMRVoiceFS2Frame.CalledID, (char*)CalledID);
+        strncpy((char*)state->dPMRVoiceFS2Frame.CalledID, (char*)CalledID,
+                sizeof(state->dPMRVoiceFS2Frame.CalledID) - 1);
+        state->dPMRVoiceFS2Frame.CalledID[sizeof(state->dPMRVoiceFS2Frame.CalledID) - 1] = '\0';
     }
 
     /* To determine the part of the payload frame, we need to check the
@@ -317,7 +321,9 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
         }
 
         /* BUGFIX : Copy in all case the SRC ID */
-        strcpy((char*)state->dPMRVoiceFS2Frame.CallingID, (char*)CallingID);
+        strncpy((char*)state->dPMRVoiceFS2Frame.CallingID, (char*)CallingID,
+                sizeof(state->dPMRVoiceFS2Frame.CallingID) - 1);
+        state->dPMRVoiceFS2Frame.CallingID[sizeof(state->dPMRVoiceFS2Frame.CallingID) - 1] = '\0';
     } else {
         /* The dPMR source and destination ID are now invalid */
         state->dPMRVoiceFS2Frame.CalledIDOk = 0;

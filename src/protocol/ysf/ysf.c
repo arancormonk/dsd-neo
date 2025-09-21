@@ -80,7 +80,7 @@ ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
     UNUSED(bt);
 
     for (i = 0; i < 20; i++) {
-        dch_bytes[i] = (char)ConvertBitIntoBytes(&input[i * 8], 8);
+        dch_bytes[i] = (char)ConvertBitIntoBytes(&input[(size_t)i * 8u], 8);
     }
 
     switch (bn) { //using bn here so we can use the frame number for sorting the text messages found in here
@@ -184,7 +184,7 @@ ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft
     UNUSED4(bn, bt, fn, ft);
 
     for (i = 0; i < 10; i++) {
-        dch_bytes[i] = (char)ConvertBitIntoBytes(&input[i * 8], 8);
+        dch_bytes[i] = (char)ConvertBitIntoBytes(&input[(size_t)i * 8u], 8);
     }
 
     switch (fn) {
@@ -374,7 +374,7 @@ ysf_conv_dch2(dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t 
     //reload after de-whitening
     memset(m_data, 0, sizeof(m_data));
     for (i = 0; i < 12; i++) {
-        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[(size_t)i * 8u], 8);
     }
 
     //decode the callsign, etc, found in the DCH when no errors
@@ -468,7 +468,7 @@ ysf_conv_dch(dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t f
     //reload after de-whitening
     memset(m_data, 0, sizeof(m_data));
     for (i = 0; i < 22; i++) {
-        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[(size_t)i * 8u], 8);
     }
 
     //decode the callsign, etc, found in the DCH when no errors
@@ -719,7 +719,6 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     char imbe_fr[8][23];
     memset(imbe_fr, 0, sizeof(imbe_fr));
     uint8_t b1, b2, msb, lsb;
-    b1 = b2 = msb = lsb = vstart = vstop = dstart = dstop = 0;
 
     //fich information
     uint8_t fi = 9; //Header, Communications, or Terminator

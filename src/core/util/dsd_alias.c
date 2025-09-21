@@ -489,8 +489,8 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
 
     sprintf(fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
     if (rid != 0 && state->event_history_s[slot].Event_History_Items[0].source_id == rid) {
-        sprintf(state->event_history_s[slot].Event_History_Items[0].alias, "%s; ", str);
-        strcat(state->event_history_s[slot].Event_History_Items[0].alias, fqs);
+        snprintf(state->event_history_s[slot].Event_History_Items[0].alias,
+                 sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; %s", str, fqs);
     }
 
     for (int16_t i = 0; i < state->group_tally; i++) {
@@ -826,7 +826,10 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             if (character >= 0x20 && character <= 0x7E) //Standard ASCII Set
             {
                 fprintf(stderr, "%c", character);
-                strcat(alias_string, ch);
+                size_t rem = sizeof(alias_string) - strlen(alias_string) - 1;
+                if (rem > 0) {
+                    strncat(alias_string, ch, rem);
+                }
             }
             // else if (character == 0)
             // {
@@ -835,7 +838,12 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             //   break;
             // }
             else {
-                strcat(alias_string, " ");
+                {
+                    size_t rem = sizeof(alias_string) - strlen(alias_string) - 1;
+                    if (rem > 0) {
+                        strncat(alias_string, " ", rem);
+                    }
+                }
                 fprintf(stderr, " ");
             }
         }
@@ -849,7 +857,10 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             if (character >= 0x20 && character != 0x7F) //allow some extended UTF diacritical characters as well
             {
                 fprintf(stderr, "%c", character);
-                strcat(alias_string, ch);
+                size_t rem2 = sizeof(alias_string) - strlen(alias_string) - 1;
+                if (rem2 > 0) {
+                    strncat(alias_string, ch, rem2);
+                }
             }
             // else if (character == 0)
             // {
@@ -858,7 +869,12 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             //   break;
             // }
             else {
-                strcat(alias_string, " ");
+                {
+                    size_t rem2 = sizeof(alias_string) - strlen(alias_string) - 1;
+                    if (rem2 > 0) {
+                        strncat(alias_string, " ", rem2);
+                    }
+                }
                 fprintf(stderr, " ");
             }
         }
@@ -888,11 +904,26 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             }
 
             if (character == 0) {
-                strcat(alias_string, " ");
+                {
+                    size_t rem3 = sizeof(alias_string) - strlen(alias_string) - 1;
+                    if (rem3 > 0) {
+                        strncat(alias_string, " ", rem3);
+                    }
+                }
             } else if (character >= 0x20 && character <= 0xFE) {
-                strcat(alias_string, ch);
+                {
+                    size_t rem3 = sizeof(alias_string) - strlen(alias_string) - 1;
+                    if (rem3 > 0) {
+                        strncat(alias_string, ch, rem3);
+                    }
+                }
             } else {
-                strcat(alias_string, "*");
+                {
+                    size_t rem3 = sizeof(alias_string) - strlen(alias_string) - 1;
+                    if (rem3 > 0) {
+                        strncat(alias_string, "*", rem3);
+                    }
+                }
             }
 
             //debug

@@ -1152,7 +1152,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -1298,7 +1299,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 //Get target mode for calls that are in the allow/whitelist
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == target) {
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -1619,7 +1621,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 //Get group mode for calls that are in the allow/whitelist
                 for (int i = 0; i < state->group_tally; i++) {
                     if (state->group_array[i].groupNumber == group) {
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -1920,7 +1923,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         //Get group mode for calls that are in the allow/whitelist
                         for (int i = 0; i < state->group_tally; i++) {
                             if (state->group_array[i].groupNumber == target) {
-                                strcpy(mode, state->group_array[i].groupMode);
+                                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                                mode[sizeof(mode) - 1] = '\0';
                                 break;
                             }
                         }

@@ -231,7 +231,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
     for (i = 0; i < state->group_tally; i++) {
         if (state->group_array[i].groupNumber == groupNumber) {
-            strcpy(mode, state->group_array[i].groupMode);
+            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            mode[sizeof(mode) - 1] = '\0';
             break;
         }
     }

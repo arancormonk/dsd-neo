@@ -654,14 +654,16 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         if (state->group_array[i].groupNumber == DestinationID && DestinationID != 0) //destination, if it isn't 0
         {
             fprintf(stderr, " [%s]", state->group_array[i].groupName);
-            strcpy(mode, state->group_array[i].groupMode);
+            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            mode[sizeof(mode) - 1] = '\0';
             break;
         }
         //might not be ideal if both source and group/target are both in the array
         else if (state->group_array[i].groupNumber == SourceUnitID && DestinationID == 0) //source, if destination is 0
         {
             fprintf(stderr, " [%s]", state->group_array[i].groupName);
-            strcpy(mode, state->group_array[i].groupMode);
+            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            mode[sizeof(mode) - 1] = '\0';
             break;
         }
     }
@@ -671,7 +673,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         for (int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == SourceUnitID) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                strcpy(mode, state->group_array[i].groupMode);
+                strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                mode[sizeof(mode) - 1] = '\0';
                 break;
             }
         }
@@ -1861,7 +1864,8 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                     if (state->group_array[i].groupNumber == id) //tg/tgt only on info4 unit
                     {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strcpy(mode, state->group_array[i].groupMode);
+                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
@@ -2040,9 +2044,11 @@ NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t*
     TransmissionMode[0] = 0;
 
     if (VoiceCallOption & 0x10) {
-        strcpy((char*)Duplex, "Duplex");
+        strncpy((char*)Duplex, "Duplex", sizeof(Duplex) - 1);
+        Duplex[sizeof(Duplex) - 1] = '\0';
     } else {
-        strcpy((char*)Duplex, "Half Duplex");
+        strncpy((char*)Duplex, "Half Duplex", sizeof(Duplex) - 1);
+        Duplex[sizeof(Duplex) - 1] = '\0';
     }
 
     switch (VoiceCallOption
@@ -2066,7 +2072,8 @@ NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t*
         default: Ptr = "Unk;"; break;            //should never get here
     }
 
-    strcpy((char*)TransmissionMode, Ptr);
+    strncpy((char*)TransmissionMode, Ptr, sizeof(TransmissionMode) - 1);
+    TransmissionMode[sizeof(TransmissionMode) - 1] = '\0';
 } /* End NXDN_Voice_Call_Option_To_Str() */
 
 char*
