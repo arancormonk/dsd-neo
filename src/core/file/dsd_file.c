@@ -97,7 +97,7 @@ PrintIMBEData(dsd_opts* opts, dsd_state* state, char* imbe_d) //for P25P1 and Pr
     fprintf(stderr, "\n IMBE ");
     uint8_t imbe[88];
     for (int i = 0; i < 11; i++) {
-        imbe[i] = convert_bits_into_output((uint8_t*)imbe_d + (i * 8), 8);
+        imbe[i] = convert_bits_into_output((uint8_t*)imbe_d + ((size_t)i * 8u), 8);
         fprintf(stderr, "%02X", imbe[i]);
     }
 
@@ -353,7 +353,7 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     } else {
         opts->mbe_out = 1;
         /* Fully buffered output to reduce syscall overhead */
-        setvbuf(opts->mbe_out_f, NULL, _IOFBF, 64 * 1024);
+        setvbuf(opts->mbe_out_f, NULL, _IOFBF, (size_t)64u * 1024u);
     }
 
     //
@@ -413,7 +413,7 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     } else {
         opts->mbe_outR = 1;
         /* Fully buffered output to reduce syscall overhead */
-        setvbuf(opts->mbe_out_fR, NULL, _IOFBF, 64 * 1024);
+        setvbuf(opts->mbe_out_fR, NULL, _IOFBF, (size_t)64u * 1024u);
     }
 
     //
@@ -730,7 +730,7 @@ void
 pack_bit_array_into_byte_array(uint8_t* input, uint8_t* output, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        output[i] = (uint8_t)convert_bits_into_output(&input[i * 8], 8);
+        output[i] = (uint8_t)convert_bits_into_output(&input[(size_t)i * 8u], 8);
     }
 }
 

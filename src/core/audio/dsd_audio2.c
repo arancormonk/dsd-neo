@@ -83,7 +83,6 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     memset(stereo_samp3, 0.0f, sizeof(stereo_samp3));
 
     //dmr enc checkdown for whether or not to fill the stereo sample or not for playback or writing
-    encL = encR = 0;
     encL = (state->dmr_so >> 6) & 0x1;
     encR = (state->dmr_soR >> 6) & 0x1;
 
@@ -1125,7 +1124,6 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     memset(stereo_samp3, 0, sizeof(stereo_samp3));
 
     //dmr enc checkdown for whether or not to fill the stereo sample or not for playback or writing
-    encL = encR = 0;
     encL = (state->dmr_so >> 6) & 0x1;
     encR = (state->dmr_soR >> 6) & 0x1;
 

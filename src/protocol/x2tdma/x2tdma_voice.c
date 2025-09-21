@@ -50,7 +50,7 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     lcformat[8] = 0;
     mfid[8] = 0;
     lcinfo[56] = 0;
-    sprintf(mi, "________________________________________________________________________");
+    // Initialize on demand below before first use; avoid dead store
     eeei = 0;
     aiei = 0;
     burstd = 0;
