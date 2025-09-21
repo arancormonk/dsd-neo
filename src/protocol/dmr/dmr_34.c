@@ -67,7 +67,7 @@ fix_34(uint8_t* p, uint8_t state, int position) {
             {
                 tri = 0xFF;
                 for (j = 0; j < 8; j++) {
-                    if (fsm[(temp_s * 8) + j] == t) {
+                    if (fsm[((size_t)temp_s * 8) + j] == t) {
                         //return our tribit value and state for the next point
                         tri = temp_s = (uint8_t)j;
                         counter++;
@@ -125,7 +125,7 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
     memset(nibs, 0, sizeof(nibs));
 
     for (i = 0; i < 49; i++) {
-        nibs[i] = (deinterleaved_dibits[i * 2 + 0] << 2) | (deinterleaved_dibits[i * 2 + 1] << 0);
+        nibs[i] = (deinterleaved_dibits[((size_t)i * 2) + 0] << 2) | (deinterleaved_dibits[((size_t)i * 2) + 1] << 0);
     }
 
     //convert our dibit pairs into constellation point values
@@ -149,7 +149,7 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
     for (i = 0; i < 49; i++) {
 
         for (j = 0; j < 8; j++) {
-            if (fsm[(state * 8) + j] == point[i]) {
+            if (fsm[((size_t)state * 8) + j] == point[i]) {
                 //return our tribit value and state for the next point
                 tribits[i] = state = (uint8_t)j;
                 break;
@@ -184,9 +184,10 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
 
     //break into chunks of 24 bit values and shuffle into 8-bit (byte) treturn values
     for (i = 0; i < 6; i++) {
-        temp = (tribits[(i * 8) + 0] << 21) + (tribits[(i * 8) + 1] << 18) + (tribits[(i * 8) + 2] << 15)
-               + (tribits[(i * 8) + 3] << 12) + (tribits[(i * 8) + 4] << 9) + (tribits[(i * 8) + 5] << 6)
-               + (tribits[(i * 8) + 6] << 3) + (tribits[(i * 8) + 7] << 0);
+        temp = (tribits[((size_t)i * 8) + 0] << 21) + (tribits[((size_t)i * 8) + 1] << 18)
+               + (tribits[((size_t)i * 8) + 2] << 15) + (tribits[((size_t)i * 8) + 3] << 12)
+               + (tribits[((size_t)i * 8) + 4] << 9) + (tribits[((size_t)i * 8) + 5] << 6)
+               + (tribits[((size_t)i * 8) + 6] << 3) + (tribits[((size_t)i * 8) + 7] << 0);
 
         treturn[(i * 3) + 0] = (temp >> 16) & 0xFF;
         treturn[(i * 3) + 1] = (temp >> 8) & 0xFF;

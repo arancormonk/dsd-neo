@@ -279,11 +279,11 @@ viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
  */
 void
 viterbi_reset(void) {
-    memset((uint8_t*)viterbi_history, 0, 2 * 244);
-    memset((uint8_t*)currMetrics, 0, 4 * NUM_STATES);
-    memset((uint8_t*)prevMetrics, 0, 4 * NUM_STATES);
-    memset((uint8_t*)currMetricsData, 0, 4 * NUM_STATES);
-    memset((uint8_t*)prevMetricsData, 0, 4 * NUM_STATES);
+    memset((uint8_t*)viterbi_history, 0, sizeof(viterbi_history));
+    memset((uint8_t*)currMetrics, 0, sizeof(currMetrics));
+    memset((uint8_t*)prevMetrics, 0, sizeof(prevMetrics));
+    memset((uint8_t*)currMetricsData, 0, sizeof(currMetricsData));
+    memset((uint8_t*)prevMetricsData, 0, sizeof(prevMetricsData));
 }
 
 uint16_t

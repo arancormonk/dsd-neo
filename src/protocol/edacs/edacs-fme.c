@@ -448,30 +448,30 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         //reconfigured to use seperate audio out stream that is always 48k short
         if (opts->audio_out == 1 && opts->audio_out_type == 0 && opts->slot1_on == 1) {
-            pa_simple_write(opts->pulse_raw_dev_out, analog1, 960 * 2, NULL);
-            pa_simple_write(opts->pulse_raw_dev_out, analog2, 960 * 2, NULL);
-            pa_simple_write(opts->pulse_raw_dev_out, analog3, 960 * 2, NULL);
+            pa_simple_write(opts->pulse_raw_dev_out, analog1, (size_t)960u * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_raw_dev_out, analog2, (size_t)960u * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_raw_dev_out, analog3, (size_t)960u * sizeof(short), NULL);
         }
 
         if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
         {
-            udp_socket_blasterA(opts, state, 960 * 2, analog1);
-            udp_socket_blasterA(opts, state, 960 * 2, analog2);
-            udp_socket_blasterA(opts, state, 960 * 2, analog3);
+            udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog1);
+            udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog2);
+            udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog3);
         }
 
         //added a condition check so that if OSS output and 8K, switches to 48K when opening OSS
         if (opts->audio_out_type == 5 && opts->floating_point == 0 && opts->slot1_on == 1) {
-            write(opts->audio_out_fd, analog1, 960 * 2);
-            write(opts->audio_out_fd, analog2, 960 * 2);
-            write(opts->audio_out_fd, analog3, 960 * 2);
+            write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
+            write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));
+            write(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short));
         }
 
         //STDOUT -- I don't see the harm of adding this here, will be fine for analog only or digital only (non-mixed analog and digital)
         if (opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1) {
-            write(opts->audio_out_fd, analog1, 960 * 2);
-            write(opts->audio_out_fd, analog2, 960 * 2);
-            write(opts->audio_out_fd, analog3, 960 * 2);
+            write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
+            write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));
+            write(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short));
         }
 
         opts->rtl_pwr = pwr;
@@ -528,20 +528,20 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             short ss[320];
             memset(ss, 0, sizeof(ss));
             for (i = 0; i < 160; i++) {
-                ss[(i * 2) + 0] = analog1[i * 6]; //grab every 6th sample to downsample
-                ss[(i * 2) + 1] = analog1[i * 6]; //grab every 6th sample to downsample
+                ss[((size_t)i * 2) + 0] = analog1[(size_t)i * 6]; //grab every 6th sample to downsample
+                ss[((size_t)i * 2) + 1] = analog1[(size_t)i * 6]; //grab every 6th sample to downsample
             }
             sf_write_short(opts->wav_out_f, ss, 320);
             memset(ss, 0, sizeof(ss));
             for (i = 0; i < 160; i++) {
-                ss[(i * 2) + 0] = analog2[i * 6]; //grab every 6th sample to downsample
-                ss[(i * 2) + 1] = analog2[i * 6]; //grab every 6th sample to downsample
+                ss[((size_t)i * 2) + 0] = analog2[(size_t)i * 6]; //grab every 6th sample to downsample
+                ss[((size_t)i * 2) + 1] = analog2[(size_t)i * 6]; //grab every 6th sample to downsample
             }
             sf_write_short(opts->wav_out_f, ss, 320);
             memset(ss, 0, sizeof(ss));
             for (i = 0; i < 160; i++) {
-                ss[(i * 2) + 0] = analog3[i * 6]; //grab every 6th sample to downsample
-                ss[(i * 2) + 1] = analog3[i * 6]; //grab every 6th sample to downsample
+                ss[((size_t)i * 2) + 0] = analog3[(size_t)i * 6]; //grab every 6th sample to downsample
+                ss[((size_t)i * 2) + 1] = analog3[(size_t)i * 6]; //grab every 6th sample to downsample
             }
             sf_write_short(opts->wav_out_f, ss, 320);
         }

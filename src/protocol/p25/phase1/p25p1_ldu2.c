@@ -386,7 +386,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_parity[4][0]), &status_count, analog_signal_array,
                               &analog_signal_index);
-    analog_signal_array[16 * 5].sequence_broken = 1;
+    analog_signal_array[((size_t)16) * 5].sequence_broken = 1;
 
     // IMBE 7
 #ifdef TRACE_DSD
@@ -412,7 +412,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
                               &analog_signal_index);
     read_and_correct_hex_word(opts, state, &(hex_parity[0][0]), &status_count, analog_signal_array,
                               &analog_signal_index);
-    analog_signal_array[20 * 5].sequence_broken = 1;
+    analog_signal_array[((size_t)20) * 5].sequence_broken = 1;
 
     // IMBE 8
 #ifdef TRACE_DSD
@@ -539,7 +539,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         encode_reedsolomon_24_16_9((char*)hex_data, fixed_parity);
 
         // Correct the dibits that we read according with the fixed parity values
-        correct_hamming_dibits(fixed_parity, 8, analog_signal_array + 16 * (3 + 2));
+        correct_hamming_dibits(fixed_parity, 8, analog_signal_array + ((size_t)16) * (3 + 2));
 
         // Once corrected, contribute this information to the heuristics module
         contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array,

@@ -261,6 +261,10 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
 
     int hi = 0;
     while (1) {
+        if (n == 0) {
+            // No items to navigate
+            break;
+        }
         ui_draw_menu(menu_win, items, n, hi, ctx);
         int c = wgetch(menu_win);
         if (c == KEY_RESIZE) {

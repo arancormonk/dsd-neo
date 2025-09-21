@@ -1,13 +1,17 @@
 Checks: >
+  # High-signal categories first
   clang-analyzer-*,
   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  clang-analyzer-optin.core*,
+  clang-analyzer-optin.portability.UnixAPI,
   clang-analyzer-optin.performance.Padding,
   bugprone-*,
-  bugprone-unsafe-functions,
+  security-*,
+  # Lower-signal but useful
   performance-*,
   portability-*,
-  security-*,
   readability-*,
+  # Disabled noisy style checks
   -readability-function-cognitive-complexity,
   -readability-function-size,
   -readability-identifier-length,
@@ -16,11 +20,13 @@ Checks: >
   -readability-uppercase-literal-suffix,
   -readability-isolate-declaration,
   -readability-non-const-parameter,
+  -readability-math-missing-parentheses,
+  # Disabled lower-value bugprone/perf noise for this codebase
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
   -performance-move-const-arg,
   -performance-noexcept-move-constructor
-WarningsAsErrors: ''
+WarningsAsErrors: 'clang-analyzer-*,bugprone-*,security-*'
 HeaderFilterRegex: '^(src|include|apps)/'
 FormatStyle: none
 CheckOptions:

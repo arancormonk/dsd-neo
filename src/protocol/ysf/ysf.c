@@ -587,7 +587,7 @@ ysf_conv_fich(uint8_t input[], uint8_t dest[32]) {
 
     memset(m_data, 0, sizeof(m_data));
     for (i = 0; i < 12; i++) {
-        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[(size_t)i * 8], 8);
     }
 
     memcpy(dest, fich_bits, 32); //copy minus the crc16
@@ -855,7 +855,7 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     if (opts->payload == 1) {
         fprintf(stderr, " FICH: ");
         for (int i = 0; i < 4; i++) {
-            fprintf(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&fich_decode[i * 8], 8));
+            fprintf(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&fich_decode[(size_t)i * 8], 8));
         }
     }
 

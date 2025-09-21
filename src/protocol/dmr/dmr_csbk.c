@@ -19,6 +19,19 @@
 #endif
 #define PCLEAR_TUNE_AWAY //disable if slower return is preferred
 
+// Safe append helper: appends src to dst within dstsz, NUL-terminating
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
+}
+
 // Forward decls for event helpers
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
@@ -512,10 +525,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                                 || csbk_o == 56) {
                                             } //do nothing
                                             else {
-                                                strcat(state->call_string[0], " Emergency  ");
+                                                dsd_append(state->call_string[0], sizeof state->call_string[0],
+                                                           " Emergency  ");
                                             }
                                         } else {
-                                            strcat(state->call_string[0], "            ");
+                                            dsd_append(state->call_string[0], sizeof state->call_string[0],
+                                                       "            ");
                                         }
                                     }
 
@@ -538,10 +553,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                                 || csbk_o == 56) {
                                             } //do nothing
                                             else {
-                                                strcat(state->call_string[1], " Emergency  ");
+                                                dsd_append(state->call_string[1], sizeof state->call_string[1],
+                                                           " Emergency  ");
                                             }
                                         } else {
-                                            strcat(state->call_string[1], "            ");
+                                            dsd_append(state->call_string[1], sizeof state->call_string[1],
+                                                       "            ");
                                         }
                                     }
                                     //Guess I forgot to add this condition here
@@ -589,10 +606,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                                 || csbk_o == 56) {
                                             } //do nothing
                                             else {
-                                                strcat(state->call_string[0], " Emergency  ");
+                                                dsd_append(state->call_string[0], sizeof state->call_string[0],
+                                                           " Emergency  ");
                                             }
                                         } else {
-                                            strcat(state->call_string[0], "            ");
+                                            dsd_append(state->call_string[0], sizeof state->call_string[0],
+                                                       "            ");
                                         }
                                     }
                                     if (lcn == 1 && data_call == 0) {
@@ -614,10 +633,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                                 || csbk_o == 56) {
                                             } //do nothing
                                             else {
-                                                strcat(state->call_string[1], " Emergency  ");
+                                                dsd_append(state->call_string[1], sizeof state->call_string[1],
+                                                           " Emergency  ");
                                             }
                                         } else {
-                                            strcat(state->call_string[1], "            ");
+                                            dsd_append(state->call_string[1], sizeof state->call_string[1],
+                                                       "            ");
                                         }
                                     }
                                     //Guess I forgot to add this condition here
@@ -1415,9 +1436,9 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 }
 
                 if (ahoy_gi == 0) {
-                    strcat(ahoy_str, "Private; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Private; ");
                 } else {
-                    strcat(ahoy_str, "Group; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Group; ");
                 }
                 state->gi[state->currentslot] = ahoy_gi ^ 1;
 
@@ -1455,31 +1476,31 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 fprintf(stderr, "Target: %d; Source: %d; ", ahoy_target, ahoy_source);
 
                 if (svc_kind == 0 || svc_kind == 1) {
-                    strcat(ahoy_str, "Voice Call; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Voice Call; ");
                 } else if (svc_kind == 2 || svc_kind == 3) {
-                    strcat(ahoy_str, "Packet Data Call; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Packet Data Call; ");
                 } else if (svc_kind == 4 || svc_kind == 5) {
-                    strcat(ahoy_str, "UDT Short Data Call; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "UDT Short Data Call; ");
                 } else if (svc_kind == 6) {
-                    strcat(ahoy_str, "UDT Short Data Polling Service; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "UDT Short Data Polling Service; ");
                 } else if (svc_kind == 7) {
-                    strcat(ahoy_str, "Status Transport Service; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Status Transport Service; ");
                 } else if (svc_kind == 8) {
-                    strcat(ahoy_str, "Call Diversion Service; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Call Diversion Service; ");
                 } else if (svc_kind == 9) {
-                    strcat(ahoy_str, "Call Answer Service; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Call Answer Service; ");
                 } else if (svc_kind == 10) {
-                    strcat(ahoy_str, "Full Duplex Voice Call; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Full Duplex Voice Call; ");
                 } else if (svc_kind == 11) {
-                    strcat(ahoy_str, "Full Duplex Packet Data Call; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Full Duplex Packet Data Call; ");
                 } else if (svc_kind == 12) {
-                    strcat(ahoy_str, "Reserved; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Reserved; ");
                 } else if (svc_kind == 13) {
-                    strcat(ahoy_str, "Supplimentary Service (Stun/Revive/Kill/Auth); ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Supplimentary Service (Stun/Revive/Kill/Auth); ");
                 } else if (svc_kind == 14) {
-                    strcat(ahoy_str, "Registration/Authentication; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Registration/Authentication; ");
                 } else if (svc_kind == 15) {
-                    strcat(ahoy_str, "Cancel Call Service; ");
+                    dsd_append(ahoy_str, sizeof ahoy_str, "Cancel Call Service; ");
                 }
 
                 //check the source and/or target for special gateway identifiers
@@ -2041,7 +2062,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                             //add active channel to display string
                             sprintf(cap_active, "LSN:%d TG:%d; ", i + 1, tg);
-                            strcat(state->active_channel[i + 1], cap_active);
+                            dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
                         } else if (pch[i] == 1) //private or data channels
                         {
                             tg = (uint16_t)ConvertBitIntoBytes(
@@ -2067,7 +2088,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             if (1 == 1) //opts->trunk_tune_private_calls
                             {
                                 sprintf(cap_active, "LSN:%d PC:%d; ", i + 1, tg);
-                                strcat(state->active_channel[i + 1], cap_active);
+                                dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
                             }
 
                         } else if (i + 1 == rest_channel) {
@@ -2232,7 +2253,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         fprintf(stderr, " CAP+ Multi Block PDU \n  ");
                         fl_bytes = 0;
                         for (i = 0; i < (10 + (block_num * 7)); i++) {
-                            fl_bytes = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][i * 8], 8);
+                            fl_bytes = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ts][((size_t)i * 8)], 8);
                             fprintf(stderr, "[%02X]", fl_bytes);
                             if (i == 17 || i == 35) {
                                 fprintf(stderr, "\n  ");
@@ -2714,7 +2735,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         if (xpt_ch[i] == 0) {
                             sprintf(xpt_active, "LSN:%d UK:%d; ", i + xpt_bank + 1, tg);
                         }
-                        strcat(state->active_channel[xpt_seq], xpt_active); //add string to active channel seq
+                        dsd_append(state->active_channel[xpt_seq], sizeof state->active_channel[0],
+                                   xpt_active); //add string to active channel seq
                     }
                 }
 

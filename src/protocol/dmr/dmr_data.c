@@ -52,8 +52,8 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
             state->dmr_stereo_payload[i] = dibit;
         }
 
-        cachdata[cachInterleave[(i * 2)]] = (1 & (dibit >> 1)); // bit 1
-        cachdata[cachInterleave[(i * 2) + 1]] = (1 & dibit);    // bit 0
+        cachdata[cachInterleave[((size_t)i * 2)]] = (1 & (dibit >> 1)); // bit 1
+        cachdata[cachInterleave[((size_t)i * 2) + 1]] = (1 & dibit);    // bit 0
     }
 
     //seperate tact bits from cach
@@ -91,8 +91,8 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
         } else {
             state->dmr_stereo_payload[i + 12] = dibit;
         }
-        info[2 * i] = (1 & (dibit >> 1)); // bit 1
-        info[(2 * i) + 1] = (1 & dibit);  // bit 0
+        info[((size_t)2) * i] = (1 & (dibit >> 1)); // bit 1
+        info[((size_t)2 * i) + 1] = (1 & dibit);    // bit 0
     }
 
     // slot type
@@ -181,8 +181,8 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
             state->dmr_stereo_payload[i + 66] = dibit;
         }
 
-        syncdata[2 * i] = (1 & (dibit >> 1)); // bit 1
-        syncdata[(2 * i) + 1] = (1 & dibit);  // bit 0
+        syncdata[((size_t)2) * i] = (1 & (dibit >> 1)); // bit 1
+        syncdata[((size_t)2 * i) + 1] = (1 & dibit);    // bit 0
         sync[i] = (dibit | 1) + 48;
     }
     sync[24] = 0;

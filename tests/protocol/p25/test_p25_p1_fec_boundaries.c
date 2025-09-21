@@ -131,7 +131,7 @@ main(void) {
         char data_bits[16 * 6];
         for (int i = 0; i < 16; i++) {
             int sym = (i * 7 + 3) & 0x3F;
-            bits_from_u(sym, 6, &data_bits[i * 6]);
+            bits_from_u(sym, 6, &data_bits[(size_t)i * 6]);
         }
         char parity_bits[8 * 6];
         encode_reedsolomon_24_16_9(data_bits, parity_bits);
@@ -143,12 +143,12 @@ main(void) {
         for (unsigned i = 0; i < sizeof(flip_syms1) / sizeof(flip_syms1[0]); i++) {
             int s = flip_syms1[i];
             for (int b = 0; b < 6; b++) {
-                flip_bit(&w1[s * 6], b);
+                flip_bit(&w1[(size_t)s * 6], b);
             }
         }
         int irr = check_and_fix_reedsolomon_24_16_9(w1, parity_bits);
         rc |= expect_eq_int("RS(24,16,9) irrecoverable(<=4 sym)", irr, 0);
-        rc |= expect_eq_hex("RS(24,16,9) corrected data", w1, data_bits, 16 * 6);
+        rc |= expect_eq_hex("RS(24,16,9) corrected data", w1, data_bits, ((size_t)16) * 6);
 
         // Flip 5 symbols
         char w2[16 * 6];
@@ -157,7 +157,7 @@ main(void) {
         for (unsigned i = 0; i < sizeof(flip_syms2) / sizeof(flip_syms2[0]); i++) {
             int s = flip_syms2[i];
             for (int b = 0; b < 6; b++) {
-                flip_bit(&w2[s * 6], b);
+                flip_bit(&w2[(size_t)s * 6], b);
             }
         }
         irr = check_and_fix_reedsolomon_24_16_9(w2, parity_bits);

@@ -90,8 +90,8 @@ p2_dibit_buffer(dsd_opts* opts, dsd_state* state) {
         //symbol capture reading now handled directly by getSymbol and getDibit
         dibit = getDibit(opts, state);
         //dibit inversion handled internally by getDibit if sync type is inverted
-        p2bit[i * 2] = (dibit >> 1) & 1;
-        p2bit[i * 2 + 1] = (dibit & 1);
+        p2bit[((size_t)i * 2)] = (dibit >> 1) & 1;
+        p2bit[((size_t)i * 2) + 1] = (dibit & 1);
     }
 }
 

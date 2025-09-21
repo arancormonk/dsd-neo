@@ -11,6 +11,8 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+
+static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -405,7 +407,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             }
 
             for (int i = 0; i < 8; i++) {
-                checksum += (uint8_t)ConvertBitIntoBytes(&lc_bits[i * 8], 8);
+                checksum += (uint8_t)ConvertBitIntoBytes(&lc_bits[((size_t)i * 8)], 8);
                 checksum &= 0xFF;
             }
             checksum = ~checksum & 0xFF;
@@ -593,11 +595,11 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         }
 
         if (so & 0x80) {
-            strcat(state->call_string[slot], " Emergency  ");
+            dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
             fprintf(stderr, "%s", KRED);
             fprintf(stderr, "Emergency ");
         } else {
-            strcat(state->call_string[slot], "            ");
+            dsd_append(state->call_string[slot], sizeof state->call_string[slot], "            ");
         }
 
         if (so & 0x40) {
@@ -1042,7 +1044,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     int i;
     uint8_t slco_bytes[6]; //completed byte blocks for payload print
     for (i = 0; i < 5; i++) {
-        slco_bytes[i] = (uint8_t)ConvertBitIntoBytes(&slco_bits[i * 8], 8);
+        slco_bytes[i] = (uint8_t)ConvertBitIntoBytes(&slco_bits[((size_t)i * 8)], 8);
     }
     slco_bytes[5] = (uint8_t)ConvertBitIntoBytes(&slco_bits[32], 4);
 
@@ -1442,4 +1444,16 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     }
 
     fprintf(stderr, "%s", KNRM);
+}
+
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
 }

@@ -11,6 +11,19 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
+}
+
 #include <dsd-neo/runtime/config.h>
 
 static void
@@ -403,7 +416,7 @@ p25_decode_es_header(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* 
         char ess_str[200];
         memset(ess_str, 0, sizeof(ess_str));
         sprintf(ess_str, "ALG: %02X; KID: %04X; SAP:%02X;%s", alg_id, key_id, aux_sap, aux_sap_string);
-        strcat(state->dmr_lrrp_gps[0], ess_str);
+        dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ess_str);
     }
 
     return encrypted;
@@ -467,7 +480,7 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, uint8_t* input, ui
     char ea_str[200];
     memset(ea_str, 0, sizeof(ea_str));
     sprintf(ea_str, "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
-    strcat(state->dmr_lrrp_gps[0], ea_str);
+    dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ea_str);
 
     *sap = ea_sap;
     *ptr += 12;

@@ -18,6 +18,9 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+// Forward prototype for bounded append helper (definition later)
+static inline void dsd_append(char* dst, size_t dstsz, const char* src);
+
 // Expose a small query helper for tests and diagnostics.
 #include <dsd-neo/protocol/p25/p25_mac.h>
 
@@ -1213,7 +1216,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == group) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    snprintf(mode, sizeof mode, "%s", state->group_array[i].groupMode);
                     break;
                 }
             }
@@ -1295,7 +1298,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == target) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strcpy(mode, state->group_array[i].groupMode);
+                    snprintf(mode, sizeof mode, "%s", state->group_array[i].groupMode);
                     break;
                 }
             }
@@ -2133,11 +2136,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             sprintf(state->call_string[slot], "   Group ");
             if (svc & 0x80) {
-                strcat(state->call_string[slot], " Emergency  ");
+                dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
             } else if (svc & 0x40) {
-                strcat(state->call_string[slot], " Encrypted  ");
+                dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Encrypted  ");
             } else {
-                strcat(state->call_string[slot], "            ");
+                dsd_append(state->call_string[slot], sizeof state->call_string[slot], "            ");
             }
 
             if (MAC[1 + len_a] == 0x21) {
@@ -2212,11 +2215,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             sprintf(state->call_string[slot], " Private ");
             if (svc & 0x80) {
-                strcat(state->call_string[slot], " Emergency  ");
+                dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
             } else if (svc & 0x40) {
-                strcat(state->call_string[slot], " Encrypted  ");
+                dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Encrypted  ");
             } else {
-                strcat(state->call_string[slot], "            ");
+                dsd_append(state->call_string[slot], sizeof state->call_string[slot], "            ");
             }
 
             if (slot == 0) {
@@ -2412,4 +2415,17 @@ END_PDU:
         }
         fprintf(stderr, "%s", KNRM);
     }
+}
+
+// Local bounded append helper (reused pattern across modules)
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
 }

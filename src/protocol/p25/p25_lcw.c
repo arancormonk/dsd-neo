@@ -12,6 +12,20 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+
+// Bounded append helper
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
+}
+
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/unicode.h>
 #ifdef USE_RTLSDR
@@ -100,11 +114,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
                 sprintf(state->call_string[0], "   Group ");
                 if (lc_svcopt & 0x80) {
-                    strcat(state->call_string[0], " Emergency  ");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
                 } else if (lc_svcopt & 0x40) {
-                    strcat(state->call_string[0], " Encrypted  ");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
                 } else {
-                    strcat(state->call_string[0], "            ");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
                 }
             }
 
@@ -128,11 +142,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
                 sprintf(state->call_string[0], " Private ");
                 if (lc_svcopt & 0x80) {
-                    strcat(state->call_string[0], " Emergency  ");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
                 } else if (lc_svcopt & 0x40) {
-                    strcat(state->call_string[0], " Encrypted  ");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
                 } else {
-                    strcat(state->call_string[0], "            ");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
                 }
 
             }

@@ -1463,8 +1463,8 @@ initState(dsd_state* state) {
     state->dmr_color_code = 16;
     state->dmr_t3_syscode = 0;
 
-    //TODO: Test this in different environments before pushing it out
-    state->event_history_s = calloc(600, sizeof(Event_History)); //600 items at the size of the Event_History struct
+    // Allocate per-slot event history (2 slots)
+    state->event_history_s = calloc(2, sizeof(Event_History_I));
 
     //debug
     //  fprintf (stderr, "allocated size of event history struct: %ld bytes; \n", 600 * sizeof(Event_History));

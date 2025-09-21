@@ -17,6 +17,9 @@
 
 #define DMR_PDU_DECRYPTION //disable to skip attempting to decrypt DMR PDUs
 
+// Bounded string append helper (implemented later in file)
+static inline void dsd_append(char* dst, size_t dstsz, const char* src);
+
 //hopefully a more simplified (or logical) version...once you get past all the variables
 void
 dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
@@ -356,37 +359,37 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
             memset(rsp_string, 0, sizeof(rsp_string));
             sprintf(rsp_string, "DATA RESP TGT: %d; SRC: %d; ", target, source);
             if (r_class == 0 && r_type == 1) {
-                strcat(rsp_string, "ACK - Success");
+                dsd_append(rsp_string, sizeof rsp_string, "ACK - Success");
             }
             if (r_class == 1) {
-                strcat(rsp_string, "NACK - ");
+                dsd_append(rsp_string, sizeof rsp_string, "NACK - ");
                 if (r_type == 0) {
-                    strcat(rsp_string, "Illegal Format");
+                    dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
                 }
                 if (r_type == 1) {
-                    strcat(rsp_string, "Illegal Format");
+                    dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
                 }
                 if (r_type == 2) {
-                    strcat(rsp_string, "Packet CRC ERR");
+                    dsd_append(rsp_string, sizeof rsp_string, "Packet CRC ERR");
                 }
                 if (r_type == 3) {
-                    strcat(rsp_string, "Memory Full");
+                    dsd_append(rsp_string, sizeof rsp_string, "Memory Full");
                 }
                 if (r_type == 4) {
-                    strcat(rsp_string, "FSN Out of Seq");
+                    dsd_append(rsp_string, sizeof rsp_string, "FSN Out of Seq");
                 }
                 if (r_type == 5) {
-                    strcat(rsp_string, "Undeliverable");
+                    dsd_append(rsp_string, sizeof rsp_string, "Undeliverable");
                 }
                 if (r_type == 6) {
-                    strcat(rsp_string, "PKT Out of Seq");
+                    dsd_append(rsp_string, sizeof rsp_string, "PKT Out of Seq");
                 }
                 if (r_type == 7) {
-                    strcat(rsp_string, "Invalid User");
+                    dsd_append(rsp_string, sizeof rsp_string, "Invalid User");
                 }
             }
             if (r_class == 2) {
-                strcat(rsp_string, "SACK - Retry");
+                dsd_append(rsp_string, sizeof rsp_string, "SACK - Retry");
             }
             // if (r_status) strcat (rsp_string, " - %d", r_status);
             UNUSED(r_status);
@@ -604,7 +607,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         if (dpf != 1 && dpf != 15) {
             sprintf(state->dmr_lrrp_gps[slot], "Data Call - %s TGT: %d SRC: %d ", sap_string, target, source);
             if (a == 1) {
-                strcat(state->dmr_lrrp_gps[slot], "- RSP REQ ");
+                dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "- RSP REQ ");
             }
         }
 
@@ -716,11 +719,11 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
 
     if (udt_format2 == 0x00) {
         fprintf(stderr, "Binary Data;");
-        strcat(udt_string, "Binary Data; ");
+        dsd_append(udt_string, sizeof udt_string, "Binary Data; ");
     } else if (udt_format2 == 0x01) //appended addresses
     {
         fprintf(stderr, "Appended Addressing;\n ");
-        strcat(udt_string, "Appended Addressing; ");
+        dsd_append(udt_string, sizeof udt_string, "Appended Addressing; ");
         if (udt_uab == 1) {
             end = 3;
         }
@@ -758,7 +761,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         end -= udt_padnib; //subtract padnib since its also 4 bits
 
         fprintf(stderr, "Dialer BCD: ");
-        strcat(udt_string, "Dialer Digits: ");
+        dsd_append(udt_string, sizeof udt_string, "Dialer Digits: ");
         for (i = 0; i < end; i++) {
             //dialer digits 7.2.9
             int digit = (int)ConvertBitIntoBytes(&cs_bits[(i * 4) + 96], 4);
@@ -788,7 +791,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
                 dc[0] = digit + 0x38;
             }
 
-            strcat(udt_string, dc);
+            dsd_append(udt_string, sizeof udt_string, dc);
         }
     } else if (udt_format2 == 0x03) //ISO7 format
     {
@@ -806,7 +809,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         }
         end -= udt_padnib / 2; //this may be more complex since its 7, so /7 and then if %7, add +1?
         fprintf(stderr, "ISO7 Text: ");
-        strcat(udt_string, "ISO7 Text; ");
+        dsd_append(udt_string, sizeof udt_string, "ISO7 Text; ");
         // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
         for (i = 0; i < end; i++) //max 368/7 = 52 character max?
@@ -818,7 +821,8 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
             if (iso7c >= 0x20 && iso7c <= 0x7E) //Standard ASCII Set
             {
                 fprintf(stderr, "%c", iso7c);
-                strcat(state->event_history_s[slot].Event_History_Items[0].text_message, i7c);
+                dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                           sizeof state->event_history_s[slot].Event_History_Items[0].text_message, i7c);
             } else {
                 fprintf(stderr, " ");
             }
@@ -826,7 +830,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
     } else if (udt_format2 == 0x04) //ISO8 format
     {
         fprintf(stderr, "ISO8 Text: ");
-        strcat(udt_string, "ISO8 Text; ");
+        dsd_append(udt_string, sizeof udt_string, "ISO8 Text; ");
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
         if (udt_uab == 1) {
             end = 10;
@@ -850,7 +854,8 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
             if (iso8c >= 0x20 && iso8c <= 0x7E) //Standard ASCII Set
             {
                 fprintf(stderr, "%c", iso8c);
-                strcat(state->event_history_s[slot].Event_History_Items[0].text_message, i8c);
+                dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                           sizeof state->event_history_s[slot].Event_History_Items[0].text_message, i8c);
             }
 
             // else if (iso8c >= 0x81 && iso8c <= 0xFE) //Extended ASCII Set
@@ -876,7 +881,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         end -= udt_padnib / 4;
         fprintf(stderr, "UTF16 Text: ");
         // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
-        strcat(udt_string, "UTF16 Text; ");
+        dsd_append(udt_string, sizeof udt_string, "UTF16 Text; ");
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
         for (i = 0; i < end; i++) //368/16 = 23 character max?
         {
@@ -897,7 +902,8 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
                     }
                 }
                 if (utf16c >= 0x20 && utf16c < 0x7F) {
-                    strcat(state->event_history_s[slot].Event_History_Items[0].text_message, u16);
+                    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, u16);
                 }
             }
 
@@ -914,7 +920,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
             fprintf(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 8));
             fprintf(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 16], 8));
             fprintf(stderr, "%d", (uint8_t)ConvertBitIntoBytes(&cs_bits[96 + 24], 8));
-            strcat(udt_string, "IP4; ");
+            dsd_append(udt_string, sizeof udt_string, "IP4; ");
         } else //IP6
         {
             fprintf(stderr, "IP6: ");
@@ -926,7 +932,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
             fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 80], 16));
             fprintf(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 96], 16));
             fprintf(stderr, "%04X", (uint16_t)ConvertBitIntoBytes(&cs_bits[96 + 112], 16));
-            strcat(udt_string, "IP6; ");
+            dsd_append(udt_string, sizeof udt_string, "IP6; ");
         }
     } else if (udt_format2 == 0x0A) //Mixed Address/UTF-16BE
     {
@@ -945,7 +951,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         end -= udt_padnib / 4;
         fprintf(stderr, "Address: %d; ", (uint32_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 24));
         fprintf(stderr, "UTF16 Text: ");
-        strcat(udt_string, "Mixed Add/Text; ");
+        dsd_append(udt_string, sizeof udt_string, "Mixed Add/Text; ");
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "Address: %d;",
                 (uint32_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 24));
         for (i = 0; i < end; i++) //368/16 = 21 character max
@@ -967,7 +973,8 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
                     }
                 }
                 if (utf16c >= 0x20 && utf16c < 0x7F) {
-                    strcat(state->event_history_s[slot].Event_History_Items[0].text_message, u16);
+                    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, u16);
                 }
             }
 
@@ -978,7 +985,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
     } else if (udt_format2 == 0x05) {
         //Would be nice to be able to test these all out to make sure the conditions are okay, etc
         fprintf(stderr, "NMEA");
-        strcat(udt_string, "NMEA; ");
+        dsd_append(udt_string, sizeof udt_string, "NMEA; ");
         if (cs_bits[96] == 1) {                      //check if its encrypted first
             fprintf(stderr, " Encrypted Format :("); //sad face
         } else if (udt_uab == 1) {
@@ -996,17 +1003,17 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         //unsure of how this is structured for UDT Blocks, would assume one appended block of same format
         //but could also be full blown LIP protocol that is also found in tetra that would require the PDU
         //type bit to be read and then to decode accordingly, this assumes its the modified Short PDU that USBD uses
-        strcat(udt_string, "LIP; ");
+        dsd_append(udt_string, sizeof udt_string, "LIP; ");
         fprintf(stderr, "\n");
         lip_protocol_decoder(opts, state, cs_bits + 96); //start on first appended block, and not header
 
     } else if (udt_format2 == 0x08 || udt_format2 == 0x09) {
         fprintf(stderr, "MFID SPEC %02X: ", udt_format2);
         //use -Z to expose this
-        strcat(udt_string, "MFID Specific; ");
+        dsd_append(udt_string, sizeof udt_string, "MFID Specific; ");
     } else {
         fprintf(stderr, "Reserved %02X: ", udt_format2);
-        strcat(udt_string, "Reserved; ");
+        dsd_append(udt_string, sizeof udt_string, "Reserved; ");
         //use -Z to expose this
     }
     fprintf(stderr, "%s", KNRM);
@@ -1780,4 +1787,17 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     // sprintf (state->call_string[1], "%s", "                     "); //21 spaces
     sprintf(state->dmr_lrrp_gps[0], "%s", "");
     sprintf(state->dmr_lrrp_gps[1], "%s", "");
+}
+
+// Safe append helper for bounded concatenation
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
 }

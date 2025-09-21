@@ -22,8 +22,8 @@ void
 md2_init(MD2State* state) {
     state->x1 = 0;
     state->x2 = 0;
-    memset(state->h2, 0, n1);
-    memset(state->h1, 0, n1 * 3);
+    memset(state->h2, 0, (size_t)n1);
+    memset(state->h1, 0, (size_t)n1 * 3);
 }
 
 void
@@ -48,7 +48,7 @@ md2_hashing(MD2State* state, unsigned char t1[], size_t b6) {
         for (; b6 && state->x2 < n1; b6--, state->x2++) {
             int b5 = t1[b4++];
             state->h1[state->x2 + n1] = b5;
-            state->h1[state->x2 + (n1 * 2)] = b5 ^ state->h1[state->x2];
+            state->h1[state->x2 + ((size_t)n1 * 2)] = b5 ^ state->h1[state->x2];
             state->x1 = state->h2[state->x2] ^= s4[b5 ^ state->x1];
         }
 
@@ -155,7 +155,8 @@ rc2_keyschedule(RC2State* state) {
     unsigned i;
     i = 63;
     do {
-        state->xkey[i] = ((unsigned char*)state->xkey)[2 * i] + (((unsigned char*)state->xkey)[2 * i + 1] << 8);
+        state->xkey[i] =
+            ((unsigned char*)state->xkey)[((size_t)2) * i] + (((unsigned char*)state->xkey)[((size_t)2) * i + 1] << 8);
     } while (i--);
 }
 

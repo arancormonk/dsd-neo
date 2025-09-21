@@ -83,8 +83,8 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
 
     CNXDNConvolution_start();
     for (int i = 0; i < 96; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -92,12 +92,12 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     CNXDNConvolution_chainback(m_data, 92);
 
     for (int i = 0; i < 12; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
         trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
         trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
@@ -123,7 +123,7 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
         trellis_decode(trellis_buf, depunc, 92);
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 12; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc12f(trellis_buf, 84);
         for (int i = 0; i < 12; i++) {
@@ -245,7 +245,7 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         trellis_decode(trellis_buf, depunc, 32);
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc6(trellis_buf, 26); //32
         for (int i = 0; i < 6; i++) {
@@ -523,7 +523,7 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         trellis_decode(trellis_buf, depunc, 32);
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc6(trellis_buf, 26); //32
         check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6);
@@ -751,7 +751,7 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
         trellis_decode(trellis_buf, depunc, 92);
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 12; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc12f(trellis_buf, 84);
         for (int i = 0; i < 12; i++) {
@@ -842,7 +842,7 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
         deperm[PERM_12_29[i]] = bits[i];
     }
     for (int i = 0; i < 29; i++) {
-        depunc[id++] = deperm[i * 12];
+        depunc[id++] = deperm[((size_t)i * 12)];
         depunc[id++] = deperm[i * 12 + 1];
         depunc[id++] = deperm[i * 12 + 2];
         depunc[id++] = 0;
@@ -914,7 +914,7 @@ nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uin
         trellis_decode(trellis_buf, depunc, 199);
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 26; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc15(trellis_buf, 199);
         for (int i = 0; i < 15; i++) {
@@ -1033,7 +1033,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
         deperm[PERM_12_25[i]] = bits[i];
     }
     for (int i = 0; i < 25; i++) {
-        depunc[id++] = deperm[i * 12];
+        depunc[id++] = deperm[((size_t)i * 12)];
         depunc[id++] = deperm[i * 12 + 1];
         depunc[id++] = deperm[i * 12 + 2];
         depunc[id++] = 0;
@@ -1098,7 +1098,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
         trellis_decode(trellis_buf, depunc, 171);
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 22; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc16cac(trellis_buf, 171);
     }
@@ -1299,7 +1299,7 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
         trellis_decode(trellis_buf, depunc, 32); //32?
         //fill m_data bytes with trellis_buf
         for (int i = 0; i < 4; i++) {
-            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+            m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc7_scch(trellis_buf, 25);
         for (int i = 0; i < 6; i++) {
@@ -1461,7 +1461,7 @@ nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], ui
             trellis_decode(trellis_buf, depunc, 92);
             //fill m_data bytes with trellis_buf
             for (int i = 0; i < 12; i++) {
-                m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8);
+                m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
             }
             crc[j] = crc12f(trellis_buf, 84);
             for (int i = 0; i < 12; i++) {

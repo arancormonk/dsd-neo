@@ -499,11 +499,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     && opts->audio_out == 1) //added carrier check here in lieu of disabling it above
                 {
                     if (opts->audio_out_type == 0) {
-                        pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, 960 * 2, NULL);
+                        pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, (size_t)960u * sizeof(short), NULL);
                     }
 
                     if (opts->audio_out_type == 8) {
-                        udp_socket_blasterA(opts, state, 960 * 2, state->analog_out);
+                        udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), state->analog_out);
                     }
 
                     //NOTE: Worked okay earlier in Cygwin, so should be fine -- can only operate at 48k1, else slow mode lag
@@ -511,7 +511,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     //This one will only operate when OSS 48k1 (when both input and output are OSS audio)
                     if (opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000
                         && opts->pulse_digi_out_channels == 1) {
-                        write(opts->audio_out_fd, state->analog_out, 960 * 2);
+                        write(opts->audio_out_fd, state->analog_out, (size_t)960u * sizeof(short));
                     }
 
                     //STDOUT, but only when operating at 48k1 (no go just yet)
@@ -732,7 +732,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         state->lastsample = sample;
     }
 
-    symbol = (sum / count);
+    if (count > 0) {
+        symbol = (sum / count);
+    } else {
+        symbol = 0;
+    }
 
     if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
         if (state->jitter >= 0) {

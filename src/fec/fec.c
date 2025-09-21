@@ -711,7 +711,7 @@ Golay_20_8_init() {
     int ip1 = 0, ip2 = 0, ip3 = 0;
     int syndromeIP1 = 0, syndromeIP2 = 0, syndromeIP3 = 0;
 
-    memset(Golay_20_8_m_corr, 0xFF, 3 * 4096);
+    memset(Golay_20_8_m_corr, 0xFF, sizeof(Golay_20_8_m_corr));
 
     for (i1 = 0; i1 < 8; i1++) {
         for (i2 = i1 + 1; i2 < 8; i2++) {
@@ -878,7 +878,7 @@ Golay_23_12_init() {
     int ip1 = 0, ip2 = 0, ip3 = 0;
     int syndromeIP1 = 0, syndromeIP2 = 0, syndromeIP3 = 0;
 
-    memset(Golay_23_12_m_corr, 0xFF, 3 * 2048);
+    memset(Golay_23_12_m_corr, 0xFF, sizeof(Golay_23_12_m_corr));
 
     for (i1 = 0; i1 < 12; i1++) {
         for (i2 = i1 + 1; i2 < 12; i2++) {
@@ -1036,7 +1036,7 @@ Golay_24_12_init() {
     int ip1 = 0, ip2 = 0, ip3 = 0;
     int syndromeIP1 = 0, syndromeIP2 = 0, syndromeIP3 = 0;
 
-    memset(Golay_24_12_m_corr, 0xFF, 3 * 4096);
+    memset(Golay_24_12_m_corr, 0xFF, sizeof(Golay_24_12_m_corr));
 
     for (i1 = 0; i1 < 12; i1++) {
         for (i2 = i1 + 1; i2 < 12; i2++) {
@@ -1193,7 +1193,7 @@ QR_16_7_6_init() {
     int ip1 = 0, ip2 = 0;
     int syndromeIP1 = 0, syndromeIP2 = 0;
 
-    memset(QR_16_7_6_m_corr, 0xFF, 2 * 512);
+    memset(QR_16_7_6_m_corr, 0xFF, sizeof(QR_16_7_6_m_corr));
 
     for (i1 = 0; i1 < 7; i1++) {
         for (i2 = i1 + 1; i2 < 7; i2++) {

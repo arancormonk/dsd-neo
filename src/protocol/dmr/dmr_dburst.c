@@ -222,14 +222,16 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
             fprintf(pFile, "\n%d 98 ", slot + 1); //'98' is CACH designation value
             for (i = 0; i < 6; i++)               //3 byte CACH
             {
-                int cach_byte = (state->dmr_stereo_payload[i * 2] << 2) | state->dmr_stereo_payload[i * 2 + 1];
+                int cach_byte =
+                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
                 fprintf(pFile, "%X",
                         cach_byte); //nibble, not a byte, next time I look at this and wonder why its not %02X
             }
             fprintf(pFile, "\n%d %02X ", slot + 1, databurst); //use hex value of current data burst type
             for (i = 6; i < 72; i++)                           //33 bytes, no CACH
             {
-                int dsp_byte = (state->dmr_stereo_payload[i * 2] << 2) | state->dmr_stereo_payload[i * 2 + 1];
+                int dsp_byte =
+                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
                 fprintf(pFile, "%X", dsp_byte);
             }
             fclose(pFile);
@@ -430,7 +432,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         }
 
         for (i = 0; i < 9; i++) {
-            DMR_PDU[i] = (uint8_t)ConvertBitIntoBytes(&LC_DataBit[i * 8], 8);
+            DMR_PDU[i] = (uint8_t)ConvertBitIntoBytes(&LC_DataBit[((size_t)i * 8)], 8);
         }
     }
 
@@ -445,7 +447,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
 
         //reconstitute info bits into dibits for the trellis decoder
         for (i = 0; i < 98; i++) {
-            tdibits[i] = (info[i * 2] << 1) | info[i * 2 + 1];
+            tdibits[i] = (info[((size_t)i * 2)] << 1) | info[((size_t)i * 2) + 1];
         }
 
         uint8_t TrellisReturn[18];

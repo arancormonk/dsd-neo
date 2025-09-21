@@ -188,7 +188,7 @@ void
 pack_bit_array_into_byte_array_ta(uint8_t* input, uint8_t* output, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        output[i] = (uint8_t)convert_bits_into_output_ta(&input[i * 8], 8);
+        output[i] = (uint8_t)convert_bits_into_output_ta(&input[(size_t)i * 8], 8);
     }
 }
 
@@ -520,17 +520,18 @@ aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, i
     struct AES_ctx ctx;
 
     //load first round of input_register with received IV (OFB First Input Register)
-    memcpy(input_register, iv, 16 * sizeof(uint8_t));
+    memcpy(input_register, iv, ((size_t)16) * sizeof(uint8_t));
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
+    memset(ctx.RoundKey, 0, ((size_t)240) * sizeof(uint8_t));
     KeyExpansion(ctx.RoundKey, key);
 
     //execute the cipher function, and copy ciphered input_register to output for required number of rounds
     for (i = 0; i < nblocks; i++) {
         Cipher((state_t*)input_register,
                ctx.RoundKey); //input_register is returned as output, and is put back in as object feedback
-        memcpy(output + (i * 16), input_register, 16 * sizeof(uint8_t)); //copy ciphered input_register to output
+        memcpy(output + ((size_t)i * 16), input_register,
+               ((size_t)16) * sizeof(uint8_t)); //copy ciphered input_register to output
     }
 }
 
@@ -570,10 +571,10 @@ aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
     struct AES_ctx ctx;
 
     //load first round of input_register with received IV (CFB First Input Register)
-    memcpy(input_register, iv, 16 * sizeof(uint8_t));
+    memcpy(input_register, iv, ((size_t)16) * sizeof(uint8_t));
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
+    memset(ctx.RoundKey, 0, ((size_t)240) * sizeof(uint8_t));
     KeyExpansion(ctx.RoundKey, key);
 
     //execute the cipher function, and copy ciphered input_register to output for required number of rounds
@@ -588,11 +589,11 @@ aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
         }
 
         //copy ciphered/xor'd input_register to output 'out'
-        memcpy(out + (i * 16), input_register, 16 * sizeof(uint8_t));
+        memcpy(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
 
         //if running in decryption mode, we feed in the next round of input
         if (!de) {
-            memcpy(input_register, in + (i * 16), 16 * sizeof(uint8_t));
+            memcpy(input_register, in + ((size_t)i * 16), ((size_t)16) * sizeof(uint8_t));
         }
     }
 }
@@ -640,7 +641,7 @@ aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
     }
 
     //initialize the key variable for the Cipher function
-    memset(ctx.RoundKey, 0, 240 * sizeof(uint8_t));
+    memset(ctx.RoundKey, 0, ((size_t)240) * sizeof(uint8_t));
     KeyExpansion(ctx.RoundKey, key);
 
     //
@@ -658,7 +659,7 @@ aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
             Cipher((state_t*)input_register, ctx.RoundKey);
 
             //copy ciphered input_register to output 'out'
-            memcpy(out + (i * 16), input_register, 16 * sizeof(uint8_t));
+            memcpy(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
 
         }
 
@@ -668,7 +669,7 @@ aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
             InvCipher((state_t*)input_register, ctx.RoundKey);
 
             //copy ciphered input_register to output 'out'
-            memcpy(out + (i * 16), input_register, 16 * sizeof(uint8_t));
+            memcpy(out + ((size_t)i * 16), input_register, ((size_t)16) * sizeof(uint8_t));
 
             //xor the current output by IV, or by last received CT
             if (i == 0) {
@@ -677,13 +678,13 @@ aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* 
                 }
             } else {
                 for (j = 0; j < 16; j++) {
-                    out[j + (i * 16)] ^= in[j + ((i - 1) * 16)];
+                    out[j + ((size_t)i * 16)] ^= in[j + ((size_t)(i - 1) * 16)];
                 }
             }
 
             //copy in next segment for input_register (if not last)
             if (i < nblocks) {
-                memcpy(input_register, in + ((i + 1) * 16), 16 * sizeof(uint8_t));
+                memcpy(input_register, in + ((size_t)(i + 1) * 16), ((size_t)16) * sizeof(uint8_t));
             }
         }
     }

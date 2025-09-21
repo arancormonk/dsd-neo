@@ -25,17 +25,16 @@ upsampleS(short invalue, short prev, short outbuf[6]) {
 void
 upsample(dsd_state* state, float invalue) {
 
-    float* outbuf1;
-    if (state->currentslot == 0 && state->dmr_stereo == 1) {
-        outbuf1 = state->audio_out_float_buf_p;
+    if (!state) {
+        return;
     }
 
-    else if (state->currentslot == 1 && state->dmr_stereo == 1) {
-        outbuf1 = state->audio_out_float_buf_pR;
+    float* outbuf1 = state->audio_out_float_buf_p;
+    if (state->dmr_stereo == 1) {
+        outbuf1 = (state->currentslot == 1) ? state->audio_out_float_buf_pR : state->audio_out_float_buf_p;
     }
-
-    else if (state->dmr_stereo == 0) {
-        outbuf1 = state->audio_out_float_buf_p;
+    if (!outbuf1) {
+        return; // nothing to write to
     }
 
     *outbuf1 = invalue;

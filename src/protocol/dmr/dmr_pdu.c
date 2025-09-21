@@ -11,6 +11,8 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+
+static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include <dsd-neo/runtime/unicode.h>
 
 //convert a value that is stored as a string decimal into a decimal uint16_t
@@ -69,7 +71,8 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 
         //this is the long version, complete message for logging purposes
         if (wr == 1 && input[i] == 0 && input[i + 1] < 0x7F && input[i + 1] >= 0x20) {
-            strcat(state->event_history_s[slot].Event_History_Items[0].text_message, c);
+            dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                       sizeof state->event_history_s[slot].Event_History_Items[0].text_message, c);
         }
     }
 
@@ -112,7 +115,8 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 
         //this is the long version, complete message for logging purposes
         if (wr == 1 && c < 0x7F && c >= 0x20) {
-            strcat(state->event_history_s[slot].Event_History_Items[0].text_message, &c);
+            dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                       sizeof state->event_history_s[slot].Event_History_Items[0].text_message, &c);
         }
     }
 
@@ -469,7 +473,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
                 input[tms_ptr] = temp; //restore byte
                 tms_ptr += 2;
             } else {
-                strcat(state->dmr_lrrp_gps[slot], "Acknowledgment;");
+                dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "Acknowledgment;");
                 fprintf(stderr, "Acknowledgment;");
             }
         } else if (port1 == 4008 && port2 == 4008) {
@@ -1030,4 +1034,16 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
             fclose(pFile);
         }
     }
+}
+
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
 }

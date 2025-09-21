@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dsd.h>
+
+static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include <dsd-neo/fec/fcs.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
 
@@ -319,24 +321,24 @@ processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd) {
                 memcpy(temp, aprs + start, 2);
                 start += 2;
                 fprintf(stderr, "Lat: %sd ", temp);
-                strcat(state->dstar_gps, "Lat: ");
-                strcat(state->dstar_gps, temp);
-                strcat(state->dstar_gps, "d ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "Lat: ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "d ");
                 memcpy(temp, aprs + start, 2);
                 start += 3;
                 fprintf(stderr, "%sm ", temp);
-                strcat(state->dstar_gps, temp);
-                strcat(state->dstar_gps, "m ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "m ");
                 memcpy(temp, aprs + start, 2);
                 start += 1;
                 fprintf(stderr, "%ss ", temp);
-                strcat(state->dstar_gps, temp);
-                strcat(state->dstar_gps, "s ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "s ");
                 fprintf(stderr, "%c", aprs[start]);
                 if (sd_bytes[start] == 0x4E) {
-                    strcat(state->dstar_gps, "N ");
+                    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "N ");
                 } else if (sd_bytes[start] == 0x53) {
-                    strcat(state->dstar_gps, "S ");
+                    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "S ");
                 }
                 fprintf(stderr, "; ");
 
@@ -345,24 +347,24 @@ processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd) {
                 memcpy(tempa, aprs + start, 3);
                 start += 3;
                 fprintf(stderr, "Lon: %sd ", tempa);
-                strcat(state->dstar_gps, "Lon: ");
-                strcat(state->dstar_gps, tempa);
-                strcat(state->dstar_gps, "d ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "Lon: ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, tempa);
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "d ");
                 memcpy(temp, aprs + start, 2);
                 start += 3; //3
                 fprintf(stderr, "%sm ", temp);
-                strcat(state->dstar_gps, temp);
-                strcat(state->dstar_gps, "m ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "m ");
                 memcpy(temp, aprs + start, 2);
                 start += 2;
                 fprintf(stderr, "%ss ", temp);
-                strcat(state->dstar_gps, temp);
-                strcat(state->dstar_gps, "s ");
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, temp);
+                dsd_append(state->dstar_gps, sizeof state->dstar_gps, "s ");
                 fprintf(stderr, "%c", aprs[start]);
                 if (aprs[start] == 0x45) {
-                    strcat(state->dstar_gps, "E ");
+                    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "E ");
                 } else if (aprs[start] == 0x57) {
-                    strcat(state->dstar_gps, "W ");
+                    dsd_append(state->dstar_gps, sizeof state->dstar_gps, "W ");
                 }
                 fprintf(stderr, "; ");
 
@@ -430,4 +432,16 @@ processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd) {
             fprintf(stderr, "CRC - EXT: %04X CMP: %04X", crc_ext, crc_cmp);
         }
     }
+}
+
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
 }

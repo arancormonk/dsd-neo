@@ -240,9 +240,9 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     //bit array to rearrange input lc_bits from phase 2 input to match the phase 1 header and block handling
     uint8_t bits[136];
     memset(bits, 0, sizeof(bits));
-    memcpy(bits, lc_bits, 2 * 8 * sizeof(uint8_t));            //header 0x9190
-    memcpy(bits + 16, lc_bits + 24, 4 * 8 * sizeof(uint8_t));  //BN, SN, etc
-    memcpy(bits + 56, lc_bits + 56, 10 * 8 * sizeof(uint8_t)); //adding 8 bits of extra padding here
+    memcpy(bits, lc_bits, ((size_t)2) * 8 * sizeof(uint8_t));            //header 0x9190
+    memcpy(bits + 16, lc_bits + 24, ((size_t)4) * 8 * sizeof(uint8_t));  //BN, SN, etc
+    memcpy(bits + 56, lc_bits + 56, ((size_t)10) * 8 * sizeof(uint8_t)); //adding 8 bits of extra padding here
 
     int16_t alias_st = 136; //start of the encoded alias (the copied size of this header, basically)
 
@@ -254,7 +254,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     //use dmr_pdu_sf for storage, store entire header (will be used to verify complete reception of full alias)
     memset(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot])); //reset storage for header and blocks
     memcpy(state->dmr_pdu_sf[slot], bits,
-           alias_st * sizeof(uint8_t)); //this header block has 128 bits of relevant data (through the fqsuid)
+           (size_t)alias_st * sizeof(uint8_t)); //this header block has 128 bits of relevant data (through the fqsuid)
 }
 
 void
@@ -537,7 +537,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     }
 
     //use +4 offset to match the MAC vPDU since that was already worked out long ago
-    memcpy(state->dmr_pdu_sf[slot] + 4 + (ptr * 7), bytes, sizeof(bytes));
+    memcpy(state->dmr_pdu_sf[slot] + 4 + ((size_t)ptr * 7), bytes, sizeof(bytes));
 
     //to be tested
     if (ptr == 4) { //is there always 4 blocks, or is it a variable amount?
@@ -819,7 +819,7 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
 
     if (char_size == 7) {
         for (i = 0; i < end; i++) {
-            uint8_t character = (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][(i * 7)], 7);
+            uint8_t character = (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][((size_t)i * 7)], 7);
             char ch[2];
             ch[0] = character;
             ch[1] = 0;
@@ -849,7 +849,7 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
         }
     } else if (char_size == 8) {
         for (i = 0; i < end; i++) {
-            uint8_t character = (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][(i * 8)], 8);
+            uint8_t character = (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][((size_t)i * 8)], 8);
             char ch[2];
             ch[0] = character;
             ch[1] = 0;
@@ -883,7 +883,7 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             LC_ALL,
             ""); //needed when encoded alias contains Chinese (or probably any non-roman charset that isn't default on users terminal)
         for (i = 0; i < end; i++) {
-            uint16_t character = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][(i * 16)], 16);
+            uint16_t character = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][((size_t)i * 16)], 16);
             char ch[2];
             ch[0] = character & 0xFF;
             ch[1] = 0;

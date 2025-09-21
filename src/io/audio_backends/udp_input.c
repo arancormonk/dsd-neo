@@ -88,7 +88,7 @@ ring_read_block(udp_input_ring* r, int16_t* out) {
         }
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 100 * 1000 * 1000; // +100ms
+        ts.tv_nsec += 100000000L; // +100ms
         if (ts.tv_nsec >= 1000000000) {
             ts.tv_sec += 1;
             ts.tv_nsec -= 1000000000;

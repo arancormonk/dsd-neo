@@ -71,7 +71,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     memset(r34bytes, 0, sizeof(r34bytes));
 
     unsigned long long int PDU[18 * 129];
-    memset(PDU, 0, 18 * 129 * sizeof(unsigned long long int));
+    memset(PDU, 0, sizeof(PDU));
 
     int tsbk_decoded_bits[18 * 129 * 8]; //decoded bits from tsbk_bytes for sending to crc16_lb_bridge
     memset(tsbk_decoded_bits, 0, sizeof(tsbk_decoded_bits));
@@ -157,7 +157,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
 
             //shuffle 34 rate data into array
             if (j != 0) { //should never happen, but just in case
-                memcpy(r34bytes + ((j - 1) * 18), r34byte_b, sizeof(r34byte_b));
+                memcpy(r34bytes + ((size_t)(j - 1) * 18), r34byte_b, sizeof(r34byte_b));
             }
 
             for (i = 2; i < 18; i++) {
@@ -328,12 +328,12 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         uint8_t crc_bytes[127 * 18];
         memset(crc_bytes, 0, sizeof(crc_bytes));
         for (i = 0; i < 16 * (blks + 1); i++) {
-            crc_bytes[i] = (uint8_t)ConvertBitIntoBytes(&mpdu_crc_bits[i * 8], 8);
+            crc_bytes[i] = (uint8_t)ConvertBitIntoBytes(&mpdu_crc_bits[(size_t)i * 8], 8);
         }
 
-        if (blks > 0 && (128 * blks) >= 32) {
-            CRCExtracted = (uint32_t)ConvertBitIntoBytes(&mpdu_crc_bits[(128 * blks) - 32], 32);
-            CRCComputed = crc32mbf(crc_bytes, (128 * blks) - 32);
+        if (blks > 0 && (((size_t)128) * blks) >= 32) {
+            CRCExtracted = (uint32_t)ConvertBitIntoBytes(&mpdu_crc_bits[(((size_t)128) * blks) - 32], 32);
+            CRCComputed = crc32mbf(crc_bytes, (((size_t)128) * blks) - 32);
         } else {
             CRCExtracted = 0;
             CRCComputed = 0;

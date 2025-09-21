@@ -114,8 +114,8 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             dibit = getDibit(opts, state);
             state->dmr_stereo_payload[i] = dibit;
 
-            cachdata[cachInterleave[(i * 2)]] = (1 & (dibit >> 1)); // bit 1
-            cachdata[cachInterleave[(i * 2) + 1]] = (1 & dibit);    // bit 0
+            cachdata[cachInterleave[((size_t)i * 2)]] = (1 & (dibit >> 1)); // bit 1
+            cachdata[cachInterleave[((size_t)i * 2) + 1]] = (1 & dibit);    // bit 0
         }
 
         for (i = 0; i < 7; i++) {
@@ -193,20 +193,20 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             state->dmr_stereo_payload[i + 66] = dibit;
             sync[i] = (dibit | 1) + 48; //Sync Burst String as ones and threes
 
-            syncdata[(2 * i)] = (1 & (dibit >> 1)); // bit 1
-            syncdata[(2 * i) + 1] = (1 & dibit);    // bit 0
+            syncdata[((size_t)2 * i)] = (1 & (dibit >> 1)); // bit 1
+            syncdata[((size_t)2 * i) + 1] = (1 & dibit);    // bit 0
 
             //embedded link control
             if (internalslot == 0 && vc1 > 1 && vc1 < 7) //grab on vc1 values 2-5 B C D E, and F
             {
-                state->dmr_embedded_signalling[internalslot][vc1 - 1][i * 2] = (1 & (dibit >> 1)); // bit 1
-                state->dmr_embedded_signalling[internalslot][vc1 - 1][i * 2 + 1] = (1 & dibit);    // bit 0
+                state->dmr_embedded_signalling[internalslot][vc1 - 1][((size_t)i * 2)] = (1 & (dibit >> 1)); // bit 1
+                state->dmr_embedded_signalling[internalslot][vc1 - 1][((size_t)i * 2) + 1] = (1 & dibit);    // bit 0
             }
 
             if (internalslot == 1 && vc2 > 1 && vc2 < 7) //grab on vc2 values 2-5 B C D E, and F
             {
-                state->dmr_embedded_signalling[internalslot][vc2 - 1][i * 2] = (1 & (dibit >> 1)); // bit 1
-                state->dmr_embedded_signalling[internalslot][vc2 - 1][i * 2 + 1] = (1 & dibit);    // bit 0
+                state->dmr_embedded_signalling[internalslot][vc2 - 1][((size_t)i * 2)] = (1 & (dibit >> 1)); // bit 1
+                state->dmr_embedded_signalling[internalslot][vc2 - 1][((size_t)i * 2) + 1] = (1 & dibit);    // bit 0
             }
         }
         sync[24] = 0;
@@ -560,13 +560,15 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 fprintf(pFile, "\n%d 98 ", internalslot + 1); //'98' is CACH designation value
                 for (i = 0; i < 6; i++)                       //3 byte CACH
                 {
-                    int cach_byte = (state->dmr_stereo_payload[i * 2] << 2) | state->dmr_stereo_payload[i * 2 + 1];
+                    int cach_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
+                                    | state->dmr_stereo_payload[((size_t)i * 2) + 1];
                     fprintf(pFile, "%X", cach_byte);
                 }
                 fprintf(pFile, "\n%d 10 ", internalslot + 1); //0x10 for voice burst
                 for (i = 6; i < 72; i++)                      //33 bytes, no CACH
                 {
-                    int dsp_byte = (state->dmr_stereo_payload[i * 2] << 2) | state->dmr_stereo_payload[i * 2 + 1];
+                    int dsp_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
+                                   | state->dmr_stereo_payload[((size_t)i * 2) + 1];
                     fprintf(pFile, "%X", dsp_byte);
                 }
                 fclose(pFile);
@@ -785,8 +787,8 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     for (i = 0; i < 12; i++) {
         dibit = state->dmr_stereo_payload[i];
-        cachdata[cachInterleave[(i * 2)]] = (1 & (dibit >> 1)); // bit 1
-        cachdata[cachInterleave[(i * 2) + 1]] = (1 & dibit);    // bit 0
+        cachdata[cachInterleave[((size_t)i * 2)]] = (1 & (dibit >> 1)); // bit 1
+        cachdata[cachInterleave[((size_t)i * 2) + 1]] = (1 & dibit);    // bit 0
     }
 
     //cach tact bits
@@ -901,13 +903,15 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         fprintf(pFile, "\n%d 98 ", internalslot + 1); //'98' is CACH designation value
         for (i = 0; i < 6; i++)                       //3 byte CACH
         {
-            int cach_byte = (state->dmr_stereo_payload[i * 2] << 2) | state->dmr_stereo_payload[i * 2 + 1];
+            int cach_byte =
+                (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
             fprintf(pFile, "%X", cach_byte);
         }
         fprintf(pFile, "\n%d 10 ", internalslot + 1); //0x10 for "voice burst"
         for (i = 6; i < 72; i++)                      //33 bytes, no CACH
         {
-            int dsp_byte = (state->dmr_stereo_payload[i * 2] << 2) | state->dmr_stereo_payload[i * 2 + 1];
+            int dsp_byte =
+                (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
             fprintf(pFile, "%X", dsp_byte);
         }
         fclose(pFile);

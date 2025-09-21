@@ -44,11 +44,10 @@ echo "Analyzing ${#FILES[@]} files with clang-tidy..."
 LOG_FILE=".clang-tidy.local.out"
 clang-tidy -p "$PDB_DIR" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" >/dev/null || true
 
-# Fail if analyzer/bugprone diagnostics are present (treated as errors in CI)
-if rg -n "\[(clang-analyzer|bugprone).*\]$" "$LOG_FILE" >/dev/null; then
-  echo "clang-tidy found analyzer/bugprone issues. See $LOG_FILE for details." >&2
+# Fail if analyzer/bugprone/security diagnostics are present (treated as errors in CI)
+if rg -n "\[(clang-analyzer|bugprone|security).*\]$" "$LOG_FILE" >/dev/null; then
+  echo "clang-tidy found analyzer/bugprone/security issues. See $LOG_FILE for details." >&2
   exit 1
 fi
 
-echo "clang-tidy clean for analyzer/bugprone checks. Full output in $LOG_FILE"
-
+echo "clang-tidy clean for analyzer/bugprone/security checks. Full output in $LOG_FILE"

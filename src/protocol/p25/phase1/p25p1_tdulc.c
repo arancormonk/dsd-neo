@@ -51,8 +51,8 @@ static void
 swap_hex_words(char* dodeca_data, char* dodeca_parity) {
     int i;
     for (i = 0; i < 6; i++) {
-        swap_hex_words_bits(dodeca_data + i * 12);
-        swap_hex_words_bits(dodeca_parity + i * 12);
+        swap_hex_words_bits(dodeca_data + ((size_t)i * 12));
+        swap_hex_words_bits(dodeca_parity + ((size_t)i * 12));
     }
 }
 
@@ -144,7 +144,7 @@ correct_golay_dibits_12(char* data, int count, AnalogSignal* analog_signal_array
         }
 
         // Calculate the golay parity for the hex word
-        encode_golay_24_12(data + i * 12, parity);
+        encode_golay_24_12(data + ((size_t)i * 12), parity);
 
         for (j = 0; j < 12; j += 2) // 6 iterations -> 6 dibits
         {
@@ -264,17 +264,18 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         swap_hex_words((char*)dodeca_data, fixed_parity);
 
         // Correct the dibits that we read according with the fixed parity values
-        correct_golay_dibits_12(fixed_parity, 6, analog_signal_array + 6 * (6 + 6));
+        correct_golay_dibits_12(fixed_parity, 6, analog_signal_array + ((size_t)6) * (6 + 6));
 
         // Once corrected, contribute this information to the heuristics module
         analog_signal_array[0].sequence_broken = 1;
         contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array,
-                                 6 * (6 + 6) + 6 * (6 + 6));
+                                 ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6));
     }
 
     // Next 10 dibits should be zeros
     // If an irrecoverable error happens, you should start a new sequence since the previous dibit was not set
-    read_zeros(opts, state, analog_signal_array + 6 * (6 + 6) + 6 * (6 + 6), 20, &status_count, irrecoverable_errors);
+    read_zeros(opts, state, analog_signal_array + ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6), 20, &status_count,
+               irrecoverable_errors);
 
     // Next we should find an status dibit
     if (status_count != 35) {

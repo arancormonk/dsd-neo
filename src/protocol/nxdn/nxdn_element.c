@@ -16,6 +16,8 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+
+static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -734,7 +736,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 //Call String for Per Call WAV File
                 sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
                 if (CCOption & 0x80) {
-                    strcat(state->call_string[0], " Emergency");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
                 }
 
                 //check the rkey array for a scrambler key value
@@ -787,7 +789,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 //Call String for Per Call WAV File
                 sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
                 if (CCOption & 0x80) {
-                    strcat(state->call_string[0], " Emergency");
+                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
                 }
 
                 //check the rkey array for a scrambler key value
@@ -1365,10 +1367,10 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     //Call String for Per Call WAV File
     sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
     if (CCOption & 0x80) {
-        strcat(state->call_string[0], " Emergency");
+        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
     }
     if (CipherType) {
-        strcat(state->call_string[0], " Enc");
+        dsd_append(state->call_string[0], sizeof state->call_string[0], " Enc");
     }
 
     if ((CipherType == 2) || (CipherType == 3)) {
@@ -2090,3 +2092,15 @@ NXDN_Cipher_Type_To_Str(uint8_t CipherType) {
 
     return Ptr;
 } /* End NXDN_Cipher_Type_To_Str() */
+
+static inline void
+dsd_append(char* dst, size_t dstsz, const char* src) {
+    if (!dst || !src || dstsz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dstsz) {
+        return;
+    }
+    snprintf(dst + len, dstsz - len, "%s", src);
+}

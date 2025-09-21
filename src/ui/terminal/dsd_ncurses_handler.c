@@ -20,6 +20,10 @@
 uint8_t
 ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
+    if (!opts || !state) {
+        return 1;
+    }
+
     struct stat st_wav = {0};
 
     // //debug char value

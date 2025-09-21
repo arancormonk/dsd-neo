@@ -278,7 +278,7 @@ des56_ofb_keystream_output(uint8_t* main_key, uint8_t* iv, uint8_t* ks_bytes, ui
         des_cipher(main_key, input_register, output_register, de);
         memcpy(input_register, output_register,
                sizeof(output_register)); //recycle output_register back into input register
-        memcpy(ks_bytes + (i * 8), output_register,
+        memcpy(ks_bytes + ((size_t)i * 8), output_register,
                sizeof(output_register)); //copy output_register to ks_bytes + iteration offset of times 8
         memset(output_register, 0, sizeof(output_register)); //reset output register
     }
@@ -382,7 +382,7 @@ tdea_cbc_payload_crypt(uint8_t* K1, uint8_t* K2, uint8_t* K3, uint8_t* iv, uint8
                    sizeof(output_register)); //recycle output_register back into input_register
 
             //copy ciphered output_register to output 'out'
-            memcpy(out + (i * 8), output_register, sizeof(output_register));
+            memcpy(out + ((size_t)i * 8), output_register, sizeof(output_register));
             memset(output_register, 0, sizeof(output_register)); //reset output register
 
         } else {
@@ -407,7 +407,7 @@ tdea_cbc_payload_crypt(uint8_t* K1, uint8_t* K2, uint8_t* K3, uint8_t* iv, uint8
                    sizeof(output_register)); //recycle output_register back into input_register
 
             //copy ciphered input_register to output 'out'
-            memcpy(out + (i * 8), output_register, sizeof(output_register));
+            memcpy(out + ((size_t)i * 8), output_register, sizeof(output_register));
 
             //xor the current output by IV, or by last received CT, depending on round
             if (i == 0) {
@@ -416,13 +416,13 @@ tdea_cbc_payload_crypt(uint8_t* K1, uint8_t* K2, uint8_t* K3, uint8_t* iv, uint8
                 }
             } else {
                 for (j = 0; j < 8; j++) {
-                    out[j + (i * 8)] ^= in[j + ((i - 1) * 8)];
+                    out[j + ((size_t)i * 8)] ^= in[j + ((size_t)(i - 1) * 8)];
                 }
             }
 
             //copy in next segment for input_register (if not last)
             if (i < nblocks) {
-                memcpy(input_register, in + ((i + 1) * 8), sizeof(input_register));
+                memcpy(input_register, in + ((size_t)(i + 1) * 8), sizeof(input_register));
             }
 
             memset(output_register, 0, sizeof(output_register)); //reset output register
@@ -519,20 +519,20 @@ tdea_cfb_payload_crypt(uint8_t* K1, uint8_t* K2, uint8_t* K3, uint8_t* iv, uint8
 
         //xor the current input 'in' to the current state of the input_register for cipher feedback
         for (j = 0; j < 8; j++) {
-            output_register[j] ^= in[j + (i * 8)];
+            output_register[j] ^= in[j + ((size_t)i * 8)];
         }
 
         memcpy(input_register, output_register,
                sizeof(output_register)); //recycle output_register back into input_register
 
         //copy keystream out and reset
-        memcpy(out + (i * 8), output_register,
+        memcpy(out + ((size_t)i * 8), output_register,
                sizeof(output_register)); //copy output_register to ks_bytes + iteration offset of times 8
         memset(output_register, 0, sizeof(output_register)); //reset output register
 
         //if running in decryption mode, we feed in the next round of input
         if (!de) {
-            memcpy(input_register, in + (i * 8), sizeof(input_register));
+            memcpy(input_register, in + ((size_t)i * 8), sizeof(input_register));
         }
     }
 }
@@ -637,7 +637,7 @@ tdea_tofb_keystream_output(uint8_t* K1, uint8_t* K2, uint8_t* K3, uint8_t* iv, u
                sizeof(output_register)); //recycle output_register back into input_register
 
         //copy keystream out and reset
-        memcpy(ks_bytes + (i * 8), output_register,
+        memcpy(ks_bytes + ((size_t)i * 8), output_register,
                sizeof(output_register)); //copy output_register to ks_bytes + iteration offset of times 8
         memset(output_register, 0, sizeof(output_register)); //reset output register
     }

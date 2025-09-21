@@ -69,8 +69,8 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
             dibit = (dibit ^ 2);
         }
 
-        CCH[0][(i * 2)] = (1 & (dibit >> 1)); // bit 1
-        CCH[0][(i * 2) + 1] = (1 & dibit);    // bit 0
+        CCH[0][((size_t)i * 2)] = (1 & (dibit >> 1)); // bit 1
+        CCH[0][((size_t)i * 2) + 1] = (1 & dibit);    // bit 0
     }
 
     /* 4 TCH (Traffic CHannel) = 4 x 72 bit voice playload */

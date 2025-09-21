@@ -308,7 +308,7 @@ M17processLICH(dsd_state* state, dsd_opts* opts, uint8_t* lich_bits) {
     if (opts->payload == 1) {
         fprintf(stderr, " LICH: ");
         for (i = 0; i < 6; i++) {
-            fprintf(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&lich_decoded[i * 8], 8));
+            fprintf(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&lich_decoded[((size_t)i * 8)], 8));
         }
     }
 
@@ -319,7 +319,7 @@ M17processLICH(dsd_state* state, dsd_opts* opts, uint8_t* lich_bits) {
 
         //need to pack bytes for the sw5wwp variant of the crc (might as well, may be useful in the future)
         for (i = 0; i < 30; i++) {
-            lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[i * 8], 8);
+            lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[((size_t)i * 8)], 8);
         }
 
         crc_cmp = crc16m17(lsf_packed, 28);
@@ -364,8 +364,8 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     unsigned char voice2[8];
 
     for (i = 0; i < 8; i++) {
-        voice1[i] = (unsigned char)ConvertBitIntoBytes(&payload[i * 8 + 0], 8);
-        voice2[i] = (unsigned char)ConvertBitIntoBytes(&payload[i * 8 + 64], 8);
+        voice1[i] = (unsigned char)ConvertBitIntoBytes(&payload[((size_t)i * 8) + 0], 8);
+        voice2[i] = (unsigned char)ConvertBitIntoBytes(&payload[((size_t)i * 8) + 64], 8);
     }
 
     //TODO: Add some decryption methods
@@ -410,12 +410,12 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 0 && state->m17_enc == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, samp1, nsam * 2, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, samp1, (size_t)nsam * sizeof(short), NULL);
         }
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
         {
-            udp_socket_blaster(opts, state, nsam * 2, samp1);
+            udp_socket_blaster(opts, state, (size_t)nsam * sizeof(short), samp1);
         }
 
         if (opts->audio_out_type == 5 && state->m17_enc == 0) //OSS 48k/1
@@ -425,20 +425,20 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
             for (i = 0; i < 160; i++) {
                 upsampleS(samp1[i], prev, out);
                 for (j = 0; j < 6; j++) {
-                    upsamp[(i * 6) + j] = out[j];
+                    upsamp[((size_t)i * 6) + j] = out[j];
                 }
             }
-            write(opts->audio_out_fd, upsamp, nsam * 2 * 6);
+            write(opts->audio_out_fd, upsamp, (size_t)nsam * 6 * sizeof(short));
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) //STDOUT
         {
-            write(opts->audio_out_fd, samp1, nsam * 2);
+            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
         }
 
         if (opts->audio_out_type == 2 && state->m17_enc == 0) //OSS 8k/1
         {
-            write(opts->audio_out_fd, samp1, nsam * 2);
+            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
         }
     }
 
@@ -452,8 +452,8 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
         short ss[320 * 2];
 
         for (i = 0; i < 320; i++) {
-            ss[(i * 2) + 0] = samp1[i];
-            ss[(i * 2) + 1] = samp1[i];
+            ss[((size_t)i * 2) + 0] = samp1[i];
+            ss[((size_t)i * 2) + 1] = samp1[i];
         }
 
         sf_write_short(opts->wav_out_f, ss, nsam * 2);
@@ -473,7 +473,7 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     uint8_t adata[9];
     adata[0] = 0x89; //set so pkt decoder will rip these out as just utf-8 chars
     for (i = 0; i < 8; i++) {
-        adata[i + 1] = (unsigned char)ConvertBitIntoBytes(&payload[i * 8 + 64], 8);
+        adata[i + 1] = (unsigned char)ConvertBitIntoBytes(&payload[((size_t)i * 8) + 64], 8);
     }
 
     //look and see if the payload has stuff in it first, if not, then run this
@@ -541,14 +541,14 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 0 && state->m17_enc == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, samp1, nsam * 2, NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, samp2, nsam * 2, NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, samp1, (size_t)nsam * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, samp2, (size_t)nsam * sizeof(short), NULL);
         }
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
         {
-            udp_socket_blaster(opts, state, nsam * 2, samp1);
-            udp_socket_blaster(opts, state, nsam * 2, samp2);
+            udp_socket_blaster(opts, state, (size_t)nsam * sizeof(short), samp1);
+            udp_socket_blaster(opts, state, (size_t)nsam * sizeof(short), samp2);
         }
 
         if (opts->audio_out_type == 5 && state->m17_enc == 0) //OSS 48k/1
@@ -561,7 +561,7 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
                     upsamp[(i * 6) + j] = out[j];
                 }
             }
-            write(opts->audio_out_fd, upsamp, nsam * 2 * 6);
+            write(opts->audio_out_fd, upsamp, (size_t)nsam * 6 * sizeof(short));
             prev = samp2[0];
             for (i = 0; i < 160; i++) {
                 upsampleS(samp2[i], prev, out);
@@ -569,19 +569,19 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
                     upsamp[(i * 6) + j] = out[j];
                 }
             }
-            write(opts->audio_out_fd, upsamp, nsam * 2 * 6);
+            write(opts->audio_out_fd, upsamp, (size_t)nsam * 6 * sizeof(short));
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) //STDOUT
         {
-            write(opts->audio_out_fd, samp1, nsam * 2);
-            write(opts->audio_out_fd, samp2, nsam * 2);
+            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
+            write(opts->audio_out_fd, samp2, (size_t)nsam * sizeof(short));
         }
 
         if (opts->audio_out_type == 2 && state->m17_enc == 0) //OSS 8k/1
         {
-            write(opts->audio_out_fd, samp1, nsam * 2);
-            write(opts->audio_out_fd, samp2, nsam * 2);
+            write(opts->audio_out_fd, samp1, (size_t)nsam * sizeof(short));
+            write(opts->audio_out_fd, samp2, (size_t)nsam * sizeof(short));
         }
     }
 
@@ -667,8 +667,8 @@ M17prepareStream(dsd_opts* opts, dsd_state* state, uint8_t* m17_bits) {
 
     CNXDNConvolution_start();
     for (i = 0; i < 148; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -677,14 +677,14 @@ M17prepareStream(dsd_opts* opts, dsd_state* state, uint8_t* m17_bits) {
 
     //144/8 = 18, last 4 (144-148) are trailing zeroes
     for (i = 0; i < 18; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     //load m_data into bits for either data packets or voice packets
@@ -726,7 +726,7 @@ M17prepareStream(dsd_opts* opts, dsd_state* state, uint8_t* m17_bits) {
     if (opts->payload == 1 && state->m17_str_dt < 2) {
         fprintf(stderr, "\n STREAM: ");
         for (i = 0; i < 18; i++) {
-            fprintf(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&trellis_buf[i * 8], 8));
+            fprintf(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8));
         }
     }
 }
@@ -898,8 +898,8 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
 
     CNXDNConvolution_start();
     for (i = 0; i < 244; i++) {
-        s0 = temp[(2 * i)];
-        s1 = temp[(2 * i) + 1];
+        s0 = temp[((size_t)2 * i)];
+        s1 = temp[((size_t)2 * i) + 1];
 
         CNXDNConvolution_decode(s0, s1);
     }
@@ -908,14 +908,14 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
 
     //244/8 = 30, last 4 (244-248) are trailing zeroes
     for (i = 0; i < 30; i++) {
-        trellis_buf[(i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[(i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[(i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[(i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[(i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[(i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[(i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[(i * 8) + 7] = (m_data[i] >> 0) & 1;
+        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
+        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
+        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
+        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
+        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
+        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
+        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
+        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
     }
 
     memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
@@ -926,7 +926,7 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
 
     //need to pack bytes for the sw5wwp variant of the crc (might as well, may be useful in the future)
     for (i = 0; i < 30; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[i * 8], 8);
+        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[((size_t)i * 8)], 8);
     }
 
     uint16_t crc_cmp = crc16m17(lsf_packed, 28);
@@ -1071,7 +1071,7 @@ processM17LSF_debug(dsd_opts* opts, dsd_state* state, uint8_t* m17_rnd_bits) {
 
     //need to pack bytes for the sw5wwp variant of the crc (might as well, may be useful in the future)
     for (i = 0; i < 30; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[i * 8], 8);
+        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[((size_t)i * 8)], 8);
     }
 
     uint16_t crc_cmp = crc16m17(lsf_packed, 28);
@@ -1502,7 +1502,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
     if (opts->monitor_input_audio == 1 && opts->audio_out == 1) {
         //Pulse Audio
         if (opts->audio_out_type == 0) {
-            pa_simple_write(opts->pulse_raw_dev_out, baseband, 1920 * 2, NULL);
+            pa_simple_write(opts->pulse_raw_dev_out, baseband, (size_t)1920u * sizeof(short), NULL);
         }
 
         //UDP
@@ -1512,7 +1512,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
 
         //STDOUT or OSS 48k/1
         if (opts->audio_out_type == 1 || opts->audio_out_type == 5) {
-            write(opts->audio_out_fd, baseband, 1920 * 2);
+            write(opts->audio_out_fd, baseband, (size_t)1920u * sizeof(short));
         }
     }
 
@@ -1820,7 +1820,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     uint8_t lsf_packed[30];
     memset(lsf_packed, 0, sizeof(lsf_packed));
     for (i = 0; i < 28; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[i * 8], 8);
+        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[((size_t)i * 8)], 8);
     }
     crc_cmp = crc16m17(lsf_packed, 28);
 
@@ -1831,7 +1831,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     //pack the CRC
     for (i = 28; i < 30; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[i * 8], 8);
+        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[((size_t)i * 8)], 8);
     }
 
     //Craft and Send Initial LSF frame to be decoded
@@ -2432,7 +2432,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //pack current bit array into a byte array for a CRC check
             for (i = 0; i < 52; i++) {
-                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[i * 8], 8);
+                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[((size_t)i * 8)], 8);
             }
             ip_crc = crc16m17(m17_ip_packed, 52);
 
@@ -2443,7 +2443,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //pack CRC into the byte array as well
             for (i = 52; i < 54; i++) {
-                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[i * 8], 8);
+                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[((size_t)i * 8)], 8);
             }
 
             //Send packed IP frame to UDP port if enabled
@@ -2518,7 +2518,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //pack current bit array into a byte array for a CRC check
             for (i = 0; i < 52; i++) {
-                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[i * 8], 8);
+                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[((size_t)i * 8)], 8);
             }
             ip_crc = crc16m17(m17_ip_packed, 52);
 
@@ -2529,7 +2529,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //pack CRC into the byte array as well
             for (i = 52; i < 54; i++) {
-                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[i * 8], 8);
+                m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[((size_t)i * 8)], 8);
             }
 
             //reset
@@ -2584,7 +2584,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             //repack, new CRC, and update rest of lsf as well
             memset(lsf_packed, 0, sizeof(lsf_packed));
             for (i = 0; i < 28; i++) {
-                lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[i * 8], 8);
+                lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[((size_t)i * 8)], 8);
             }
             crc_cmp = crc16m17(lsf_packed, 28);
 
@@ -2595,7 +2595,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //repack the CRC
             for (i = 28; i < 30; i++) {
-                lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[i * 8], 8);
+                lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[((size_t)i * 8)], 8);
             }
 
             //Recraft and Prepare New LSF frame for next encoding session
@@ -2828,7 +2828,7 @@ encodeM17BRT(dsd_opts* opts, dsd_state* state) {
 
         //Dump Output of the BERT array (reversed and shifted sequence)
         for (i = 0; i < 25; i++) {
-            fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&m17_b1r[i * 8], 8));
+            fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&m17_b1r[((size_t)i * 8)], 8));
         }
 
         //convert bit array into symbols and RF/Audio
@@ -2994,7 +2994,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     uint8_t lsf_packed[30];
     memset(lsf_packed, 0, sizeof(lsf_packed));
     for (i = 0; i < 28; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[i * 8], 8);
+        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[((size_t)i * 8)], 8);
     }
     crc_cmp = crc16m17(lsf_packed, 28);
 
@@ -3005,7 +3005,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //pack the CRC
     for (i = 28; i < 30; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[i * 8], 8);
+        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_lsf[((size_t)i * 8)], 8);
     }
 
     //Craft and Send Initial LSF frame to be decoded
@@ -3138,7 +3138,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     uint8_t m17_p1_packed[31 * 25];
     memset(m17_p1_packed, 0, sizeof(m17_p1_packed));
     for (i = 0; i < 25 * 31; i++) {
-        m17_p1_packed[x] = (uint8_t)ConvertBitIntoBytes(&m17_p1_full[i * 8], 8);
+        m17_p1_packed[x] = (uint8_t)ConvertBitIntoBytes(&m17_p1_full[((size_t)i * 8)], 8);
         if (m17_p1_packed[x] == 0) {
             break; //stop at the termination byte
         }
@@ -3174,7 +3174,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
         if ((i % 25) == 0 && i != 0) {
             fprintf(stderr, "\n                       ");
         }
-        fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&m17_p1_full[i * 8], 8));
+        fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&m17_p1_full[((size_t)i * 8)], 8));
     }
     fprintf(stderr, "\n");
 
@@ -3296,12 +3296,12 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //pack current bit array to current
     for (i = 0; i < 34; i++) {
-        m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[i * 8], 8);
+        m17_ip_packed[i] = (uint8_t)ConvertBitIntoBytes(&m17_ip_frame[((size_t)i * 8)], 8);
     }
 
     //pack the entire PKT payload (plus terminator, sans CRC)
     for (i = 0; i < x + 1; i++) {
-        m17_ip_packed[i + 34] = (uint8_t)ConvertBitIntoBytes(&m17_p1_full[i * 8], 8);
+        m17_ip_packed[i + 34] = (uint8_t)ConvertBitIntoBytes(&m17_p1_full[((size_t)i * 8)], 8);
     }
 
     //Calculate CRC over everthing packed (including the terminator)
@@ -3435,7 +3435,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
         //Dump Output of the current Packet Frame
         for (i = 0; i < 26; i++) {
-            fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&m17_p1[i * 8], 8));
+            fprintf(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&m17_p1[((size_t)i * 8)], 8));
         }
 
         //debug PBC
