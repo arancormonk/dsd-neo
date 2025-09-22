@@ -59,9 +59,9 @@ p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uin
 
     time_t ts = time(NULL);
     fprintf(stderr,
-            "{\"ts\":%ld,\"proto\":\"p25\",\"mac\":1,\"xch\":\"%s\",\"mfid\":%u,\"op\":%u,\"slot\":%d,"
+            "{\"ts\":%ld,\"proto\":\"p25\",\"mac\":1,\"xch\":\"%s\",\"mfid\":%u,\"op\":%u,\"slot\":%d,\"slot1\":%d,"
             "\"lenB\":%d,\"lenC\":%d,\"summary\":\"%s\"}\n",
-            (long)ts, xch, (unsigned)mfid, (unsigned)opcode, slot, len_b, len_c, sum);
+            (long)ts, xch, (unsigned)mfid, (unsigned)opcode, slot, slot + 1, len_b, len_c, sum);
 }
 
 //MAC PDU 3-bit Opcodes BBAC (8.4.1) p 123:
@@ -226,7 +226,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             freq = process_channel_to_freq(opts, state, channel);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "MFID90 Active Ch: %04X SG: %d; ", channel, sgroup);
+            char suf_m90a[32];
+            p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_m90a, sizeof suf_m90a);
+            sprintf(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; ", channel, suf_m90a, sgroup);
             state->last_active_time = time(NULL);
 
             for (int i = 0; i < state->group_tally; i++) {
@@ -284,7 +286,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             freq = process_channel_to_freq(opts, state, channel);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "MFID90 Active Ch: %04X SG: %d; ", channel, sgroup);
+            char suf_m90b[32];
+            p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_m90b, sizeof suf_m90b);
+            sprintf(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; ", channel, suf_m90b, sgroup);
             state->last_active_time = time(NULL);
 
             for (int i = 0; i < state->group_tally; i++) {
@@ -350,10 +354,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             //add active channel to string for ncurses display
             if (channel2 != channel1 && channel2 != 0 && channel2 != 0xFFFF) {
-                sprintf(state->active_channel[0], "MFID90 Active Ch: %04X SG: %d; Ch: %04X SG: %d; ", channel1, group1,
-                        channel2, group2);
+                char suf_m90c1[32];
+                char suf_m90c2[32];
+                p25_format_chan_suffix(state, (uint16_t)channel1, -1, suf_m90c1, sizeof suf_m90c1);
+                p25_format_chan_suffix(state, (uint16_t)channel2, -1, suf_m90c2, sizeof suf_m90c2);
+                sprintf(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; Ch: %04X%s SG: %d; ", channel1,
+                        suf_m90c1, group1, channel2, suf_m90c2, group2);
             } else {
-                sprintf(state->active_channel[0], "MFID90 Active Ch: %04X SG: %d; ", channel1, group1);
+                char suf_m90d[32];
+                p25_format_chan_suffix(state, (uint16_t)channel1, -1, suf_m90d, sizeof suf_m90d);
+                sprintf(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; ", channel1, suf_m90d, group1);
             }
             state->last_active_time = time(NULL);
 
@@ -466,7 +476,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             freq = process_channel_to_freq(opts, state, channel);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; ", channel, group);
+            char suf_gvg[32];
+            p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_gvg, sizeof suf_gvg);
+            sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channel, suf_gvg, group);
             state->last_active_time = time(NULL);
 
             for (int i = 0; i < state->group_tally; i++) {
@@ -575,7 +587,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             //add active channel to string for ncurses display
             if (channel != 0 && channel != 0xFFFF) {
-                sprintf(state->active_channel[0], "Active Tele Ch: %04X TGT: %u; ", channel, target);
+                char suf_tel[32];
+                p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_tel, sizeof suf_tel);
+                sprintf(state->active_channel[0], "Active Tele Ch: %04X%s TGT: %u; ", channel, suf_tel, target);
             }
             state->last_active_time = time(NULL);
 
@@ -664,7 +678,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             freq = process_channel_to_freq(opts, state, channel);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "Active Ch: %04X TGT: %d; ", channel, target);
+            char suf_uug[32];
+            p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_uug, sizeof suf_uug);
+            sprintf(state->active_channel[0], "Active Ch: %04X%s TGT: %d; ", channel, suf_uug, target);
             state->last_active_time = time(NULL);
 
             //Skip tuning private calls if private calls is disabled
@@ -788,8 +804,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; Ch: %04X TG: %d; ", channelt1, group1, channelt2,
-                    group2);
+            {
+                char suf_dcg1[32];
+                char suf_dcg2[32];
+                p25_format_chan_suffix(state, (uint16_t)channelt1, -1, suf_dcg1, sizeof suf_dcg1);
+                p25_format_chan_suffix(state, (uint16_t)channelt2, -1, suf_dcg2, sizeof suf_dcg2);
+                sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channelt1, suf_dcg1,
+                        group1, channelt2, suf_dcg2, group2);
+            }
             state->last_active_time = time(NULL);
 
             //Skip tuning group calls if group calls are disabled
@@ -968,8 +990,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; Ch: %04X TG: %d; Ch: %04X TG: %d; ", channel1,
-                    group1, channel2, group2, channel3, group3);
+            {
+                char suf_sgc1[32];
+                char suf_sgc2[32];
+                char suf_sgc3[32];
+                p25_format_chan_suffix(state, (uint16_t)channel1, -1, suf_sgc1, sizeof suf_sgc1);
+                p25_format_chan_suffix(state, (uint16_t)channel2, -1, suf_sgc2, sizeof suf_sgc2);
+                p25_format_chan_suffix(state, (uint16_t)channel3, -1, suf_sgc3, sizeof suf_sgc3);
+                sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ",
+                        channel1, suf_sgc1, group1, channel2, suf_sgc2, group2, channel3, suf_sgc3, group3);
+            }
 
             //add active channel to string for ncurses display (multi check)
             // if (channel3 != channel2 && channel2 != channel1 && channel3 != 0 && channel3 != 0xFFFF)
@@ -1085,10 +1115,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             //add active channel to string for ncurses display
             if (channel2 != channel1 && channel2 != 0 && channel2 != 0xFFFF) {
-                sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; Ch: %04X TG: %d; ", channel1, group1,
-                        channel2, group2);
+                char suf_tgc1[32];
+                char suf_tgc2[32];
+                p25_format_chan_suffix(state, (uint16_t)channel1, -1, suf_tgc1, sizeof suf_tgc1);
+                p25_format_chan_suffix(state, (uint16_t)channel2, -1, suf_tgc2, sizeof suf_tgc2);
+                sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1, suf_tgc1,
+                        group1, channel2, suf_tgc2, group2);
             } else {
-                sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; ", channel1, group1);
+                char suf_tgc3[32];
+                p25_format_chan_suffix(state, (uint16_t)channel1, -1, suf_tgc3, sizeof suf_tgc3);
+                sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channel1, suf_tgc3, group1);
             }
             state->last_active_time = time(NULL);
 
@@ -1306,7 +1342,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             long int freq = process_channel_to_freq(opts, state, channelt);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "Active Data Ch: %04X TGT: %d; ", channelt, target);
+            {
+                char suf_dat[32];
+                p25_format_chan_suffix(state, (uint16_t)channelt, -1, suf_dat, sizeof suf_dat);
+                sprintf(state->active_channel[0], "Active Data Ch: %04X%s TGT: %d; ", channelt, suf_dat, target);
+            }
             state->last_active_time = time(NULL);
 
             //Skip tuning data calls if data calls is disabled
@@ -1866,7 +1906,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             int gr = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
             int src = (MAC[6 + len_a] << 16) | (MAC[7 + len_a] << 8) | MAC[8 + len_a];
-            fprintf(stderr, "\n VCH %d - Super Group %d SRC %d ", slot, gr, src);
+            fprintf(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
             fprintf(stderr, "MFID90 Group Regroup Voice");
             state->gi[slot] = 0;
 
@@ -1893,7 +1933,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             int gr = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
             int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
-            fprintf(stderr, "\n VCH %d - Super Group %d SRC %d ", slot, gr, src);
+            fprintf(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
             fprintf(stderr, "MFID90 Group Regroup Voice");
             state->gi[slot] = 0;
 
@@ -2137,7 +2177,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 src = src_suid & 0xFFFFFF; //last 24 of completed SUID?
             }
 
-            fprintf(stderr, "\n VCH %d - TG: %d; SRC: %d; ", slot, gr, src);
+            fprintf(stderr, "\n VCH %d - TG: %d; SRC: %d; ", slot + 1, gr, src);
 
             if (MAC[1 + len_a] == 0x21) {
                 fprintf(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, src);
@@ -2216,7 +2256,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 src = src_suid & 0xFFFFFF;
             }
 
-            fprintf(stderr, "\n VCH %d - TGT: %d; SRC %d; ", slot, gr, src);
+            fprintf(stderr, "\n VCH %d - TGT: %d; SRC %d; ", slot + 1, gr, src);
 
             if (MAC[1 + len_a] == 0x22) {
                 fprintf(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, src);

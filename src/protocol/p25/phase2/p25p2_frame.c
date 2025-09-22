@@ -574,7 +574,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 
     if (opts->payload == 1) {
         // fprintf (stderr, "\n");
-        fprintf(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot, essb_hex1, essb_hex2, ec);
+        fprintf(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot + 1, essb_hex1, essb_hex2, ec);
     }
 
     if (ec >= 0 && ec < 15) //corrected up to 14 errors and not -1 failure
@@ -587,7 +587,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             state->payload_miP = ((essb_hex1 & 0xFF) << 56) | ((essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
             if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
                 fprintf(stderr, "\n");
-                fprintf(stderr, " VCH 0 -");
+                fprintf(stderr, " VCH 1 -");
                 fprintf(stderr, " ALG ID: 0x%02X", state->payload_algid);
                 fprintf(stderr, " KEY ID: 0x%04X", state->payload_keyid);
                 fprintf(stderr, " MI: 0x%016llX", state->payload_miP);
@@ -621,7 +621,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             state->payload_miN = ((essb_hex1 & 0xFF) << 56) | ((essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
             if (state->payload_algidR != 0x80 && state->payload_algidR != 0x0) {
                 fprintf(stderr, "\n");
-                fprintf(stderr, " VCH 1 -");
+                fprintf(stderr, " VCH 2 -");
                 fprintf(stderr, " ALG ID: 0x%02X", state->payload_algidR);
                 fprintf(stderr, " KEY ID: 0x%04X", state->payload_keyidR);
                 fprintf(stderr, " MI: 0x%016llX", state->payload_miN);

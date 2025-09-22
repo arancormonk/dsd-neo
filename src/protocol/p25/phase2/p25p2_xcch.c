@@ -129,7 +129,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->dropL = 256;
 
             state->dmrburstL = 20;
-            fprintf(stderr, "\n VCH 0 - ");
+            fprintf(stderr, "\n VCH 1 - ");
             //check that src is not zero first, some harris and other patch systems may do this,
             //but that also causes an issue in the new event logger if the active channel has a src, but mac_ptt has 0
             uint32_t src = (SMAC[13] << 16) | (SMAC[14] << 8) | SMAC[15];
@@ -254,7 +254,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->payload_algidR = 0; //zero this out as well
 
             state->dmrburstR = 20;
-            fprintf(stderr, "\n VCH 1 - ");
+            fprintf(stderr, "\n VCH 2 - ");
             //check that src is not zero first, some harris and other patch systems may do this,
             //but that also causes an issue in the new event logger if the active channel has a src, but mac_ptt has 0
             uint32_t src = (SMAC[13] << 16) | (SMAC[14] << 8) | SMAC[15];
@@ -411,7 +411,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->payload_algid = 0;
             state->payload_keyid = 0;
 
-            fprintf(stderr, "\n VCH 0 - ");
+            fprintf(stderr, "\n VCH 1 - ");
             fprintf(stderr, "TG %d ", state->lasttg);
             fprintf(stderr, "SRC %d ", state->lastsrc);
 
@@ -459,7 +459,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->payload_algidR = 0;
             state->payload_keyidR = 0;
 
-            fprintf(stderr, "\n VCH 1 - ");
+            fprintf(stderr, "\n VCH 2 - ");
             fprintf(stderr, "TG %d ", state->lasttgR);
             fprintf(stderr, "SRC %d ", state->lastsrcR);
 
@@ -686,7 +686,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             state->dropL = 256;
 
             state->dmrburstL = 20;
-            fprintf(stderr, "\n VCH 0 - ");
+            fprintf(stderr, "\n VCH 1 - ");
             //check that src is not zero first, some harris and other patch systems may do this,
             //but that also causes an issue in the new event logger if the active channel has a src, but mac_ptt has 0
             uint32_t src = (FMAC[13] << 16) | (FMAC[14] << 8) | FMAC[15];
@@ -761,7 +761,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             state->dropR = 256;
 
             state->dmrburstR = 20;
-            fprintf(stderr, "\n VCH 1 - ");
+            fprintf(stderr, "\n VCH 2 - ");
             //check that src is not zero first, some harris and other patch systems may do this,
             //but that also causes an issue in the new event logger if the active channel has a src, but mac_ptt has 0
             uint32_t src = (FMAC[13] << 16) | (FMAC[14] << 8) | FMAC[15];
@@ -879,7 +879,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             state->payload_algid = 0; //zero this out as well
             state->payload_keyid = 0;
 
-            fprintf(stderr, "\n VCH 0 - ");
+            fprintf(stderr, "\n VCH 1 - ");
             fprintf(stderr, "TG %d ", state->lasttg);
             fprintf(stderr, "SRC %d ", state->lastsrc);
 
@@ -920,7 +920,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             state->payload_algidR = 0; //zero this out as well
             state->payload_keyidR = 0;
 
-            fprintf(stderr, "\n VCH 1 - ");
+            fprintf(stderr, "\n VCH 2 - ");
             fprintf(stderr, "TG %d ", state->lasttgR);
             fprintf(stderr, "SRC %d ", state->lastsrcR);
 

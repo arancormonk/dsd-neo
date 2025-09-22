@@ -116,6 +116,57 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
     }
 }
 
+// Format a short suffix describing the FDMA-equivalent channel and slot for a
+// given P25 channel index. Intended to reduce confusion when Phase 2 TDMA uses
+// 6.25 kHz channel numbering (e.g., 0x0148) while the Learned Channels list is
+// keyed by the 12.5 kHz FDMA channel (e.g., 0x00A4).
+//
+// Example output (for TDMA): " (FDMA 00A4 S1)"
+// For FDMA (denom==1) the suffix is empty to avoid noise.
+void
+p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz) {
+    if (!out || outsz == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    if (!state) {
+        return;
+    }
+
+    int iden = (chan >> 12) & 0xF;
+    int raw = chan & 0xFFF;
+
+    // Mirror denom logic from process_channel_to_freq
+    int type = state->p25_chan_type[iden] & 0xF;
+    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+    int denom = 1;
+    if ((state->p25_chan_tdma[iden] & 0x1) != 0) {
+        if (type >= 0 && type <= 15) {
+            denom = slots_per_carrier[type];
+        }
+    } else if (state->p25_cc_is_tdma == 1) {
+        // Conservative fallback when TDMA IDEN not yet learned
+        denom = 2;
+    }
+
+    if (denom <= 1) {
+        // FDMA: nothing to add
+        return;
+    }
+
+    int fdma = raw / denom;
+    int slot = raw % denom;
+    if (slot_hint >= 0 && slot_hint < denom) {
+        slot = slot_hint;
+    }
+
+    // Print only the 12-bit channel index for FDMA to match the Learned list
+    // (which commonly shows values like 00A4), and include slot.
+    // Display slots as 1-based (S1/S2) to match UI conventions
+    snprintf(out, outsz, " (FDMA %04X S%d)", fdma & 0xFFF, slot + 1);
+}
+
 void
 p25_reset_iden_tables(dsd_state* state) {
     if (!state) {

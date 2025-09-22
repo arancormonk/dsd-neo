@@ -232,8 +232,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         freq1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
 
-        //add active channel to string for ncurses display
-        sprintf(state->active_channel[0], "Active Ch: %04X TG: %d; ", channelt, group);
+        //add active channel to string for ncurses display (FDMA/slot hint only shown for TDMA systems)
+        char suf1[32];
+        p25_format_chan_suffix(state, channelt, -1, suf1, sizeof suf1);
+        sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channelt, suf1, group);
         state->last_active_time = time(NULL);
 
         for (int i = 0; i < state->group_tally; i++) {
@@ -321,7 +323,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         (void)process_channel_to_freq(opts, state, channelr); //optional!
 
         //add active channel to string for ncurses display
-        sprintf(state->active_channel[0], "Active Ch: %04X TGT: %u; ", channelt, (uint32_t)target);
+        char suf2[32];
+        p25_format_chan_suffix(state, channelt, -1, suf2, sizeof suf2);
+        sprintf(state->active_channel[0], "Active Ch: %04X%s TGT: %u; ", channelt, suf2, (uint32_t)target);
 
         for (int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == target) {
@@ -487,7 +491,11 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             (void)process_channel_to_freq(opts, state, channelr);
 
             //add active channel to string for ncurses display
-            sprintf(state->active_channel[0], "MFID90 Ch: %04X SG: %d ", channelt, group);
+            {
+                char suf3[32];
+                p25_format_chan_suffix(state, channelt, -1, suf3, sizeof suf3);
+                sprintf(state->active_channel[0], "MFID90 Ch: %04X%s SG: %d ", channelt, suf3, group);
+            }
             state->last_active_time = time(NULL);
 
             for (int i = 0; i < state->group_tally; i++) {

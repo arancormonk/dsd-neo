@@ -1635,6 +1635,8 @@ void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]);
 
 //P25 Channel to Frequency
 long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
+// Format a short suffix for P25 channel showing FDMA-equivalent channel and slot
+void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
 // Reset all P25 IDEN tables (type/tdma/spacing/base/offset) when system identity changes
 void p25_reset_iden_tables(dsd_state* state);
 // Promote any IDENs whose provenance matches the current site to trusted (2)
