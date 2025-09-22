@@ -225,3 +225,69 @@ add_executable(dsd-neo_test_p25_p2_vpdu_sequence protocol/p25/test_p25_p2_vpdu_s
 target_include_directories(dsd-neo_test_p25_p2_vpdu_sequence PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_p2_vpdu_sequence PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_VPDU_SEQUENCE COMMAND dsd-neo_test_p25_p2_vpdu_sequence)
+
+# DSP block tests
+add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
+target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_halfband PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_HALFBAND COMMAND dsd-neo_test_dsp_halfband)
+
+add_executable(dsd-neo_test_dsp_polar_disc dsp/test_dsp_polar_disc.cpp)
+target_include_directories(dsd-neo_test_dsp_polar_disc PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_polar_disc PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_POLAR_DISC COMMAND dsd-neo_test_dsp_polar_disc)
+
+add_executable(dsd-neo_test_dsp_resampler dsp/test_dsp_resampler.cpp)
+target_include_directories(dsd-neo_test_dsp_resampler PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_resampler PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_RESAMPLER COMMAND dsd-neo_test_dsp_resampler)
+
+add_executable(dsd-neo_test_dsp_fll dsp/test_dsp_fll.cpp)
+target_include_directories(dsd-neo_test_dsp_fll PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_FLL COMMAND dsd-neo_test_dsp_fll)
+
+add_executable(dsd-neo_test_dsp_ted dsp/test_dsp_ted.cpp)
+target_include_directories(dsd-neo_test_dsp_ted PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_ted PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_TED COMMAND dsd-neo_test_dsp_ted)
+
+add_executable(dsd-neo_test_dsp_simd_widen dsp/test_dsp_simd_widen.cpp)
+target_include_directories(dsd-neo_test_dsp_simd_widen PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_simd_widen PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_SIMD_WIDEN COMMAND dsd-neo_test_dsp_simd_widen)
+
+add_executable(dsd-neo_test_dsp_cqpsk_eq dsp/test_dsp_cqpsk_eq.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_eq PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_eq PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_EQ COMMAND dsd-neo_test_dsp_cqpsk_eq)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path dsp/test_dsp_cqpsk_path.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH COMMAND dsd-neo_test_dsp_cqpsk_path)
+
+add_executable(dsd-neo_test_dsp_demod_helpers dsp/test_dsp_demod_helpers.cpp)
+target_include_directories(dsd-neo_test_dsp_demod_helpers PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_demod_helpers PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_DEMOD_HELPERS COMMAND dsd-neo_test_dsp_demod_helpers)
+
+add_executable(dsd-neo_test_dsp_audio_filters dsp/test_dsp_audio_filters.cpp)
+target_include_directories(dsd-neo_test_dsp_audio_filters PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_audio_filters PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_AUDIO_FILTERS COMMAND dsd-neo_test_dsp_audio_filters)
+
+add_executable(dsd-neo_test_dsp_rrc dsp/test_dsp_rrc.cpp)
+target_include_directories(dsd-neo_test_dsp_rrc PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_rrc PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_RRC COMMAND dsd-neo_test_dsp_rrc)
+
+add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
+target_include_directories(dsd-neo_test_dsp_demod_misc PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_demod_misc PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_DEMOD_MISC COMMAND dsd-neo_test_dsp_demod_misc)
+
+add_executable(dsd-neo_test_dsp_channel_filters dsp/test_dsp_channel_filters.cpp)
+target_include_directories(dsd-neo_test_dsp_channel_filters PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_channel_filters PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CHANNEL_FILTERS COMMAND dsd-neo_test_dsp_channel_filters)
