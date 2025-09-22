@@ -1069,6 +1069,19 @@ rtl_set_vol(void* v) {
 }
 
 static void
+rtl_toggle_bias(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    svc_rtl_set_bias_tee(c->opts, c->opts->rtl_bias_tee ? 0 : 1);
+}
+
+static const char*
+lbl_rtl_bias(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Bias Tee: %s", (c->opts->rtl_bias_tee ? "On" : "Off"));
+    return b;
+}
+
+static void
 ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
     static const NcMenuItem items[] = {
@@ -1091,6 +1104,11 @@ ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
         {.id = "bw", .label = "Set Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
         {.id = "sql", .label = "Set Squelch (dB)...", .help = "More negative -> tighter.", .on_select = rtl_set_sql},
         {.id = "vol", .label = "Set Volume Multiplier...", .help = "0..3 sample scaler.", .on_select = rtl_set_vol},
+        {.id = "bias",
+         .label = "Toggle Bias Tee",
+         .label_fn = lbl_rtl_bias,
+         .help = "Enable/disable 5V bias tee (USB or rtl_tcp)",
+         .on_select = rtl_toggle_bias},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }

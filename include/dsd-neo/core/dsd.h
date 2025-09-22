@@ -365,6 +365,7 @@ typedef struct {
     int rtl_volume_multiplier;
     int rtl_udp_port;
     int rtl_bandwidth;
+    int rtl_bias_tee; /* 1 to enable RTL-SDR bias tee (if supported) */
     int rtl_started;
     int monitor_input_audio;
     int analog_only;

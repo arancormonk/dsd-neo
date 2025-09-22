@@ -167,6 +167,13 @@ if(RTLSDR_FOUND)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
     add_definitions(-DUSE_RTLSDR)
+    # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
+    include(CheckSymbolExists)
+    set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
+    check_symbol_exists(rtlsdr_set_bias_tee "rtl-sdr.h" HAVE_RTLSDR_BIAS_TEE)
+    if(HAVE_RTLSDR_BIAS_TEE)
+        add_definitions(-DUSE_RTLSDR_BIAS_TEE)
+    endif()
 endif(RTLSDR_FOUND)
 
 if(CODEC2_FOUND)

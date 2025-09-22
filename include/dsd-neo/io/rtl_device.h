@@ -167,6 +167,19 @@ int rtl_device_stop_async(struct rtl_device* dev);
  */
 void rtl_device_mute(struct rtl_device* dev, int samples);
 
+/**
+ * @brief Enable or disable the RTL-SDR bias tee.
+ *
+ * USB (librtlsdr) backend uses `rtlsdr_set_bias_tee` when available at
+ * build time. The rtl_tcp backend forwards the request to the server via
+ * protocol command 0x0E.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param on  Non-zero to enable, zero to disable.
+ * @return 0 on success, negative on failure.
+ */
+int rtl_device_set_bias_tee(struct rtl_device* dev, int on);
+
 #ifdef __cplusplus
 }
 #endif

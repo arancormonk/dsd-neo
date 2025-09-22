@@ -978,4 +978,17 @@ svc_rtl_set_volume_mult(dsd_opts* opts, int mult) {
     opts->rtl_volume_multiplier = mult;
     return 0;
 }
+
+int
+svc_rtl_set_bias_tee(dsd_opts* opts, int on) {
+    if (!opts) {
+        return -1;
+    }
+    opts->rtl_bias_tee = on ? 1 : 0;
+    if (g_rtl_ctx) {
+        /* Apply live when RTL stream is active */
+        return rtl_stream_set_bias_tee(opts->rtl_bias_tee);
+    }
+    return 0;
+}
 #endif

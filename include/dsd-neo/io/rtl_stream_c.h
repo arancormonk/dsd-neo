@@ -97,6 +97,18 @@ void rtl_stream_clear_output(RtlSdrContext* ctx);
 long rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
 /**
+ * @brief Enable or disable RTL-SDR bias tee at runtime.
+ *
+ * Applies to the active device if present. For rtl_tcp sources, forwards the
+ * request to the server (protocol cmd 0x0E). For USB sources, requires
+ * librtlsdr built with bias tee API support.
+ *
+ * @param on Non-zero to enable, zero to disable.
+ * @return 0 on success; negative on failure or when no device is active.
+ */
+int rtl_stream_set_bias_tee(int on);
+
+/**
  * @brief Get the currently applied tuner gain.
  *
  * Returns the driver-reported tuner gain in tenths of a dB (e.g., 270 for

@@ -70,6 +70,7 @@ struct rtl_device {
     int port;
     std::atomic<int> run;
     int agc_mode; /* cached for TCP backend */
+    int bias_tee_on;
     /* TCP stats (optional) */
     uint64_t tcp_bytes_total;
     uint64_t tcp_bytes_window;
@@ -1227,4 +1228,32 @@ rtl_device_mute(struct rtl_device* dev, int samples) {
         return;
     }
     dev->mute.store(samples);
+}
+
+int
+rtl_device_set_bias_tee(struct rtl_device* dev, int on) {
+    if (!dev) {
+        return -1;
+    }
+    dev->bias_tee_on = on ? 1 : 0;
+    if (dev->backend == 1) {
+        /* rtl_tcp protocol command 0x0E toggles bias tee */
+        return rtl_tcp_send_cmd(dev->sockfd, 0x0E, (uint32_t)dev->bias_tee_on);
+    }
+#ifdef USE_RTLSDR_BIAS_TEE
+    if (!dev->dev) {
+        return -1;
+    }
+    int r = rtlsdr_set_bias_tee(dev->dev, dev->bias_tee_on);
+    if (r != 0) {
+        fprintf(stderr, "WARNING: Failed to %sable RTL-SDR bias tee.\n", dev->bias_tee_on ? "en" : "dis");
+        return -1;
+    }
+    fprintf(stderr, "RTL-SDR bias tee %s.\n", dev->bias_tee_on ? "enabled" : "disabled");
+    return 0;
+#else
+    (void)on;
+    fprintf(stderr, "NOTE: librtlsdr built without bias tee API; ignoring bias setting on USB.\n");
+    return 0;
+#endif
 }

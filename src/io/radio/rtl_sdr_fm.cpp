@@ -280,6 +280,17 @@ drain_output_on_retune(void) {
     (void)before; /* reserved for future diagnostics */
 }
 
+/* C-linkage helper to toggle bias tee on the active RTL device.
+   For rtl_tcp sources, forwards the request via protocol; for USB, uses
+   librtlsdr API when available. Returns 0 on success; negative on error. */
+extern "C" int
+dsd_rtl_stream_set_bias_tee(int on) {
+    if (!rtl_device_handle) {
+        return -1;
+    }
+    return rtl_device_set_bias_tee(rtl_device_handle, on ? 1 : 0);
+}
+
 /* Export applied tuner gain for UI without exposing internals. */
 extern "C" int
 dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
@@ -2144,6 +2155,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         } else {
             LOG_INFO("Using RTLSDR Device Index: %d. \n", dongle.dev_index);
         }
+    }
+
+    /* Apply bias tee setting before other tuner config (USB via librtlsdr; rtl_tcp via protocol cmd 0x0E) */
+    if (opts && opts->rtl_bias_tee) {
+        rtl_device_set_bias_tee(rtl_device_handle, 1);
     }
 
     if (demod.deemph) {

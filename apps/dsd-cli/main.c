@@ -761,7 +761,8 @@ initOpts(dsd_opts* opts) {
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
     opts->rtl_started = 0;
-    opts->rtl_pwr = 0; // mean power approximation level on rtl input signal
+    opts->rtl_pwr = 0;      // mean power approximation level on rtl input signal
+    opts->rtl_bias_tee = 0; // bias tee disabled by default
     //end RTL user options
     opts->pulse_raw_rate_in = 48000;
     opts->pulse_raw_rate_out = 48000; //
@@ -1587,7 +1588,7 @@ usage() {
     printf("                1 1 1 1 (0xF): PBF/LPF/HPF/HPFD on\n");
     printf("\n");
     printf("RTL-SDR options:\n");
-    printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol\n");
+    printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
     printf("  dev  <num>    RTL-SDR Device Index Number or 8 Digit Serial Number, no strings! (default 0)\n");
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M) \n");
@@ -1598,11 +1599,12 @@ usage() {
     printf("                 (Negative = dB; Positive/Zero = linear mean power)\n");
     // printf ("  udp  <num>    RTL-SDR Legacy UDP Remote Port (Optional -- External Use Only)\n"); //NOTE: This is still available as an option in the ncurses menu
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
+    printf("  bias [on|off] Enable 5V bias tee on compatible dongles (default off)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
     printf(" Example: dsd-neo -fp -i rtl:0:851.375M:22:-2:24:0:2\n");
     printf("\n");
     printf("RTL-TCP options:\n");
-    printf(" Usage: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol]]\n");
+    printf(" Usage: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]\n");
     printf("  host: default 127.0.0.1; port: default 1234\n");
     printf("  Remaining fields mirror rtl: string semantics.\n");
     printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 -N\n");
@@ -3637,11 +3639,32 @@ main(int argc, char** argv) {
             goto RTLTCPEND;
         }
 
+        // Optional trailing tokens: bias tee toggle
+        while ((curr = strtok_r(NULL, ":", &saveptr)) != NULL) {
+            if (strncmp(curr, "bias", 4) == 0 || strncmp(curr, "b", 1) == 0) {
+                const char* val = strchr(curr, '=');
+                int on = 1; // default enable if no explicit value
+                if (val && *(val + 1)) {
+                    val++; // move past '='
+                    if (*val == '0' || *val == 'n' || *val == 'N' || *val == 'o' || *val == 'O' || *val == 'f'
+                        || *val == 'F') {
+                        on = 0;
+                    }
+                }
+                opts.rtl_bias_tee = on;
+            }
+        }
+
     RTLTCPEND:
         if (opts.rtltcp_portno == 0) {
             opts.rtltcp_portno = 1234;
         }
-        fprintf(stderr, "%s:%d\n", opts.rtltcp_hostname, opts.rtltcp_portno);
+        fprintf(stderr, "%s:%d", opts.rtltcp_hostname, opts.rtltcp_portno);
+        if (opts.rtl_bias_tee) {
+            fprintf(stderr, " (bias=on)\n");
+        } else {
+            fprintf(stderr, "\n");
+        }
         opts.rtltcp_enabled = 1;
         opts.audio_in_type = 3; // use RTL pipeline
     }
@@ -3738,6 +3761,22 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
+        // Optional trailing tokens: bias tee toggle
+        while ((curr = strtok_r(NULL, ":", &saveptr)) != NULL) {
+            if (strncmp(curr, "bias", 4) == 0 || strncmp(curr, "b", 1) == 0) {
+                const char* val = strchr(curr, '=');
+                int on = 1; // default enable if no explicit value
+                if (val && *(val + 1)) {
+                    val++; // move past '='
+                    if (*val == '0' || *val == 'n' || *val == 'N' || *val == 'o' || *val == 'O' || *val == 'f'
+                        || *val == 'F') {
+                        on = 0;
+                    }
+                }
+                opts.rtl_bias_tee = on;
+            }
+        }
+
     RTLEND:
 
         device_count = rtlsdr_get_device_count();
@@ -3773,7 +3812,12 @@ main(int argc, char** argv) {
         fprintf(stderr, "BW %d ", opts.rtl_bandwidth);
         fprintf(stderr, "SQ %.1f dB ", pwr_to_dB(opts.rtl_squelch_level));
         // fprintf (stderr, "UDP %d \n", opts.rtl_udp_port);
-        fprintf(stderr, "VOL %d \n", opts.rtl_volume_multiplier);
+        fprintf(stderr, "VOL %d ", opts.rtl_volume_multiplier);
+        if (opts.rtl_bias_tee) {
+            fprintf(stderr, "BIAS on\n");
+        } else {
+            fprintf(stderr, "\n");
+        }
         opts.audio_in_type = 3;
 
         rtl_ok = 1;

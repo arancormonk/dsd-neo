@@ -30,6 +30,8 @@ void dsd_rtl_stream_set_ted_gain(int g);
 int dsd_rtl_stream_get_ted_gain(void);
 void dsd_rtl_stream_set_ted_force(int onoff);
 int dsd_rtl_stream_get_ted_force(void);
+/* Bias tee control implemented in rtl_sdr_fm.cpp */
+int dsd_rtl_stream_set_bias_tee(int on);
 void dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                      int sacch_err_delta, int voice_err_delta);
 void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
@@ -224,6 +226,11 @@ rtl_stream_clear_output(RtlSdrContext* /*ctx*/) {
 extern "C" long
 rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
     return dsd_rtl_stream_return_pwr();
+}
+
+extern "C" int
+rtl_stream_set_bias_tee(int on) {
+    return dsd_rtl_stream_set_bias_tee(on);
 }
 
 extern "C" int
