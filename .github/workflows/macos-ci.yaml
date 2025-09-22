@@ -62,7 +62,7 @@ jobs:
           brew update
           # Many deps we build from source (cached) to align with Linux/Windows flows
           brew install cmake ninja pkg-config ccache \
-            libsndfile pulseaudio fftw libusb
+            libsndfile pulseaudio fftw libusb ncurses
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
           # ITPP may not be in core; try core first, then brewsci tap
@@ -186,7 +186,10 @@ jobs:
       - name: Configure (Release preset)
         shell: bash
         run: |
-          cmake --preset dev-release -G Ninja -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --preset dev-release -G Ninja \
+            -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCURSES_LIBRARY="$HB_PREFIX/opt/ncurses/lib/libncursesw.dylib" \
+            -DCURSES_INCLUDE_PATH="$HB_PREFIX/opt/ncurses/include"
 
       - name: Build
         shell: bash
