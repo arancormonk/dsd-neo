@@ -108,6 +108,10 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
         if (opts && opts->verbose > 1) {
             fprintf(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
         }
+        // Persist learned mapping so UI can display and future grants can use explicit map
+        if (freq != 0) {
+            state->trunk_chan_map[chan16] = freq;
+        }
         return freq;
     }
 }
@@ -209,6 +213,10 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
         if (base && step) {
             freq = base + (channel * step);
             fprintf(stderr, "\n  DFA Frequency [%.6lf] MHz", (double)freq / 1000000);
+            // Persist learned mapping for UI visibility and later reuse
+            if (freq != 0) {
+                state->trunk_chan_map[channel] = freq;
+            }
             return (freq);
         } else {
             fprintf(stderr, "\n    Custom DFA Settings -- Unknown Freq;");

@@ -1881,6 +1881,187 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
     return 1;
 }
 
+// Try to resolve an active VC frequency from current state when p25_vc_freq is unset
+static long int
+ui_guess_active_vc_freq(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    // Prefer explicit VC freq when available
+    if (state->p25_vc_freq[0] != 0) {
+        return state->p25_vc_freq[0];
+    }
+    // Parse any active channel strings for a channel/LCN and map via trunk_chan_map
+    for (int i = 0; i < 31; i++) {
+        const char* s = state->active_channel[i];
+        if (!s || s[0] == '\0') {
+            continue;
+        }
+        const char* p = strstr(s, "Ch:");
+        if (!p) {
+            continue;
+        }
+        p += 3; // skip "Ch:"
+        while (*p == ' ') {
+            p++;
+        }
+        // Capture up to 6 hex/dec digits
+        char tok[8] = {0};
+        int t = 0;
+        while (*p && t < 6) {
+            char c = *p;
+            int is_hex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+            if (!is_hex) {
+                break;
+            }
+            tok[t++] = c;
+            p++;
+        }
+        if (t == 0) {
+            continue;
+        }
+        // Try hex channel index first (P25), then decimal (DMR/NXDN)
+        char* endp = NULL;
+        long ch_hex = strtol(tok, &endp, 16);
+        if (endp && *endp == '\0' && ch_hex > 0 && ch_hex < 65535) {
+            long int f = state->trunk_chan_map[ch_hex];
+            if (f != 0) {
+                return f;
+            }
+        }
+        long ch_dec = strtol(tok, &endp, 10);
+        if (endp && *endp == '\0' && ch_dec > 0 && ch_dec < 65535) {
+            long int f = state->trunk_chan_map[ch_dec];
+            if (f != 0) {
+                return f;
+            }
+        }
+    }
+    return 0;
+}
+
+// Print learned trunking LCNs and their mapped frequencies
+static void
+ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (opts->p25_trunk != 1) {
+        return;
+    }
+
+    int have_lcn_freq = 0;
+    for (int i = 0; i < 26; i++) {
+        if (state->trunk_lcn_freq[i] != 0) {
+            have_lcn_freq = 1;
+            break;
+        }
+    }
+
+    int have_chan_map = 0;
+    // Presence check across the full range; needed because many systems use high channel indices
+    for (int i = 1; i < 65535; i++) {
+        if (state->trunk_chan_map[i] != 0) {
+            have_chan_map = 1;
+            break;
+        }
+    }
+
+    if (!have_lcn_freq && !have_chan_map) {
+        return;
+    }
+
+    ui_print_header("Learned Channels");
+
+    // Prefer a calm cyan unless a call is active
+    if (state->carrier == 1) {
+        attron(COLOR_PAIR(3));
+    } else {
+        attron(COLOR_PAIR(4));
+    }
+
+    // Track which freqs we've already shown to avoid duplicates across LCNs and CH map
+    long int seen_freqs[256];
+    int seen_count = 0;
+
+    // First: render known channel->frequency pairs as CH <hex>
+    if (have_chan_map) {
+        int printed = 0;
+        int extra = 0;
+        for (int i = 1; i < 65535; i++) {
+            long int f = state->trunk_chan_map[i];
+            if (f == 0) {
+                continue;
+            }
+            int dup = 0;
+            for (int k = 0; k < seen_count; k++) {
+                if (seen_freqs[k] == f) {
+                    dup = 1;
+                    break;
+                }
+            }
+            if (dup) {
+                continue;
+            }
+            if (printed < 32) { // cap to avoid flooding
+                printw("| CH %04X: %010.06lf MHz\n", i & 0xFFFF, (double)f / 1000000.0);
+                printed++;
+            } else {
+                extra++;
+            }
+            if (seen_count < (int)(sizeof(seen_freqs) / sizeof(seen_freqs[0]))) {
+                seen_freqs[seen_count++] = f;
+            }
+        }
+        if (extra > 0) {
+            printw("| ... and %d more learned channels\n", extra);
+        }
+    }
+
+    // Then: include any additional freqs learned via LCN list, labeling as CH as well.
+    if (have_lcn_freq) {
+        for (int i = 0; i < 26; i++) {
+            long int f = state->trunk_lcn_freq[i];
+            if (f == 0) {
+                continue;
+            }
+            int dup = 0;
+            for (int k = 0; k < seen_count; k++) {
+                if (seen_freqs[k] == f) {
+                    dup = 1;
+                    break;
+                }
+            }
+            if (dup) {
+                continue;
+            }
+            // Try to find a matching channel id for this freq
+            int found_ch = -1;
+            for (int j = 1; j < 65535; j++) {
+                if (state->trunk_chan_map[j] == f) {
+                    found_ch = j;
+                    break;
+                }
+            }
+            if (found_ch >= 0) {
+                printw("| CH %04X: %010.06lf MHz\n", found_ch & 0xFFFF, (double)f / 1000000.0);
+            } else {
+                printw("| CH ----: %010.06lf MHz\n", (double)f / 1000000.0);
+            }
+            if (seen_count < (int)(sizeof(seen_freqs) / sizeof(seen_freqs[0]))) {
+                seen_freqs[seen_count++] = f;
+            }
+        }
+    }
+
+    // Restore to green if in-call, otherwise keep cyan; callers around will adjust as needed
+    if (state->carrier == 1) {
+        attron(COLOR_PAIR(3));
+    } else {
+        attron(COLOR_PAIR(4));
+    }
+}
+
 void
 ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     uint8_t idas = 0;
@@ -3628,10 +3809,16 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             {
                 printw("|        | "); //Currently Tuned Frequency
 
-                // Tuned Frequency Display
-                if (state->p25_vc_freq[0] != 0) {
-                    attron(COLOR_PAIR(4));
-                    printw("Frequency: %.06lf MHz  ", (double)state->p25_vc_freq[0] / 1000000);
+                // Tuned/Active Frequency Display: prefer tuned VC; else derive from active channel text/map
+                {
+                    long int vc = state->p25_vc_freq[0];
+                    if (vc == 0) {
+                        vc = ui_guess_active_vc_freq(state);
+                    }
+                    if (vc != 0) {
+                        attron(COLOR_PAIR(4));
+                        printw("Frequency: %.06lf MHz  ", (double)vc / 1000000);
+                    }
                 }
 
                 //TG Hold, if specified by user
@@ -3866,6 +4053,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attron(COLOR_PAIR(3));
         }
     }
+
+    // Render learned LCNs just under the Call Info section when trunking
+    ui_print_learned_lcns(opts, state);
 
     //fence bottom
     ui_print_hr();
