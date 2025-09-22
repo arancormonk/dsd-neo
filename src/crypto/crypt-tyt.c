@@ -181,8 +181,7 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, char* input) {
     unsigned char key2[16] = {0};
 
     char buf[1024];
-    strncpy(buf, input, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    snprintf(buf, sizeof(buf), "%s", input);
 
     char* pEnd;
     uint64_t K1 = strtoull(buf, &pEnd, 16);
@@ -207,8 +206,7 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, char* input) {
 void
 tyt_ep_aes_keystream_creation(dsd_state* state, char* input) {
     char buf[1024];
-    strncpy(buf, input, 1023);
-    buf[1023] = '\0';
+    snprintf(buf, sizeof(buf), "%s", input);
 
     char* pEnd;
     unsigned long long int K1 = strtoull(buf, &pEnd, 16);

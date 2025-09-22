@@ -36,22 +36,34 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].svc = 0;
         event_struct->Event_History_Items[i].source_id = 0;
         event_struct->Event_History_Items[i].target_id = 0;
-        sprintf(event_struct->Event_History_Items[i].src_str, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].tgt_str, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].t_name, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].s_name, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].t_mode, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].s_mode, "%s", "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].src_str, sizeof(event_struct->Event_History_Items[i].src_str),
+                 "%s", "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].tgt_str, sizeof(event_struct->Event_History_Items[i].tgt_str),
+                 "%s", "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].t_name, sizeof(event_struct->Event_History_Items[i].t_name), "%s",
+                 "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].s_name, sizeof(event_struct->Event_History_Items[i].s_name), "%s",
+                 "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].t_mode, sizeof(event_struct->Event_History_Items[i].t_mode), "%s",
+                 "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].s_mode, sizeof(event_struct->Event_History_Items[i].s_mode), "%s",
+                 "BUMBLEBEETUNA");
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
 
         memset(event_struct->Event_History_Items[i].pdu, 0, sizeof(event_struct->Event_History_Items[0].pdu));
-        sprintf(event_struct->Event_History_Items[i].sysid_string, "%s", "");
-        sprintf(event_struct->Event_History_Items[i].alias, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].gps_s, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].text_message, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].event_string, "%s", "BUMBLEBEETUNA");
-        sprintf(event_struct->Event_History_Items[i].internal_str, "%s", "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].sysid_string,
+                 sizeof(event_struct->Event_History_Items[i].sysid_string), "%s", "");
+        snprintf(event_struct->Event_History_Items[i].alias, sizeof(event_struct->Event_History_Items[i].alias), "%s",
+                 "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].gps_s, sizeof(event_struct->Event_History_Items[i].gps_s), "%s",
+                 "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].text_message,
+                 sizeof(event_struct->Event_History_Items[i].text_message), "%s", "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].event_string,
+                 sizeof(event_struct->Event_History_Items[i].event_string), "%s", "BUMBLEBEETUNA");
+        snprintf(event_struct->Event_History_Items[i].internal_str,
+                 sizeof(event_struct->Event_History_Items[i].internal_str), "%s", "BUMBLEBEETUNA");
     }
 }
 
@@ -77,27 +89,39 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].svc = event_struct->Event_History_Items[i - 1].svc;
         event_struct->Event_History_Items[i].source_id = event_struct->Event_History_Items[i - 1].source_id;
         event_struct->Event_History_Items[i].target_id = event_struct->Event_History_Items[i - 1].target_id;
-        sprintf(event_struct->Event_History_Items[i].src_str, "%s", event_struct->Event_History_Items[i - 1].src_str);
-        sprintf(event_struct->Event_History_Items[i].tgt_str, "%s", event_struct->Event_History_Items[i - 1].tgt_str);
-        sprintf(event_struct->Event_History_Items[i].t_name, "%s", event_struct->Event_History_Items[i - 1].t_name);
-        sprintf(event_struct->Event_History_Items[i].s_name, "%s", event_struct->Event_History_Items[i - 1].s_name);
-        sprintf(event_struct->Event_History_Items[i].t_mode, "%s", event_struct->Event_History_Items[i - 1].t_mode);
-        sprintf(event_struct->Event_History_Items[i].s_mode, "%s", event_struct->Event_History_Items[i - 1].s_mode);
+        snprintf(event_struct->Event_History_Items[i].src_str, sizeof(event_struct->Event_History_Items[i].src_str),
+                 "%s", event_struct->Event_History_Items[i - 1].src_str);
+        snprintf(event_struct->Event_History_Items[i].tgt_str, sizeof(event_struct->Event_History_Items[i].tgt_str),
+                 "%s", event_struct->Event_History_Items[i - 1].tgt_str);
+        snprintf(event_struct->Event_History_Items[i].t_name, sizeof(event_struct->Event_History_Items[i].t_name), "%s",
+                 event_struct->Event_History_Items[i - 1].t_name);
+        snprintf(event_struct->Event_History_Items[i].s_name, sizeof(event_struct->Event_History_Items[i].s_name), "%s",
+                 event_struct->Event_History_Items[i - 1].s_name);
+        snprintf(event_struct->Event_History_Items[i].t_mode, sizeof(event_struct->Event_History_Items[i].t_mode), "%s",
+                 event_struct->Event_History_Items[i - 1].t_mode);
+        snprintf(event_struct->Event_History_Items[i].s_mode, sizeof(event_struct->Event_History_Items[i].s_mode), "%s",
+                 event_struct->Event_History_Items[i - 1].s_mode);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i + 1].event_time;
 
         memcpy(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
                sizeof(event_struct->Event_History_Items[0].pdu));
-        sprintf(event_struct->Event_History_Items[i].sysid_string, "%s",
-                event_struct->Event_History_Items[i - 1].sysid_string);
-        sprintf(event_struct->Event_History_Items[i].alias, "%s", event_struct->Event_History_Items[i - 1].alias);
-        sprintf(event_struct->Event_History_Items[i].gps_s, "%s", event_struct->Event_History_Items[i - 1].gps_s);
-        sprintf(event_struct->Event_History_Items[i].text_message, "%s",
-                event_struct->Event_History_Items[i - 1].text_message);
-        sprintf(event_struct->Event_History_Items[i].event_string, "%s",
-                event_struct->Event_History_Items[i - 1].event_string);
-        sprintf(event_struct->Event_History_Items[i].internal_str, "%s",
-                event_struct->Event_History_Items[i - 1].internal_str);
+        snprintf(event_struct->Event_History_Items[i].sysid_string,
+                 sizeof(event_struct->Event_History_Items[i].sysid_string), "%s",
+                 event_struct->Event_History_Items[i - 1].sysid_string);
+        snprintf(event_struct->Event_History_Items[i].alias, sizeof(event_struct->Event_History_Items[i].alias), "%s",
+                 event_struct->Event_History_Items[i - 1].alias);
+        snprintf(event_struct->Event_History_Items[i].gps_s, sizeof(event_struct->Event_History_Items[i].gps_s), "%s",
+                 event_struct->Event_History_Items[i - 1].gps_s);
+        snprintf(event_struct->Event_History_Items[i].text_message,
+                 sizeof(event_struct->Event_History_Items[i].text_message), "%s",
+                 event_struct->Event_History_Items[i - 1].text_message);
+        snprintf(event_struct->Event_History_Items[i].event_string,
+                 sizeof(event_struct->Event_History_Items[i].event_string), "%s",
+                 event_struct->Event_History_Items[i - 1].event_string);
+        snprintf(event_struct->Event_History_Items[i].internal_str,
+                 sizeof(event_struct->Event_History_Items[i].internal_str), "%s",
+                 event_struct->Event_History_Items[i - 1].internal_str);
     }
 }
 

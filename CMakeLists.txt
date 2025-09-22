@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(dsd-neo)
+include(CTest) # provides BUILD_TESTING and enables tests when on
 enable_testing()
 
-SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake/")
+# Prefer modern list operations to update module path
+list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # Prefer ncurses wide-character support
 set(CURSES_NEED_NCURSES TRUE)
 set(CURSES_NEED_WIDE TRUE)
@@ -202,4 +204,6 @@ add_subdirectory(src/crypto)
 add_subdirectory(src/fec)
 add_subdirectory(src/third_party)
 add_subdirectory(apps)
-add_subdirectory(tests)
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()

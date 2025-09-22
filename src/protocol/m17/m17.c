@@ -80,9 +80,9 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
             dst = dst / 40;
         }
         //assign completed CSD to a more useful string instead
-        sprintf(state->m17_dst_str, "%c%c%c%c%c%c%c%c%c", state->m17_dst_csd[0], state->m17_dst_csd[1],
-                state->m17_dst_csd[2], state->m17_dst_csd[3], state->m17_dst_csd[4], state->m17_dst_csd[5],
-                state->m17_dst_csd[6], state->m17_dst_csd[7], state->m17_dst_csd[8]);
+        snprintf(state->m17_dst_str, sizeof(state->m17_dst_str), "%c%c%c%c%c%c%c%c%c", state->m17_dst_csd[0],
+                 state->m17_dst_csd[1], state->m17_dst_csd[2], state->m17_dst_csd[3], state->m17_dst_csd[4],
+                 state->m17_dst_csd[5], state->m17_dst_csd[6], state->m17_dst_csd[7], state->m17_dst_csd[8]);
 
         //debug
         // fprintf (stderr, "DT: %s", state->m17_dst_str);
@@ -104,9 +104,9 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
             src = src / 40;
         }
         //assign completed CSD to a more useful string instead
-        sprintf(state->m17_src_str, "%c%c%c%c%c%c%c%c%c", state->m17_src_csd[0], state->m17_src_csd[1],
-                state->m17_src_csd[2], state->m17_src_csd[3], state->m17_src_csd[4], state->m17_src_csd[5],
-                state->m17_src_csd[6], state->m17_src_csd[7], state->m17_src_csd[8]);
+        snprintf(state->m17_src_str, sizeof(state->m17_src_str), "%c%c%c%c%c%c%c%c%c", state->m17_src_csd[0],
+                 state->m17_src_csd[1], state->m17_src_csd[2], state->m17_src_csd[3], state->m17_src_csd[4],
+                 state->m17_src_csd[5], state->m17_src_csd[6], state->m17_src_csd[7], state->m17_src_csd[8]);
 
         //debug
         // fprintf (stderr, "ST: %s", state->m17_src_str);
@@ -1568,11 +1568,11 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->str50c[0] != 0) {
-        sprintf(s40, "%s", state->str50c);
+        snprintf(s40, sizeof(s40), "%s", state->str50c);
     }
 
     if (state->str50b[0] != 0) {
-        sprintf(d40, "%s", state->str50b);
+        snprintf(d40, sizeof(d40), "%s", state->str50b);
     }
 
     //if special values, then assign them
@@ -1875,8 +1875,8 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
         //if not decoding internally, assign values for ncurses display
         if (opts->monitor_input_audio == 1) {
-            sprintf(state->m17_src_str, "%s", s40);
-            sprintf(state->m17_dst_str, "%s", d40);
+            snprintf(state->m17_src_str, sizeof(state->m17_src_str), "%s", s40);
+            snprintf(state->m17_dst_str, sizeof(state->m17_dst_str), "%s", d40);
             state->m17_src = src;
             state->m17_dst = dst;
             state->m17_can = can;
@@ -2892,15 +2892,15 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->str50c[0] != 0) {
-        sprintf(s40, "%s", state->str50c);
+        snprintf(s40, sizeof(s40), "%s", state->str50c);
     }
 
     if (state->str50b[0] != 0) {
-        sprintf(d40, "%s", state->str50b);
+        snprintf(d40, sizeof(d40), "%s", state->str50b);
     }
 
     if (state->m17sms[0] != 0) {
-        sprintf(text, "%s", state->m17sms);
+        snprintf(text, sizeof(text), "%s", state->m17sms);
     }
 
     //if special values, then assign them

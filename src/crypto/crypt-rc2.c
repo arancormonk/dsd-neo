@@ -329,8 +329,7 @@ retevis_rc2_keystream_creation(dsd_state* state, char* input) {
     unsigned char key2[16] = {0};
 
     char buf[1024];
-    strncpy(buf, input, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    snprintf(buf, sizeof(buf), "%s", input);
 
     char* pEnd;
     uint64_t K1 = strtoull(buf, &pEnd, 16);
