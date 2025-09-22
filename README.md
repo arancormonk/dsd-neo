@@ -6,8 +6,18 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 
 [![linux-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml)
 [![windows-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml)
+[![macos-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/macos-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/macos-ci.yaml)
 
 ![DSD-neo](images/dsd-neo_const_view.png)
+
+## Downloads
+
+- Stable releases: https://github.com/arancormonk/dsd-neo/releases
+  - macOS DMG (arm64): dsd-neo-macos-arm64-portable-<version>.dmg
+  - Windows ZIP (x86_64): dsd-neo-cygwin-x86_64-portable-<version>.zip
+- Nightly builds: https://github.com/arancormonk/dsd-neo/releases/tag/nightly
+  - macOS DMG (arm64): dsd-neo-macos-arm64-portable-nightly.dmg
+  - Windows ZIP (x86_64): dsd-neo-cygwin-x86_64-portable-nightly.zip
 
 ## Project Status
 
