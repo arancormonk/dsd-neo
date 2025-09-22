@@ -203,6 +203,8 @@ parse_pulse_output_string(dsd_opts* opts, char* input) {
     }
 }
 
+// OSS output is only supported on platforms exposing <sys/soundcard.h>
+#if defined(__linux__) || defined(__CYGWIN__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 void
 openOSSOutput(dsd_opts* opts) {
     int fmt;
@@ -309,6 +311,13 @@ openOSSOutput(dsd_opts* opts) {
         }
     }
 }
+#else
+void
+openOSSOutput(dsd_opts* opts) {
+    (void)opts;
+    // No-op: OSS not available on this platform
+}
+#endif
 
 void
 processAudio(dsd_opts* opts, dsd_state* state) {
