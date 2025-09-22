@@ -3955,6 +3955,7 @@ main(int argc, char** argv) {
     }
 
     speed = 48000; //hardset to 48000
+#if DSD_HAVE_OSS
     if ((strncmp(opts.audio_in_dev, "/dev/dsp", 8) == 0)) {
         fprintf(stderr, "OSS Input %s.\n", opts.audio_in_dev);
         opts.audio_in_fd = open(opts.audio_in_dev, O_RDWR);
@@ -3981,6 +3982,7 @@ main(int argc, char** argv) {
 
         opts.audio_in_type = 5; //5 will become OSS input type
     }
+#endif
 
     //check for OSS output
     if ((strncmp(opts.audio_out_dev, "/dev/audio", 10) == 0)) {
