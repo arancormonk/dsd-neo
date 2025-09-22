@@ -396,6 +396,13 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     state->p25_base_freq[iden] = base; // store in 5 kHz units
                     fprintf(stderr, " (updated)");
                 }
+                // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
+                // Trust as confirmed only when on current CC; otherwise mark unconfirmed.
+                state->p25_iden_wacn[iden] = state->p2_wacn;
+                state->p25_iden_sysid[iden] = state->p2_sysid;
+                state->p25_iden_rfss[iden] = state->p2_rfssid;
+                state->p25_iden_site[iden] = state->p2_siteid;
+                state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
             }
         }
 
@@ -410,6 +417,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     state->p25_base_freq[iden] = base; // store in 5 kHz units
                     fprintf(stderr, " (updated)");
                 }
+                // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
+                state->p25_iden_wacn[iden] = state->p2_wacn;
+                state->p25_iden_sysid[iden] = state->p2_sysid;
+                state->p25_iden_rfss[iden] = state->p2_rfssid;
+                state->p25_iden_site[iden] = state->p2_siteid;
+                state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
             }
         }
 
