@@ -1190,6 +1190,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                         //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
                         if (opts->use_rigctl == 1) {
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (opts->setmod_bw != 0) {
                                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                             }
@@ -1205,6 +1207,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         if (opts->audio_in_type == 3) //rtl dongle
                         {
 #ifdef USE_RTLSDR
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (g_rtl_ctx) {
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
@@ -1334,6 +1338,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                         //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
                         if (opts->use_rigctl == 1) {
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (opts->setmod_bw != 0) {
                                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                             }
@@ -1349,6 +1355,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         if (opts->audio_in_type == 3) //rtl dongle
                         {
 #ifdef USE_RTLSDR
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (g_rtl_ctx) {
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
@@ -1464,6 +1472,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                         //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
                         if (opts->use_rigctl == 1) {
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (opts->setmod_bw != 0) {
                                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                             }
@@ -1479,6 +1489,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         if (opts->audio_in_type == 3) //rtl dongle
                         {
 #ifdef USE_RTLSDR
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (g_rtl_ctx) {
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
@@ -1658,6 +1670,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         }
 
                         if (opts->use_rigctl == 1) {
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             //only set bandwidth IF we have an original one to fall back to (experimental, but requires user to set the -B 12000 or -B 24000 value manually)
                             if (opts->setmod_bw != 0) {
                                 if (is_digital == 0) {
@@ -1680,6 +1694,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         if (opts->audio_in_type == 3) //rtl dongle
                         {
 #ifdef USE_RTLSDR
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (g_rtl_ctx) {
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
@@ -1978,6 +1994,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                     }
                                 }
 
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 SetFreq(opts->rigctl_sockfd,
                                         state->trunk_lcn_freq[lcn - 1]); //minus one because our index starts at zero
                                 state->edacs_tuned_lcn = lcn;
@@ -1990,6 +2008,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             if (opts->audio_in_type == 3) //rtl dongle
                             {
 #ifdef USE_RTLSDR
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 if (g_rtl_ctx) {
                                     rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                                 }
@@ -2438,6 +2458,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                         }
                                     }
 
+                                    // ensure any queued audio tail plays before changing channels
+                                    dsd_drain_audio_output(opts);
                                     SetFreq(
                                         opts->rigctl_sockfd,
                                         state->trunk_lcn_freq[lcn - 1]); //minus one because our index starts at zero
@@ -2451,6 +2473,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 if (opts->audio_in_type == 3) //rtl dongle
                                 {
 #ifdef USE_RTLSDR
+                                    // ensure any queued audio tail plays before changing channels
+                                    dsd_drain_audio_output(opts);
                                     if (g_rtl_ctx) {
                                         rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                                     }
@@ -2601,6 +2625,8 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
             if (opts->setmod_bw != 0) {
                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
             }
+            // ensure any queued audio tail plays before changing channels
+            dsd_drain_audio_output(opts);
             SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
         }
 
@@ -2620,6 +2646,8 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
             opts->p25_is_tuned = 0;
             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
             if (g_rtl_ctx) {
+                // ensure any queued audio tail plays before changing channels
+                dsd_drain_audio_output(opts);
                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
             }
 #endif

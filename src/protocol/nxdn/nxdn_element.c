@@ -1880,6 +1880,8 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                             state->last_cc_sync_time = time(NULL);
                             state->last_vc_sync_time = time(NULL); //should we use this here, or not?
                             //
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (opts->setmod_bw != 0) {
                                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                             }
@@ -1905,6 +1907,8 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                             state->last_cc_sync_time = time(NULL);
                             state->last_vc_sync_time = time(NULL); //should we use this here, or not?
                             //
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             if (g_rtl_ctx) {
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
                             }

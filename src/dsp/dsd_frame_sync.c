@@ -109,6 +109,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (opts->p25_prefer_candidates == 1 && p25_sm_next_cc_candidate(state, &cand_freq) && cand_freq != 0) {
             //rigctl
             if (opts->use_rigctl == 1) {
+                // ensure any queued audio tail plays before changing channels
+                dsd_drain_audio_output(opts);
                 if (opts->setmod_bw != 0) {
                     SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                 }
@@ -117,6 +119,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             //rtl
             if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
+                // ensure any queued audio tail plays before changing channels
+                dsd_drain_audio_output(opts);
                 if (g_rtl_ctx) {
                     rtl_stream_tune(g_rtl_ctx, (uint32_t)cand_freq);
                 }
@@ -163,6 +167,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             if (state->trunk_lcn_freq[state->lcn_freq_roll] != 0) {
                 //rigctl
                 if (opts->use_rigctl == 1) {
+                    // ensure any queued audio tail plays before changing channels
+                    dsd_drain_audio_output(opts);
                     if (opts->setmod_bw != 0) {
                         SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                     }
@@ -171,6 +177,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 //rtl
                 if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
+                    // ensure any queued audio tail plays before changing channels
+                    dsd_drain_audio_output(opts);
                     if (g_rtl_ctx) {
                         rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
                     }

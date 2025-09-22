@@ -1194,6 +1194,8 @@ void openPulseOutput(dsd_opts* opts);
 void openOSSOutput(dsd_opts* opts);
 void closePulseInput(dsd_opts* opts);
 void closePulseOutput(dsd_opts* opts);
+// Best-effort drain of audio output buffers (Pulse/OSS). Safe no-op when disabled.
+void dsd_drain_audio_output(dsd_opts* opts);
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
 void writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state);
 void writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); //short mono to stereo wav file

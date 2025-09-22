@@ -525,6 +525,9 @@ udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
+    // Before moving away from the current VC, ensure any queued audio is
+    // played to completion to avoid carrying tail audio into the next call.
+    dsd_drain_audio_output(opts);
     //extra safeguards due to sync issues with NXDN
     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));

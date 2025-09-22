@@ -2427,6 +2427,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         {
                             //RIGCTL
                             if (opts->use_rigctl == 1) {
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 if (opts->setmod_bw != 0) {
                                     SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                                 }
@@ -2443,6 +2445,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             //rtl
                             else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 if (g_rtl_ctx) {
                                     rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_chan_map[lcn]);
                                 }
@@ -2532,6 +2536,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         {
                             //RIGCTL
                             if (opts->use_rigctl == 1) {
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 if (opts->setmod_bw != 0) {
                                     SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                                 }
@@ -2548,6 +2554,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             //rtl
                             else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 if (g_rtl_ctx) {
                                     rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_chan_map[lcn]);
                                 }
@@ -2830,6 +2838,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                             state); //reset all block gathering since we are tuning away from current frequency
                                     }
 
+                                    // ensure any queued audio tail plays before changing channels
+                                    dsd_drain_audio_output(opts);
                                     if (opts->setmod_bw != 0) {
                                         SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                                     }
@@ -2865,6 +2875,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                         dmr_reset_blocks(
                                             opts,
                                             state); //reset all block gathering since we are tuning away from current frequency
+                                        // ensure any queued audio tail plays before changing channels
+                                        dsd_drain_audio_output(opts);
                                         if (g_rtl_ctx) {
                                             rtl_stream_tune(
                                                 g_rtl_ctx,

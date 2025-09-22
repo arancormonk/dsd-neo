@@ -178,6 +178,45 @@ openPulseInput(dsd_opts* opts) {
 }
 
 void
+dsd_drain_audio_output(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    // Only act if audio output is enabled
+    if (opts->audio_out != 1) {
+        return;
+    }
+    // PulseAudio: drain any queued samples on digital/raw streams
+    if (opts->audio_out_type == 0) {
+        int err = 0;
+        if (opts->pulse_digi_dev_out) {
+            (void)pa_simple_drain(opts->pulse_digi_dev_out, &err);
+        }
+        if (opts->pulse_raw_dev_out) {
+            err = 0;
+            (void)pa_simple_drain(opts->pulse_raw_dev_out, &err);
+        }
+        return;
+    }
+    // UDP/STDOUT: nothing meaningful to drain; attempt fsync for file descriptors
+    if (opts->audio_out_type == 1 || opts->audio_out_type == 8) {
+        if (opts->audio_out_fd >= 0) {
+            (void)fsync(opts->audio_out_fd);
+        }
+        return;
+    }
+#if DSD_HAVE_OSS
+    // OSS: block until the device has played all queued samples
+    if (opts->audio_out_type == 2 || opts->audio_out_type == 5) {
+        if (opts->audio_out_fd >= 0) {
+            (void)ioctl(opts->audio_out_fd, SNDCTL_DSP_SYNC, 0);
+        }
+        return;
+    }
+#endif
+}
+
+void
 parse_pulse_input_string(dsd_opts* opts, char* input) {
     char* curr;
     curr = strtok(input, ":");

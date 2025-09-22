@@ -1332,6 +1332,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             if (opts->setmod_bw != 0) {
                                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                             }
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
@@ -1343,6 +1345,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
                             if (g_rtl_ctx) {
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
@@ -1401,6 +1405,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             if (opts->setmod_bw != 0) {
                                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                             }
+                            // ensure any queued audio tail plays before changing channels
+                            dsd_drain_audio_output(opts);
                             SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
@@ -1412,6 +1418,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
                             if (g_rtl_ctx) {
+                                // ensure any queued audio tail plays before changing channels
+                                dsd_drain_audio_output(opts);
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
