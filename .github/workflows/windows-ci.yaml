@@ -183,6 +183,11 @@ jobs:
         run: |
           C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && cmake --build --preset dev-release -j'
 
+      - name: Smoke test - show CLI help
+        shell: pwsh
+        run: |
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")" && ./build/dev-release/apps/dsd-cli/dsd-neo.exe -h || true'
+
       - name: Stage portable tree
         id: stage
         # Run script via Cygwin bash with CRLF ignoring enabled
@@ -328,6 +333,14 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke test staged binary
+        shell: 'C:\\tools\\cygwin\\bin\\bash.exe --noprofile --norc -lc "set -o igncr; __f=$(cygpath -u ''{0}''); source \"$__f\""'
+        run: |
+          set -eu
+          STAGE="dist/dsd-neo-cygwin"
+          export PATH="$STAGE/bin:${PATH}"
+          "$STAGE/bin/dsd-neo.exe" -h || true
+
       - name: Archive ZIP
         shell: pwsh
         env:
@@ -353,6 +366,22 @@ jobs:
           echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         id: zip
+
+      - name: Verify ZIP contents (extract and run help)
+        shell: pwsh
+        run: |
+          $zip = '${{ steps.zip.outputs.ZIP_PATH }}'
+          if (!(Test-Path $zip)) { throw "ZIP not found: $zip" }
+          $dest = Join-Path $env:RUNNER_TEMP ('dsd-neo-cygwin-' + [System.Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          $bin = Join-Path $dest 'bin'
+          $exe = Join-Path $bin 'dsd-neo.exe'
+          if (!(Test-Path $exe)) { throw "Extracted exe not found: $exe" }
+          $env:PATH = "$bin;$env:PATH"
+          Write-Host "Running: $exe -h"
+          & $exe -h
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
