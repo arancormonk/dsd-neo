@@ -141,7 +141,11 @@ jobs:
             cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
               -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-              -DCMAKE_OSX_ARCHITECTURES=arm64
+              -DCMAKE_OSX_ARCHITECTURES=arm64 \
+              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              -DBLA_VENDOR=Apple \
+              -DITPP_SHARED_LIB=ON \
+              -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/usr/bin/false
             cmake --build /tmp/itpp/build -j
             cmake --install /tmp/itpp/build
           fi
