@@ -13,6 +13,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/ui/keymap.h>
+#include <unistd.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -252,6 +253,20 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     if (c == DSD_KEY_MUTE_LOWER || c == DSD_KEY_MUTE_UPPER) //'x' or 'X' key, toggle audio mute
     {
         opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
+        /* On unmute, refresh the audio sink to prevent potential blocking
+           if the backend was idle/suspended for a long time. */
+        if (opts->audio_out == 1) {
+            if (opts->audio_out_type == 0) { // Pulse
+                closePulseOutput(opts);
+                openPulseOutput(opts);
+            } else if (opts->audio_out_type == 2 || opts->audio_out_type == 5) { // OSS
+                if (opts->audio_out_fd >= 0) {
+                    close(opts->audio_out_fd);
+                    opts->audio_out_fd = -1;
+                }
+                openOSSOutput(opts);
+            }
+        }
         if (state) {
             if (opts->audio_out == 0) {
                 snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: Muted");

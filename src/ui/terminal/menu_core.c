@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <dsd-neo/ui/menu_services.h>
 
@@ -915,7 +916,21 @@ lbl_out_mute(void* vctx, char* b, size_t n) {
 static void
 switch_out_toggle_mute(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
+    /* Toggle mute and, on unmute, reinitialize the audio sink to avoid
+       potential blocking on a long-idle/stale backend handle. */
     c->opts->audio_out = (c->opts->audio_out == 0) ? 1 : 0;
+    if (c->opts->audio_out == 1) {
+        if (c->opts->audio_out_type == 0) { /* Pulse */
+            closePulseOutput(c->opts);
+            openPulseOutput(c->opts);
+        } else if (c->opts->audio_out_type == 2 || c->opts->audio_out_type == 5) { /* OSS */
+            if (c->opts->audio_out_fd >= 0) {
+                close(c->opts->audio_out_fd);
+                c->opts->audio_out_fd = -1;
+            }
+            openOSSOutput(c->opts);
+        }
+    }
     ui_statusf("Output: %s", c->opts->audio_out ? "On" : "Muted");
 }
 
