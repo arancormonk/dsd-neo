@@ -1951,10 +1951,24 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (state) {
         time_t now = time(NULL);
         if (state->ui_msg[0] != '\0' && state->ui_msg_expire > now) {
+#ifdef PRETTY_COLORS
+            // Preserve current color pair to avoid forcing default/white after toast
+            attr_t saved_attrs = 0;
+            short saved_pair = 0;
+            attr_get(&saved_attrs, &saved_pair, NULL);
+#endif
             attron(COLOR_PAIR(2));
             printw("| %s\n", state->ui_msg);
             attroff(COLOR_PAIR(2));
             ui_print_hr();
+#ifdef PRETTY_COLORS
+            // Restore whichever color was active before the toast (e.g., cyan UI)
+            if (saved_pair >= 0) {
+                attron(COLOR_PAIR(saved_pair));
+            } else {
+                attron(COLOR_PAIR(4));
+            }
+#endif
         } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
             // clear stale message
             state->ui_msg[0] = '\0';
