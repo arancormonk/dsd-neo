@@ -913,6 +913,16 @@ rtl_device_destroy(struct rtl_device* dev) {
         dev->thread_started = 0;
     }
 
+    /* Best-effort device state cleanup before closing the USB handle. */
+    if (dev->backend == 0 && dev->dev) {
+        /* Disable bias tee so subsequent runs don't inherit stale 5V state. */
+#ifdef USE_RTLSDR_BIAS_TEE
+        (void)rtlsdr_set_bias_tee(dev->dev, 0);
+#endif
+        /* Reset buffers after cancel to leave device in a clean state. */
+        (void)rtlsdr_reset_buffer(dev->dev);
+    }
+
     if (dev->backend == 0 && dev->dev) {
         rtlsdr_close(dev->dev);
     }

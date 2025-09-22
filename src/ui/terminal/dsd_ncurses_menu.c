@@ -93,6 +93,9 @@ dsp_apply_snapshot(const DspMenuSnapshot* s) {
 //ncursesMenu
 void
 ncursesMenu(dsd_opts* opts, dsd_state* state) {
+    // Mark menu open so the main loop (e.g., frame sync) suppresses processing
+    state->menuopen = 1;
+
     // Update sync time so we don't immediately go CC hunting when exiting the menu
     state->last_cc_sync_time = time(NULL);
 
