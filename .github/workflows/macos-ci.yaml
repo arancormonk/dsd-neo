@@ -63,9 +63,16 @@ jobs:
           # Many deps we build from source (cached) to align with Linux/Windows flows
           brew install cmake ninja pkg-config ccache \
             libsndfile pulseaudio fftw libusb
-          # Try to use system/brew codec2/rtl-sdr/itpp when available
+          # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
-          # itpp may not be available on Homebrew; handled below
+          # ITPP may not be in core; try core first, then brewsci tap
+          if ! brew list --versions itpp >/dev/null 2>&1; then
+            brew install itpp || true
+          fi
+          if ! brew list --versions itpp >/dev/null 2>&1; then
+            brew tap brewsci/science || true
+            brew install brewsci/science/itpp || true
+          fi
           brew --version
           cmake --version
           pkg-config --version
