@@ -1435,6 +1435,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;
+            // Promote any matching IDENs to trusted on site identification
+            p25_confirm_idens_for_current_site(state);
         }
 
         //RFSS Status Broadcast - Explicit
@@ -1456,6 +1458,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;
+            p25_confirm_idens_for_current_site(state);
         }
 
         //Unit-to-Unit Answer Request (UU_ANS_REQ) -- ISP?
@@ -1701,6 +1704,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_chan_type[iden] = 1; //set as old values for now
             state->p25_chan_tdma[iden] = 0; //set as old values for now
 
+            // Record provenance (use current system/site context); trust if on CC
+            state->p25_iden_wacn[iden] = state->p2_wacn;
+            state->p25_iden_sysid[iden] = state->p2_sysid;
+            state->p25_iden_rfss[iden] = state->p2_rfssid;
+            state->p25_iden_site[iden] = state->p2_siteid;
+            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+
             fprintf(stderr, "\n Identifier Update UHF/VHF\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
@@ -1722,6 +1732,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_base_freq[iden] =
                 (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
 
+            // Record provenance (use current system/site context); trust if on CC
+            state->p25_iden_wacn[iden] = state->p2_wacn;
+            state->p25_iden_sysid[iden] = state->p2_sysid;
+            state->p25_iden_rfss[iden] = state->p2_rfssid;
+            state->p25_iden_site[iden] = state->p2_siteid;
+            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+
             fprintf(stderr, "\n Identifier Update (8.3.1.23)\n");
             fprintf(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
@@ -1740,6 +1757,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
             state->p25_base_freq[iden] =
                 (MAC[6 + len_a] << 24) | (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | (MAC[9 + len_a] << 0);
+
+            // Record provenance (use current system/site context); trust if on CC
+            state->p25_iden_wacn[iden] = state->p2_wacn;
+            state->p25_iden_sysid[iden] = state->p2_sysid;
+            state->p25_iden_rfss[iden] = state->p2_rfssid;
+            state->p25_iden_site[iden] = state->p2_siteid;
+            state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
 
             fprintf(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
             fprintf(stderr,
@@ -1761,6 +1785,17 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 (MAC[7 + len_a] << 24) | (MAC[8 + len_a] << 16) | (MAC[9 + len_a] << 8) | (MAC[10 + len_a] << 0);
             int lwacn = (MAC[11 + len_a] << 12) | (MAC[12 + len_a] << 4) | ((MAC[13 + len_a] & 0xF0) >> 4);
             int lsysid = ((MAC[13 + len_a] & 0xF) << 8) | MAC[14 + len_a];
+
+            // Record provenance from payload + current RFSS/SITE; trust if on matching CC
+            state->p25_iden_wacn[iden] = lwacn;
+            state->p25_iden_sysid[iden] = lsysid;
+            state->p25_iden_rfss[iden] = state->p2_rfssid;
+            state->p25_iden_site[iden] = state->p2_siteid;
+            state->p25_iden_trust[iden] =
+                (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && state->p2_wacn == (unsigned long long)lwacn
+                 && state->p2_sysid == (unsigned long long)lsysid)
+                    ? 2
+                    : 1;
 
             fprintf(stderr, "\n Identifier Update for TDMA - Extended\n");
             fprintf(stderr,
@@ -2283,6 +2318,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
                     state->trunk_lcn_freq[0] = state->p25_cc_freq;
                 }
+                // Confirm any IDENs now that CC identity is known
+                p25_confirm_idens_for_current_site(state);
             } else {
                 // Invalid/unknown channel mapping: ignore to avoid wiping IDEN tables from bogus frames
                 fprintf(stderr, "\n  P25 NSB: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
@@ -2321,6 +2358,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         state->p2_cc = lcolorcode;
                     }
                 }
+                p25_confirm_idens_for_current_site(state);
             } else {
                 fprintf(stderr, "\n  P25 NSB-EXT: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
             }

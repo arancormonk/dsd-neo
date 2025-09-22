@@ -865,6 +865,14 @@ typedef struct {
     int p25_trans_off[16];
     int p25_chan_spac[16];
     long int p25_base_freq[16];
+    // Per-IDEN provenance and trust level
+    // - wacn/sysid/rfss/site capture the system/site context when the IDEN was learned
+    // - trust: 0=unknown, 1=unconfirmed (learned off-CC/adjacent), 2=confirmed on matching CC
+    unsigned long long int p25_iden_wacn[16];
+    unsigned long long int p25_iden_sysid[16];
+    unsigned long long int p25_iden_rfss[16];
+    unsigned long long int p25_iden_site[16];
+    uint8_t p25_iden_trust[16];
 
     //p25 frequency storage for trunking and display in ncurses
     int p25_cc_is_tdma; //flag to tell us that the P25 control channel is TDMA so we can change symbol rate when required
@@ -1622,6 +1630,8 @@ void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]);
 long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
 // Reset all P25 IDEN tables (type/tdma/spacing/base/offset) when system identity changes
 void p25_reset_iden_tables(dsd_state* state);
+// Promote any IDENs whose provenance matches the current site to trusted (2)
+void p25_confirm_idens_for_current_site(dsd_state* state);
 
 //P25 CRC Functions
 int crc16_lb_bridge(int payload[190], int len);

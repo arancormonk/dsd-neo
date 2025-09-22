@@ -225,7 +225,8 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     state.p25_chan_tdma[state.p25_chan_iden] = tdma & 0x1;
     state.p25_chan_spac[state.p25_chan_iden] = spac;
     state.p25_base_freq[state.p25_chan_iden] = base;
-    state.synctype = 0; // P1 FDMA context
+    state.p25_iden_trust[state.p25_chan_iden] = 2; // trust for tests
+    state.synctype = 0;                            // P1 FDMA context
 
     unsigned long long int MAC[24] = {0};
     int n = mac_len < 24 ? mac_len : 24;
@@ -254,6 +255,7 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     state.p25_chan_tdma[state.p25_chan_iden] = tdma & 0x1;
     state.p25_chan_spac[state.p25_chan_iden] = spac;
     state.p25_base_freq[state.p25_chan_iden] = base;
+    state.p25_iden_trust[state.p25_chan_iden] = 2; // trust for tests
 
     unsigned long long int MAC[24] = {0};
     int n = mac_len < 24 ? mac_len : 24;

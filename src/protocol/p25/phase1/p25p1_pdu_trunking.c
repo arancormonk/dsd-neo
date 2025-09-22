@@ -124,6 +124,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
             long neigh[2] = {ct_freq, cr_freq};
             p25_sm_on_neighbor_update(opts, state, neigh, 2);
+            // Confirm any IDENs now that CC identity is known
+            p25_confirm_idens_for_current_site(state);
         } else {
             fprintf(stderr, "\n  P25 MBT NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
         }
@@ -150,6 +152,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
 
         state->p2_siteid = siteid;
         state->p2_rfssid = rfssid;
+        p25_confirm_idens_for_current_site(state);
     }
 
     //Adjacent Status Broadcast (ADJ_STS_BCST) Extended 6.2.2.2

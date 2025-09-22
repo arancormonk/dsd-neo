@@ -563,6 +563,9 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
                 state->p2_sysid = sysid;
             }
 
+            // Confirm any IDENs now that CC identity is known
+            p25_confirm_idens_for_current_site(state);
+
             if (opts->payload == 1) {
                 fprintf(stderr, "%s", KCYN);
                 fprintf(stderr, "\n P25 PDU Payload #%d ", j + 1);

@@ -240,10 +240,27 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
 // Compute frequency from explicit channel and call p25_tune_to_vc
 static void
 p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
+    uint16_t chan16 = (uint16_t)channel;
+    int iden = (chan16 >> 12) & 0xF;
     long freq = process_channel_to_freq(opts, state, channel);
-    if (freq != 0) {
-        p25_tune_to_vc(opts, state, freq, channel);
+    if (freq == 0) {
+        return;
     }
+    // If channel not provided via explicit map, enforce IDEN trust: only tune
+    // using IDEN params that were confirmed on the current CC.
+    if (state->trunk_chan_map[chan16] == 0) {
+        uint8_t trust = (iden >= 0 && iden < 16) ? state->p25_iden_trust[iden] : 0;
+        int prov_unset =
+            (iden >= 0 && iden < 16) ? (state->p25_iden_wacn[iden] == 0 && state->p25_iden_sysid[iden] == 0) : 1;
+        int on_cc = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0);
+        if (iden < 0 || iden > 15 || (trust < 2 && !(on_cc && prov_unset))) {
+            if (opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: block tune ch=0x%04X (iden %d unconfirmed)\n", chan16, iden);
+            }
+            return;
+        }
+    }
+    p25_tune_to_vc(opts, state, freq, channel);
 }
 
 void

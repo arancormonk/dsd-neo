@@ -25,7 +25,6 @@
 // - slots_per_carrier table below is sourced from OP25 and common system behavior.
 long int
 process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
-    UNUSED(opts);
 
     //RX and SU TX frequencies.
     //SU RX = (Base Frequency) + (Channel Number) x (Channel Spacing).
@@ -73,6 +72,17 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
             fprintf(stderr, "\n  P25 FREQ: invalid slots/carrier for type %d", type);
             return 0;
         }
+    } else {
+        // Fallback: if the control channel is TDMA but we have not yet seen
+        // an IDEN_UP_TDMA for this iden, assume 2 slots/carrier. This avoids
+        // early mis-tunes where a TDMA grant arrives before the IDEN table is
+        // populated, which would otherwise be treated as FDMA (denom=1).
+        if (state->p25_cc_is_tdma == 1) {
+            denom = 2;
+            if (opts && opts->verbose > 1) {
+                fprintf(stderr, "\n  P25 FREQ: iden %d tdma unknown; fallback denom=2 (P2 CC)", iden);
+            }
+        }
     }
     int step = (chan16 & 0xFFF) / denom;
 
@@ -113,6 +123,42 @@ p25_reset_iden_tables(dsd_state* state) {
         state->p25_chan_spac[i] = 0;
         state->p25_base_freq[i] = 0;
         state->p25_trans_off[i] = 0;
+        state->p25_iden_wacn[i] = 0;
+        state->p25_iden_sysid[i] = 0;
+        state->p25_iden_rfss[i] = 0;
+        state->p25_iden_site[i] = 0;
+        state->p25_iden_trust[i] = 0; // unknown
+    }
+}
+
+// Promote any IDENs whose provenance matches the current site to trusted
+void
+p25_confirm_idens_for_current_site(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    unsigned long long cur_wacn = state->p2_wacn;
+    unsigned long long cur_sys = state->p2_sysid;
+    unsigned long long cur_rfss = state->p2_rfssid;
+    unsigned long long cur_site = state->p2_siteid;
+    if (cur_wacn == 0 && cur_sys == 0) {
+        return;
+    }
+    for (int i = 0; i < 16; i++) {
+        if (state->p25_iden_trust[i] == 2) {
+            continue; // already trusted
+        }
+        if (state->p25_iden_wacn[i] == 0 && state->p25_iden_sysid[i] == 0) {
+            continue;
+        }
+        if (state->p25_iden_wacn[i] == cur_wacn && state->p25_iden_sysid[i] == cur_sys) {
+            // If rfss/site are recorded, require match; else allow
+            int rf_ok = (state->p25_iden_rfss[i] == 0 || state->p25_iden_rfss[i] == cur_rfss);
+            int st_ok = (state->p25_iden_site[i] == 0 || state->p25_iden_site[i] == cur_site);
+            if (rf_ok && st_ok) {
+                state->p25_iden_trust[i] = 2; // confirmed
+            }
+        }
     }
 }
 
