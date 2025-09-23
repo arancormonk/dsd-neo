@@ -130,7 +130,7 @@ jobs:
               build_dep https://github.com/arancormonk/itpp "$itpp_sha" itpp "-DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF"
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr "-DDETACH_KERNEL_DRIVER=ON"
 
-              cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF -DCMAKE_INSTALL_PREFIX=/usr
+              cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
               cmake --build build/appimage -j
               ./build/appimage/apps/dsd-cli/dsd-neo -h || true
 

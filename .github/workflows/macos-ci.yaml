@@ -192,6 +192,7 @@ jobs:
         run: |
           cmake --preset dev-release -G Ninja \
             -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DBUILD_TESTING=OFF \
             -DCURSES_LIBRARY="$HB_PREFIX/opt/ncurses/lib/libncursesw.dylib" \
             -DCURSES_INCLUDE_PATH="$HB_PREFIX/opt/ncurses/include"
 
