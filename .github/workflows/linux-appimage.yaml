@@ -35,7 +35,7 @@ jobs:
       - name: Enable QEMU for cross-arch containers
         uses: docker/setup-qemu-action@v3.6.0
         with:
-          platforms: arm64
+          platforms: all
       - name: Prepare artifact naming
         id: names
         shell: bash
@@ -63,17 +63,18 @@ jobs:
         run: |
           set -euo pipefail
           arch='${{ matrix.arch }}'
+          image='ubuntu:20.04'
           if [ "$arch" = 'x86_64' ]; then
-            image='ubuntu:20.04'
+            platform='linux/amd64'
             ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage'
             plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage'
           else
-            image='arm64v8/ubuntu:20.04'
+            platform='linux/arm64/v8'
             ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage'
             plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage'
           fi
 
-          docker run --rm \
+          docker run --rm --platform "$platform" \
             -e DEBIAN_FRONTEND=noninteractive \
             -e VERSION='${{ steps.names.outputs.VER }}' \
             -v "$GITHUB_WORKSPACE":/work -w /work "$image" \
@@ -83,7 +84,19 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-                libncurses-dev patchelf file
+                libncurses-dev patchelf file squashfs-tools desktop-file-utils
+
+              # Install a newer CMake (>=3.20) than Ubuntu 20.04 provides
+              arch=$(uname -m)
+              case "$arch" in
+                x86_64) cmUrl=https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-x86_64.sh ;;
+                aarch64) cmUrl=https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-aarch64.sh ;;
+                *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
+              esac
+              wget -qO /tmp/cmake.sh "$cmUrl"
+              chmod +x /tmp/cmake.sh
+              /tmp/cmake.sh --skip-license --prefix=/usr/local
+              cmake --version
 
               DEPS=/opt/deps
               mkdir -p "$DEPS"
