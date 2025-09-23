@@ -18,14 +18,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
-// Portable weak attribute for test override stubs
-#if !defined(DSD_WEAK)
-#if defined(__GNUC__)
-#define DSD_WEAK __attribute__((weak))
-#else
-#define DSD_WEAK
-#endif
-#endif
+// Note: Do not use weak symbols here. Windows/COFF linkers handle them
+// differently than ELF and that caused undefined references in CI.
 // Expire regroup/patch entries older than this many seconds
 #define P25_PATCH_TTL_SECONDS 600
 
@@ -276,13 +270,14 @@ p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
     p25_tune_to_vc(opts, state, freq, channel);
 }
 
-DSD_WEAK void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
+// Internal implementation symbols; public wrappers live in p25_trunk_sm_wrap.c
+void
+dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
-DSD_WEAK void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+void
+dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     UNUSED2(svc_bits, src);
     // TG may be used for future gating; tuning logic is centralized here
     if (tg == 0) {
@@ -291,8 +286,8 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     p25_handle_grant(opts, state, channel);
 }
 
-DSD_WEAK void
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+void
+dsd_p25_sm_on_indiv_grant_impl(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     UNUSED2(svc_bits, src);
     if (dst == 0) {
         // proceed regardless
@@ -300,8 +295,8 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     p25_handle_grant(opts, state, channel);
 }
 
-DSD_WEAK void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
+void
+dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     // Centralized release handling. For Phase 2 (TDMA) voice channels with two
     // logical slots, do not return to the control channel if the other slot is
     // still active. This prevents dropping an in-progress call on the opposite
@@ -343,8 +338,8 @@ p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     p25_sm_log_status(opts, state, "after-release");
 }
 
-DSD_WEAK void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+void
+dsd_p25_sm_on_neighbor_update_impl(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     UNUSED(opts);
     if (count <= 0 || state == NULL || freqs == NULL) {
         return;
@@ -400,13 +395,13 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     p25_sm_log_status(opts, state, "after-neigh");
 }
 
-DSD_WEAK void
-p25_sm_tick(dsd_opts* opts, dsd_state* state) {
+void
+dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
-DSD_WEAK int
-p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
+int
+dsd_p25_sm_next_cc_candidate_impl(dsd_state* state, long* out_freq) {
     if (!state || !out_freq) {
         return 0;
     }
