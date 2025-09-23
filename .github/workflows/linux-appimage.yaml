@@ -89,7 +89,9 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-                libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick
+                libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick \
+                libboost-all-dev libarchive-dev libcurl4-openssl-dev zsync libglib2.0-dev \
+                libzstd-dev liblzma-dev
 
               # Install a newer CMake (>=3.20) than Ubuntu 20.04 provides
               arch=$(uname -m)
@@ -207,15 +209,39 @@ jobs:
               }
 
               # Try continuous first, fall back to pinned tags on failure
-              if ! try_linuxdeploy "$ldeploy_url" "$plugin_url"; then
-                echo "continuous linuxdeploy failed; trying pinned versions" >&2
-                if [ "$arch" = aarch64 ]; then
-                  for tag in 1-alpha-20240109-1 1-alpha-20231206-1; do
-                    if try_linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/$tag/linuxdeploy-aarch64.AppImage" "$plugin_url"; then
-                      break
-                    fi
-                  done
-                else
+              if [ "$arch" = aarch64 ]; then
+                # Build native linuxdeploy, plugin, and appimagetool from source to avoid executing AppImages under QEMU
+                export OUTPUT="/work/${{ steps.names.outputs.OUT }}"
+                mkdir -p "$(dirname "$OUTPUT")"
+                export PATH="/usr/local/bin:$PATH"
+                echo "Building native appimagetool (AppImageKit) for aarch64..."
+                git clone --depth 1 https://github.com/AppImage/AppImageKit.git /tmp/AppImageKit
+                cmake -S /tmp/AppImageKit -B /tmp/AppImageKit/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+                cmake --build /tmp/AppImageKit/build --target appimagetool -j
+                install -m0755 /tmp/AppImageKit/build/appimagetool /usr/local/bin/appimagetool
+                echo "Building native linuxdeploy for aarch64..."
+                git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy.git /tmp/linuxdeploy
+                cmake -S /tmp/linuxdeploy -B /tmp/linuxdeploy/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+                cmake --build /tmp/linuxdeploy/build -j
+                install -m0755 /tmp/linuxdeploy/build/src/linuxdeploy /usr/local/bin/linuxdeploy
+                echo "Building native linuxdeploy-plugin-appimage for aarch64..."
+                git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy-plugin-appimage.git /tmp/linuxdeploy-plugin-appimage
+                cmake -S /tmp/linuxdeploy-plugin-appimage -B /tmp/linuxdeploy-plugin-appimage/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+                cmake --build /tmp/linuxdeploy-plugin-appimage/build -j
+                install -m0755 /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
+                echo "linuxdeploy version: $(/usr/local/bin/linuxdeploy --version || true)"
+                echo "appimagetool version: $(/usr/local/bin/appimagetool --version || true)"
+                # Create the AppImage using native binaries
+                /usr/local/bin/linuxdeploy \
+                  --appdir /work/AppDir \
+                  -e /work/AppDir/usr/bin/dsd-neo \
+                  -d /work/packaging/appimage/dsd-neo.desktop \
+                  -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
+                  --output appimage
+              else
+                # x86_64 path (prefer prebuilt AppImages)
+                if ! try_linuxdeploy "$ldeploy_url" "$plugin_url"; then
+                  echo "continuous linuxdeploy failed; trying pinned versions" >&2
                   for tag in 1-alpha-20240109-1 1-alpha-20231206-1; do
                     if try_linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/$tag/linuxdeploy-x86_64.AppImage" "$plugin_url"; then
                       break
