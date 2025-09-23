@@ -84,7 +84,7 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-                libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz
+                libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick
 
               # Install a newer CMake (>=3.20) than Ubuntu 20.04 provides
               arch=$(uname -m)
@@ -140,11 +140,9 @@ jobs:
               mkdir -p AppDir/usr/share/applications
               cp -f packaging/appimage/dsd-neo.desktop AppDir/usr/share/applications/
               mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-              if [ -f images/dsd-neo.png ]; then
-                cp -f images/dsd-neo.png AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png || true
-              else
-                cp -f images/dsd-neo_const_view.png AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png || true
-              fi
+              src_icon="images/dsd-neo.png"; [ -f "$src_icon" ] || src_icon="images/dsd-neo_const_view.png"
+              # Normalize to a valid square icon size
+              convert "$src_icon" -resize 256x256^ -gravity center -extent 256x256 PNG32:/work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png
 
               mkdir -p /tmp/linuxdeploy
               cd /tmp/linuxdeploy
