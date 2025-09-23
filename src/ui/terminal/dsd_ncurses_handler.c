@@ -781,7 +781,13 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             // Scrub any groups previously marked as ENC LO so they can be tracked again
             // Mode "DE" is used as an ENC-lockout mark; restore to normal "D".
             for (int i = 0; i < state->group_tally; i++) {
+                // Scrub P25/NXDN ENC LO marks
                 if (strcmp(state->group_array[i].groupMode, "DE") == 0) {
+                    sprintf(state->group_array[i].groupMode, "%s", "D");
+                }
+                // Scrub DMR ENC LO marks (only those created by ENC lockout; avoid manual LOCKOUT entries)
+                if (strcmp(state->group_array[i].groupName, "ENC LO") == 0
+                    && strcmp(state->group_array[i].groupMode, "B") == 0) {
                     sprintf(state->group_array[i].groupMode, "%s", "D");
                 }
                 if (strcmp(state->group_array[i].groupName, "ENC LO") == 0) {

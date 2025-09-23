@@ -1258,6 +1258,10 @@ initState(dsd_state* state) {
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
     state->p25_p2_enc_lo_early = 0;
+    state->p25_p2_enc_pending[0] = 0;
+    state->p25_p2_enc_pending[1] = 0;
+    state->p25_p2_enc_pending_ttg[0] = 0;
+    state->p25_p2_enc_pending_ttg[1] = 0;
     state->p25_cc_is_tdma =
         2; //init on 2, TSBK NET_STS will set 0, TDMA NET_STS will set 1. //used to determine if we need to change symbol rate when cc hunting
 

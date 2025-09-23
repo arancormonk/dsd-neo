@@ -98,6 +98,12 @@
 extern volatile uint8_t exitflag; //fix for issue #136
 
 //event history (each item)
+// NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
+// The dsd_state structure is intentionally organized by functional groups for clarity
+// and cross-module stability rather than by strict padding minimization. Reordering
+// hundreds of fields as suggested by the analyzer would be high-risk and harm
+// readability/maintainability without measurable benefit. Suppress the padding
+// warning for this aggregate while keeping all other clang-tidy checks active.
 typedef struct {
     uint8_t write;      //if this event needs to be written to a log file
     uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
@@ -862,6 +868,9 @@ typedef struct {
     unsigned int p25_p2_rs_ess_corr; // total corrected symbols over accepts
     // P25p2 early ENC lockout counter (MAC_PTT-driven)
     unsigned int p25_p2_enc_lo_early;
+    // P25p2 early ENC lockout hardening: require confirmation across two indications
+    uint8_t p25_p2_enc_pending[2];
+    uint32_t p25_p2_enc_pending_ttg[2];
 
     //iden freq storage for frequency calculations
     int p25_chan_tdma[16]; //set from iden_up vs iden_up_tdma
@@ -1091,6 +1100,8 @@ typedef struct {
     char ui_msg[128];
 
 } dsd_state;
+
+// NOLINTEND(clang-analyzer-optin.performance.Padding)
 
 /*
  * Frame sync patterns

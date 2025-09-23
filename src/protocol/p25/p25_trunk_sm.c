@@ -334,6 +334,18 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     p25_p2_audio_ring_reset(state, -1);
+    // Reset encryption detection fields to avoid stale ALG/KID/MI affecting next call
+    state->payload_algid = 0;
+    state->payload_algidR = 0;
+    state->payload_keyid = 0;
+    state->payload_keyidR = 0;
+    state->payload_miP = 0;
+    state->payload_miN = 0;
+    // Clear early ENC pending flags
+    state->p25_p2_enc_pending[0] = 0;
+    state->p25_p2_enc_pending[1] = 0;
+    state->p25_p2_enc_pending_ttg[0] = 0;
+    state->p25_p2_enc_pending_ttg[1] = 0;
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
 }
