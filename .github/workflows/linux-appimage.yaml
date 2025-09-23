@@ -175,6 +175,9 @@ jobs:
                 chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage || return 1
                 export PATH="$PWD:$PATH"
                 export APPIMAGE_EXTRACT_AND_RUN=1
+                # Instruct plugin-appimage to write directly to our desired output path
+                export OUTPUT="/work/${{ steps.names.outputs.OUT }}"
+                mkdir -p "$(dirname "$OUTPUT")"
                 echo "linuxdeploy: $(file -b linuxdeploy.AppImage)"
                 echo "plugin:      $(file -b linuxdeploy-plugin-appimage)"
                 # Quick probe to see if it is executable in this environment
@@ -218,10 +221,13 @@ jobs:
                 # x86_64 path (default)
                 try_linuxdeploy "$ldeploy_url" "$plugin_url"
               fi
-
-              # Move output to dist with desired name
-              mkdir -p /work/dist
-              find . -maxdepth 1 -type f -name "*.AppImage" -print -exec mv {} "/work/${{ steps.names.outputs.OUT }}" \; || true
+              # Ensure the expected output file exists
+              if [ ! -s "/work/${{ steps.names.outputs.OUT }}" ]; then
+                echo "ERROR: AppImage output not produced at /work/${{ steps.names.outputs.OUT }}" >&2
+                echo "Contents of current dir:" >&2
+                ls -la >&2
+                exit 1
+              fi
             '
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
