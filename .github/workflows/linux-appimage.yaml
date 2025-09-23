@@ -84,7 +84,7 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-                libncurses-dev patchelf file squashfs-tools desktop-file-utils
+                libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz
 
               # Install a newer CMake (>=3.20) than Ubuntu 20.04 provides
               arch=$(uname -m)
@@ -127,7 +127,7 @@ jobs:
 
               build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo ""
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 ""
-              build_dep https://github.com/arancormonk/itpp "$itpp_sha" itpp "-DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/usr/bin/false"
+              build_dep https://github.com/arancormonk/itpp "$itpp_sha" itpp "-DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF"
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr "-DDETACH_KERNEL_DRIVER=ON"
 
               cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF -DCMAKE_INSTALL_PREFIX=/usr
