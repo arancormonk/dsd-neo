@@ -18,6 +18,17 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+// Portable weak attribute for test override stubs
+#if !defined(DSD_WEAK)
+#if defined(__GNUC__)
+#define DSD_WEAK __attribute__((weak))
+#else
+#define DSD_WEAK
+#endif
+#endif
+// Expire regroup/patch entries older than this many seconds
+#define P25_PATCH_TTL_SECONDS 600
+
 static void
 p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
     if (!opts || !state) {
@@ -176,6 +187,8 @@ p25_sm_persist_cache(dsd_opts* opts, dsd_state* state) {
     fclose(fp);
 }
 
+// (moved) Patch group tracking lives in p25_patch.c
+
 // Internal helper: compute and tune to a P25 VC, set symbol/slot appropriately
 static void
 p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
@@ -263,12 +276,12 @@ p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
     p25_tune_to_vc(opts, state, freq, channel);
 }
 
-void
+DSD_WEAK void
 p25_sm_init(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
-void
+DSD_WEAK void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     UNUSED2(svc_bits, src);
     // TG may be used for future gating; tuning logic is centralized here
@@ -278,7 +291,7 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     p25_handle_grant(opts, state, channel);
 }
 
-void
+DSD_WEAK void
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     UNUSED2(svc_bits, src);
     if (dst == 0) {
@@ -287,7 +300,7 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     p25_handle_grant(opts, state, channel);
 }
 
-void
+DSD_WEAK void
 p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     // Centralized release handling. For Phase 2 (TDMA) voice channels with two
     // logical slots, do not return to the control channel if the other slot is
@@ -330,7 +343,7 @@ p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     p25_sm_log_status(opts, state, "after-release");
 }
 
-void
+DSD_WEAK void
 p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     UNUSED(opts);
     if (count <= 0 || state == NULL || freqs == NULL) {
@@ -387,12 +400,12 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     p25_sm_log_status(opts, state, "after-neigh");
 }
 
-void
+DSD_WEAK void
 p25_sm_tick(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
-int
+DSD_WEAK int
 p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
     if (!state || !out_freq) {
         return 0;

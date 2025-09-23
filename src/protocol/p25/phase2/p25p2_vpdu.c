@@ -1909,6 +1909,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
             fprintf(stderr, "MFID90 Group Regroup Voice");
             state->gi[slot] = 0;
+            // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
+            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
 
             if (slot == 0) {
                 state->lasttg = gr;
@@ -1936,6 +1938,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
             fprintf(stderr, "MFID90 Group Regroup Voice");
             state->gi[slot] = 0;
+            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
 
             uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
             mfid90_wacn >>= 4;
@@ -2008,9 +2011,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     }
                     wgid = (MAC[10 + len_a + a] << 8) | MAC[11 + len_a + a];
                     fprintf(stderr, "WGID: %d; ", wgid);
+                    p25_patch_add_wgid(state, sg, wgid);
                     a = a + 2;
                     i = i + 2;
                 }
+
+                // Update patch tracker for this SG (two-way patch if bit4 of TGA is 0)
+                int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+                int active = (tga & 0x1) ? 1 : 0;
+                p25_patch_update(state, sg, is_patch, active);
+                p25_patch_set_kas(state, sg, key, alg, ssn);
 
             }
 
@@ -2023,6 +2033,15 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 int t3 = (MAC[15 + len_a] << 16) | (MAC[16 + len_a] << 8) | MAC[17 + len_a];
                 fprintf(stderr, "  SG: %d KEY: %04X", sg, key);
                 fprintf(stderr, " WUID: %d; WUID: %d; WUID: %d; ", t1, t2, t3);
+                p25_patch_add_wuid(state, sg, (uint32_t)t1);
+                p25_patch_add_wuid(state, sg, (uint32_t)t2);
+                p25_patch_add_wuid(state, sg, (uint32_t)t3);
+
+                // Update patch tracker
+                int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+                int active = (tga & 0x1) ? 1 : 0;
+                p25_patch_update(state, sg, is_patch, active);
+                p25_patch_set_kas(state, sg, key, -1, ssn);
             }
         }
 

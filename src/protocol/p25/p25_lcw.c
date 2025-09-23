@@ -476,6 +476,10 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             state->lasttg = sg;
             state->lastsrc = src;
             state->gi[0] = 0;
+
+            // Treat observed Super Group on LCW as an active two-way patch.
+            // This drives the UI patches line even when only LCWs are present.
+            p25_patch_update(state, (int)sg, /*is_patch*/ 1, /*active*/ 1);
         }
 
         else if (lc_mfid == 0x90 && lc_opcode == 0x1) {
@@ -494,10 +498,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
         else if (lc_mfid == 0x90 && lc_opcode == 0x3) {
             fprintf(stderr, " MFID90 (Moto) Group Regroup Add");
+            // Best-effort: we don't fully parse membership here; keep SG marked active if previously seen.
         }
 
         else if (lc_mfid == 0x90 && lc_opcode == 0x4) {
             fprintf(stderr, " MFID90 (Moto) Group Regroup Delete");
+            // Best-effort: without membership parsing, avoid clearing SG to prevent flicker.
         }
 
         else if (lc_mfid == 0x90 && lc_opcode == 0xF) {

@@ -6,6 +6,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   p25_frequency.c
   p25_lcw.c
   p25_trunk_sm.c
+  p25_patch.c
   p25_test_shim.c
   p25_test_lcw_shim.c
   phase1/p25p1_hdu.c

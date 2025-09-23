@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/synctype.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/ui/keymap.h>
@@ -174,6 +175,15 @@ ui_print_lborder(void) {
     attron(COLOR_PAIR(4));
     addch('|');
     attroff(COLOR_PAIR(4));
+}
+
+/* Print a single left border '|' using the Active/Green color (pair 3)
+ * Used for sections that should visually align with "active" styling even when idle. */
+static inline void
+ui_print_lborder_green(void) {
+    attron(COLOR_PAIR(3));
+    addch('|');
+    attroff(COLOR_PAIR(3));
 }
 
 /* Forward declaration for int ascending comparator (used by qsort for percentiles) */
@@ -1881,6 +1891,10 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
     return 1;
 }
 
+// Compose a short string describing any active patch/system mode for trunking
+// Example outputs: "P25p2 trunk", "P25p1 trunk", "EDACS trunk", "DMR TIII trunk", "DMR Con+ trunk", "Trunking"
+/* (removed) ui_compose_active_patch_label: replaced with p25_patch_compose_summary */
+
 // Try to resolve an active VC frequency from current state when p25_vc_freq is unset
 static long int
 ui_guess_active_vc_freq(const dsd_state* state) {
@@ -1971,7 +1985,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
 
-    ui_print_header("Learned Channels");
+    ui_print_header("Channels");
 
     // Prefer a calm cyan unless a call is active
     if (state->carrier == 1) {
@@ -1983,6 +1997,8 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     // Track which freqs we've already shown to avoid duplicates across LCNs and CH map
     long int seen_freqs[256];
     int seen_count = 0;
+    int cols_per_line = 3;
+    int col_in_row = 0;
 
     // First: render known channel->frequency pairs as CH <hex>
     if (have_chan_map) {
@@ -2003,9 +2019,20 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
             if (dup) {
                 continue;
             }
-            if (printed < 32) { // cap to avoid flooding
-                printw("| CH %04X: %010.06lf MHz\n", i & 0xFFFF, (double)f / 1000000.0);
+            if (printed < 32) { // cap to avoid flooding (rows of 3)
+                if (col_in_row == 0) {
+                    ui_print_lborder_green();
+                    addch(' ');
+                }
+                printw("CH %04X: %010.06lf MHz", i & 0xFFFF, (double)f / 1000000.0);
+                col_in_row++;
                 printed++;
+                if (col_in_row >= cols_per_line) {
+                    addch('\n');
+                    col_in_row = 0;
+                } else {
+                    addstr("   "); // spacing between columns
+                }
             } else {
                 extra++;
             }
@@ -2013,8 +2040,13 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
                 seen_freqs[seen_count++] = f;
             }
         }
+        if (col_in_row > 0) { // flush partial row before switching to LCN list
+            addch('\n');
+            col_in_row = 0; // reset so the next section starts with a fresh border
+        }
         if (extra > 0) {
-            printw("| ... and %d more learned channels\n", extra);
+            ui_print_lborder_green();
+            printw(" ... and %d more learned channels\n", extra);
         }
     }
 
@@ -2044,13 +2076,31 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
                 }
             }
             if (found_ch >= 0) {
-                printw("| CH %04X: %010.06lf MHz\n", found_ch & 0xFFFF, (double)f / 1000000.0);
+                if (col_in_row == 0) {
+                    ui_print_lborder_green();
+                    addch(' ');
+                }
+                printw("CH %04X: %010.06lf MHz", found_ch & 0xFFFF, (double)f / 1000000.0);
             } else {
-                printw("| CH ----: %010.06lf MHz\n", (double)f / 1000000.0);
+                if (col_in_row == 0) {
+                    ui_print_lborder_green();
+                    addch(' ');
+                }
+                printw("CH ----: %010.06lf MHz", (double)f / 1000000.0);
+            }
+            col_in_row++;
+            if (col_in_row >= cols_per_line) {
+                addch('\n');
+                col_in_row = 0;
+            } else {
+                addstr("   ");
             }
             if (seen_count < (int)(sizeof(seen_freqs) / sizeof(seen_freqs[0]))) {
                 seen_freqs[seen_count++] = f;
             }
+        }
+        if (col_in_row > 0) {
+            addch('\n');
         }
     }
 
@@ -4053,6 +4103,28 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attron(COLOR_PAIR(3));
         }
     }
+
+    // If any P25 patches are active, show a compact summary as the last line
+    // of the Call Info window (keep the left border color consistent).
+    {
+        char patch_line[192] = {0};
+        int n = p25_patch_compose_details(state, patch_line, sizeof patch_line);
+        if (n > 0) {
+            printw("|        | ");
+            attron(COLOR_PAIR(4));
+            printw("Patches: %s", patch_line);
+            // restore border color
+            if (state->carrier == 1) {
+                attron(COLOR_PAIR(3));
+            } else {
+                attron(COLOR_PAIR(4));
+            }
+            printw("\n");
+        }
+    }
+
+    // Bottom border for Call Info section
+    ui_print_hr();
 
     // Render learned LCNs just under the Call Info section when trunking
     ui_print_learned_lcns(opts, state);

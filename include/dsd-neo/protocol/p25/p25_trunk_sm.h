@@ -33,6 +33,34 @@ void p25_sm_tick(dsd_opts* opts, dsd_state* state);
 // Returns 1 and writes to out_freq if available; returns 0 otherwise.
 int p25_sm_next_cc_candidate(dsd_state* state, long* out_freq);
 
+// --- Patch group (P25 regroup/patch) tracking helpers ---
+// Record or update a P25 regroup/patch state for a Super Group ID (SGID).
+// is_patch: 1=two-way patch, 0=simulselect (one-way regroup)
+// active: 1=activated, 0=deactivated/cleared
+void p25_patch_update(dsd_state* state, int sgid, int is_patch, int active);
+
+// Compose a compact summary string for active patch SGIDs (e.g., "P: 069,142").
+// Returns length written; writes empty string when none active.
+int p25_patch_compose_summary(const dsd_state* state, char* out, size_t cap);
+
+// Add a Working Group ID to an SGID entry (creates/activates entry if needed)
+void p25_patch_add_wgid(dsd_state* state, int sgid, int wgid);
+
+// Add a Working Unit ID to an SGID entry (creates/activates entry if needed)
+void p25_patch_add_wuid(dsd_state* state, int sgid, uint32_t wuid);
+
+// Compose a more detailed status string, including WGID/WUID counts or samples.
+// Example: "SG069[P] WG:2(0345,0789); SG142[S] U:3"
+int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
+
+// Remove membership or clear entire SG record
+void p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid);
+void p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid);
+void p25_patch_clear_sg(dsd_state* state, int sgid);
+
+// Set optional Key/Alg/SSN context for an SG
+void p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn);
+
 #ifdef __cplusplus
 }
 #endif

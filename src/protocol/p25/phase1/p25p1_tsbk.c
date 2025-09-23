@@ -188,8 +188,10 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
                 if ((tga & 0x2) == 2) { //WGID or WUID (working group id or working unit id)
                     fprintf(stderr, "  SG: %d; KEY: %04X; WGID: %d; ", sg, key, add);
+                    p25_patch_add_wgid(state, sg, add);
                 } else {
                     fprintf(stderr, "  SG: %d; KEY: %04X; WUID: %d; ", sg, key, add);
+                    p25_patch_add_wuid(state, sg, (uint32_t)add);
                 }
 
                 if ((tga & 0x4) == 4) {
@@ -209,6 +211,13 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
                 fprintf(stderr, " SSN: %02d \n", ssn);
                 fprintf(stderr, " %s", KNRM);
+
+                // Update patch tracker (show only two-way patches in UI)
+                int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+                int active = (tga & 0x1) ? 1 : 0;
+                p25_patch_update(state, sg, is_patch, active);
+                // Record K/SSN; ALG unknown on P1 form
+                p25_patch_set_kas(state, sg, key, -1, ssn);
             } else {
                 fprintf(stderr, "%s", KCYN);
                 fprintf(stderr, "\n MFID A4 (Harris); Opcode: %02X; ", tsbk_byte[0] & 0x3F);
@@ -401,6 +410,25 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
                 for (i = 2; i < 10; i++) {
                     fprintf(stderr, "%02X", tsbk_byte[i]);
                 }
+                // Best-effort: parse GRG_Options and SGID similar to A4 layout
+                int tga = tsbk_byte[2] >> 5;
+                int ssn = tsbk_byte[2] & 0x1F;
+                int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
+                int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+                p25_patch_update(state, sg, is_patch, 1);
+                p25_patch_set_kas(state, sg, -1, -1, ssn);
+                // Try to capture membership: assume WGID at [5..6] for group, WUID at [7..9] for unit
+                if ((tga & 0x2) == 2) {
+                    int wgid = (tsbk_byte[5] << 8) | tsbk_byte[6];
+                    if (wgid > 0) {
+                        p25_patch_add_wgid(state, sg, wgid);
+                    }
+                } else {
+                    uint32_t wuid = ((uint32_t)tsbk_byte[7] << 16) | ((uint32_t)tsbk_byte[8] << 8) | tsbk_byte[9];
+                    if (wuid > 0) {
+                        p25_patch_add_wuid(state, sg, wuid);
+                    }
+                }
             }
 
             else if ((tsbk_byte[0] & 0x3F) == 0x01) {
@@ -409,6 +437,24 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, " MFID 90 (Moto) Group Regroup Delete: ");
                 for (i = 2; i < 10; i++) {
                     fprintf(stderr, "%02X", tsbk_byte[i]);
+                }
+                int tga = tsbk_byte[2] >> 5;
+                int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
+                // Prune membership for the indicated element if we can infer it; otherwise clear SG
+                if ((tga & 0x2) == 2) {
+                    int wgid = (tsbk_byte[5] << 8) | tsbk_byte[6];
+                    if (wgid > 0) {
+                        p25_patch_remove_wgid(state, sg, wgid);
+                    } else {
+                        p25_patch_clear_sg(state, sg);
+                    }
+                } else {
+                    uint32_t wuid = ((uint32_t)tsbk_byte[7] << 16) | ((uint32_t)tsbk_byte[8] << 8) | tsbk_byte[9];
+                    if (wuid > 0) {
+                        p25_patch_remove_wuid(state, sg, wuid);
+                    } else {
+                        p25_patch_clear_sg(state, sg);
+                    }
                 }
             }
 

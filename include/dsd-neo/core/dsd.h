@@ -910,6 +910,23 @@ typedef struct {
     int p25_p2_voice_err_hist_pos[2];
     unsigned int p25_p2_voice_err_hist_sum[2];
 
+    // P25 regroup/patch tracking (active super group IDs)
+    // Tracks up to 8 concurrent SGIDs; updates come from MFID A4/90 regroup PDUs.
+    int p25_patch_count;
+    uint16_t p25_patch_sgid[8];
+    uint8_t p25_patch_is_patch[8]; // 1=two-way patch, 0=simulselect
+    uint8_t p25_patch_active[8];   // 1=active, 0=inactive
+    time_t p25_patch_last_update[8];
+    // Membership (best-effort): WGIDs and WUIDs per SG
+    uint8_t p25_patch_wgid_count[8];
+    uint16_t p25_patch_wgid[8][8];
+    uint8_t p25_patch_wuid_count[8];
+    uint32_t p25_patch_wuid[8][8];
+    // Optional crypt/state context from GRG commands
+    uint16_t p25_patch_key[8]; // Key ID
+    uint8_t p25_patch_alg[8];  // ALG (vendor-specific)
+    uint8_t p25_patch_ssn[8];  // SSN
+
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed
     int use_throttle;    //only use throttle if set to 1
