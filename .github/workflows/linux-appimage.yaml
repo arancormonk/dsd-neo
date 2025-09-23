@@ -91,7 +91,8 @@ jobs:
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
                 libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick \
                 libboost-all-dev libarchive-dev libcurl4-openssl-dev zsync libglib2.0-dev \
-                libzstd-dev liblzma-dev
+                libzstd-dev liblzma-dev libgpgme-dev libgcrypt20-dev gnupg \
+                libpng-dev libjpeg-dev cimg-dev
 
               # Install a newer CMake (>=3.20) than Ubuntu 20.04 provides
               arch=$(uname -m)
