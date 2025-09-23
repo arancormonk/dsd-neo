@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/config.h>
+#include <math.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -46,6 +47,111 @@ select_window_c4fm(const dsd_state* state, int* l_edge, int* r_edge, int freeze_
     }
     *l_edge = l;
     *r_edge = r;
+}
+
+/* ---------------- C4FM dynamic RRC matched filter (real, sample-by-sample) ---------------- */
+/*
+ * Designs and applies a root-raised-cosine matched filter for the real C4FM path.
+ *
+ * - Alpha fixed to 0.2 (more typical for P25 C4FM)
+ * - Span fixed to 8 symbols (taps_len = 2*span*sps + 1, clamped 7..257)
+ * - Taps normalized to unit DC gain (sum = 1), no extra gain scaling
+ * - Drives SPS from caller (state->samplesPerSymbol)
+ */
+static short
+c4fm_rrc_filter_sample(short sample, int sps) {
+    /* Parameterization */
+    const double alpha = 0.2; /* recommended default for P25 C4FM */
+    const int span_syms = 8;  /* total span ~16 symbols */
+
+    if (sps <= 1) {
+        return sample;
+    }
+
+    /* Cached taps and history */
+    static int last_sps = 0;
+    static int last_span = 0;
+    static int taps_len = 0;
+    static float taps[257]; /* design up to 257 taps */
+    static float hist[257];
+    static int head = -1; /* circular buffer head */
+    static int ready = 0;
+
+    int desired_len = span_syms * 2 * sps + 1;
+    if (desired_len < 7) {
+        desired_len = 7;
+    }
+    if (desired_len > 257) {
+        desired_len = 257;
+    }
+
+    if (!ready || sps != last_sps || span_syms != last_span || taps_len != desired_len) {
+        int mid = desired_len / 2;
+        double sum = 0.0;
+        const double pi = 3.14159265358979323846;
+        for (int n = 0; n < desired_len; n++) {
+            double tau = ((double)n - (double)mid) / (double)sps; /* t/T */
+            double h;
+            double four_a_tau = 4.0 * alpha * tau;
+            double denom = pi * tau * (1.0 - (four_a_tau * four_a_tau));
+            if (fabs(tau) < 1e-12) {
+                h = (1.0 + alpha * (4.0 / pi - 1.0));
+            } else if (alpha > 0.0 && fabs(fabs(tau) - (1.0 / (4.0 * alpha))) < 1e-9) {
+                double a = alpha;
+                double term1 = (1.0 + 2.0 / pi) * sin(pi / (4.0 * a));
+                double term2 = (1.0 - 2.0 / pi) * cos(pi / (4.0 * a));
+                h = (a / sqrt(2.0)) * (term1 + term2);
+            } else {
+                double num = sin(pi * tau * (1.0 - alpha)) + four_a_tau * cos(pi * tau * (1.0 + alpha));
+                h = num / denom;
+            }
+            taps[n] = (float)h;
+            sum += h;
+        }
+        if (fabs(sum) < 1e-18) {
+            sum = 1.0; /* avoid div by zero; unlikely */
+        }
+        /* Normalize to unit DC gain */
+        for (int n = 0; n < desired_len; n++) {
+            taps[n] = (float)(taps[n] / sum);
+        }
+        /* Reset history on redesign to avoid long transients */
+        for (int i = 0; i < desired_len; i++) {
+            hist[i] = 0.0f;
+        }
+        head = -1;
+        taps_len = desired_len;
+        last_sps = sps;
+        last_span = span_syms;
+        ready = 1;
+    }
+
+    /* Push sample into history (circular buffer, head is most recent) */
+    head++;
+    if (head >= taps_len) {
+        head = 0;
+    }
+    hist[head] = (float)sample;
+
+    /* Convolution: oldest..newest matches taps[0..taps_len-1] */
+    float acc = 0.0f;
+    int zeros = taps_len - 1;
+    for (int i = 0; i <= zeros; i++) {
+        int idx = head - (zeros - i);
+        if (idx < 0) {
+            idx += taps_len;
+        }
+        acc += taps[i] * hist[idx];
+    }
+
+    /* Saturate to int16 */
+    if (acc > 32767.0f) {
+        acc = 32767.0f;
+    }
+    if (acc < -32768.0f) {
+        acc = -32768.0f;
+    }
+    return (short)lrintf(acc);
 }
 
 static inline void
@@ -571,9 +677,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 sample = m17_filter(sample);
             }
 
-            // Apply matched filter to P25 Phase 1 (C4FM) using legacy C4FM kernel
+            // Apply matched filter to P25 Phase 1 (C4FM) using dynamic real RRC (alpha=0.2)
             else if (state->lastsynctype == 0 || state->lastsynctype == 1) {
-                sample = p25_c4fm_filter(sample);
+                sample = c4fm_rrc_filter_sample(sample, state->samplesPerSymbol);
             }
 
             else if (state->lastsynctype == 20 || state->lastsynctype == 21 || state->lastsynctype == 22
@@ -669,8 +775,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
         } else {
             if (state->rf_mod == 0) {
-                // 0: C4FM modulation
-                if ((i >= state->symbolCenter - l_edge_pre) && (i <= state->symbolCenter + r_edge_pre)) {
+                // 0: C4FM modulation — take single sample at matched-filter peak
+                if (i == state->symbolCenter) {
                     sum += sample;
                     count++;
                 }
