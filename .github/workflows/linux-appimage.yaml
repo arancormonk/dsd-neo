@@ -162,10 +162,9 @@ jobs:
                 *) echo "Unsupported arch for linuxdeploy: $arch" >&2; exit 1 ;;
               esac
               wget -qO linuxdeploy.AppImage "$ldeploy_url"
-              wget -qO linuxdeploy-plugin-appimage.AppImage "$plugin_url"
-              chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage.AppImage
+              chmod +x linuxdeploy.AppImage
               export APPIMAGE_EXTRACT_AND_RUN=1
-              ./linuxdeploy.AppImage --appdir /work/AppDir -e /work/AppDir/usr/bin/dsd-neo -d /work/packaging/appimage/dsd-neo.desktop -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png --plugin appimage --output appimage
+              ./linuxdeploy.AppImage --appdir /work/AppDir -e /work/AppDir/usr/bin/dsd-neo -d /work/packaging/appimage/dsd-neo.desktop -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png --output appimage
 
               # Move output to dist with desired name
               mkdir -p /work/dist
