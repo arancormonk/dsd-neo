@@ -166,36 +166,44 @@ jobs:
                   ;;
                 *) echo "Unsupported arch for linuxdeploy: $arch" >&2; exit 1 ;;
               esac
-              # Helper to run linuxdeploy and appimagetool by extracting AppImages
+              # Helper to run linuxdeploy AppImage directly (with robust TMPDIR)
               try_linuxdeploy() {
                 url="$1"; plugin="$2"
-                rm -rf linuxdeploy.AppImage linuxdeploy-plugin-appimage ldeploy-root plugin-root || true
+                rm -f linuxdeploy.AppImage linuxdeploy-plugin-appimage || true
                 wget -qO linuxdeploy.AppImage "$url"
                 wget -qO linuxdeploy-plugin-appimage "$plugin"
+                chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage || return 1
+                export PATH="$PWD:$PATH"
+                # Avoid FUSE/noexec issues by extracting to a writable, executable TMPDIR
+                export APPIMAGE_EXTRACT_AND_RUN=1
+                export TMPDIR="/work/.cache/linuxdeploy/tmp"
+                mkdir -p "$TMPDIR"
+                # Instruct plugin-appimage to write directly to our desired output path
+                export OUTPUT="/work/${{ steps.names.outputs.OUT }}"
+                mkdir -p "$(dirname "$OUTPUT")"
                 echo "linuxdeploy: $(file -b linuxdeploy.AppImage)"
                 echo "plugin:      $(file -b linuxdeploy-plugin-appimage)"
-                # Extract both AppImages to avoid executing AppImages under QEMU/binfmt
-                mkdir -p ldeploy-root plugin-root
-                unsquashfs -f -d ldeploy-root linuxdeploy.AppImage >/dev/null 2>&1 || true
-                unsquashfs -f -d plugin-root linuxdeploy-plugin-appimage >/dev/null 2>&1 || true
-                if [ ! -x ldeploy-root/usr/bin/linuxdeploy ]; then
-                  echo "ERROR: failed to extract linuxdeploy binary" >&2
-                  return 2
+                # Try direct exec first
+                if ./linuxdeploy.AppImage \
+                    --appdir /work/AppDir \
+                    -e /work/AppDir/usr/bin/dsd-neo \
+                    -d /work/packaging/appimage/dsd-neo.desktop \
+                    -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
+                    --output appimage; then
+                  return 0
                 fi
-                if [ ! -x plugin-root/usr/bin/appimagetool ]; then
-                  echo "ERROR: failed to extract appimagetool binary" >&2
-                  return 2
+                # On aarch64 under QEMU, try invoking via dynamic loader
+                if [ "$(uname -m)" = aarch64 ] && [ -x /lib/ld-linux-aarch64.so.1 ]; then
+                  echo "Direct exec failed; retrying via dynamic loader" >&2
+                  /lib/ld-linux-aarch64.so.1 ./linuxdeploy.AppImage \
+                    --appdir /work/AppDir \
+                    -e /work/AppDir/usr/bin/dsd-neo \
+                    -d /work/packaging/appimage/dsd-neo.desktop \
+                    -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
+                    --output appimage
+                  return $?
                 fi
-                export PATH="$PWD/ldeploy-root/usr/bin:$PWD/plugin-root/usr/bin:$PATH"
-                # Deploy into AppDir (no plugin)
-                ldeploy-root/usr/bin/linuxdeploy \
-                  --appdir /work/AppDir \
-                  -e /work/AppDir/usr/bin/dsd-neo \
-                  -d /work/packaging/appimage/dsd-neo.desktop \
-                  -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png
-                # Build the AppImage with appimagetool
-                mkdir -p "$(dirname "/work/${{ steps.names.outputs.OUT }}")"
-                plugin-root/usr/bin/appimagetool -n /work/AppDir "/work/${{ steps.names.outputs.OUT }}"
+                return 2
               }
 
               # Try continuous first, fall back to pinned tags on failure
