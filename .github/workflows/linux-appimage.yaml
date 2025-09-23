@@ -214,11 +214,11 @@ jobs:
                 export OUTPUT="/work/${{ steps.names.outputs.OUT }}"
                 mkdir -p "$(dirname "$OUTPUT")"
                 export PATH="/usr/local/bin:$PATH"
-                echo "Building native appimagetool (AppImageKit) for aarch64..."
-                git clone --depth 1 https://github.com/AppImage/AppImageKit.git /tmp/AppImageKit
-                cmake -S /tmp/AppImageKit -B /tmp/AppImageKit/build -G Ninja -DCMAKE_BUILD_TYPE=Release
-                cmake --build /tmp/AppImageKit/build --target appimagetool -j
-                install -m0755 /tmp/AppImageKit/build/appimagetool /usr/local/bin/appimagetool
+                echo "Building native appimagetool for aarch64..."
+                git clone --depth 1 https://github.com/AppImage/appimagetool.git /tmp/appimagetool
+                cmake -S /tmp/appimagetool -B /tmp/appimagetool/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+                cmake --build /tmp/appimagetool/build --target appimagetool -j
+                install -m0755 /tmp/appimagetool/build/appimagetool /usr/local/bin/appimagetool
                 echo "Building native linuxdeploy for aarch64..."
                 git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy.git /tmp/linuxdeploy
                 cmake -S /tmp/linuxdeploy -B /tmp/linuxdeploy/build -G Ninja -DCMAKE_BUILD_TYPE=Release
