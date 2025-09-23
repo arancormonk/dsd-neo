@@ -223,12 +223,16 @@ jobs:
                 install -m0755 /tmp/appimagetool/build/src/appimagetool /usr/local/bin/appimagetool
                 echo "Building native linuxdeploy for aarch64..."
                 git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy.git /tmp/linuxdeploy
-                cmake -S /tmp/linuxdeploy -B /tmp/linuxdeploy/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+                # Ensure required submodules are present (cmake-scripts, linuxdeploy-desktopfile, etc.)
+                git -C /tmp/linuxdeploy submodule update --init --recursive
+                cmake -S /tmp/linuxdeploy -B /tmp/linuxdeploy/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
                 cmake --build /tmp/linuxdeploy/build -j
                 install -m0755 /tmp/linuxdeploy/build/src/linuxdeploy /usr/local/bin/linuxdeploy
                 echo "Building native linuxdeploy-plugin-appimage for aarch64..."
                 git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy-plugin-appimage.git /tmp/linuxdeploy-plugin-appimage
-                cmake -S /tmp/linuxdeploy-plugin-appimage -B /tmp/linuxdeploy-plugin-appimage/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+                # Initialize any submodules the plugin may require
+                git -C /tmp/linuxdeploy-plugin-appimage submodule update --init --recursive || true
+                cmake -S /tmp/linuxdeploy-plugin-appimage -B /tmp/linuxdeploy-plugin-appimage/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
                 cmake --build /tmp/linuxdeploy-plugin-appimage/build -j
                 install -m0755 /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
                 echo "linuxdeploy version: $(/usr/local/bin/linuxdeploy --version || true)"
