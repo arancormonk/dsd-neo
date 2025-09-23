@@ -159,10 +159,24 @@ jobs:
                   ;;
                 *) echo "Unsupported arch for linuxdeploy: $arch" >&2; exit 1 ;;
               esac
+              # Download linuxdeploy and the appimage output plugin matching the container arch
               wget -qO linuxdeploy.AppImage "$ldeploy_url"
-              chmod +x linuxdeploy.AppImage
+              wget -qO linuxdeploy-plugin-appimage "$plugin_url"
+              chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage
+              # Make sure plugin is discoverable by linuxdeploy
+              export PATH="$PWD:$PATH"
+              # Avoid FUSE requirement inside CI
               export APPIMAGE_EXTRACT_AND_RUN=1
-              ./linuxdeploy.AppImage --appdir /work/AppDir -e /work/AppDir/usr/bin/dsd-neo -d /work/packaging/appimage/dsd-neo.desktop -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png --output appimage
+              # Sanity log
+              echo "linuxdeploy: $(file -b linuxdeploy.AppImage)"
+              echo "plugin:      $(file -b linuxdeploy-plugin-appimage)"
+              # Build the AppImage
+              ./linuxdeploy.AppImage \
+                --appdir /work/AppDir \
+                -e /work/AppDir/usr/bin/dsd-neo \
+                -d /work/packaging/appimage/dsd-neo.desktop \
+                -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
+                --output appimage
 
               # Move output to dist with desired name
               mkdir -p /work/dist
