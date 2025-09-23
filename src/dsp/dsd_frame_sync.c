@@ -301,23 +301,22 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         {
             lastt = 0;
             if (state->numflips > opts->mod_threshold) {
-                if (opts->mod_qpsk == 1) {
-                    state->rf_mod = 1;
-                    /* Auto-enable CQPSK/LSM DSP path and loops when QPSK detected */
+                /* Treat as QPSK irrespective of mod_qpsk; allow auto-detect to engage CQPSK path. */
+                state->rf_mod = 1;
+                /* Auto-enable CQPSK/LSM DSP path and loops when QPSK detected */
 #ifdef USE_RTLSDR
-                    int cq = 0, f = 0, t = 0, a = 0; /* a=auto-dsp enable */
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
-                    if (a && !rtl_stream_get_manual_dsp()) {
-                        /* Disable generic IQ balance; enable CQPSK chain */
-                        rtl_stream_toggle_iq_balance(0);
-                        rtl_stream_toggle_cqpsk(1);
-                        rtl_stream_toggle_fll(1);
-                        rtl_stream_toggle_ted(1);
-                        /* Enable LMS + WL with modest defaults, MF on, brief CMA */
-                        rtl_stream_cqpsk_set(1, 5, 2, 6, 1, 0, 0, 1, 1200);
-                    }
-#endif
+                int cq = 0, f = 0, t = 0, a = 0; /* a=auto-dsp enable */
+                rtl_stream_dsp_get(&cq, &f, &t, &a);
+                if (a && !rtl_stream_get_manual_dsp()) {
+                    /* Disable generic IQ balance; enable CQPSK chain */
+                    rtl_stream_toggle_iq_balance(0);
+                    rtl_stream_toggle_cqpsk(1);
+                    rtl_stream_toggle_fll(1);
+                    rtl_stream_toggle_ted(1);
+                    /* Enable LMS + WL with modest defaults, MF on, brief CMA */
+                    rtl_stream_cqpsk_set(1, 5, 2, 6, 1, 0, 0, 1, 1200);
                 }
+#endif
             } else if (state->numflips > 18) {
                 if (opts->mod_gfsk == 1) {
                     state->rf_mod = 2;

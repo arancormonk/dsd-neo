@@ -3394,10 +3394,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("DMR MS - DCC: %02i; ", state->dmr_color_code);
         } else if (lls == 0 || lls == 1) //P1
         {
-            printw("P25p1  - %05llX:%03llX:%03llX; RFSS: %lld SITE: %lld ", state->p2_wacn, state->p2_sysid,
-                   state->p2_cc, state->p2_rfssid, state->p2_siteid);
+            // Clarify identifiers to avoid confusion when SYSID and NAC
+            // happen to have the same numeric value on some systems.
+            printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX; RFSS: %lld SITE: %lld ", state->p2_wacn,
+                   state->p2_sysid, state->p2_cc, state->p2_rfssid, state->p2_siteid);
             if (state->p25_cc_freq != 0) {
-                printw("Freq: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
+                printw("FREQ: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
             }
 
             //load talker aliases here (Moto, Tait, Harris)
@@ -3411,8 +3413,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         } else if (lls == 35 || lls == 36) //P2
         {
-            printw("P25p2  - %05llX:%03llX:%03llX; RFSS: %lld SITE: %lld ", state->p2_wacn, state->p2_sysid,
-                   state->p2_cc, state->p2_rfssid, state->p2_siteid);
+            // Clarify identifiers to avoid confusion when SYSID and NAC
+            // happen to have the same numeric value on some systems.
+            printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX; RFSS: %lld SITE: %lld ", state->p2_wacn,
+                   state->p2_sysid, state->p2_cc, state->p2_rfssid, state->p2_siteid);
             if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
                 attron(COLOR_PAIR(2));
                 printw(" Phase 2 Missing Parameters ");
@@ -3423,7 +3427,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 attron(COLOR_PAIR(3));
             } else {
                 if (state->p25_cc_freq != 0) {
-                    printw("Freq: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
+                    printw("FREQ: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
                 }
             }
 
