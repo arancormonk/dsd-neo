@@ -148,6 +148,19 @@ jobs:
 
               mkdir -p /tmp/linuxdeploy
               cd /tmp/linuxdeploy
+              # Select linuxdeploy binaries inside the container
+              arch=$(uname -m)
+              case "$arch" in
+                x86_64)
+                  ldeploy_url=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+                  plugin_url=https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
+                  ;;
+                aarch64)
+                  ldeploy_url=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
+                  plugin_url=https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage
+                  ;;
+                *) echo "Unsupported arch for linuxdeploy: $arch" >&2; exit 1 ;;
+              esac
               wget -qO linuxdeploy.AppImage "$ldeploy_url"
               wget -qO linuxdeploy-plugin-appimage.AppImage "$plugin_url"
               chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage.AppImage
