@@ -1,0 +1,170 @@
+name: linux-appimage
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - ".github/*.yml"
+      - ".github/*.yaml"
+      - ".github/**/*.yml"
+      - ".github/**/*.yaml"
+      - "**/*.md"
+  pull_request:
+    branches: [main, master]
+    paths-ignore:
+      - ".github/*.yml"
+      - ".github/*.yaml"
+      - ".github/**/*.yml"
+      - ".github/**/*.yaml"
+      - "**/*.md"
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5.0.0
+      - name: Enable QEMU for cross-arch containers
+        uses: docker/setup-qemu-action@v3.6.0
+        with:
+          platforms: arm64
+      - name: Prepare artifact naming
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          arch='${{ matrix.arch }}'
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            out="dist/dsd-neo-linux-${arch}-portable-${REF_NAME}.AppImage"
+            art="dsd-neo-linux-${arch}-portable-${REF_NAME}"
+            ver="$REF_NAME"
+          else
+            out="dist/dsd-neo-linux-${arch}-portable-nightly.AppImage"
+            art="dsd-neo-linux-${arch}-portable-nightly"
+            ver="nightly"
+          fi
+          mkdir -p dist
+          echo "OUT=$out" >> "$GITHUB_OUTPUT"
+          echo "ART=$art" >> "$GITHUB_OUTPUT"
+          echo "VER=$ver" >> "$GITHUB_OUTPUT"
+      - name: Build in container and create AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch='${{ matrix.arch }}'
+          if [ "$arch" = 'x86_64' ]; then
+            image='ubuntu:20.04'
+            ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage'
+            plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage'
+          else
+            image='arm64v8/ubuntu:20.04'
+            ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage'
+            plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage'
+          fi
+
+          docker run --rm \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e VERSION='${{ steps.names.outputs.VER }}' \
+            -v "$GITHUB_WORKSPACE":/work -w /work "$image" \
+            bash -lc '
+              set -euo pipefail
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                ca-certificates wget git build-essential cmake ninja-build pkg-config ccache \
+                libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+                libncurses-dev patchelf file
+
+              DEPS=/opt/deps
+              mkdir -p "$DEPS"
+              export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$DEPS/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+              export CMAKE_PREFIX_PATH="$DEPS:${CMAKE_PREFIX_PATH:-}"
+              export LD_LIBRARY_PATH="$DEPS/lib:$DEPS/lib64:${LD_LIBRARY_PATH:-}"
+
+              mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)
+              codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)
+              itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)
+              rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)
+
+              build_dep() {
+                repo="$1" sha="$2" name="$3" cmake_opts="$4"
+                dst="$DEPS/lib/pkgconfig/${name}.pc"
+                dst64="$DEPS/lib64/pkgconfig/${name}.pc"
+                if [ -f "$dst" ] || [ -f "$dst64" ]; then
+                  return
+                fi
+                git clone --depth 1 "$repo" "/tmp/${name}"
+                git -C "/tmp/${name}" fetch --depth 1 origin "$sha"
+                git -C "/tmp/${name}" checkout "$sha"
+                cmake -S "/tmp/${name}" -B "/tmp/${name}/build" -G Ninja \
+                  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS" $cmake_opts
+                cmake --build "/tmp/${name}/build" -j
+                cmake --install "/tmp/${name}/build"
+              }
+
+              build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo ""
+              build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 ""
+              build_dep https://github.com/arancormonk/itpp "$itpp_sha" itpp "-DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/usr/bin/false"
+              build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr "-DDETACH_KERNEL_DRIVER=ON"
+
+              cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF -DCMAKE_INSTALL_PREFIX=/usr
+              cmake --build build/appimage -j
+              ./build/appimage/apps/dsd-cli/dsd-neo -h || true
+
+              rm -rf AppDir
+              cmake --install build/appimage --prefix AppDir/usr
+
+              mkdir -p AppDir/usr/share/applications
+              cp -f packaging/appimage/dsd-neo.desktop AppDir/usr/share/applications/
+              mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+              if [ -f images/dsd-neo.png ]; then
+                cp -f images/dsd-neo.png AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png || true
+              else
+                cp -f images/dsd-neo_const_view.png AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png || true
+              fi
+
+              mkdir -p /tmp/linuxdeploy
+              cd /tmp/linuxdeploy
+              wget -qO linuxdeploy.AppImage "$ldeploy_url"
+              wget -qO linuxdeploy-plugin-appimage.AppImage "$plugin_url"
+              chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage.AppImage
+              export APPIMAGE_EXTRACT_AND_RUN=1
+              ./linuxdeploy.AppImage --appdir /work/AppDir -e /work/AppDir/usr/bin/dsd-neo -d /work/packaging/appimage/dsd-neo.desktop -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png --plugin appimage --output appimage
+
+              # Move output to dist with desired name
+              mkdir -p /work/dist
+              find . -maxdepth 1 -type f -name "*.AppImage" -print -exec mv {} "/work/${{ steps.names.outputs.OUT }}" \; || true
+            '
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.names.outputs.ART }}
+          path: ${{ steps.names.outputs.OUT }}
+          retention-days: 7
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2.3.3
+        with:
+          files: ${{ steps.names.outputs.OUT }}
+          name: ${{ steps.names.outputs.ART }}
+          generate_release_notes: true
+      - name: Upload nightly asset (overwrite)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: nightly
+          prerelease: true
+          file: ${{ steps.names.outputs.OUT }}
+          asset_name: ${{ steps.names.outputs.ART }}.AppImage
+          overwrite: true
