@@ -149,8 +149,9 @@ jobs:
               # Normalize to a valid square icon size
               convert "$src_icon" -resize 256x256^ -gravity center -extent 256x256 PNG32:/work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png
 
-              mkdir -p /tmp/linuxdeploy
-              cd /tmp/linuxdeploy
+              # Use workspace cache dir (avoids any potential noexec tmp mounts)
+              mkdir -p /work/.cache/linuxdeploy
+              cd /work/.cache/linuxdeploy
               # Select linuxdeploy binaries inside the container
               arch=$(uname -m)
               case "$arch" in
@@ -159,29 +160,64 @@ jobs:
                   plugin_url=https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
                   ;;
                 aarch64)
+                  # Prefer continuous; fall back to known-good tags if execution fails under CI emulation
                   ldeploy_url=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
                   plugin_url=https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage
                   ;;
                 *) echo "Unsupported arch for linuxdeploy: $arch" >&2; exit 1 ;;
               esac
-              # Download linuxdeploy and the appimage output plugin matching the container arch
-              wget -qO linuxdeploy.AppImage "$ldeploy_url"
-              wget -qO linuxdeploy-plugin-appimage "$plugin_url"
-              chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage
-              # Make sure plugin is discoverable by linuxdeploy
-              export PATH="$PWD:$PATH"
-              # Avoid FUSE requirement inside CI
-              export APPIMAGE_EXTRACT_AND_RUN=1
-              # Sanity log
-              echo "linuxdeploy: $(file -b linuxdeploy.AppImage)"
-              echo "plugin:      $(file -b linuxdeploy-plugin-appimage)"
-              # Build the AppImage
-              ./linuxdeploy.AppImage \
-                --appdir /work/AppDir \
-                -e /work/AppDir/usr/bin/dsd-neo \
-                -d /work/packaging/appimage/dsd-neo.desktop \
-                -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
-                --output appimage
+              # Helper to try a specific linuxdeploy URL once
+              try_linuxdeploy() {
+                url="$1"; plugin="$2"
+                rm -f linuxdeploy.AppImage linuxdeploy-plugin-appimage || true
+                wget -qO linuxdeploy.AppImage "$url"
+                wget -qO linuxdeploy-plugin-appimage "$plugin"
+                chmod +x linuxdeploy.AppImage linuxdeploy-plugin-appimage || return 1
+                export PATH="$PWD:$PATH"
+                export APPIMAGE_EXTRACT_AND_RUN=1
+                echo "linuxdeploy: $(file -b linuxdeploy.AppImage)"
+                echo "plugin:      $(file -b linuxdeploy-plugin-appimage)"
+                # Quick probe to see if it is executable in this environment
+                if ./linuxdeploy.AppImage --help >/dev/null 2>&1; then
+                  # Build the AppImage
+                  ./linuxdeploy.AppImage \
+                    --appdir /work/AppDir \
+                    -e /work/AppDir/usr/bin/dsd-neo \
+                    -d /work/packaging/appimage/dsd-neo.desktop \
+                    -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
+                    --output appimage
+                  return $?
+                elif [ "$(uname -m)" = aarch64 ] && [ -x /lib/ld-linux-aarch64.so.1 ]; then
+                  echo "Direct exec failed; retrying via dynamic loader" >&2
+                  if /lib/ld-linux-aarch64.so.1 ./linuxdeploy.AppImage --help >/dev/null 2>&1; then
+                    /lib/ld-linux-aarch64.so.1 ./linuxdeploy.AppImage \
+                      --appdir /work/AppDir \
+                      -e /work/AppDir/usr/bin/dsd-neo \
+                      -d /work/packaging/appimage/dsd-neo.desktop \
+                      -i /work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png \
+                      --output appimage
+                    return $?
+                  fi
+                else
+                  return 2
+                fi
+              }
+
+              if [ "$arch" = aarch64 ]; then
+                # Try continuous first
+                if ! try_linuxdeploy "$ldeploy_url" "$plugin_url"; then
+                  echo "continuous linuxdeploy failed to execute; trying pinned versions" >&2
+                  # Fall back through a list of known tags
+                  for tag in 1-alpha-20240109-1 1-alpha-20231206-1; do
+                    if try_linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/$tag/linuxdeploy-aarch64.AppImage" "$plugin_url"; then
+                      break
+                    fi
+                  done
+                fi
+              else
+                # x86_64 path (default)
+                try_linuxdeploy "$ldeploy_url" "$plugin_url"
+              fi
 
               # Move output to dist with desired name
               mkdir -p /work/dist
