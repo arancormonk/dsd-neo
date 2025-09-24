@@ -225,16 +225,39 @@ jobs:
                 git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy.git /tmp/linuxdeploy
                 # Ensure required submodules are present (cmake-scripts, linuxdeploy-desktopfile, etc.)
                 git -C /tmp/linuxdeploy submodule update --init --recursive
-                cmake -S /tmp/linuxdeploy -B /tmp/linuxdeploy/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+                cmake -S /tmp/linuxdeploy -B /tmp/linuxdeploy/build -G Ninja \
+                  -DCMAKE_BUILD_TYPE=Release \
+                  -DBUILD_TESTING=OFF -DBUILD_TESTS=OFF -DENABLE_UNIT_TESTS=OFF -DENABLE_TESTS=OFF -DLINUXDEPLOY_BUILD_TESTS=OFF
                 cmake --build /tmp/linuxdeploy/build -j
-                install -m0755 /tmp/linuxdeploy/build/src/linuxdeploy /usr/local/bin/linuxdeploy
+                # linuxdeploy binary path can be in build/bin or build/src depending on upstream changes
+                if [ -f /tmp/linuxdeploy/build/bin/linuxdeploy ]; then
+                  install -m0755 /tmp/linuxdeploy/build/bin/linuxdeploy /usr/local/bin/linuxdeploy
+                elif [ -f /tmp/linuxdeploy/build/src/linuxdeploy ]; then
+                  install -m0755 /tmp/linuxdeploy/build/src/linuxdeploy /usr/local/bin/linuxdeploy
+                else
+                  echo "linuxdeploy binary not found after build" >&2
+                  ls -la /tmp/linuxdeploy/build || true
+                  ls -la /tmp/linuxdeploy/build/bin || true
+                  ls -la /tmp/linuxdeploy/build/src || true
+                  exit 1
+                fi
                 echo "Building native linuxdeploy-plugin-appimage for aarch64..."
                 git clone --depth 1 https://github.com/linuxdeploy/linuxdeploy-plugin-appimage.git /tmp/linuxdeploy-plugin-appimage
                 # Initialize any submodules the plugin may require
                 git -C /tmp/linuxdeploy-plugin-appimage submodule update --init --recursive || true
                 cmake -S /tmp/linuxdeploy-plugin-appimage -B /tmp/linuxdeploy-plugin-appimage/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
                 cmake --build /tmp/linuxdeploy-plugin-appimage/build -j
-                install -m0755 /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
+                # plugin binary path can vary; handle common locations
+                if [ -f /tmp/linuxdeploy-plugin-appimage/build/bin/linuxdeploy-plugin-appimage ]; then
+                  install -m0755 /tmp/linuxdeploy-plugin-appimage/build/bin/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
+                elif [ -f /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage ]; then
+                  install -m0755 /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
+                else
+                  echo "linuxdeploy-plugin-appimage binary not found after build" >&2
+                  ls -la /tmp/linuxdeploy-plugin-appimage/build || true
+                  ls -la /tmp/linuxdeploy-plugin-appimage/build/bin || true
+                  exit 1
+                fi
                 echo "linuxdeploy version: $(/usr/local/bin/linuxdeploy --version || true)"
                 echo "appimagetool version: $(/usr/local/bin/appimagetool --version || true)"
                 # Create the AppImage using native binaries
