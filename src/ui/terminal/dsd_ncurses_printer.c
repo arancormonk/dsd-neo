@@ -1901,7 +1901,11 @@ ui_guess_active_vc_freq(const dsd_state* state) {
     if (!state) {
         return 0;
     }
-    // Prefer explicit VC freq when available
+    // Prefer protocol-agnostic trunk alias when available
+    if (state->trunk_vc_freq[0] != 0) {
+        return state->trunk_vc_freq[0];
+    }
+    // Fallback to P25-specific field
     if (state->p25_vc_freq[0] != 0) {
         return state->p25_vc_freq[0];
     }
@@ -2854,10 +2858,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     ui_print_header("Audio Decode");
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
         printw("| Tuner state: Busy\n");
     }
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0) {
+    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0)) {
         printw("| Tuner state: Free\n");
     }
     printw("| Demod/Rate:  ");
@@ -3225,8 +3229,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (idas == 1) {
                     printw("Monitoring RTCH2 Channel"); //Idas RTCH2 Channel
                 }
-                if (state->p25_cc_freq != 0) {
-                    printw(" - Frequency: %.06lf Mhz ", (double)state->p25_cc_freq / 1000000);
+                if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                    printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
                 }
             } else if (opts->p25_is_tuned == 1) {
                 if (idas == 0) {
@@ -3235,8 +3240,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (idas == 1) {
                     printw("Monitoring RTCH2 Channel"); //Idas RTCH2
                 }
-                if (state->p25_vc_freq[0] != 0) {
-                    printw(" - Frequency: %.06lf Mhz ", (double)state->p25_vc_freq[0] / 1000000);
+                if (state->trunk_vc_freq[0] != 0 || state->p25_vc_freq[0] != 0) {
+                    long f = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
+                    printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
                 }
             }
 
@@ -3386,8 +3392,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
                     printw("Freq: %.06lf Mhz", (double)state->trunk_chan_map[state->dmr_rest_channel] / 1000000);
                 }
-            } else if (state->p25_cc_freq != 0) {
-                printw("Freq: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
+            } else if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                printw("Freq: %.06lf MHz", (double)f / 1000000);
             }
 
         } else if (lls == 32 || lls == 33 || lls == 34) {
@@ -3398,8 +3405,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             // happen to have the same numeric value on some systems.
             printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX; RFSS: %lld SITE: %lld ", state->p2_wacn,
                    state->p2_sysid, state->p2_cc, state->p2_rfssid, state->p2_siteid);
-            if (state->p25_cc_freq != 0) {
-                printw("FREQ: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
+            if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                printw("FREQ: %.06lf MHz", (double)f / 1000000);
             }
 
             //load talker aliases here (Moto, Tait, Harris)
@@ -3426,8 +3434,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw(" Phase 2 Invalid Parameters ");
                 attron(COLOR_PAIR(3));
             } else {
-                if (state->p25_cc_freq != 0) {
-                    printw("FREQ: %.06lf MHz", (double)state->p25_cc_freq / 1000000);
+                if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
+                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                    printw("FREQ: %.06lf MHz", (double)f / 1000000);
                 }
             }
 
@@ -3865,7 +3874,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                 // Tuned/Active Frequency Display: prefer tuned VC; else derive from active channel text/map
                 {
-                    long int vc = state->p25_vc_freq[0];
+                    long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
                     if (vc == 0) {
                         vc = ui_guess_active_vc_freq(state);
                     }
@@ -3916,7 +3925,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (lls == 14 || lls == 15 || lls == 37 || lls == 38) {
         attroff(COLOR_PAIR(3)); //colors off for EDACS
         if (state->edacs_site_id != 0) {
-            if (opts->p25_is_tuned == 0) {
+            if (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0) {
                 printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
             } else {
                 printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
@@ -4098,7 +4107,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
             }
 
-            if (i == state->edacs_tuned_lcn && opts->p25_is_tuned == 1) {
+            if (i == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
                 printw(" **T**"); //asterisk which lcn is tuned
             }
             printw("\n");

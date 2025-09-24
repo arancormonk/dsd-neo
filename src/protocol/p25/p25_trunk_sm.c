@@ -18,6 +18,21 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+// Weak fallback for trunk_tune_to_freq so unit tests that link only the P25
+// library do not need the IO Control library. The real implementation lives in
+// src/io/control/dsd_rigctl.c and overrides this weak symbol when linked.
+__attribute__((weak)) void
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+    if (!opts || !state || freq <= 0) {
+        return;
+    }
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->last_vc_sync_time = time(NULL);
+}
+
 // Note: Do not use weak symbols here. Windows/COFF linkers handle them
 // differently than ELF and that caused undefined references in CI.
 // Expire regroup/patch entries older than this many seconds
@@ -215,23 +230,8 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
         state->p25_p2_active_slot = -1;
     }
 
-    // Tune
-    if (opts->use_rigctl == 1) {
-        if (opts->setmod_bw != 0) {
-            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-        }
-        SetFreq(opts->rigctl_sockfd, freq);
-    } else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-        if (g_rtl_ctx) {
-            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
-        }
-#endif
-    }
-
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-    opts->p25_is_tuned = 1;
-    state->last_vc_sync_time = time(NULL);
+    // Tune via common helper
+    trunk_tune_to_freq(opts, state, freq);
     // Reset Phase 2 per-slot audio gate and jitter buffers on new VC
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;

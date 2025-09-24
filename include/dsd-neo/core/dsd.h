@@ -439,6 +439,7 @@ typedef struct {
     int wav_decimator;
     int p25_trunk;        //experimental P25 trunking with RIGCTL (or RTLFM)
     int p25_is_tuned;     //set to 1 if currently on VC, set back to 0 if on CC
+    int trunk_is_tuned;   //protocol-agnostic alias (kept in sync with p25_is_tuned)
     float trunk_hangtime; //hangtime in seconds before tuning back to CC
     int scanner_mode;     //experimental -- use the channel map as a conventional scanner, quicker tuning, but no CC
     int setmod_bw;
@@ -549,7 +550,8 @@ typedef struct {
     unsigned long long int p2_cc; //p1 NAC
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
-    long int p25_cc_freq; //cc freq from net_stat
+    long int p25_cc_freq;   //cc freq from net_stat
+    long int trunk_cc_freq; //protocol-agnostic alias (kept in sync with p25_cc_freq)
     unsigned long long int edacs_site_id;
     time_t last_cc_sync_time; //use this to start hunting for CC after signal lost
     time_t last_vc_sync_time; //flag for voice activity bursts, tune back on con+ after more than x seconds no voice
@@ -578,10 +580,14 @@ typedef struct {
     unsigned long long int dmr_lrrp_target[2];
     // P25 trunking freq storage and candidates
     long int p25_vc_freq[2];
+    long int trunk_vc_freq[2]; //protocol-agnostic alias (kept in sync with p25_vc_freq)
     long p25_cc_candidates[16];
     // Trunking LCNs and maps
     long int trunk_lcn_freq[26];
     long int trunk_chan_map[0xFFFF];
+    // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
+    // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
+    uint8_t dmr_lcn_trust[0x1000];
     groupinfo group_array[0x3FF];
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
@@ -1706,6 +1712,8 @@ void eot_cc(dsd_opts* opts, dsd_state* state); //end of TX return to CC
 
 //Generic Tuning Functions
 void return_to_cc(dsd_opts* opts, dsd_state* state);
+// Common VC tuning helper: performs rigctl/RTL tune and updates trunk/p25 fields.
+void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq);
 
 //initialize static float filter memory
 void init_rrc_filter_memory();

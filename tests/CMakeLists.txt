@@ -226,6 +226,19 @@ target_include_directories(dsd-neo_test_p25_p2_vpdu_sequence PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_p25_p2_vpdu_sequence PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_VPDU_SEQUENCE COMMAND dsd-neo_test_p25_p2_vpdu_sequence)
 
+# DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
+add_executable(dsd-neo_test_dmr_t3_sm_clamp
+  protocol/dmr/test_dmr_t3_sm_clamp.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
+target_include_directories(dsd-neo_test_dmr_t3_sm_clamp PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
+
+add_executable(dsd-neo_test_dmr_t3_sm_release
+  protocol/dmr/test_dmr_t3_sm_release.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
+target_include_directories(dsd-neo_test_dmr_t3_sm_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
+
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
 target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)

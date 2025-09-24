@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /*-------------------------------------------------------------------------------
  * dmr_csbk.c
  * DMR Control Signal Data PDU (CSBK, MBC) Handler and Related Functions
@@ -14,6 +18,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -164,6 +169,14 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
     }
 
     state->trunk_chan_map[lpcn] = freq;
+    // Mark provenance: trusted if learned while on CC for current site, else unconfirmed
+    if (lpcn < 0x1000) {
+        uint8_t trust = 1;
+        if (state->p25_cc_freq != 0 && opts && opts->p25_is_tuned == 0) {
+            trust = 2;
+        }
+        state->dmr_lcn_trust[lpcn] = trust;
+    }
 
     // Emit a one-line event so users can see learning progress in ncurses
     if (opts) {
@@ -504,7 +517,56 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             if (freq != 0) //if we have a valid frequency
                             {
                                 //RIGCTL
-                                if (opts->use_rigctl == 1) {
+                                // Pre-tune: update per-call UI strings and invoke centralized DMR trunk SM
+                                if (lcn == 0 && data_call == 0) {
+                                    state->lasttg = target;
+                                    state->lastsrc = source;
+                                    sprintf(state->call_string[0], " Trunked ");
+                                    if (csbk_o == 49 || csbk_o == 50) {
+                                        sprintf(state->call_string[0], "   Group ");
+                                    } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
+                                               || csbk_o == 56) {
+                                        // data call: leave string as-is
+                                    } else {
+                                        sprintf(state->call_string[0], " Private ");
+                                    }
+                                    if (st2
+                                        && !(csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
+                                             || csbk_o == 56)) {
+                                        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
+                                    } else {
+                                        dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
+                                    }
+                                }
+                                if (lcn == 1 && data_call == 0) {
+                                    state->lasttgR = target;
+                                    state->lastsrcR = source;
+                                    sprintf(state->call_string[1], " Trunked ");
+                                    if (csbk_o == 49 || csbk_o == 50) {
+                                        sprintf(state->call_string[1], "   Group ");
+                                    } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
+                                               || csbk_o == 56) {
+                                        // data call: leave string as-is
+                                    } else {
+                                        sprintf(state->call_string[1], " Private ");
+                                    }
+                                    if (st2
+                                        && !(csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
+                                             || csbk_o == 56)) {
+                                        dsd_append(state->call_string[1], sizeof state->call_string[1], " Emergency  ");
+                                    } else {
+                                        dsd_append(state->call_string[1], sizeof state->call_string[1], "            ");
+                                    }
+                                }
+                                // Centralized tune via DMR SM
+                                if (csbk_o == 49) {
+                                    dmr_sm_on_group_grant(opts, state, /*freq_hz*/ freq, /*lpcn*/ lpchannum, target,
+                                                          source);
+                                } else {
+                                    dmr_sm_on_indiv_grant(opts, state, /*freq_hz*/ freq, /*lpcn*/ lpchannum, target,
+                                                          source);
+                                }
+                                if (0 && opts->use_rigctl == 1) {
                                     //we will want to set these values here, some Tier 3 systems prefer P_Protects (Tait) over VLC and TLC headers
                                     //and is faster than waiting on good embedded link control
                                     if (lcn == 0 && data_call == 0) {
@@ -584,7 +646,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                 }
 
                                 //rtl
-                                else if (opts->audio_in_type == 3) {
+                                else if (0 && opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
                                     //we will want to set these values here, some Tier 3 systems prefer P_Protects (Tait) over VLC and TLC headers
                                     //and is faster than waiting on good embedded link control
@@ -817,114 +879,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                     if (clear) {
                         if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-
-                            //run a watchdog here so we can update this with the most recent info
+                            // Update event panels first
                             watchdog_event_current(opts, state, 0);
                             watchdog_event_current(opts, state, 1);
-
-                            //display/le/buzzer bug fix when p_clear activated (unsure why this was disabled)
-                            //clear only the current slot initially, then clear both if tuning to a different freq
-                            if (state->currentslot == 0
-                                && csbk_fid
-                                       != 253) //don't reset on Cap+ since we aren't testing based on the current TS
-                            {
-                                state->payload_mi = 0;
-                                state->payload_algid = 0;
-                                state->payload_keyid = 0;
-                                state->dmr_so = 0;
-                            }
-                            if (state->currentslot == 1 && csbk_fid != 253) {
-                                state->payload_miR = 0;
-                                state->payload_algidR = 0;
-                                state->payload_keyidR = 0;
-                                state->dmr_soR = 0;
-                            }
-
-                            //rigctl
-                            if (opts->use_rigctl == 1) {
-                                //Guess I forgot to add this condition here
-                                if (GetCurrentFreq(opts->rigctl_sockfd) != state->p25_cc_freq) {
-                                    dmr_reset_blocks(
-                                        opts,
-                                        state); //reset all block gathering since we are tuning away from current frequency
-                                }
-
-                                //clear both if tuning away to another frequency
-                                if (GetCurrentFreq(opts->rigctl_sockfd) != state->p25_cc_freq) {
-                                    state->lastsrc = 0;
-                                    state->lasttg = 0;
-                                    state->payload_mi = 0;
-                                    state->payload_algid = 0;
-                                    state->payload_keyid = 0;
-                                    state->dmr_so = 0;
-
-                                    state->lastsrcR = 0;
-                                    state->lasttgR = 0;
-                                    state->payload_miR = 0;
-                                    state->payload_algidR = 0;
-                                    state->payload_keyidR = 0;
-                                    state->dmr_soR = 0;
-                                }
-
-                                //reset some strings
-                                sprintf(state->call_string[state->currentslot], "%s",
-                                        "                     "); //21 spaces
-                                sprintf(state->active_channel[state->currentslot], "%s", "");
-                                state->last_vc_sync_time = 0;
-                                state->last_cc_sync_time = time(NULL);
-                                opts->p25_is_tuned = 0;
-                                state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                                if (opts->setmod_bw != 0) {
-                                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                }
-                                if (GetCurrentFreq(opts->rigctl_sockfd) != state->p25_cc_freq) {
-                                    SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
-                                }
-                            }
-
-                            //rtl
-                            else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                                //Guess I forgot to add this condition here
-                                uint32_t tempf = (uint32_t)state->p25_cc_freq;
-                                if (opts->rtlsdr_center_freq != tempf) {
-                                    dmr_reset_blocks(
-                                        opts,
-                                        state); //reset all block gathering since we are tuning away from current frequency
-                                }
-
-                                //clear both if tuning away to another frequency
-                                if (opts->rtlsdr_center_freq != tempf) {
-                                    state->lastsrc = 0;
-                                    state->lasttg = 0;
-                                    state->payload_mi = 0;
-                                    state->payload_algid = 0;
-                                    state->payload_keyid = 0;
-                                    state->dmr_so = 0;
-
-                                    state->lastsrcR = 0;
-                                    state->lasttgR = 0;
-                                    state->payload_miR = 0;
-                                    state->payload_algidR = 0;
-                                    state->payload_keyidR = 0;
-                                    state->dmr_soR = 0;
-                                }
-
-                                //reset some strings
-                                sprintf(state->call_string[state->currentslot], "%s",
-                                        "                     "); //21 spaces
-                                sprintf(state->active_channel[state->currentslot], "%s", "");
-                                state->last_cc_sync_time = time(NULL);
-                                state->last_vc_sync_time = 0;
-                                opts->p25_is_tuned = 0;
-                                state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                                if (opts->rtlsdr_center_freq != tempf) {
-                                    if (g_rtl_ctx) {
-                                        rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
-                                    }
-                                }
-#endif
-                            }
+                            // Centralized SM release (mirrors P25 SM behavior)
+                            dmr_sm_on_release(opts, state);
                         }
                     }
                 } //end if trunking is enabled
@@ -1109,13 +1068,22 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         fprintf(stderr, " Remove;");
                     }
 
-                    // Learn control channel LCNs if current CC frequency is known
+                    // Learn control channel LCNs and add current CC as a candidate
                     if (state->p25_cc_freq != 0) {
+                        long cand[2] = {0};
+                        int ccount = 0;
                         if (ch1_flag == 0) {
                             dmr_learn_chan_map(opts, state, bcast_ch1, state->p25_cc_freq);
+                            cand[ccount++] = state->p25_cc_freq;
                         }
                         if (ch2_flag == 0) {
                             dmr_learn_chan_map(opts, state, bcast_ch2, state->p25_cc_freq);
+                            if (ccount == 0 || cand[0] != state->p25_cc_freq) {
+                                cand[ccount++] = state->p25_cc_freq;
+                            }
+                        }
+                        if (ccount > 0) {
+                            dmr_sm_on_neighbor_update(opts, state, cand, ccount);
                         }
                     }
                 }
@@ -1251,6 +1219,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     if (state->lcn_freq_count > 25) {
                                         state->lcn_freq_count = 25;
                                     }
+                                    long cand1[1] = {freqr};
+                                    dmr_sm_on_neighbor_update(opts, state, cand1, 1);
                                 }
                             }
 
@@ -1335,6 +1305,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                                 // Learn mapping from absolute parameters when announced here
                                 dmr_learn_chan_map(opts, state, mbc_lpchannum, freqr);
+                                long cand2[1] = {freqr};
+                                dmr_sm_on_neighbor_update(opts, state, cand2, 1);
 
                             } else {
                                 fprintf(stderr, "\n Unknown CDEFType: %X; CDEFParms: %015llX", mbc_cdeftype,
@@ -1778,6 +1750,20 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     if (nl[i]) {
                         fprintf(stderr, "Site: %d Rest: %d; ", nl[i], nr[i]);
                     }
+                }
+                // Add any known Rest LSN frequencies as CC candidates
+                long cand[6];
+                int ccount = 0;
+                for (int i = 0; i < 6; i++) {
+                    if (nr[i] != 0) {
+                        long f = state->trunk_chan_map[nr[i]];
+                        if (f != 0) {
+                            cand[ccount++] = f;
+                        }
+                    }
+                }
+                if (ccount > 0) {
+                    dmr_sm_on_neighbor_update(opts, state, cand, ccount);
                 }
             }
 
@@ -2423,40 +2409,17 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                     if (state->p25_cc_freq != 0 && opts->p25_trunk == 1 && (strcmp(mode, "B") != 0)
                         && (strcmp(mode, "DE") != 0)) {
-                        if (state->trunk_chan_map[lcn] != 0) //if we have a valid frequency
-                        {
-                            //RIGCTL
-                            if (opts->use_rigctl == 1) {
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                if (opts->setmod_bw != 0) {
-                                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                }
-                                SetFreq(opts->rigctl_sockfd, state->trunk_chan_map[lcn]);
-                                state->p25_vc_freq[0] = state->p25_vc_freq[1] = state->trunk_chan_map[lcn];
-                                opts->p25_is_tuned =
-                                    1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                                state->is_con_plus = 1; //flag on
-                                state->last_vc_sync_time = time(
-                                    NULL); //bugfix: set sync here so we don't immediately tune back to CC constantly.
-                                dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-                            }
-
-                            //rtl
-                            else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                if (g_rtl_ctx) {
-                                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_chan_map[lcn]);
-                                }
-                                state->p25_vc_freq[0] = state->p25_vc_freq[1] = state->trunk_chan_map[lcn];
-                                opts->p25_is_tuned = 1;
-                                state->is_con_plus = 1; //flag on
-                                state->last_vc_sync_time = time(
-                                    NULL); //bugfix: set sync here so we don't immediately tune back to CC constantly.
-                                dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-#endif
+                        long f = state->trunk_chan_map[lcn];
+                        if (f != 0) {
+                            // Mark as Con+ context for data block reset heuristics
+                            state->is_con_plus = 1;
+                            // Route to DMR SM
+                            if (opt == 3) {
+                                dmr_sm_on_indiv_grant(opts, state, /*freq_hz*/ f, /*lpcn*/ lcn, /*dst*/ grpAddr,
+                                                      /*src*/ srcAddr);
+                            } else {
+                                dmr_sm_on_group_grant(opts, state, /*freq_hz*/ f, /*lpcn*/ lcn, /*tg*/ grpAddr,
+                                                      /*src*/ srcAddr);
                             }
                         }
                     }
@@ -2584,13 +2547,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 fprintf(stderr, " Connect Plus Slot Termination;");
                 fprintf(stderr, " Target: %d;", ttarget);
 
-                //Run p_clear to decide whether or not to return to the control channel
-                uint8_t dummy[12];
-                uint8_t dbits_local[1] = {0};
-                memset(dummy, 0, sizeof(dummy));
-                dummy[0] = 46;
-                dummy[1] = 12;
-                dmr_cspdu(opts, state, dbits_local, dummy, 1, 0);
+                // Centralized SM release
+                dmr_sm_on_release(opts, state);
 
                 state->dmr_mfid = 0x06;
                 sprintf(state->dmr_branding, "%s", "Motorola");
@@ -2641,6 +2599,14 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 }
 
                 fprintf(stderr, " Hytera XPT Site Status - Free LCN: %d SN: %d", xpt_free, xpt_seq);
+                // Add free LCN frequency as a CC candidate if known
+                if (xpt_free != 0) {
+                    long f = state->trunk_chan_map[xpt_free];
+                    if (f != 0) {
+                        long candx[1] = {f};
+                        dmr_sm_on_neighbor_update(opts, state, candx, 1);
+                    }
+                }
 
                 //strings for active channels
                 char xpt_active[20];
@@ -2809,93 +2775,23 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             //debug print for tuning verification
                             fprintf(stderr, "\n LSN/TG to tune to: %d - %d", j + xpt_bank + 1, t_tg[j + xpt_bank]);
 
-                            if (state->trunk_chan_map[j + xpt_bank + 1] != 0) //if we have a valid frequency
-                            {
-                                //RIGCTL
-                                if (opts->use_rigctl == 1) {
-
-                                    //may need the code below to TG hold (just in case SLC comes before a VLC or a VC6 EMB and immediately goes to the free lcn channel)
-                                    //disable or tweak code below if these are reversed somehow or causes issues
+                            if (state->trunk_chan_map[j + xpt_bank + 1] != 0) { // if we have a valid frequency
+                                // Common handling for rigctl or RTL input
+                                if (opts->use_rigctl == 1 || opts->audio_in_type == 3) {
+                                    // TG hold handling (ensure lasttg/lasttgR tracked on tune)
                                     if (state->tg_hold != 0) {
-                                        if ((j & 1) == 0) //slot 1 LSN
-                                        {
+                                        if ((j & 1) == 0) { // slot 1 LSN
                                             state->lasttg = t_tg[j + xpt_bank];
-                                            // state->lastsrc = source;
-                                        } else //slot 2 LSN
-                                        {
+                                        } else { // slot 2 LSN
                                             state->lasttgR = t_tg[j + xpt_bank];
-                                            // state->lastsrcR = source;
                                         }
-                                        //end TG set on tune
                                     }
 
-                                    //debug
-                                    // fprintf (stderr, " - Freq: %ld", state->trunk_chan_map[j+xpt_bank+1]);
-                                    if (GetCurrentFreq(opts->rigctl_sockfd)
-                                        != state->trunk_chan_map[j + xpt_bank + 1]) {
-                                        dmr_reset_blocks(
-                                            opts,
-                                            state); //reset all block gathering since we are tuning away from current frequency
-                                    }
-
-                                    // ensure any queued audio tail plays before changing channels
-                                    dsd_drain_audio_output(opts);
-                                    if (opts->setmod_bw != 0) {
-                                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                    }
-                                    SetFreq(opts->rigctl_sockfd, state->trunk_chan_map[j + xpt_bank + 1]);
-                                    state->p25_vc_freq[0] = state->p25_vc_freq[1] =
-                                        state->trunk_chan_map[j + xpt_bank + 1];
-                                    opts->p25_is_tuned =
-                                        1;  //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                                    j = 11; //break loop
-                                }
-
-                                //rtl
-                                else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-
-                                    //may need the code below to TG hold (just in case SLC comes before a VLC or a VC6 EMB and immediately goes to the free lcn channel)
-                                    //disable or tweak code below if these are reversed somehow or causes issues
-                                    if (state->tg_hold != 0) {
-                                        if ((j & 1) == 0) //slot 1 LSN
-                                        {
-                                            state->lasttg = t_tg[j + xpt_bank];
-                                            // state->lastsrc = source;
-                                        } else //slot 2 LSN
-                                        {
-                                            state->lasttgR = t_tg[j + xpt_bank];
-                                            // state->lastsrcR = source;
-                                        }
-                                        //end TG set on tune
-                                    }
-
-                                    uint32_t temp = (uint32_t)state->trunk_chan_map[j + xpt_bank + 1];
-                                    if (opts->rtlsdr_center_freq != temp) {
-                                        dmr_reset_blocks(
-                                            opts,
-                                            state); //reset all block gathering since we are tuning away from current frequency
-                                        // ensure any queued audio tail plays before changing channels
-                                        dsd_drain_audio_output(opts);
-                                        if (g_rtl_ctx) {
-                                            rtl_stream_tune(
-                                                g_rtl_ctx,
-                                                (uint32_t)state->trunk_chan_map
-                                                    [j + xpt_bank
-                                                     + 1]); //unlike rigctl, using this actually interrupts signal decodes (rtl_clean_queue)
-                                        }
-                                        //debug print for tuning verification
-                                        fprintf(stderr, " - Tune to Freq: %ld",
-                                                state->trunk_chan_map[j + xpt_bank + 1]);
-                                    } else {
-                                        fprintf(stderr, " - Dont Tune Freq: %ld",
-                                                state->trunk_chan_map[j + xpt_bank + 1]);
-                                    }
-                                    state->p25_vc_freq[0] = state->p25_vc_freq[1] =
-                                        state->trunk_chan_map[j + xpt_bank + 1];
-                                    opts->p25_is_tuned = 1;
-                                    j = 11; //break loop
-#endif
+                                    // Defer tune to SM (common path)
+                                    dmr_sm_on_group_grant(opts, state,
+                                                          /*freq_hz*/ state->trunk_chan_map[j + xpt_bank + 1],
+                                                          /*lpcn*/ 0, /*tg*/ t_tg[j + xpt_bank], /*src*/ 0);
+                                    j = 11; // break loop
                                 }
                             }
                         }

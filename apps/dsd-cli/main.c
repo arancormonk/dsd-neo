@@ -185,13 +185,17 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     //end experimental conventional frequency scanner mode
 
     //tune back to last known CC when using trunking after x second hangtime
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && ((now - state->last_cc_sync_time) > opts->trunk_hangtime)) {
-        if (state->p25_cc_freq != 0) {
+    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)
+        && ((now - state->last_cc_sync_time) > opts->trunk_hangtime)) {
+        long cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+        if (cc != 0) {
 
             //cap+ rest channel - redundant?
             if (state->dmr_rest_channel != -1) {
                 if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
-                    state->p25_cc_freq = state->trunk_chan_map[state->dmr_rest_channel];
+                    cc = state->trunk_chan_map[state->dmr_rest_channel];
+                    state->p25_cc_freq = cc;
+                    state->trunk_cc_freq = cc;
                 }
             }
 
@@ -201,9 +205,9 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                     SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
                     s_last_rigctl_bw = opts->setmod_bw;
                 }
-                if (state->p25_cc_freq != s_last_rigctl_freq) {
-                    SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
-                    s_last_rigctl_freq = state->p25_cc_freq;
+                if (cc != s_last_rigctl_freq) {
+                    SetFreq(opts->rigctl_sockfd, cc);
+                    s_last_rigctl_freq = cc;
                 }
                 state->dmr_rest_channel = -1; //maybe?
             }
@@ -211,7 +215,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
             else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
                 if (g_rtl_ctx) {
-                    uint32_t rf = (uint32_t)state->p25_cc_freq;
+                    uint32_t rf = (uint32_t)cc;
                     if (rf != s_last_rtl_freq) {
                         rtl_stream_tune(g_rtl_ctx, rf);
                         s_last_rtl_freq = rf;

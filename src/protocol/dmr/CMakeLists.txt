@@ -5,6 +5,7 @@ target_sources(dsd-neo_proto_dmr PRIVATE
   dmr_block.c
   dmr_bs.c
   dmr_csbk.c
+  dmr_trunk_sm.c
   dmr_data.c
   dmr_dburst.c
   dmr_flco.c

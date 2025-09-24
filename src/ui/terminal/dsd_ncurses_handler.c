@@ -623,7 +623,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->payload_miP = 0;
         state->payload_miN = 0;
         opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
 
         //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
         //RIGCTL
@@ -633,7 +635,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             if (opts->setmod_bw != 0) {
                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
             }
-            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+            {
+                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                SetFreq(opts->rigctl_sockfd, f);
+                state->trunk_cc_freq = f;
+            }
         }
 
 //rtl
@@ -642,7 +648,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             //drop all items (failsafe)
             noCarrier(opts, state);
             if (g_rtl_ctx) {
-                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                {
+                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
+                    state->trunk_cc_freq = f;
+                }
             }
         }
 #endif
@@ -707,7 +717,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->payload_miP = 0;
         state->payload_miN = 0;
         opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
 
         //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
         //RIGCTL
@@ -717,7 +729,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             if (opts->setmod_bw != 0) {
                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
             }
-            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+            {
+                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                SetFreq(opts->rigctl_sockfd, f);
+                state->trunk_cc_freq = f;
+            }
         }
 
 //rtl
@@ -726,7 +742,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             //drop all items (failsafe)
             noCarrier(opts, state);
             if (g_rtl_ctx) {
-                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                {
+                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
+                    state->trunk_cc_freq = f;
+                }
             }
         }
 #endif
@@ -917,7 +937,8 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     //if trunking and user wants to just go back to the control channel and skip this call
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && c == DSD_KEY_RETURN_CC) //Capital C key - Return to CC
+    if (opts->p25_trunk == 1 && (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0)
+        && c == DSD_KEY_RETURN_CC) //Capital C key - Return to CC
     {
 
         //extra safeguards due to sync issues with NXDN
@@ -943,7 +964,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->payload_miP = 0;
         state->payload_miN = 0;
         opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
 
         //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
         //RIGCTL
@@ -951,14 +974,20 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             if (opts->setmod_bw != 0) {
                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
             }
-            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+            {
+                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                SetFreq(opts->rigctl_sockfd, f);
+            }
         }
 
 //rtl
 #ifdef USE_RTLSDR
         if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
             if (g_rtl_ctx) {
-                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                {
+                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
+                }
             }
         }
 #endif
@@ -1008,6 +1037,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->payload_miP = 0;
         state->payload_miN = 0;
         opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
 
         // Optionally try P25 CC candidates before LCN scan
@@ -1174,6 +1204,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->edacs_tuned_lcn = -1;
         state->edacs_vc_call_type = 0;
         state->p25_cc_freq = 0;
+        state->trunk_cc_freq = 0;
         opts->p25_is_tuned = 0;
         state->lasttg = 0;
         state->lastsrc = 0;

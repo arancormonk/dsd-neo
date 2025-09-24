@@ -553,7 +553,9 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     state->payload_miP = 0;
     state->payload_miN = 0;
     opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     // Clear P25p2 per-slot audio gating
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
@@ -579,6 +581,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 #endif
 
     state->last_cc_sync_time = now;
+    state->trunk_cc_freq = state->p25_cc_freq;
 
     //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
     if (state->p25_cc_is_tdma == 0) {
@@ -601,4 +604,30 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     }
 
     // fprintf (stderr, "\n User Activated Return to CC; \n ");
+}
+
+void
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+    if (!opts || !state || freq <= 0) {
+        return;
+    }
+    // Ensure any queued audio tail plays before changing channels
+    dsd_drain_audio_output(opts);
+    if (opts->use_rigctl == 1) {
+        if (opts->setmod_bw != 0) {
+            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+        }
+        SetFreq(opts->rigctl_sockfd, freq);
+    } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+        if (g_rtl_ctx) {
+            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
+        }
+#endif
+    }
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->last_vc_sync_time = time(NULL);
 }
