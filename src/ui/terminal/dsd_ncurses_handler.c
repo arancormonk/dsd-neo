@@ -339,8 +339,10 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     {
         if (opts->p25_trunk == 1) {
             opts->p25_trunk = 0;
+            opts->trunk_enable = 0;
         } else {
             opts->p25_trunk = 1;
+            opts->trunk_enable = 1;
         }
     }
 
@@ -352,6 +354,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             opts->scanner_mode = 1;
         }
         opts->p25_trunk = 0; //turn off trunking mode
+        opts->trunk_enable = 0;
     }
 
     if (c == DSD_KEY_CALL_ALERT) //'a' key, toggle call alert beep

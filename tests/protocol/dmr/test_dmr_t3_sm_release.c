@@ -46,6 +46,7 @@ main(int argc, char** argv) {
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
     opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     state.p25_cc_freq = 851000000;
     opts.p25_is_tuned = 1;
 

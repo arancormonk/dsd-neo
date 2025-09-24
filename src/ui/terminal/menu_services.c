@@ -668,6 +668,7 @@ svc_toggle_trunking(dsd_opts* opts) {
         return;
     }
     opts->p25_trunk = !opts->p25_trunk;
+    opts->trunk_enable = opts->p25_trunk;
     if (opts->p25_trunk) {
         opts->scanner_mode = 0;
     }
@@ -681,6 +682,7 @@ svc_toggle_scanner(dsd_opts* opts) {
     opts->scanner_mode = !opts->scanner_mode;
     if (opts->scanner_mode) {
         opts->p25_trunk = 0;
+        opts->trunk_enable = 0;
     }
 }
 

@@ -478,7 +478,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     }
 
                     //shim in here for ncurses freq display when not trunking (playback, not live)
-                    if (opts->p25_trunk == 0 && freq != 0) {
+                    if (opts->trunk_enable == 0 && freq != 0) {
                         //just set to both for now, could go on tslot later
                         state->p25_vc_freq[0] = freq;
                         state->p25_vc_freq[1] = freq;
@@ -512,7 +512,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             sprintf(mode, "%s", "A");
                         }
 
-                        if (state->p25_cc_freq != 0 && opts->p25_trunk == 1 && (strcmp(mode, "B") != 0)
+                        if (state->p25_cc_freq != 0 && opts->trunk_enable == 1 && (strcmp(mode, "B") != 0)
                             && (strcmp(mode, "DE") != 0)) {
                             if (freq != 0) //if we have a valid frequency
                             {
@@ -566,164 +566,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     dmr_sm_on_indiv_grant(opts, state, /*freq_hz*/ freq, /*lpcn*/ lpchannum, target,
                                                           source);
                                 }
-                                if (0 && opts->use_rigctl == 1) {
-                                    //we will want to set these values here, some Tier 3 systems prefer P_Protects (Tait) over VLC and TLC headers
-                                    //and is faster than waiting on good embedded link control
-                                    if (lcn == 0 && data_call == 0) {
-                                        state->lasttg = target;
-                                        state->lastsrc = source;
-
-                                        //fix call string for per call, etc
-                                        sprintf(state->call_string[0], " Trunked "); //catch all
-                                        if (csbk_o == 49 || csbk_o == 50) {
-                                            sprintf(state->call_string[0], "   Group ");
-                                        } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                   || csbk_o == 56) {
-                                        } //do nothing
-                                        else {
-                                            sprintf(state->call_string[0], " Private ");
-                                        }
-                                        if (st2) {
-                                            if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                || csbk_o == 56) {
-                                            } //do nothing
-                                            else {
-                                                dsd_append(state->call_string[0], sizeof state->call_string[0],
-                                                           " Emergency  ");
-                                            }
-                                        } else {
-                                            dsd_append(state->call_string[0], sizeof state->call_string[0],
-                                                       "            ");
-                                        }
-                                    }
-
-                                    if (lcn == 1 && data_call == 0) {
-                                        state->lasttgR = target;
-                                        state->lastsrcR = source;
-
-                                        //fix call string for per call, etc
-                                        sprintf(state->call_string[1], " Trunked "); //catch all
-                                        if (csbk_o == 49 || csbk_o == 50) {
-                                            sprintf(state->call_string[1], "   Group ");
-                                        } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                   || csbk_o == 56) {
-                                        } //do nothing
-                                        else {
-                                            sprintf(state->call_string[1], " Private ");
-                                        }
-                                        if (st2) {
-                                            if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                || csbk_o == 56) {
-                                            } //do nothing
-                                            else {
-                                                dsd_append(state->call_string[1], sizeof state->call_string[1],
-                                                           " Emergency  ");
-                                            }
-                                        } else {
-                                            dsd_append(state->call_string[1], sizeof state->call_string[1],
-                                                       "            ");
-                                        }
-                                    }
-                                    //Guess I forgot to add this condition here
-                                    if (GetCurrentFreq(opts->rigctl_sockfd) != freq) {
-                                        dmr_reset_blocks(
-                                            opts,
-                                            state); //reset all block gathering since we are tuning away from current frequency
-                                    }
-                                    if (opts->setmod_bw != 0) {
-                                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                    }
-                                    if (GetCurrentFreq(opts->rigctl_sockfd) != freq) {
-                                        SetFreq(opts->rigctl_sockfd, freq);
-                                    }
-                                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                                    opts->p25_is_tuned =
-                                        1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
-                                    state->last_vc_sync_time = time(NULL);
-                                    state->last_t3_tune_time = time(
-                                        NULL); //set here so a random p_clear on the opposite slot doesn't send us back to the CC
-
-                                }
-
-                                //rtl
-                                else if (0 && opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                                    //we will want to set these values here, some Tier 3 systems prefer P_Protects (Tait) over VLC and TLC headers
-                                    //and is faster than waiting on good embedded link control
-                                    if (lcn == 0 && data_call == 0) {
-                                        state->lasttg = target;
-                                        state->lastsrc = source;
-
-                                        //fix call string for per call, etc
-                                        sprintf(state->call_string[0], " Trunked "); //catch all
-                                        if (csbk_o == 49 || csbk_o == 50) {
-                                            sprintf(state->call_string[0], "   Group ");
-                                        } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                   || csbk_o == 56) {
-                                        } //do nothing
-                                        else {
-                                            sprintf(state->call_string[0], " Private ");
-                                        }
-                                        if (st2) {
-                                            if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                || csbk_o == 56) {
-                                            } //do nothing
-                                            else {
-                                                dsd_append(state->call_string[0], sizeof state->call_string[0],
-                                                           " Emergency  ");
-                                            }
-                                        } else {
-                                            dsd_append(state->call_string[0], sizeof state->call_string[0],
-                                                       "            ");
-                                        }
-                                    }
-                                    if (lcn == 1 && data_call == 0) {
-                                        state->lasttgR = target;
-                                        state->lastsrcR = source;
-
-                                        //fix call string for per call, etc
-                                        sprintf(state->call_string[1], " Trunked "); //catch all
-                                        if (csbk_o == 49 || csbk_o == 50) {
-                                            sprintf(state->call_string[1], "   Group ");
-                                        } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                   || csbk_o == 56) {
-                                        } //do nothing
-                                        else {
-                                            sprintf(state->call_string[1], " Private ");
-                                        }
-                                        if (st2) {
-                                            if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55
-                                                || csbk_o == 56) {
-                                            } //do nothing
-                                            else {
-                                                dsd_append(state->call_string[1], sizeof state->call_string[1],
-                                                           " Emergency  ");
-                                            }
-                                        } else {
-                                            dsd_append(state->call_string[1], sizeof state->call_string[1],
-                                                       "            ");
-                                        }
-                                    }
-                                    //Guess I forgot to add this condition here
-                                    uint32_t tempf = (uint32_t)freq;
-                                    if (opts->rtlsdr_center_freq != tempf) {
-                                        dmr_reset_blocks(
-                                            opts,
-                                            state); //reset all block gathering since we are tuning away from current frequency
-                                    }
-                                    if (opts->rtlsdr_center_freq != tempf) {
-                                        if (g_rtl_ctx) {
-                                            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
-                                        }
-                                    }
-                                    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                                    opts->p25_is_tuned = 1;
-                                    state->last_vc_sync_time = time(NULL);
-                                    state->last_t3_tune_time = time(
-                                        NULL); //set here so a random p_clear on the opposite slot doesn't send us back to the CC
-
-#endif
-                                }
+                                /* legacy direct tuner paths removed; tuning is handled by DMR SM above */
                             }
                         }
                     }
@@ -834,7 +677,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 fprintf(stderr, " Clear (P_CLEAR) ");
 #ifdef PCLEAR_TUNE_AWAY
 
-                if (opts->p25_trunk == 1) {
+                if (opts->trunk_enable == 1) {
 
                     //check the p_clear logic and report status
                     if (clear && csbk_fid == 255) {
@@ -878,7 +721,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     }
 
                     if (clear) {
-                        if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+                        if (opts->trunk_enable == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
                             // Update event panels first
                             watchdog_event_current(opts, state, 0);
                             watchdog_event_current(opts, state, 1);
@@ -933,7 +776,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 dmr_gateway_identifier(source, target);
 
                 //change this slot burst type to VLC so the revamped p_clear doesn't tune away
-                if (opts->p25_trunk == 1) {
+                if (opts->trunk_enable == 1) {
                     if (gi && opts->trunk_tune_group_calls == 1) {
                         if (state->currentslot == 0) {
                             state->dmrburstL = 1;
@@ -1693,7 +1536,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 }
 
                 //if trunking and data calls allowed, convert preamble burst to a DATA header burst to hold p_clear or con+
-                if (opts->p25_trunk == 1 && opts->trunk_tune_data_calls == 1) {
+                if (opts->trunk_enable == 1 && opts->trunk_tune_data_calls == 1) {
                     if (state->currentslot == 0) {
                         state->dmrburstL = 6;
                     } else {
@@ -2120,7 +1963,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             }
 
                             //without priority, this will tune the first one it finds (if group isn't blocked)
-                            if (t_tg[j] != 0 && state->p25_cc_freq != 0 && opts->p25_trunk == 1
+                            if (t_tg[j] != 0 && state->p25_cc_freq != 0 && opts->trunk_enable == 1
                                 && (strcmp(mode, "B") != 0) && (strcmp(mode, "DE") != 0)) {
                                 //debug print for tuning verification
                                 // fprintf (stderr, "\n LSN/TG to tune to: %d - %d", j+1, t_tg[j]);
@@ -2227,8 +2070,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     int busy = memcmp(empty, t_tg, sizeof(empty));
 
                     //testing (don't keep setting on quick data call LSN flip flops but same frequency for rest channel, other misc conditions)
-                    // if (!busy && rest_channel != state->dmr_rest_channel && opts->p25_trunk == 1 && state->p25_cc_freq != state->trunk_chan_map[rest_channel])
-                    if (!busy && opts->p25_trunk == 1 && state->p25_cc_freq != state->trunk_chan_map[rest_channel]) {
+                    // if (!busy && rest_channel != state->dmr_rest_channel && opts->trunk_enable == 1 && state->p25_cc_freq != state->trunk_chan_map[rest_channel])
+                    if (!busy && opts->trunk_enable == 1 && state->p25_cc_freq != state->trunk_chan_map[rest_channel]) {
                         //assign now, ideally, this should always trigger a positive p_clear when needed
                         // state->dmr_rest_channel = rest_channel;
 
@@ -2358,7 +2201,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //FME to return to a dead air channel and start searching
 
                 //shim in here for ncurses freq display when not trunking (playback, not live)
-                if (opts->p25_trunk == 0 && state->trunk_chan_map[lcn] != 0) {
+                if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
                     //just set to both for now, could go on tslot later
                     state->p25_vc_freq[0] = state->trunk_chan_map[lcn];
                     state->p25_vc_freq[1] = state->trunk_chan_map[lcn];
@@ -2407,7 +2250,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //don't tune if currently a vc on the control channel, but allow hopping form one VC to another VC if the former is in long TLC/Idle mode
                 if ((opts->trunk_tune_group_calls == 1) && (time(NULL) - state->last_vc_sync_time > waitsec)) {
 
-                    if (state->p25_cc_freq != 0 && opts->p25_trunk == 1 && (strcmp(mode, "B") != 0)
+                    if (state->p25_cc_freq != 0 && opts->trunk_enable == 1 && (strcmp(mode, "B") != 0)
                         && (strcmp(mode, "DE") != 0)) {
                         long f = state->trunk_chan_map[lcn];
                         if (f != 0) {
@@ -2458,7 +2301,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //FME to return to a dead air channel and start searching
 
                 //shim in here for ncurses freq display when not trunking (playback, not live)
-                if (opts->p25_trunk == 0 && state->trunk_chan_map[lcn] != 0) {
+                if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
                     //just set to both for now, could go on tslot later
                     state->p25_vc_freq[0] = state->trunk_chan_map[lcn];
                     state->p25_vc_freq[1] = state->trunk_chan_map[lcn];
@@ -2493,7 +2336,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //don't tune if currently a vc on the control channel
                 if ((opts->trunk_tune_data_calls == 1) && (time(NULL) - state->last_vc_sync_time > 2)) {
 
-                    if (state->p25_cc_freq != 0 && opts->p25_trunk == 1 && (strcmp(mode, "B") != 0)
+                    if (state->p25_cc_freq != 0 && opts->trunk_enable == 1 && (strcmp(mode, "B") != 0)
                         && (strcmp(mode, "DE") != 0)) {
                         if (state->trunk_chan_map[lcn] != 0) //if we have a valid frequency
                         {
@@ -2770,7 +2613,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         }
 
                         //without priority, this will tune the first one it finds (if group isn't blocked)
-                        if (t_tg[j + xpt_bank] != 0 && state->p25_cc_freq != 0 && opts->p25_trunk == 1
+                        if (t_tg[j + xpt_bank] != 0 && state->p25_cc_freq != 0 && opts->trunk_enable == 1
                             && (strcmp(mode, "B") != 0) && (strcmp(mode, "DE") != 0)) {
                             //debug print for tuning verification
                             fprintf(stderr, "\n LSN/TG to tune to: %d - %d", j + xpt_bank + 1, t_tg[j + xpt_bank]);

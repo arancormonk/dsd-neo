@@ -437,7 +437,8 @@ typedef struct {
     int wav_sample_rate;
     int wav_interpolator;
     int wav_decimator;
-    int p25_trunk;        //experimental P25 trunking with RIGCTL (or RTLFM)
+    int p25_trunk;        // legacy flag name used across protocols
+    int trunk_enable;     // protocol-agnostic alias for trunking enable (kept in sync with p25_trunk)
     int p25_is_tuned;     //set to 1 if currently on VC, set back to 0 if on CC
     int trunk_is_tuned;   //protocol-agnostic alias (kept in sync with p25_is_tuned)
     float trunk_hangtime; //hangtime in seconds before tuning back to CC

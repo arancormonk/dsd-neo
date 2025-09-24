@@ -525,7 +525,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         }
 
         //only assign this value here if not trunking
-        // if (opts->p25_trunk == 0) //may be safe to always do this now with code changes, will want to test at some point (tg hold w/ dual voice / slco may optimally need this set)
+        // if (opts->trunk_enable == 0) //may be safe to always do this now with code changes, will want to test at some point (tg hold w/ dual voice / slco may optimally need this set)
         {
             if (restchannel != state->dmr_rest_channel && restchannel != -1) {
                 state->dmr_rest_channel = restchannel;
@@ -609,7 +609,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             fprintf(stderr, "Encrypted ");
 
             //experimental TG LO/B if ENC trunked following disabled //DMR -- LO Trunked Enc Calls WIP; #121
-            if (opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0) //&& type != 2
+            if (opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0) //&& type != 2
             {
                 int i, lo = 0;
                 uint32_t t = 0;
@@ -1298,7 +1298,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
         //extra handling for TG hold while trunking enabled
         if (state->tg_hold != 0
-            && opts->p25_trunk == 1) //logic seems to be fixed now for new rest lsn logic and other considerations
+            && opts->trunk_enable == 1) //logic seems to be fixed now for new rest lsn logic and other considerations
         {
             //debug
             // fprintf (stderr, " TG HOLD Both Slots Busy Check; ");
@@ -1371,7 +1371,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         sprintf(state->dmr_site_parms, "Free LCN - %d ", xpt_free);
 
         //extra handling for TG hold while trunking enabled
-        if (state->tg_hold != 0 && opts->p25_trunk == 1) {
+        if (state->tg_hold != 0 && opts->trunk_enable == 1) {
             //if both slots are voice,
             if (state->dmrburstL == 16 && state->dmrburstR == 16) {
                 //but nether is the TG on hold

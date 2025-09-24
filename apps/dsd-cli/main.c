@@ -857,8 +857,9 @@ initOpts(dsd_opts* opts) {
     opts->udp_in_bytes = 0ULL;
     opts->udp_in_drops = 0ULL;
 
-    opts->p25_trunk = 0;    //0 disabled, 1 is enabled
-    opts->p25_is_tuned = 0; //set to 1 if currently on VC, set back to 0 on carrier drop
+    opts->p25_trunk = 0;                  //0 disabled, 1 is enabled
+    opts->trunk_enable = opts->p25_trunk; // keep alias in sync
+    opts->p25_is_tuned = 0;               //set to 1 if currently on VC, set back to 0 on carrier drop
     opts->trunk_hangtime =
         1; //1 second hangtime by default before tuning back to CC, going sub 1 sec causes issues with cc slip
 
@@ -2309,6 +2310,7 @@ main(int argc, char** argv) {
             case 'Y':                  //conventional scanner mode
                 opts.scanner_mode = 1; //enable scanner
                 opts.p25_trunk = 0;    //turn off trunking mode if user enabled it
+                opts.trunk_enable = 0;
                 break;
 
             case 'k': //multi-key loader (dec)
@@ -2439,6 +2441,7 @@ main(int argc, char** argv) {
 
             case 'T': //new letter assignment for trunking, flow down to allow temp numbers
                 opts.p25_trunk = 1;
+                opts.trunk_enable = 1;
                 opts.scanner_mode = 0; //turn off scanner mode if user enabled it
                 break;
 

@@ -59,6 +59,7 @@ init_opts_state(dsd_opts* opts, dsd_state* state) {
     memset(opts, 0, sizeof(*opts));
     memset(state, 0, sizeof(*state));
     opts->p25_trunk = 1;     // enable trunking logic
+    opts->trunk_enable = 1;  // protocol-agnostic alias
     opts->use_rigctl = 0;    // avoid IO during test
     opts->audio_in_type = 0; // avoid RTL path
     opts->setmod_bw = 0;

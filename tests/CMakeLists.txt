@@ -239,6 +239,13 @@ add_executable(dsd-neo_test_dmr_t3_sm_release
 target_include_directories(dsd-neo_test_dmr_t3_sm_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 
+# DMR Tier III end-to-end shim (neighbor → grant → release)
+add_executable(dsd-neo_test_dmr_t3_shim
+  protocol/dmr/test_dmr_t3_shim.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
+target_include_directories(dsd-neo_test_dmr_t3_shim PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
+
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
 target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)
