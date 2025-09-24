@@ -250,12 +250,15 @@ jobs:
                 # plugin binary path can vary; handle common locations
                 if [ -f /tmp/linuxdeploy-plugin-appimage/build/bin/linuxdeploy-plugin-appimage ]; then
                   install -m0755 /tmp/linuxdeploy-plugin-appimage/build/bin/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
+                elif [ -f /tmp/linuxdeploy-plugin-appimage/build/src/linuxdeploy-plugin-appimage ]; then
+                  install -m0755 /tmp/linuxdeploy-plugin-appimage/build/src/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
                 elif [ -f /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage ]; then
                   install -m0755 /tmp/linuxdeploy-plugin-appimage/build/linuxdeploy-plugin-appimage /usr/local/bin/linuxdeploy-plugin-appimage
                 else
                   echo "linuxdeploy-plugin-appimage binary not found after build" >&2
                   ls -la /tmp/linuxdeploy-plugin-appimage/build || true
                   ls -la /tmp/linuxdeploy-plugin-appimage/build/bin || true
+                  ls -la /tmp/linuxdeploy-plugin-appimage/build/src || true
                   exit 1
                 fi
                 echo "linuxdeploy version: $(/usr/local/bin/linuxdeploy --version || true)"
