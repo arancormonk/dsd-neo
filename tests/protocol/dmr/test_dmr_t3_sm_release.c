@@ -50,8 +50,8 @@ main(int argc, char** argv) {
     state.p25_cc_freq = 851000000;
     opts.p25_is_tuned = 1;
 
-    // Mark slot bursts as active (non-idle)
-    state.dmrburstL = 1;
+    // Mark slot bursts as active voice on left (DMR VOICE=16), idle on right
+    state.dmrburstL = 16;
     state.dmrburstR = 24; // one idle, one active
 
     // Invoke release: should defer (stay tuned)

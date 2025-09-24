@@ -117,8 +117,8 @@ test_explicit_grant_and_release(void) {
     assert(opts.p25_is_tuned == 1);
     assert(state.p25_vc_freq[0] == vc);
 
-    // Slot activity prevents return
-    state.dmrburstL = 9; // active
+    // Slot activity prevents return (DMR VOICE=16)
+    state.dmrburstL = 16; // active voice
     dmr_sm_on_release(&opts, &state);
     assert(opts.p25_is_tuned == 1);
 

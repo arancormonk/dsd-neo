@@ -146,6 +146,13 @@ dmr_sm_persist_cache(dsd_opts* opts, dsd_state* state) {
     fclose(fp);
 }
 
+// Determine if a DMR slot burst indicates active voice
+static inline int
+dmr_sm_burst_is_voice(int burst) {
+    // DMR VOICE (16), MAC_ACTIVE VOICE (21)
+    return (burst == 16) || (burst == 21);
+}
+
 // Internal helper: compute VC freq from inputs
 static long
 dmr_sm_resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
@@ -243,10 +250,11 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
         return;
     }
     state->p25_sm_release_count++;
-    // If either slot still shows activity, defer return-to-CC (prevents
-    // dropping an opposite-slot call ending slightly later).
-    int left_active = (state->dmrburstL != 24 && state->dmrburstL != 0);
-    int right_active = (state->dmrburstR != 24 && state->dmrburstR != 0);
+    // If either slot still shows VOICE activity, defer return-to-CC (prevents
+    // dropping an opposite-slot call ending slightly later). Treat only
+    // explicit VOICE states as active; IDLE/CSBK/etc. are not voice activity.
+    int left_active = dmr_sm_burst_is_voice(state->dmrburstL);
+    int right_active = dmr_sm_burst_is_voice(state->dmrburstR);
     if (left_active || right_active) {
         if (opts->verbose > 0) {
             fprintf(stderr, "\n  DMR SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u\n", left_active,
