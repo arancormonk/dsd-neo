@@ -13,9 +13,13 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 ## Downloads
 
 - Stable releases: https://github.com/arancormonk/dsd-neo/releases
+  - Linux AppImage (x86_64): dsd-neo-linux-x86_64-portable-<version>.AppImage
+  - Linux AppImage (aarch64): dsd-neo-linux-aarch64-portable-<version>.AppImage
   - macOS DMG (arm64): dsd-neo-macos-arm64-portable-<version>.dmg
   - Windows ZIP (x86_64): dsd-neo-cygwin-x86_64-portable-<version>.zip
 - Nightly builds: https://github.com/arancormonk/dsd-neo/releases/tag/nightly
+  - Linux AppImage (x86_64): dsd-neo-linux-x86_64-portable-nightly.AppImage
+  - Linux AppImage (aarch64): dsd-neo-linux-aarch64-portable-nightly.AppImage
   - macOS DMG (arm64): dsd-neo-macos-arm64-portable-nightly.dmg
   - Windows ZIP (x86_64): dsd-neo-cygwin-x86_64-portable-nightly.zip
 
