@@ -37,6 +37,20 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     snprintf(dst + len, dstsz - len, "%s", src);
 }
 
+// Format a short suffix indicating TDMA slot for DMR UI, e.g., " (TDMA S1)".
+static inline void
+dmr_format_chan_suffix(int slot_index, char* out, size_t outsz) {
+    if (!out || outsz == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (slot_index < 0) {
+        return;
+    }
+    // Display slots as 1-based (S1/S2) to match UI conventions
+    snprintf(out, outsz, " (TDMA S%d)", (slot_index % 2) + 1);
+}
+
 // Forward decls for event helpers
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
@@ -411,22 +425,26 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     }
                 }
 
-                //add active channel string to display
+                //add active channel string to display (match P25 style: hex channel + slot suffix)
                 if (lpchannum != 0 && lpchannum != 0xFFF) {
+                    char suf[24];
+                    dmr_format_chan_suffix(lcn, suf, sizeof suf);
                     if (csbk_o == 49 || csbk_o == 50) {
-                        sprintf(state->active_channel[lcn], "Active Group Ch: %d TG: %d; ", lpchannum, target);
+                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
                     } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56) {
-                        sprintf(state->active_channel[lcn], "Active Data Ch: %d TG: %d; ", lpchannum, target);
+                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
                     } else {
-                        sprintf(state->active_channel[lcn], "Active Private Ch: %d TG: %d; ", lpchannum, target);
+                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
                     }
                 } else if (lpchannum == 0xFFF) {
+                    char suf[24];
+                    dmr_format_chan_suffix(lcn, suf, sizeof suf);
                     if (csbk_o == 49 || csbk_o == 50) {
-                        sprintf(state->active_channel[lcn], "Active Group Ch: %d TG: %d; ", mbc_lpchannum, target);
+                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
                     } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56) {
-                        sprintf(state->active_channel[lcn], "Active Data Ch: %d TG: %d; ", mbc_lpchannum, target);
+                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
                     } else {
-                        sprintf(state->active_channel[lcn], "Active Private Ch: %d TG: %d; ", mbc_lpchannum, target);
+                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
                     }
                 }
                 //update last active channel time
@@ -2169,13 +2187,17 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 sprintf(state->dmr_branding, "%s", "Motorola");
                 sprintf(state->dmr_branding_sub, "Con+ ");
 
-                //add active channel string for display
-                if (opt == 2) {
-                    sprintf(state->active_channel[tslot], "Active Group Ch: %d TG: %d; ", lcn, grpAddr);
-                } else if (opt == 3) {
-                    sprintf(state->active_channel[tslot], "Active Private Ch: %d TG: %d; ", lcn, grpAddr);
-                } else { //generic channel of unknown type
-                    sprintf(state->active_channel[tslot], "Active OPT %02X Ch: %d TG: %d; ", opt, lcn, grpAddr);
+                //add active channel string for display (match P25 style: hex channel + slot suffix)
+                {
+                    char suf[24];
+                    dmr_format_chan_suffix(tslot, suf, sizeof suf);
+                    if (opt == 2) {
+                        sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
+                    } else if (opt == 3) {
+                        sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
+                    } else { //generic channel of unknown type
+                        sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
+                    }
                 }
 
                 state->last_active_time = time(NULL);
@@ -2291,8 +2313,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     goto SKIPCOND;
                 }
 
-                //add active channel string for display
-                sprintf(state->active_channel[tslot], "Active Data Ch: %d TG: %d; ", lcn, dtarget);
+                //add active channel string for display (match P25 style: hex channel + slot suffix)
+                {
+                    char suf[24];
+                    dmr_format_chan_suffix(tslot, suf, sizeof suf);
+                    sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
+                }
                 state->last_active_time = time(NULL);
 
                 //NOTE: Only set CC Frequency from SLC since it will tell us
