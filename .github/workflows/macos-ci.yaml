@@ -220,8 +220,8 @@ jobs:
 
           # Copy docs/launchers
           cp -f packaging/macos/README-macos.txt "$STAGE/" || true
-          cp -f packaging/macos/run-dsd-neo.sh "$STAGE/" || true
-          chmod +x "$STAGE/run-dsd-neo.sh" || true
+          cp -f packaging/macos/dsd-neo.sh "$STAGE/" || true
+          chmod +x "$STAGE/dsd-neo.sh" || true
 
           # Helper: collect dylib deps of a file and copy non-system libs into $STAGE/lib
           collect_deps() {

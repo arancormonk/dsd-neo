@@ -429,23 +429,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 if (lpchannum != 0 && lpchannum != 0xFFF) {
                     char suf[24];
                     dmr_format_chan_suffix(lcn, suf, sizeof suf);
-                    if (csbk_o == 49 || csbk_o == 50) {
-                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
-                    } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56) {
-                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
-                    } else {
-                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
-                    }
+                    sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", lpchannum, suf, target);
                 } else if (lpchannum == 0xFFF) {
                     char suf[24];
                     dmr_format_chan_suffix(lcn, suf, sizeof suf);
-                    if (csbk_o == 49 || csbk_o == 50) {
-                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
-                    } else if (csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56) {
-                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
-                    } else {
-                        sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
-                    }
+                    sprintf(state->active_channel[lcn], "Active Ch: %04X%s TG: %d; ", mbc_lpchannum, suf, target);
                 }
                 //update last active channel time
                 state->last_active_time = time(NULL);
@@ -2191,13 +2179,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 {
                     char suf[24];
                     dmr_format_chan_suffix(tslot, suf, sizeof suf);
-                    if (opt == 2) {
-                        sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
-                    } else if (opt == 3) {
-                        sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
-                    } else { //generic channel of unknown type
-                        sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
-                    }
+                    sprintf(state->active_channel[tslot], "Active Ch: %04X%s TG: %d; ", lcn, suf, grpAddr);
                 }
 
                 state->last_active_time = time(NULL);

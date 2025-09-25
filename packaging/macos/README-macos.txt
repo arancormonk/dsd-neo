@@ -4,14 +4,14 @@ DSD-NEO Portable for macOS
 Contents
 - bin/dsd-neo              : The decoder executable
 - lib/*.dylib              : Bundled runtime library dependencies (when available)
-- run-dsd-neo.sh           : Launcher that sets DYLD paths and runs dsd-neo
+- dsd-neo.sh           : Launcher that sets DYLD paths and runs dsd-neo
 
 Usage
 1) Open the DMG (double‑click the .dmg file).
 2) Drag the “dsd-neo-macos” folder to a location on your disk (e.g., ~/Applications/dsd-neo).
 3) Eject the DMG.
 4) From Terminal, run inside the copied folder:
-   ./run-dsd-neo.sh -h
+   ./dsd-neo.sh -h
 
 Notes
 - The launcher sets DYLD_FALLBACK_LIBRARY_PATH to use bundled libs.
@@ -28,10 +28,10 @@ Notes
 
 Examples
 - Show help:
-  ./run-dsd-neo.sh -h
+  ./dsd-neo.sh -h
 
 - Use a WAV file as input:
-  ./run-dsd-neo.sh -i sample.wav
+  ./dsd-neo.sh -i sample.wav
 
 Licensing
 This distribution includes third-party components under their respective

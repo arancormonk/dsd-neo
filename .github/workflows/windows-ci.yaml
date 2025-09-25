@@ -273,8 +273,8 @@ jobs:
           done
 
           # Copy launchers and config
-          cp -f packaging/windows-cygwin/run-dsd-neo.bat "$STAGE/"
-          cp -f packaging/windows-cygwin/run-dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true
+          cp -f packaging/windows-cygwin/dsd-neo.bat "$STAGE/"
+          cp -f packaging/windows-cygwin/dsd-neo-mintty.bat "$STAGE/" 2>/dev/null || true
           cp -f packaging/windows-cygwin/README-windows.txt "$STAGE/"
           if [ -f packaging/windows-cygwin/etc/pulse/default.pa ]; then
             mkdir -p "$STAGE/etc/pulse"
