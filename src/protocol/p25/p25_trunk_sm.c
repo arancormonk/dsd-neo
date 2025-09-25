@@ -303,26 +303,36 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     // timeslot when only one slot sends an END/IDLE indication.
     state->p25_sm_release_count++;
 
+    int forced = (state && state->p25_sm_force_release) ? 1 : 0;
+    if (state) {
+        state->p25_sm_force_release = 0; // consume one-shot flag
+    }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
     if (is_p2_vc) {
-        int left_active = 0;
-        int right_active = 0;
-        // Consider a slot active if audio is allowed OR its burst state is
-        // not idle (24). This preserves encrypted call following (audio gated)
-        // while still honoring true idle determinations.
-        if (state) {
-            left_active = (state->p25_p2_audio_allowed[0] != 0) || (state->dmrburstL != 24 && state->dmrburstL != 0);
-            right_active = (state->p25_p2_audio_allowed[1] != 0) || (state->dmrburstR != 24 && state->dmrburstR != 0);
-        }
-
-        if (left_active || right_active) {
+        // Determine activity using P25-specific gates and a short recent-voice window.
+        // Avoid relying on DMR burst flags here, as they may be stale across protocol transitions
+        // and can wedge the state machine on a dead VC.
+        int left_audio = (state->p25_p2_audio_allowed[0] != 0);
+        int right_audio = (state->p25_p2_audio_allowed[1] != 0);
+        time_t now = time(NULL);
+        int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= opts->trunk_hangtime);
+        if (left_audio || right_audio) {
             if (opts && opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u allowL=%d allowR=%d\n",
-                        left_active, right_active, state->dmrburstL, state->dmrburstR, state->p25_p2_audio_allowed[0],
-                        state->p25_p2_audio_allowed[1]);
+                fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%d\n", left_audio,
+                        right_audio, recent_voice, opts ? opts->trunk_hangtime : -1);
             }
-            p25_sm_log_status(opts, state, "release-deferred");
+            p25_sm_log_status(opts, state, "release-deferred-gated");
             return; // keep current VC; do not return to CC yet
+        }
+        // If neither slot has audio and we were invoked due to explicit message,
+        // ignore recent voice window and proceed immediately. Otherwise, delay
+        // until hangtime expires.
+        if (!forced && recent_voice) {
+            if (opts && opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: Release delayed (recent voice within hangtime)\n");
+            }
+            p25_sm_log_status(opts, state, "release-delayed-recent");
+            return;
         }
     }
 

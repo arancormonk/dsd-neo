@@ -226,6 +226,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             state->p25_p2_enc_lo_early++;
                             fprintf(stderr,
                                     " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Return to CC; \n");
+                            state->p25_sm_force_release = 1;
                             p25_sm_on_release(opts, state);
                             // Avoid enabling audio; bail out early
                             fprintf(stderr, "%s", KNRM);
@@ -460,6 +461,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
             // If both logical channels are idle, return to CC
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+                state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }
 
@@ -539,8 +541,10 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 } else {
                     state->dmrburstR = 24;
                 }
+                state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             } else if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+                state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }
         }
@@ -579,6 +583,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         state->p25_p2_audio_allowed[slot] = 0;
         // If both logical channels are idle, return to CC
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+            state->p25_sm_force_release = 1;
             p25_sm_on_release(opts, state);
         }
     }
@@ -995,8 +1000,10 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 } else {
                     state->dmrburstR = 24;
                 }
+                state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             } else if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+                state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }
         }
@@ -1052,6 +1059,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // Only return to CC when both slots are IDLE (not merely audio-gated),
         // or upon explicit vPDU release. This avoids bouncing on encrypted calls.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+            state->p25_sm_force_release = 1;
             p25_sm_on_release(opts, state);
         }
     }

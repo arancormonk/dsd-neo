@@ -907,6 +907,9 @@ typedef struct {
     // P25 SM metrics
     unsigned int p25_sm_tune_count;    // number of VC tunes via SM
     unsigned int p25_sm_release_count; // number of releases via SM
+    // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
+    // or policy events; cleared by the SM after handling
+    int p25_sm_force_release;
 
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes
