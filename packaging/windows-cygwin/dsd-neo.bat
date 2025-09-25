@@ -1,12 +1,33 @@
 @echo off
 setlocal ENABLEDELAYEDEXPANSION
 
+REM --- Double-click friendly relaunch: prefer Windows Terminal, fallback to cmd ---
+set "__RELAUNCHED=0"
+if /I "%~1"=="--relaunch" (
+  set "__RELAUNCHED=1"
+  shift
+)
+if not "%__RELAUNCHED%"=="1" (
+  echo %CMDCMDLINE% | findstr /I " /c " >nul
+  if not errorlevel 1 (
+    REM Launched via double-click (cmd /c). Reopen in persistent terminal.
+    if exist "%LocalAppData%\Microsoft\WindowsApps\wt.exe" (
+      start "" "%LocalAppData%\Microsoft\WindowsApps\wt.exe" -w 0 nt -d "%CD%" cmd /k """%~f0"" --relaunch %*"
+      exit /b
+    ) else (
+      start "" cmd /k """%~f0"" --relaunch %*"
+      exit /b
+    )
+  )
+)
+
 REM Optional: allow disabling the final pause with --no-pause
 set "DO_PAUSE=1"
 if /I "%~1"=="--no-pause" (
   set "DO_PAUSE=0"
   shift
 )
+if "%__RELAUNCHED%"=="1" set "DO_PAUSE=0"
 
 REM Resolve script directory and expected layout
 set "ROOT=%~dp0"

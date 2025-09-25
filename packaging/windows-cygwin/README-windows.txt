@@ -6,28 +6,27 @@ Contents
 - bin\*.dll                    : Cygwin and library runtime dependencies
 - bin\pulseaudio.exe           : PulseAudio server (if present)
 - etc\pulse\default.pa         : Optional PulseAudio server config
-- run-dsd-neo.bat              : Launcher that sets PATH, starts PulseAudio, runs dsd-neo
+- dsd-neo.bat                  : Launcher (double-click friendly) that sets PATH, starts PulseAudio, runs dsd-neo
 
 Usage
 1) Extract the ZIP to any folder (avoid protected locations like Program Files).
-2) Recommended: double-click run-dsd-neo-mintty.bat for a nicer terminal UI.
-   Or use run-dsd-neo.bat directly. The launcher will:
+2) Double-click dsd-neo.bat (preferred). The launcher will open in Windows Terminal when available, or a persistent Command Prompt, then:
    - add bin\ to PATH so bundled DLLs are used
    - start PulseAudio in the background (if available)
    - launch dsd-neo.exe with any arguments you pass to the BAT
 
 Examples
 - Show help:
-  run-dsd-neo.bat -h
+  dsd-neo.bat -h
 
 - Use a WAV file as input:
-  run-dsd-neo.bat -i sample.wav
+  dsd-neo.bat -i sample.wav
 
 - List PulseAudio devices (from within dsd-neo):
-  run-dsd-neo.bat -O
+  dsd-neo.bat -O
 
 - Use PulseAudio output explicitly (recommended on Windows):
-  run-dsd-neo.bat -o pulse
+  dsd-neo.bat -o pulse
 
 RTL-SDR Support
 If this ZIP includes RTL-SDR support, you will also need to install WinUSB
