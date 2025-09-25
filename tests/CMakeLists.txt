@@ -31,6 +31,24 @@ target_include_directories(dsd-neo_test_p25_mac_lengths PRIVATE ${PROJECT_SOURCE
 target_link_libraries(dsd-neo_test_p25_mac_lengths PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_MAC_LENGTHS COMMAND dsd-neo_test_p25_mac_lengths)
 
+# P25 P2 FACCH RS vectors
+add_executable(dsd-neo_test_p25_p2_facch_rs protocol/p25/test_p25_p2_facch_rs.c)
+target_include_directories(dsd-neo_test_p25_p2_facch_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_facch_rs PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_FACCH_RS COMMAND dsd-neo_test_p25_p2_facch_rs)
+
+# P25 P2 MAC header MCO -> length inference
+add_executable(dsd-neo_test_p25_mac_segment protocol/p25/test_p25_mac_segment.c)
+target_include_directories(dsd-neo_test_p25_mac_segment PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_mac_segment PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MAC_SEGMENT COMMAND dsd-neo_test_p25_mac_segment)
+
+# P25 IDEN variants (TDMA denom + map override)
+add_executable(dsd-neo_test_p25_iden_variants protocol/p25/test_p25_iden_variants.c)
+target_include_directories(dsd-neo_test_p25_iden_variants PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_iden_variants PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_IDEN_VARIANTS COMMAND dsd-neo_test_p25_iden_variants)
+
 # P25 P1 MBT → MAC bridging: Identifier Update
 add_executable(dsd-neo_test_p25_iden_bridge protocol/p25/test_p25_iden_bridge.c)
 target_include_directories(dsd-neo_test_p25_iden_bridge PRIVATE ${PROJECT_SOURCE_DIR}/include)

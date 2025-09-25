@@ -122,7 +122,7 @@ main(void) {
 
     // Add a 4th WGID to SG069 to trigger compact summary form WG:4(a,b+)
     p25_patch_add_wgid(&st, 69, 0x0DEF);
-    dl = p25_patch_compose_details(&st, det, sizeof det);
+    (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details compact WG", strstr(det, "WG:4(0837,1929+") != NULL);
 
     // TTL sweep: mark SG142 stale, ensure it disappears from summary/details
@@ -130,9 +130,9 @@ main(void) {
     if (idx142 >= 0) {
         st.p25_patch_last_update[idx142] = time(NULL) - 601; // >600s ago
     }
-    sl = p25_patch_compose_summary(&st, sum, sizeof sum);
+    (void)p25_patch_compose_summary(&st, sum, sizeof sum);
     rc |= expect_eq_str("summary after TTL", sum, "P: 069");
-    dl = p25_patch_compose_details(&st, det, sizeof det);
+    (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details dropped SG142", strstr(det, "SG142[") == NULL);
 
     // Clear SG069; expect no summary and SG069 inactive
@@ -148,7 +148,7 @@ main(void) {
     p25_patch_remove_wgid(&st, 69, 0x1111);
     p25_patch_remove_wgid(&st, 69, 0x2222);
     // Compose details should not include SG069 anymore (inactive)
-    dl = p25_patch_compose_details(&st, det, sizeof det);
+    (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("SG069 inactive after removals", strstr(det, "SG069[") == NULL);
 
     // SG077[S] still present (simulselect) with U:3
