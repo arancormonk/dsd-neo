@@ -337,38 +337,28 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         unsigned long long mihex1_e = (unsigned long long)ConvertBitIntoBytes(&mi_b[0], 32);
         unsigned long long mihex2_e = (unsigned long long)ConvertBitIntoBytes(&mi_b[32], 32);
 
-        state->payload_algid = algid_early;
-        state->payload_keyid = kid_early;
-        state->payload_miP = (mihex1_e << 32) | mihex2_e; // 64 MSBs
+        // Do NOT persist early ALGID/KID/MI into state here; bits are not
+        // yet fully FEC-corrected and can cause false ENC classification.
+        // Defer assignments until after FEC below where algidhex/kidhex/MI
+        // are computed from corrected words.
+        (void)algid_early;
+        (void)kid_early;
+        (void)mihex1_e;
+        (void)mihex2_e;
 
         // Establish mute/unmute policy early (no prints here)
-        if (state->R != 0
-            && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
+        if (state->R != 0 && (algid_early == 0xAA || algid_early == 0x81 || algid_early == 0x9F)) {
             opts->unmute_encrypted_p25 = 1; // RC4/DES/DES-XL with key
-        } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
+        } else if (algid_early == 0x84 || algid_early == 0x89) {
             // AES: defer unmute unless key already known loaded; keep muted by default
             // opts->unmute_encrypted_p25 remains as-is
-        } else if (state->payload_algid != 0 && state->payload_algid != 0x80) {
+        } else if (algid_early != 0 && algid_early != 0x80) {
             opts->unmute_encrypted_p25 = 0;
         }
 
-#ifdef P25p1_ENC_LO
-        // Apply early ENC lockout policy consistent with later block
-        if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->p25_trunk == 1 && opts->p25_is_tuned == 1
-            && opts->trunk_tune_enc_calls == 0) {
-            int enc_lo = 1;
-            if (state->payload_algid == 0xAA && state->R != 0) {
-                enc_lo = 0; // RC4 with key present → allow
-            }
-            if (enc_lo == 1 && state->lasttg != 0) {
-                // Return to CC swiftly; prints/logs handled in later code path
-                p25_sm_on_release(opts, state);
-                // Stop processing remaining IMBE frames for this LDU to avoid
-                // any residual audio output while releasing to CC.
-                return;
-            }
-        }
-#endif // P25p1_ENC_LO
+        // Do NOT apply ENC lockout before FEC confirmation; early bits can be
+        // wrong and spuriously trigger lockout/misclassification. The proper
+        // ENC lockout is handled later after parity/FEC steps.
     }
 
     // IMBE 6

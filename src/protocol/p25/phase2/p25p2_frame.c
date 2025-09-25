@@ -653,11 +653,15 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 #define P25p2_ENC_LO //disable if this behavior is detremental
 #ifdef P25p2_ENC_LO
 
-        //If trunking and tuning ENC calls is disabled, lock out and go back to CC
+        // If trunking and tuning ENC calls is disabled, lock out and go back to CC
+        // NOTE: Treat ALGID 0x00 and 0x80 as clear. Consider keys for RC4/DES/DES‑XL and
+        // AES key presence to avoid false lockouts when decryptable.
         int enc_lo = 1;
-        int ttg = 0; //checking to a valid TG will help make sure we have a good MAC_PTT or SACCH Channel Update First
-        int alg = 0; //set alg and key based on current slot values
+        int ttg = 0; // checking to a valid TG will help make sure we have a good MAC_PTT or SACCH Channel Update First
+        int alg = 0; // set alg and key based on current slot values
         unsigned long long int key = 0;
+        int slot = state->currentslot;
+        int aes_loaded = state->aes_key_loaded[slot];
 
         if (state->currentslot == 0) {
             ttg = state->lasttg;
@@ -679,13 +683,19 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             // else if (future condition) key = 1;
         }
 
-        if (alg != 0 && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-            //NOTE: This may still cause an issue IF we havent' loaded the key yet from keyloader
-            if (alg == 0xAA && key != 0) {
+        if (alg != 0 && alg != 0x80 && opts->p25_trunk == 1 && opts->p25_is_tuned == 1
+            && opts->trunk_tune_enc_calls == 0) {
+            // Consider key presence for known algorithms
+            int have_key = 0;
+            if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0) {
+                have_key = 1; // RC4/DES/DES-XL have key
+            }
+            if ((alg == 0x84 || alg == 0x89) && aes_loaded == 1) {
+                have_key = 1; // AES-256/AES-128 key loaded
+            }
+            if (have_key) {
                 enc_lo = 0;
             }
-            // else if (future condition) enc_lo = 0;
-            // else if (future condition) enc_lo = 0;
 
             //if this is locked out by conditions above, then write it into the TG mode if we have a TG value assigned
             if (enc_lo == 1 && ttg != 0) {
