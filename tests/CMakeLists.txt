@@ -240,67 +240,67 @@ add_test(NAME P25_IDEN_TRUST_PROMOTE COMMAND dsd-neo_test_p25_iden_trust_promote
 
 # P25 channel suffix formatting
 add_executable(dsd-neo_test_p25_format_chan_suffix protocol/p25/test_p25_format_chan_suffix.c)
-target_include_directories(dsd-neo_test_p25_format_chan_suffix PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_format_chan_suffix PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_format_chan_suffix PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_FORMAT_CHAN_SUFFIX COMMAND dsd-neo_test_p25_format_chan_suffix)
 
 # P25 freq fallback when CC is TDMA but IDEN TDMA unknown
 add_executable(dsd-neo_test_p25_freq_fallback_tdma protocol/p25/test_p25_freq_fallback_tdma.c)
-target_include_directories(dsd-neo_test_p25_freq_fallback_tdma PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_freq_fallback_tdma PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_freq_fallback_tdma PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_FREQ_FALLBACK_TDMA COMMAND dsd-neo_test_p25_freq_fallback_tdma)
 
 # P25 P2 release gating semantics
 add_executable(dsd-neo_test_p25_p2_release_gating protocol/p25/test_p25_p2_release_gating.c)
-target_include_directories(dsd-neo_test_p25_p2_release_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_p2_release_gating PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_p2_release_gating PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_RELEASE_GATING COMMAND dsd-neo_test_p25_p2_release_gating)
 
 # P25 regroup/patch tracking
 add_executable(dsd-neo_test_p25_patch_tracking protocol/p25/test_p25_patch_tracking.c)
-target_include_directories(dsd-neo_test_p25_patch_tracking PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_patch_tracking PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_patch_tracking PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_PATCH_TRACKING COMMAND dsd-neo_test_p25_patch_tracking)
 
 # P25 grant trust clamp
 add_executable(dsd-neo_test_p25_grant_trust_clamp protocol/p25/test_p25_grant_trust_clamp.c)
-target_include_directories(dsd-neo_test_p25_grant_trust_clamp PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_grant_trust_clamp PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_grant_trust_clamp PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_GRANT_TRUST_CLAMP COMMAND dsd-neo_test_p25_grant_trust_clamp)
 
 # P25 options gating on MAC VPDU grants
 add_executable(dsd-neo_test_p25_options_gating protocol/p25/test_p25_options_gating.c)
-target_include_directories(dsd-neo_test_p25_options_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_options_gating PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_options_gating PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_OPTIONS_GATING COMMAND dsd-neo_test_p25_options_gating)
 
 # P25 CC cache disable via env
 add_executable(dsd-neo_test_p25_cc_cache_disable protocol/p25/test_p25_cc_cache_disable.c)
-target_include_directories(dsd-neo_test_p25_cc_cache_disable PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_cc_cache_disable PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_cc_cache_disable PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_CC_CACHE_DISABLE COMMAND dsd-neo_test_p25_cc_cache_disable)
 
 # P25 learned channel map persistence
 add_executable(dsd-neo_test_p25_learned_chan_map protocol/p25/test_p25_learned_chan_map.c)
-target_include_directories(dsd-neo_test_p25_learned_chan_map PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_learned_chan_map PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_learned_chan_map PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_LEARNED_CHAN_MAP COMMAND dsd-neo_test_p25_learned_chan_map)
 
 # P25 trunk SM timing (TDMA vs FDMA)
 add_executable(dsd-neo_test_p25_trunk_sm_timing protocol/p25/test_p25_trunk_sm_timing.c)
-target_include_directories(dsd-neo_test_p25_trunk_sm_timing PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_trunk_sm_timing PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_trunk_sm_timing PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_TRUNK_SM_TIMING COMMAND dsd-neo_test_p25_trunk_sm_timing)
 
 # P25 suffix formatting denom=4
 add_executable(dsd-neo_test_p25_format_chan_suffix_denom4 protocol/p25/test_p25_format_chan_suffix_denom4.c)
-target_include_directories(dsd-neo_test_p25_format_chan_suffix_denom4 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_format_chan_suffix_denom4 PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_format_chan_suffix_denom4 PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_FORMAT_CHAN_SUFFIX_DENOM4 COMMAND dsd-neo_test_p25_format_chan_suffix_denom4)
 
 # P25 next CC candidate empty/cc-only edges
 add_executable(dsd-neo_test_p25_next_cc_candidate_edges protocol/p25/test_p25_next_cc_candidate_edges.c)
-target_include_directories(dsd-neo_test_p25_next_cc_candidate_edges PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(dsd-neo_test_p25_next_cc_candidate_edges PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_next_cc_candidate_edges PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_NEXT_CC_CANDIDATE_EDGES COMMAND dsd-neo_test_p25_next_cc_candidate_edges)
 
