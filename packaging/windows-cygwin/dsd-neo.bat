@@ -12,10 +12,12 @@ if not "%__RELAUNCHED%"=="1" (
   if not errorlevel 1 (
     REM Launched via double-click (cmd /c). Reopen in persistent terminal.
     if exist "%LocalAppData%\Microsoft\WindowsApps\wt.exe" (
-      start "" "%LocalAppData%\Microsoft\WindowsApps\wt.exe" -w 0 nt -d "%CD%" cmd /k """%~f0"" --relaunch %*"
+      REM Use correct quoting so arguments are preserved through cmd /k
+      start "" "%LocalAppData%\Microsoft\WindowsApps\wt.exe" -w 0 nt -d "%CD%" cmd /k ""%~f0" --relaunch %*"
       exit /b
     ) else (
-      start "" cmd /k """%~f0"" --relaunch %*"
+      REM Fallback to classic cmd with proper argument forwarding
+      start "" cmd /k ""%~f0" --relaunch %*"
       exit /b
     )
   )
