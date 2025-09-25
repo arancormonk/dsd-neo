@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.
@@ -273,3 +274,24 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
 }
 
 /* (xcch test wrapper provided as a separate TU in tests/) */
+
+// Test helper: emulate the early ENC lockout decision used in P25p2 SACCH/FACCH
+// after two consecutive encrypted MAC_PTT indications for the same TG when
+// ENC lockout is enabled. Mirrors the patched behavior:
+//  - Mute only the indicated slot
+//  - Release to CC only if the opposite slot is not active
+// Returns 1 if release was requested via p25_sm_on_release, else 0.
+int
+p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot) {
+    if (!opts || !state) {
+        return 0;
+    }
+    int eslot = slot & 1;
+    int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+    state->p25_p2_audio_allowed[eslot] = 0;
+    if (!other_audio) {
+        p25_sm_on_release(opts, state);
+        return 1;
+    }
+    return 0;
+}

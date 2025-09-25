@@ -250,6 +250,12 @@ target_include_directories(dsd-neo_test_p25_trunk_cc_cache PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_p25_trunk_cc_cache PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_TRUNK_CC_CACHE COMMAND dsd-neo_test_p25_trunk_cc_cache)
 
+# P25 P2 early ENC lockout per-slot gating (stay on VC when other slot active)
+add_executable(dsd-neo_test_p25_p2_early_enc_lockout protocol/p25/test_p25_p2_early_enc_lockout.c)
+target_include_directories(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
+target_link_libraries(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_EARLY_ENC_LOCKOUT COMMAND dsd-neo_test_p25_p2_early_enc_lockout)
+
 # P25 IDEN trust promotion for current site
 add_executable(dsd-neo_test_p25_iden_trust_promote protocol/p25/test_p25_iden_trust_promote.c)
 # Include local P25 test stubs (e.g., mbelib.h) before project headers

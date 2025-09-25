@@ -224,10 +224,20 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                                 watchdog_event_current(opts, state, eslot);
                             }
                             state->p25_p2_enc_lo_early++;
-                            fprintf(stderr,
+                            // Hardened early ENC lockout: mute only this slot, and
+                            // release to CC only if the opposite slot is not active.
+                            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+                            state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
+                            if (!other_audio) {
+                                fprintf(
+                                    stderr,
                                     " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Return to CC; \n");
-                            state->p25_sm_force_release = 1;
-                            p25_sm_on_release(opts, state);
+                                state->p25_sm_force_release = 1;
+                                p25_sm_on_release(opts, state);
+                            } else {
+                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
+                                                "slot active; stay on VC. \n");
+                            }
                             // Avoid enabling audio; bail out early
                             fprintf(stderr, "%s", KNRM);
                             // Clear pending after action
@@ -354,9 +364,19 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                                 watchdog_event_current(opts, state, eslot);
                             }
                             state->p25_p2_enc_lo_early++;
-                            fprintf(stderr,
+                            // Hardened early ENC lockout: mute only this slot, and
+                            // release to CC only if the opposite slot is not active.
+                            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+                            state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
+                            if (!other_audio) {
+                                fprintf(
+                                    stderr,
                                     " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Return to CC; \n");
-                            p25_sm_on_release(opts, state);
+                                p25_sm_on_release(opts, state);
+                            } else {
+                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
+                                                "slot active; stay on VC. \n");
+                            }
                             fprintf(stderr, "%s", KNRM);
                             state->p25_p2_enc_pending[eslot] = 0;
                             state->p25_p2_enc_pending_ttg[eslot] = 0;
