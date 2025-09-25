@@ -1135,6 +1135,22 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             voice = 0;
         }
     }
+
+    // Fallback release: if we are tuned to a P25p2 voice channel but have not
+    // observed any recent voice activity for longer than hangtime AND both
+    // logical channels have audio disabled, force a return to the control
+    // channel. This covers sites that do not emit MAC_SIGNAL/IDLE on the VCs
+    // after call teardown, preventing the tuner from getting wedged.
+    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+        time_t now2 = time(NULL);
+        int no_recent_voice =
+            (state->last_vc_sync_time != 0 && (now2 - state->last_vc_sync_time) > opts->trunk_hangtime);
+        int both_slots_idle = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
+        if (no_recent_voice && both_slots_idle) {
+            state->p25_sm_force_release = 1;
+            p25_sm_on_release(opts, state);
+        }
+    }
 END:
     voice = 0; //reset before exit
 }
