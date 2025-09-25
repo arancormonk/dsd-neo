@@ -252,7 +252,8 @@ add_test(NAME P25_TRUNK_CC_CACHE COMMAND dsd-neo_test_p25_trunk_cc_cache)
 
 # P25 IDEN trust promotion for current site
 add_executable(dsd-neo_test_p25_iden_trust_promote protocol/p25/test_p25_iden_trust_promote.c)
-target_include_directories(dsd-neo_test_p25_iden_trust_promote PRIVATE ${PROJECT_SOURCE_DIR}/include)
+# Include local P25 test stubs (e.g., mbelib.h) before project headers
+target_include_directories(dsd-neo_test_p25_iden_trust_promote PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_iden_trust_promote PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_TRUST_PROMOTE COMMAND dsd-neo_test_p25_iden_trust_promote)
 
