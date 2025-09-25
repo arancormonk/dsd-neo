@@ -32,6 +32,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5.0.0
+      - name: Login to Docker Hub (optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Enable QEMU for cross-arch containers
         uses: docker/setup-qemu-action@v3.6.0
         with:
@@ -78,6 +84,22 @@ jobs:
             ldeploy_url='https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage'
             plugin_url='https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage'
           fi
+
+          # Proactively pull the base image with retries; fall back to an Ubuntu
+          # mirror if Docker Hub returns unauthorized/rate-limited on runners.
+          tries=0
+          fallback_image='public.ecr.aws/lts/ubuntu:20.04'
+          until docker pull --platform "$platform" "$image"; do
+            tries=$((tries+1))
+            echo "docker pull failed (attempt $tries)." >&2
+            if [ $tries -ge 2 ]; then
+              echo "Falling back to mirror: $fallback_image" >&2
+              image="$fallback_image"
+              docker pull --platform "$platform" "$image"
+              break
+            fi
+            sleep 2
+          done
 
           docker run --rm --platform "$platform" \
             -e DEBIAN_FRONTEND=noninteractive \
