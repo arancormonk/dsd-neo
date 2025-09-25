@@ -62,13 +62,14 @@ REM Ensure ncurses can find terminfo in portable tree; default TERM if unset
 if not defined TERM set "TERM=xterm"
 if exist "%SHARE%\terminfo" set "TERMINFO=%SHARE%\terminfo"
 
-REM Start PulseAudio server if available; ignore errors if already running
+REM Start PulseAudio server if available; run hidden (no extra window)
+REM Use --daemonize=1 so it detaches immediately; silence output.
 if exist "%BIN%\pulseaudio.exe" (
   echo Starting PulseAudio...
   if exist "%ETC%\pulse\default.pa" (
-    start "" "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 -F "%ETC%\pulse\default.pa"
+    "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 -F "%ETC%\pulse\default.pa" >nul 2>nul
   ) else (
-    start "" "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1
+    "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 >nul 2>nul
   )
 )
 
