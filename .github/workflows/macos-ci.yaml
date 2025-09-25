@@ -25,6 +25,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v5.0.0
@@ -63,7 +67,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          brew update
           # Many deps we build from source (cached) to align with Linux/Windows flows
           brew install cmake ninja pkg-config ccache \
             libsndfile pulseaudio fftw libusb ncurses
