@@ -65,7 +65,6 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
     uint8_t R[3];
     uint8_t BPTCReservedBits = 0;
     uint8_t is_ras = 0;
-    uint8_t crc_original_validity = 0;
 
     uint32_t crcmask = 0;
     uint8_t crclen = 0;
@@ -338,12 +337,8 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             is_ras = 0;
         }
 
-        //if this is a RAS system, set the CRC to okay if irrecoverable errors are okay
-        //if we don't do this, then we can't view some data (CSBKs on RAS enabled systems)
-        if (is_ras == 1) {
-            crc_original_validity = CRCCorrect;
-            CRCCorrect = 1;
-        }
+        // Do not override CRC correctness based on suspected RAS.
+        // Keep CRCCorrect as computed and only annotate/log RAS.
 
         if (databurst == 0x04 || databurst == 0x06) //MBC Header, Data Header
         {
@@ -642,10 +637,7 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
         }
     }
 
-    //set the original CRCCorrect back to its original value if the RAS flag was tripped
-    if (is_ras == 1) {
-        CRCCorrect = crc_original_validity;
-    }
+    // Keep original CRC result; RAS should not change CRC validity.
 
     //start printing relevant fec/crc/ras messages, don't print on idle or MBC continuation blocks (handled in dmr_block.c)
     // if (IrrecoverableErrors == 0 && CRCCorrect == 1 && databurst != 0x09 && databurst != 0x05) fprintf(stderr, "(CRC OK)");
