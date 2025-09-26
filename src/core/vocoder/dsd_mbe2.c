@@ -4,10 +4,8 @@
  */
 /*-------------------------------------------------------------------------------
  *
- *
- *
- * TODO: Fill me in'
- *
+ * AMBE/IMBE soft-demod and processing helpers
+ * (consolidated and simplified handling)
  *
  * LWVMOBILE
  * 2023-07 DSD-FME Florida Man Edition

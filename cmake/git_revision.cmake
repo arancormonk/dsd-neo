@@ -94,13 +94,14 @@ function(git_describe _var)
 		return()
 	endif()
 
-	# TODO sanitize
-	#if((${ARGN}" MATCHES "&&") OR
-	#	(ARGN MATCHES "||") OR
-	#	(ARGN MATCHES "\\;"))
-	#	message("Please report the following error to the project!")
-	#	message(FATAL_ERROR "Looks like someone's doing something nefarious with git_describe! Passed arguments ${ARGN}")
-	#endif()
+	# Basic sanitization of additional arguments to avoid suspicious tokens.
+	# Note: execute_process does not invoke a shell, so risk is already low.
+	# We still defensively reject args containing '&&' or '||'.
+	foreach(_git_arg IN LISTS ARGN)
+		if(_git_arg MATCHES "&&|\\|\\|")
+			message(FATAL_ERROR "git_describe received suspicious args: ${ARGN}")
+		endif()
+	endforeach()
 
 	#message(STATUS "Arguments to execute_process: ${ARGN}")
 

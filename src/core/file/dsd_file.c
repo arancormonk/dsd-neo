@@ -465,7 +465,13 @@ close_wav_file(SNDFILE* wav_file) {
 
 SNDFILE*
 close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, Event_History_I* event_struct) {
-    sf_close(wav_file);
+    if (wav_file != NULL) {
+        sf_close(wav_file);
+    }
+
+    if (wav_out_filename == NULL || wav_out_filename[0] == '\0') {
+        return NULL;
+    }
 
     time_t event_time = event_struct->Event_History_Items[0].event_time;
     char datestr[9];
@@ -487,59 +493,65 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
     char gi_str[10];
     memset(gi_str, 0, sizeof(gi_str));
 
-    sprintf(sys_str, "%s", event_struct->Event_History_Items[0].sysid_string);
-    sprintf(src_str, "%s", event_struct->Event_History_Items[0].src_str);
-    sprintf(tgt_str, "%s", event_struct->Event_History_Items[0].tgt_str);
+    snprintf(sys_str, sizeof(sys_str), "%s", event_struct->Event_History_Items[0].sysid_string);
+    snprintf(src_str, sizeof(src_str), "%s", event_struct->Event_History_Items[0].src_str);
+    snprintf(tgt_str, sizeof(tgt_str), "%s", event_struct->Event_History_Items[0].tgt_str);
 
-    sprintf(gi_str, "%s", "");
+    snprintf(gi_str, sizeof(gi_str), "%s", "");
     if (gi == 0) {
-        sprintf(gi_str, "%s", "GROUP");
+        snprintf(gi_str, sizeof(gi_str), "%s", "GROUP");
     } else if (gi == 1) {
-        sprintf(gi_str, "%s", "PRIVATE");
+        snprintf(gi_str, sizeof(gi_str), "%s", "PRIVATE");
     }
 
     uint8_t is_string = 0;
     char emp_str[200];
     memset(emp_str, 0, sizeof(emp_str));
-    sprintf(emp_str, "%s", "BUMBLEBEETUNA");
+    snprintf(emp_str, sizeof(emp_str), "%s", "BUMBLEBEETUNA");
     if (strncmp(emp_str, src_str, 13) != 0) {
         is_string = 1;
     }
 
-    //rename and give extension .wav after closing
+    // Prepare final filename now, but only rename if file is not empty header-only (44 bytes)
     char new_filename[2000];
     memset(new_filename, 0, sizeof(new_filename));
 
-    //check for String based TGT and SRC values (M17, YSF, DSTAR)
     if (is_string == 1) {
-        sprintf(new_filename, "%s/%s_%s_%05d_%s_%s_TGT_%s_SRC_%s.wav", dir, datestr, timestr, random_number, sys_str,
-                gi_str, tgt_str, src_str);
+        snprintf(new_filename, sizeof(new_filename), "%s/%s_%s_%05d_%s_%s_TGT_%s_SRC_%s.wav", dir, datestr, timestr,
+                 random_number, sys_str, gi_str, tgt_str, src_str);
     } else { //is a numerical value
-        sprintf(new_filename, "%s/%s_%s_%05d_%s_%s_TGT_%d_SRC_%d.wav", dir, datestr, timestr, random_number, sys_str,
-                gi_str, target_id, source_id);
+        snprintf(new_filename, sizeof(new_filename), "%s/%s_%s_%05d_%s_%s_TGT_%d_SRC_%d.wav", dir, datestr, timestr,
+                 random_number, sys_str, gi_str, target_id, source_id);
     }
 
     /* stack buffers; no free */
 
-    rename(wav_out_filename, new_filename);
-
-    //WIP: Open File, seek, and if 44 bytes, delete it (empty wav file)
-    //TODO: May need to move the deletion ahead of renaming, and do a NULL check,
-    //some software may attempt to injest an empty .wav file first, but this should
-    //occur so quickly, the watchdog on rdio or similar shouldn't even realize it
-    //may also consider checking for a larger size, something that's more than a blip
-    //sometimes if encrypted and no key provided, if signal is marginal, short garbled audio
-    //could be written to a wav file, so may look into a value >= xx kb in size minimum
-    FILE* file = fopen(new_filename, "r");
+    // Check size of temp file before renaming; delete if only header (44 bytes)
+    FILE* file = fopen(wav_out_filename, "r");
     if (file != NULL) {
         fseek(file, 0, SEEK_END);
         long size = ftell(file);
         fseek(file, 0, SEEK_SET); // Rewind to beginning
         fclose(file);
 
-        //debug
-        // fprintf (stderr, " Closed Wav File %s; Size: %d; \n", new_filename, size);
+        if (size == 44) {
+            // Remove the temp file and do not expose a .wav to watchers
+            remove(wav_out_filename);
+            wav_file = NULL;
+            return wav_file;
+        }
+    }
 
+    // Safe to rename now
+    rename(wav_out_filename, new_filename);
+
+    // Optional: recheck final file size and remove if header-only, though we already checked
+    file = fopen(new_filename, "r");
+    if (file != NULL) {
+        fseek(file, 0, SEEK_END);
+        long size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        fclose(file);
         if (size == 44) {
             remove(new_filename);
         }

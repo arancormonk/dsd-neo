@@ -4,10 +4,8 @@
  */
 /*-------------------------------------------------------------------------------
  *
- *
- *
- * TODO: Fill me in'
- *
+ * Float-path audio processing helpers and playback mixers
+ * (DMR stereo variants and utilities)
  *
  * LWVMOBILE
  * 2023-10 DSD-FME Florida Man Edition
