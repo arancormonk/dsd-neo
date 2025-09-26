@@ -99,13 +99,13 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         is_xpt = 1;
     }
 
-    //hytera XPT -- disable the pf flag, is used for TS value in some Hytera XPT PDUs
-    if (is_xpt) {
-        pf = 0;
-    }
+    // Preserve PF semantics globally. Some Hytera XPT PDUs overload PF as TS,
+    // but we must not clear PF globally. Handle those under vendor-gated cases
+    // when evaluating the protect flag below.
 
-    //check protect flag
-    if (pf == 1) {
+    //check protect flag (preserve PF semantics); ignore PF only for specific Hytera XPT TLC/variants
+    int pf_overloaded_by_xpt = (fid == 0x68) && (flco == 0x09);
+    if (pf == 1 && !pf_overloaded_by_xpt) {
         if (type == 1) {
             fprintf(stderr, "%s \n", KRED);
         }
