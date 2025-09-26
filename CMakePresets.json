@@ -24,6 +24,7 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "OFF",
         "DSD_ENABLE_LTO": "ON",
         "DSD_ENABLE_FAST_MATH": "ON"
       }
