@@ -640,6 +640,20 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     state->last_active_time = time(NULL);
                 }
 
+                // Debounce slot state on move: mark destination slot active voice
+                // and clear the opposite slot to prevent stale dual-slot activity.
+                if (tslot == 0) {
+                    state->dmrburstL = 16; // voice
+                    state->dmrburstR = 9;  // idle
+                    state->active_channel[1][0] = '\0';
+                    state->call_string[1][0] = '\0';
+                } else {
+                    state->dmrburstR = 16; // voice
+                    state->dmrburstL = 9;  // idle
+                    state->active_channel[0][0] = '\0';
+                    state->call_string[0][0] = '\0';
+                }
+
                 // Gate retune: only follow C_MOVE if we’re currently off-CC on a VC
                 if (opts->trunk_enable == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1
                     && (move_freq > 0 || (move_lpcn > 0 && move_lpcn < 0xFFFF))) {
@@ -740,6 +754,18 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 #ifdef PCLEAR_TUNE_AWAY
 
                 if (opts->trunk_enable == 1) {
+
+                    // Mark this slot as idle so the SM release gate does not
+                    // see stale voice activity on the cleared slot.
+                    if (state->currentslot == 0) {
+                        state->dmrburstL = 9;
+                        state->call_string[0][0] = '\0';
+                        state->active_channel[0][0] = '\0';
+                    } else {
+                        state->dmrburstR = 9;
+                        state->call_string[1][0] = '\0';
+                        state->active_channel[1][0] = '\0';
+                    }
 
                     //check the p_clear logic and report status (SM will make final decision)
                     if (clear && csbk_fid == 255) {

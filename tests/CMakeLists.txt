@@ -367,6 +367,15 @@ target_include_directories(dsd-neo_test_dmr_t3_force_release PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_dmr_t3_force_release PRIVATE m)
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 
+# DMR Tier III move then release (grant -> move TS2->TS1 -> P_CLEAR -> return CC)
+add_executable(dsd-neo_test_dmr_t3_move_release
+  protocol/dmr/test_dmr_t3_move_release.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c)
+target_include_directories(dsd-neo_test_dmr_t3_move_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_t3_move_release PRIVATE m)
+add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)
+
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
 target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)
