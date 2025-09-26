@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 /*-------------------------------------------------------------------------------
  * dmr_dburst.c
  * DMR Data Burst Handling and related BPTC/FEC/CRC Functions
@@ -14,6 +18,7 @@
 //TODO: Test UDT NMEA and LIP Decoders with Real World Samples (if/when available)
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dmr/r34_viterbi.h>
 
 void
 dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst) {
@@ -450,7 +455,11 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
 
         uint8_t TrellisReturn[18];
         memset(TrellisReturn, 0, sizeof(TrellisReturn));
-        IrrecoverableErrors = dmr_34(tdibits, TrellisReturn);
+        // Prefer normative Viterbi decoder; fall back to legacy on error
+        if (dmr_r34_viterbi_decode(tdibits, TrellisReturn) != 0) {
+            (void)dmr_34(tdibits, TrellisReturn);
+        }
+        IrrecoverableErrors = 0;
 
         //NOTE: IrrecoverableErrors in this context are a tally of errors from trellis
         //they may have been successfully corrected, the CRC will reveal as much

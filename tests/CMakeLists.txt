@@ -432,3 +432,24 @@ add_executable(dsd-neo_test_dsp_channel_filters dsp/test_dsp_channel_filters.cpp
 target_include_directories(dsd-neo_test_dsp_channel_filters PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_channel_filters PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CHANNEL_FILTERS COMMAND dsd-neo_test_dsp_channel_filters)
+
+# DMR utility/CRC property tests
+add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
+target_include_directories(dsd-neo_test_dmr_crc_props PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_crc_props PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_CRC_PROPS COMMAND dsd-neo_test_dmr_crc_props)
+
+add_executable(dsd-neo_test_dmr_bit_utils protocol/dmr/test_dmr_bit_utils.c)
+target_include_directories(dsd-neo_test_dmr_bit_utils PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_bit_utils PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_BIT_UTILS COMMAND dsd-neo_test_dmr_bit_utils)
+
+add_executable(dsd-neo_test_dmr_r34_stub protocol/dmr/test_dmr_r34_stub.c)
+target_include_directories(dsd-neo_test_dmr_r34_stub PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_r34_stub PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_R34_STUB COMMAND dsd-neo_test_dmr_r34_stub)
+
+add_executable(dsd-neo_test_dmr_r34_equiv protocol/dmr/test_dmr_r34_equiv.c)
+target_include_directories(dsd-neo_test_dmr_r34_equiv PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_r34_equiv PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_R34_EQUIV COMMAND dsd-neo_test_dmr_r34_equiv)

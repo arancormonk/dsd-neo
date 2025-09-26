@@ -2,6 +2,7 @@ add_library(dsd-neo_proto_dmr)
 
 target_sources(dsd-neo_proto_dmr PRIVATE
   dmr_34.c
+  dmr_34_viterbi.c
   dmr_block.c
   dmr_bs.c
   dmr_csbk.c
