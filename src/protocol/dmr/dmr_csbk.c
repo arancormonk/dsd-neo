@@ -867,15 +867,18 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //check the source and/or target for special gateway identifiers
                 dmr_gateway_identifier(source, target);
 
-                // For hangtime (ILLEGALLY_PARKED), do not force a fake VLC burst.
-                // That override can suppress return-to-CC decisions. Instead, if
-                // we are off the CC on a VC and hangtime is indicated, attempt a
-                // centralized release; the SM will debounce based on actual slot
-                // activity and configured hangtime.
+                // For hangtime (ILLEGALLY_PARKED), do not force a fake VLC burst
+                // and do not trigger an immediate release while already on a VC.
+                // Treat it as a heartbeat to extend the recent-activity timer
+                // so the SM hangtime gate holds the VC briefly, preventing CC↔VC
+                // bouncing between back-to-back grants.
                 if (opts->trunk_enable == 1) {
                     if (p_kind == 2) {
                         if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-                            dmr_sm_on_release(opts, state);
+                            state->last_vc_sync_time = time(NULL);
+                            if (opts->verbose > 2) {
+                                fprintf(stderr, " Hold VC (hangtime advisory) ");
+                            }
                         }
                     } else {
                         // For other P_PROTECT kinds, preserve prior behavior of

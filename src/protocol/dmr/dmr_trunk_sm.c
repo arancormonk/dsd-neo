@@ -285,6 +285,10 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
     // slightly later.
     int left_active = dmr_sm_burst_is_activity(opts, state->dmrburstL);
     int right_active = dmr_sm_burst_is_activity(opts, state->dmrburstR);
+    if (opts->verbose > 2) {
+        fprintf(stderr, "\n  DMR SM: Release check L_act=%d R_act=%d burstL=%d burstR=%d\n", left_active, right_active,
+                state->dmrburstL, state->dmrburstR);
+    }
     if (left_active || right_active) {
         if (opts->verbose > 0) {
             fprintf(stderr, "\n  DMR SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u\n", left_active,
@@ -293,19 +297,28 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
         dmr_sm_log_status(opts, state, "release-deferred");
         return; // keep current VC
     }
-    // Respect a brief hangtime: some P_CLEAR arrive slightly before last bursts fully drain
-    if (state->last_t3_tune_time != 0 && opts->trunk_hangtime > 0.0f) {
+    // Respect a brief hangtime based on recent voice activity rather than
+    // initial tune time. This avoids bouncing back to CC between back-to-back
+    // calls on the same VC when the first call exceeded the hangtime window.
+    if (opts->trunk_hangtime > 0.0f) {
         time_t now = time(NULL);
-        if ((double)(now - state->last_t3_tune_time) < opts->trunk_hangtime) {
-            if (opts->verbose > 1) {
-                fprintf(stderr, "\n  DMR SM: Release deferred (hangtime) dt=%.2f\n",
-                        (double)(now - state->last_t3_tune_time));
+        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
+        if (opts->verbose > 2) {
+            fprintf(stderr, "\n  DMR SM: Hangtime check dt=%.2f hang=%.2f last_vc_sync=%ld now=%ld\n", dt,
+                    opts->trunk_hangtime, (long)state->last_vc_sync_time, (long)now);
+        }
+        if (state->last_vc_sync_time != 0 && dt < opts->trunk_hangtime) {
+            if (opts->verbose > 2) {
+                fprintf(stderr, "\n  DMR SM: Release deferred (recent voice) dt=%.2f\n", dt);
             }
             return; // defer return to CC
         }
     }
 
     // Return to CC using shared tuner helper
+    if (opts->verbose > 2) {
+        fprintf(stderr, "\n  DMR SM: Release -> CC\n");
+    }
     return_to_cc(opts, state);
     dmr_sm_log_status(opts, state, "after-release");
 }

@@ -122,15 +122,15 @@ test_explicit_grant_and_release(void) {
     dmr_sm_on_release(&opts, &state);
     assert(opts.p25_is_tuned == 1);
 
-    // Clear activity; hangtime defers
+    // Clear activity; hangtime defers (based on recent voice activity)
     state.dmrburstL = 24; // idle
     opts.trunk_hangtime = 1.0f;
-    state.last_t3_tune_time = time(NULL);
+    state.last_vc_sync_time = time(NULL);
     dmr_sm_on_release(&opts, &state);
     assert(opts.p25_is_tuned == 1);
 
     // After hangtime, return to CC
-    state.last_t3_tune_time = time(NULL) - 2; // ensure elapsed > hangtime
+    state.last_vc_sync_time = time(NULL) - 2; // ensure elapsed > hangtime
     dmr_sm_on_release(&opts, &state);
     assert(opts.p25_is_tuned == 0);
 }

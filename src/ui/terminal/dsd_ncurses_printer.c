@@ -3868,12 +3868,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("\n");
             }
 
-            if (1 == 1) //opts->p25_trunk == 1
-            {
+            if (opts->p25_trunk == 1) {
                 printw("|        | "); //Currently Tuned Frequency
 
-                // Tuned/Active Frequency Display: prefer tuned VC; else derive from active channel text/map
-                {
+                // Only render VC frequency when tuned off CC (on a voice/data channel)
+                if (opts->p25_is_tuned == 1) {
+                    // Tuned/Active Frequency Display: prefer tuned VC; else derive from active channel text/map
                     long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
                     if (vc == 0) {
                         vc = ui_guess_active_vc_freq(state);
