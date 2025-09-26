@@ -149,13 +149,14 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         //ETSI TS 102 361-4 V1.12.1 (2023-07) p281
         udt_uab += 1; //add 1 internally, up to 4 appended blocks are carried, min is 1
 
-        //NMEA Specific Fix for unspecified MFID format w/ 2 appended blocks (UAB 2) p291
-        if (udt_format == 0x5 && udt_uab == 3) {
-            udt_uab = 2; //set to two if long unspecified format
+        // Harden UDT UAB edge cases (P7):
+        // Do not coerce UAB to a different block count. For NMEA (0x05) with UAB==3,
+        // treat the block count as reserved/unknown and let the assembler detect the
+        // last block via CRC instead of block count. This avoids false-positive counts.
+        state->udt_uab_reserved[slot] = 0;
+        if (dpf == 0 && udt_format == 0x05 && udt_uab == 3) {
+            state->udt_uab_reserved[slot] = 1;
         }
-
-        //Note: NMEA Reserved value UAB 3 is not referenced in ETSI, so unknown number of
-        //appended blocks but we will assume it is supposed to be 4 appended blocks
 
         //p_head
         uint8_t p_sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[0], 4);
@@ -332,10 +333,18 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         {
             //UDT packet info -- samples needed for testing
             //NOTE: This format's completed message has a CRC16 - like MBC - but has number of blocks (appended blocks) like R 1/2, etc.
-            fprintf(stderr, "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d SF %d - PF %d OP %02X", sap,
-                    sap_string, udt_format, udtf_string, udt_padnib, udt_uab, udt_sf, udt_pf, udt_op);
+            if (dpf == 0 && state->udt_uab_reserved[slot]) {
+                fprintf(stderr,
+                        "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d (reserved/unknown) SF %d - PF %d OP %02X",
+                        sap, sap_string, udt_format, udtf_string, udt_padnib, udt_uab, udt_sf, udt_pf, udt_op);
+            } else {
+                fprintf(stderr, "\n  SAP %02d [%s] - FMT %d [%s] - PDn %d - BLOCKS %d SF %d - PF %d OP %02X", sap,
+                        sap_string, udt_format, udtf_string, udt_padnib, udt_uab, udt_sf, udt_pf, udt_op);
+            }
 
             //set number of blocks to follow (appended blocks) for block assembler
+            //When UAB is reserved/unknown, keep the raw header value but allow the
+            //assembler to end on CRC match rather than this count (see dmr_block_assembler).
             state->data_header_blocks[slot] = udt_uab;
 
             //set data header to valid
@@ -1563,10 +1572,52 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
         pf = (block_bytes[0] >> 6) & 1;
 
         if (is_udt) {
-            lb = 0; //set to zero, data header may erroneously the lb flag check above (IG)
-            pf = 0; //set to zero, data header may erroneously the pf flag check above (A)
-            if (blocks == blockcounter) {
-                lb = 1; //seems to work now with the +1 on udt_uab
+            pf = 0; // ignore header PF for UDT in assembler
+
+            if (state->udt_uab_reserved[slot]) {
+                // UDT UAB reserved/unknown: detect end-of-message dynamically using CRC16
+                lb = 0;
+
+                // Build bits for header + current appended blocks
+                memset(dmr_pdu_sf_bits, 0, sizeof(dmr_pdu_sf_bits));
+                for (i = 0, j = 0; i < (int)((1 + blockcounter) * block_len); i++, j += 8) {
+                    dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
+                    dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
+                    dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
+                    dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
+                    dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
+                    dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
+                    dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
+                    dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
+                }
+
+                // Extract CRC from the last 16 bits of current appended block span
+                CRCExtracted = 0;
+                for (i = 0; i < 16; i++) {
+                    CRCExtracted =
+                        (CRCExtracted << 1) | (uint32_t)(dmr_pdu_sf_bits[i + 96 * (1 + blockcounter) - 16] & 1);
+                }
+
+                // Compute CRC over appended blocks only (skip header)
+                uint8_t mbc_block_bits[12 * 8 * 6]; // up to 4 blocks
+                memset(mbc_block_bits, 0, sizeof(mbc_block_bits));
+                int mbits = (int)(blockcounter * 96);
+                for (i = 0; i < mbits; i++) {
+                    mbc_block_bits[i] = dmr_pdu_sf_bits[i + 96];
+                }
+                CRCComputed = ComputeCrcCCITT16d(mbc_block_bits, (uint16_t)(mbits - 16));
+
+                if (CRCComputed == CRCExtracted) {
+                    // CRC says we have a complete UDT PDU; treat this as last block
+                    lb = 1;
+                    blocks = blockcounter;
+                }
+            } else {
+                // Header-reported UAB path
+                lb = 0; // ignore potential lb indication in byte0
+                if (blocks == blockcounter) {
+                    lb = 1;
+                }
             }
 
             //debug -- evaluate current block count vs the number of expected blocks
@@ -1713,6 +1764,8 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
         state->data_byte_ctr[slot] = 0;
         //reset ks start value
         state->data_ks_start[slot] = 0;
+        //reset UDT UAB reserved flag
+        state->udt_uab_reserved[slot] = 0;
     }
 
     //else if the end of MBC Header and Blocks
@@ -1737,6 +1790,8 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
         state->data_conf_data[slot] = 0;
         //flag off p_head
         state->data_p_head[slot] = 0;
+        //reset UDT UAB reserved flag
+        state->udt_uab_reserved[slot] = 0;
 
     }
 
@@ -1758,6 +1813,7 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     memset(state->data_block_counter, 1, sizeof(state->data_block_counter));
     memset(state->data_block_poc, 0, sizeof(state->data_block_poc));
     memset(state->data_byte_ctr, 0, sizeof(state->data_byte_ctr));
+    memset(state->udt_uab_reserved, 0, sizeof(state->udt_uab_reserved));
     memset(state->data_ks_start, 0, sizeof(state->data_ks_start));
     memset(state->data_header_blocks, 1, sizeof(state->data_header_blocks));
     memset(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));

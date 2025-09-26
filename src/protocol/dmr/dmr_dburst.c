@@ -624,16 +624,22 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
 
     //Unified Single Data Block (USBD) -- Not to be confused with Unified Data Transport (UDT)
     if (databurst == 0x0B) {
-        //TODO: provide more robust handling at a later date -- ETSI TS 102 361-4 V1.11.1 (2021-01) 6.6.11.3
+        // ETSI TS 102 361-4 6.6.11.3
         usbd_st = (uint8_t)ConvertBitIntoBytes(&DMR_PDU_bits[0], 4);
         fprintf(stderr, "%s\n", KYEL);
-        fprintf(stderr, " USBD - ");
+        // Minimal service table: recognize LIP(0); classify others as standard/reserved/manufacturer
+        const char* svc_name = NULL;
+        switch (usbd_st) {
+            case 0: svc_name = "Location Information Protocol"; break; // LIP Poll Response
+            default: svc_name = "Standard Service"; break;             // Placeholder for 1..8
+        }
+        fprintf(stderr, " USBD - Service: %s (%u) - ", svc_name, usbd_st);
         if (usbd_st == 0) {
             lip_protocol_decoder(opts, state, DMR_PDU_bits);
         } else if (usbd_st > 8) {
-            fprintf(stderr, "Manufacturer Specific Service %d ", usbd_st);
+            fprintf(stderr, "Manufacturer Specific ");
         } else {
-            fprintf(stderr, "Reserved %d ", usbd_st);
+            fprintf(stderr, "Reserved/Not decoded ");
         }
     }
 
