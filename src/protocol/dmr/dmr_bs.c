@@ -64,6 +64,9 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
     //Init the color code status
     state->color_code_ok = 0;
+    // Reset EMB error hysteresis per slot at start of BS voice loop
+    state->dmr_emb_err[0] = 0;
+    state->dmr_emb_err[1] = 0;
 
     //if coming from the bootsrap, then the slot will still be assigned the last value
     //we want to set only that vc value to 2, the other to 7
@@ -251,9 +254,11 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
         if (strcmp(sync, DMR_BS_VOICE_SYNC) == 0) {
             if (internalslot == 0) {
                 vc1 = 1;
+                state->dmr_emb_err[0] = 0; // reset EMB miss counter on fresh voice sync
             }
             if (internalslot == 1) {
                 vc2 = 1;
+                state->dmr_emb_err[1] = 0; // reset EMB miss counter on fresh voice sync
             }
         }
 
@@ -411,20 +416,31 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             != 0) //we already have a tact ecc check, so we won't get here without that, see if there is any other eccs we can run just to make sure
         {
 
-            //check the embedded signalling, if bad at this point, we probably aren't quite in sync
-            if (QR_16_7_6_decode(emb_pdu)) {
-                emb_ok = 1;
-            } else {
-                emb_ok = 0;
-            }
+            // Check the embedded signalling (EMB). ETSI allows voice continuation on transient
+            // EMB errors; add simple hysteresis to avoid premature aborts on marginal signals.
+            emb_ok = QR_16_7_6_decode(emb_pdu) ? 1 : 0;
 
-            //disable the goto END; if this causes more problems than fixing on late entry dual voices i.e., lots of forced resyncs
-            if ((strcmp(sync, DMR_BS_VOICE_SYNC) != 0) && emb_ok == 0) {
-                goto END; //fprintf (stderr, "EMB BAD? ");
-            } else if (emb_ok == 1) {
+            if (emb_ok == 1) {
+                // On valid EMB, reset miss counter and update CC/Power
+                state->dmr_emb_err[internalslot] = 0;
                 cc = ((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
                 power = emb_pdu[4];
                 state->dmr_color_code = state->color_code = cc;
+            } else {
+                // If not a voice sync frame and EMB is invalid, increment miss counter.
+                // Abort only after 2 consecutive failures to improve robustness.
+                if (strcmp(sync, DMR_BS_VOICE_SYNC) != 0) {
+                    uint8_t* miss = &state->dmr_emb_err[internalslot];
+                    if (*miss < 0xFF) {
+                        (*miss)++;
+                    }
+                    if (*miss >= 2) {
+                        goto END; // persistent EMB failures → resync
+                    }
+                } else {
+                    // On voice sync frames, do not penalize; clear any transient miss.
+                    state->dmr_emb_err[internalslot] = 0;
+                }
             }
 
             skipcount = 0; //reset skip count if processing voice frames
@@ -727,6 +743,9 @@ END:
     //reset static ks counter
     state->static_ks_counter[0] = 0;
     state->static_ks_counter[1] = 0;
+    // reset EMB miss counters on exit
+    state->dmr_emb_err[0] = 0;
+    state->dmr_emb_err[1] = 0;
 }
 
 //Process buffered half frame and 2nd half and then jump to full BS decoding

@@ -1118,6 +1118,9 @@ typedef struct {
     uint8_t static_ks_bits[2][882];
     int static_ks_counter[2];
 
+    // DMR: consecutive EMB decode failures per slot (hysteresis for robustness)
+    uint8_t dmr_emb_err[2];
+
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
 
