@@ -655,19 +655,50 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
         // ETSI TS 102 361-4 6.6.11.3
         usbd_st = (uint8_t)ConvertBitIntoBytes(&DMR_PDU_bits[0], 4);
         fprintf(stderr, "%s\n", KYEL);
-        // Minimal service table: recognize LIP(0); classify others as standard/reserved/manufacturer
-        const char* svc_name = NULL;
+
+        // Enumerate standard services 0..8; 9..15 reserved; >15 manufacturer specific
+        const char* name = NULL;
         switch (usbd_st) {
-            case 0: svc_name = "Location Information Protocol"; break; // LIP Poll Response
-            default: svc_name = "Standard Service"; break;             // Placeholder for 1..8
+            case 0: name = "Location Information Protocol"; break; // LIP
+            case 1: name = "Standard Service 1"; break;
+            case 2: name = "Standard Service 2"; break;
+            case 3: name = "Standard Service 3"; break;
+            case 4: name = "Standard Service 4"; break;
+            case 5: name = "Standard Service 5"; break;
+            case 6: name = "Standard Service 6"; break;
+            case 7: name = "Standard Service 7"; break;
+            case 8: name = "Standard Service 8"; break;
+            default: name = (usbd_st <= 15) ? "Reserved (standard)" : "Manufacturer Specific"; break;
         }
-        fprintf(stderr, " USBD - Service: %s (%u) - ", svc_name, usbd_st);
+
+        fprintf(stderr, " USBD - Service: %s (%u)", name, usbd_st);
+
+        // Minimal payload framing: print 11 full bytes + 4-bit tail after ST nibble
+        // DMR_PDU_bits contains 96 bits total; first 4 bits are ST
+        uint8_t pl_bytes[11];
+        memset(pl_bytes, 0, sizeof(pl_bytes));
+        // Pack next 88 bits into 11 bytes (MSB-first)
+        for (int b = 0; b < 11; b++) {
+            uint8_t v = 0;
+            for (int k2 = 0; k2 < 8; k2++) {
+                v = (uint8_t)((v << 1) | (DMR_PDU_bits[4 + b * 8 + k2] & 1));
+            }
+            pl_bytes[b] = v;
+        }
+        uint8_t tail4 = 0;
+        for (int k2 = 0; k2 < 4; k2++) {
+            tail4 = (uint8_t)((tail4 << 1) | (DMR_PDU_bits[4 + 88 + k2] & 1));
+        }
+
+        fprintf(stderr, " - Payload: ");
+        for (int i2 = 0; i2 < 11; i2++) {
+            fprintf(stderr, "[%02X]", pl_bytes[i2]);
+        }
+        fprintf(stderr, "[%1X]", tail4 & 0xF);
+
+        // Delegate LIP to decoder when ST=0
         if (usbd_st == 0) {
             lip_protocol_decoder(opts, state, DMR_PDU_bits);
-        } else if (usbd_st > 8) {
-            fprintf(stderr, "Manufacturer Specific ");
-        } else {
-            fprintf(stderr, "Reserved/Not decoded ");
         }
     }
 

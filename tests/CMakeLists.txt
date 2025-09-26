@@ -488,3 +488,9 @@ add_executable(dsd-neo_test_dmr_slco_sfrag_bits protocol/dmr/test_dmr_slco_sfrag
 target_include_directories(dsd-neo_test_dmr_slco_sfrag_bits PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_slco_sfrag_bits PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_SLCO_SFRAG_BITS COMMAND dsd-neo_test_dmr_slco_sfrag_bits)
+
+# DMR SlotType Golay(20,8)
+add_executable(dsd-neo_test_dmr_slottype_golay protocol/dmr/test_dmr_slottype_golay.c)
+target_include_directories(dsd-neo_test_dmr_slottype_golay PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_slottype_golay PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_SLOTTYPE_GOLAY COMMAND dsd-neo_test_dmr_slottype_golay)

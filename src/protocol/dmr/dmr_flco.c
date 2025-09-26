@@ -985,6 +985,28 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
                 } break;
             }
             fprintf(stderr, " SLC Activity (single) TS1: %s; TS2: %s;", ts1_str, ts2_str);
+        } else if (slco == 0x2 || slco == 0x3) {
+            // C_SYS_PARMS / P_SYS_PARMS: only model bits are safely within first 12 bits
+            uint8_t model = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 2);
+            const char* model_str = "Unknown";
+            switch (model) {
+                case 0: model_str = "Tiny"; break;
+                case 1: model_str = "Small"; break;
+                case 2: model_str = "Large"; break;
+                case 3: model_str = "Huge"; break;
+            }
+            if (slco == 0x2) {
+                fprintf(stderr, " SLC C_SYS_PARMS (single) Model=%s", model_str);
+            } else {
+                fprintf(stderr, " SLC P_SYS_PARMS (single) Model=%s", model_str);
+            }
+        } else if (slco == 0x8) {
+            // Hytera XPT indicator: do not access fields beyond first 12 bits
+            fprintf(stderr, " SLCO Hytera XPT (single)");
+        } else if (slco == 0x9) {
+            fprintf(stderr, " SLCO Connect Plus Traffic (single)");
+        } else if (slco == 0xA) {
+            fprintf(stderr, " SLCO Connect Plus Control (single)");
         } else {
             // Unknown/unsupported single-fragment type — acknowledge quietly
             fprintf(stderr, " SLC (single) OPC=0x%X ", slco);
