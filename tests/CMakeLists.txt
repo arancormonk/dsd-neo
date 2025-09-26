@@ -349,6 +349,24 @@ add_executable(dsd-neo_test_dmr_t3_shim
 target_include_directories(dsd-neo_test_dmr_t3_shim PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
+# DMR Tier III C_MOVE retune (grant -> move -> retune, gated on VC)
+add_executable(dsd-neo_test_dmr_t3_cmove
+  protocol/dmr/test_dmr_t3_cmove.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c)
+target_include_directories(dsd-neo_test_dmr_t3_cmove PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_t3_cmove PRIVATE m)
+add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
+
+# DMR Tier III forced release via TG hold override on P_CLEAR
+add_executable(dsd-neo_test_dmr_t3_force_release
+  protocol/dmr/test_dmr_t3_force_release.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c)
+target_include_directories(dsd-neo_test_dmr_t3_force_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_t3_force_release PRIVATE m)
+add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
+
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
 target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)

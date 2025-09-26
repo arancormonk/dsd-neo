@@ -153,6 +153,24 @@ dmr_sm_burst_is_voice(int burst) {
     return (burst == 16) || (burst == 21);
 }
 
+// Determine if a slot should be considered "active" for release decisions.
+// Voice is always active. If the user opts to tune data calls, treat common
+// data header/block indicators as active as well so we don’t prematurely
+// return to CC while a data call is in progress on the opposite slot.
+static inline int
+dmr_sm_burst_is_activity(const dsd_opts* opts, int burst) {
+    if (dmr_sm_burst_is_voice(burst)) {
+        return 1;
+    }
+    if (opts && opts->trunk_tune_data_calls == 1) {
+        // DATA (6), R12D (7), R34D (8), R1_D (10)
+        if (burst == 6 || burst == 7 || burst == 8 || burst == 10) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Internal helper: compute VC freq from inputs
 static long
 dmr_sm_resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
@@ -182,8 +200,12 @@ dmr_sm_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq_hz) {
         return;
     }
     if (opts->p25_is_tuned == 1) {
-        // Already off CC on a VC — avoid thrashing
-        return;
+        // Already off CC on a VC — allow retune only if target differs
+        long cur = state->trunk_vc_freq[0];
+        if (cur == freq_hz && cur != 0) {
+            return; // no-op
+        }
+        // fall through to retune to new VC frequency
     }
 
     // Best-effort reset of data block assembly when leaving current frequency
@@ -250,11 +272,19 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
         return;
     }
     state->p25_sm_release_count++;
-    // If either slot still shows VOICE activity, defer return-to-CC (prevents
-    // dropping an opposite-slot call ending slightly later). Treat only
-    // explicit VOICE states as active; IDLE/CSBK/etc. are not voice activity.
-    int left_active = dmr_sm_burst_is_voice(state->dmrburstL);
-    int right_active = dmr_sm_burst_is_voice(state->dmrburstR);
+    // One-shot force: bypass gating and immediately return to CC
+    int forced = (state->p25_sm_force_release != 0);
+    if (forced) {
+        state->p25_sm_force_release = 0; // consume
+        return_to_cc(opts, state);
+        dmr_sm_log_status(opts, state, "after-release-forced");
+        return;
+    }
+    // If either slot still shows activity (voice, or data when enabled),
+    // defer return-to-CC to avoid dropping an opposite-slot call that ends
+    // slightly later.
+    int left_active = dmr_sm_burst_is_activity(opts, state->dmrburstL);
+    int right_active = dmr_sm_burst_is_activity(opts, state->dmrburstR);
     if (left_active || right_active) {
         if (opts->verbose > 0) {
             fprintf(stderr, "\n  DMR SM: Release ignored (slot active) L=%d R=%d dL=%u dR=%u\n", left_active,

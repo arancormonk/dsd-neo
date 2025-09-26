@@ -629,5 +629,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
+    // Reset activity timers so noCarrier() does not immediately force a return
+    // to CC before we have a chance to acquire sync on the new VC.
     state->last_vc_sync_time = time(NULL);
+    state->last_cc_sync_time = state->last_vc_sync_time;
 }

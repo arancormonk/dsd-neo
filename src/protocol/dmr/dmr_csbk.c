@@ -474,14 +474,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         state->last_vc_sync_time = 0;
                     }
 
-                    //TIII tuner fix if voice assignment occurs to the control channel itself,
-                    //then it may not want to resume tuning due to no framesync loss after call ends
-                    if ((time(NULL) - state->last_vc_sync_time > 2)) {
-                        opts->p25_is_tuned = 0;
-                        //zero out vc frequencies
-                        state->p25_vc_freq[0] = 0;
-                        state->p25_vc_freq[1] = 0;
-                    }
+                    // Legacy TIII retune gating removed — rely on trunk SM to manage VC↔VC retunes
 
                     //shim in here for ncurses freq display when not trunking (playback, not live)
                     if (opts->trunk_enable == 0 && freq != 0) {
@@ -490,8 +483,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         state->p25_vc_freq[1] = freq;
                     }
 
-                    //don't tune if currently a vc on the control channel
-                    if ((time(NULL) - state->last_vc_sync_time > 2)) {
+                    // Evaluate allow/whitelist and tune decision unconditionally; SM will debounce
+                    if (1) {
                         char mode[8]; //allow, block, digital, enc, etc
                         sprintf(mode, "%s", "");
 
@@ -586,6 +579,73 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //initial line break
                 fprintf(stderr, "\n");
                 fprintf(stderr, " Move (C_MOVE) ");
+
+                // Basic move handling: parse destination LPCN/APCN and retune via DMR SM
+                long int move_freq = 0;
+                uint16_t move_lpcn = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
+                uint8_t move_ts = cs_pdu_bits[28];
+                UNUSED(move_ts);
+
+                // Optional target/source (used for UI context only)
+                uint32_t mv_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
+                uint32_t mv_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+
+                if (move_lpcn == 0xFFF) {
+                    // Absolute (APCN) via appended MBC parameters
+                    uint8_t mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
+                    if (mbc_cdeftype == 0) {
+                        uint16_t mbc_lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
+                        uint16_t mbc_abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
+                        uint16_t mbc_abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+                        move_lpcn = mbc_lpchannum;
+                        move_freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
+                        // Learn mapping for future logical grants
+                        dmr_learn_chan_map(opts, state, move_lpcn, move_freq);
+                    }
+                } else if (move_lpcn != 0) {
+                    // Resolve from existing logical channel map if available
+                    move_freq = state->trunk_chan_map[move_lpcn];
+                }
+
+                // Update simple UI context (active channel and per-slot call string)
+                int tslot = (int)(move_ts & 1);
+                if (mv_target) {
+                    if (tslot == 0) {
+                        state->lasttg = mv_target;
+                        state->lastsrc = mv_source;
+                        if (state->gi[0] == 0) {
+                            snprintf(state->call_string[0], sizeof state->call_string[0], "   Group  Move      ");
+                        } else if (state->gi[0] == 1) {
+                            snprintf(state->call_string[0], sizeof state->call_string[0], " Private  Move      ");
+                        } else {
+                            snprintf(state->call_string[0], sizeof state->call_string[0], " Trunked  Move      ");
+                        }
+                    } else {
+                        state->lasttgR = mv_target;
+                        state->lastsrcR = mv_source;
+                        if (state->gi[1] == 0) {
+                            snprintf(state->call_string[1], sizeof state->call_string[1], "   Group  Move      ");
+                        } else if (state->gi[1] == 1) {
+                            snprintf(state->call_string[1], sizeof state->call_string[1], " Private  Move      ");
+                        } else {
+                            snprintf(state->call_string[1], sizeof state->call_string[1], " Trunked  Move      ");
+                        }
+                    }
+                }
+                char suf[24];
+                dmr_format_chan_suffix(tslot, suf, sizeof suf);
+                if (move_lpcn != 0) {
+                    snprintf(state->active_channel[tslot], sizeof state->active_channel[tslot],
+                             "Active Ch: %04X%s TG: %u; ", move_lpcn, suf, mv_target);
+                    state->last_active_time = time(NULL);
+                }
+
+                // Gate retune: only follow C_MOVE if we’re currently off-CC on a VC
+                if (opts->trunk_enable == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1
+                    && (move_freq > 0 || (move_lpcn > 0 && move_lpcn < 0xFFFF))) {
+                    // Centralized tune; prefer explicit frequency to bypass trust gating
+                    dmr_sm_on_group_grant(opts, state, /*freq_hz*/ move_freq, /*lpcn*/ move_lpcn, mv_target, mv_source);
+                }
             }
 
             //Aloha
@@ -672,11 +732,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     clear = 5;
                 }
 
-                //make sure we aren't sent back immediately by an p_clear condition upon first tuning (i.e., random ENC LO, or end of Data Call)
-                //one second default on hangtime should be an optimal time, but let it be user configurable with hangtime option
-                if (time(NULL) - state->last_t3_tune_time < opts->trunk_hangtime) {
-                    clear = 0;
-                }
+                // Hangtime is handled centrally in the DMR trunk SM; avoid duplicating here.
 
                 //initial line break
                 fprintf(stderr, "\n");
@@ -685,55 +741,85 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                 if (opts->trunk_enable == 1) {
 
-                    //check the p_clear logic and report status
+                    //check the p_clear logic and report status (SM will make final decision)
                     if (clear && csbk_fid == 255) {
-                        fprintf(stderr, " Slot %d No Encrypted Call Trunking; Slot %d Free; Return to CC; ", pslot,
-                                oslot);
+                        fprintf(stderr,
+                                " Slot %d No Encrypted Call Trunking; Slot %d Free; Request return to CC; SM decides "
+                                "(may defer by hangtime/activity); ",
+                                pslot, oslot);
                     } else if (!clear && csbk_fid == 255) {
-                        fprintf(stderr, " Slot %d No Encrypted Call Trunking; Slot %d Busy; Remain on VC;", pslot,
-                                oslot);
+                        fprintf(stderr,
+                                " Slot %d No Encrypted Call Trunking; Slot %d Busy; Suggest remain on VC; SM decides "
+                                "(may defer by hangtime/activity);",
+                                pslot, oslot);
                     } else if (clear && csbk_fid == 254) {
-                        fprintf(stderr, " Cap+ Rest LSN Change: %d; Slot %d Free; Slot %d Free; Go To Rest LSN;",
+                        fprintf(stderr,
+                                " Cap+ Rest LSN Change: %d; Slot %d Free; Slot %d Free; Request return to Rest LSN; SM "
+                                "decides (may defer by hangtime/activity);",
                                 state->dmr_rest_channel, pslot, oslot); //disabled
                     } else if (!clear && csbk_fid == 254) {
-                        fprintf(stderr, " Cap+ Rest LSN Change: %d; Slot %d Free; Slot %d Busy; Remain on LSN;",
+                        fprintf(stderr,
+                                " Cap+ Rest LSN Change: %d; Slot %d Free; Slot %d Busy; Suggest remain on LSN; SM "
+                                "decides (may defer by hangtime/activity);",
                                 state->dmr_rest_channel, pslot, oslot); //disabled
                     } else if (clear && csbk_fid == 253) {
-                        fprintf(stderr, " Cap+ Rest LSN Change: %d; No CSBK Channel Activity; Go To Rest LSN;",
+                        fprintf(stderr,
+                                " Cap+ Rest LSN Change: %d; No CSBK Channel Activity; Request return to Rest LSN; SM "
+                                "decides (may defer by hangtime/activity);",
                                 state->dmr_rest_channel);
                     } else if (!clear && csbk_fid == 253) {
-                        fprintf(stderr, " Cap+ Rest LSN Change: %d; CSBK Channel Activity; Remain on LSN;",
+                        fprintf(stderr,
+                                " Cap+ Rest LSN Change: %d; CSBK Channel Activity; Suggest remain on LSN; SM decides "
+                                "(may defer by hangtime/activity);",
                                 state->dmr_rest_channel); //this should never happen in code
                     } else if (!clear && csbk_fid == 12) {
-                        fprintf(stderr, " Con+ Slot %d Termination: Slot %d Busy Voice or Data Call;", pslot,
-                                oslot); //Con+ test clears based on the Call Termination CSBK
+                        fprintf(stderr,
+                                " Con+ Slot %d Termination: Slot %d Busy Voice or Data Call; SM decides (may defer by "
+                                "hangtime/activity);",
+                                pslot, oslot); //Con+ test clears based on the Call Termination CSBK
                     } else if (clear && csbk_fid == 12) {
-                        fprintf(stderr, " Con+ Slot %d Termination: Slot %d Clear or Control CSBK;", pslot,
-                                oslot); //Con+ test clears based on the Call Termination CSBK
+                        fprintf(stderr,
+                                " Con+ Slot %d Termination: Slot %d Clear or Control CSBK; SM decides (may defer by "
+                                "hangtime/activity);",
+                                pslot, oslot); //Con+ test clears based on the Call Termination CSBK
                     } else if (!clear) {
-                        fprintf(stderr, " Slot %d Clear; Slot %d Busy; Remain on VC;", pslot, oslot);
+                        fprintf(stderr,
+                                " Slot %d Clear; Slot %d Busy; Suggest remain on VC; SM decides (may defer by "
+                                "hangtime/activity);",
+                                pslot, oslot);
                     } else if (clear == 1) {
-                        fprintf(stderr, " Slot %d Clear; Slot %d Idle; Return to CC;", pslot, oslot);
+                        fprintf(stderr,
+                                " Slot %d Clear; Slot %d Idle; Request return to CC; SM decides (may defer by "
+                                "hangtime/activity);",
+                                pslot, oslot);
                     } else if (clear == 2 || clear == 3) {
-                        fprintf(stderr, " Slot %d Clear; Slot %d Free; Return to CC;", pslot, oslot);
+                        fprintf(stderr,
+                                " Slot %d Clear; Slot %d Free; Request return to CC; SM decides (may defer by "
+                                "hangtime/activity);",
+                                pslot, oslot);
                     } else if (clear == 4 || clear == 5) {
-                        fprintf(stderr, " Slot %d Clear w/ TG Hold %d; Slot %d Activity Override; Return to CC; ",
+                        fprintf(stderr,
+                                " Slot %d Clear w/ TG Hold %d; Slot %d Activity Override; Force return to CC; SM "
+                                "decides (honors force); ",
                                 pslot, state->tg_hold, oslot);
                     }
                     //NOTE: Below clears are just conditions for reporting, and not clear to tune away, so they are set back to zero
                     else if (clear == 21 || clear == 22) {
-                        fprintf(stderr, " Slot %d Clear; Slot %d Data; Remain on DC;", pslot, oslot);
+                        fprintf(stderr,
+                                " Slot %d Clear; Slot %d Data; Suggest remain on DC; SM decides (may defer by "
+                                "hangtime/activity);",
+                                pslot, oslot);
                         clear = 0; //flag as 0 so we won't tune away until data call is completed
                     }
-
-                    if (clear) {
-                        if (opts->trunk_enable == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-                            // Update event panels first
-                            watchdog_event_current(opts, state, 0);
-                            watchdog_event_current(opts, state, 1);
-                            // Centralized SM release (mirrors P25 SM behavior)
-                            dmr_sm_on_release(opts, state);
-                        }
+                    // Tag TG-hold override as a forced release to bypass hangtime/opposite-slot activity
+                    if (clear == 4 || clear == 5) {
+                        state->p25_sm_force_release = 1;
+                    }
+                    // Post a release to the centralized SM unconditionally when off-CC.
+                    if (opts->trunk_enable == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+                        watchdog_event_current(opts, state, 0);
+                        watchdog_event_current(opts, state, 1);
+                        dmr_sm_on_release(opts, state);
                     }
                 } //end if trunking is enabled
 #else
@@ -781,23 +867,35 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //check the source and/or target for special gateway identifiers
                 dmr_gateway_identifier(source, target);
 
-                //change this slot burst type to VLC so the revamped p_clear doesn't tune away
+                // For hangtime (ILLEGALLY_PARKED), do not force a fake VLC burst.
+                // That override can suppress return-to-CC decisions. Instead, if
+                // we are off the CC on a VC and hangtime is indicated, attempt a
+                // centralized release; the SM will debounce based on actual slot
+                // activity and configured hangtime.
                 if (opts->trunk_enable == 1) {
-                    if (gi && opts->trunk_tune_group_calls == 1) {
-                        if (state->currentslot == 0) {
-                            state->dmrburstL = 1;
-                        } else {
-                            state->dmrburstR = 1;
+                    if (p_kind == 2) {
+                        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+                            dmr_sm_on_release(opts, state);
                         }
-                        state->gi[state->currentslot] = 0;
-                    }
-                    if (!gi && opts->trunk_tune_private_calls == 1) {
-                        if (state->currentslot == 0) {
-                            state->dmrburstL = 1;
-                        } else {
-                            state->dmrburstR = 1;
+                    } else {
+                        // For other P_PROTECT kinds, preserve prior behavior of
+                        // marking the slot as VLC to avoid premature tune-away.
+                        if (gi && opts->trunk_tune_group_calls == 1) {
+                            if (state->currentslot == 0) {
+                                state->dmrburstL = 1;
+                            } else {
+                                state->dmrburstR = 1;
+                            }
+                            state->gi[state->currentslot] = 0;
                         }
-                        state->gi[state->currentslot] = 1;
+                        if (!gi && opts->trunk_tune_private_calls == 1) {
+                            if (state->currentslot == 0) {
+                                state->dmrburstL = 1;
+                            } else {
+                                state->dmrburstR = 1;
+                            }
+                            state->gi[state->currentslot] = 1;
+                        }
                     }
                 }
             }
@@ -917,22 +1015,50 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         fprintf(stderr, " Remove;");
                     }
 
-                    // Learn control channel LCNs and add current CC as a candidate
-                    if (state->p25_cc_freq != 0) {
-                        long cand[2] = {0};
-                        int ccount = 0;
-                        if (ch1_flag == 0) {
-                            dmr_learn_chan_map(opts, state, bcast_ch1, state->p25_cc_freq);
-                            cand[ccount++] = state->p25_cc_freq;
+                    // If mappings exist for the announced TSCC LCNs, publish them
+                    // as CC candidates and proactively switch when the current CC
+                    // is being withdrawn.
+                    long f1 = 0, f2 = 0;
+                    if (bcast_ch1 > 0 && bcast_ch1 < 0xFFFF) {
+                        f1 = state->trunk_chan_map[bcast_ch1];
+                    }
+                    if (bcast_ch2 > 0 && bcast_ch2 < 0xFFFF) {
+                        f2 = state->trunk_chan_map[bcast_ch2];
+                    }
+
+                    long cand[2];
+                    int ccount = 0;
+                    if (f1 > 0) {
+                        cand[ccount++] = f1;
+                    }
+                    if (f2 > 0 && f2 != f1) {
+                        cand[ccount++] = f2;
+                    }
+                    if (ccount > 0) {
+                        dmr_sm_on_neighbor_update(opts, state, cand, ccount);
+                    }
+
+                    // If currently monitoring the CC and this announcement withdraws
+                    // our present CC while adding the alternate, immediately switch.
+                    if (opts->trunk_enable == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq != 0) {
+                        long cur = state->p25_cc_freq;
+                        int cur_is_ch1 = (cur == f1);
+                        int cur_is_ch2 = (cur == f2);
+                        int ch1_add = (ch1_flag == 0);
+                        int ch2_add = (ch2_flag == 0);
+                        int ch1_remove = (ch1_flag == 1);
+                        int ch2_remove = (ch2_flag == 1);
+                        long next = 0;
+                        if (cur_is_ch1 && ch1_remove && ch2_add && f2 > 0) {
+                            next = f2;
+                        } else if (cur_is_ch2 && ch2_remove && ch1_add && f1 > 0) {
+                            next = f1;
                         }
-                        if (ch2_flag == 0) {
-                            dmr_learn_chan_map(opts, state, bcast_ch2, state->p25_cc_freq);
-                            if (ccount == 0 || cand[0] != state->p25_cc_freq) {
-                                cand[ccount++] = state->p25_cc_freq;
-                            }
-                        }
-                        if (ccount > 0) {
-                            dmr_sm_on_neighbor_update(opts, state, cand, ccount);
+                        if (next > 0 && next != cur) {
+                            state->p25_cc_freq = next;
+                            state->trunk_cc_freq = next;
+                            return_to_cc(opts, state);
+                            fprintf(stderr, "\n Switched to announced TSCC: %.6lf MHz\n", (double)next / 1000000.0);
                         }
                     }
                 }
