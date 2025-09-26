@@ -316,7 +316,12 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         int right_audio = (state->p25_p2_audio_allowed[1] != 0);
         time_t now = time(NULL);
         int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= opts->trunk_hangtime);
-        if (left_audio || right_audio) {
+        int stale_activity =
+            (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) > (opts->trunk_hangtime + 2));
+        // Treat forced release as an unconditional directive: ignore audio gates
+        // and recent-voice window when explicitly requested by higher layers
+        // (e.g., MAC_IDLE on both slots, early ENC lockout, or teardown PDUs).
+        if (!forced && !stale_activity && (left_audio || right_audio)) {
             if (opts && opts->verbose > 0) {
                 fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%d\n", left_audio,
                         right_audio, recent_voice, opts ? opts->trunk_hangtime : -1);
@@ -324,9 +329,8 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
             p25_sm_log_status(opts, state, "release-deferred-gated");
             return; // keep current VC; do not return to CC yet
         }
-        // If neither slot has audio and we were invoked due to explicit message,
-        // ignore recent voice window and proceed immediately. Otherwise, delay
-        // until hangtime expires.
+        // If neither slot has audio and we were not forced here, still respect
+        // a brief hangtime based on the most recent voice activity.
         if (!forced && recent_voice) {
             if (opts && opts->verbose > 0) {
                 fprintf(stderr, "\n  P25 SM: Release delayed (recent voice within hangtime)\n");
@@ -419,7 +423,42 @@ dsd_p25_sm_on_neighbor_update_impl(dsd_opts* opts, dsd_state* state, const long*
 
 void
 dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
-    UNUSED2(opts, state);
+    if (!opts || !state) {
+        return;
+    }
+    if (opts->p25_trunk != 1) {
+        return;
+    }
+
+    const time_t now = time(NULL);
+
+    // If currently tuned to a P25 VC and we've observed no recent voice
+    // activity for longer than hangtime, force a safe return to CC. This
+    // complements the inline fallbacks in the P25p2 frame path and protects
+    // against cases where frame processing halts due to signal loss.
+    if (opts->p25_is_tuned == 1) {
+        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
+        int is_p2_vc = (state->p25_p2_active_slot != -1);
+        int both_slots_idle =
+            (!is_p2_vc) ? 1 : (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
+        if (dt > (opts->trunk_hangtime + 1.5) && both_slots_idle) {
+            if (state->p25_cc_freq != 0) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            } else {
+                // If CC unknown, do a minimal VC teardown to allow the normal
+                // CC-hunt path to engage without attempting to tune to 0 Hz.
+                state->p25_p2_audio_allowed[0] = 0;
+                state->p25_p2_audio_allowed[1] = 0;
+                state->p25_p2_active_slot = -1;
+                state->p25_vc_freq[0] = 0;
+                state->p25_vc_freq[1] = 0;
+                opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
+                state->last_cc_sync_time = now;
+            }
+        }
+    }
 }
 
 int

@@ -78,6 +78,7 @@ pretty_colors() {
 }
 
 #include <dsd-neo/io/pa_devs.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 inline int
@@ -1908,6 +1909,10 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     // apx_embedded_alias_test_phase1(opts, state); //enable this to run test
 
     while (!exitflag) {
+
+        // Periodic safety tick for trunking state machines (e.g., P25)
+        // Ensures we return to the CC after stale VCs or partial teardowns.
+        p25_sm_tick(opts, state);
 
         noCarrier(opts, state);
         if (state->menuopen == 0) {
