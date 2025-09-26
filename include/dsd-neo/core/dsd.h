@@ -512,6 +512,9 @@ typedef struct {
     int* dibit_buf_p;
     int* dmr_payload_buf;
     int* dmr_payload_p;
+    // Per-dibit reliability buffer (0..255). Aligned with dmr_payload_buf.
+    uint8_t* dmr_reliab_buf;
+    uint8_t* dmr_reliab_p;
     int repeat;
     short* audio_out_buf;
     short* audio_out_buf_p;
@@ -754,6 +757,7 @@ typedef struct {
     int directmode;
 
     int dmr_stereo_payload[144];    //load up 144 dibit buffer for every single DMR TDMA frame
+    uint8_t dmr_stereo_reliab[144]; //parallel reliability for stereo cache (0..255)
     int data_header_blocks[2];      //collect number of blocks to follow from data header per slot
     int data_block_counter[2];      //counter for number of data blocks collected
     uint8_t data_header_valid[2];   //flag for verifying the data header if still valid (in case of tact/burst fec errs)
@@ -1485,6 +1489,9 @@ uint32_t ComputeCrc32Bit(uint8_t* DMRData, uint32_t NbData);
 
 //new simplified dmr functions
 void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst);
+// Extended variant: optional per-dibit reliability for trellis (length 98). Pass NULL to skip.
+void dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                               const uint8_t* reliab98);
 void dmr_data_sync(dsd_opts* opts, dsd_state* state);
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,

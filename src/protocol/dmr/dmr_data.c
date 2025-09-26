@@ -17,6 +17,9 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
@@ -30,6 +33,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     uint8_t burst;
     char info[196];
+    uint8_t rel98[98];
     unsigned char SlotType[20];
     unsigned int SlotTypeOk;
     // CACH handler called for side effects; ignore return
@@ -37,11 +41,18 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     int cachInterleave[24] = {0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23};
 
     dibit_p = state->dmr_payload_p - 90;
+    uint8_t* rel_p = NULL;
+    if (state->dmr_reliab_buf && state->dmr_reliab_p) {
+        rel_p = state->dmr_reliab_p - 90;
+    }
 
     //collect cach and de-interleave
     for (i = 0; i < 12; i++) {
         dibit = *dibit_p;
         dibit_p++;
+        if (rel_p) {
+            rel_p++;
+        }
         if (opts->inverted_dmr == 1) {
             dibit = (dibit ^ 2);
         }
@@ -82,6 +93,12 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     for (i = 0; i < 49; i++) {
         dibit = *dibit_p;
         dibit_p++;
+        if (rel_p) {
+            rel98[i] = *rel_p;
+            rel_p++;
+        } else {
+            rel98[i] = 200;
+        }
         if (opts->inverted_dmr == 1) {
             dibit = (dibit ^ 2);
         }
@@ -97,6 +114,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     // slot type
     dibit = *dibit_p;
     dibit_p++;
+    if (rel_p) {
+        rel_p++;
+    }
     if (opts->inverted_dmr == 1) {
         dibit = (dibit ^ 2);
     }
@@ -111,6 +131,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     dibit = *dibit_p;
     dibit_p++;
+    if (rel_p) {
+        rel_p++;
+    }
     if (opts->inverted_dmr == 1) {
         dibit = (dibit ^ 2);
     }
@@ -125,6 +148,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     dibit = *dibit_p;
     dibit_p++;
+    if (rel_p) {
+        rel_p++;
+    }
     if (opts->inverted_dmr == 1) {
         dibit = (dibit ^ 2);
     }
@@ -140,6 +166,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     dibit = *dibit_p;
     dibit_p++;
+    if (rel_p) {
+        rel_p++;
+    }
     if (opts->inverted_dmr == 1) {
         dibit = (dibit ^ 2);
     }
@@ -171,6 +200,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     for (i = 0; i < 24; i++) {
         dibit = *dibit_p;
         dibit_p++;
+        if (rel_p) {
+            rel_p++;
+        }
         if (opts->inverted_dmr == 1) {
             dibit = (dibit ^ 2);
         }
@@ -215,8 +247,79 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     // Slot type - Second part - Parity bit
     for (i = 0; i < 5; i++) {
         if (state->dmr_stereo == 0) {
-            dibit = getDibit(opts, state);
+            int symbol = 0;
+            dibit = get_dibit_and_analog_signal(opts, state, &symbol);
             state->dmr_stereo_payload[i + 90] = dibit;
+            // store reliab for stereo cache
+            int rel = 0;
+            if (symbol > state->umid) {
+                int span = state->max - state->umid;
+                if (span < 1) {
+                    span = 1;
+                }
+                rel = (symbol - state->umid) * 255 / span;
+            } else if (symbol > state->center) {
+                int d1 = symbol - state->center;
+                int d2 = state->umid - symbol;
+                int span = state->umid - state->center;
+                if (span < 1) {
+                    span = 1;
+                }
+                int m = d1 < d2 ? d1 : d2;
+                rel = (m * 510) / span;
+            } else if (symbol >= state->lmid) {
+                int d1 = state->center - symbol;
+                int d2 = symbol - state->lmid;
+                int span = state->center - state->lmid;
+                if (span < 1) {
+                    span = 1;
+                }
+                int m = d1 < d2 ? d1 : d2;
+                rel = (m * 510) / span;
+            } else {
+                int span = state->lmid - state->min;
+                if (span < 1) {
+                    span = 1;
+                }
+                rel = (state->lmid - symbol) * 255 / span;
+            }
+            if (rel < 0) {
+                rel = 0;
+            }
+            if (rel > 255) {
+                rel = 255;
+            }
+#ifdef USE_RTLSDR
+            double snr_db = rtl_stream_get_snr_c4fm();
+            if (snr_db < -50.0) {
+                snr_db = rtl_stream_estimate_snr_c4fm_eye();
+            }
+            int w256 = 0;
+            if (snr_db > -5.0) {
+                if (snr_db >= 20.0) {
+                    w256 = 255;
+                } else {
+                    double w = (snr_db + 5.0) / 25.0;
+                    if (w < 0.0) {
+                        w = 0.0;
+                    }
+                    if (w > 1.0) {
+                        w = 1.0;
+                    }
+                    w256 = (int)(w * 255.0 + 0.5);
+                }
+            }
+            int scale_num = 204 + (w256 >> 2);
+            int scaled = (rel * scale_num) >> 8;
+            if (scaled > 255) {
+                scaled = 255;
+            }
+            if (scaled < 0) {
+                scaled = 0;
+            }
+            rel = scaled;
+#endif
+            state->dmr_stereo_reliab[i + 90] = (uint8_t)rel;
         }
         if (state->dmr_stereo == 1) {
             dibit = (int)state->dmr_stereo_payload[i + 90];
@@ -255,12 +358,84 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     // Current slot - Second Half - Data Payload - 2nd part
     for (i = 0; i < 49; i++) {
         if (state->dmr_stereo == 0) {
-            dibit = getDibit(opts, state);
+            int symbol = 0;
+            dibit = get_dibit_and_analog_signal(opts, state, &symbol);
             state->dmr_stereo_payload[i + 95] = dibit;
+            int rel = 0;
+            if (symbol > state->umid) {
+                int span = state->max - state->umid;
+                if (span < 1) {
+                    span = 1;
+                }
+                rel = (symbol - state->umid) * 255 / span;
+            } else if (symbol > state->center) {
+                int d1 = symbol - state->center;
+                int d2 = state->umid - symbol;
+                int span = state->umid - state->center;
+                if (span < 1) {
+                    span = 1;
+                }
+                int m = d1 < d2 ? d1 : d2;
+                rel = (m * 510) / span;
+            } else if (symbol >= state->lmid) {
+                int d1 = state->center - symbol;
+                int d2 = symbol - state->lmid;
+                int span = state->center - state->lmid;
+                if (span < 1) {
+                    span = 1;
+                }
+                int m = d1 < d2 ? d1 : d2;
+                rel = (m * 510) / span;
+            } else {
+                int span = state->lmid - state->min;
+                if (span < 1) {
+                    span = 1;
+                }
+                rel = (state->lmid - symbol) * 255 / span;
+            }
+            if (rel < 0) {
+                rel = 0;
+            }
+            if (rel > 255) {
+                rel = 255;
+            }
+#ifdef USE_RTLSDR
+            double snr_db = rtl_stream_get_snr_c4fm();
+            if (snr_db < -50.0) {
+                snr_db = rtl_stream_estimate_snr_c4fm_eye();
+            }
+            int w256 = 0;
+            if (snr_db > -5.0) {
+                if (snr_db >= 20.0) {
+                    w256 = 255;
+                } else {
+                    double w = (snr_db + 5.0) / 25.0;
+                    if (w < 0.0) {
+                        w = 0.0;
+                    }
+                    if (w > 1.0) {
+                        w = 1.0;
+                    }
+                    w256 = (int)(w * 255.0 + 0.5);
+                }
+            }
+            int scale_num = 204 + (w256 >> 2);
+            int scaled = (rel * scale_num) >> 8;
+            if (scaled > 255) {
+                scaled = 255;
+            }
+            if (scaled < 0) {
+                scaled = 0;
+            }
+            rel = scaled;
+#endif
+            rel98[i + 49] = (uint8_t)rel;
+            state->dmr_stereo_reliab[i + 95] = (uint8_t)rel;
         }
 
         if (state->dmr_stereo == 1) {
             dibit = (int)state->dmr_stereo_payload[i + 95];
+            rel98[i + 49] = state->dmr_stereo_reliab[i + 95];
         }
 
         info[(2 * i) + 98] = (1 & (dibit >> 1)); // bit 1
@@ -268,7 +443,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     }
 
     //
-    dmr_data_burst_handler(opts, state, (uint8_t*)info, burst);
+    dmr_data_burst_handler_ex(opts, state, (uint8_t*)info, burst, rel98);
 
     //don't run cach on simplex or mono
     if (state->dmr_ms_mode == 0 && opts->dmr_mono == 0) {

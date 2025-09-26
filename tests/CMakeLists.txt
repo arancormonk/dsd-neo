@@ -462,3 +462,8 @@ add_executable(dsd-neo_test_dmr_r34_equiv protocol/dmr/test_dmr_r34_equiv.c)
 target_include_directories(dsd-neo_test_dmr_r34_equiv PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_r34_equiv PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_R34_EQUIV COMMAND dsd-neo_test_dmr_r34_equiv)
+
+add_executable(dsd-neo_test_dmr_r34_noise protocol/dmr/test_dmr_r34_noise.c)
+target_include_directories(dsd-neo_test_dmr_r34_noise PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_r34_noise PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_R34_NOISE COMMAND dsd-neo_test_dmr_r34_noise)

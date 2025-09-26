@@ -385,6 +385,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (state->dmr_payload_p > state->dmr_payload_buf + 900000) {
             state->dmr_payload_p = state->dmr_payload_buf + 200;
         }
+        if (state->dmr_reliab_p && state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
+            state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+        }
 
         if (1 == 1) {
             if (symbol > state->center) {
@@ -399,6 +402,79 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 } else {
                     *state->dmr_payload_p = 2; // -1
                 }
+            }
+            if (state->dmr_reliab_p) {
+                int sym = symbol;
+                int rel = 0;
+                if (sym > state->umid) {
+                    int span = state->max - state->umid;
+                    if (span < 1) {
+                        span = 1;
+                    }
+                    rel = (sym - state->umid) * 255 / span;
+                } else if (sym > state->center) {
+                    int d1 = sym - state->center;
+                    int d2 = state->umid - sym;
+                    int span = state->umid - state->center;
+                    if (span < 1) {
+                        span = 1;
+                    }
+                    int m = d1 < d2 ? d1 : d2;
+                    rel = (m * 510) / span;
+                } else if (sym >= state->lmid) {
+                    int d1 = state->center - sym;
+                    int d2 = sym - state->lmid;
+                    int span = state->center - state->lmid;
+                    if (span < 1) {
+                        span = 1;
+                    }
+                    int m = d1 < d2 ? d1 : d2;
+                    rel = (m * 510) / span;
+                } else {
+                    int span = state->lmid - state->min;
+                    if (span < 1) {
+                        span = 1;
+                    }
+                    rel = (state->lmid - sym) * 255 / span;
+                }
+                if (rel < 0) {
+                    rel = 0;
+                }
+                if (rel > 255) {
+                    rel = 255;
+                }
+#ifdef USE_RTLSDR
+                double snr_db = rtl_stream_get_snr_c4fm();
+                if (snr_db < -50.0) {
+                    snr_db = rtl_stream_estimate_snr_c4fm_eye();
+                }
+                int w256 = 0;
+                if (snr_db > -5.0) {
+                    if (snr_db >= 20.0) {
+                        w256 = 255;
+                    } else {
+                        double w = (snr_db + 5.0) / 25.0;
+                        if (w < 0.0) {
+                            w = 0.0;
+                        }
+                        if (w > 1.0) {
+                            w = 1.0;
+                        }
+                        w256 = (int)(w * 255.0 + 0.5);
+                    }
+                }
+                int scale_num = 204 + (w256 >> 2);
+                int scaled = (rel * scale_num) >> 8;
+                if (scaled > 255) {
+                    scaled = 255;
+                }
+                if (scaled < 0) {
+                    scaled = 0;
+                }
+                rel = scaled;
+#endif
+                *state->dmr_reliab_p = (uint8_t)rel;
+                state->dmr_reliab_p++;
             }
         }
 

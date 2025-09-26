@@ -21,7 +21,8 @@
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
 
 void
-dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst) {
+dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                          const uint8_t* reliab98) {
 
     uint32_t i, j, k;
     uint32_t CRCExtracted = 0;
@@ -455,9 +456,15 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
 
         uint8_t TrellisReturn[18];
         memset(TrellisReturn, 0, sizeof(TrellisReturn));
-        // Prefer normative Viterbi decoder; fall back to legacy on error
-        if (dmr_r34_viterbi_decode(tdibits, TrellisReturn) != 0) {
-            (void)dmr_34(tdibits, TrellisReturn);
+        // Prefer normative Viterbi decoder; use soft metrics if available; fall back to legacy on error
+        int vrc = -1;
+        if (reliab98 != NULL) {
+            vrc = dmr_r34_viterbi_decode_soft(tdibits, reliab98, TrellisReturn);
+        }
+        if (vrc != 0) {
+            if (dmr_r34_viterbi_decode(tdibits, TrellisReturn) != 0) {
+                (void)dmr_34(tdibits, TrellisReturn);
+            }
         }
         IrrecoverableErrors = 0;
 
@@ -697,4 +704,9 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
 
         fprintf(stderr, "%s", KNRM);
     }
+}
+
+void
+dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst) {
+    dmr_data_burst_handler_ex(opts, state, info, databurst, NULL);
 }

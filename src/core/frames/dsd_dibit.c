@@ -19,6 +19,9 @@
 #include <assert.h>
 
 #include <dsd-neo/core/dsd.h>
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
@@ -170,6 +173,86 @@ invert_dibit(int dibit) {
     return -1;
 }
 
+static inline uint8_t
+dmr_compute_reliability(const dsd_state* st, int sym) {
+    int min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
+    int rel = 0;
+    if (sym > umid) {
+        int span = max - umid;
+        if (span < 1) {
+            span = 1;
+        }
+        rel = (sym - umid) * 255 / span;
+    } else if (sym > center) {
+        int d1 = sym - center;
+        int d2 = umid - sym;
+        int span = umid - center;
+        if (span < 1) {
+            span = 1;
+        }
+        int m = d1 < d2 ? d1 : d2;
+        rel = (m * 510) / span; // scale to 0..255 (2x since max margin is span/2)
+    } else if (sym >= lmid) {
+        int d1 = center - sym;
+        int d2 = sym - lmid;
+        int span = center - lmid;
+        if (span < 1) {
+            span = 1;
+        }
+        int m = d1 < d2 ? d1 : d2;
+        rel = (m * 510) / span;
+    } else {
+        int span = lmid - min;
+        if (span < 1) {
+            span = 1;
+        }
+        rel = (lmid - sym) * 255 / span;
+    }
+    if (rel < 0) {
+        rel = 0;
+    }
+    if (rel > 255) {
+        rel = 255;
+    }
+
+    // Refine using demod SNR when available from RTL stream: scale reliability
+    // into [~0.8x, ~1.2x] based on SNR in a coarse [ -5dB .. +20dB ] window.
+#ifdef USE_RTLSDR
+    double snr_db = rtl_stream_get_snr_c4fm();
+    if (snr_db < -50.0) {
+        // fallback estimate when smooth SNR not available
+        snr_db = rtl_stream_estimate_snr_c4fm_eye();
+    }
+    // Map [-5, 20] dB to [0, 255]
+    int w256 = 0;
+    if (snr_db > -5.0) {
+        if (snr_db >= 20.0) {
+            w256 = 255;
+        } else {
+            double w = (snr_db + 5.0) / 25.0; // 0..1
+            if (w < 0.0) {
+                w = 0.0;
+            }
+            if (w > 1.0) {
+                w = 1.0;
+            }
+            w256 = (int)(w * 255.0 + 0.5);
+        }
+    }
+    // Base scale 0.8 (204/256) + up to +0.25 (64/256) with SNR
+    int scale_num = 204 + (w256 >> 2); // 204..(204+63)=267
+    int scaled = (rel * scale_num) >> 8;
+    if (scaled > 255) {
+        scaled = 255;
+    }
+    if (scaled < 0) {
+        scaled = 0;
+    }
+    rel = scaled;
+#endif
+    return (uint8_t)rel;
+}
+
 int
 digitize(dsd_opts* opts, dsd_state* state, int symbol) {
     // determine dibit state
@@ -267,6 +350,13 @@ digitize(dsd_opts* opts, dsd_state* state, int symbol) {
 
         //dmr buffer
         *state->dmr_payload_p = invert_dibit(dibit);
+        if (state->dmr_reliab_p) {
+            if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
+                state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+            }
+            *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
+            state->dmr_reliab_p++;
+        }
         state->dmr_payload_p++;
         //dmr buffer end
 
@@ -327,6 +417,13 @@ digitize(dsd_opts* opts, dsd_state* state, int symbol) {
         //decoded properly, need to investigate the root cause of what audacity is doing
         //vs other audio sources...perhaps just the audio level itself?
         *state->dmr_payload_p = dibit;
+        if (state->dmr_reliab_p) {
+            if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
+                state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+            }
+            *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
+            state->dmr_reliab_p++;
+        }
         state->dmr_payload_p++;
         //dmr buffer end
 

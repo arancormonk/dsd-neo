@@ -57,6 +57,19 @@ resetState(dsd_state* state) {
     state->audio_out_idx2R = 0;
     state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
 
+    // DMR reliability buffer (parallel to dmr_payload_buf)
+    if (state->dmr_reliab_buf) {
+        free(state->dmr_reliab_buf);
+        state->dmr_reliab_buf = NULL;
+    }
+    state->dmr_reliab_buf = (uint8_t*)malloc(1000000 * sizeof(uint8_t));
+    if (state->dmr_reliab_buf) {
+        memset(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
+        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+    } else {
+        state->dmr_reliab_p = NULL;
+    }
+
     //Sync
     state->center = 0;
     state->jitter = -1;
@@ -166,4 +179,8 @@ reset_dibit_buffer(dsd_state* state) {
 
     state->dibit_buf_p = state->dibit_buf + 200;
     memset(state->dibit_buf, 0, sizeof(int) * 200);
+    if (state->dmr_reliab_buf) {
+        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+        memset(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
+    }
 }
