@@ -466,12 +466,29 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
                 state->data_byte_ctr[slot] = (uint16_t)len;
                 state->data_p_head[slot] = 1;
 
-                //my observation on chained p_head is that the enc header will come first, and then
-                //a second extended header, and the keystream on that starts after the sap/dpf, mfid, and 3rd octet (opcode?)
-                //this is the only time starting the keystream at an offset value will be required (after 0x1F1002)
+                // My observation on chained p_head is that the enc header will come first, and then
+                // a second extended header. For specific vendor opcodes, the keystream begins after
+                // the first three octets (SAP/DPF, MFID, opcode). Constrain this to known cases.
 
-                //set ks start value to 3 (confirmed on several samples rc4 and bp)
-                state->data_ks_start[slot] = 3;
+                // Extract the third octet (opcode) from the proprietary header
+                uint8_t p_opcode = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
+
+                // Gate keystream start offset by (MFID, opcode)
+                // Known fixture: 0x1F 0x10 0x02 -> start after 3 bytes
+                if (p_mfid == 0x10) {
+                    switch (p_opcode) {
+                        case 0x02: // Motorola MNIS/ENC header variant (observed)
+                            state->data_ks_start[slot] = 3;
+                            break;
+                        default:
+                            // Unknown opcode: do not offset by default
+                            state->data_ks_start[slot] = 0;
+                            break;
+                    }
+                } else {
+                    // Non-Motorola (or unknown MFID): do not apply an offset
+                    state->data_ks_start[slot] = 0;
+                }
             }
 
             else //if (p_sap != 1) //anything else
