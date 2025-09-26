@@ -80,6 +80,10 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
 
     uint8_t usbd_st = 0; //usbd service type
 
+    // Confirmed data sequence tracking (DBSN)
+    uint8_t dbsn_for_seq = 0;
+    int dbsn_valid = 0;
+
     switch (databurst) {
         case 0x00: //PI
             is_bptc = 1;
@@ -296,8 +300,9 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
 
         //run CRC9 on intermediate and last 1/2 confirmed data blocks
         else if (state->data_conf_data[slot] == 1 && databurst == 0x7) {
-            blockcounter = state->data_block_counter[slot];   //current block number according to the counter
-            (void)ConvertBitIntoBytes(&BPTCDmrDataBit[0], 7); //recover data block serial number (unused)
+            blockcounter = state->data_block_counter[slot]; //current block number according to the counter
+            dbsn_for_seq = (uint8_t)ConvertBitIntoBytes(&BPTCDmrDataBit[0], 7);
+            dbsn_valid = 1;
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&BPTCDmrDataBit[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 
@@ -478,6 +483,12 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             DMR_PDU_bits[j + 7] = (TrellisReturn[i] >> 0) & 0x01;
         }
 
+        // Capture DBSN before reorganizing/removing it
+        if (state->data_conf_data[slot] == 1) {
+            dbsn_for_seq = (uint8_t)ConvertBitIntoBytes(&DMR_PDU_bits[0], 7);
+            dbsn_valid = 1;
+        }
+
         //set CRC to correct on unconfirmed 3/4 data blocks (for reporting due to no CRC available on these)
         if (state->data_conf_data[slot] == 0) {
             CRCCorrect = 1;
@@ -543,8 +554,9 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
 
         //run CRC9 on intermediate and last 1 rate data blocks
         else if (state->data_conf_data[slot] == 1) {
-            blockcounter = state->data_block_counter[slot];            //current block number according to the counter
-            (void)ConvertBitIntoBytes(&info[0], 7);                    //recover data block serial number (unused)
+            blockcounter = state->data_block_counter[slot]; //current block number according to the counter
+            dbsn_for_seq = (uint8_t)ConvertBitIntoBytes(&info[0], 7);
+            dbsn_valid = 1;
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&info[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 
@@ -572,6 +584,22 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
 
         //copy info to dmr_pdu_bits
         memcpy(DMR_PDU_bits, info, sizeof(DMR_PDU_bits));
+    }
+
+    // Enforce confirmed data DBSN sequencing before assembling multi-block data
+    if ((databurst == 0x07 || databurst == 0x08 || databurst == 0x0A) && state->data_conf_data[slot] == 1
+        && CRCCorrect == 1 && dbsn_valid) {
+        if (!state->data_dbsn_have[slot]) {
+            state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
+            state->data_dbsn_have[slot] = 1;
+        } else if (dbsn_for_seq != state->data_dbsn_expected[slot]) {
+            fprintf(stderr, "%s DBSN Seq Err: got %u expected %u %s", KRED, dbsn_for_seq,
+                    state->data_dbsn_expected[slot], KNRM);
+            dmr_reset_blocks(opts, state);
+            return; // do not assemble out-of-sequence block
+        } else {
+            state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
+        }
     }
 
     //time for some pi

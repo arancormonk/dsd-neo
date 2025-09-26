@@ -87,10 +87,9 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         sprintf(state->dmr_branding_sub, "XPT ");
     }
 
-    //bug fix for Hytera Enhanced link control (go by the checksum in the message)
-    //a good checksum will set IrrecoverableErrors back to zero
-    if (fid == 0x68 && flco == 0x02 && *IrrecoverableErrors == 0) {
-        *IrrecoverableErrors = 1;
+    // Hytera Enhanced link control uses a vendor checksum; do not alter generic error flags here.
+    if (fid == 0x68 && flco == 0x02) {
+        // vendor checksum handled later; keep IrrecoverableErrors semantics for FEC/CRC only
     }
 
     //look at the dmr_branding_sub for the XPT string
@@ -105,7 +104,8 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
 
     //check protect flag (preserve PF semantics); ignore PF only for specific Hytera XPT TLC/variants
     int pf_overloaded_by_xpt = (fid == 0x68) && (flco == 0x09);
-    if (pf == 1 && !pf_overloaded_by_xpt) {
+    int protected_lc = (pf == 1 && !pf_overloaded_by_xpt);
+    if (protected_lc) {
         if (type == 1) {
             fprintf(stderr, "%s \n", KRED);
         }
@@ -117,7 +117,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         }
         fprintf(stderr, " SLOT %d", state->currentslot + 1);
         fprintf(stderr, " Protected LC ");
-        goto END_FLCO;
+        // Do not bail early; update metadata first, then exit below.
     }
 
     if (*IrrecoverableErrors == 0) {
@@ -136,19 +136,19 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         }
 
         //Embedded Talker Alias Header Only (format and len storage)
-        if ((fid == 0 || fid == 0x68) && type == 3 && flco == 0x04) {
+        if (!protected_lc && (fid == 0 || fid == 0x68) && type == 3 && flco == 0x04) {
             is_alias = 1;
             dmr_talker_alias_lc_header(opts, state, slot, lc_bits);
         }
 
         //Embedded Talker Alias Header (continuation) and Blocks
-        if ((fid == 0 || fid == 0x68) && type == 3 && flco > 0x04 && flco < 0x08) {
+        if (!protected_lc && (fid == 0 || fid == 0x68) && type == 3 && flco > 0x04 && flco < 0x08) {
             is_alias = 1;
             dmr_talker_alias_lc_blocks(opts, state, slot, flco - 5, lc_bits);
         }
 
         //Embedded GPS
-        if ((fid == 0 || fid == 0x68) && fid == 0 && type == 3 && flco == 0x08) {
+        if (!protected_lc && (fid == 0 || fid == 0x68) && fid == 0 && type == 3 && flco == 0x08) {
             is_gps = 1;
             dmr_embedded_gps(opts, state, lc_bits);
         }
@@ -431,8 +431,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
 
                 //disable late entry for DMRA (hopefully, there aren't any systems running both DMRA and Hytera Enhanced mixed together)
                 opts->dmr_le = 2;
-
-                *IrrecoverableErrors = 0; //only set if checksum passes
+                // Keep IrrecoverableErrors unchanged; vendor checksum validated.
             }
 
             if (checksum == (uint8_t)ConvertBitIntoBytes(&lc_bits[64], 8))
@@ -455,6 +454,11 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         //set overarching manufacturer in use when non-standard feature id set is up
         if (fid != 0) {
             state->dmr_mfid = fid;
+        }
+
+        // If LC is protected, exit after updating metadata/state.
+        if (protected_lc) {
+            goto END_FLCO;
         }
 
         if (type != 2) //VLC and EMB, set our target, source, so, and fid per channel

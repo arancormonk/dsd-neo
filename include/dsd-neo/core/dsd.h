@@ -784,6 +784,9 @@ typedef struct {
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot
     uint8_t cap_plus_block_num[2];             //received block number storage -- per timeslot
     uint8_t data_block_crc_valid[2][127];      //flag each individual block as good crc on confirmed data
+    // Confirmed data sequence tracking (DBSN expected per slot)
+    uint8_t data_dbsn_expected[2];
+    uint8_t data_dbsn_have[2];
     char dmr_embedded_signalling
         [2][7]
         [48]; //embedded signalling 2 slots by 6 vc by 48 bits (replacing TS1SuperFrame.TimeSlotRawVoiceFrame.Sync structure)

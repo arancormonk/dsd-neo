@@ -37,6 +37,9 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) //&&CRCCorrect == 1
     {
+        // Reset confirmed-data DBSN tracking on new header
+        state->data_dbsn_have[slot] = 0;
+        state->data_dbsn_expected[slot] = 0;
 
         uint8_t gi = dheader_bits[0];                                    //group or individual data
         uint8_t a = dheader_bits[1];                                     //response requested flag
@@ -1825,6 +1828,8 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     memset(state->data_header_valid, 0, sizeof(state->data_header_valid));
     memset(state->data_header_format, 7, sizeof(state->data_header_format));
     memset(state->data_header_sap, 0, sizeof(state->data_header_sap));
+    memset(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));
+    memset(state->data_dbsn_have, 0, sizeof(state->data_dbsn_have));
     //reset some strings -- resetting call string here causes random blink on ncurses terminal (cap+)
     // sprintf (state->call_string[0], "%s", "                     "); //21 spaces
     // sprintf (state->call_string[1], "%s", "                     "); //21 spaces

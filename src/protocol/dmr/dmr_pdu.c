@@ -661,12 +661,10 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                     minute = ((DMR_PDU[i + 4] & 0x0F) << 2) + ((DMR_PDU[i + 5] & 0xC0) >> 6);
                     second = (DMR_PDU[i + 5] & 0x3F);
                     i += 5;
-                    //sanity check
-                    if (year > 2000 && year <= 2026) {
+                    // basic plausibility checks (range-limited fields only; do not clamp year)
+                    if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59
+                        && second <= 59) {
                         lrrp_confidence++;
-                    }
-                    if (year > 2025 || year < 2000) {
-                        year = 0; //needs future proofing
                     }
                 }
                 break;
