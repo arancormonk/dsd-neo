@@ -458,6 +458,16 @@ target_include_directories(dsd-neo_test_dmr_confirmed_crc9 PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_dmr_confirmed_crc9 PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_CONFIRMED_CRC9 COMMAND dsd-neo_test_dmr_confirmed_crc9)
 
+add_executable(dsd-neo_test_dmr_crc_masks protocol/dmr/test_dmr_crc_masks.c)
+target_include_directories(dsd-neo_test_dmr_crc_masks PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_crc_masks PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_CRC_MASKS COMMAND dsd-neo_test_dmr_crc_masks)
+
+add_executable(dsd-neo_test_dmr_rc_crc7 protocol/dmr/test_dmr_rc_crc7.c)
+target_include_directories(dsd-neo_test_dmr_rc_crc7 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_rc_crc7 PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_RC_CRC7 COMMAND dsd-neo_test_dmr_rc_crc7)
+
 add_executable(dsd-neo_test_dmr_r34_stub protocol/dmr/test_dmr_r34_stub.c)
 target_include_directories(dsd-neo_test_dmr_r34_stub PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_r34_stub PRIVATE dsd-neo_proto_dmr)
