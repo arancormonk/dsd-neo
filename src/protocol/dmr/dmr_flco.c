@@ -899,6 +899,7 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
         lcss = (tact_bits[2] << 1) | tact_bits[3];
         // tact_valid set but not used elsewhere
         //fprintf (stderr, "AT=%d LCSS=%d - ", at, lcss); //debug print
+        tact_valid = 1;
     } else //probably skip/memset/zeroes with else statement?
     {
         //do something?
@@ -907,37 +908,85 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
     }
 
     //determine counter value based on lcss value
-    if (lcss
-        == 0) //run as single block/fragment NOTE: There is no Single fragment LC defined for CACH signalling (but is mentioned in the manual table)
-    {
-        //reset the full cach, even if we aren't going to use it, may be beneficial for next time
-        state->dmr_cach_counter = 0; //first fragment, set to zero.
+    if (tact_valid && lcss == 0) { // Single-fragment SLC per TACT LCSS=0 (guarded handling)
+        // Reset any in-flight multi-fragment state for safety
+        state->dmr_cach_counter = 0;
         memset(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
 
-        //seperate
+        // Extract the 17-bit Hamming(17,12) codeword directly from CACH payload
         for (i = 0; i < 17; i++) {
-            slco_raw_bits[i] = cach_bits[i + 7];
+            slco_bits[i] = cach_bits[i + 7];
         }
 
-        //De-interleave
-        int src = 0;
-        for (i = 0; i < 17; i++) {
-            src = (i * 4) % 67;
-            slco_bits[i] = slco_raw_bits[src];
-        }
-        //slco_bits[i] = slco_raw_bits[i];
-
-        //hamming check here
+        // Validate and correct with Hamming(17,12,3)
         h1 = Hamming17123(slco_bits + 0);
-
-        //run single - manual would suggest that though this exists, there is no support? or perhaps its manufacturer only thing?
-        if (h1)
-            ; // dmr_slco (opts, state, slco_bits); //random false positives and sets bad parms/mfid etc
-        else {
+        if (!h1) {
             err = 1;
-            //return (err);
+            return err;
         }
-        return (err);
+
+        // Decode opcode; only handle the safe subset that fits within first 12 info bits
+        uint8_t slco = (uint8_t)ConvertBitIntoBytes(&slco_bits[0], 4);
+
+        // Rate-limit logging to avoid spam on busy channels
+        int slot = state->currentslot;
+        time_t now = time(NULL);
+        if (state->slco_sfrag_last[slot] != 0 && (now - state->slco_sfrag_last[slot]) < 1) {
+            return err; // silently accept but do not log more than 1/sec/slot
+        }
+        state->slco_sfrag_last[slot] = now;
+
+        // Minimal, safe reporting — avoid invoking full dmr_slco() with partial payload
+        fprintf(stderr, "\n%s", KYEL);
+        fprintf(stderr, " SLOT %d", slot + 1);
+        if (slco == 0x0) {
+            fprintf(stderr, " SLCO NULL (single) ");
+        } else if (slco == 0x1) {
+            // Activity Update (fits within first 12 bits: TS1/TS2 activity only)
+            uint8_t ts1_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 4);
+            uint8_t ts2_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[8], 4);
+
+            const char* ts1_str;
+            const char* ts2_str;
+            switch (ts1_act) {
+                case 0x0: ts1_str = "Idle"; break;
+                case 0x2: ts1_str = "Group CSBK"; break;
+                case 0x3: ts1_str = "Ind CSBK"; break;
+                case 0x8: ts1_str = "Group Voice"; break;
+                case 0x9: ts1_str = "Ind Voice"; break;
+                case 0xA: ts1_str = "Ind Data"; break;
+                case 0xB: ts1_str = "Group Data"; break;
+                case 0xC: ts1_str = "Group Emergency"; break;
+                case 0xD: ts1_str = "Ind Emergency"; break;
+                default: {
+                    static char buf[16];
+                    snprintf(buf, sizeof(buf), "Res %X", ts1_act);
+                    ts1_str = buf;
+                } break;
+            }
+            switch (ts2_act) {
+                case 0x0: ts2_str = "Idle"; break;
+                case 0x2: ts2_str = "Group CSBK"; break;
+                case 0x3: ts2_str = "Ind CSBK"; break;
+                case 0x8: ts2_str = "Group Voice"; break;
+                case 0x9: ts2_str = "Ind Voice"; break;
+                case 0xA: ts2_str = "Ind Data"; break;
+                case 0xB: ts2_str = "Group Data"; break;
+                case 0xC: ts2_str = "Group Emergency"; break;
+                case 0xD: ts2_str = "Ind Emergency"; break;
+                default: {
+                    static char buf2[16];
+                    snprintf(buf2, sizeof(buf2), "Res %X", ts2_act);
+                    ts2_str = buf2;
+                } break;
+            }
+            fprintf(stderr, " SLC Activity (single) TS1: %s; TS2: %s;", ts1_str, ts2_str);
+        } else {
+            // Unknown/unsupported single-fragment type — acknowledge quietly
+            fprintf(stderr, " SLC (single) OPC=0x%X ", slco);
+        }
+        fprintf(stderr, "%s", KNRM);
+        return err;
     }
 
     if (lcss == 1) //first block, reset counters and memset

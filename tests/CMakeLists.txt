@@ -472,3 +472,9 @@ add_executable(dsd-neo_test_dmr_r34_noise protocol/dmr/test_dmr_r34_noise.c)
 target_include_directories(dsd-neo_test_dmr_r34_noise PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_r34_noise PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_R34_NOISE COMMAND dsd-neo_test_dmr_r34_noise)
+
+# DMR SLCO single-fragment bits (LCSS=0) tests
+add_executable(dsd-neo_test_dmr_slco_sfrag_bits protocol/dmr/test_dmr_slco_sfrag_bits.c)
+target_include_directories(dsd-neo_test_dmr_slco_sfrag_bits PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_slco_sfrag_bits PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_SLCO_SFRAG_BITS COMMAND dsd-neo_test_dmr_slco_sfrag_bits)
