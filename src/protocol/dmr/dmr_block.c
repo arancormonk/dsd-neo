@@ -699,9 +699,31 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
     UNUSED4(udt_padnib, udt_zero, udt_sf, udt_pf);
     UNUSED(udt_op);
 
-    //number of repititions required in various bit grabs
-    int end = 3;
-    UNUSED(end);
+    // Compute strict payload sizing using actual assembled block count.
+    // At decode time, data_block_counter equals the number of appended blocks present (excludes header).
+    int app_blocks = state->data_block_counter[slot];
+    if (app_blocks < 0) {
+        app_blocks = 0;
+    }
+    if (app_blocks > 4) {
+        app_blocks = 4;
+    }
+
+    // Available payload bits across appended blocks (exclude trailing CRC16)
+    int payload_bits_total = (app_blocks * 96) - 16;
+    if (payload_bits_total < 0) {
+        payload_bits_total = 0;
+    }
+
+    // Pad nibble field is in nibbles (4 bits each). Clamp to available payload.
+    int pad_bits = (int)udt_padnib * 4;
+    if (pad_bits > payload_bits_total) {
+        pad_bits = payload_bits_total;
+    }
+    int payload_bits = payload_bits_total - pad_bits;
+    if (payload_bits < 0) {
+        payload_bits = 0;
+    }
 
     //char strings
     uint8_t iso7c;
@@ -745,22 +767,29 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
     if (udt_format2 == 0x00) {
         fprintf(stderr, "Binary Data;");
         dsd_append(udt_string, sizeof udt_string, "Binary Data; ");
+        // Heuristic: show a bounded UTF-8 view if it looks like text
+        int bytes = payload_bits / 8;
+        if (bytes > 0) {
+            int offset = 96 / 8; // first appended block starts after header
+            if (offset + bytes > 60) {
+                bytes = 60 - offset; // hard cap to on-stack buffer size used above
+                if (bytes < 0) {
+                    bytes = 0;
+                }
+            }
+            if (bytes > 0) {
+                utf8_to_text(state, 0, (uint16_t)bytes, block_bytes + offset);
+            }
+        }
     } else if (udt_format2 == 0x01) //appended addresses
     {
         fprintf(stderr, "Appended Addressing;\n ");
         dsd_append(udt_string, sizeof udt_string, "Appended Addressing; ");
-        if (udt_uab == 1) {
-            end = 3;
+        int addr_bits = payload_bits - 8; // 7-bit reserved + 1-bit OK flag
+        if (addr_bits < 0) {
+            addr_bits = 0;
         }
-        if (udt_uab == 2) {
-            end = 7;
-        }
-        if (udt_uab == 3) {
-            end = 11;
-        }
-        if (udt_uab == 4) {
-            end = 15;
-        }
+        int end = addr_bits / 24;
         if (add_res) {
             fprintf(stderr, "RES: %d; ", add_res);
         }
@@ -771,19 +800,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         }
     } else if (udt_format2 == 0x02) //BCD 4-bit Dialer Digits
     {
-        if (udt_uab == 1) {
-            end = 20;
-        }
-        if (udt_uab == 2) {
-            end = 44;
-        }
-        if (udt_uab == 3) {
-            end = 95;
-        }
-        if (udt_uab == 4) {
-            end = 92;
-        }
-        end -= udt_padnib; //subtract padnib since its also 4 bits
+        int end = payload_bits / 4; // 4 bits per BCD digit (pad already removed)
 
         fprintf(stderr, "Dialer BCD: ");
         dsd_append(udt_string, sizeof udt_string, "Dialer Digits: ");
@@ -820,22 +837,9 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         }
     } else if (udt_format2 == 0x03) //ISO7 format
     {
-        if (udt_uab == 1) {
-            end = 11;
-        }
-        if (udt_uab == 2) {
-            end = 25;
-        }
-        if (udt_uab == 3) {
-            end = 38;
-        }
-        if (udt_uab == 4) {
-            end = 52;
-        }
-        end -= udt_padnib / 2; //this may be more complex since its 7, so /7 and then if %7, add +1?
+        int end = payload_bits / 7; // 7-bit characters (pad accounted above)
         fprintf(stderr, "ISO7 Text: ");
         dsd_append(udt_string, sizeof udt_string, "ISO7 Text; ");
-        // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
         for (i = 0; i < end; i++) //max 368/7 = 52 character max?
         {
@@ -857,20 +861,7 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         fprintf(stderr, "ISO8 Text: ");
         dsd_append(udt_string, sizeof udt_string, "ISO8 Text; ");
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
-        if (udt_uab == 1) {
-            end = 10;
-        }
-        if (udt_uab == 2) {
-            end = 22;
-        }
-        if (udt_uab == 3) {
-            end = 34;
-        }
-        if (udt_uab == 4) {
-            end = 46;
-        }
-        end -= udt_padnib / 2; //just going with /2 so that its 2*nib = byte format (might cut off last, not sure?)
-        // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
+        int end = payload_bits / 8; // 8-bit characters
         for (i = 0; i < end; i++) {
             iso8c = (uint8_t)ConvertBitIntoBytes(&cs_bits[(i * 8) + 96], 8);
             char i8c[2];
@@ -891,21 +882,8 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         }
     } else if (udt_format2 == 0x07) //UTF-16BE format
     {
-        if (udt_uab == 1) {
-            end = 5;
-        }
-        if (udt_uab == 2) {
-            end = 11;
-        }
-        if (udt_uab == 3) {
-            end = 17;
-        }
-        if (udt_uab == 4) {
-            end = 23;
-        }
-        end -= udt_padnib / 4;
+        int end = payload_bits / 16; // 16-bit characters
         fprintf(stderr, "UTF16 Text: ");
-        // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
         dsd_append(udt_string, sizeof udt_string, "UTF16 Text; ");
         sprintf(state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
         for (i = 0; i < end; i++) //368/16 = 23 character max?
@@ -961,19 +939,11 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, uint8_t* block_bytes, uint32_t
         }
     } else if (udt_format2 == 0x0A) //Mixed Address/UTF-16BE
     {
-        if (udt_uab == 1) {
-            end = 3;
+        int text_bits = payload_bits - 32; // 8-bit spare + 24-bit address
+        if (text_bits < 0) {
+            text_bits = 0;
         }
-        if (udt_uab == 2) {
-            end = 9;
-        }
-        if (udt_uab == 3) {
-            end = 15;
-        }
-        if (udt_uab == 4) {
-            end = 21;
-        }
-        end -= udt_padnib / 4;
+        int end = text_bits / 16; // 16-bit characters
         fprintf(stderr, "Address: %d; ", (uint32_t)ConvertBitIntoBytes(&cs_bits[96 + 8], 24));
         fprintf(stderr, "UTF16 Text: ");
         dsd_append(udt_string, sizeof udt_string, "Mixed Add/Text; ");
@@ -1629,8 +1599,24 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
         //last block arrived and we have a valid data header, time to send to cspdu decoder
         if (lb == 1 && state->data_header_valid[slot] == 1) {
-            for (i = 0, j = 0; i < 12 * 6; i++, j += 8) //4 blocks max?
-            {
+            // Enforce Tier III MBC aggregate bounds: header + up to 4 continuation blocks
+            int max_blocks = 4; // appended blocks (not counting header)
+            if (!is_udt && (blocks < 1 || blocks > max_blocks)) {
+                // Reject overlong/short aggregates
+                fprintf(stderr, "%s", KRED);
+                fprintf(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", slot + 1, blocks);
+                fprintf(stderr, "%s", KNRM);
+                // Reset and bail
+                state->data_block_crc_valid[slot][0] = 0;
+                return;
+            }
+
+            // Convert assembled bytes (header + appended blocks) into bits for downstream decoders
+            int total_bytes = (1 + blocks) * block_len; // header + blocks
+            if (total_bytes > 12 * 5) {
+                total_bytes = 12 * 5; // clamp to header + 4 continuation blocks
+            }
+            for (i = 0, j = 0; i < total_bytes; i++, j += 8) {
                 dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
                 dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
                 dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
