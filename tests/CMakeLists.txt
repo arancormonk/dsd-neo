@@ -501,3 +501,15 @@ add_executable(dsd-neo_test_dmr_slottype_golay protocol/dmr/test_dmr_slottype_go
 target_include_directories(dsd-neo_test_dmr_slottype_golay PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_slottype_golay PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_SLOTTYPE_GOLAY COMMAND dsd-neo_test_dmr_slottype_golay)
+
+# FEC core (Hamming/Golay/QR) block code tests
+add_executable(dsd-neo_test_fec_block_codes fec/test_fec_block_codes.c)
+target_include_directories(dsd-neo_test_fec_block_codes PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_fec_block_codes PRIVATE dsd-neo_fec)
+add_test(NAME FEC_BLOCK_CODES COMMAND dsd-neo_test_fec_block_codes)
+
+# FEC BPTC + RS(12,9) tests
+add_executable(dsd-neo_test_fec_bptc_rs fec/test_fec_bptc_rs.c)
+target_include_directories(dsd-neo_test_fec_bptc_rs PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_fec_bptc_rs PRIVATE dsd-neo_fec)
+add_test(NAME FEC_BPTC_RS COMMAND dsd-neo_test_fec_bptc_rs)
