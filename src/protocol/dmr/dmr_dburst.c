@@ -302,16 +302,13 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&BPTCDmrDataBit[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 
-            //reorganize the BPTCDmrDataBit array into confdatabits, just for CRC9 check
-            //need to find a sample to confirm this
+            // ETSI TS 102 361-1/-3: For confirmed 1/2-rate blocks, CRC-9 covers
+            // the 80 information bits only (10 octets), MSB-first. Do not include DBSN.
             for (i = 0; i < 80; i++) {
                 confdatabits[i] = BPTCDmrDataBit[i + 16];
             }
-            for (i = 0; i < 7; i++) {
-                confdatabits[i + 80] = BPTCDmrDataBit[i];
-            }
 
-            CRCComputed = ComputeCrc9Bit(confdatabits, 87);
+            CRCComputed = ComputeCrc9Bit(confdatabits, 80);
             if (CRCExtracted == CRCComputed) {
                 CRCCorrect = 1;
                 state->data_block_crc_valid[slot][blockcounter] = 1;
@@ -499,14 +496,12 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             CRCExtracted = CRCExtracted ^ crcmask;
 
             //reorganize the DMR_PDU_bits array into confdatabits, just for CRC9 check
+            // ETSI: For confirmed 3/4-rate blocks, CRC-9 covers 128 information bits (16 octets), MSB-first.
             for (i = 0; i < 128; i++) {
                 confdatabits[i] = DMR_PDU_bits[i + 16];
             }
-            for (i = 0; i < 7; i++) {
-                confdatabits[i + 128] = DMR_PDU_bits[i];
-            }
 
-            CRCComputed = ComputeCrc9Bit(confdatabits, 135);
+            CRCComputed = ComputeCrc9Bit(confdatabits, 128);
             if (CRCExtracted == CRCComputed) {
                 CRCCorrect = 1;
                 state->data_block_crc_valid[slot][blockcounter] = 1;
@@ -566,9 +561,7 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             for (i = 100; i < 196; i++) {
                 confdatabits[k++] = info[i]; //second half
             }
-            for (i = 0; i < 7; i++) {
-                confdatabits[k++] = info[i]; //DBSN
-            }
+            // ETSI: For confirmed rate 1 blocks, CRC-9 covers 176 information bits (22 octets), MSB-first.
             CRCComputed = ComputeCrc9Bit(confdatabits, k);
 
             if (CRCExtracted == CRCComputed) {

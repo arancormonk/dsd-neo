@@ -453,6 +453,11 @@ target_include_directories(dsd-neo_test_dmr_bit_utils PRIVATE ${PROJECT_SOURCE_D
 target_link_libraries(dsd-neo_test_dmr_bit_utils PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_BIT_UTILS COMMAND dsd-neo_test_dmr_bit_utils)
 
+add_executable(dsd-neo_test_dmr_confirmed_crc9 protocol/dmr/test_dmr_confirmed_crc9.c)
+target_include_directories(dsd-neo_test_dmr_confirmed_crc9 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_confirmed_crc9 PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_CONFIRMED_CRC9 COMMAND dsd-neo_test_dmr_confirmed_crc9)
+
 add_executable(dsd-neo_test_dmr_r34_stub protocol/dmr/test_dmr_r34_stub.c)
 target_include_directories(dsd-neo_test_dmr_r34_stub PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_r34_stub PRIVATE dsd-neo_proto_dmr)

@@ -16,6 +16,7 @@ extern "C" {
 uint64_t ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength);
 
 uint16_t ComputeCrcCCITT(uint8_t* DMRData);
+uint16_t ComputeCrc9Bit(uint8_t* DMRData, uint32_t NbData);
 
 uint8_t crc3(uint8_t bits[], unsigned int len);
 uint8_t crc4(uint8_t bits[], unsigned int len);
