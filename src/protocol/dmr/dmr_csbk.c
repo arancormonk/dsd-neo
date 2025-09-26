@@ -755,14 +755,18 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                 if (opts->trunk_enable == 1) {
 
-                    // Mark this slot as idle so the SM release gate does not
-                    // see stale voice activity on the cleared slot.
+                    // Mark both slots as idle to ensure the SM release gate
+                    // does not see stale activity on either slot. This avoids
+                    // deferring the return-to-CC due to an old opposite-slot
+                    // burst value lingering as "active".
                     if (state->currentslot == 0) {
                         state->dmrburstL = 9;
+                        state->dmrburstR = 9;
                         state->call_string[0][0] = '\0';
                         state->active_channel[0][0] = '\0';
                     } else {
                         state->dmrburstR = 9;
+                        state->dmrburstL = 9;
                         state->call_string[1][0] = '\0';
                         state->active_channel[1][0] = '\0';
                     }
@@ -837,8 +841,10 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                 pslot, oslot);
                         clear = 0; //flag as 0 so we won't tune away until data call is completed
                     }
-                    // Tag TG-hold override as a forced release to bypass hangtime/opposite-slot activity
-                    if (clear == 4 || clear == 5) {
+                    // For explicit slot clear, force release so we return to CC
+                    // immediately instead of waiting on hangtime or stale slot
+                    // activity checks. TG-hold overrides also force release.
+                    if (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5) {
                         state->p25_sm_force_release = 1;
                     }
                     // Post a release to the centralized SM unconditionally when off-CC.
