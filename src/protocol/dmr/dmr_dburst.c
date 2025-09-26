@@ -586,9 +586,11 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
         memcpy(DMR_PDU_bits, info, sizeof(DMR_PDU_bits));
     }
 
-    // Enforce confirmed data DBSN sequencing before assembling multi-block data
+    // Enforce confirmed data DBSN sequencing before assembling multi-block data.
+    // Only enforce in strict (aggressive) mode; allow relaxed mode to attempt
+    // best-effort assembly for ARS/LRRP resilience on marginal signals.
     if ((databurst == 0x07 || databurst == 0x08 || databurst == 0x0A) && state->data_conf_data[slot] == 1
-        && CRCCorrect == 1 && dbsn_valid) {
+        && CRCCorrect == 1 && dbsn_valid && opts->aggressive_framesync == 1) {
         if (!state->data_dbsn_have[slot]) {
             state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
             state->data_dbsn_have[slot] = 1;

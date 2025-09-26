@@ -502,6 +502,16 @@ target_include_directories(dsd-neo_test_dmr_slottype_golay PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_dmr_slottype_golay PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_SLOTTYPE_GOLAY COMMAND dsd-neo_test_dmr_slottype_golay)
 
+# DMR relaxed header acceptance for SAP=4 (IP-based)
+add_executable(dsd-neo_test_dmr_relaxed_header_ip
+  protocol/dmr/test_dmr_relaxed_header_ip.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_block.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_utils.c
+)
+target_include_directories(dsd-neo_test_dmr_relaxed_header_ip PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_compile_definitions(dsd-neo_test_dmr_relaxed_header_ip PRIVATE MBELIB_NO_HEADERS=1)
+add_test(NAME DMR_RELAXED_HEADER_IP COMMAND dsd-neo_test_dmr_relaxed_header_ip)
+
 # FEC core (Hamming/Golay/QR) block code tests
 add_executable(dsd-neo_test_fec_block_codes fec/test_fec_block_codes.c)
 target_include_directories(dsd-neo_test_fec_block_codes PRIVATE ${PROJECT_SOURCE_DIR}/include)

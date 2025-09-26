@@ -35,7 +35,10 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     //reset block counter to 1
     state->data_block_counter[slot] = 1;
 
-    if (IrrecoverableErrors == 0 && CRCCorrect == 1) //&&CRCCorrect == 1
+    // Accept headers when CRC is good, or when relaxed CRC bypass is enabled.
+    // This restores ARS/LRRP decoding on systems using RAS or with minor header
+    // corruption when the user explicitly disables aggressive frame sync.
+    if (IrrecoverableErrors == 0 && (CRCCorrect == 1 || opts->aggressive_framesync == 0)) //&&CRCCorrect == 1
     {
         // Reset confirmed-data DBSN tracking on new header
         state->data_dbsn_have[slot] = 0;
