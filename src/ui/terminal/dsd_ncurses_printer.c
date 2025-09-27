@@ -4493,10 +4493,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
     if (opts->show_channels == 1) {
         ui_print_learned_lcns(opts, state);
+        // fence bottom only when Channels are shown
+        ui_print_hr();
     }
-
-    //fence bottom
-    ui_print_hr();
     //colors off
     if (state->carrier == 1) { //same as above
         attroff(COLOR_PAIR(3));
