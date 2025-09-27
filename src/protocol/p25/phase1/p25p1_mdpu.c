@@ -74,8 +74,12 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     unsigned long long int PDU[18 * 129];
     memset(PDU, 0, sizeof(PDU));
 
-    int tsbk_decoded_bits[18 * 129 * 8]; //decoded bits from tsbk_bytes for sending to crc16_lb_bridge
+    int tsbk_decoded_bits[18 * 129 * 8]; // decoded bits from tsbk_bytes for sending to crc16_lb_bridge
     memset(tsbk_decoded_bits, 0, sizeof(tsbk_decoded_bits));
+
+    // Header repetition buffers for majority vote (first 3 reps only)
+    uint8_t hdr_rep_bits[3][96];
+    memset(hdr_rep_bits, 0, sizeof(hdr_rep_bits));
 
     uint8_t mpdu_decoded_bits[18 * 129 * 8];
     memset(mpdu_decoded_bits, 0, sizeof(mpdu_decoded_bits));
@@ -96,6 +100,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     int err[2];  //error value returned from crc16 on header and crc32 on full message
     memset(ec, -2, sizeof(ec));
     memset(err, -2, sizeof(err));
+    int err0_first = -2; // CRC16 result from first header repetition (for early gating only)
 
     uint8_t mpdu_byte[18 * 129];
     memset(mpdu_byte, 0, sizeof(mpdu_byte));
@@ -186,20 +191,16 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        //CRC16 on the header
-        if (j == 0) {
-            err[0] = crc16_lb_bridge(tsbk_decoded_bits, 80);
-            if (err[0] == 0) {
-                state->p25_p1_fec_ok++;
-#ifdef USE_RTLSDR
-                rtl_stream_p25p1_ber_update(1, 0);
-#endif
-            } else {
-                state->p25_p1_fec_err++;
-#ifdef USE_RTLSDR
-                rtl_stream_p25p1_ber_update(0, 1);
-#endif
+        // Save header (first 96 bits) for repetition j (majority after loop)
+        if (j < 3) {
+            for (i = 0; i < 96; i++) {
+                hdr_rep_bits[j][i] = (uint8_t)(tsbk_decoded_bits[i] & 1);
             }
+        }
+
+        // Compute CRC16 for first header repetition for early length decisions only
+        if (j == 0) {
+            err0_first = crc16_lb_bridge(tsbk_decoded_bits, 80);
         }
 
         //load into bit array for storage (easier decoding for future PDUs)
@@ -224,7 +225,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         }
 
         //check header data to see if this is a 12 rate, or 34 rate packet data unit
-        if ((j == 0 && err[0] == 0) || (j == 0 && opts->aggressive_framesync == 0)) {
+        if ((j == 0 && (err0_first == 0 || opts->aggressive_framesync == 0))) {
             an = (mpdu_byte[0] >> 6) & 0x1;
             io = (mpdu_byte[0] >> 5) & 0x1;
             fmt = mpdu_byte[0] & 0x1F;
@@ -247,6 +248,37 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             if (end > 128) {
                 end = 128;
             }
+        }
+    }
+
+    // Compute header CRC using majority across first 3 repetitions
+    {
+        int reps = (end < 3) ? end : 3;
+        uint8_t hdr_maj_bits[96];
+        memset(hdr_maj_bits, 0, sizeof(hdr_maj_bits));
+        for (i = 0; i < 96; i++) {
+            int sum = 0;
+            for (j = 0; j < reps; j++) {
+                sum += (int)hdr_rep_bits[j][i];
+            }
+            int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1; // >=2 reps: majority; 1 rep: passthrough
+            hdr_maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
+        }
+        int hdr_bits_int[96];
+        for (i = 0; i < 96; i++) {
+            hdr_bits_int[i] = (int)hdr_maj_bits[i];
+        }
+        err[0] = crc16_lb_bridge(hdr_bits_int, 80);
+        if (err[0] == 0) {
+            state->p25_p1_fec_ok++;
+#ifdef USE_RTLSDR
+            rtl_stream_p25p1_ber_update(1, 0);
+#endif
+        } else {
+            state->p25_p1_fec_err++;
+#ifdef USE_RTLSDR
+            rtl_stream_p25p1_ber_update(0, 1);
+#endif
         }
     }
 

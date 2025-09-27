@@ -4,7 +4,7 @@
  */
 /*-------------------------------------------------------------------------------
  * p25p1_tsbk.c
- * P25p1 Trunking Signal Block Handler
+ * P25p1 Trunking Signal Block Handler (with majority-vote over 3 reps)
  *
  * LWVMOBILE
  * 2022-10 DSD-FME Florida Man Edition
@@ -15,648 +15,234 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tsbk++;
 
-    //p25p2 18v reset counters and buffers
-    state->voice_counter[0] = 0; //reset
-    state->voice_counter[1] = 0; //reset
+    // Reset counters and buffers to avoid carryover from voice paths
+    state->voice_counter[0] = 0;
+    state->voice_counter[1] = 0;
     memset(state->s_l4, 0, sizeof(state->s_l4));
     memset(state->s_r4, 0, sizeof(state->s_r4));
     opts->slot_preference = 2;
 
-    //push current slot to 0, just in case swapping p2 to p1
-    //or stale slot value from p2 and then decoding a pdu
+    // Ensure slot index is sane when swapping protocols
     state->currentslot = 0;
 
-    //reset some strings when returning from a call in case they didn't get zipped already
-    sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-    sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-
-    //clear stale Active Channel messages here
+    // Clear stale Active Channel messages after idle
     const time_t now = time(NULL);
     if ((now - state->last_active_time) > 3) {
         memset(state->active_channel, 0, sizeof(state->active_channel));
     }
 
+    // Buffers
     uint8_t tsbk_dibit[98];
     memset(tsbk_dibit, 0, sizeof(tsbk_dibit));
 
-    int dibit = 0;
-
-    uint8_t tsbk_byte[12]; //12 byte return from p25_12
+    uint8_t tsbk_byte[12]; // per repetition
     memset(tsbk_byte, 0, sizeof(tsbk_byte));
 
-    unsigned long long int PDU[24]; //24 byte PDU to send to the tsbk_byte vPDU handler, should be same formats (mostly)
+    // Store decoded 96 bits from each of the 3 repetitions
+    uint8_t rep_bits[3][96];
+    memset(rep_bits, 0, sizeof(rep_bits));
+    uint8_t rep_bytes[3][12];
+    memset(rep_bytes, 0, sizeof(rep_bytes));
+    int rep_crc[3] = {-2, -2, -2};
+
+    unsigned long long int PDU[24];
     memset(PDU, 0, sizeof(PDU));
 
-    int tsbk_decoded_bits[190]; //decoded bits from tsbk_bytes for sending to crc16_lb_bridge
+    int tsbk_decoded_bits[96];
     memset(tsbk_decoded_bits, 0, sizeof(tsbk_decoded_bits));
 
     int i, j, k, x;
-    int ec = -2;  //error value returned from p25_12
-    int err = -2; //error value returned from crc16_lb_bridge
+    int err = -2; // CRC16 result (majority)
 
     int protectbit = 0;
-    int MFID = 0xFF; //Manufacturer ID - Might be beneficial to NOT send anything but standard 0x00 or 0x01 messages
-    int lb = 0;      //last block
+    int MFID = 0xFF;
 
-    //now using modulus on skipdibit values (this was unneccesary on TSBK, but doing it to keep the two roughly the same code wise)
-    int skipdibit =
-        36
-        - 14; //when we arrive here, we are at this position in the counter after reading FS, NID, DUID, and Parity dibits
-    int status_count = 1; //we have already skipped the Status 1 dibit before arriving here
-    int dibit_count = 0;  //number of gathered dibits
-    UNUSED(status_count); //debug counter
-    UNUSED(dibit_count);  //debug counter
+    // Status-dibit skipping state
+    int skipdibit = 36 - 14;
+    int status_count = 1;
+    int dibit_count = 0;
+    UNUSED(status_count);
+    UNUSED(dibit_count);
 
-    //collect three reps of 101 dibits (98 valid dibits with status dibits interlaced)
+    // Collect up to 3 repetitions of 101 dibits (with status dibits interlaced)
+    int reps_got = 0;
     for (j = 0; j < 3; j++) {
         k = 0;
         for (i = 0; i < 101; i++) {
-
-            dibit = getDibit(opts, state);
+            int dibit = getDibit(opts, state);
             if ((skipdibit / 36) == 0) {
                 dibit_count++;
-                tsbk_dibit[k++] = dibit;
-            }
-
-            else {
+                tsbk_dibit[k++] = (uint8_t)dibit;
+            } else {
                 skipdibit = 0;
                 status_count++;
-
-                // fprintf (stderr, " S:%02d; D:%03d; i:%03d;", status_count, (j*101)+i+57, i); //debug Status Count, Total Dibit Count, and i (compare to symbol rx table)
-                // fprintf (stderr, " S:%02d; CD:%02d; i:%03d; d:%d;", status_count, dibit_count, i, dibit); //debug Status Count, Current Dibit Count, i, and status dibit
             }
-
-            skipdibit++; //increment
+            skipdibit++;
         }
 
-        // fprintf (stderr, " DC: %d", dibit_count); //debug
+        // 1/2-rate decode this repetition
+        (void)p25_12(tsbk_dibit, tsbk_byte);
 
-        //send to p25_12 and return tsbk_byte
-        ec = p25_12(tsbk_dibit, tsbk_byte);
-
-        //debug err tally from 1/2 decoder
-        // if (ec) fprintf (stderr, " #%d ERR = %d;", j+1, ec);
-
-        //too many bit manipulations!
+        // Convert decoded bytes into a 96-bit MSB-first vector
         k = 0;
         for (i = 0; i < 12; i++) {
             for (x = 0; x < 8; x++) {
-                tsbk_decoded_bits[k] = ((tsbk_byte[i] << x) & 0x80) >> 7;
-                k++;
+                tsbk_decoded_bits[k++] = ((tsbk_byte[i] << x) & 0x80) >> 7;
             }
         }
-
-        err = crc16_lb_bridge(tsbk_decoded_bits, 80);
-        if (err == 0) {
-            state->p25_p1_fec_ok++;
-#ifdef USE_RTLSDR
-            rtl_stream_p25p1_ber_update(1, 0);
-#endif
-        } else {
-            state->p25_p1_fec_err++;
-#ifdef USE_RTLSDR
-            rtl_stream_p25p1_ber_update(0, 1);
-#endif
+        for (i = 0; i < 96; i++) {
+            rep_bits[j][i] = (uint8_t)(tsbk_decoded_bits[i] & 1);
         }
+        memcpy(rep_bytes[j], tsbk_byte, 12);
 
-        //shuffle corrected bits back into tsbk_byte
-        k = 0;
-        for (i = 0; i < 12; i++) {
-            int byte = 0;
-            for (x = 0; x < 8; x++) {
-                byte = byte << 1;
-                byte = byte | tsbk_decoded_bits[k];
-                k++;
-            }
-            tsbk_byte[i] = byte;
-        }
+        // Compute per-repetition CRC16 over first 80 bits for later selection
+        rep_crc[j] = crc16_lb_bridge(tsbk_decoded_bits, 80);
 
-        //convert tsbk_byte to vPDU and send to vPDU handler
-        //...may or may not be entirely compatible,
-        MFID = tsbk_byte[1];
-        PDU[0] = 0x07; //P25p1 TSBK Duid 0x07
-        PDU[1] = tsbk_byte[0] & 0x3F;
-        PDU[2] = tsbk_byte[2];
-        PDU[3] = tsbk_byte[3];
-        PDU[4] = tsbk_byte[4];
-        PDU[5] = tsbk_byte[5];
-        PDU[6] = tsbk_byte[6];
-        PDU[7] = tsbk_byte[7];
-        PDU[8] = tsbk_byte[8];
-        PDU[9] = tsbk_byte[9];
-        //remove CRC to prevent false positive when vPDU goes to look for additional message in block
-        PDU[10] = 0;            //tsbk_byte[10];
-        PDU[11] = 0;            //tsbk_byte[11];
-        PDU[1] = PDU[1] ^ 0x40; //flip bit to make it compatible with MAC_PDUs, i.e. 3D to 7D
+        reps_got++;
 
-        //check the protect bit, don't run if protected
-        protectbit = (tsbk_byte[0] >> 6) & 0x1;
-        lb = (tsbk_byte[0] >> 7) & 0x1;
-
-        //zero out data calls after returning from a SNDCP data channel
-        if (err == 0) {
-            sprintf(state->dmr_lrrp_gps[0], "%s", "");
-        }
-
-        //Don't run NET_STS out of this, or will set wrong NAC/CC
-        //Note: Running MFID 90 (moto) opcode 9 GRG Delete or Reserve will falsely trigger a telephone interconnect grant
-        if (MFID < 0x2 && protectbit == 0 && err == 0 && PDU[1] != 0x7B) {
-            fprintf(stderr, "%s", KYEL);
-            process_MAC_VPDU(opts, state, 0, PDU);
-            fprintf(stderr, "%s", KNRM);
-        }
-
-        //look at Harris Opcodes and payload portion of TSBK
-        else if (MFID == 0xA4 && protectbit == 0 && err == 0) {
-
-            //MFIDA4 Group Regroup Explicit Encryption Command
-            if ((tsbk_byte[0] & 0x3F) == 0x30) {
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
-                int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
-                int key = (tsbk_byte[5] << 8) | tsbk_byte[6];
-                int add = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-                int tga = tsbk_byte[2] >> 5;   //3 bit TGA from GRG_Options
-                int ssn = tsbk_byte[2] & 0x1F; //5 bit SSN from GRG_Options
-
-                if ((tga & 0x2) == 2) { //WGID or WUID (working group id or working unit id)
-                    fprintf(stderr, "  SG: %d; KEY: %04X; WGID: %d; ", sg, key, add);
-                    p25_patch_add_wgid(state, sg, add);
-                } else {
-                    fprintf(stderr, "  SG: %d; KEY: %04X; WUID: %d; ", sg, key, add);
-                    p25_patch_add_wuid(state, sg, (uint32_t)add);
-                }
-
-                if ((tga & 0x4) == 4) {
-                    fprintf(stderr, " Simulselect"); //one-way regroup
-                } else {
-                    fprintf(stderr, " Patch"); //two-way regroup
-                }
-
-                if (tga & 1) {
-                    fprintf(stderr, " Active;"); //activated
-                } else {
-                    fprintf(stderr, " Inactive;"); //deactivated
-                }
-
-                //debug
-                // fprintf (stderr, " T:%d G:%d A:%d;", (tga >> 2) & 1, (tga >> 1) & 1, tga & 1);
-
-                fprintf(stderr, " SSN: %02d \n", ssn);
-                fprintf(stderr, " %s", KNRM);
-
-                // Update patch tracker (show only two-way patches in UI)
-                int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-                int active = (tga & 0x1) ? 1 : 0;
-                p25_patch_update(state, sg, is_patch, active);
-                // Record K/SSN; ALG unknown on P1 form
-                p25_patch_set_kas(state, sg, key, -1, ssn);
-            } else {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "\n MFID A4 (Harris); Opcode: %02X; ", tsbk_byte[0] & 0x3F);
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-                fprintf(stderr, " %s", KNRM);
-            }
-
-            if (opts->payload == 1) {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "\n P25 PDU Payload #%d ", j + 1);
-                for (i = 0; i < 12; i++) {
-                    fprintf(stderr, "[%02X]", tsbk_byte[i]);
-                }
-                fprintf(stderr, "\n MFID %02X Protected: %d Last Block: %d", MFID, protectbit, lb);
-
-                if (ec != 0) {
-                    fprintf(stderr, "%s", KRED);
-                    fprintf(stderr, " ERR = %d", ec);
-                }
-                if (err != 0) {
-                    fprintf(stderr, "%s", KRED);
-                    fprintf(stderr, " (CRC ERR)");
-                }
-                fprintf(stderr, "%s ", KNRM);
-            }
-        }
-
-        //look at Motorola Opcodes and payload portion of TSBK
-        else if (MFID == 0x90 && protectbit == 0 && err == 0) {
-            //group list mode so we can look and see if we need to block tuning any groups, etc
-            char mode[8]; //allow, block, digital, enc, etc
-            sprintf(mode, "%s", "");
-
-            //MFID 90 Group Regroup Channel Grant (MOT_GRG_CN_GRANT) TIA-102.AABH
-            if ((tsbk_byte[0] & 0x3F) == 0x02) {
-                int svc = tsbk_byte[2]; //Just the Res, P-bit, and more res bits
-                int channel = (tsbk_byte[3] << 8) | tsbk_byte[4];
-                long int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-                int group = (tsbk_byte[5] << 8) | tsbk_byte[6];
-                long int freq1 = 0;
-                UNUSED(source);
-                fprintf(stderr, "%s\n ", KYEL);
-
-                //unsure if this follows for GRG
-                // if (svc & 0x80) fprintf (stderr, " Emergency");
-
-                if (svc & 0x40) {
-                    fprintf(stderr, " Encrypted"); //P-bit
-                }
-
-                //unsure if this follows for GRG
-                // if (opts->payload == 1) //hide behind payload due to len
-                // {
-                //   if (svc & 0x20) fprintf (stderr, " Duplex");
-                //   if (svc & 0x10) fprintf (stderr, " Packet");
-                //   else fprintf (stderr, " Circuit");
-                //   if (svc & 0x8) fprintf (stderr, " R"); //reserved bit is on
-                //   fprintf (stderr, " Priority %d", svc & 0x7); //call priority
-                // }
-
-                fprintf(stderr, " MFID 90 (Moto) Group Regroup Channel Grant");
-                fprintf(stderr, "\n  SVC [%02X] CHAN [%04X] SG [%d][%04X]", svc, channel, group, group);
-                freq1 = process_channel_to_freq(opts, state, channel);
-
-                //add active channel to string for ncurses display
-                sprintf(state->active_channel[0], "MFID90 Ch: %04X SG: %d ", channel, group);
-                state->last_active_time = time(NULL);
-
-                if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
-                }
-
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == group) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                        mode[sizeof(mode) - 1] = '\0';
-                        break;
-                    }
-                }
-
-                //TG hold on MFID90 GRG -- block non-matching target, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != group) {
-                    sprintf(mode, "%s", "B");
-                }
-                if (state->tg_hold != 0 && state->tg_hold == group) {
-                    sprintf(mode, "%s", "A");
-                }
-
-                //Skip tuning group calls if group calls are disabled
-                if (opts->trunk_tune_group_calls == 0) {
-                    goto SKIPCALL;
-                }
-
-                //Skip tuning encrypted calls if enc calls are disabled
-                if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
-                    goto SKIPCALL;
-                }
-
-                //tune if tuning available
-                if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                    if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
-                        p25_sm_on_group_grant(opts, state, channel, svc, group, (int)source);
-                    }
-                }
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x03) {
-                //MFID 90 Group Regroup Channel Update (MOT_GRG_CN_GRANT_UPDT) TIA-102.AABH
-                int channel1 = (tsbk_byte[2] << 8) | tsbk_byte[3];
-                int group1 = (tsbk_byte[4] << 8) | tsbk_byte[5];
-                int channel2 = (tsbk_byte[6] << 8) | tsbk_byte[7];
-                int group2 = (tsbk_byte[8] << 8) | tsbk_byte[9];
-
-                long int freq1 = 0;
-                long int freq2 = 0;
-
-                int tempg = 0;      //temp group
-                int tempc = 0;      //temp chan
-                long int tempf = 0; //temp freq
-
-                fprintf(stderr, "%s\n ", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Group Regroup Channel Grant Update");
-                fprintf(stderr, "\n  CHAN1 [%04X] SG [%d][%04X] CHAN2 [%04X] SG [%d][%04X]", channel1, group1, group1,
-                        channel2, group2, group2);
-                freq1 = process_channel_to_freq(opts, state, channel1);
-                freq2 = process_channel_to_freq(opts, state, channel2);
-
-                //add active channel to string for ncurses display
-                sprintf(state->active_channel[0], "MFID90 Ch: %04X SG: %d; Ch: %04X SG: %d ", channel1, group1,
-                        channel2, group2);
-                state->last_active_time = time(NULL);
-
-                tempf = freq1;
-                tempc = channel1;
-                tempg = group1;
-
-                for (int j = 0; j < 2; j++) {
-                    if (j == 1) {
-                        tempf = freq2;
-                        tempc = channel2;
-                        tempg = group2;
-                    }
-
-                    if (opts->trunk_use_allow_list == 1) {
-                        sprintf(mode, "%s", "B");
-                    }
-
-                    for (int i = 0; i < state->group_tally; i++) {
-                        if (state->group_array[i].groupNumber == tempg) {
-                            fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
-                            mode[sizeof(mode) - 1] = '\0';
-                            break;
-                        }
-                    }
-
-                    //TG hold on MFID90 GRG -- block non-matching target, allow matching group
-                    if (state->tg_hold != 0 && state->tg_hold != tempg) {
-                        sprintf(mode, "%s", "B");
-                    }
-                    if (state->tg_hold != 0 && state->tg_hold == tempg) {
-                        sprintf(mode, "%s", "A");
-                    }
-
-                    //Skip tuning group calls if group calls are disabled
-                    if (opts->trunk_tune_group_calls == 0) {
-                        goto SKIPCALL;
-                    }
-
-                    //Skip tuning encrypted calls if enc calls are disabled
-                    // if (opts->trunk_tune_enc_calls == 0) goto SKIPCALL;
-
-                    //tune if tuning available
-                    if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
-                        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tempf != 0) {
-                            p25_sm_on_group_grant(opts, state, tempc, /*svc_bits*/ 0, tempg, /*src*/ 0);
-                        }
-                    }
-                }
-
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x00) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Group Regroup Add: ");
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-                // Best-effort: parse GRG_Options and SGID similar to A4 layout
-                int tga = tsbk_byte[2] >> 5;
-                int ssn = tsbk_byte[2] & 0x1F;
-                int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
-                int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-                p25_patch_update(state, sg, is_patch, 1);
-                p25_patch_set_kas(state, sg, -1, -1, ssn);
-                // Try to capture membership: assume WGID at [5..6] for group, WUID at [7..9] for unit
-                if ((tga & 0x2) == 2) {
-                    int wgid = (tsbk_byte[5] << 8) | tsbk_byte[6];
-                    if (wgid > 0) {
-                        p25_patch_add_wgid(state, sg, wgid);
-                    }
-                } else {
-                    uint32_t wuid = ((uint32_t)tsbk_byte[7] << 16) | ((uint32_t)tsbk_byte[8] << 8) | tsbk_byte[9];
-                    if (wuid > 0) {
-                        p25_patch_add_wuid(state, sg, wuid);
-                    }
-                }
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x01) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Group Regroup Delete: ");
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-                int tga = tsbk_byte[2] >> 5;
-                int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
-                // Prune membership for the indicated element if we can infer it; otherwise clear SG
-                if ((tga & 0x2) == 2) {
-                    int wgid = (tsbk_byte[5] << 8) | tsbk_byte[6];
-                    if (wgid > 0) {
-                        p25_patch_remove_wgid(state, sg, wgid);
-                    } else {
-                        p25_patch_clear_sg(state, sg);
-                    }
-                } else {
-                    uint32_t wuid = ((uint32_t)tsbk_byte[7] << 16) | ((uint32_t)tsbk_byte[8] << 8) | tsbk_byte[9];
-                    if (wuid > 0) {
-                        p25_patch_remove_wuid(state, sg, wuid);
-                    } else {
-                        p25_patch_clear_sg(state, sg);
-                    }
-                }
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x04) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Extended Function: ");
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x06) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Queued Response: ");
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x07) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Deny Response: ");
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-            }
-
-            else if ((tsbk_byte[0] & 0x3F) == 0x08) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, "%s", KYEL);
-                fprintf(stderr, " MFID 90 (Moto) Acknoledge Response: ");
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-            }
-
-            //Some of these Opcodes that aren't found in any TIA manual come from SDRTrunk (or other sources),
-            //but can't verify the accuracy of their meaning/context
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x05 )
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Traffic Channel: "); //not sure about this one, don't understand what it means when its on a control channel (activity? but never seems to change even while call grants in progress)
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x09 )
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Channel Loading: "); //don't understand the context for this one, waiting on units to arrive on channel?
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x0B )
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Control Channel: "); //this appears to echo the 16-bit channel number for the main control channel/RFSS
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x0E )
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Control Channel Planned Shutdown: ");
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x10 )
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Something: "); //observed, but no idea
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x15 ) //noted on RR, but not observed as of yet, this may actualy be a LCW and not a TSBK?
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Talker Alias: ");
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            // else if ( (tsbk_byte[0] & 0x3F) == 0x16 )
-            // {
-            //   fprintf (stderr, "\n");
-            //   fprintf (stderr, " MFID 90 (Moto) Something: "); //observed, but no idea
-            //   for (i = 2; i < 10; i++)
-            //     fprintf (stderr, "%02X", tsbk_byte[i]);
-            // }
-
-            else {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", tsbk_byte[0] & 0x3F);
-                for (i = 2; i < 10; i++) {
-                    fprintf(stderr, "%02X", tsbk_byte[i]);
-                }
-                fprintf(stderr, " %s", KNRM);
-            }
-
-            if (opts->payload == 1) {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "\n P25 PDU Payload #%d ", j + 1);
-                for (i = 0; i < 12; i++) {
-                    fprintf(stderr, "[%02X]", tsbk_byte[i]);
-                }
-                fprintf(stderr, "\n MFID %02X Protected: %d Last Block: %d", MFID, protectbit, lb);
-
-                if (ec != 0) {
-                    fprintf(stderr, "%s", KRED);
-                    fprintf(stderr, " ERR = %d", ec);
-                }
-                if (err != 0) {
-                    fprintf(stderr, "%s", KRED);
-                    fprintf(stderr, " (CRC ERR)");
-                }
-                fprintf(stderr, "%s ", KNRM);
-            }
-
-        SKIPCALL:; //do nothing
-
-        }
-
-        //set our WACN and SYSID here now that we have valid ec and crc/checksum
-        else if (protectbit == 0 && err == 0 && (tsbk_byte[0] & 0x3F) == 0x3B) {
-            long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
-            int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
-            int channel = (tsbk_byte[7] << 8) | tsbk_byte[8];
-            fprintf(stderr, "%s", KYEL);
-            fprintf(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
-            fprintf(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
-            state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
-            long neigh[1] = {state->p25_cc_freq};
-            p25_sm_on_neighbor_update(opts, state, neigh, 1);
-            state->p25_cc_is_tdma = 0; //flag off for CC tuning purposes when system is qpsk
-
-            //place the cc freq into the list at index 0 if 0 is empty, or not the same,
-            //so we can hunt for rotating CCs without user LCN list
-            if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-                state->trunk_lcn_freq[0] = state->p25_cc_freq;
-            }
-
-            //only set IF these values aren't already hard set by the user
-            if (state->p2_hardset == 0) {
-                state->p2_wacn = wacn;
-                state->p2_sysid = sysid;
-            }
-
-            // Confirm any IDENs now that CC identity is known
-            p25_confirm_idens_for_current_site(state);
-
-            if (opts->payload == 1) {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "\n P25 PDU Payload #%d ", j + 1);
-                for (i = 0; i < 12; i++) {
-                    fprintf(stderr, "[%02X]", tsbk_byte[i]);
-                }
-            }
-
-            fprintf(stderr, "%s ", KNRM);
-
-        }
-
-        else {
-            if (opts->payload == 1) {
-                fprintf(stderr, "%s", KCYN);
-                fprintf(stderr, "\n P25 PDU Payload #%d ", j + 1);
-                for (i = 0; i < 12; i++) {
-                    fprintf(stderr, "[%02X]", tsbk_byte[i]);
-                }
-                fprintf(stderr, "\n MFID %02X Protected: %d Last Block: %d", MFID, protectbit, lb);
-
-                if (ec != 0) {
-                    fprintf(stderr, "%s", KRED);
-                    fprintf(stderr, " ERR = %d", ec);
-                }
-                if (err != 0) {
-                    fprintf(stderr, "%s", KRED);
-                    fprintf(stderr, " (CRC ERR)");
-                }
-                fprintf(stderr, "%s ", KNRM);
-            }
-        }
-
-        // reset not needed; variables are overwritten on next iteration
-
-        //check for last block bit
-        if (lb) {
+        // If this repetition indicates Last Block, further reps typically stop.
+        // Use what we have for majority to avoid blending with the next message.
+        int lb_rep = (tsbk_byte[0] >> 7) & 0x1;
+        if (lb_rep) {
             break;
         }
     }
 
-    fprintf(stderr, "%s ", KNRM);
+    // Majority-vote across available repetitions (1..3)
+    uint8_t maj_bits[96];
+    memset(maj_bits, 0, sizeof(maj_bits));
+    int reps = (reps_got > 0) ? reps_got : 1;
+    int thresh = (reps >= 2) ? ((reps + 1) / 2) : 1;
+    for (i = 0; i < 96; i++) {
+        int sum = 0;
+        for (int r = 0; r < reps; r++) {
+            sum += (int)rep_bits[r][i];
+        }
+        maj_bits[i] = (uint8_t)((sum >= thresh) ? 1 : 0);
+    }
+
+    // Select best repetition: prefer any CRC-pass rep; otherwise fall back to majority
+    int sel_idx = -1;
+    for (int r = 0; r < reps; r++) {
+        if (rep_crc[r] == 0) {
+            sel_idx = r;
+            break;
+        }
+    }
+    if (sel_idx >= 0) {
+        // Use passing repetition
+        memcpy(tsbk_byte, rep_bytes[sel_idx], 12);
+        err = 0;
+    } else {
+        // No rep passed; compute CRC on majority and use majority bytes
+        int maj_bits_int[96];
+        for (i = 0; i < 96; i++) {
+            maj_bits_int[i] = (int)maj_bits[i];
+        }
+        err = crc16_lb_bridge(maj_bits_int, 80);
+        // Rebuild bytes from majority bits for downstream parsing
+        for (i = 0; i < 12; i++) {
+            int byte = 0;
+            for (x = 0; x < 8; x++) {
+                byte = (byte << 1) | (maj_bits[(i * 8) + x] & 1);
+            }
+            tsbk_byte[i] = (uint8_t)byte;
+        }
+    }
+
+    // Update FEC counters once per message
+    if (err == 0) {
+        state->p25_p1_fec_ok++;
+#ifdef USE_RTLSDR
+        rtl_stream_p25p1_ber_update(1, 0);
+#endif
+    } else {
+        state->p25_p1_fec_err++;
+#ifdef USE_RTLSDR
+        rtl_stream_p25p1_ber_update(0, 1);
+#endif
+    }
+
+    // Basic field extraction
+    MFID = tsbk_byte[1];
+    protectbit = (tsbk_byte[0] >> 6) & 0x1;
+    /* lb not needed here: only used intra-repetition for early break */
+
+    // Prepare a MAC-like PDU form when applicable
+    PDU[0] = 0x07; // P25p1 TSBK DUID
+    PDU[1] = tsbk_byte[0] & 0x3F;
+    PDU[2] = tsbk_byte[2];
+    PDU[3] = tsbk_byte[3];
+    PDU[4] = tsbk_byte[4];
+    PDU[5] = tsbk_byte[5];
+    PDU[6] = tsbk_byte[6];
+    PDU[7] = tsbk_byte[7];
+    PDU[8] = tsbk_byte[8];
+    PDU[9] = tsbk_byte[9];
+    PDU[10] = 0; // strip CRC for vPDU search
+    PDU[11] = 0;
+    PDU[1] ^= 0x40; // flip to match MAC_PDU flavor (3D -> 7D)
+
+    // Downstream handling on majority-decoded frame
+    if (MFID < 0x2 && protectbit == 0 && err == 0 && PDU[1] != 0x7B) {
+        fprintf(stderr, "%s", KYEL);
+        process_MAC_VPDU(opts, state, 0, PDU);
+        fprintf(stderr, "%s", KNRM);
+    } else if (MFID == 0xA4 && protectbit == 0 && err == 0) {
+        // Harris regrouping summaries
+        if ((tsbk_byte[0] & 0x3F) == 0x30) {
+            int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
+            int key = (tsbk_byte[5] << 8) | tsbk_byte[6];
+            int add = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+            int tga = tsbk_byte[2] >> 5;
+            int ssn = tsbk_byte[2] & 0x1F;
+            fprintf(stderr, "%s", KYEL);
+            fprintf(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
+            if ((tga & 0x2) == 2) {
+                fprintf(stderr, "  SG: %d; KEY: %04X; WGID: %d; ", sg, key, add);
+                p25_patch_add_wgid(state, sg, add);
+            } else {
+                fprintf(stderr, "  SG: %d; KEY: %04X; WUID: %d; ", sg, key, add);
+                p25_patch_add_wuid(state, sg, (uint32_t)add);
+            }
+            fprintf(stderr, (tga & 0x4) ? " Simulselect" : " Patch");
+            fprintf(stderr, (tga & 0x1) ? " Active;" : " Inactive;");
+            fprintf(stderr, " SSN: %02d \n", ssn);
+            int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+            int active = (tga & 0x1) ? 1 : 0;
+            p25_patch_update(state, sg, is_patch, active);
+            p25_patch_set_kas(state, sg, -1, -1, ssn);
+        }
+    } else if (protectbit == 0 && err == 0 && (tsbk_byte[0] & 0x3F) == 0x3B) {
+        // Network Status Broadcast (Abbreviated)
+        long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
+        int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
+        int channel = (tsbk_byte[7] << 8) | tsbk_byte[8];
+        fprintf(stderr, "%s", KYEL);
+        fprintf(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
+        fprintf(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
+        state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
+        long neigh[1] = {state->p25_cc_freq};
+        p25_sm_on_neighbor_update(opts, state, neigh, 1);
+        state->p25_cc_is_tdma = 0;
+        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+            state->trunk_lcn_freq[0] = state->p25_cc_freq;
+        }
+        if (state->p2_hardset == 0) {
+            state->p2_wacn = wacn;
+            state->p2_sysid = sysid;
+        }
+        p25_confirm_idens_for_current_site(state);
+    }
+
+    fprintf(stderr, "%s", KNRM);
     fprintf(stderr, "\n");
 
-    //when on a CC, rotate the symbol out file every hour, if enabled
+    // When on a CC, rotate the symbol out file every hour, if enabled
     rotate_symbol_out_file(opts, state);
 }
