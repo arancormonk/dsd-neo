@@ -91,6 +91,31 @@ extern "C" {
  *     Optional one-pole low-pass filter after demod. Approximate cutoff in Hz.
  *     Values: "off" or "0" to disable; integer (e.g., 3000, 5000) to enable. Default: off.
  *
+ * FM/C4FM amplitude stabilization (pre-discriminator)
+ * - DSD_NEO_FM_AGC
+ *     Enable a constant-envelope limiter/AGC on complex I/Q before FM discrimination. Helps stabilize
+ *     RTL-SDR amplitude bounce (e.g., +/-3 dB) that can raise P25 P1 error rates. Default: on for RO2/digital.
+ *     Values: 1 enable, 0 disable.
+ * - DSD_NEO_FM_AGC_TARGET
+ *     Target RMS amplitude of the complex envelope |z| in int16 units after decimation. Typical 8000..12000.
+ *     Default: 10000.
+ * - DSD_NEO_FM_AGC_MIN
+ *     Minimum RMS to engage AGC; below this, gain is held to avoid boosting noise. Default: 2000.
+ * - DSD_NEO_FM_AGC_ALPHA_UP, DSD_NEO_FM_AGC_ALPHA_DOWN
+ *     Q15 smoothing factors when the computed block gain increases vs decreases, respectively.
+ *     Larger values react faster. Defaults: ALPHA_UP=8192 (~0.25), ALPHA_DOWN=24576 (~0.75).
+ * - DSD_NEO_FM_LIMITER
+ *     Enable constant-envelope limiter that normalizes each complex sample to a near-constant
+ *     magnitude around the AGC target. Helpful to clamp fast AM ripple. Default: off (try enabling
+ *     for P25 P1 if AGC alone is insufficient).
+ *
+ * Complex DC offset removal (baseband)
+ * - DSD_NEO_IQ_DC_BLOCK
+ *     Enable a leaky integrator high-pass on I/Q before FM discrimination: dc += (x-dc)>>k; y=x-dc.
+ *     Values: 1 enable, 0 disable. Default: off.
+ * - DSD_NEO_IQ_DC_SHIFT
+ *     k in the above relation (10..14 typical, larger=k -> slower). Default: 11.
+ *
  * Frontend tuning behavior
  * - DSD_NEO_DISABLE_FS4_SHIFT
  *     Disable +fs/4 capture frequency shift when offset_tuning is off. Useful for trunking where exact
@@ -197,6 +222,28 @@ typedef struct dsdneoRuntimeConfig {
      * Applies to relevant digital modes (e.g., P25 C4FM/CQPSK, GFSK family). */
     int snr_sql_is_set;
     int snr_sql_db; /* integer dB threshold */
+
+    /* FM/C4FM amplitude AGC */
+    int fm_agc_is_set;
+    int fm_agc_enable;
+    int fm_agc_target_is_set;
+    int fm_agc_target_rms;
+    int fm_agc_min_is_set;
+    int fm_agc_min_rms;
+    int fm_agc_alpha_up_is_set;
+    int fm_agc_alpha_up_q15;
+    int fm_agc_alpha_down_is_set;
+    int fm_agc_alpha_down_q15;
+
+    /* FM constant-envelope limiter */
+    int fm_limiter_is_set;
+    int fm_limiter_enable;
+
+    /* Complex DC blocker */
+    int iq_dc_block_is_set;
+    int iq_dc_block_enable;
+    int iq_dc_shift_is_set;
+    int iq_dc_shift;
 }
 
 dsdneoRuntimeConfig;

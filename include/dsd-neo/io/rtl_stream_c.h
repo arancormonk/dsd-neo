@@ -332,6 +332,37 @@ int rtl_stream_spectrum_set_size(int n);
 /** Get current spectrum FFT size. */
 int rtl_stream_spectrum_get_size(void);
 
+/* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
+/** Get FM AGC enable state (1 on, 0 off). */
+int rtl_stream_get_fm_agc(void);
+/** Enable/disable FM AGC (0 off, nonzero on). */
+void rtl_stream_set_fm_agc(int onoff);
+/**
+ * Get FM AGC parameters (any pointer may be NULL).
+ * target_rms/min_rms are int16-domain magnitudes (~1000..20000).
+ * alpha_up/down are Q15 smoothing factors (0..32768).
+ */
+void rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15);
+/** Set FM AGC parameters; pass negative to leave a field unchanged. */
+void rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15);
+
+/** Get FM constant-envelope limiter state (1 on, 0 off). */
+int rtl_stream_get_fm_limiter(void);
+/** Enable/disable FM constant-envelope limiter (0 off, nonzero on). */
+void rtl_stream_set_fm_limiter(int onoff);
+
+/**
+ * Get complex I/Q DC blocker state and shift k (any pointer may be NULL).
+ * Returns 1 if enabled, 0 otherwise; writes current k to out_shift_k if not NULL.
+ */
+int rtl_stream_get_iq_dc(int* out_shift_k);
+/** Set DC blocker enable (0/1) and/or shift k (>=6..<=15). Pass shift_k<0 to keep unchanged. */
+void rtl_stream_set_iq_dc(int enable, int shift_k);
+
+/* FM AGC Auto-tune (0/1) */
+int rtl_stream_get_fm_agc_auto(void);
+void rtl_stream_set_fm_agc_auto(int onoff);
+
 #ifdef __cplusplus
 }
 #endif

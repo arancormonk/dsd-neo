@@ -335,6 +335,68 @@ rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
 }
 
+/* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
+extern "C" int dsd_rtl_stream_get_fm_agc(void);
+extern "C" void dsd_rtl_stream_set_fm_agc(int onoff);
+extern "C" void dsd_rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15);
+extern "C" void dsd_rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15);
+extern "C" int dsd_rtl_stream_get_fm_limiter(void);
+extern "C" void dsd_rtl_stream_set_fm_limiter(int onoff);
+extern "C" int dsd_rtl_stream_get_iq_dc(int* out_shift_k);
+extern "C" void dsd_rtl_stream_set_iq_dc(int enable, int shift_k);
+extern "C" int dsd_rtl_stream_get_fm_agc_auto(void);
+extern "C" void dsd_rtl_stream_set_fm_agc_auto(int onoff);
+
+extern "C" int
+rtl_stream_get_fm_agc(void) {
+    return dsd_rtl_stream_get_fm_agc();
+}
+
+extern "C" void
+rtl_stream_set_fm_agc(int onoff) {
+    dsd_rtl_stream_set_fm_agc(onoff);
+}
+
+extern "C" void
+rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15) {
+    dsd_rtl_stream_get_fm_agc_params(target_rms, min_rms, alpha_up_q15, alpha_down_q15);
+}
+
+extern "C" void
+rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15) {
+    dsd_rtl_stream_set_fm_agc_params(target_rms, min_rms, alpha_up_q15, alpha_down_q15);
+}
+
+extern "C" int
+rtl_stream_get_fm_limiter(void) {
+    return dsd_rtl_stream_get_fm_limiter();
+}
+
+extern "C" void
+rtl_stream_set_fm_limiter(int onoff) {
+    dsd_rtl_stream_set_fm_limiter(onoff);
+}
+
+extern "C" int
+rtl_stream_get_iq_dc(int* out_shift_k) {
+    return dsd_rtl_stream_get_iq_dc(out_shift_k);
+}
+
+extern "C" void
+rtl_stream_set_iq_dc(int enable, int shift_k) {
+    dsd_rtl_stream_set_iq_dc(enable, shift_k);
+}
+
+extern "C" int
+rtl_stream_get_fm_agc_auto(void) {
+    return dsd_rtl_stream_get_fm_agc_auto();
+}
+
+extern "C" void
+rtl_stream_set_fm_agc_auto(int onoff) {
+    dsd_rtl_stream_set_fm_agc_auto(onoff);
+}
+
 extern "C" double
 rtl_stream_estimate_snr_c4fm_eye(void) {
     return dsd_rtl_stream_estimate_snr_c4fm_eye();

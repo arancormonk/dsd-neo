@@ -190,4 +190,22 @@ struct demod_state {
     int iqbal_alpha_ema_r_q15; /* EMA of alpha real (Q15) */
     int iqbal_alpha_ema_i_q15; /* EMA of alpha imag (Q15) */
     int iqbal_alpha_ema_a_q15; /* EMA alpha (Q15) */
+
+    /* FM envelope AGC (pre-discriminator) */
+    int fm_agc_enable;         /* 0/1 gate; constant-envelope limiter/AGC for FM/C4FM */
+    int fm_agc_gain_q15;       /* smoothed gain in Q15 (applied to I/Q) */
+    int fm_agc_target_rms;     /* target RMS magnitude for |z| in Q0 (int16 domain) */
+    int fm_agc_min_rms;        /* minimum RMS to engage AGC (avoid boosting noise) */
+    int fm_agc_alpha_up_q15;   /* smoothing when increasing gain (signal got weaker) */
+    int fm_agc_alpha_down_q15; /* smoothing when decreasing gain (signal got stronger) */
+    int fm_agc_auto_enable;    /* auto-tune AGC target/alphas based on runtime stats */
+
+    /* Optional constant-envelope limiter for FM/C4FM */
+    int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
+
+    /* Complex DC blocker before discriminator */
+    int iq_dc_block_enable; /* 0/1 gate */
+    int iq_dc_shift;        /* shift k for dc += (x-dc)>>k; typical 10..14 */
+    int iq_dc_avg_r;        /* running DC estimate for I */
+    int iq_dc_avg_i;        /* running DC estimate for Q */
 };

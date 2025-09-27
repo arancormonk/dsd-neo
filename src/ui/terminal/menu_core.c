@@ -1976,6 +1976,211 @@ lbl_onoff_iqbal(void* v, char* b, size_t n) {
     return b;
 }
 
+/* ---- FM AGC / Limiter / DC Block UI helpers ---- */
+static const char*
+lbl_fm_agc(void* v, char* b, size_t n) {
+    int on = rtl_stream_get_fm_agc();
+    snprintf(b, n, "FM AGC [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_fm_agc(void* v) {
+    int on = rtl_stream_get_fm_agc();
+    rtl_stream_set_fm_agc(on ? 0 : 1);
+}
+
+static const char*
+lbl_fm_limiter(void* v, char* b, size_t n) {
+    int on = rtl_stream_get_fm_limiter();
+    snprintf(b, n, "FM Limiter [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static const char*
+lbl_fm_agc_auto(void* v, char* b, size_t n) {
+    int on = rtl_stream_get_fm_agc_auto();
+    snprintf(b, n, "FM AGC Auto [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_fm_agc_auto(void* v) {
+    int on = rtl_stream_get_fm_agc_auto();
+    rtl_stream_set_fm_agc_auto(on ? 0 : 1);
+}
+
+static void
+act_toggle_fm_limiter(void* v) {
+    int on = rtl_stream_get_fm_limiter();
+    rtl_stream_set_fm_limiter(on ? 0 : 1);
+}
+
+static const char*
+lbl_fm_agc_target(void* v, char* b, size_t n) {
+    int tgt = 0;
+    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
+    snprintf(b, n, "AGC Target: %d (+/-)", tgt);
+    return b;
+}
+
+static void
+act_fm_agc_target_up(void* v) {
+    int tgt = 0;
+    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
+    tgt += 500;
+    if (tgt > 20000) {
+        tgt = 20000;
+    }
+    rtl_stream_set_fm_agc_params(tgt, -1, -1, -1);
+}
+
+static void
+act_fm_agc_target_dn(void* v) {
+    int tgt = 0;
+    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
+    tgt -= 500;
+    if (tgt < 1000) {
+        tgt = 1000;
+    }
+    rtl_stream_set_fm_agc_params(tgt, -1, -1, -1);
+}
+
+static const char*
+lbl_fm_agc_min(void* v, char* b, size_t n) {
+    int mn = 0;
+    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
+    snprintf(b, n, "AGC Min: %d (+/-)", mn);
+    return b;
+}
+
+static void
+act_fm_agc_min_up(void* v) {
+    int mn = 0;
+    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
+    mn += 500;
+    if (mn > 15000) {
+        mn = 15000;
+    }
+    rtl_stream_set_fm_agc_params(-1, mn, -1, -1);
+}
+
+static void
+act_fm_agc_min_dn(void* v) {
+    int mn = 0;
+    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
+    mn -= 500;
+    if (mn < 0) {
+        mn = 0;
+    }
+    rtl_stream_set_fm_agc_params(-1, mn, -1, -1);
+}
+
+static const char*
+lbl_fm_agc_alpha_up(void* v, char* b, size_t n) {
+    int au = 0;
+    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
+    int pct = (int)((au * 100 + 16384) / 32768);
+    snprintf(b, n, "AGC Alpha Up: %d (Q15 ~%d%%)", au, pct);
+    return b;
+}
+
+static const char*
+lbl_fm_agc_alpha_down(void* v, char* b, size_t n) {
+    int ad = 0;
+    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
+    int pct = (int)((ad * 100 + 16384) / 32768);
+    snprintf(b, n, "AGC Alpha Down: %d (Q15 ~%d%%)", ad, pct);
+    return b;
+}
+
+static void
+act_fm_agc_alpha_up_up(void* v) {
+    int au = 0;
+    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
+    au += 1024;
+    if (au > 32768) {
+        au = 32768;
+    }
+    rtl_stream_set_fm_agc_params(-1, -1, au, -1);
+}
+
+static void
+act_fm_agc_alpha_up_dn(void* v) {
+    int au = 0;
+    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
+    au -= 1024;
+    if (au < 1) {
+        au = 1;
+    }
+    rtl_stream_set_fm_agc_params(-1, -1, au, -1);
+}
+
+static void
+act_fm_agc_alpha_down_up(void* v) {
+    int ad = 0;
+    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
+    ad += 1024;
+    if (ad > 32768) {
+        ad = 32768;
+    }
+    rtl_stream_set_fm_agc_params(-1, -1, -1, ad);
+}
+
+static void
+act_fm_agc_alpha_down_dn(void* v) {
+    int ad = 0;
+    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
+    ad -= 1024;
+    if (ad < 1) {
+        ad = 1;
+    }
+    rtl_stream_set_fm_agc_params(-1, -1, -1, ad);
+}
+
+static const char*
+lbl_iq_dc(void* v, char* b, size_t n) {
+    int k = 0;
+    int on = rtl_stream_get_iq_dc(&k);
+    snprintf(b, n, "IQ DC Block [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_iq_dc(void* v) {
+    int k = 0;
+    int on = rtl_stream_get_iq_dc(&k);
+    rtl_stream_set_iq_dc(on ? 0 : 1, -1);
+}
+
+static const char*
+lbl_iq_dc_k(void* v, char* b, size_t n) {
+    int k = 0;
+    rtl_stream_get_iq_dc(&k);
+    snprintf(b, n, "IQ DC Shift k: %d (+/-)", k);
+    return b;
+}
+
+static void
+act_iq_dc_k_up(void* v) {
+    int k = 0;
+    rtl_stream_get_iq_dc(&k);
+    if (k < 15) {
+        k++;
+    }
+    rtl_stream_set_iq_dc(-1, k);
+}
+
+static void
+act_iq_dc_k_dn(void* v) {
+    int k = 0;
+    rtl_stream_get_iq_dc(&k);
+    if (k > 6) {
+        k--;
+    }
+    rtl_stream_set_iq_dc(-1, k);
+}
+
 static const char*
 lbl_ted_sps(void* v, char* b, size_t n) {
     int sps = rtl_stream_get_ted_sps();
@@ -2757,6 +2962,53 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .label = "TED Bias (status)",
          .label_fn = lbl_ted_bias,
          .help = "Smoothed Gardner residual (read-only status)."},
+        {.id = "fm_agc",
+         .label = "FM AGC",
+         .label_fn = lbl_fm_agc,
+         .help = "Toggle pre-discriminator FM AGC.",
+         .on_select = act_toggle_fm_agc},
+        {.id = "fm_lim",
+         .label = "FM Limiter",
+         .label_fn = lbl_fm_limiter,
+         .help = "Toggle constant-envelope limiter.",
+         .on_select = act_toggle_fm_limiter},
+        {.id = "fm_agc_auto",
+         .label = "FM AGC Auto",
+         .label_fn = lbl_fm_agc_auto,
+         .help = "Auto-tune AGC target/alphas.",
+         .on_select = act_toggle_fm_agc_auto},
+        {.id = "fm_tgt",
+         .label = "AGC Target (status)",
+         .label_fn = lbl_fm_agc_target,
+         .help = "Target RMS amplitude (int16 units)."},
+        {.id = "fm_tgt+", .label = "AGC Target +500", .on_select = act_fm_agc_target_up},
+        {.id = "fm_tgt-", .label = "AGC Target -500", .on_select = act_fm_agc_target_dn},
+        {.id = "fm_min", .label = "AGC Min (status)", .label_fn = lbl_fm_agc_min, .help = "Min RMS to engage AGC."},
+        {.id = "fm_min+", .label = "AGC Min +500", .on_select = act_fm_agc_min_up},
+        {.id = "fm_min-", .label = "AGC Min -500", .on_select = act_fm_agc_min_dn},
+        {.id = "fm_au",
+         .label = "AGC Alpha Up (status)",
+         .label_fn = lbl_fm_agc_alpha_up,
+         .help = "Smoothing when gain increases (Q15)."},
+        {.id = "fm_au+", .label = "Alpha Up +1024", .on_select = act_fm_agc_alpha_up_up},
+        {.id = "fm_au-", .label = "Alpha Up -1024", .on_select = act_fm_agc_alpha_up_dn},
+        {.id = "fm_ad",
+         .label = "AGC Alpha Down (status)",
+         .label_fn = lbl_fm_agc_alpha_down,
+         .help = "Smoothing when gain decreases (Q15)."},
+        {.id = "fm_ad+", .label = "Alpha Down +1024", .on_select = act_fm_agc_alpha_down_up},
+        {.id = "fm_ad-", .label = "Alpha Down -1024", .on_select = act_fm_agc_alpha_down_dn},
+        {.id = "iq_dc",
+         .label = "IQ DC Block",
+         .label_fn = lbl_iq_dc,
+         .help = "Toggle complex DC blocker.",
+         .on_select = act_toggle_iq_dc},
+        {.id = "iq_dck",
+         .label = "IQ DC Shift k (status)",
+         .label_fn = lbl_iq_dc_k,
+         .help = "k in dc += (x-dc)>>k (10..14 typical)."},
+        {.id = "iq_dck+", .label = "Shift k +1", .on_select = act_iq_dc_k_up},
+        {.id = "iq_dck-", .label = "Shift k -1", .on_select = act_iq_dc_k_dn},
         {.id = "auto_status",
          .label = "Auto-DSP Status",
          .label_fn = lbl_auto_status,

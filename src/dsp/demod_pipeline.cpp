@@ -634,6 +634,286 @@ fll_mix_and_update(struct demod_state* d) {
     d->fll_prev_j = d->fll_state.prev_j;
 }
 
+/*
+ * FM envelope AGC/limiter (block-based)
+ *
+ * Normalizes complex I/Q magnitude toward a target RMS to reduce amplitude
+ * bounce from low-cost front-ends (e.g., RTL-SDR). Uses per-block RMS with a
+ * smoothed gain (separate attack/decay alphas) to avoid pumping. Disabled for
+ * CQPSK/LSM paths where constant-modulus EQ handles amplitude.
+ */
+static inline void
+fm_envelope_agc(struct demod_state* d) {
+    if (!d || !d->fm_agc_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    const int pairs = d->lp_len >> 1;
+    if (pairs <= 0) {
+        return;
+    }
+    /* Compute block RMS of |z| */
+    uint64_t acc = 0;
+    const int16_t* iq = d->lowpassed;
+    for (int n = 0; n < pairs; n++) {
+        int32_t I = iq[(size_t)(n << 1) + 0];
+        int32_t Q = iq[(size_t)(n << 1) + 1];
+        acc += (uint64_t)((int64_t)I * (int64_t)I + (int64_t)Q * (int64_t)Q);
+    }
+    if (acc == 0) {
+        return;
+    }
+    double mean_r2 = (double)acc / (double)pairs;
+    double rms = sqrt(mean_r2);
+    if (rms < (double)(d->fm_agc_min_rms > 0 ? d->fm_agc_min_rms : 2000)) {
+        /* Hold gain on very weak input to avoid boosting noise */
+        return;
+    }
+    int target = (d->fm_agc_target_rms > 0) ? d->fm_agc_target_rms : 10000;
+    if (target < 1000) {
+        target = 1000;
+    }
+    if (target > 20000) {
+        target = 20000;
+    }
+    double g_raw = (double)target / rms;
+    /* Clamp extreme steps */
+    if (g_raw > 8.0) {
+        g_raw = 8.0;
+    }
+    if (g_raw < 0.125) {
+        g_raw = 0.125;
+    }
+    int g_tgt_q15 = (int)(g_raw * 32768.0 + 0.5);
+    if (g_tgt_q15 < 512) {
+        g_tgt_q15 = 512;
+    }
+    if (g_tgt_q15 > 262144) {
+        g_tgt_q15 = 262144; /* allow >1 in Q15 via later clamp */
+    }
+    int g_q15 = d->fm_agc_gain_q15 > 0 ? d->fm_agc_gain_q15 : 32768;
+    int alpha_up = d->fm_agc_alpha_up_q15 > 0 ? d->fm_agc_alpha_up_q15 : 8192;      /* ~0.25 */
+    int alpha_dn = d->fm_agc_alpha_down_q15 > 0 ? d->fm_agc_alpha_down_q15 : 24576; /* ~0.75 */
+    int diff = g_tgt_q15 - g_q15;
+    int alpha = (diff > 0) ? alpha_up : alpha_dn;
+    g_q15 += (int)(((int64_t)alpha * (int64_t)diff) >> 15);
+    if (g_q15 < 1024) {
+        g_q15 = 1024; /* >= 1/32 */
+    }
+    if (g_q15 > 262144) {
+        g_q15 = 262144; /* <= 8x */
+    }
+    /* Apply smoothed gain and collect simple post-AGC stats for auto-tune */
+    int16_t* out = d->lowpassed;
+    int clip_cnt = 0;
+    int max_abs = 0;
+    for (int n = 0; n < pairs; n++) {
+        int32_t I = out[(size_t)(n << 1) + 0];
+        int32_t Q = out[(size_t)(n << 1) + 1];
+        int32_t yI = (int32_t)(((int64_t)I * (int64_t)g_q15) >> 15);
+        int32_t yQ = (int32_t)(((int64_t)Q * (int64_t)g_q15) >> 15);
+        if (yI > 32767) {
+            yI = 32767;
+            clip_cnt++;
+        }
+        if (yI < -32768) {
+            yI = -32768;
+            clip_cnt++;
+        }
+        if (yQ > 32767) {
+            yQ = 32767;
+            clip_cnt++;
+        }
+        if (yQ < -32768) {
+            yQ = -32768;
+            clip_cnt++;
+        }
+        int aI = yI >= 0 ? yI : -yI;
+        int aQ = yQ >= 0 ? yQ : -yQ;
+        if (aI > max_abs) {
+            max_abs = aI;
+        }
+        if (aQ > max_abs) {
+            max_abs = aQ;
+        }
+        out[(size_t)(n << 1) + 0] = (int16_t)yI;
+        out[(size_t)(n << 1) + 1] = (int16_t)yQ;
+    }
+    d->fm_agc_gain_q15 = g_q15;
+
+    /* Auto-tune AGC parameters heuristically (optional) */
+    if (d->fm_agc_auto_enable) {
+        /* Track envelope ripple and clipping over time */
+        enum { MAXC = 8 };
+
+        static int clip_run = 0;
+        static int under_run = 0;
+        static double ema_rms = 0.0;
+        static int init = 0;
+        if (!init) {
+            ema_rms = rms;
+            init = 1;
+        } else {
+            ema_rms = 0.9 * ema_rms + 0.1 * rms;
+        }
+        int clip_thresh = pairs / 512; /* ~0.2% of complex samples */
+        if (clip_thresh < 1) {
+            clip_thresh = 1;
+        }
+        if (clip_cnt > clip_thresh) {
+            if (clip_run < MAXC) {
+                clip_run++;
+            }
+        } else if (clip_run > 0) {
+            clip_run--;
+        }
+        /* If we're far from full-scale with no clipping for a while, nudge target up */
+        int desired_peak = 28000; /* aim for ~85% FS */
+        if (max_abs < 20000 && clip_cnt == 0) {
+            if (under_run < MAXC) {
+                under_run++;
+            }
+        } else if (under_run > 0) {
+            under_run--;
+        }
+        /* Adjust target based on persistent conditions */
+        int tgt = d->fm_agc_target_rms;
+        if (clip_run >= 4) {
+            tgt -= 400;
+            if (tgt < 6000) {
+                tgt = 6000;
+            }
+            d->fm_agc_target_rms = tgt;
+            clip_run = 0;
+        } else if (under_run >= 8) {
+            tgt += 300;
+            if (tgt > 14000) {
+                tgt = 14000;
+            }
+            d->fm_agc_target_rms = tgt;
+            under_run = 0;
+        }
+        /* Adapt response speed based on ripple (how much rms deviates) */
+        double dev = fabs(rms - ema_rms);
+        double ripple = (ema_rms > 1e-6) ? (dev / ema_rms) : 0.0;
+        int au = d->fm_agc_alpha_up_q15;
+        int ad = d->fm_agc_alpha_down_q15;
+        if (ripple > 0.10) { /* >10% short-term change */
+            if (au < 24576) {
+                au += 1024;
+            }
+            if (ad < 28672) {
+                ad += 1024;
+            }
+        } else if (ripple < 0.03) {
+            if (au > 4096) {
+                au -= 512;
+            }
+            if (ad > 16384) {
+                ad -= 512;
+            }
+        }
+        if (au < 1) {
+            au = 1;
+        }
+        if (au > 32768) {
+            au = 32768;
+        }
+        if (ad < 1) {
+            ad = 1;
+        }
+        if (ad > 32768) {
+            ad = 32768;
+        }
+        d->fm_agc_alpha_up_q15 = au;
+        d->fm_agc_alpha_down_q15 = ad;
+        /* Keep min_rms as a fraction of target so it engages when useful */
+        d->fm_agc_min_rms = d->fm_agc_target_rms / 4;
+    }
+}
+
+/* Optional complex DC blocker prior to FM discrimination */
+static inline void
+iq_dc_block(struct demod_state* d) {
+    if (!d || !d->iq_dc_block_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    int k = d->iq_dc_shift;
+    if (k < 6) {
+        k = 6;
+    }
+    if (k > 15) {
+        k = 15;
+    }
+    int16_t* iq = d->lowpassed;
+    const int pairs = d->lp_len >> 1;
+    /* Estimate DC using block mean, then smooth the applied offset */
+    int64_t sumI = 0, sumQ = 0;
+    for (int n = 0; n < pairs; n++) {
+        sumI += (int)iq[(size_t)(n << 1) + 0];
+        sumQ += (int)iq[(size_t)(n << 1) + 1];
+    }
+    int meanI = (pairs > 0) ? (int)(sumI / pairs) : 0;
+    int meanQ = (pairs > 0) ? (int)(sumQ / pairs) : 0;
+    int dcI = d->iq_dc_avg_r + ((meanI - d->iq_dc_avg_r) >> k);
+    int dcQ = d->iq_dc_avg_i + ((meanQ - d->iq_dc_avg_i) >> k);
+    /* Apply constant subtraction across this block */
+    for (int n = 0; n < pairs; n++) {
+        int yI = (int)iq[(size_t)(n << 1) + 0] - dcI;
+        int yQ = (int)iq[(size_t)(n << 1) + 1] - dcQ;
+        iq[(size_t)(n << 1) + 0] = sat16(yI);
+        iq[(size_t)(n << 1) + 1] = sat16(yQ);
+    }
+    d->iq_dc_avg_r = dcI;
+    d->iq_dc_avg_i = dcQ;
+}
+
+/* Optional constant-envelope limiter: per-sample normalization around target magnitude */
+static inline void
+fm_constant_envelope_limiter(struct demod_state* d) {
+    if (!d || !d->fm_limiter_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    int target = (d->fm_agc_target_rms > 0) ? d->fm_agc_target_rms : 10000;
+    if (target < 1000) {
+        target = 1000;
+    }
+    if (target > 20000) {
+        target = 20000;
+    }
+    const int64_t t2 = (int64_t)target * (int64_t)target;
+    const int64_t lo2 = (t2 >> 2); /* 0.5^2 */
+    const int64_t hi2 = (t2 << 2); /* 2.0^2 */
+    int16_t* iq = d->lowpassed;
+    const int pairs = d->lp_len >> 1;
+    for (int n = 0; n < pairs; n++) {
+        int32_t I = iq[(size_t)(n << 1) + 0];
+        int32_t Q = iq[(size_t)(n << 1) + 1];
+        int64_t m2 = (int64_t)I * I + (int64_t)Q * Q;
+        if (m2 <= 0) {
+            continue;
+        }
+        if (m2 >= lo2 && m2 <= hi2) {
+            /* within tolerance, leave unchanged */
+            continue;
+        }
+        double mag = sqrt((double)m2);
+        if (mag < 1e-6) {
+            continue;
+        }
+        double g = (double)target / mag;
+        if (g > 8.0) {
+            g = 8.0;
+        }
+        if (g < 0.125) {
+            g = 0.125;
+        }
+        int32_t yI = (int32_t)lrint((double)I * g);
+        int32_t yQ = (int32_t)lrint((double)Q * g);
+        iq[(size_t)(n << 1) + 0] = sat16(yI);
+        iq[(size_t)(n << 1) + 1] = sat16(yQ);
+    }
+}
+
 /* Small symmetric 5-tap matched-like FIR on interleaved I/Q (in-place via workbuf). */
 static void
 mf5_complex_interleaved(struct demod_state* d) {
@@ -874,6 +1154,13 @@ full_demod(struct demod_state* d) {
     } else {
         low_pass(d);
     }
+    /* Baseband conditioning order (FM/C4FM):
+       1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
+       2) Block-based envelope AGC to normalize |z|
+       3) Optional per-sample limiter to clamp fast AM ripple */
+    iq_dc_block(d);
+    fm_envelope_agc(d);
+    fm_constant_envelope_limiter(d);
     /* Mode-aware generic IQ balance (image suppression): engage for non-QPSK paths */
     if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {
         /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */

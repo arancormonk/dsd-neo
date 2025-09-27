@@ -191,6 +191,40 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.snr_sql_is_set = env_is_set(snrsql);
     c.snr_sql_db = c.snr_sql_is_set ? atoi(snrsql) : 0;
 
+    /* FM/C4FM amplitude AGC (pre-discriminator) */
+    const char* fm_agc = getenv("DSD_NEO_FM_AGC");
+    c.fm_agc_is_set = env_is_set(fm_agc);
+    c.fm_agc_enable = c.fm_agc_is_set ? (atoi(fm_agc) != 0) : 0; /* default decided by mode later */
+
+    const char* fm_tgt = getenv("DSD_NEO_FM_AGC_TARGET");
+    c.fm_agc_target_is_set = env_is_set(fm_tgt);
+    c.fm_agc_target_rms = c.fm_agc_target_is_set ? atoi(fm_tgt) : 10000;
+
+    const char* fm_min = getenv("DSD_NEO_FM_AGC_MIN");
+    c.fm_agc_min_is_set = env_is_set(fm_min);
+    c.fm_agc_min_rms = c.fm_agc_min_is_set ? atoi(fm_min) : 2000;
+
+    const char* fm_au = getenv("DSD_NEO_FM_AGC_ALPHA_UP");
+    c.fm_agc_alpha_up_is_set = env_is_set(fm_au);
+    c.fm_agc_alpha_up_q15 = c.fm_agc_alpha_up_is_set ? atoi(fm_au) : 8192; /* ~0.25 */
+
+    const char* fm_ad = getenv("DSD_NEO_FM_AGC_ALPHA_DOWN");
+    c.fm_agc_alpha_down_is_set = env_is_set(fm_ad);
+    c.fm_agc_alpha_down_q15 = c.fm_agc_alpha_down_is_set ? atoi(fm_ad) : 24576; /* ~0.75 */
+
+    /* FM constant-envelope limiter */
+    const char* fml = getenv("DSD_NEO_FM_LIMITER");
+    c.fm_limiter_is_set = env_is_set(fml);
+    c.fm_limiter_enable = c.fm_limiter_is_set ? (atoi(fml) != 0) : 0;
+
+    /* Complex DC blocker */
+    const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
+    const char* dck = getenv("DSD_NEO_IQ_DC_SHIFT");
+    c.iq_dc_block_is_set = env_is_set(dcb);
+    c.iq_dc_block_enable = c.iq_dc_block_is_set ? (atoi(dcb) != 0) : 0;
+    c.iq_dc_shift_is_set = env_is_set(dck);
+    c.iq_dc_shift = c.iq_dc_shift_is_set ? atoi(dck) : 11;
+
     g_config = c;
     g_config_inited = 1;
 }

@@ -1852,6 +1852,29 @@ configure_from_env_and_opts(dsd_opts* opts) {
         }
         demod.cqpsk_rrc_span_syms = v;
     }
+
+    /* FM/C4FM amplitude AGC (pre-discriminator): default on for FM-like digital modes
+       such as P25 P1, DMR, NXDN, dPMR, ProVoice; off for CQPSK (P25 P2) by default. */
+    int default_fm_agc = 0;
+    if (opts) {
+        default_fm_agc =
+            (opts->frame_p25p1 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
+             || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->analog_only == 1)
+                ? 1
+                : 0;
+    }
+    demod.fm_agc_enable = cfg->fm_agc_is_set ? (cfg->fm_agc_enable != 0) : default_fm_agc;
+    demod.fm_agc_target_rms = cfg->fm_agc_target_is_set ? cfg->fm_agc_target_rms : 10000;
+    demod.fm_agc_min_rms = cfg->fm_agc_min_is_set ? cfg->fm_agc_min_rms : 2000;
+    demod.fm_agc_alpha_up_q15 = cfg->fm_agc_alpha_up_is_set ? cfg->fm_agc_alpha_up_q15 : 8192;        /* ~0.25 */
+    demod.fm_agc_alpha_down_q15 = cfg->fm_agc_alpha_down_is_set ? cfg->fm_agc_alpha_down_q15 : 24576; /* ~0.75 */
+    if (demod.fm_agc_gain_q15 <= 0) {
+        demod.fm_agc_gain_q15 = 32768; /* unity */
+    }
+    demod.fm_limiter_enable = cfg->fm_limiter_is_set ? (cfg->fm_limiter_enable != 0) : 0;
+    demod.iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
+    demod.iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
+    demod.iq_dc_avg_r = demod.iq_dc_avg_i = 0;
 }
 
 /**
@@ -2674,6 +2697,164 @@ dsd_rtl_stream_set_ted_force(int onoff) {
 extern "C" int
 dsd_rtl_stream_get_ted_force(void) {
     return demod.ted_force ? 1 : 0;
+}
+
+/* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
+extern "C" int
+dsd_rtl_stream_get_fm_agc(void) {
+    return demod.fm_agc_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_agc(int onoff) {
+    demod.fm_agc_enable = onoff ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15) {
+    if (target_rms) {
+        *target_rms = demod.fm_agc_target_rms;
+    }
+    if (min_rms) {
+        *min_rms = demod.fm_agc_min_rms;
+    }
+    if (alpha_up_q15) {
+        *alpha_up_q15 = demod.fm_agc_alpha_up_q15;
+    }
+    if (alpha_down_q15) {
+        *alpha_down_q15 = demod.fm_agc_alpha_down_q15;
+    }
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15) {
+    if (target_rms >= 0) {
+        if (target_rms < 1000) {
+            target_rms = 1000;
+        }
+        if (target_rms > 20000) {
+            target_rms = 20000;
+        }
+        demod.fm_agc_target_rms = target_rms;
+    }
+    if (min_rms >= 0) {
+        if (min_rms < 0) {
+            min_rms = 0;
+        }
+        if (min_rms > 15000) {
+            min_rms = 15000;
+        }
+        demod.fm_agc_min_rms = min_rms;
+    }
+    if (alpha_up_q15 >= 0) {
+        if (alpha_up_q15 < 1) {
+            alpha_up_q15 = 1;
+        }
+        if (alpha_up_q15 > 32768) {
+            alpha_up_q15 = 32768;
+        }
+        demod.fm_agc_alpha_up_q15 = alpha_up_q15;
+    }
+    if (alpha_down_q15 >= 0) {
+        if (alpha_down_q15 < 1) {
+            alpha_down_q15 = 1;
+        }
+        if (alpha_down_q15 > 32768) {
+            alpha_down_q15 = 32768;
+        }
+        demod.fm_agc_alpha_down_q15 = alpha_down_q15;
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_get_fm_limiter(void) {
+    return demod.fm_limiter_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_limiter(int onoff) {
+    demod.fm_limiter_enable = onoff ? 1 : 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_iq_dc(int* out_shift_k) {
+    if (out_shift_k) {
+        *out_shift_k = demod.iq_dc_shift;
+    }
+    return demod.iq_dc_block_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_iq_dc(int enable, int shift_k) {
+    int was = demod.iq_dc_block_enable ? 1 : 0;
+    if (enable >= 0) {
+        demod.iq_dc_block_enable = enable ? 1 : 0;
+    }
+    if (shift_k >= 0) {
+        if (shift_k < 6) {
+            shift_k = 6;
+        }
+        if (shift_k > 15) {
+            shift_k = 15;
+        }
+        demod.iq_dc_shift = shift_k;
+    }
+    /* If enabling now, precharge DC estimate to current block mean and retarget AGC
+       so there is no apparent level drop. */
+    if (!was && demod.iq_dc_block_enable && demod.lowpassed && demod.lp_len >= 2) {
+        const int pairs = demod.lp_len >> 1;
+        int64_t sumI = 0, sumQ = 0;
+        for (int n = 0; n < pairs; n++) {
+            sumI += (int)demod.lowpassed[(size_t)(n << 1) + 0];
+            sumQ += (int)demod.lowpassed[(size_t)(n << 1) + 1];
+        }
+        int meanI = (pairs > 0) ? (int)(sumI / pairs) : 0;
+        int meanQ = (pairs > 0) ? (int)(sumQ / pairs) : 0;
+        demod.iq_dc_avg_r = meanI;
+        demod.iq_dc_avg_i = meanQ;
+        /* Estimate RMS after subtraction and retarget AGC gain */
+        uint64_t acc = 0;
+        for (int n = 0; n < pairs; n++) {
+            int32_t I = (int)demod.lowpassed[(size_t)(n << 1) + 0] - meanI;
+            int32_t Q = (int)demod.lowpassed[(size_t)(n << 1) + 1] - meanQ;
+            acc += (uint64_t)((int64_t)I * I + (int64_t)Q * Q);
+        }
+        if (pairs > 0) {
+            double mean_r2 = (double)acc / (double)pairs;
+            double rms = sqrt(mean_r2);
+            int target = (demod.fm_agc_target_rms > 0) ? demod.fm_agc_target_rms : 10000;
+            if (target < 1000) {
+                target = 1000;
+            }
+            if (target > 20000) {
+                target = 20000;
+            }
+            double g_raw = (rms > 1e-6) ? ((double)target / rms) : 1.0;
+            if (g_raw > 8.0) {
+                g_raw = 8.0;
+            }
+            if (g_raw < 0.125) {
+                g_raw = 0.125;
+            }
+            demod.fm_agc_gain_q15 = (int)(g_raw * 32768.0 + 0.5);
+            if (demod.fm_agc_gain_q15 < 1024) {
+                demod.fm_agc_gain_q15 = 1024;
+            }
+            if (demod.fm_agc_gain_q15 > 262144) {
+                demod.fm_agc_gain_q15 = 262144;
+            }
+        }
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_get_fm_agc_auto(void) {
+    return demod.fm_agc_auto_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_agc_auto(int onoff) {
+    demod.fm_agc_auto_enable = onoff ? 1 : 0;
 }
 
 /**
