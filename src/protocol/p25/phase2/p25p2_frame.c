@@ -976,16 +976,16 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "SACCH ");
         }
 
-        //check to see when last voice activity occurred in order to allow tuning on phase 2
-        //mac_signal or mac_idle when no more voice activity on current channel
-        //this is primarily a fix for TDMA control channels that carry voice (Duke P25)
-        //but may also allow for chain tuning without returning to the control channel <--may be problematic since we can assign a p25_cc_freq from the pdu
+        // Check to see when last voice activity occurred in order to allow tuning on phase 2
+        // MAC_SIGNAL or MAC_IDLE when no more voice activity on current channel
+        // This is primarily a fix for TDMA control channels that carry voice (Duke P25)
+        // For trunking, defer the release until after LCCH processing so per-slot audio
+        // gates are cleared first; this avoids the SM deferring on stale gates.
+        int p2_pending_release = 0;
         if (duid_decoded == 13 && opts->p25_is_tuned == 1
-            && ((now - state->last_vc_sync_time) > opts->trunk_hangtime)) // MAC_SIGNAL hangtime expiry
-        {
+            && ((now - state->last_vc_sync_time) > opts->trunk_hangtime)) { // MAC_SIGNAL hangtime expiry
             if (opts->p25_trunk == 1) {
-                // Prefer centralized release logic
-                p25_sm_on_release(opts, state);
+                p2_pending_release = 1; // handle after LCCH is processed below
             } else {
                 // Non-trunking: minimal reset
                 state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
@@ -996,8 +996,10 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
                 memset(state->s_r4, 0, sizeof(state->s_r4));
                 opts->p25_is_tuned = 0;
             }
-        } else if (duid_decoded == 13 && ((now - state->last_active_time) > 2)
-                   && opts->p25_is_tuned == 0) //should we use && opts->p25_is_tuned == 1?
+        }
+
+        if (duid_decoded == 13 && ((now - state->last_active_time) > 2)
+            && opts->p25_is_tuned == 0) //should we use && opts->p25_is_tuned == 1?
         {
             memset(state->active_channel, 0, sizeof(state->active_channel)); //zero out here? I think this will be fine
             //clear out stale voice samples left in the buffer and reset counter value
@@ -1042,6 +1044,12 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         } else if (duid_decoded == 13) {
             state->p2_is_lcch = 1;
             process_SACCHc(opts, state);
+            // If MAC_SIGNAL hangtime expired while tuned on a trunked VC,
+            // perform the centralized release now that LCCH processing has
+            // cleared per-slot audio gates.
+            if (p2_pending_release) {
+                p25_sm_on_release(opts, state);
+            }
         } else if (duid_decoded == 4) {
             if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0 && state->p2_wacn != 0xFFFFF
                 && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF) {

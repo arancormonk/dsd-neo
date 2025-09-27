@@ -626,9 +626,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     // if (opts->audio_out_type == 2 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
                     //   write (opts->audio_out_fd, state->analog_out, 960*2);
 
-                    //test updating the sync time, so we can hold here while trunking or scanning
+                    // Update CC sync time for UI/scan responsiveness, but do not
+                    // let the source-audio monitor refresh last_vc_sync_time while
+                    // tuned to a trunked VC. That timer should reflect actual
+                    // digital voice activity; noise or analog monitor audio can
+                    // otherwise wedge the P25 trunk SM hangtime logic.
                     state->last_cc_sync_time = time(NULL);
-                    state->last_vc_sync_time = time(NULL);
+                    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1)) {
+                        state->last_vc_sync_time = time(NULL);
+                    }
                 }
 
                 //raw wav file saving -- save the WAV file samples before we apply filtering to them
