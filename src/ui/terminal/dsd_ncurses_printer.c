@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/ui/keymap.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -172,18 +173,58 @@ ui_print_header(const char* title) {
 /* Print a single left border '|' using the primary UI color (pair 4) */
 static inline void
 ui_print_lborder(void) {
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    attr_get(&saved_attrs, &saved_pair, NULL);
     attron(COLOR_PAIR(4));
     addch('|');
-    attroff(COLOR_PAIR(4));
+    /* Restore whatever color pair was active before drawing the border */
+    attron(COLOR_PAIR(saved_pair));
 }
 
 /* Print a single left border '|' using the Active/Green color (pair 3)
  * Used for sections that should visually align with "active" styling even when idle. */
 static inline void
 ui_print_lborder_green(void) {
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    attr_get(&saved_attrs, &saved_pair, NULL);
     attron(COLOR_PAIR(3));
     addch('|');
-    attroff(COLOR_PAIR(3));
+    /* Restore previously active color pair */
+    attron(COLOR_PAIR(saved_pair));
+}
+
+/* Small helpers to align key/value fields to a consistent value column. */
+static inline void
+ui_print_label_pad(const char* label) {
+    const int value_col = 14; /* column (from label start) where values begin */
+    int lab_len = (int)strlen(label);
+    if (lab_len < 0) {
+        lab_len = 0;
+    }
+    /* Draw border using the current active color (green during decode, cyan otherwise) */
+    addch('|');
+    addch(' ');
+    addstr(label);
+    addch(':');
+    int need = value_col - (lab_len + 1); /* +1 for ':' */
+    if (need < 1) {
+        need = 1; /* at least one space after ':' */
+    }
+    for (int i = 0; i < need; i++) {
+        addch(' ');
+    }
+}
+
+static void
+ui_print_kv_line(const char* label, const char* fmt, ...) {
+    ui_print_label_pad(label);
+    va_list ap;
+    va_start(ap, fmt);
+    vw_printw(stdscr, fmt, ap);
+    va_end(ap);
+    addch('\n');
 }
 
 /* Forward declaration for int ascending comparator (used by qsort for percentiles) */
@@ -1891,6 +1932,58 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
     return 1;
 }
 
+/* Print P25 P1/P2 decoder metrics. Returns number of lines printed. */
+static int
+ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts; /* currently unused */
+    if (!state) {
+        return 0;
+    }
+    int lines = 0;
+    int is_p25p1 = (lls == 0 || lls == 1);
+    int is_p25p2 = (lls == 35 || lls == 36);
+
+    if (is_p25p1 || is_p25p2) {
+        /* P25p1 voice error snapshot (IMBE ECC) + moving average */
+        double avgv = 0.0;
+        if (compute_p25p1_voice_avg_err(state, &avgv)) {
+            printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
+        } else {
+            printw("| P1: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
+        }
+        lines++;
+    }
+
+    if (is_p25p2 || (is_p25p1 && opts && opts->p25_trunk == 1)) {
+        /* P25p2 voice average BER (per slot) */
+        double avgl = 0.0, avgr = 0.0;
+        int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
+        int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
+        if (hasl || hasr) {
+            if (hasl && hasr) {
+                printw("| P2 Voice: Avg BER - S1:%4.1f%%, S2:%4.1f%%\n", avgl, avgr);
+            } else if (hasl) {
+                printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avgl);
+            } else {
+                printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
+            }
+            lines++;
+        }
+
+        /* Condensed P25p2 RS summary line (only if any counters are non-zero) */
+        if ((state->p25_p2_rs_facch_ok | state->p25_p2_rs_facch_err | state->p25_p2_rs_sacch_ok
+             | state->p25_p2_rs_sacch_err | state->p25_p2_rs_ess_ok | state->p25_p2_rs_ess_err)
+            != 0) {
+            printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
+                   state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
+                   state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
+            lines++;
+        }
+    }
+
+    return lines;
+}
+
 // Compose a short string describing any active patch/system mode for trunking
 // Example outputs: "P25p2 trunk", "P25p1 trunk", "EDACS trunk", "DMR TIII trunk", "DMR Con+ trunk", "Trunking"
 /* (removed) ui_compose_active_patch_label: replaced with p25_patch_compose_summary */
@@ -2568,46 +2661,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
-        // P25 SM summary line + early ENC LO counter
-        /* printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
-               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
-               state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early); */
-        // Only show P25-specific voice/RS metrics when decoding P25
-        int is_p25p1 = (lls == 0 || lls == 1);
-        int is_p25p2 = (lls == 35 || lls == 36);
-        if (is_p25p1 || is_p25p2) {
-            // P25p1 voice error snapshot (IMBE ECC) + moving average
-            double avgv = 0.0;
-            if (compute_p25p1_voice_avg_err(state, &avgv)) {
-                printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
-            } else {
-                printw("| P1: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
-            }
-        }
-        if (is_p25p2 || (is_p25p1 && opts->p25_trunk == 1)) {
-            // P25p2 voice avg (per slot)
-            double avgl = 0.0, avgr = 0.0;
-            int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
-            int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
-            if (hasl || hasr) {
-                if (hasl && hasr) {
-                    printw("| P2 Voice: Avg BER - S1:%4.1f%%, S2:%4.1f%%\n", avgl, avgr);
-                } else if (hasl) {
-                    printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avgl);
-                } else {
-                    printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
-                }
-            }
-
-            if ((state->p25_p2_rs_facch_ok | state->p25_p2_rs_facch_err | state->p25_p2_rs_sacch_ok
-                 | state->p25_p2_rs_sacch_err | state->p25_p2_rs_ess_ok | state->p25_p2_rs_ess_err)
-                != 0) {
-                // P25p2 RS summary line
-                printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
-                       state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
-                       state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
-            }
-        }
+        // P25 metrics moved to dedicated 'P25 Metrics' section below.
     }
 #else //set on to UPPER CASE, off to lower case
     if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
@@ -2638,38 +2692,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
-        // P25 SM summary line + early ENC LO counter
-        /* printw("| P25 SM: tunes=%u releases=%u cc_cand add=%u used=%u cnt=%d idx=%d enc_lo_early=%u\n",
-               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
-               state->p25_cc_cand_count, state->p25_cc_cand_idx, state->p25_p2_enc_lo_early); */
-        // Only show P25-specific voice/RS metrics when decoding P25
-        int is_p25p1_n = (lls == 0 || lls == 1);
-        int is_p25p2_n = (lls == 35 || lls == 36);
-        if (is_p25p1_n) {
-            double avgv = 0.0;
-            if (compute_p25p1_voice_avg_err(state, &avgv)) {
-                printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avgv);
-            } else {
-                printw("| P1 Voice: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
-            }
-        }
-        if (is_p25p2_n) {
-            double avgl = 0.0, avgr = 0.0;
-            int hasl = compute_p25p2_voice_avg_err(state, 0, &avgl);
-            int hasr = compute_p25p2_voice_avg_err(state, 1, &avgr);
-            if (hasl || hasr) {
-                if (hasl && hasr) {
-                    printw("| P2 Voice: Avg BER - S1:%4.1f%%, S2:%4.1f%%\n", avgl, avgr);
-                } else if (hasl) {
-                    printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avgl);
-                } else {
-                    printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avgr);
-                }
-            }
-            printw("| P2 RS: FACCH %u/%u SACCH %u/%u ESS %u/%u\n", state->p25_p2_rs_facch_ok,
-                   state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
-                   state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
-        }
+        // P25 metrics moved to dedicated 'P25 Metrics' section below.
     }
 #endif
 //print additional information for EDACS modes and toggles
@@ -2859,12 +2882,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     ui_print_header("Audio Decode");
     if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
-        printw("| Tuner state: Busy\n");
+        ui_print_kv_line("Tuner state", "Busy");
     }
     if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0)) {
-        printw("| Tuner state: Free\n");
+        ui_print_kv_line("Tuner state", "Free");
     }
-    printw("| Demod/Rate:  ");
+    ui_print_label_pad("Demod/Rate");
     if (opts->mod_qpsk == 1) {
         printw("[QPSK]");
     }
@@ -2879,7 +2902,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
     }
-    printw("| Decoding:    [%s] ", opts->output_name);
+    ui_print_label_pad("Decoding");
+    printw("[%s] ", opts->output_name);
     if (opts->aggressive_framesync == 0) {
         printw("CRC/(RAS) ");
     }
@@ -2996,43 +3020,71 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     printw(" SNR: n/a []");
 #endif
     printw("\n");
-    printw("| In Level:    [%02d%%] \n", level);
+    ui_print_kv_line("In Level", "[%02d%%]", level);
     /* Quick hint for output mute toggle */
-    printw("| Output:      [%s] (x to toggle)\n", (opts->audio_out == 0) ? "Muted" : "On");
+    ui_print_kv_line("Output (x)", "[%s]", (opts->audio_out == 0) ? "Muted" : "On");
+
+    /* Hide generic Voice Error line when P25 is active, but keep slot toggles */
+    int is_p25p1_active = (lls == 0 || lls == 1);
+    int is_p25p2_active = (lls == 35 || lls == 36);
+    int is_p25_active = is_p25p1_active || is_p25p2_active;
 
     if (opts->dmr_stereo == 0) {
-        printw("| Voice Error: [%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
-        double avgv = 0.0;
-        if (compute_p25p1_voice_avg_err(state, &avgv)) {
-            printw(" Avg:%4.1f%%", avgv);
+        if (!is_p25_active) {
+            printw("| Voice Error: [%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
+            double avgv = 0.0;
+            if (compute_p25p1_voice_avg_err(state, &avgv)) {
+                printw(" Avg:%4.1f%%", avgv);
+            }
+            /* Keep slot toggle state at the end, as before */
+            if (opts->slot1_on == 0) {
+                printw(" Off");
+            }
+            if (opts->slot1_on == 1) {
+                printw(" On");
+            }
+            printw("\n");
+        } else {
+            /* P25 active: show only slot toggle state, no error counters */
+            printw("| Slot 1 (1):  [%s]\n", (opts->slot1_on == 1) ? "On" : "Off");
         }
-        if (opts->slot1_on == 0) {
-            printw(" Off");
-        }
-        if (opts->slot1_on == 1) {
-            printw(" On");
-        }
-        printw("\n");
     }
 
     if (opts->dmr_stereo == 1) {
-        printw("| Voice Error: [%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
+        if (!is_p25_active) {
+            printw("| Voice Error: [%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
+        } else {
+            ui_print_label_pad("Slot 1 (1)");
+            addch('[');
+        }
         if (opts->slot1_on == 0) {
-            printw(" Off");
+            printw(is_p25_active ? "Off" : " Off");
         }
         if (opts->slot1_on == 1) {
-            printw(" On");
+            printw(is_p25_active ? "On" : " On");
+        }
+        if (is_p25_active) {
+            printw("]");
         }
         if (opts->slot_preference == 0) {
             printw(" *Preferred (3)");
         }
         printw("\n");
-        printw("| Voice Error: [%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
+
+        if (!is_p25_active) {
+            printw("| Voice Error: [%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
+        } else {
+            ui_print_label_pad("Slot 2 (2)");
+            addch('[');
+        }
         if (opts->slot2_on == 0) {
-            printw(" Off");
+            printw(is_p25_active ? "Off" : " Off");
         }
         if (opts->slot2_on == 1) {
-            printw(" On");
+            printw(is_p25_active ? "On" : " On");
+        }
+        if (is_p25_active) {
+            printw("]");
         }
         if (opts->slot_preference == 1) {
             printw(" *Preferred (3)");
@@ -3040,6 +3092,17 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
     }
     ui_print_hr();
+
+    /* Dedicated P25 metrics section (moved from Input/Output) */
+    {
+        int is_p25p1 = (lls == 0 || lls == 1);
+        int is_p25p2 = (lls == 35 || lls == 36);
+        if (is_p25p1 || is_p25p2) {
+            ui_print_header("P25 Metrics");
+            (void)ui_print_p25_metrics(opts, state);
+            ui_print_hr();
+        }
+    }
 
     ui_print_header("Call Info");
 
