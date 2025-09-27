@@ -185,90 +185,109 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     }
     //end experimental conventional frequency scanner mode
 
-    //tune back to last known CC when using trunking after x second hangtime
-    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)
-        && ((now - state->last_cc_sync_time) > opts->trunk_hangtime)) {
-        long cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-        if (cc != 0) {
-
-            //cap+ rest channel - redundant?
-            if (state->dmr_rest_channel != -1) {
-                if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
-                    cc = state->trunk_chan_map[state->dmr_rest_channel];
-                    state->p25_cc_freq = cc;
-                    state->trunk_cc_freq = cc;
-                }
+    // Tune back to last known CC when using trunking after hangtime expires.
+    // Use VC activity when currently tuned to a VC; otherwise use CC timer.
+    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+        double dt;
+        if (opts->p25_is_tuned == 1) {
+            // On a voice channel: gate return by recent voice activity
+            if (state->last_vc_sync_time == 0) {
+                dt = 1e9; // no activity recorded; treat as expired
+            } else {
+                dt = (double)(now - state->last_vc_sync_time);
             }
-
-            if (opts->use_rigctl == 1) //rigctl tuning
-            {
-                if (opts->setmod_bw != 0 && opts->setmod_bw != s_last_rigctl_bw) {
-                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    s_last_rigctl_bw = opts->setmod_bw;
-                }
-                if (cc != s_last_rigctl_freq) {
-                    SetFreq(opts->rigctl_sockfd, cc);
-                    s_last_rigctl_freq = cc;
-                }
-                state->dmr_rest_channel = -1; //maybe?
-            }
-            //rtl
-            else if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                if (g_rtl_ctx) {
-                    uint32_t rf = (uint32_t)cc;
-                    if (rf != s_last_rtl_freq) {
-                        rtl_stream_tune(g_rtl_ctx, rf);
-                        s_last_rtl_freq = rf;
-                    }
-                }
-                state->dmr_rest_channel = -1;
-#endif
-            }
-
-            opts->p25_is_tuned = 0;
-            state->edacs_tuned_lcn = -1;
-
-            state->last_cc_sync_time = now;
-            //test to switch back to 10/4 P1 QPSK for P25 FDMA CC
-
-            //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-            if (state->p25_cc_is_tdma == 0) //is set on signal from P25 TSBK or MAC_SIGNAL
-            {
-                state->samplesPerSymbol = 10;
-                state->symbolCenter = 4;
-#ifdef USE_RTLSDR
-                if (s_last_ted_sps != 10) {
-                    rtl_stream_set_ted_sps(10);
-                    s_last_ted_sps = 10;
-                }
-#endif
-                //re-enable both slots
-                opts->slot1_on = 1;
-                opts->slot2_on = 1;
-            }
-            //if P25p1 SNDCP channel (or revert) and going to a P25 TDMA CC
-            else if (state->p25_cc_is_tdma == 1) {
-                state->samplesPerSymbol = 8;
-                state->symbolCenter = 3;
-#ifdef USE_RTLSDR
-                if (s_last_ted_sps != 8) {
-                    rtl_stream_set_ted_sps(8);
-                    s_last_ted_sps = 8;
-                }
-#endif
-                //re-enable both slots (in case of late entry voice, MAC_SIGNAL can turn them back off)
-                opts->slot1_on = 1;
-                opts->slot2_on = 1;
+        } else {
+            // On control or idle: use CC timer
+            if (state->last_cc_sync_time == 0) {
+                dt = 1e9;
+            } else {
+                dt = (double)(now - state->last_cc_sync_time);
             }
         }
-        //zero out vc frequencies?
-        state->p25_vc_freq[0] = 0;
-        state->p25_vc_freq[1] = 0;
 
-        memset(state->active_channel, 0, sizeof(state->active_channel));
+        if (dt > opts->trunk_hangtime) {
+            long cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+            if (cc != 0) {
 
-        state->is_con_plus = 0; //flag off
+                //cap+ rest channel - redundant?
+                if (state->dmr_rest_channel != -1) {
+                    if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
+                        cc = state->trunk_chan_map[state->dmr_rest_channel];
+                        state->p25_cc_freq = cc;
+                        state->trunk_cc_freq = cc;
+                    }
+                }
+
+                if (opts->use_rigctl == 1) //rigctl tuning
+                {
+                    if (opts->setmod_bw != 0 && opts->setmod_bw != s_last_rigctl_bw) {
+                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+                        s_last_rigctl_bw = opts->setmod_bw;
+                    }
+                    if (cc != s_last_rigctl_freq) {
+                        SetFreq(opts->rigctl_sockfd, cc);
+                        s_last_rigctl_freq = cc;
+                    }
+                    state->dmr_rest_channel = -1; //maybe?
+                }
+                //rtl
+                else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                    if (g_rtl_ctx) {
+                        uint32_t rf = (uint32_t)cc;
+                        if (rf != s_last_rtl_freq) {
+                            rtl_stream_tune(g_rtl_ctx, rf);
+                            s_last_rtl_freq = rf;
+                        }
+                    }
+                    state->dmr_rest_channel = -1;
+#endif
+                }
+
+                opts->p25_is_tuned = 0;
+                state->edacs_tuned_lcn = -1;
+
+                state->last_cc_sync_time = now;
+                //test to switch back to 10/4 P1 QPSK for P25 FDMA CC
+
+                //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
+                if (state->p25_cc_is_tdma == 0) //is set on signal from P25 TSBK or MAC_SIGNAL
+                {
+                    state->samplesPerSymbol = 10;
+                    state->symbolCenter = 4;
+#ifdef USE_RTLSDR
+                    if (s_last_ted_sps != 10) {
+                        rtl_stream_set_ted_sps(10);
+                        s_last_ted_sps = 10;
+                    }
+#endif
+                    //re-enable both slots
+                    opts->slot1_on = 1;
+                    opts->slot2_on = 1;
+                }
+                //if P25p1 SNDCP channel (or revert) and going to a P25 TDMA CC
+                else if (state->p25_cc_is_tdma == 1) {
+                    state->samplesPerSymbol = 8;
+                    state->symbolCenter = 3;
+#ifdef USE_RTLSDR
+                    if (s_last_ted_sps != 8) {
+                        rtl_stream_set_ted_sps(8);
+                        s_last_ted_sps = 8;
+                    }
+#endif
+                    //re-enable both slots (in case of late entry voice, MAC_SIGNAL can turn them back off)
+                    opts->slot1_on = 1;
+                    opts->slot2_on = 1;
+                }
+            }
+            //zero out vc frequencies?
+            state->p25_vc_freq[0] = 0;
+            state->p25_vc_freq[1] = 0;
+
+            memset(state->active_channel, 0, sizeof(state->active_channel));
+
+            state->is_con_plus = 0; //flag off
+        }
     }
 
     state->dibit_buf_p = state->dibit_buf + 200;

@@ -206,6 +206,9 @@ void
 processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_hdu++;
 
+    // Mark recent activity when HDU is received to cover call setup.
+    state->last_vc_sync_time = time(NULL);
+
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
     state->currentslot = 0;
