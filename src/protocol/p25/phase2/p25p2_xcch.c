@@ -90,6 +90,14 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             {
                 if (opts->aggressive_framesync == 1) {
                     fprintf(stderr, " CRC16 ERR L");
+                    // If this is a MAC_SIGNAL opcode, still clear per-slot audio
+                    // gates and flush rings before exiting to avoid stale gates
+                    // wedging the trunking SM release.
+                    if (opcode == 0x0) {
+                        state->p25_p2_audio_allowed[0] = 0;
+                        state->p25_p2_audio_allowed[1] = 0;
+                        p25_p2_audio_ring_reset(state, -1);
+                    }
                     state->p2_is_lcch = 0; //turn flag off here
                     //if (state->currentslot == 0) state->dmrburstL = 14;
                     //else state->dmrburstR = 14;
@@ -372,6 +380,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                                 fprintf(
                                     stderr,
                                     " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Return to CC; \n");
+                                // Force release so SM ignores any stale gates
+                                state->p25_sm_force_release = 1;
                                 p25_sm_on_release(opts, state);
                             } else {
                                 fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "

@@ -439,6 +439,13 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     if (opts->p25_is_tuned == 1) {
         double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
         int is_p2_vc = (state->p25_p2_active_slot != -1);
+        // Safety: if we've exceeded hangtime (by a small margin), aggressively
+        // clear per-slot audio gates so stale 'allowed' flags cannot wedge the
+        // release logic when voice has clearly stopped.
+        if (is_p2_vc && dt > (opts->trunk_hangtime + 1.0)) {
+            state->p25_p2_audio_allowed[0] = 0;
+            state->p25_p2_audio_allowed[1] = 0;
+        }
         int both_slots_idle =
             (!is_p2_vc) ? 1 : (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
         if (dt > (opts->trunk_hangtime + 1.5) && both_slots_idle) {

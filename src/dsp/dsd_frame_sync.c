@@ -57,6 +57,13 @@ printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, ch
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
+    // Periodic P25 trunk SM heartbeat (once per second) to enforce hangtime
+    // fallbacks even if frame processing stalls due to signal loss.
+    static time_t last_tick = 0;
+    if (now != last_tick) {
+        p25_sm_tick(opts, state);
+        last_tick = now;
+    }
     /* detects frame sync and returns frame type
    *  0 = +P25p1
    *  1 = -P25p1
