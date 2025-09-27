@@ -92,7 +92,15 @@ RtlSdrOrchestrator::stop() {
     if (!started_) {
         return 0;
     }
-    dsd_rtl_stream_close();
+    /*
+     * Use the soft-stop path to avoid touching the global exitflag.
+     * The ncurses menu restarts/destroys RTL streams as part of reconfiguring
+     * device parameters (gain/bandwidth/etc). Calling the hard close would set
+     * exitflag=1 and terminate the whole application when merely closing the
+     * menu. The soft-stop mirrors cleanup (threads, rings, device) without
+     * requesting process exit.
+     */
+    dsd_rtl_stream_soft_stop();
     started_ = false;
     last_error_code_ = 0;
     return 0;

@@ -15,6 +15,9 @@
 #include <time.h>
 
 extern volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
+#ifdef USE_RTLSDR
+extern "C" int dsd_rtl_stream_should_exit(void);
+#endif
 
 /**
  * @brief Reserve writable regions in the input ring buffer.
@@ -158,6 +161,11 @@ input_ring_read_block(struct input_ring_state* r, int16_t* out, size_t max_count
         return 0;
     }
     while (input_ring_is_empty(r)) {
+#ifdef USE_RTLSDR
+        if (dsd_rtl_stream_should_exit()) {
+            return -1;
+        }
+#endif
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += 10L * 1000000L; /* 10ms */
@@ -172,6 +180,11 @@ input_ring_read_block(struct input_ring_state* r, int16_t* out, size_t max_count
             if (exitflag) {
                 return -1;
             }
+#ifdef USE_RTLSDR
+            if (dsd_rtl_stream_should_exit()) {
+                return -1;
+            }
+#endif
             /* Metrics: consumer timed out waiting for input */
             r->read_timeouts.fetch_add(1);
             /* Timeout: check again */

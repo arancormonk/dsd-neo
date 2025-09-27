@@ -28,6 +28,9 @@ extern volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
  */
 void
 ring_write(struct output_state* o, const int16_t* data, size_t count) {
+    if (!o || !o->buffer) {
+        return;
+    }
     int need_signal = ring_is_empty(o);
     while (count > 0 && !exitflag) {
         size_t free_sp = ring_free(o);
@@ -103,6 +106,9 @@ ring_write(struct output_state* o, const int16_t* data, size_t count) {
  */
 void
 ring_write_no_signal(struct output_state* o, const int16_t* data, size_t count) {
+    if (!o || !o->buffer) {
+        return;
+    }
     while (count > 0 && !exitflag) {
         size_t free_sp = ring_free(o);
         if (free_sp == 0) {
@@ -188,7 +194,13 @@ ring_write_signal_on_empty_transition(struct output_state* o, const int16_t* dat
  */
 int
 ring_read_one(struct output_state* o, int16_t* out) {
+    if (!o || !o->buffer) {
+        return -1;
+    }
     while (ring_is_empty(o)) {
+        if (!o->buffer) {
+            return -1; /* stream torn down */
+        }
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += 10L * 1000000L; /* 10ms */
@@ -202,6 +214,9 @@ ring_read_one(struct output_state* o, int16_t* out) {
         if (ret != 0) {
             if (exitflag) {
                 return -1;
+            }
+            if (!o->buffer) {
+                return -1; /* stream torn down */
             }
             /* Metrics: consumer timed out waiting for data */
             o->read_timeouts.fetch_add(1);
@@ -239,7 +254,13 @@ ring_read_batch(struct output_state* o, int16_t* out, size_t max_count) {
     if (max_count == 0) {
         return 0;
     }
+    if (!o || !o->buffer) {
+        return -1;
+    }
     while (ring_is_empty(o)) {
+        if (!o->buffer) {
+            return -1; /* stream torn down */
+        }
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += 10L * 1000000L; /* 10ms */
@@ -253,6 +274,9 @@ ring_read_batch(struct output_state* o, int16_t* out, size_t max_count) {
         if (ret != 0) {
             if (exitflag) {
                 return -1;
+            }
+            if (!o->buffer) {
+                return -1; /* stream torn down */
             }
             /* Metrics: consumer timed out waiting for data */
             o->read_timeouts.fetch_add(1);

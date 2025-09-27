@@ -2430,8 +2430,11 @@ dsd_rtl_stream_close(void) {
     safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
     safe_cond_signal(&controller.hop, &controller.hop_m);
     rtl_device_stop_async(rtl_device_handle);
+    /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
+    safe_cond_signal(&output.space, &output.ready_m);
     pthread_join(demod.thread, NULL);
+    /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
     pthread_join(controller.thread, NULL);
 
@@ -2477,8 +2480,11 @@ dsd_rtl_stream_soft_stop(void) {
     safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
     safe_cond_signal(&controller.hop, &controller.hop_m);
     rtl_device_stop_async(rtl_device_handle);
+    /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
+    safe_cond_signal(&output.space, &output.ready_m);
     pthread_join(demod.thread, NULL);
+    /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
     pthread_join(controller.thread, NULL);
 
@@ -2511,6 +2517,10 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
     UNUSED(state);
     if (count == 0) {
         return 0;
+    }
+    /* If stream is being torn down, abort read promptly. */
+    if (!output.buffer || (g_stream && g_stream->should_exit.load())) {
+        return -1;
     }
 
     /* Optional: auto-adjust RTL PPM using smoothed TED residual (opt-in).
@@ -2603,6 +2613,12 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
 extern "C" unsigned int
 dsd_rtl_stream_output_rate(void) {
     return (unsigned int)output.rate;
+}
+
+/* Helper for generic rings to observe RTL stream shutdown without using exitflag */
+extern "C" int
+dsd_rtl_stream_should_exit(void) {
+    return (g_stream && g_stream->should_exit.load()) ? 1 : 0;
 }
 
 /**
