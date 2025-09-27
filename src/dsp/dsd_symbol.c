@@ -683,9 +683,75 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 sample = m17_filter(sample);
             }
 
-            // Apply matched filter to P25 Phase 1 (C4FM) using dynamic real RRC (alpha=0.2)
+            // Apply matched filter to P25 Phase 1 (C4FM)
             else if (state->lastsynctype == 0 || state->lastsynctype == 1) {
-                sample = c4fm_rrc_filter_sample(sample, state->samplesPerSymbol);
+                // Optional auto-probe between dynamic (alpha≈0.2) and fixed (alpha=0.5)
+                if (opts->p25_c4fm_rrc_autoprobe) {
+                    time_t now = time(NULL);
+                    // Kick off probe if not decided and cosine filter is enabled
+                    if (!state->p25_rrc_auto_decided) {
+                        if (state->p25_rrc_auto_state == 0) {
+                            // Stage 1: measure dynamic
+                            opts->p25_c4fm_rrc_fixed = 0;
+                            state->p25_rrc_auto_state = 1;
+                            state->p25_rrc_auto_start = now;
+                            state->p25_rrc_auto_fec_ok_base = state->p25_p1_fec_ok;
+                            state->p25_rrc_auto_fec_err_base = state->p25_p1_fec_err;
+                        } else if (state->p25_rrc_auto_state == 1 && (now - state->p25_rrc_auto_start) >= 1) {
+                            // End Stage 1 → capture metrics
+                            unsigned int ok = state->p25_p1_fec_ok - state->p25_rrc_auto_fec_ok_base;
+                            unsigned int er = state->p25_p1_fec_err - state->p25_rrc_auto_fec_err_base;
+                            (void)ok; // reserved; main discriminator is err
+                            state->p25_rrc_auto_dyn_fec_err = er;
+                            // voice avg snapshot
+                            if (state->p25_p1_voice_err_hist_len > 0) {
+                                state->p25_rrc_auto_dyn_voice_avg =
+                                    (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
+                            } else {
+                                state->p25_rrc_auto_dyn_voice_avg = 100.0;
+                            }
+                            // Stage 2: switch to fixed
+                            opts->p25_c4fm_rrc_fixed = 1;
+                            state->p25_rrc_auto_state = 2;
+                            state->p25_rrc_auto_start = now;
+                            state->p25_rrc_auto_fec_ok_base = state->p25_p1_fec_ok;
+                            state->p25_rrc_auto_fec_err_base = state->p25_p1_fec_err;
+                        } else if (state->p25_rrc_auto_state == 2 && (now - state->p25_rrc_auto_start) >= 1) {
+                            // End Stage 2 → capture and decide
+                            unsigned int ok = state->p25_p1_fec_ok - state->p25_rrc_auto_fec_ok_base;
+                            unsigned int er = state->p25_p1_fec_err - state->p25_rrc_auto_fec_err_base;
+                            (void)ok;
+                            state->p25_rrc_auto_fix_fec_err = er;
+                            if (state->p25_p1_voice_err_hist_len > 0) {
+                                state->p25_rrc_auto_fix_voice_avg =
+                                    (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
+                            } else {
+                                state->p25_rrc_auto_fix_voice_avg = 100.0;
+                            }
+                            // Decision: prefer fewer FEC errors; tie-breaker lower voice avg
+                            int choose_fixed = 0;
+                            if (state->p25_rrc_auto_fix_fec_err < state->p25_rrc_auto_dyn_fec_err) {
+                                choose_fixed = 1;
+                            } else if (state->p25_rrc_auto_fix_fec_err == state->p25_rrc_auto_dyn_fec_err) {
+                                if (state->p25_rrc_auto_fix_voice_avg <= state->p25_rrc_auto_dyn_voice_avg) {
+                                    choose_fixed = 1;
+                                }
+                            }
+                            opts->p25_c4fm_rrc_fixed = choose_fixed ? 1 : 0;
+                            state->p25_rrc_auto_choice = choose_fixed ? 1 : 0;
+                            state->p25_rrc_auto_decided = 1;
+                            state->p25_rrc_auto_state = 0;
+                        }
+                    }
+                }
+
+                if (opts->p25_c4fm_rrc_fixed) {
+                    // Dedicated fixed RRC(alpha=0.5, sps=10, span=8)
+                    sample = p25_c4fm_filter(sample);
+                } else {
+                    // Dynamic RRC with alpha≈0.2 tuned by SPS
+                    sample = c4fm_rrc_filter_sample(sample, state->samplesPerSymbol);
+                }
             }
 
             else if (state->lastsynctype == 20 || state->lastsynctype == 21 || state->lastsynctype == 22

@@ -982,6 +982,31 @@ io_toggle_cosine(void* vctx) {
 }
 
 static void
+io_toggle_p25_rrc(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->p25_c4fm_rrc_fixed = c->opts->p25_c4fm_rrc_fixed ? 0 : 1;
+}
+
+static void
+io_toggle_p25_rrc_autoprobe(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->p25_c4fm_rrc_autoprobe = c->opts->p25_c4fm_rrc_autoprobe ? 0 : 1;
+    // Reset auto-probe runtime state on toggle
+    if (c->state) {
+        c->state->p25_rrc_auto_state = 0;
+        c->state->p25_rrc_auto_decided = 0;
+        c->state->p25_rrc_auto_start = 0;
+        c->state->p25_rrc_auto_fec_ok_base = 0;
+        c->state->p25_rrc_auto_fec_err_base = 0;
+        c->state->p25_rrc_auto_dyn_fec_err = 0;
+        c->state->p25_rrc_auto_fix_fec_err = 0;
+        c->state->p25_rrc_auto_dyn_voice_avg = 0.0;
+        c->state->p25_rrc_auto_fix_voice_avg = 0.0;
+        c->state->p25_rrc_auto_choice = 0;
+    }
+}
+
+static void
 inv_x2(void* v) {
     svc_toggle_inv_x2(((UiCtx*)v)->opts);
 }
@@ -1437,6 +1462,20 @@ lbl_cosine(void* v, char* b, size_t n) {
 }
 
 static const char*
+lbl_p25_rrc(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "P25 C4FM RRC alpha=0.5 [%s]", c->opts->p25_c4fm_rrc_fixed ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_p25_rrc_autoprobe(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "P25 C4FM RRC Auto-Probe [%s]", c->opts->p25_c4fm_rrc_autoprobe ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
 lbl_toggle_payload(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Payload Logging [%s]", c->opts->payload ? "Active" : "Inactive");
@@ -1694,6 +1733,16 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_cosine,
          .help = "Enable/disable cosine filter.",
          .on_select = io_toggle_cosine},
+        {.id = "p25_rrc",
+         .label = "P25 C4FM RRC alpha=0.5",
+         .label_fn = lbl_p25_rrc,
+         .help = "Use fixed RRC(alpha=0.5) for P25p1 C4FM when Cosine Filter is enabled.",
+         .on_select = io_toggle_p25_rrc},
+        {.id = "p25_rrc_auto",
+         .label = "P25 C4FM RRC Auto-Probe",
+         .label_fn = lbl_p25_rrc_autoprobe,
+         .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
+         .on_select = io_toggle_p25_rrc_autoprobe},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }

@@ -374,6 +374,8 @@ typedef struct {
     int m17decoderip;
     int delay;
     int use_cosine_filter;
+    int p25_c4fm_rrc_fixed;     // 0: dynamic RRC(alpha≈0.2); 1: fixed RRC(alpha=0.5) for P25p1 C4FM
+    int p25_c4fm_rrc_autoprobe; // 1: auto-probe between dynamic and fixed RRC and choose best
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;
@@ -1038,6 +1040,18 @@ typedef struct {
     char nxdn_alias_block_segment[4][4][8];
 
     //site/srv/cch info
+
+    // P25p1 C4FM RRC auto-probe runtime
+    int p25_rrc_auto_state;    // 0=idle/decided, 1=measure dynamic, 2=measure fixed
+    int p25_rrc_auto_decided;  // 1 after decision
+    time_t p25_rrc_auto_start; // start time of current stage
+    unsigned int p25_rrc_auto_fec_ok_base;
+    unsigned int p25_rrc_auto_fec_err_base;
+    unsigned int p25_rrc_auto_dyn_fec_err; // measured errs during dynamic stage
+    unsigned int p25_rrc_auto_fix_fec_err; // measured errs during fixed stage
+    double p25_rrc_auto_dyn_voice_avg;     // snapshot of avg voice BER at end of dynamic stage
+    double p25_rrc_auto_fix_voice_avg;     // snapshot of avg voice BER at end of fixed stage
+    int p25_rrc_auto_choice;               // 0=dynamic, 1=fixed when decided
     char nxdn_location_category[14];
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;

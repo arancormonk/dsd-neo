@@ -2048,7 +2048,7 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
 
 static int
 ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
-    (void)opts; /* currently unused */
+    /* opts used below for filter status */
     if (!state) {
         return 0;
     }
@@ -2085,6 +2085,29 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                 printw("| P1 Voice: P50/P95: %4.1f/%4.1f%%\n", p50, p95);
                 lines++;
             }
+        }
+
+        /* P1 C4FM matched filter mode (when cosine filter is enabled), with auto-probe status */
+        if (opts) {
+            if (opts->use_cosine_filter) {
+                if (opts->p25_c4fm_rrc_autoprobe) {
+                    if (state->p25_rrc_auto_decided) {
+                        printw("| P1 C4FM RRC (auto): %s\n",
+                               opts->p25_c4fm_rrc_fixed ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)");
+                    } else if (state->p25_rrc_auto_state != 0) {
+                        const char* stage = (state->p25_rrc_auto_state == 1) ? "dynamic" : "fixed";
+                        printw("| P1 C4FM RRC (auto): probing %s...\n", stage);
+                    } else {
+                        printw("| P1 C4FM RRC (auto): waiting for P25p1\n");
+                    }
+                } else {
+                    printw("| P1 C4FM RRC: %s\n",
+                           opts->p25_c4fm_rrc_fixed ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)");
+                }
+            } else {
+                printw("| P1 C4FM RRC: Off\n");
+            }
+            lines++;
         }
     }
 
