@@ -383,6 +383,9 @@ typedef struct {
     int rtl_bandwidth;
     int rtl_bias_tee; /* 1 to enable RTL-SDR bias tee (if supported) */
     int rtl_started;
+    /* Mark when RTL-SDR stream must be destroyed/recreated to apply changes
+       that cannot be updated live (e.g., device index, bandwidth, manual gain). */
+    int rtl_needs_restart;
     int monitor_input_audio;
     int analog_only;
     int pulse_raw_rate_in;

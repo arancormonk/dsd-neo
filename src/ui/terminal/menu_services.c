@@ -885,6 +885,9 @@ svc_rtl_restart(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
+    /* Mark that a full restart is required. If a context exists, drop it now
+       so a fresh one will be created on next activation. */
+    opts->rtl_needs_restart = 1;
     if (g_rtl_ctx) {
         rtl_stream_soft_stop(g_rtl_ctx);
         rtl_stream_destroy(g_rtl_ctx);
@@ -903,6 +906,8 @@ svc_rtl_set_dev_index(dsd_opts* opts, int index) {
         index = 0;
     }
     opts->rtl_dev_index = index;
+    /* Changing device requires reopen */
+    opts->rtl_needs_restart = 1;
     return 0;
 }
 
@@ -930,6 +935,8 @@ svc_rtl_set_gain(dsd_opts* opts, int value) {
         value = 49;
     }
     opts->rtl_gain_value = value;
+    /* Manual gain change requires reopen to apply */
+    opts->rtl_needs_restart = 1;
     return 0;
 }
 
@@ -957,6 +964,8 @@ svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
         khz = 12;
     }
     opts->rtl_bandwidth = khz;
+    /* Tuner bandwidth change requires reopen */
+    opts->rtl_needs_restart = 1;
     return 0;
 }
 

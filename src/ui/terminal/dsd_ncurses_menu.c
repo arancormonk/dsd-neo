@@ -114,10 +114,6 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
         if (g_rtl_ctx) {
             // Soft-stop the RTL stream while the menu is open to avoid CPU spin
             rtl_stream_soft_stop(g_rtl_ctx);
-            // Destroy the context so a fresh one is created with updated opts
-            rtl_stream_destroy(g_rtl_ctx);
-            g_rtl_ctx = NULL;
-            opts->rtl_started = 0;
         }
 #endif
     }
@@ -167,18 +163,30 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     }
     if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
-        if (opts->rtl_started == 0) {
-            opts->rtl_started = 1;
-            if (g_rtl_ctx == NULL) {
-                if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
-                    fprintf(stderr, "Failed to create RTL stream.\n");
-                }
+        /* If a full restart was requested (or the context was dropped),
+           destroy any stale context, then create and start fresh. Otherwise,
+           simply resume the existing stream. */
+        if (opts->rtl_needs_restart || g_rtl_ctx == NULL) {
+            if (g_rtl_ctx) {
+                rtl_stream_destroy(g_rtl_ctx);
+                g_rtl_ctx = NULL;
             }
-            if (g_rtl_ctx && rtl_stream_start(g_rtl_ctx) < 0) {
+            if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
+                fprintf(stderr, "Failed to create RTL stream.\n");
+            } else if (rtl_stream_start(g_rtl_ctx) < 0) {
                 fprintf(stderr, "Failed to open RTL-SDR stream.\n");
+            } else {
+                // Reapply DSP settings selected in the menu to the fresh stream
+                dsp_apply_snapshot(&dsp_snap);
+                opts->rtl_started = 1;
+                opts->rtl_needs_restart = 0;
             }
-            // Reapply DSP settings selected in the menu to the fresh stream
-            dsp_apply_snapshot(&dsp_snap);
+        } else {
+            if (rtl_stream_start(g_rtl_ctx) < 0) {
+                fprintf(stderr, "Failed to resume RTL-SDR stream.\n");
+            } else {
+                opts->rtl_started = 1;
+            }
         }
         reset_dibit_buffer(state);
 #elif AERO_BUILD
@@ -186,6 +194,18 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
 #else
         opts->audio_out_type = 0;
         openPulseOutput(opts);
+#endif
+    } else {
+#ifdef USE_RTLSDR
+        /* If RTL is no longer the active input, free any existing context
+           so background tune calls become no-ops and resources are returned. */
+        if (g_rtl_ctx) {
+            rtl_stream_soft_stop(g_rtl_ctx);
+            rtl_stream_destroy(g_rtl_ctx);
+            g_rtl_ctx = NULL;
+        }
+        opts->rtl_started = 0;
+        opts->rtl_needs_restart = 0;
 #endif
     }
     if (opts->audio_in_type == 8) {

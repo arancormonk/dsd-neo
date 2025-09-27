@@ -766,6 +766,7 @@ initOpts(dsd_opts* opts) {
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
     opts->rtl_started = 0;
+    opts->rtl_needs_restart = 0;
     opts->rtl_pwr = 0;      // mean power approximation level on rtl input signal
     opts->rtl_bias_tee = 0; // bias tee disabled by default
     //end RTL user options
@@ -1859,6 +1860,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "Failed to open RTL-SDR stream.\n");
         }
         opts->rtl_started = 1;
+        opts->rtl_needs_restart = 0;
     }
 #endif
 
