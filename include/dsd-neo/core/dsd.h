@@ -400,12 +400,14 @@ typedef struct {
     uint8_t use_ncurses_terminal;
     uint8_t ncurses_compact;
     uint8_t ncurses_history;
-    uint8_t eye_view;       //ncurses timing/eye diagram for C4FM/FSK (0=off)
-    uint8_t fsk_hist_view;  //ncurses 4-level histogram for C4FM/FSK (0=off)
-    uint8_t spectrum_view;  //ncurses spectrum analyzer for complex baseband (0=off)
-    uint8_t eye_unicode;    //use Unicode block glyphs in eye diagram (0=ASCII)
-    uint8_t eye_color;      //use colorized density in eye diagram (0=mono)
-    uint8_t show_dsp_panel; //show compact DSP status panel (0=hidden)
+    uint8_t eye_view;         //ncurses timing/eye diagram for C4FM/FSK (0=off)
+    uint8_t fsk_hist_view;    //ncurses 4-level histogram for C4FM/FSK (0=off)
+    uint8_t spectrum_view;    //ncurses spectrum analyzer for complex baseband (0=off)
+    uint8_t eye_unicode;      //use Unicode block glyphs in eye diagram (0=ASCII)
+    uint8_t eye_color;        //use colorized density in eye diagram (0=mono)
+    uint8_t show_dsp_panel;   //show compact DSP status panel (0=hidden)
+    uint8_t show_p25_metrics; //show P25 Metrics section (0=hidden)
+    uint8_t show_channels;    //show Channels section (0=hidden)
     int reset_state;
     int payload;
     unsigned int dPMR_curr_frame_is_encrypted;
@@ -934,6 +936,15 @@ typedef struct {
     unsigned int p25_p1_fec_err;    // count of CRC16/1/2-rate header/FEC failures
     unsigned int p25_cc_cand_added; // candidates added
     unsigned int p25_cc_cand_used;  // candidates used for hunting
+
+    // P25 Phase 1 DUID/frame-type histogram (since last tune/reset)
+    unsigned int p25_p1_duid_hdu;
+    unsigned int p25_p1_duid_ldu1;
+    unsigned int p25_p1_duid_ldu2;
+    unsigned int p25_p1_duid_tdu;
+    unsigned int p25_p1_duid_tdulc;
+    unsigned int p25_p1_duid_tsbk;
+    unsigned int p25_p1_duid_mpdu;
 
     // P25 Phase 1 voice error moving average (last N IMBE frames)
     uint8_t p25_p1_voice_err_hist[64];

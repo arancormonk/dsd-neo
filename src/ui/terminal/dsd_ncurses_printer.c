@@ -195,6 +195,67 @@ ui_print_lborder_green(void) {
     attron(COLOR_PAIR(saved_pair));
 }
 
+/* Classify whether a channel mapping matches the active P25 IDEN parameters. */
+static int
+ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
+    if (!state || ch16 <= 0 || ch16 >= 65535) {
+        return 0;
+    }
+    int iden = (ch16 >> 12) & 0xF;
+    if (iden < 0 || iden > 15) {
+        return 0;
+    }
+    long base = state->p25_base_freq[iden];
+    long spac = state->p25_chan_spac[iden];
+    if (base == 0 || spac == 0) {
+        return 0;
+    }
+    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+    int type = state->p25_chan_type[iden] & 0xF;
+    int denom = 1;
+    if ((state->p25_chan_tdma[iden] & 0x1) != 0) {
+        if (type < 0 || type > 15) {
+            return 0;
+        }
+        denom = slots_per_carrier[type];
+        if (denom <= 0) {
+            return 0;
+        }
+    } else if (state->p25_cc_is_tdma == 1) {
+        denom = 2; // conservative fallback (matches compute path)
+    }
+    int raw = ch16 & 0xFFF;
+    int step = raw / denom;
+    long int calc = (base * 5) + (step * spac * 125);
+    return (calc == freq) ? 1 : 0;
+}
+
+/* Match channel/freq to an IDEN index; returns 1 if matched and sets *out_iden, else 0. */
+static int
+ui_match_iden_channel(const dsd_state* state, int ch16, long int freq, int* out_iden) {
+    if (!state) {
+        return 0;
+    }
+    if (!ui_is_iden_channel(state, ch16, freq)) {
+        return 0;
+    }
+    int iden = (ch16 >> 12) & 0xF;
+    if (out_iden) {
+        *out_iden = iden;
+    }
+    return 1;
+}
+
+/* Map IDEN nibble (0..15) to a color pair in 21..28 (wrap by 8) */
+static inline short
+ui_iden_color_pair(int iden) {
+    if (iden < 0) {
+        iden = 0;
+    }
+    int idx = iden & 7;
+    return (short)(21 + idx);
+}
+
 /* Small helpers to align key/value fields to a consistent value column. */
 static inline void
 ui_print_label_pad(const char* label) {
@@ -443,6 +504,15 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     init_pair(12, COLOR_YELLOW, COLOR_BLACK); //moderate
     init_pair(13, COLOR_RED, COLOR_BLACK);    //poor
     init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status (explicit yellow)
+    /* IDEN color palette (per-bandplan); 8 slots, wrap IDEN nibble modulo 8 */
+    init_pair(21, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(22, COLOR_GREEN, COLOR_BLACK);
+    init_pair(23, COLOR_CYAN, COLOR_BLACK);
+    init_pair(24, COLOR_MAGENTA, COLOR_BLACK);
+    init_pair(25, COLOR_BLUE, COLOR_BLACK);
+    init_pair(26, COLOR_WHITE, COLOR_BLACK);
+    init_pair(27, COLOR_RED, COLOR_BLACK);
+    init_pair(28, COLOR_BLACK, COLOR_WHITE); /* high contrast alt */
 #else
     init_pair(1, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
     init_pair(2, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
@@ -458,6 +528,10 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     init_pair(12, COLOR_WHITE, COLOR_BLACK);
     init_pair(13, COLOR_WHITE, COLOR_BLACK);
     init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status stays yellow even on white card scheme
+    /* IDEN color palette fallback */
+    for (int p = 21; p <= 28; p++) {
+        init_pair(p, COLOR_WHITE, COLOR_BLACK);
+    }
 #endif
 
     noecho();
@@ -1933,6 +2007,43 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
 }
 
 /* Print P25 P1/P2 decoder metrics. Returns number of lines printed. */
+/* Small percentile helper for u8 rings (len <= 64) */
+static int
+compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
+    if (!src || len <= 0) {
+        return 0;
+    }
+    if (len > 64) {
+        len = 64;
+    }
+    int vals[64];
+    for (int i = 0; i < len; i++) {
+        vals[i] = (int)src[i];
+    }
+    qsort(vals, len, sizeof(int), cmp_int_asc);
+    int i50 = (int)lrint(0.50 * (double)(len - 1));
+    int i95 = (int)lrint(0.95 * (double)(len - 1));
+    if (i50 < 0) {
+        i50 = 0;
+    }
+    if (i95 < 0) {
+        i95 = 0;
+    }
+    if (i50 >= len) {
+        i50 = len - 1;
+    }
+    if (i95 >= len) {
+        i95 = len - 1;
+    }
+    if (p50) {
+        *p50 = (double)vals[i50];
+    }
+    if (p95) {
+        *p95 = (double)vals[i95];
+    }
+    return 1;
+}
+
 static int
 ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     (void)opts; /* currently unused */
@@ -1952,6 +2063,27 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             printw("| P1: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
         }
         lines++;
+
+        /* P1 FEC/CRC16 health (TSBK/MDPU headers) */
+        unsigned int ok = state->p25_p1_fec_ok;
+        unsigned int err = state->p25_p1_fec_err;
+        unsigned int tot = ok + err;
+        if (tot > 0) {
+            double okpct = (100.0 * (double)ok) / (double)tot;
+            printw("| P1 FEC: %u/%u (ok:%4.1f%%)\n", ok, err, okpct);
+            lines++;
+        }
+
+        /* P1 voice error distribution (percentiles) */
+        if (state->p25_p1_voice_err_hist_len > 0) {
+            double p50 = 0.0, p95 = 0.0;
+            int n = state->p25_p1_voice_err_hist_len;
+            /* Only the first <len> entries are used by the ring */
+            if (compute_percentiles_u8(state->p25_p1_voice_err_hist, n, &p50, &p95)) {
+                printw("| P1 Voice: P50/P95: %4.1f/%4.1f%%\n", p50, p95);
+                lines++;
+            }
+        }
     }
 
     if (is_p25p2 || (is_p25p1 && opts && opts->p25_trunk == 1)) {
@@ -1970,6 +2102,23 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             lines++;
         }
 
+        /* P2 voice percentiles (per slot) */
+        if (state->p25_p2_voice_err_hist_len > 0) {
+            double l50 = 0.0, l95 = 0.0, r50 = 0.0, r95 = 0.0;
+            int n = state->p25_p2_voice_err_hist_len;
+            int have_any = 0;
+            if (compute_percentiles_u8(state->p25_p2_voice_err_hist[0], n, &l50, &l95)) {
+                have_any = 1;
+            }
+            if (compute_percentiles_u8(state->p25_p2_voice_err_hist[1], n, &r50, &r95)) {
+                have_any = 1;
+            }
+            if (have_any) {
+                printw("| P2 Voice: P50/P95 - S1:%4.1f/%4.1f%% S2:%4.1f/%4.1f%%\n", l50, l95, r50, r95);
+                lines++;
+            }
+        }
+
         /* Condensed P25p2 RS summary line (only if any counters are non-zero) */
         if ((state->p25_p2_rs_facch_ok | state->p25_p2_rs_facch_err | state->p25_p2_rs_sacch_ok
              | state->p25_p2_rs_sacch_err | state->p25_p2_rs_ess_ok | state->p25_p2_rs_ess_err)
@@ -1978,7 +2127,86 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                    state->p25_p2_rs_facch_err, state->p25_p2_rs_sacch_ok, state->p25_p2_rs_sacch_err,
                    state->p25_p2_rs_ess_ok, state->p25_p2_rs_ess_err);
             lines++;
+
+            /* Average corrections per accepted block (gives quality beyond pass/fail) */
+            if (state->p25_p2_rs_facch_ok || state->p25_p2_rs_sacch_ok || state->p25_p2_rs_ess_ok) {
+                double fac = 0.0, sac = 0.0, ess = 0.0;
+                if (state->p25_p2_rs_facch_ok) {
+                    fac = (double)state->p25_p2_rs_facch_corr / (double)state->p25_p2_rs_facch_ok;
+                }
+                if (state->p25_p2_rs_sacch_ok) {
+                    sac = (double)state->p25_p2_rs_sacch_corr / (double)state->p25_p2_rs_sacch_ok;
+                }
+                if (state->p25_p2_rs_ess_ok) {
+                    ess = (double)state->p25_p2_rs_ess_corr / (double)state->p25_p2_rs_ess_ok;
+                }
+                printw("| P2 RS avg corr: FACCH %4.1f SACCH %4.1f ESS %4.1f\n", fac, sac, ess);
+                lines++;
+            }
         }
+    }
+
+    /* Trunking state-machine counters and IDEN trust summary (trunking only) */
+    if (opts && opts->p25_trunk == 1) {
+        /* SM counters */
+        printw("| SM: tunes %u releases %u; CC cands add:%u used:%u count:%d\n", state->p25_sm_tune_count,
+               state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
+               state->p25_cc_cand_count);
+        lines++;
+
+        /* IDEN trust summary */
+        int iden_total = 0, iden_conf = 0;
+        for (int i = 0; i < 16; i++) {
+            uint8_t t = state->p25_iden_trust[i];
+            if (t > 0) {
+                iden_total++;
+                if (t >= 2) {
+                    iden_conf++;
+                }
+            }
+        }
+        if (iden_total > 0) {
+            printw("| IDENs: %d total (%d confirmed)\n", iden_total, iden_conf);
+            lines++;
+        }
+
+        /* CC mode hint (TDMA vs FDMA) */
+        if (state->p25_cc_freq != 0 || state->trunk_cc_freq != 0) {
+            printw("| CC: %s\n", state->p25_cc_is_tdma ? "TDMA" : "FDMA");
+            lines++;
+        }
+    }
+
+    /* P2 slot and jitter ring status (when on a P2 channel) */
+    if (is_p25p2) {
+        int act = state->p25_p2_active_slot;
+        int lfill = state->p25_p2_audio_ring_count[0];
+        int rfill = state->p25_p2_audio_ring_count[1];
+        if (lfill < 0) {
+            lfill = 0;
+        }
+        if (lfill > 3) {
+            lfill = 3;
+        }
+        if (rfill < 0) {
+            rfill = 0;
+        }
+        if (rfill > 3) {
+            rfill = 3;
+        }
+        printw("| P2 slot: %s; jitter S1:%d/3 S2:%d/3\n", (act == 0) ? "L" : (act == 1) ? "R" : "-", lfill, rfill);
+        lines++;
+    }
+
+    /* P1 DUID histogram (since last reset/tune) */
+    unsigned int du_sum = state->p25_p1_duid_hdu + state->p25_p1_duid_ldu1 + state->p25_p1_duid_ldu2
+                          + state->p25_p1_duid_tdu + state->p25_p1_duid_tdulc + state->p25_p1_duid_tsbk
+                          + state->p25_p1_duid_mpdu;
+    if (du_sum > 0) {
+        printw("| P1 DUID: HDU %u LDU1 %u LDU2 %u TDU %u TDULC %u TSBK %u MPDU %u\n", state->p25_p1_duid_hdu,
+               state->p25_p1_duid_ldu1, state->p25_p1_duid_ldu2, state->p25_p1_duid_tdu, state->p25_p1_duid_tdulc,
+               state->p25_p1_duid_tsbk, state->p25_p1_duid_mpdu);
+        lines++;
     }
 
     return lines;
@@ -2121,7 +2349,19 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
                     ui_print_lborder_green();
                     addch(' ');
                 }
-                printw("CH %04X: %010.06lf MHz", i & 0xFFFF, (double)f / 1000000.0);
+                // Temporarily tint IDEN-derived channels
+                attr_t saved_attrs = 0;
+                short saved_pair = 0;
+                attr_get(&saved_attrs, &saved_pair, NULL);
+                int iden = -1;
+                int is_iden = ui_match_iden_channel(state, i, f, &iden);
+                if (is_iden) {
+                    attron(COLOR_PAIR(ui_iden_color_pair(iden)));
+                    printw("CH %04X[I%d]: %010.06lf MHz", i & 0xFFFF, iden & 0xF, (double)f / 1000000.0);
+                    attron(COLOR_PAIR(saved_pair));
+                } else {
+                    printw("CH %04X: %010.06lf MHz", i & 0xFFFF, (double)f / 1000000.0);
+                }
                 col_in_row++;
                 printed++;
                 if (col_in_row >= cols_per_line) {
@@ -2177,7 +2417,19 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
                     ui_print_lborder_green();
                     addch(' ');
                 }
-                printw("CH %04X: %010.06lf MHz", found_ch & 0xFFFF, (double)f / 1000000.0);
+                // Tint if this CH aligns with IDEN params
+                attr_t saved_attrs = 0;
+                short saved_pair = 0;
+                attr_get(&saved_attrs, &saved_pair, NULL);
+                int iden = -1;
+                int is_iden = ui_match_iden_channel(state, found_ch, f, &iden);
+                if (is_iden) {
+                    attron(COLOR_PAIR(ui_iden_color_pair(iden)));
+                    printw("CH %04X[I%d]: %010.06lf MHz", found_ch & 0xFFFF, iden & 0xF, (double)f / 1000000.0);
+                    attron(COLOR_PAIR(saved_pair));
+                } else {
+                    printw("CH %04X: %010.06lf MHz", found_ch & 0xFFFF, (double)f / 1000000.0);
+                }
             } else {
                 if (col_in_row == 0) {
                     ui_print_lborder_green();
@@ -2200,6 +2452,17 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
             addch('\n');
         }
     }
+
+    // Legend for IDEN color/suffix
+    ui_print_lborder_green();
+    printw(" Legend: IDEN colors ");
+    for (int c = 0; c < 8; c++) {
+        attron(COLOR_PAIR(ui_iden_color_pair(c)));
+        printw("I%d", c);
+        attroff(COLOR_PAIR(ui_iden_color_pair(c)));
+        addch(' ');
+    }
+    addch('\n');
 
     // Restore to green if in-call, otherwise keep cyan; callers around will adjust as needed
     if (state->carrier == 1) {
@@ -2841,6 +3104,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
         printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
+        printw("  P25M: %s (%c)", opts->show_p25_metrics ? "On" : "Off", DSD_KEY_TOGGLE_P25M);
+        printw("  Chan: %s (%c)", opts->show_channels ? "On" : "Off", DSD_KEY_TOGGLE_CHANS);
         if (opts->spectrum_view == 1) {
             printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
         }
@@ -3093,11 +3358,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
     ui_print_hr();
 
-    /* Dedicated P25 metrics section (moved from Input/Output) */
+    /* Dedicated P25 metrics section (toggle in menu) */
     {
         int is_p25p1 = (lls == 0 || lls == 1);
         int is_p25p2 = (lls == 35 || lls == 36);
-        if (is_p25p1 || is_p25p2) {
+        if (opts->show_p25_metrics == 1 && (is_p25p1 || is_p25p2)) {
             ui_print_header("P25 Metrics");
             (void)ui_print_p25_metrics(opts, state);
             ui_print_hr();
@@ -4202,8 +4467,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     // Bottom border for Call Info section
     ui_print_hr();
 
-    // Render learned LCNs just under the Call Info section when trunking
-    ui_print_learned_lcns(opts, state);
+    // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
+    if (opts->show_channels == 1) {
+        ui_print_learned_lcns(opts, state);
+    }
 
     //fence bottom
     ui_print_hr();

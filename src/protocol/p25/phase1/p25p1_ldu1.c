@@ -29,6 +29,7 @@
 
 void
 processLDU1(dsd_opts* opts, dsd_state* state) {
+    state->p25_p1_duid_ldu1++;
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu

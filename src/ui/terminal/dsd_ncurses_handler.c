@@ -25,6 +25,25 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         return 1;
     }
 
+    // UI section visibility hotkeys (global)
+    if (c == DSD_KEY_TOGGLE_P25M) //'J' key, toggle P25 Metrics section
+    {
+        opts->show_p25_metrics = opts->show_p25_metrics ? 0 : 1;
+        if (state) {
+            snprintf(state->ui_msg, sizeof state->ui_msg, "P25 Metrics: %s", opts->show_p25_metrics ? "On" : "Off");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
+    }
+
+    if (c == DSD_KEY_TOGGLE_CHANS) //'I' key, toggle Channels section
+    {
+        opts->show_channels = opts->show_channels ? 0 : 1;
+        if (state) {
+            snprintf(state->ui_msg, sizeof state->ui_msg, "Channels: %s", opts->show_channels ? "On" : "Off");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
+    }
+
     struct stat st_wav = {0};
 
     // //debug char value

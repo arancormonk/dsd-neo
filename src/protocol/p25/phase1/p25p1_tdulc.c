@@ -195,6 +195,7 @@ read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, 
 
 void
 processTDULC(dsd_opts* opts, dsd_state* state) {
+    state->p25_p1_duid_tdulc++;
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu

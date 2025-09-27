@@ -21,6 +21,7 @@
 
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
+    state->p25_p1_duid_tsbk++;
 
     //p25p2 18v reset counters and buffers
     state->voice_counter[0] = 0; //reset

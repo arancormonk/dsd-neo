@@ -3450,6 +3450,55 @@ act_dsp_opts(void* v) {
     ui_menu_dsp_options(c->opts, c->state);
 }
 
+// ---- UI Display Options ----
+static const char*
+lbl_ui_p25_metrics(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 Metrics [%s]", (c && c->opts && c->opts->show_p25_metrics) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_p25_metrics(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_p25_metrics = c->opts->show_p25_metrics ? 0 : 1;
+}
+
+static const char*
+lbl_ui_channels(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show Channels [%s]", (c && c->opts && c->opts->show_channels) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_channels(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_channels = c->opts->show_channels ? 0 : 1;
+}
+
+static void
+act_ui_display(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    static const NcMenuItem items[] = {
+        {.id = "p25m",
+         .label_fn = lbl_ui_p25_metrics,
+         .help = "Toggle P25 Metrics section.",
+         .on_select = act_toggle_ui_p25_metrics},
+        {.id = "chans",
+         .label_fn = lbl_ui_channels,
+         .help = "Toggle Channels section.",
+         .on_select = act_toggle_ui_channels},
+    };
+    ui_menu_run(items, sizeof items / sizeof items[0], c);
+}
+
 static void
 act_lrrp_opts(void* v) {
     UiCtx* c = (UiCtx*)v;
@@ -3520,6 +3569,7 @@ ui_menu_main(dsd_opts* opts, dsd_state* state) {
          .help = "RTL-SDR DSP toggles and tuning.",
          .is_enabled = io_rtl_active,
          .on_select = act_dsp_opts},
+        {.id = "ui_display", .label = "UI Display", .help = "Toggle on-screen sections.", .on_select = act_ui_display},
         {.id = "lrrp", .label = "LRRP Output", .help = "Configure LRRP file output.", .on_select = act_lrrp_opts},
         {.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit},
     };

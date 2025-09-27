@@ -42,6 +42,10 @@
 // Compact view toggle
 #define DSD_KEY_COMPACT          'c'
 
+// UI section visibility
+#define DSD_KEY_TOGGLE_P25M      'J' // show/hide P25 Metrics
+#define DSD_KEY_TOGGLE_CHANS     'I' // show/hide Channels
+
 // Audio output mute
 #define DSD_KEY_MUTE_LOWER       'x'
 #define DSD_KEY_MUTE_UPPER       'X'
