@@ -12,16 +12,16 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 
 ## Downloads
 
-- Stable releases: https://github.com/arancormonk/dsd-neo/releases
+- Stable releases (**TBD**):
   - Linux AppImage (x86_64): dsd-neo-linux-x86_64-portable-<version>.AppImage
   - Linux AppImage (aarch64): dsd-neo-linux-aarch64-portable-<version>.AppImage
   - macOS DMG (arm64): dsd-neo-macos-arm64-portable-<version>.dmg
   - Windows ZIP (x86_64): dsd-neo-cygwin-x86_64-portable-<version>.zip
-- Nightly builds: https://github.com/arancormonk/dsd-neo/releases/tag/nightly
-  - Linux AppImage (x86_64): dsd-neo-linux-x86_64-portable-nightly.AppImage
-  - Linux AppImage (aarch64): dsd-neo-linux-aarch64-portable-nightly.AppImage
-  - macOS DMG (arm64): dsd-neo-macos-arm64-portable-nightly.dmg
-  - Windows ZIP (x86_64): dsd-neo-cygwin-x86_64-portable-nightly.zip
+- Nightly builds:
+  - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
+  - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
+  - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
+  - Windows ZIP (x86_64): [dsd-neo-cygwin-x86_64-portable-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-cygwin-x86_64-portable-nightly.zip)
 
 ## Project Status
 
@@ -33,7 +33,56 @@ This project is an active work in progress as we decouple from the upstream fork
 - Modularized fork with clear boundaries: `runtime`, `dsp`, `io`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
 - Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17, YSF.
 - Integrates with [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) for IMBE/AMBE vocoder primitives; falls back to legacy MBE if needed.
-- Public headers installed under `include/dsd-neo/...` and included via `#include <dsd-neo/<module>/<header>>`.
+- Public headers live under `include/dsd-neo/...` and are included as `#include <dsd-neo/<module>/<header>>`.
+
+## How DSD‑neo Is Different
+
+- More input and streaming options
+
+  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and generic IQ TCP (`-i tcp[:host:port]`, SDR++/GRC 7355).
+  - UDP audio in/out: receive PCM16 over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts.
+
+- Built‑in trunking workflow
+
+  - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `-N`).
+  - On‑the‑fly control via UDP retune or rigctl; pairs well with TCP/RTL‑TCP inputs.
+
+- RTL‑SDR quality‑of‑life features
+
+  - Bias‑tee control (when supported by your librtlsdr), manual or auto gain, power squelch, adjustable tuner bandwidth, and per‑run PPM correction.
+  - Optional auto‑PPM drift correction driven by the timing error detector for long runs without user intervention.
+  - rtl_tcp niceties: configurable prebuffering to reduce dropouts and settings tuned for stable network use.
+
+- RTL‑SDR optimizations and diagnostics
+
+  - Real‑time visual aids in the terminal for faster setup and troubleshooting:
+    - Constellation view with adjustable gating and normalization.
+    - Eye diagram (Unicode/ASCII, optional color) with adaptive scales and level guides.
+    - Spectrum analyzer with adjustable FFT size.
+    - FSK 4‑level histogram and live per‑modulation SNR readouts.
+  - Heavily optimized RTL path for smoother audio and fewer dropouts:
+    - One‑pass byte→I/Q widening with optional 90° rotation and DC‑spur fs/4 capture shift (configurable).
+    - Cascaded decimation and an optional rational resampler to keep processing efficient and responsive.
+    - Optional auto‑PPM correction from the timing error detector for long unattended runs.
+  - Device control from the UI: toggle bias‑tee, switch AGC/manual gain, adjust bandwidth and squelch, and retune quickly.
+
+- Expanded DSP controls (power users welcome)
+
+  - Adaptive equalizer and decision‑feedback equalizer toggles with quick presets.
+  - Matched filters with adjustable RRC parameters (alpha, span) and a CMA warmup assist.
+  - Timing and carrier helpers: enable/disable TED and FLL, tweak TED rate/gain, and force TED when needed.
+  - IQ balance prefilter and DQPSK decision mode for tough RF environments.
+  - Auto‑DSP assist that adapts based on live error metrics (P25/TDMA), helping stabilize challenging signals.
+  - Changes apply instantly from the UI and persist across retunes, so you can iterate quickly without restarting.
+  - These controls go beyond what most open DSD projects expose directly.
+
+- Portable, ready‑to‑run builds
+  - Linux AppImage, macOS DMG, and Windows portable ZIP releases.
+
+How this compares at a glance
+
+- Versus DSD‑FME: similar protocol coverage and UI heritage, but DSD‑neo adds network‑friendly I/O (UDP audio in), refined RTL‑TCP handling (prebuffer, tuned defaults), optional auto‑PPM, and packaged cross‑platform binaries.
+- Versus the original DSD: more protocols (notably P25 Phase 2, M17, YSF, EDACS), built‑in trunking, network inputs, device control, and an interactive UI.
 
 ## Build From Source
 
@@ -59,7 +108,7 @@ cmake --build --preset dev-debug -j
 cmake --preset dev-release
 cmake --build --preset dev-release -j
 
-# Run smoke tests (future CI; no dedicated unit tests yet)
+# Run tests
 ctest --preset dev-debug -V
 ```
 
@@ -120,9 +169,12 @@ cmake --build build/dev-release --target uninstall
   - RTL‑SDR: `-i rtl` for defaults, or `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`.
   - RTL‑TCP: `-i rtltcp[:host:port]` (default 127.0.0.1:1234). Optional trailing fields mirror RTL‑SDR, including `bias` (forwarded to the rtl_tcp server when supported).
   - TCP (SDR++ / GRC): `-i tcp[:host:port]` (default port 7355).
+  - UDP PCM input: `-i udp[:bind_addr:port]` (PCM16 at 48 kHz by default).
   - M17 UDP/IP: `-i m17udp[:bind_addr:port]` and/or `-o m17udp[:host:port]`.
+  - UDP audio output: `-o udp[:host:port]` (default 127.0.0.1:23456).
 - Quick examples:
   - Play saved MBE files: `dsd-neo -r *.mbe`
+  - UDP in to Pulse out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse -N`
   - Trunking with TCP control: `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N 2> log.txt`
   - Trunking with RTL‑SDR: `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> log.txt`
 
@@ -130,8 +182,9 @@ If `help2man` is available during build, a `dsd-neo(1)` man page is generated an
 
 ## Tests and Examples
 
-- Run: `ctest --preset dev-debug -V`.
-- No dedicated unit tests yet; CTest is wired for future smoke tests and CI. Prefer small, testable helpers when contributing.
+- Run all tests: `ctest --preset dev-debug -V` (or `ctest --test-dir build/dev-debug -V`).
+- Scope: unit tests for protocol helpers (P25 p1/p2, IDEN maps, CRC/RS), crypto, and FEC primitives are included and run via CTest.
+- Contributions: prefer small, testable helpers and add focused tests under `tests/<area>`.
 
 ## Documentation
 
@@ -144,7 +197,7 @@ If `help2man` is available during build, a `dsd-neo(1)` man page is generated an
 - Core: `src/core`, headers `<dsd-neo/core/...>` — glue (audio, vocoder, frame dispatch, GPS, file import).
 - Runtime: `src/runtime`, headers `<dsd-neo/runtime/...>` — config, logging, aligned memory, rings, worker pool, RT scheduling, git version.
 - DSP: `src/dsp`, headers `<dsd-neo/dsp/...>` — demod pipeline, resampler, filters, FLL/TED, SIMD helpers.
-- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR), audio backends (PortAudio, PulseAudio), control (UDP/rigctl/serial).
+- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR), audio (PulseAudio + UDP PCM input/output), control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
@@ -153,7 +206,7 @@ If `help2man` is available during build, a `dsd-neo(1)` man page is generated an
 ## Tooling
 
 - Format: `tools/format.sh` (requires `clang-format`; see `.clang-format`).
-- Static analysis: `clang-tidy -p build/dev-debug <files>` (config in `.clang-tidy`).
+- Static analysis: `tools/clang_tidy.sh` (use `--strict` for extra checks) or `clang-tidy -p build/dev-debug <files>`.
 - Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit.
 
 ## Contributing

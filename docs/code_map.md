@@ -24,15 +24,19 @@ High‑level layout with module responsibilities and libraries. All public heade
 
 - Path: `src/dsp`, `include/dsd-neo/dsp`
 - Target: `dsd-neo_dsp`
-- Responsibilities: demodulation pipeline, resampler, filters, FLL, TED, SIMD helpers
+- Responsibilities: demodulation pipeline, cascaded decimation/resampler, filters, FLL/TED, CQPSK helpers (LMS/DFE, matched/RRC), and SIMD helpers. Exposes runtime‑tunable parameters consumed by the UI.
 
 ## IO
 
 - Path: `src/io`, `include/dsd-neo/io`
 - Targets:
-  - `dsd-neo_io_radio` — RTL‑SDR front‑end and orchestrator (optional; stubbed if not found)
-  - `dsd-neo_io_audio` — audio device discovery/helpers (PortAudio, PulseAudio)
-  - `dsd-neo_io_control` — UDP control server, rigctl/serial
+  - `dsd-neo_io_radio` — RTL‑SDR front‑end and orchestrator for USB and rtl_tcp; provides constellation/eye/spectrum snapshots, optional bias‑tee, fs/4 capture shift, and auto‑PPM hooks.
+  - `dsd-neo_io_audio` — audio I/O backends: PulseAudio playback and UDP PCM input. PortAudio device listing is available when enabled.
+  - `dsd-neo_io_control` — UDP retune control server and control interfaces (rigctl/serial); also brokers M17 UDP/IP when configured.
+
+Key public headers:
+
+- RTL shim API: `include/dsd-neo/io/rtl_stream_c.h` (C API for stream lifecycle, tuning, SNR, constellation/eye, spectrum, and DSP runtime controls).
 
 ## FEC
 
@@ -61,7 +65,7 @@ High‑level layout with module responsibilities and libraries. All public heade
 
 - Path: `src/ui`, `include/dsd-neo/ui`
 - Target: `dsd-neo_ui_terminal`
-- Responsibilities: ncurses terminal UI. The menu system is moving to a data‑driven core in `menu_core.[ch]` with standardized prompt helpers and declarative menu tables. Legacy menus remain functional during migration.
+- Responsibilities: ncurses terminal UI. The menu system is moving to a data‑driven core in `menu_core.[ch]` with standardized prompt helpers and declarative menu tables. Legacy menus remain functional during migration. Includes live visualizers (constellation, eye diagram, spectrum, FSK histogram) driven by the RTL shim API.
 
 ### Adding Menu Items
 - Define a handler:
@@ -89,3 +93,4 @@ High‑level layout with module responsibilities and libraries. All public heade
 
 - Libraries build under `src/...`; the CLI builds under `apps/dsd-cli` as `dsd-neo`.
 - Use CMake presets (see `CMakePresets.json`).
+- Tests live under `tests/<area>` and are wired with CTest; run with `ctest --preset dev-debug -V`.
