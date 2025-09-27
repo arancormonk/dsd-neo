@@ -64,8 +64,8 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         return 1;
     }
 
-    //keyboard shortcuts - codes same as ascii codes
-    if (c == DSD_KEY_ENTER) //Return / Enter key, open menu
+    //keyboard shortcuts - handle Enter across terminals (LF, CR, or KEY_ENTER)
+    if (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER) //Return / Enter key, open menu
     {
         if (opts->m17encoder == 0) { //don't allow menu if using M17 encoder
             ncursesMenu(opts, state);

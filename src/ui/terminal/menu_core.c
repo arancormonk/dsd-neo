@@ -260,6 +260,8 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
     }
     WINDOW* menu_win = ui_make_window(height, width, my, mx);
     keypad(menu_win, TRUE);
+    // Ensure blocking input for menu navigation regardless of stdscr timeout
+    wtimeout(menu_win, -1);
 
     int hi = 0;
     while (1) {

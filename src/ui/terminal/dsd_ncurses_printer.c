@@ -487,6 +487,8 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     setlocale(LC_ALL, "");
     initscr(); //Initialize NCURSES screen window
     start_color();
+    // Ensure special keys (arrows, keypad Enter) are decoded as KEY_* constants
+    keypad(stdscr, TRUE);
 
 #ifdef PRETTY_COLORS
     init_pair(1, COLOR_YELLOW, COLOR_BLACK);  //Yellow/Amber for frame sync/control channel, NV style
@@ -3104,8 +3106,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
         printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
-        printw("  P25M: %s (%c)", opts->show_p25_metrics ? "On" : "Off", DSD_KEY_TOGGLE_P25M);
-        printw("  Chan: %s (%c)", opts->show_channels ? "On" : "Off", DSD_KEY_TOGGLE_CHANS);
         if (opts->spectrum_view == 1) {
             printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
         }

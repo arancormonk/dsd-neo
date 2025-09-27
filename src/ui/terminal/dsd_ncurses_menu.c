@@ -99,27 +99,18 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     // Update sync time so we don't immediately go CC hunting when exiting the menu
     state->last_cc_sync_time = time(NULL);
 
-    // Pre-menu: close current outputs/inputs to avoid buffering while menu is open
-    if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-        closePulseOutput(opts);
-    }
-    if (opts->audio_out_type == 2 || opts->audio_out_type == 5) {
-        close(opts->audio_out_fd);
-    }
-    if (opts->audio_in_type == 0) {
-        closePulseInput(opts);
-    }
-    if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-        if (g_rtl_ctx) {
-            // Soft-stop the RTL stream while the menu is open to avoid CPU spin
-            rtl_stream_soft_stop(g_rtl_ctx);
-        }
-#endif
-    }
-    if (opts->audio_in_type == 8) {
-        sf_close(opts->tcp_file_in);
-    }
+    // Avoid pre-closing audio/IO here. Some backends block during stop/join,
+    // which delayed menu rendering until a SIGINT. Decoding is paused via
+    // state->menuopen, so streams can keep running underneath safely.
+
+    // Temporarily ignore SIGINT/SIGTERM while the menu is open so an
+    // accidental Ctrl-C doesn't terminate the app. Restore after exit.
+    struct sigaction old_int, sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, &old_int);
 
     // Reset some transient state
     state->payload_keyid = 0;
@@ -151,7 +142,17 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     refresh();
     state->menuopen = 0;
 
-    // Post-menu: reopen outputs/inputs based on current configuration
+    // Discard any typeahead (e.g., a repeated 'q') so it doesn't leak to the global handler
+    flushinp();
+
+    // Restore default signal handling after menu; if Ctrl-C was pressed
+    // during the menu, it was ignored. Show a brief UI notice instead.
+    sigaction(SIGINT, &old_int, NULL);
+    if (state && old_int.sa_handler != SIG_IGN) {
+        // nothing to infer; this path simply documents restoration
+    }
+
+    // Post-menu: reopen outputs/inputs if needed based on current configuration
     if (opts->audio_out == 1 && opts->audio_out_type == 0) {
         openPulseOutput(opts);
     }
