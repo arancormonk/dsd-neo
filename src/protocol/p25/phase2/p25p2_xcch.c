@@ -230,6 +230,24 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                                 sprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
                                         "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
                                 watchdog_event_current(opts, state, eslot);
+                                // Immediately log and push this lockout event so it is not delayed
+                                if (opts->event_out_file[0] != 0) {
+                                    uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                                    write_event_to_log_file(
+                                        opts, state, eslot, swrite,
+                                        state->event_history_s[eslot].Event_History_Items[0].event_string);
+                                }
+                                push_event_history(&state->event_history_s[eslot]);
+                                init_event_history(&state->event_history_s[eslot], 0, 1);
+                                // Immediately log and push this lockout event so it is not delayed
+                                if (opts->event_out_file[0] != 0) {
+                                    uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                                    write_event_to_log_file(
+                                        opts, state, eslot, swrite,
+                                        state->event_history_s[eslot].Event_History_Items[0].event_string);
+                                }
+                                push_event_history(&state->event_history_s[eslot]);
+                                init_event_history(&state->event_history_s[eslot], 0, 1);
                             }
                             state->p25_p2_enc_lo_early++;
                             // Hardened early ENC lockout: mute only this slot, and
@@ -245,6 +263,21 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             } else {
                                 fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
                                                 "slot active; stay on VC. \n");
+                                // UI hygiene: clear V XTRA fields and banner for this slot so stale
+                                // ALG/KID/MI and "Group Encrypted" are not shown while gated
+                                if (slot == 0) {
+                                    state->payload_algid = 0;
+                                    state->payload_keyid = 0;
+                                    state->payload_miP = 0ULL;
+                                    snprintf(state->call_string[0], sizeof state->call_string[0], "%s",
+                                             "                     ");
+                                } else {
+                                    state->payload_algidR = 0;
+                                    state->payload_keyidR = 0;
+                                    state->payload_miN = 0ULL;
+                                    snprintf(state->call_string[1], sizeof state->call_string[1], "%s",
+                                             "                     ");
+                                }
                             }
                             // Avoid enabling audio; bail out early
                             fprintf(stderr, "%s", KNRM);
@@ -675,6 +708,19 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Other slot active; stay on VC. \n");
+                    // UI hygiene: clear V XTRA fields and banner for this slot so stale ALG/KID/MI and
+                    // "Group Encrypted" are not shown
+                    if (slot == 0) {
+                        state->payload_algid = 0;
+                        state->payload_keyid = 0;
+                        state->payload_miP = 0ULL;
+                        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+                    } else {
+                        state->payload_algidR = 0;
+                        state->payload_keyidR = 0;
+                        state->payload_miN = 0ULL;
+                        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+                    }
                 }
             }
         }

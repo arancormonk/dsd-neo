@@ -425,6 +425,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     p25_p2_audio_ring_reset(state, -1);
+    // Clear call string banners to avoid stale "Group Encrypted" in UI
+    snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+    snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
     // Clear P25 call flags
     state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
     state->p25_call_priority[0] = state->p25_call_priority[1] = 0;

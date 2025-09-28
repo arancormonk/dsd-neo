@@ -520,6 +520,10 @@ processHDU(dsd_opts* opts, dsd_state* state) {
             }
             int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
             if (enc_suspect) {
+                // Clear V XTRA fields immediately to avoid UI stale display
+                state->payload_algid = 0;
+                state->payload_keyid = 0;
+                state->payload_miP = 0ULL;
                 // Optional: mark TG as ENC LO for visibility when known
                 int ttg = state->lasttg;
                 if (ttg != 0) {
@@ -541,7 +545,16 @@ processHDU(dsd_opts* opts, dsd_state* state) {
                     sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
                     watchdog_event_current(opts, state, 0);
+                    // Immediately log and push this lockout event so it is not delayed
+                    if (opts->event_out_file[0] != 0) {
+                        write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
+                                                state->event_history_s[0].Event_History_Items[0].event_string);
+                    }
+                    push_event_history(&state->event_history_s[0]);
+                    init_event_history(&state->event_history_s[0], 0, 1);
                 }
+                // Also clear banner to avoid stale "Group Encrypted" on UI
+                snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
                 fprintf(stderr, " No Enc Following on P25p1 Trunking (HDU); Return to CC; \n");
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);

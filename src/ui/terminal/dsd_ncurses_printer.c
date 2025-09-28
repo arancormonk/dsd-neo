@@ -4235,7 +4235,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attron(COLOR_PAIR(3));
         }
 
-        printw("%s | ", state->call_string[0]);
+        // Show banner only when actively in a call; otherwise blank to avoid stale labels
+        if (show_l_ids) {
+            printw("%s | ", state->call_string[0]);
+        } else {
+            printw("%s | ", "                     "); // 21 spaces
+        }
         printw("%s ", DMRBusrtTypes[state->dmrburstL]);
 
         if (opts->slot_preference == 1 && opts->audio_out_type == 5 && opts->audio_out == 1
@@ -4440,7 +4445,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 attron(COLOR_PAIR(3));
             }
 
-            printw("%s | ", state->call_string[1]);
+            // Show banner only during active call states on slot 2
+            if (show_r_ids) {
+                printw("%s | ", state->call_string[1]);
+            } else {
+                printw("%s | ", "                     "); // 21 spaces
+            }
             printw("%s ", DMRBusrtTypes[state->dmrburstR]);
 
             if (opts->slot_preference == 0 && opts->audio_out_type == 5 && opts->audio_out == 1

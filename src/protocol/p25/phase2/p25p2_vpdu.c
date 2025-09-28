@@ -2341,6 +2341,18 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
+                    // UI hygiene: clear V XTRA and banner for this slot
+                    if (slot == 0) {
+                        state->payload_algid = 0;
+                        state->payload_keyid = 0;
+                        state->payload_miP = 0ULL;
+                        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+                    } else {
+                        state->payload_algidR = 0;
+                        state->payload_keyidR = 0;
+                        state->payload_miN = 0ULL;
+                        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+                    }
                 }
             }
         }
@@ -2455,6 +2467,18 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
+                    // UI hygiene: clear V XTRA and banner for this slot
+                    if (slot == 0) {
+                        state->payload_algid = 0;
+                        state->payload_keyid = 0;
+                        state->payload_miP = 0ULL;
+                        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+                    } else {
+                        state->payload_algidR = 0;
+                        state->payload_keyidR = 0;
+                        state->payload_miN = 0ULL;
+                        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+                    }
                 }
             }
         }
