@@ -206,6 +206,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         fprintf(stderr, "%s\n ", KYEL);
         if (svc & 0x80) {
             fprintf(stderr, " Emergency");
+            state->p25_call_emergency[0] = 1;
+        } else {
+            state->p25_call_emergency[0] = 0;
         }
         if (svc & 0x40) {
             fprintf(stderr, " Encrypted");
@@ -225,6 +228,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 fprintf(stderr, " R"); //reserved bit is on
             }
             fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+            state->p25_call_priority[0] = (uint8_t)(svc & 0x7);
+        } else {
+            state->p25_call_priority[0] = 0;
         }
         fprintf(stderr, " Group Voice Channel Grant Update - Extended");
         fprintf(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, channelt, channelr, group,
@@ -294,6 +300,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         fprintf(stderr, "%s\n ", KYEL);
         if (svc & 0x80) {
             fprintf(stderr, " Emergency");
+            state->p25_call_emergency[0] = 1;
+        } else {
+            state->p25_call_emergency[0] = 0;
         }
         if (svc & 0x40) {
             fprintf(stderr, " Encrypted");
@@ -313,6 +322,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 fprintf(stderr, " R"); //reserved bit is on
             }
             fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+            state->p25_call_priority[0] = (uint8_t)(svc & 0x7);
+        } else {
+            state->p25_call_priority[0] = 0;
         }
         fprintf(stderr, " Unit to Unit Voice Channel Grant Update - Extended");
         fprintf(stderr,
@@ -373,6 +385,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         fprintf(stderr, "\n");
         if (svc & 0x80) {
             fprintf(stderr, " Emergency");
+            state->p25_call_emergency[0] = 1;
+        } else {
+            state->p25_call_emergency[0] = 0;
         }
         if (svc & 0x40) {
             fprintf(stderr, " Encrypted");
@@ -392,6 +407,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 fprintf(stderr, " R"); //reserved bit is on
             }
             fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+            state->p25_call_priority[0] = (uint8_t)(svc & 0x7);
+        } else {
+            state->p25_call_priority[0] = 0;
         }
 
         fprintf(stderr, " Telephone Interconnect Voice Channel Grant");

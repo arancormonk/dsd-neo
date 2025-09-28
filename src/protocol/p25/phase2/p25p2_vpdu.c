@@ -450,6 +450,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n");
             if (svc & 0x80) {
                 fprintf(stderr, " Emergency");
+                state->p25_call_emergency[state->currentslot & 1] = 1;
+            } else {
+                state->p25_call_emergency[state->currentslot & 1] = 0;
             }
             if (svc & 0x40) {
                 fprintf(stderr, " Encrypted");
@@ -469,6 +472,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " R"); //reserved bit is on
                 }
                 fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+                state->p25_call_priority[state->currentslot & 1] = (uint8_t)(svc & 0x7);
+            } else {
+                state->p25_call_priority[state->currentslot & 1] = 0;
             }
 
             fprintf(stderr, " Group Voice Channel Grant");
@@ -551,6 +557,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n");
             if (svc & 0x80) {
                 fprintf(stderr, " Emergency");
+                state->p25_call_emergency[state->currentslot & 1] = 1;
+            } else {
+                state->p25_call_emergency[state->currentslot & 1] = 0;
             }
             if (svc & 0x40) {
                 fprintf(stderr, " Encrypted");
@@ -570,6 +579,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " R"); //reserved bit is on
                 }
                 fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+                state->p25_call_priority[state->currentslot & 1] = (uint8_t)(svc & 0x7);
+            } else {
+                state->p25_call_priority[state->currentslot & 1] = 0;
             }
 
             fprintf(stderr, " Telephone Interconnect Voice Channel Grant");
@@ -751,6 +763,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     group1, group1);
             if (svc1 & 0x80) {
                 fprintf(stderr, " Emergency");
+                state->p25_call_emergency[0] = 1;
+            } else {
+                state->p25_call_emergency[0] = 0;
             }
             if (svc1 & 0x40) {
                 fprintf(stderr, " Encrypted");
@@ -769,6 +784,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " R"); //reserved bit is on
                 }
                 fprintf(stderr, " Priority %d", svc1 & 0x7); //call priority
+                state->p25_call_priority[0] = (uint8_t)(svc1 & 0x7);
+            } else {
+                state->p25_call_priority[0] = 0;
             }
             (void)process_channel_to_freq(opts, state, channelt1);
             if (channelr1 != 0 && channelr1 != 0xFFFF) {
@@ -779,6 +797,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     group2, group2);
             if (svc2 & 0x80) {
                 fprintf(stderr, " Emergency");
+                state->p25_call_emergency[1] = 1;
+            } else {
+                state->p25_call_emergency[1] = 0;
             }
             if (svc2 & 0x40) {
                 fprintf(stderr, " Encrypted");
@@ -797,6 +818,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " R"); //reserved bit is on
                 }
                 fprintf(stderr, " Priority %d", svc2 & 0x7); //call priority
+                state->p25_call_priority[1] = (uint8_t)(svc2 & 0x7);
+            } else {
+                state->p25_call_priority[1] = 0;
             }
             (void)process_channel_to_freq(opts, state, channelt2);
             if (channelr2 != 0 && channelr2 != 0xFFFF) {
@@ -1212,6 +1236,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             if (svc & 0x80) {
                 fprintf(stderr, " Emergency");
+                state->p25_call_emergency[state->currentslot & 1] = 1;
+            } else {
+                state->p25_call_emergency[state->currentslot & 1] = 0;
             }
             if (svc & 0x40) {
                 fprintf(stderr, " Encrypted");
@@ -1231,6 +1258,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " R"); //reserved bit is on
                 }
                 fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+                state->p25_call_priority[state->currentslot & 1] = (uint8_t)(svc & 0x7);
+            } else {
+                state->p25_call_priority[state->currentslot & 1] = 0;
             }
             fprintf(stderr, " Group Voice Channel Grant Update - Explicit");
             fprintf(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, channelt, channelr,
@@ -2213,6 +2243,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             if (svc & 0x80) {
                 fprintf(stderr, " Emergency");
+                state->p25_call_emergency[state->currentslot & 1] = 1;
+            } else {
+                state->p25_call_emergency[state->currentslot & 1] = 0;
             }
             if (svc & 0x40) {
                 fprintf(stderr, " Encrypted");
@@ -2232,6 +2265,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " R"); //reserved bit is on
                 }
                 fprintf(stderr, " Priority %d", svc & 0x7); //call priority
+                state->p25_call_priority[state->currentslot & 1] = (uint8_t)(svc & 0x7);
+            } else {
+                state->p25_call_priority[state->currentslot & 1] = 0;
             }
 
             fprintf(stderr, " Group Voice");

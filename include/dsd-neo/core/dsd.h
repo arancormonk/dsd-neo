@@ -1002,6 +1002,10 @@ typedef struct {
     long int p25_nb_freq[32];    // neighbor/control frequencies in Hz
     time_t p25_nb_last_seen[32]; // last seen timestamp per entry
 
+    // P25 current-call flags (per logical slot; FDMA uses slot 0)
+    uint8_t p25_call_emergency[2]; // 1 if current call is emergency
+    uint8_t p25_call_priority[2];  // 0..7 call priority (0 if unknown)
+
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed
     int use_throttle;    //only use throttle if set to 1

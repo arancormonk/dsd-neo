@@ -4204,6 +4204,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                          || (state->dmrburstL == 26) || (state->dmrburstL == 27);
         if (show_l_ids) {
             printw("TGT: [%8i] SRC: [%8i] ", state->lasttg, state->lastsrc);
+            // P25 call flags: show [EM] and [PR:n] when active
+            if (state->p25_call_emergency[0]) {
+                printw("[EM] ");
+            }
+            if (state->p25_call_priority[0] > 0) {
+                printw("[PR:%d] ", (int)state->p25_call_priority[0]);
+            }
         } else {
             // Blank out IDs cleanly when slot 1 is not in an active call
             printw("TGT: [        ] SRC: [        ] ");
@@ -4402,6 +4409,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                              || (state->dmrburstR == 26) || (state->dmrburstR == 27);
             if (show_r_ids) {
                 printw("TGT: [%8i] SRC: [%8i] ", state->lasttgR, state->lastsrcR);
+                // P25 call flags for right slot
+                if (state->p25_call_emergency[1]) {
+                    printw("[EM] ");
+                }
+                if (state->p25_call_priority[1] > 0) {
+                    printw("[PR:%d] ", (int)state->p25_call_priority[1]);
+                }
             } else {
                 // Blank out IDs cleanly when slot 2 is not in an active call
                 printw("TGT: [        ] SRC: [        ] ");
