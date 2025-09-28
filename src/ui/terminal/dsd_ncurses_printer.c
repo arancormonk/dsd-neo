@@ -201,6 +201,13 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
     if (!state || ch16 <= 0 || ch16 >= 65535) {
         return 0;
     }
+    // Suppress IDEN classification when not on a P25 system
+    int lls = state->synctype;
+    int is_p25p1 = (lls == 0 || lls == 1);
+    int is_p25p2 = (lls == 35 || lls == 36);
+    if (!(is_p25p1 || is_p25p2)) {
+        return 0;
+    }
     int iden = (ch16 >> 12) & 0xF;
     if (iden < 0 || iden > 15) {
         return 0;
@@ -2478,16 +2485,23 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
         }
     }
 
-    // Legend for IDEN color/suffix
-    ui_print_lborder_green();
-    printw(" Legend: IDEN colors ");
-    for (int c = 0; c < 8; c++) {
-        attron(COLOR_PAIR(ui_iden_color_pair(c)));
-        printw("I%d", c);
-        attroff(COLOR_PAIR(ui_iden_color_pair(c)));
-        addch(' ');
+    // Legend for IDEN color/suffix (P25 systems only)
+    {
+        int lls = state ? state->synctype : -1;
+        int is_p25p1 = (lls == 0 || lls == 1);
+        int is_p25p2 = (lls == 35 || lls == 36);
+        if (is_p25p1 || is_p25p2) {
+            ui_print_lborder_green();
+            printw(" Legend: IDEN colors ");
+            for (int c = 0; c < 8; c++) {
+                attron(COLOR_PAIR(ui_iden_color_pair(c)));
+                printw("I%d", c);
+                attroff(COLOR_PAIR(ui_iden_color_pair(c)));
+                addch(' ');
+            }
+            addch('\n');
+        }
     }
-    addch('\n');
 
     // Restore to green if in-call, otherwise keep cyan; callers around will adjust as needed
     if (state->carrier == 1) {
