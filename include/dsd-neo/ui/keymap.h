@@ -45,6 +45,10 @@
 // UI section visibility
 #define DSD_KEY_TOGGLE_P25M      'J' // show/hide P25 Metrics
 #define DSD_KEY_TOGGLE_CHANS     'I' // show/hide Channels
+// P25 affiliations (RID list)
+#define DSD_KEY_TOGGLE_P25A      'A' // show/hide P25 Affiliations
+// P25 Group Affiliation (RID↔TG)
+#define DSD_KEY_TOGGLE_P25GA     'T' // show/hide P25 Group Affiliation
 
 // Audio output mute
 #define DSD_KEY_MUTE_LOWER       'x'

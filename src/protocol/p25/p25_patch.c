@@ -232,11 +232,20 @@ p25_patch_compose_details(const dsd_state* state_in, char* out, size_t cap) {
         } else if (wuc > 0) {
             n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " U:%u", wuc);
         }
-        // Optional crypt context
+        // Optional crypt context: print only fields that are present
         if (state->p25_patch_key[i] || state->p25_patch_alg[i] || state->p25_patch_ssn[i]) {
-            n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " K:%04X A:%02X S:%02u",
-                          state->p25_patch_key[i] & 0xFFFF, state->p25_patch_alg[i] & 0xFF,
-                          state->p25_patch_ssn[i] & 0x1F);
+            if (state->p25_patch_key[i]) {
+                n += snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " K:%04X",
+                              state->p25_patch_key[i] & 0xFFFF);
+            }
+            if (state->p25_patch_alg[i]) {
+                n +=
+                    snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " A:%02X", state->p25_patch_alg[i] & 0xFF);
+            }
+            if (state->p25_patch_ssn[i]) {
+                n +=
+                    snprintf(out + n, cap > (size_t)n ? cap - (size_t)n : 0, " S:%02u", state->p25_patch_ssn[i] & 0x1F);
+            }
         }
         if (n >= (int)cap - 8) {
             break;

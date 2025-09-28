@@ -61,6 +61,21 @@ void p25_patch_clear_sg(dsd_state* state, int sgid);
 // Set optional Key/Alg/SSN context for an SG
 void p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn);
 
+// --- Affiliation (RID) tracking ---
+// Record a RID as affiliated/registered on this system (updates last_seen or adds new entry).
+void p25_aff_register(dsd_state* state, uint32_t rid);
+
+// Remove a RID from the affiliation table (on explicit deregistration or aging).
+void p25_aff_deregister(dsd_state* state, uint32_t rid);
+
+// Periodic aging/cleanup of affiliation table. Safe to call at 1 Hz from SM tick.
+void p25_aff_tick(dsd_state* state);
+
+// Group Affiliation (RID ↔ TG) helpers
+void p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg);
+void p25_ga_remove(dsd_state* state, uint32_t rid, uint16_t tg);
+void p25_ga_tick(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

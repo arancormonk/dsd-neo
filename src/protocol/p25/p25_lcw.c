@@ -112,6 +112,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 state->generic_talker_alias[0][0] = '\0';
                 state->generic_talker_alias_src[0] = 0;
 
+                // Track RID↔TG observation
+                if (source != 0 && group != 0) {
+                    p25_ga_add(state, (uint32_t)source, (uint16_t)group);
+                }
+
                 sprintf(state->call_string[0], "   Group ");
                 if (lc_svcopt & 0x80) {
                     dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
@@ -250,6 +255,20 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
 
             else if (lc_format == 0x50) {
                 fprintf(stderr, " Group Affiliation Query");
+                // Heuristic field mapping: TG at bits[32..47], SRC at bits[48..71]
+                uint16_t group = (uint16_t)ConvertBitIntoBytes(&LCW_bits[32], 16);
+                uint32_t source = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
+                if (group) {
+                    fprintf(stderr, " - TG %u", group);
+                    state->lasttg = group;
+                }
+                if (source) {
+                    fprintf(stderr, " SRC %u", source);
+                    state->lastsrc = source;
+                }
+                if (group && source) {
+                    p25_ga_add(state, (uint32_t)source, (uint16_t)group);
+                }
             }
 
             else if (lc_format == 0x51) {

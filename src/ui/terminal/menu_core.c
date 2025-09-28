@@ -3771,6 +3771,39 @@ act_toggle_ui_p25_metrics(void* v) {
 }
 
 static const char*
+lbl_ui_p25_affil(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 Affiliations [%s]", (c && c->opts && c->opts->show_p25_affiliations) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_p25_affil(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_p25_affiliations = c->opts->show_p25_affiliations ? 0 : 1;
+}
+
+static const char*
+lbl_ui_p25_ga(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 Group Affiliation [%s]",
+             (c && c->opts && c->opts->show_p25_group_affiliations) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_p25_ga(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_p25_group_affiliations = c->opts->show_p25_group_affiliations ? 0 : 1;
+}
+
+static const char*
 lbl_ui_channels(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Show Channels [%s]", (c && c->opts && c->opts->show_channels) ? "On" : "Off");
@@ -3794,6 +3827,14 @@ act_ui_display(void* v) {
          .label_fn = lbl_ui_p25_metrics,
          .help = "Toggle P25 Metrics section.",
          .on_select = act_toggle_ui_p25_metrics},
+        {.id = "p25aff",
+         .label_fn = lbl_ui_p25_affil,
+         .help = "Toggle P25 Affiliations section (RID list).",
+         .on_select = act_toggle_ui_p25_affil},
+        {.id = "p25ga",
+         .label_fn = lbl_ui_p25_ga,
+         .help = "Toggle P25 Group Affiliation section (RID↔TG).",
+         .on_select = act_toggle_ui_p25_ga},
         {.id = "chans",
          .label_fn = lbl_ui_channels,
          .help = "Toggle Channels section.",

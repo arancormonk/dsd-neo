@@ -2219,7 +2219,7 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         if (rfill > 3) {
             rfill = 3;
         }
-        printw("| P2 slot: %s; jitter S1:%d/3 S2:%d/3\n", (act == 0) ? "L" : (act == 1) ? "R" : "-", lfill, rfill);
+        printw("| P2 slot: %s; jitter S1:%d/3 S2:%d/3\n", (act == 0) ? "1" : (act == 1) ? "2" : "-", lfill, rfill);
         lines++;
     }
 
@@ -3392,6 +3392,99 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 
+    /* P25 affiliations (RIDs registered on the system) */
+    {
+        int is_p25p1 = (lls == 0 || lls == 1);
+        int is_p25p2 = (lls == 35 || lls == 36);
+        if (opts->show_p25_affiliations == 1 && (is_p25p1 || is_p25p2)) {
+            ui_print_header("P25 Affiliations");
+            // Compose a recent-first list of up to 20 RIDs
+            int idxs[256];
+            int n = 0;
+            time_t now = time(NULL);
+            for (int i = 0; i < 256; i++) {
+                if (state->p25_aff_rid[i] != 0) {
+                    idxs[n++] = i;
+                }
+            }
+            // Selection sort by last_seen desc (n is typically small)
+            for (int i = 0; i < n; i++) {
+                int best = i;
+                for (int j = i + 1; j < n; j++) {
+                    if (state->p25_aff_last_seen[idxs[j]] > state->p25_aff_last_seen[idxs[best]]) {
+                        best = j;
+                    }
+                }
+                if (best != i) {
+                    int tmp = idxs[i];
+                    idxs[i] = idxs[best];
+                    idxs[best] = tmp;
+                }
+            }
+            int shown = 0;
+            for (int i = 0; i < n && shown < 20; i++) {
+                int k = idxs[i];
+                uint32_t rid = state->p25_aff_rid[k];
+                long age = (long)((state->p25_aff_last_seen[k] != 0) ? (now - state->p25_aff_last_seen[k]) : 0);
+                if (age < 0) {
+                    age = 0;
+                }
+                printw("| RID: %u  age:%lds\n", (unsigned)rid, age);
+                shown++;
+            }
+            if (shown == 0) {
+                printw("| (none)\n");
+            }
+            ui_print_hr();
+        }
+    }
+
+    /* P25 Group Affiliation (RID ↔ TG) */
+    {
+        int is_p25p1 = (lls == 0 || lls == 1);
+        int is_p25p2 = (lls == 35 || lls == 36);
+        if (opts->show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2)) {
+            ui_print_header("P25 Group Affiliation");
+            int idxs[512];
+            int n = 0;
+            time_t now = time(NULL);
+            for (int i = 0; i < 512; i++) {
+                if (state->p25_ga_rid[i] != 0 && state->p25_ga_tg[i] != 0) {
+                    idxs[n++] = i;
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                int best = i;
+                for (int j = i + 1; j < n; j++) {
+                    if (state->p25_ga_last_seen[idxs[j]] > state->p25_ga_last_seen[idxs[best]]) {
+                        best = j;
+                    }
+                }
+                if (best != i) {
+                    int tmp = idxs[i];
+                    idxs[i] = idxs[best];
+                    idxs[best] = tmp;
+                }
+            }
+            int shown = 0;
+            for (int i = 0; i < n && shown < 20; i++) {
+                int k = idxs[i];
+                uint32_t rid = state->p25_ga_rid[k];
+                uint16_t tg = state->p25_ga_tg[k];
+                long age = (long)((state->p25_ga_last_seen[k] != 0) ? (now - state->p25_ga_last_seen[k]) : 0);
+                if (age < 0) {
+                    age = 0;
+                }
+                printw("| RID: %u  TG:%u  age:%lds\n", (unsigned)rid, (unsigned)tg, age);
+                shown++;
+            }
+            if (shown == 0) {
+                printw("| (none)\n");
+            }
+            ui_print_hr();
+        }
+    }
+
     ui_print_header("Call Info");
 
     //DSTAR
@@ -4468,22 +4561,77 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    // If any P25 patches are active, show a compact summary as the last line
-    // of the Call Info window (keep the left border color consistent).
+    // If any P25 patches are active, show them in wrapped columns (3 per line)
+    // to avoid overflowing the Call Info width (similar to Channels layout).
     {
         char patch_line[192] = {0};
         int n = p25_patch_compose_details(state, patch_line, sizeof patch_line);
         if (n > 0) {
-            printw("|        | ");
-            attron(COLOR_PAIR(4));
-            printw("Patches: %s", patch_line);
-            // restore border color
-            if (state->carrier == 1) {
-                attron(COLOR_PAIR(3));
-            } else {
-                attron(COLOR_PAIR(4));
+            // Parse tokens separated by ';' and compute uniform column width
+            char tokens[48][64];
+            int count = 0;
+            const char* s = patch_line;
+            while (*s && count < 48) {
+                while (*s == ';' || *s == ' ') {
+                    s++;
+                }
+                if (!*s) {
+                    break;
+                }
+                int t = 0;
+                while (*s && *s != ';' && t < 63) {
+                    tokens[count][t++] = *s++;
+                }
+                while (t > 0 && tokens[count][t - 1] == ' ') {
+                    t--; // rtrim
+                }
+                tokens[count][t] = '\0';
+                if (t > 0) {
+                    count++;
+                }
+                if (*s == ';') {
+                    s++;
+                }
             }
-            printw("\n");
+            if (count > 0) {
+                int colw = 0;
+                for (int i = 0; i < count; i++) {
+                    int len = (int)strlen(tokens[i]);
+                    if (len > colw) {
+                        colw = len;
+                    }
+                }
+                if (colw > 28) {
+                    colw = 28; // clamp
+                }
+                const int cols_per_line = 3;
+                const char* label = "Patches: ";
+                int idx = 0;
+                while (idx < count) {
+                    printw("|        | ");
+                    if (idx == 0) {
+                        attron(COLOR_PAIR(4));
+                        printw("%s", label);
+                    } else {
+                        for (size_t sp = 0; sp < strlen(label); sp++) {
+                            addch(' ');
+                        }
+                    }
+                    for (int c = 0; c < cols_per_line && idx < count; c++, idx++) {
+                        attron(COLOR_PAIR(4));
+                        printw("%-*s", colw, tokens[idx]);
+                        if (state->carrier == 1) {
+                            attron(COLOR_PAIR(3));
+                        } else {
+                            attron(COLOR_PAIR(4));
+                        }
+                        if (c < cols_per_line - 1 && idx < count) {
+                            addstr("   ");
+                        }
+                    }
+                    printw("\n");
+                }
+            }
         }
     }
 

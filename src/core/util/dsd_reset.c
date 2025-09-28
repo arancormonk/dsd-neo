@@ -185,6 +185,17 @@ resetState(dsd_state* state) {
     state->p25_rrc_auto_dyn_voice_avg = 0.0;
     state->p25_rrc_auto_fix_voice_avg = 0.0;
     state->p25_rrc_auto_choice = 0;
+
+    // Reset P25 affiliation table
+    state->p25_aff_count = 0;
+    memset(state->p25_aff_rid, 0, sizeof(state->p25_aff_rid));
+    memset(state->p25_aff_last_seen, 0, sizeof(state->p25_aff_last_seen));
+
+    // Reset P25 Group Affiliation table
+    state->p25_ga_count = 0;
+    memset(state->p25_ga_rid, 0, sizeof(state->p25_ga_rid));
+    memset(state->p25_ga_tg, 0, sizeof(state->p25_ga_tg));
+    memset(state->p25_ga_last_seen, 0, sizeof(state->p25_ga_last_seen));
 }
 
 //simple function to reset the dibit buffer

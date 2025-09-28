@@ -402,14 +402,16 @@ typedef struct {
     uint8_t use_ncurses_terminal;
     uint8_t ncurses_compact;
     uint8_t ncurses_history;
-    uint8_t eye_view;         //ncurses timing/eye diagram for C4FM/FSK (0=off)
-    uint8_t fsk_hist_view;    //ncurses 4-level histogram for C4FM/FSK (0=off)
-    uint8_t spectrum_view;    //ncurses spectrum analyzer for complex baseband (0=off)
-    uint8_t eye_unicode;      //use Unicode block glyphs in eye diagram (0=ASCII)
-    uint8_t eye_color;        //use colorized density in eye diagram (0=mono)
-    uint8_t show_dsp_panel;   //show compact DSP status panel (0=hidden)
-    uint8_t show_p25_metrics; //show P25 Metrics section (0=hidden)
-    uint8_t show_channels;    //show Channels section (0=hidden)
+    uint8_t eye_view;                    //ncurses timing/eye diagram for C4FM/FSK (0=off)
+    uint8_t fsk_hist_view;               //ncurses 4-level histogram for C4FM/FSK (0=off)
+    uint8_t spectrum_view;               //ncurses spectrum analyzer for complex baseband (0=off)
+    uint8_t eye_unicode;                 //use Unicode block glyphs in eye diagram (0=ASCII)
+    uint8_t eye_color;                   //use colorized density in eye diagram (0=mono)
+    uint8_t show_dsp_panel;              //show compact DSP status panel (0=hidden)
+    uint8_t show_p25_metrics;            //show P25 Metrics section (0=hidden)
+    uint8_t show_channels;               //show Channels section (0=hidden)
+    uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
+    uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
     int reset_state;
     int payload;
     unsigned int dPMR_curr_frame_is_encrypted;
@@ -976,6 +978,20 @@ typedef struct {
     uint16_t p25_patch_key[8]; // Key ID
     uint8_t p25_patch_alg[8];  // ALG (vendor-specific)
     uint8_t p25_patch_ssn[8];  // SSN
+
+    // P25 affiliated RIDs tracking (simple fixed-size table)
+    // Tracks up to 256 recent unit registrations (RIDs) with last-seen time for aging.
+    // Entries are added on Unit Registration Accept and removed on Deregistration Ack
+    // or when the last-seen exceeds an aging threshold.
+    int p25_aff_count;             // number of active entries
+    uint32_t p25_aff_rid[256];     // RID values
+    time_t p25_aff_last_seen[256]; // last seen timestamp per RID
+
+    // P25 Group Affiliation tracking: RID↔TG observations with aging
+    int p25_ga_count;
+    uint32_t p25_ga_rid[512];
+    uint16_t p25_ga_tg[512];
+    time_t p25_ga_last_seen[512];
 
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed

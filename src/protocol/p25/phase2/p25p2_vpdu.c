@@ -1960,6 +1960,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     state->generic_talker_alias_src[1] = 0;
                 }
             }
+            if (src != 0 && gr != 0) {
+                p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
+            }
         }
 
         //MFIDA4 Group Regroup Explicit Encryption Command
@@ -2058,6 +2061,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             if (RV == 0) {
                 fprintf(stderr, " REG_ACCEPT;");
+                // Track affiliated RID
+                p25_aff_register(state, (uint32_t)src);
             }
             if (RV == 1) {
                 fprintf(stderr, " REG_FAIL;"); //RFSS was unable to verify
@@ -2094,6 +2099,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             if (RV == 0) {
                 fprintf(stderr, " REG_ACCEPT;");
+                // Track affiliated RID
+                p25_aff_register(state, (uint32_t)src);
             }
             if (RV == 1) {
                 fprintf(stderr, " REG_FAIL;"); //RFSS was unable to verify
@@ -2126,6 +2133,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (MAC[1 + len_a] == 0xEF) {
                 fprintf(stderr, " - Extended;");
             }
+            // Remove RID from affiliation table
+            p25_aff_deregister(state, (uint32_t)src);
         }
 
         //Authentication Demand

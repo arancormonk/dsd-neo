@@ -35,11 +35,31 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
+    if (c == DSD_KEY_TOGGLE_P25A) //'A' key, toggle P25 Affiliations section
+    {
+        opts->show_p25_affiliations = opts->show_p25_affiliations ? 0 : 1;
+        if (state) {
+            snprintf(state->ui_msg, sizeof state->ui_msg, "P25 Affiliations: %s",
+                     opts->show_p25_affiliations ? "On" : "Off");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
+    }
+
     if (c == DSD_KEY_TOGGLE_CHANS) //'I' key, toggle Channels section
     {
         opts->show_channels = opts->show_channels ? 0 : 1;
         if (state) {
             snprintf(state->ui_msg, sizeof state->ui_msg, "Channels: %s", opts->show_channels ? "On" : "Off");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
+    }
+
+    if (c == DSD_KEY_TOGGLE_P25GA) //'T' key, toggle P25 Group Affiliation section
+    {
+        opts->show_p25_group_affiliations = opts->show_p25_group_affiliations ? 0 : 1;
+        if (state) {
+            snprintf(state->ui_msg, sizeof state->ui_msg, "P25 Group Affiliation: %s",
+                     opts->show_p25_group_affiliations ? "On" : "Off");
             state->ui_msg_expire = time(NULL) + 3;
         }
     }

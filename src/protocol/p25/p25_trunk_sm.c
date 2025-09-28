@@ -33,6 +33,14 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     state->last_vc_sync_time = time(NULL);
 }
 
+// Weak fallback for return_to_cc so unit tests that link only the P25 library
+// do not need the IO Control library. The real implementation lives in
+// src/io/control/dsd_rigctl.c and overrides this weak symbol when linked.
+__attribute__((weak)) void
+return_to_cc(dsd_opts* opts, dsd_state* state) {
+    UNUSED2(opts, state);
+}
+
 // Note: Do not use weak symbols here. Windows/COFF linkers handle them
 // differently than ELF and that caused undefined references in CI.
 // Expire regroup/patch entries older than this many seconds
@@ -283,6 +291,10 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
     if (tg == 0) {
         // proceed, some systems use TG 0 for special cases
     }
+    // Track RID↔TG mapping when source is known and plausible
+    if (src > 0 && tg > 0) {
+        p25_ga_add(state, (uint32_t)src, (uint16_t)tg);
+    }
     p25_handle_grant(opts, state, channel);
 }
 
@@ -466,6 +478,11 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
         }
     }
+
+    // Age-out any stale affiliated RIDs (runs at ~1 Hz)
+    p25_aff_tick(state);
+    // Age-out Group Affiliation pairs
+    p25_ga_tick(state);
 }
 
 int
@@ -485,4 +502,193 @@ dsd_p25_sm_next_cc_candidate_impl(dsd_state* state, long* out_freq) {
         }
     }
     return 0;
+}
+
+// ---- Affiliation (RID) table helpers ----
+
+// Default aging window for affiliations: 15 minutes
+#define P25_AFF_TTL_SEC ((time_t)15 * 60)
+
+static int
+p25_aff_find_idx(const dsd_state* state, uint32_t rid) {
+    if (!state || rid == 0) {
+        return -1;
+    }
+    for (int i = 0; i < 256; i++) {
+        if (state->p25_aff_rid[i] == rid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ---- Group Affiliation (RID↔TG) table helpers ----
+
+#define P25_GA_TTL_SEC ((time_t)30 * 60)
+
+static int
+p25_ga_find_idx(const dsd_state* state, uint32_t rid, uint16_t tg) {
+    if (!state || rid == 0 || tg == 0) {
+        return -1;
+    }
+    for (int i = 0; i < 512; i++) {
+        if (state->p25_ga_rid[i] == rid && state->p25_ga_tg[i] == tg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int
+p25_ga_find_free(const dsd_state* state) {
+    if (!state) {
+        return -1;
+    }
+    for (int i = 0; i < 512; i++) {
+        if (state->p25_ga_rid[i] == 0 || state->p25_ga_tg[i] == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void
+p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
+    if (!state || rid == 0 || tg == 0) {
+        return;
+    }
+    int idx = p25_ga_find_idx(state, rid, tg);
+    if (idx < 0) {
+        idx = p25_ga_find_free(state);
+        if (idx < 0) {
+            // replace stalest entry
+            time_t oldest = state->p25_ga_last_seen[0];
+            int old_idx = 0;
+            for (int i = 1; i < 512; i++) {
+                if (state->p25_ga_last_seen[i] < oldest) {
+                    oldest = state->p25_ga_last_seen[i];
+                    old_idx = i;
+                }
+            }
+            idx = old_idx;
+        } else {
+            state->p25_ga_count++;
+        }
+        state->p25_ga_rid[idx] = rid;
+        state->p25_ga_tg[idx] = tg;
+    }
+    state->p25_ga_last_seen[idx] = time(NULL);
+}
+
+void
+p25_ga_remove(dsd_state* state, uint32_t rid, uint16_t tg) {
+    if (!state || rid == 0 || tg == 0) {
+        return;
+    }
+    int idx = p25_ga_find_idx(state, rid, tg);
+    if (idx >= 0) {
+        state->p25_ga_rid[idx] = 0;
+        state->p25_ga_tg[idx] = 0;
+        state->p25_ga_last_seen[idx] = 0;
+        if (state->p25_ga_count > 0) {
+            state->p25_ga_count--;
+        }
+    }
+}
+
+void
+p25_ga_tick(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    time_t now = time(NULL);
+    for (int i = 0; i < 512; i++) {
+        if (state->p25_ga_rid[i] != 0 && state->p25_ga_tg[i] != 0) {
+            time_t last = state->p25_ga_last_seen[i];
+            if (last != 0 && (now - last) > P25_GA_TTL_SEC) {
+                state->p25_ga_rid[i] = 0;
+                state->p25_ga_tg[i] = 0;
+                state->p25_ga_last_seen[i] = 0;
+                if (state->p25_ga_count > 0) {
+                    state->p25_ga_count--;
+                }
+            }
+        }
+    }
+}
+
+static int
+p25_aff_find_free(const dsd_state* state) {
+    if (!state) {
+        return -1;
+    }
+    for (int i = 0; i < 256; i++) {
+        if (state->p25_aff_rid[i] == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void
+p25_aff_register(dsd_state* state, uint32_t rid) {
+    if (!state || rid == 0) {
+        return;
+    }
+    int idx = p25_aff_find_idx(state, rid);
+    if (idx < 0) {
+        idx = p25_aff_find_free(state);
+        if (idx < 0) {
+            // If full, replace the stalest entry
+            time_t oldest = state->p25_aff_last_seen[0];
+            int old_idx = 0;
+            for (int i = 1; i < 256; i++) {
+                if (state->p25_aff_last_seen[i] < oldest) {
+                    oldest = state->p25_aff_last_seen[i];
+                    old_idx = i;
+                }
+            }
+            idx = old_idx;
+        } else {
+            state->p25_aff_count++;
+        }
+        state->p25_aff_rid[idx] = rid;
+    }
+    state->p25_aff_last_seen[idx] = time(NULL);
+}
+
+void
+p25_aff_deregister(dsd_state* state, uint32_t rid) {
+    if (!state || rid == 0) {
+        return;
+    }
+    int idx = p25_aff_find_idx(state, rid);
+    if (idx >= 0) {
+        state->p25_aff_rid[idx] = 0;
+        state->p25_aff_last_seen[idx] = 0;
+        if (state->p25_aff_count > 0) {
+            state->p25_aff_count--;
+        }
+    }
+}
+
+void
+p25_aff_tick(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    time_t now = time(NULL);
+    for (int i = 0; i < 256; i++) {
+        if (state->p25_aff_rid[i] != 0) {
+            time_t last = state->p25_aff_last_seen[i];
+            if (last != 0 && (now - last) > P25_AFF_TTL_SEC) {
+                // Expire entry
+                state->p25_aff_rid[i] = 0;
+                state->p25_aff_last_seen[i] = 0;
+                if (state->p25_aff_count > 0) {
+                    state->p25_aff_count--;
+                }
+            }
+        }
+    }
 }
