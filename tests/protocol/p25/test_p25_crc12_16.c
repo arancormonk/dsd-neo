@@ -12,8 +12,8 @@
 #include <string.h>
 
 // Bridges from src/protocol/p25/p25_crc.c
-int crc12_xb_bridge(int payload[190], int len);
-int crc16_lb_bridge(int payload[190], int len);
+int crc12_xb_bridge(const int* payload, int len);
+int crc16_lb_bridge(const int* payload, int len);
 
 // Local CRC12 (matches src/protocol/p25/p25_crc.c)
 static unsigned short

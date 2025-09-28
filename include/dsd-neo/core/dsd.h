@@ -1759,8 +1759,10 @@ void p25_reset_iden_tables(dsd_state* state);
 void p25_confirm_idens_for_current_site(dsd_state* state);
 
 //P25 CRC Functions
-int crc16_lb_bridge(int payload[190], int len);
-int crc12_xb_bridge(int payload[190], int len);
+// Accept a pointer to a bitvector (values 0/1) of length `len` plus trailing CRC bits.
+// The functions do not modify the input; callers may pass any suitably sized buffer.
+int crc16_lb_bridge(const int* payload, int len);
+int crc12_xb_bridge(const int* payload, int len);
 
 //NXDN Channel to Frequency, Courtesy of IcomIcR20 on RR Forums
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);

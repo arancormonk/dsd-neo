@@ -8,7 +8,7 @@
 #include <string.h>
 
 // Use existing bridge in p25 CRC module
-int crc16_lb_bridge(int payload[190], int len);
+int crc16_lb_bridge(const int* payload, int len);
 
 // Local copy of the CCITT-16 (0x1021) bitwise CRC used by LCCH (matches src/protocol/p25/p25_crc.c)
 static unsigned short

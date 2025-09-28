@@ -55,13 +55,20 @@ crc16_ok(const uint8_t bits[], unsigned int len) {
 
 //TSBK/LCCH CRC16 x-bit bridge to crc16b and crc16b_okay, wip, may need multi pdu format as well
 int
-crc16_lb_bridge(int payload[190], int len) {
+crc16_lb_bridge(const int* payload, int len) {
     int err = -2;
     uint8_t buf[190] = {0};
 
-    for (int i = 0; i < len + 16; i++) //add +16 here so we load the entire frame but only run crc on the len portion
-    {
-        buf[i] = payload[i];
+    // add +16 here so we load the entire frame but only run crc on the len portion
+    int total = len + 16;
+    if (total < 0) {
+        total = 0;
+    }
+    if (total > (int)sizeof(buf)) {
+        total = (int)sizeof(buf);
+    }
+    for (int i = 0; i < total; i++) {
+        buf[i] = (uint8_t)payload[i];
     }
     err = crc16_ok(buf, len);
     return (err);
@@ -117,13 +124,20 @@ crc12_ok(const uint8_t bits[], unsigned int len) {
 
 //xCCH CRC12 x-bit bridge to crc12b and crc12b_okay
 int
-crc12_xb_bridge(int payload[190], int len) {
+crc12_xb_bridge(const int* payload, int len) {
     int err = -5;
     uint8_t buf[190] = {0};
 
     //need to load up the 12 crc bits as well, else it will fail on the check, but not on the crc calc
-    for (int i = 0; i < len + 12; i++) {
-        buf[i] = payload[i];
+    int total = len + 12;
+    if (total < 0) {
+        total = 0;
+    }
+    if (total > (int)sizeof(buf)) {
+        total = (int)sizeof(buf);
+    }
+    for (int i = 0; i < total; i++) {
+        buf[i] = (uint8_t)payload[i];
     }
     err = crc12_ok(buf, len);
     return (err);
