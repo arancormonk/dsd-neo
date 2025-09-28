@@ -2244,6 +2244,197 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     return lines;
 }
 
+// Print P25 CC candidate list (simple wrapped columns)
+static void
+ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (opts->p25_trunk != 1) {
+        return;
+    }
+    if (state->p25_cc_cand_count <= 0) {
+        ui_print_lborder_green();
+        addstr(" (none)\n");
+        return;
+    }
+    int rows = 0, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    if (cols < 1) {
+        cols = 80;
+    }
+    int shown = 0;
+    int line_used = 0;
+    for (int i = 0; i < state->p25_cc_cand_count; i++) {
+        long f = state->p25_cc_candidates[i];
+        if (f == 0) {
+            continue;
+        }
+        char buf[64];
+        int is_next = (state->p25_cc_cand_count > 0) ? (i == (state->p25_cc_cand_idx % state->p25_cc_cand_count)) : 0;
+        int m = snprintf(buf, sizeof buf, "%c%.6lf MHz", is_next ? '>' : ' ', (double)f / 1000000.0);
+        if (m < 0) {
+            m = 0;
+        }
+        int sep = (line_used == 0) ? 0 : 4;
+        int left_border = (line_used == 0) ? 2 : 0;
+        if ((left_border + line_used + sep + m) > cols) {
+            if (line_used > 0) {
+                addch('\n');
+            }
+            line_used = 0;
+        }
+        if (line_used == 0) {
+            ui_print_lborder_green();
+            addch(' ');
+        } else {
+            addstr("    ");
+        }
+        addnstr(buf, m);
+        line_used += ((line_used == 0) ? 0 : sep) + m;
+        shown++;
+    }
+    if (shown > 0 && line_used > 0) {
+        addch('\n');
+    }
+}
+
+// Print recently seen neighbor/control frequencies (age descending)
+static void
+ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (state->p25_nb_count <= 0) {
+        ui_print_lborder_green();
+        addstr(" (none)\n");
+        return;
+    }
+    // Build index list and sort by last_seen desc (selection sort; small n)
+    int idxs[32];
+    int n = 0;
+    for (int i = 0; i < state->p25_nb_count && i < 32; i++) {
+        if (state->p25_nb_freq[i] != 0) {
+            idxs[n++] = i;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        int best = i;
+        for (int j = i + 1; j < n; j++) {
+            if (state->p25_nb_last_seen[idxs[j]] > state->p25_nb_last_seen[idxs[best]]) {
+                best = j;
+            }
+        }
+        if (best != i) {
+            int tmp = idxs[i];
+            idxs[i] = idxs[best];
+            idxs[best] = tmp;
+        }
+    }
+    int rows = 0, cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    if (cols < 1) {
+        cols = 80;
+    }
+    int shown = 0;
+    int line_used = 0;
+    time_t now = time(NULL);
+    for (int i = 0; i < n && shown < 20; i++) {
+        int k = idxs[i];
+        long f = state->p25_nb_freq[k];
+        long age = (long)((state->p25_nb_last_seen[k] != 0) ? (now - state->p25_nb_last_seen[k]) : 0);
+        if (age < 0) {
+            age = 0;
+        }
+        int is_cc = (f == state->p25_cc_freq);
+        int in_cands = 0;
+        for (int c = 0; c < state->p25_cc_cand_count; c++) {
+            if (state->p25_cc_candidates[c] == f) {
+                in_cands = 1;
+                break;
+            }
+        }
+        char buf[80];
+        int m = snprintf(buf, sizeof buf, "%.6lf MHz%s%s age:%lds", (double)f / 1000000.0, is_cc ? " [CC]" : "",
+                         in_cands ? " [C]" : "", age);
+        if (m < 0) {
+            m = 0;
+        }
+        int sep = (line_used == 0) ? 0 : 4;
+        int left_border = (line_used == 0) ? 2 : 0;
+        if ((left_border + line_used + sep + m) > cols) {
+            if (line_used > 0) {
+                addch('\n');
+            }
+            line_used = 0;
+        }
+        if (line_used == 0) {
+            ui_print_lborder_green();
+            addch(' ');
+        } else {
+            addstr("    ");
+        }
+        addnstr(buf, m);
+        line_used += ((line_used == 0) ? 0 : sep) + m;
+        shown++;
+    }
+    if (shown > 0 && line_used > 0) {
+        addch('\n');
+    }
+}
+
+// Print discovered IDEN plan entries
+static void
+ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) {
+    UNUSED(opts);
+    if (!state) {
+        return;
+    }
+    int any = 0;
+    for (int id = 0; id < 16; id++) {
+        if (state->p25_base_freq[id] || state->p25_chan_spac[id] || state->p25_iden_trust[id]) {
+            any = 1;
+            break;
+        }
+    }
+    if (!any) {
+        ui_print_lborder_green();
+        addstr(" (none)\n");
+        return;
+    }
+    for (int id = 0; id < 16; id++) {
+        long base = state->p25_base_freq[id];
+        long spac = state->p25_chan_spac[id];
+        int type = state->p25_chan_type[id] & 0xF;
+        int tdma = (state->p25_chan_tdma[id] & 0x1) ? 1 : 0;
+        int trust = state->p25_iden_trust[id];
+        if (base == 0 && spac == 0 && trust == 0) {
+            continue;
+        }
+        double base_mhz = (double)(base * 5) / 1000000.0;   // base*5 Hz
+        double spac_mhz = (double)(spac * 125) / 1000000.0; // spac*125 Hz
+        attr_t saved_attrs = 0;
+        short saved_pair = 0;
+        attr_get(&saved_attrs, &saved_pair, NULL);
+        attron(COLOR_PAIR(ui_iden_color_pair(id)));
+        ui_print_lborder_green();
+        addch(' ');
+        printw("IDEN %d: %s type:%d base:%.6lfMHz spac:%.6lfMHz off:%d trust:%s", id, tdma ? "TDMA" : "FDMA", type,
+               base_mhz, spac_mhz, state->p25_trans_off[id],
+               (trust >= 2)   ? "ok"
+               : (trust == 1) ? "prov"
+                              : "-");
+        if (state->p25_iden_wacn[id] || state->p25_iden_sysid[id]) {
+            printw(" W:%05llX S:%03llX", state->p25_iden_wacn[id], state->p25_iden_sysid[id]);
+        }
+        if (state->p25_iden_rfss[id] || state->p25_iden_site[id]) {
+            printw(" R:%lld I:%lld", state->p25_iden_rfss[id], state->p25_iden_site[id]);
+        }
+        addch('\n');
+        attron(COLOR_PAIR(saved_pair));
+    }
+}
+
 // Compose a short string describing any active patch/system mode for trunking
 // Example outputs: "P25p2 trunk", "P25p1 trunk", "EDACS trunk", "DMR TIII trunk", "DMR Con+ trunk", "Trunking"
 /* (removed) ui_compose_active_patch_label: replaced with p25_patch_compose_summary */
@@ -3402,6 +3593,26 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (opts->show_p25_metrics == 1 && (is_p25p1 || is_p25p2)) {
             ui_print_header("P25 Metrics");
             (void)ui_print_p25_metrics(opts, state);
+            ui_print_hr();
+        }
+        /* CC Candidates (toggle) */
+        if (opts->show_p25_cc_candidates == 1 && (is_p25p1 || is_p25p2)) {
+            if (opts->p25_trunk == 1) {
+                ui_print_header("P25 CC Candidates");
+                ui_print_p25_cc_candidates(opts, state);
+                ui_print_hr();
+            }
+        }
+        /* Neighbors (toggle) */
+        if (opts->show_p25_neighbors == 1 && (is_p25p1 || is_p25p2)) {
+            ui_print_header("P25 Neighbors");
+            ui_print_p25_neighbors(opts, state);
+            ui_print_hr();
+        }
+        /* IDEN Plan (toggle) */
+        if (opts->show_p25_iden_plan == 1 && (is_p25p1 || is_p25p2)) {
+            ui_print_header("P25 IDEN Plan");
+            ui_print_p25_iden_plan(opts, state);
             ui_print_hr();
         }
     }

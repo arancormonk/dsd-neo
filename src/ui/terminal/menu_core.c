@@ -3804,6 +3804,54 @@ act_toggle_ui_p25_ga(void* v) {
 }
 
 static const char*
+lbl_ui_p25_neighbors(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 Neighbors [%s]", (c && c->opts && c->opts->show_p25_neighbors) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_p25_neighbors(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_p25_neighbors = c->opts->show_p25_neighbors ? 0 : 1;
+}
+
+static const char*
+lbl_ui_p25_iden(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 IDEN Plan [%s]", (c && c->opts && c->opts->show_p25_iden_plan) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_p25_iden(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_p25_iden_plan = c->opts->show_p25_iden_plan ? 0 : 1;
+}
+
+static const char*
+lbl_ui_p25_ccc(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 CC Candidates [%s]", (c && c->opts && c->opts->show_p25_cc_candidates) ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_ui_p25_ccc(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->show_p25_cc_candidates = c->opts->show_p25_cc_candidates ? 0 : 1;
+}
+
+static const char*
 lbl_ui_channels(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Show Channels [%s]", (c && c->opts && c->opts->show_channels) ? "On" : "Off");
@@ -3835,6 +3883,18 @@ act_ui_display(void* v) {
          .label_fn = lbl_ui_p25_ga,
          .help = "Toggle P25 Group Affiliation section (RID↔TG).",
          .on_select = act_toggle_ui_p25_ga},
+        {.id = "p25nb",
+         .label_fn = lbl_ui_p25_neighbors,
+         .help = "Toggle P25 Neighbors section (adjacent/candidate freqs).",
+         .on_select = act_toggle_ui_p25_neighbors},
+        {.id = "p25iden",
+         .label_fn = lbl_ui_p25_iden,
+         .help = "Toggle P25 IDEN Plan table.",
+         .on_select = act_toggle_ui_p25_iden},
+        {.id = "p25ccc",
+         .label_fn = lbl_ui_p25_ccc,
+         .help = "Toggle P25 CC Candidates list.",
+         .on_select = act_toggle_ui_p25_ccc},
         {.id = "chans",
          .label_fn = lbl_ui_channels,
          .help = "Toggle Channels section.",

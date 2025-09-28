@@ -680,11 +680,14 @@ initOpts(dsd_opts* opts) {
     opts->const_norm_mode = 0; // default: radial percentile normalization
     opts->eye_view = 0;
     opts->fsk_hist_view = 0;
-    opts->eye_unicode = 1;      //default On for clearer rendering
-    opts->eye_color = 1;        //default On when terminal supports color
-    opts->show_dsp_panel = 0;   // hide compact DSP panel by default
-    opts->show_p25_metrics = 0; // hide P25 metrics by default
-    opts->show_channels = 0;    // hide Channels section by default
+    opts->eye_unicode = 1;            //default On for clearer rendering
+    opts->eye_color = 1;              //default On when terminal supports color
+    opts->show_dsp_panel = 0;         // hide compact DSP panel by default
+    opts->show_p25_metrics = 0;       // hide P25 metrics by default
+    opts->show_p25_neighbors = 0;     // hide P25 Neighbors by default
+    opts->show_p25_iden_plan = 0;     // hide P25 IDEN Plan by default
+    opts->show_p25_cc_candidates = 0; // hide P25 CC Candidates by default
+    opts->show_channels = 0;          // hide Channels section by default
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;
@@ -1134,6 +1137,13 @@ initState(dsd_state* state) {
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     mbe_initMbeParms(state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2);
     state->p25kid = 0;
+
+    // Initialize P25 neighbor/candidate UI helpers
+    state->p25_nb_count = 0;
+    for (int i2 = 0; i2 < 32; i2++) {
+        state->p25_nb_freq[i2] = 0;
+        state->p25_nb_last_seen[i2] = 0;
+    }
 
     state->debug_audio_errors = 0;
     state->debug_audio_errorsR = 0;

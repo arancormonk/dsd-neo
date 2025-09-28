@@ -409,6 +409,9 @@ typedef struct {
     uint8_t eye_color;                   //use colorized density in eye diagram (0=mono)
     uint8_t show_dsp_panel;              //show compact DSP status panel (0=hidden)
     uint8_t show_p25_metrics;            //show P25 Metrics section (0=hidden)
+    uint8_t show_p25_neighbors;          //show P25 Neighbors (freq list) (0=hidden)
+    uint8_t show_p25_iden_plan;          //show P25 IDEN Plan table (0=hidden)
+    uint8_t show_p25_cc_candidates;      //show P25 CC Candidates (0=hidden)
     uint8_t show_channels;               //show Channels section (0=hidden)
     uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
     uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
@@ -992,6 +995,12 @@ typedef struct {
     uint32_t p25_ga_rid[512];
     uint16_t p25_ga_tg[512];
     time_t p25_ga_last_seen[512];
+
+    // P25 neighbors seen via Adjacent Status (best-effort)
+    // Track a small set of recently announced neighbor/control candidates for UI purposes.
+    int p25_nb_count;            // number of active neighbor entries
+    long int p25_nb_freq[32];    // neighbor/control frequencies in Hz
+    time_t p25_nb_last_seen[32]; // last seen timestamp per entry
 
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed
