@@ -2304,6 +2304,45 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     state->generic_talker_alias_src[1] = 0;
                 }
             }
+
+            // VPDU fallback: if SVC indicates encryption and ENC lockout is enabled,
+            // terminate the encrypted slot (mute only this slot) and return to CC
+            // if the opposite slot is not active.
+            if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+                // Mark TG as ENC LO for visibility in UI/event log
+                int ttg = gr;
+                if (ttg != 0) {
+                    int enc_wr = 0;
+                    for (unsigned int xx = 0; xx < state->group_tally; xx++) {
+                        if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
+                            enc_wr = 1;
+                            break;
+                        }
+                    }
+                    if (enc_wr == 0
+                        && state->group_tally
+                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                        state->group_array[state->group_tally].groupNumber = ttg;
+                        sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                        sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                        state->group_tally++;
+                    }
+                    // Optionally emit event text for UI (tests may not link events)
+                    sprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
+                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                }
+                // Gate this slot only
+                state->p25_p2_audio_allowed[slot] = 0;
+                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                if (!other_audio) {
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    fprintf(stderr,
+                            " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
+                }
+            }
         }
 
         //1 or 21, unit to unit voice channel message, abb and ext
@@ -2379,6 +2418,43 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         state->generic_talker_alias[1][0] = '\0';
                         state->generic_talker_alias_src[1] = 0;
                     }
+                }
+            }
+
+            // VPDU fallback for UU_V: encrypted per SVC and ENC lockout enabled
+            if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+                // Mark target as ENC LO (use same table for display)
+                int ttg = gr;
+                if (ttg != 0) {
+                    int enc_wr = 0;
+                    for (unsigned int xx = 0; xx < state->group_tally; xx++) {
+                        if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
+                            enc_wr = 1;
+                            break;
+                        }
+                    }
+                    if (enc_wr == 0
+                        && state->group_tally
+                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                        state->group_array[state->group_tally].groupNumber = ttg;
+                        sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                        sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                        state->group_tally++;
+                    }
+                    // Optionally emit event text for UI (tests may not link events)
+                    sprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
+                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                }
+                // Gate this slot only
+                state->p25_p2_audio_allowed[slot] = 0;
+                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                if (!other_audio) {
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    fprintf(stderr,
+                            " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
                 }
             }
         }

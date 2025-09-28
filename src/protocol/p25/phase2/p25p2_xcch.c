@@ -651,6 +651,33 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }
+
+        // Fallback early ENC lockout on MAC_ACTIVE: if encryption lockout is
+        // enabled and the stream is encrypted without a usable key, mute only
+        // this slot and return to CC if the opposite slot is not active.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+            int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+            unsigned long long key = (slot == 0) ? state->R : state->RR;
+            int aes_loaded = state->aes_key_loaded[slot];
+            int have_key = 0;
+            if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
+                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
+                have_key = 1;
+            }
+            int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
+            if (enc_suspect) {
+                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                state->p25_p2_audio_allowed[slot] = 0; // gate current slot
+                if (!other_audio) {
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    fprintf(stderr,
+                            " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Other slot active; stay on VC. \n");
+                }
+            }
+        }
     }
     if (opcode == 0x6 && err == 0) {
         if (state->currentslot == 1) {
@@ -1126,6 +1153,31 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 allow_audio = 1; // clear or decryptable with key
             }
             state->p25_p2_audio_allowed[slot] = allow_audio;
+        }
+
+        // Fallback early ENC lockout on MAC_ACTIVE (FACCH path)
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+            int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+            unsigned long long key = (slot == 0) ? state->R : state->RR;
+            int aes_loaded = state->aes_key_loaded[slot];
+            int have_key = 0;
+            if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
+                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
+                have_key = 1;
+            }
+            int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
+            if (enc_suspect) {
+                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                state->p25_p2_audio_allowed[slot] = 0; // gate current slot
+                if (!other_audio) {
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    fprintf(stderr,
+                            " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Other slot active; stay on VC. \n");
+                }
+            }
         }
     }
     if (opcode == 0x6 && err == 0) {

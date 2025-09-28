@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
@@ -505,6 +506,47 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
         //xl, we need to know if the ESS is from HDU, or LDU2
         state->xl_is_hdu = 1;
+
+        // Early ENC lockout for P25 Phase 1: if trunking ENC lockout is
+        // enabled and the call is encrypted without a usable key, terminate
+        // immediately and return to the control channel. This avoids sitting
+        // on an encrypted VC waiting for later LDUs.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+            int alg = state->payload_algid;
+            int have_key = 0;
+            if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
+                || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)) {
+                have_key = 1;
+            }
+            int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
+            if (enc_suspect) {
+                // Optional: mark TG as ENC LO for visibility when known
+                int ttg = state->lasttg;
+                if (ttg != 0) {
+                    int enc_wr = 0;
+                    for (unsigned int xx = 0; xx < state->group_tally; xx++) {
+                        if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
+                            enc_wr = 1;
+                            break;
+                        }
+                    }
+                    if (enc_wr == 0
+                        && state->group_tally
+                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                        state->group_array[state->group_tally].groupNumber = ttg;
+                        sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                        sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                        state->group_tally++;
+                    }
+                    sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                    watchdog_event_current(opts, state, 0);
+                }
+                fprintf(stderr, " No Enc Following on P25p1 Trunking (HDU); Return to CC; \n");
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            }
+        }
 
     } else {
         fprintf(stderr, "%s", KRED);
