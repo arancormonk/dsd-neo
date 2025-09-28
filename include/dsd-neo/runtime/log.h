@@ -34,7 +34,13 @@ typedef enum { LOG_LEVEL_ERROR = 0, LOG_LEVEL_WARN = 1, LOG_LEVEL_INFO = 2, LOG_
  * @param format printf-style format string.
  * @param ...    Variadic arguments corresponding to `format`.
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
 void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...);
+#ifdef __cplusplus
+}
+#endif
 
 /* Logging macros route through dsd_neo_log_write to allow environment handling */
 

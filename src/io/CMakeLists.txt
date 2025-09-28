@@ -30,6 +30,7 @@ target_include_directories(dsd-neo_io_audio
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${_PUBLIC_INCLUDES}
 )
+target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime)
 
 # Control interfaces (UDP control, rigctl, serial)
 add_library(dsd-neo_io_control)

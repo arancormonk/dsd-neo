@@ -8,7 +8,6 @@ target_link_libraries(dsd-neo PRIVATE
   dsd-neo_fec
   dsd-neo_crypto
   dsd-neo_dsp
-  dsd-neo_runtime
   dsd-neo_io_audio
   dsd-neo_io_radio
   dsd-neo_io_control
@@ -24,6 +23,8 @@ target_link_libraries(dsd-neo PRIVATE
   dsd-neo_proto_dmr
   dsd-neo_proto_nxdn
   dsd-neo_proto_p25
+  # Ensure runtime logging symbols resolve after static libs that reference them
+  dsd-neo_runtime
   # System/third-party libraries last to satisfy static lib resolution order
   ${LIBS})
 

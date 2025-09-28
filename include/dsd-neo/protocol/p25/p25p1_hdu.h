@@ -4,7 +4,7 @@
 #ifndef P25P1_HDU_H_9f95c3a5072842e8aaf94444e1452d20
 #define P25P1_HDU_H_9f95c3a5072842e8aaf94444e1452d20
 
-#include "p25p1_heuristics.h"
+#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 /**
  * Reads a dibit (two bits) from the stream of data. Takes into account the periodic occurrence of status

@@ -6,7 +6,7 @@
 
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
-#include "p25p1_heuristics.h"
+#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 /**
  * Separate imbe frames and deinterleave.

@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/log.h>
 
 // This callback gets called when our context changes state.  We really only
 // care about when it's ready or if it has failed
@@ -57,7 +58,9 @@ pa_sinklist_cb(pa_context* c, const pa_sink_info* l, int eol, void* userdata) {
     for (ctr = 0; ctr < 16; ctr++) {
         if (!pa_devicelist[ctr].initialized) {
             strncpy(pa_devicelist[ctr].name, l->name, 511);
+            pa_devicelist[ctr].name[511] = '\0';
             strncpy(pa_devicelist[ctr].description, l->description, 255);
+            pa_devicelist[ctr].description[255] = '\0';
             pa_devicelist[ctr].index = l->index;
             pa_devicelist[ctr].initialized = 1;
             break;
@@ -80,7 +83,9 @@ pa_sourcelist_cb(pa_context* c, const pa_source_info* l, int eol, void* userdata
     for (ctr = 0; ctr < 16; ctr++) {
         if (!pa_devicelist[ctr].initialized) {
             strncpy(pa_devicelist[ctr].name, l->name, 511);
+            pa_devicelist[ctr].name[511] = '\0';
             strncpy(pa_devicelist[ctr].description, l->description, 255);
+            pa_devicelist[ctr].description[255] = '\0';
             pa_devicelist[ctr].index = l->index;
             pa_devicelist[ctr].initialized = 1;
             break;
@@ -176,7 +181,7 @@ pa_get_devicelist(pa_devicelist_t* input, pa_devicelist_t* output) {
                 break;
             default:
                 // We should never see this state
-                fprintf(stderr, "in state %d\n", state);
+                LOG_ERROR("in state %d\n", state);
                 return -1;
         }
 
@@ -200,7 +205,7 @@ pulse_list() {
     pa_devicelist_t pa_output_devicelist[16];
 
     if (pa_get_devicelist(pa_input_devicelist, pa_output_devicelist) < 0) {
-        fprintf(stderr, "failed to get device list\n");
+        LOG_ERROR("failed to get device list\n");
         return 1;
     }
 

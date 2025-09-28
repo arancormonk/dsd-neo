@@ -15,14 +15,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define safe_cond_signal(n, m)                                                                                         \
-    pthread_mutex_lock(m);                                                                                             \
-    pthread_cond_signal(n);                                                                                            \
-    pthread_mutex_unlock(m)
-#define safe_cond_wait(n, m)                                                                                           \
-    pthread_mutex_lock(m);                                                                                             \
-    pthread_cond_wait(n, m);                                                                                           \
-    pthread_mutex_unlock(m)
+#include <dsd-neo/runtime/threading.h>
 
 struct output_state {
     int rate;

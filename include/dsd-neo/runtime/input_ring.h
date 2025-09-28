@@ -13,18 +13,10 @@
 #pragma once
 
 #include <atomic>
+#include <dsd-neo/runtime/threading.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
-
-#define safe_cond_signal(n, m)                                                                                         \
-    pthread_mutex_lock(m);                                                                                             \
-    pthread_cond_signal(n);                                                                                            \
-    pthread_mutex_unlock(m)
-#define safe_cond_wait(n, m)                                                                                           \
-    pthread_mutex_lock(m);                                                                                             \
-    pthread_cond_wait(n, m);                                                                                           \
-    pthread_mutex_unlock(m)
 
 /* Simple SPSC ring for interleaved I/Q int16_t samples (input path) */
 struct input_ring_state {

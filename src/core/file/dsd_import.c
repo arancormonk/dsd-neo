@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/log.h>
 #define BSIZE 999
 
 int
 csvGroupImport(dsd_opts* opts, dsd_state* state) {
     char filename[1024] = "filename.csv";
-    sprintf(filename, "%s", opts->group_in_file);
+    snprintf(filename, sizeof filename, "%s", opts->group_in_file);
     //filename[1023] = '\0'; //necessary?
     char buffer[BSIZE];
     FILE* fp;
     fp = fopen(filename, "r");
     if (fp == NULL) {
-        printf("Unable to open group file '%s'\n", filename);
+        LOG_ERROR("Unable to open group file '%s'\n", filename);
         exit(1);
     }
     int row_count = 0;
@@ -31,23 +32,23 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
             if (field_count == 0) {
                 //group_number = atol(field);
                 state->group_array[i].groupNumber = atol(field);
-                fprintf(stderr, "%ld, ", state->group_array[i].groupNumber);
+                LOG_INFO("%ld, ", state->group_array[i].groupNumber);
             }
             if (field_count == 1) {
                 strncpy(state->group_array[i].groupMode, field, sizeof(state->group_array[i].groupMode) - 1);
                 state->group_array[i].groupMode[sizeof(state->group_array[i].groupMode) - 1] = '\0';
-                fprintf(stderr, "%s, ", state->group_array[i].groupMode);
+                LOG_INFO("%s, ", state->group_array[i].groupMode);
             }
             if (field_count == 2) {
                 strncpy(state->group_array[i].groupName, field, sizeof(state->group_array[i].groupName) - 1);
                 state->group_array[i].groupName[sizeof(state->group_array[i].groupName) - 1] = '\0';
-                fprintf(stderr, "%s ", state->group_array[i].groupName);
+                LOG_INFO("%s ", state->group_array[i].groupName);
             }
 
             field = strtok(NULL, ",");
             field_count++;
         }
-        fprintf(stderr, "\n");
+        LOG_INFO("\n");
         i++;
         state->group_tally++;
     }
@@ -59,13 +60,13 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
 int
 csvLCNImport(dsd_opts* opts, dsd_state* state) {
     char filename[1024] = "filename.csv";
-    sprintf(filename, "%s", opts->lcn_in_file);
+    snprintf(filename, sizeof filename, "%s", opts->lcn_in_file);
     //filename[1023] = '\0'; //necessary?
     char buffer[BSIZE];
     FILE* fp;
     fp = fopen(filename, "r");
     if (fp == NULL) {
-        printf("Unable to open lcn file '%s'\n", filename);
+        LOG_ERROR("Unable to open lcn file '%s'\n", filename);
         //have this return -1 and handle it inside of main
         exit(1);
     }
@@ -83,13 +84,13 @@ csvLCNImport(dsd_opts* opts, dsd_state* state) {
 
             state->trunk_lcn_freq[field_count] = atol(field);
             state->lcn_freq_count++; //keep tally of number of Frequencies imported
-            fprintf(stderr, "LCN [%d] [%ld]", field_count + 1, state->trunk_lcn_freq[field_count]);
-            fprintf(stderr, "\n");
+            LOG_INFO("LCN [%d] [%ld]", field_count + 1, state->trunk_lcn_freq[field_count]);
+            LOG_INFO("\n");
 
             field = strtok(NULL, ",");
             field_count++;
         }
-        fprintf(stderr, "LCN Count %d\n", state->lcn_freq_count);
+        LOG_INFO("LCN Count %d\n", state->lcn_freq_count);
     }
     fclose(fp);
     return 0;
@@ -99,13 +100,13 @@ int
 csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
 {
     char filename[1024] = "filename.csv";
-    sprintf(filename, "%s", opts->chan_in_file);
+    snprintf(filename, sizeof filename, "%s", opts->chan_in_file);
 
     char buffer[BSIZE];
     FILE* fp;
     fp = fopen(filename, "r");
     if (fp == NULL) {
-        printf("Unable to open channel map file '%s'\n", filename);
+        LOG_ERROR("Unable to open channel map file '%s'\n", filename);
         //have this return -1 and handle it inside of main
         exit(1);
     }
@@ -144,9 +145,9 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
             field_count++;
         }
         if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
-            fprintf(stderr, "Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
+            LOG_INFO("Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
         }
-        fprintf(stderr, "\n");
+        LOG_INFO("\n");
     }
     fclose(fp);
     return 0;
@@ -157,13 +158,13 @@ int
 csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
 {
     char filename[1024] = "filename.csv";
-    sprintf(filename, "%s", opts->key_in_file);
+    snprintf(filename, sizeof filename, "%s", opts->key_in_file);
 
     char buffer[BSIZE];
     FILE* fp;
     fp = fopen(filename, "r");
     if (fp == NULL) {
-        printf("Unable to open file '%s'\n", filename);
+        LOG_ERROR("Unable to open file '%s'\n", filename);
         exit(1);
     }
     int row_count = 0;
@@ -195,7 +196,7 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
                     }
                     hash = ComputeCrcCCITT16d(hash_bits, 24);
                     keynumber = hash & 0xFFFF; //make sure its no larger than 16-bits
-                    fprintf(stderr, "Hashed ");
+                    LOG_INFO("Hashed ");
                 }
             }
 
@@ -209,8 +210,8 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
             field = strtok(NULL, ",");
             field_count++;
         }
-        fprintf(stderr, "Key [%03lld] [%05lld]", keynumber, state->rkey_array[keynumber]);
-        fprintf(stderr, "\n");
+        LOG_INFO("Key [%03lld] [%05lld]", keynumber, state->rkey_array[keynumber]);
+        LOG_INFO("\n");
     }
     fclose(fp);
     return 0;
@@ -221,12 +222,12 @@ int
 csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
 {
     char filename[1024] = "filename.csv";
-    sprintf(filename, "%s", opts->key_in_file);
+    snprintf(filename, sizeof filename, "%s", opts->key_in_file);
     char buffer[BSIZE];
     FILE* fp;
     fp = fopen(filename, "r");
     if (fp == NULL) {
-        printf("Unable to open file '%s'\n", filename);
+        LOG_ERROR("Unable to open file '%s'\n", filename);
         exit(1);
     }
     int row_count = 0;
@@ -276,20 +277,20 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
         }
 
         if (keynumber >= 0 && keynumber < 0x1FFFF) {
-            fprintf(stderr, "Key [%04llX] [%016llX]", keynumber, state->rkey_array[keynumber]);
+            LOG_INFO("Key [%04llX] [%016llX]", keynumber, state->rkey_array[keynumber]);
         } else {
-            fprintf(stderr, "Key [%04llX] [out-of-range]", keynumber);
+            LOG_INFO("Key [%04llX] [out-of-range]", keynumber);
         }
 
         //if longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset, then print the full key listing)
         if ((keynumber + 0x301) < 0x1FFFF) {
             if ((state->rkey_array[keynumber + 0x101] != 0) || (state->rkey_array[keynumber + 0x201] != 0)
                 || (state->rkey_array[keynumber + 0x301] != 0)) {
-                fprintf(stderr, " [%016llX] [%016llX] [%016llX]", state->rkey_array[keynumber + 0x101],
-                        state->rkey_array[keynumber + 0x201], state->rkey_array[keynumber + 0x301]);
+                LOG_INFO(" [%016llX] [%016llX] [%016llX]", state->rkey_array[keynumber + 0x101],
+                         state->rkey_array[keynumber + 0x201], state->rkey_array[keynumber + 0x301]);
             }
         }
-        fprintf(stderr, "\n");
+        LOG_INFO("\n");
     }
     fclose(fp);
     return 0;
