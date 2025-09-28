@@ -3436,6 +3436,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
             }
             int shown = 0;
+            int rows = 0, cols = 80;
+            getmaxyx(stdscr, rows, cols);
+            if (cols < 1) {
+                cols = 80;
+            }
+            // Track the current line width after the left border
+            int line_used = 0;
             for (int i = 0; i < n && shown < 20; i++) {
                 int k = idxs[i];
                 uint32_t rid = state->p25_aff_rid[k];
@@ -3443,11 +3450,37 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (age < 0) {
                     age = 0;
                 }
-                printw("| RID: %u  age:%lds\n", (unsigned)rid, age);
+                char buf[64];
+                int m = snprintf(buf, sizeof buf, "RID:%u age:%lds", (unsigned)rid, age);
+                if (m < 0) {
+                    m = 0;
+                }
+                int sep = (line_used == 0) ? 0 : 4; // spacing between columns
+                // If this is the first item on the line, account for "| " at line start
+                int left_border = (line_used == 0) ? 2 : 0;
+                if ((left_border + line_used + sep + m) > cols) {
+                    // New line and reset tracking
+                    if (line_used > 0) {
+                        addch('\n');
+                    }
+                    line_used = 0;
+                }
+                if (line_used == 0) {
+                    ui_print_lborder_green();
+                    addch(' ');
+                } else {
+                    addstr("    ");
+                }
+                addnstr(buf, m);
+                line_used += ((line_used == 0) ? 0 : sep) + m;
                 shown++;
             }
+            if (shown > 0 && line_used > 0) {
+                addch('\n');
+            }
             if (shown == 0) {
-                printw("| (none)\n");
+                ui_print_lborder_green();
+                addstr(" (none)\n");
             }
             ui_print_hr();
         }
@@ -3481,6 +3514,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
             }
             int shown = 0;
+            int rows = 0, cols = 80;
+            getmaxyx(stdscr, rows, cols);
+            if (cols < 1) {
+                cols = 80;
+            }
+            int line_used = 0;
             for (int i = 0; i < n && shown < 20; i++) {
                 int k = idxs[i];
                 uint32_t rid = state->p25_ga_rid[k];
@@ -3489,11 +3528,35 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (age < 0) {
                     age = 0;
                 }
-                printw("| RID: %u  TG:%u  age:%lds\n", (unsigned)rid, (unsigned)tg, age);
+                char buf[80];
+                int m = snprintf(buf, sizeof buf, "RID:%u TG:%u age:%lds", (unsigned)rid, (unsigned)tg, age);
+                if (m < 0) {
+                    m = 0;
+                }
+                int sep = (line_used == 0) ? 0 : 4;
+                int left_border = (line_used == 0) ? 2 : 0;
+                if ((left_border + line_used + sep + m) > cols) {
+                    if (line_used > 0) {
+                        addch('\n');
+                    }
+                    line_used = 0;
+                }
+                if (line_used == 0) {
+                    ui_print_lborder_green();
+                    addch(' ');
+                } else {
+                    addstr("    ");
+                }
+                addnstr(buf, m);
+                line_used += ((line_used == 0) ? 0 : sep) + m;
                 shown++;
             }
+            if (shown > 0 && line_used > 0) {
+                addch('\n');
+            }
             if (shown == 0) {
-                printw("| (none)\n");
+                ui_print_lborder_green();
+                addstr(" (none)\n");
             }
             ui_print_hr();
         }
