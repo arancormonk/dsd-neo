@@ -14,9 +14,13 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t ke
     unsigned int count;
     uint8_t t, b;
 
+    if (drop < 0) {
+        drop = 0;
+    }
+
     //init Sbox
     uint8_t S[256];
-    for (int i = 0; i < 256; i++) {
+    for (i = 0; i < 256; i++) {
         S[i] = i;
     }
 
@@ -31,7 +35,8 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t ke
 
     //Drop Bytes and Cipher Byte XOR
     i = j = 0;
-    for (count = 0; count < (messagelength + drop); count++) {
+    unsigned int total = (unsigned int)messagelength + (unsigned int)drop;
+    for (count = 0; count < total; count++) {
         i = (i + 1) % 256;
         j = (j + S[i]) % 256;
         t = S[i];
@@ -40,7 +45,7 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t ke
         b = S[(S[i] + S[j]) % 256];
 
         //return mbe payload byte here
-        if (count >= drop) {
+        if (count >= (unsigned int)drop) {
             plain[count - drop] = b ^ cipher[count - drop];
         }
     }
@@ -54,6 +59,10 @@ rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output
     unsigned int keylength = (unsigned int)keylen;
     unsigned int messagelength = (unsigned int)meslen;
     unsigned int S[256];
+
+    if (drop < 0) {
+        drop = 0;
+    }
 
     for (i = 0; i < 256; i++) {
         S[i] = i;
@@ -74,7 +83,8 @@ rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output
     unsigned int byte;
 
     // fprintf (stderr, " Keystream Octets = ");
-    for (count = 0; count < (messagelength + drop); count++) {
+    unsigned int total = messagelength + (unsigned int)drop;
+    for (count = 0; count < total; count++) {
         i = (i + 1) % 256;
         j = (j + S[i]) % 256;
         unsigned int temp = S[i];
@@ -83,7 +93,7 @@ rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output
         byte = S[(S[i] + S[j]) % 256];
 
         //Collect Output blocks
-        if (count >= drop) {
+        if (count >= (unsigned int)drop) {
             output_blocks[x++] = byte;
         }
     }

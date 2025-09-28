@@ -931,6 +931,7 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
 
             case 0x53: //S -- South
                 lat_sign = -1;
+                /* fall through */
             case 0x4E: //N -- North
                 lat = 1;
                 lat_deg = ((DMR_PDU[i + 1] - 0x30) << 4) | (DMR_PDU[i + 2] - 0x30);
@@ -942,6 +943,7 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
 
             case 0x57: //W -- West
                 lon_sign = -1;
+                /* fall through */
             case 0x45: //E -- East
                 lon = 1;
                 lon_deg =

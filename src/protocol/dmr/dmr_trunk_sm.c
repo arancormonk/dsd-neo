@@ -66,6 +66,7 @@ dmr_sm_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
 
 static void
 dmr_sm_try_load_cache(dsd_opts* opts, dsd_state* state) {
+    UNUSED(opts);
     if (!state || state->p25_cc_cache_loaded) {
         return;
     }

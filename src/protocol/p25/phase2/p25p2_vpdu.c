@@ -231,20 +231,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             sprintf(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; ", channel, suf_m90a, sgroup);
             state->last_active_time = time(NULL);
 
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == sgroup) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)sgroup) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                     mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
             //TG hold on MFID90 GRG -- block non-matching super group, allow matching group
-            if (state->tg_hold != 0 && state->tg_hold != sgroup) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)sgroup) {
                 sprintf(mode, "%s", "B");
             }
-            if (state->tg_hold != 0 && state->tg_hold == sgroup) {
+            if (state->tg_hold != 0 && state->tg_hold == (uint32_t)sgroup) {
                 sprintf(mode, "%s", "A");
             }
 
@@ -291,20 +291,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             sprintf(state->active_channel[0], "MFID90 Active Ch: %04X%s SG: %d; ", channel, suf_m90b, sgroup);
             state->last_active_time = time(NULL);
 
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == sgroup) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)sgroup) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                     mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
             //TG hold on MFID90 GRG -- block non-matching super group, allow matching group
-            if (state->tg_hold != 0 && state->tg_hold != sgroup) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)sgroup) {
                 sprintf(mode, "%s", "B");
             }
-            if (state->tg_hold != 0 && state->tg_hold == sgroup) {
+            if (state->tg_hold != 0 && state->tg_hold == (uint32_t)sgroup) {
                 sprintf(mode, "%s", "A");
             }
 
@@ -397,20 +397,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group2;
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
+                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
                 //TG hold on MFID90 GRG -- block non-matching super group, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "A");
                 }
 
@@ -487,20 +487,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channel, suf_gvg, group);
             state->last_active_time = time(NULL);
 
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == group) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)group) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                     mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
             //TG hold on GRP_V -- block non-matching group, allow matching group
-            if (state->tg_hold != 0 && state->tg_hold != group) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
                 sprintf(mode, "%s", "B");
             }
-            if (state->tg_hold != 0 && state->tg_hold == group) {
+            if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
                 sprintf(mode, "%s", "A");
             }
 
@@ -616,17 +616,17 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             //telephone only has a target address (manual shows combined source/target of 24-bits)
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == target) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)target) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                     mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
             //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled -- same for Telephone?
-            if (state->tg_hold != 0 && state->tg_hold != target) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                 sprintf(mode, "%s", "B");
             }
             // if (state->tg_hold != 0 && state->tg_hold == target)
@@ -642,7 +642,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 }
             }
             if (opts->p25_trunk == 0) {
-                if (target == state->lasttg || target == state->lasttgR) {
+                if ((uint32_t)target == (uint32_t)state->lasttg || (uint32_t)target == (uint32_t)state->lasttgR) {
                     //P1 FDMA
                     if (state->synctype == 0 || state->synctype == 1) {
                         state->p25_vc_freq[0] = freq;
@@ -704,17 +704,18 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // if (opts->trunk_tune_enc_calls == 0) goto SKIPCALL; //enable, or disable?
 
             //unit to unit needs work, may fail under certain conditions (first blocked, second allowed, etc) (labels should still work though)
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == source || state->group_array[i].groupNumber == target) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)source
+                    || state->group_array[gi].groupNumber == (unsigned long)target) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                     mode[sizeof(mode) - 1] = '\0';
                     break;
                 }
             }
 
             //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled
-            if (state->tg_hold != 0 && state->tg_hold != target) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                 sprintf(mode, "%s", "B");
             }
             // if (state->tg_hold != 0 && state->tg_hold == target)
@@ -882,20 +883,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_chan = channelt2;
                     tunable_group = group2;
                 }
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == tunable_group) {
+                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
                 //TG hold on GRP_V Multi -- block non-matching group, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "A");
                 }
 
@@ -1080,20 +1081,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group3;
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
+                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
                 //TG hold on GRP_V Multi -- block non-matching group, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "A");
                 }
 
@@ -1183,20 +1184,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     tunable_group = group2;
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                        strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+                for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                    if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
+                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                        strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
 
                 //TG hold on GRP_V Multi -- block non-matching group, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == tunable_group) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)tunable_group) {
                     sprintf(mode, "%s", "A");
                 }
 
@@ -1279,19 +1280,19 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // }
             // else state->lasttgR = group;
 
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == group) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    snprintf(mode, sizeof mode, "%s", state->group_array[i].groupMode);
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)group) {
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
+                    snprintf(mode, sizeof mode, "%s", state->group_array[gi].groupMode);
                     break;
                 }
             }
 
             //TG hold on GRP_V Exp -- block non-matching group, allow matching group
-            if (state->tg_hold != 0 && state->tg_hold != group) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
                 sprintf(mode, "%s", "B");
             }
-            if (state->tg_hold != 0 && state->tg_hold == group) {
+            if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
                 sprintf(mode, "%s", "A");
             }
 
@@ -1361,10 +1362,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int target = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
             fprintf(stderr, "\n  DSO: %02X; CHAN-T: %04X; CHAN-R: %04X; Target: %d;", dso, channelt, channelr, target);
 
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == target) {
+            for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+                if (state->group_array[gi].groupNumber == (unsigned long)target) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
-                    snprintf(mode, sizeof mode, "%s", state->group_array[i].groupMode);
+                    snprintf(mode, sizeof mode, "%s", state->group_array[gi].groupMode);
                     break;
                 }
             }
@@ -1385,7 +1386,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             //TG hold on UU_V -- will want to disable UU_V grants while TG Hold enabled
-            if (state->tg_hold != 0 && state->tg_hold != target) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                 sprintf(mode, "%s", "B");
             }
 
@@ -1701,7 +1702,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int hour = MAC[7 + len_a] >> 3;
             int min = ((MAC[7 + len_a] & 0x7) << 3) | (MAC[8 + len_a] >> 5);
             int slots = ((MAC[8 + len_a] & 0x1F) << 8) | MAC[9 + len_a];
-            int sign = (ltoff & 0b100000) >> 5;
+            int sign = (ltoff & 0x20) >> 5;
             float offhour = 0;
 
             if (opts->payload == 1) {
@@ -1725,9 +1726,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             //calculate local time (on system) by looking at offset and subtracting 30 minutes increments, or divide by 2 for hourly
             if (sign == 1) {
-                offhour = -((float)(ltoff & 0b11111) / 2.0f);
+                offhour = -((float)(ltoff & 0x1F) / 2.0f);
             } else {
-                offhour = ((float)(ltoff & 0b11111) / 2.0f);
+                offhour = ((float)(ltoff & 0x1F) / 2.0f);
             }
 
             int seconds = slots / 135; //very rough estimation, but may be close enough for grins

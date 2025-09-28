@@ -141,6 +141,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         case 0x08: //TX_REL
             sprintf(state->call_string[0], "%s", "");
             sprintf(state->nxdn_call_type, "%s", "");
+            /* fall through */
         case 0x01: //VCALL
             NXDN_decode_VCALL(opts, state, ElementsContent);
             break;
@@ -646,9 +647,9 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         sprintf(mode, "%s", "B");
     }
 
-    for (int i = 0; i < state->group_tally; i++) {
-        if ((state->group_array[i].groupNumber == DestinationID && DestinationID != 0)
-            || (state->group_array[i].groupNumber == SourceUnitID && DestinationID == 0)) {
+    for (unsigned int i = 0; i < state->group_tally; i++) {
+        if ((state->group_array[i].groupNumber == (unsigned long)DestinationID && DestinationID != 0)
+            || (state->group_array[i].groupNumber == (unsigned long)SourceUnitID && DestinationID == 0)) {
             fprintf(stderr, " [%s]", state->group_array[i].groupName);
             strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
             mode[sizeof(mode) - 1] = '\0';
@@ -658,8 +659,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
     //check purely by SourceUnitID as last resort -- this is a bugfix to block individual radios on selected systems
     if ((strcmp(mode, "") == 0)) {
-        for (int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == SourceUnitID) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
+            if (state->group_array[i].groupNumber == (unsigned long)SourceUnitID) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                 mode[sizeof(mode) - 1] = '\0';
@@ -1074,6 +1075,7 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
 void
 NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
+    UNUSED(opts);
     uint32_t location_id = 0;
     uint16_t cs_info = 0;  //channel structure information
     uint16_t svc_info = 0; //service information
@@ -1522,13 +1524,13 @@ NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
     //TG ENC LO/B if ENC trunked following disabled #121 -- was locking out everything
     if (opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0 && MessageType == 0x1 && state->dmr_encL == 1) {
-        int i, lo = 0;
+        int lo = 0;
         uint16_t t = 0;
         char gm[8];
         char gn[50];
 
         //check to see if this group already exists, or has already been locked out, or is allowed
-        for (i = 0; i <= state->group_tally; i++) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
             t = (uint16_t)state->group_array[i].groupNumber;
             if (DestinationID == t && t != 0) {
                 lo = 1;
@@ -1843,8 +1845,8 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                     sprintf(mode, "%s", "B");
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == id) //tg/tgt only on info4 unit
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)id) //tg/tgt only on info4 unit
                     {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
                         strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
@@ -2031,11 +2033,9 @@ NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t*
     TransmissionMode[0] = 0;
 
     if (VoiceCallOption & 0x10) {
-        strncpy((char*)Duplex, "Duplex", sizeof(Duplex) - 1);
-        Duplex[sizeof(Duplex) - 1] = '\0';
+        snprintf((char*)Duplex, 32, "%s", "Duplex");
     } else {
-        strncpy((char*)Duplex, "Half Duplex", sizeof(Duplex) - 1);
-        Duplex[sizeof(Duplex) - 1] = '\0';
+        snprintf((char*)Duplex, 32, "%s", "Half Duplex");
     }
 
     switch (VoiceCallOption
@@ -2059,8 +2059,7 @@ NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t*
         default: Ptr = "Unk;"; break;            //should never get here
     }
 
-    strncpy((char*)TransmissionMode, Ptr, sizeof(TransmissionMode) - 1);
-    TransmissionMode[sizeof(TransmissionMode) - 1] = '\0';
+    snprintf((char*)TransmissionMode, 32, "%s", Ptr);
 } /* End NXDN_Voice_Call_Option_To_Str() */
 
 char*

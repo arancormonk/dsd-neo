@@ -1902,7 +1902,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         //read some audio samples from source and load them into an audio buffer
         if (opts->audio_in_type == 0) //pulse audio
         {
-            for (i = 0; i < nsam; i++) {
+            for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
                 }
@@ -1910,7 +1910,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             if (st == 2) {
-                for (i = 0; i < nsam; i++) {
+                for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
                     }
@@ -1922,7 +1922,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         else if (opts->audio_in_type == 1) //stdin
         {
             int result = 0;
-            for (i = 0; i < nsam; i++) {
+            for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     result = sf_read_short(opts->audio_in_file, &sample, 1);
                 }
@@ -1937,7 +1937,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             if (st == 2) {
-                for (i = 0; i < nsam; i++) {
+                for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         result = sf_read_short(opts->audio_in_file, &sample, 1);
                     }
@@ -1955,7 +1955,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
         else if (opts->audio_in_type == 5) //OSS
         {
-            for (i = 0; i < nsam; i++) {
+            for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     read(opts->audio_in_fd, &sample, 2);
                 }
@@ -1963,7 +1963,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             if (st == 2) {
-                for (i = 0; i < nsam; i++) {
+                for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         read(opts->audio_in_fd, &sample, 2);
                     }
@@ -1975,7 +1975,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         else if (opts->audio_in_type == 8) //TCP
         {
             int result = 0;
-            for (i = 0; i < nsam; i++) {
+            for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     result = sf_read_short(opts->tcp_file_in, &sample, 1);
                 }
@@ -1990,7 +1990,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             if (st == 2) {
-                for (i = 0; i < nsam; i++) {
+                for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         result = sf_read_short(opts->tcp_file_in, &sample, 1);
                     }
@@ -2007,7 +2007,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         } else if (opts->audio_in_type == 6) // UDP direct audio
         {
             int result = 1;
-            for (i = 0; i < nsam; i++) {
+            for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     if (!udp_input_read_sample(opts, &sample)) {
                         result = 0;
@@ -2022,7 +2022,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             if (st == 2) {
-                for (i = 0; i < nsam; i++) {
+                for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         if (!udp_input_read_sample(opts, &sample)) {
                             result = 0;
@@ -2041,7 +2041,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         else if (opts->audio_in_type == 3) //RTL
         {
 #ifdef USE_RTLSDR
-            for (i = 0; i < nsam; i++) {
+            for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     int need_break = 0;
                     if (!g_rtl_ctx) {
@@ -2063,7 +2063,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             if (st == 2) {
-                for (i = 0; i < nsam; i++) {
+                for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         int need_break2 = 0;
                         if (!g_rtl_ctx) {
@@ -2453,7 +2453,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             if (fsn > 0x7FFF) {
                 fsn = 0;
                 nonce[13]++;
-                if (nonce[13] > 0xFF) {
+                if (nonce[13] == 0x00) {
                     nonce[13] = 0; //roll over to zero of exceeds 0xFF
                     nonce[12]++;
                     nonce[12] &= 0xFF; //trunc for potential rollover (doesn't spill over)

@@ -38,6 +38,9 @@ env_is_set(const char* v) {
  * @param fallback Fallback integer when `v` is unset or empty.
  * @return Parsed integer value or `fallback` when not set.
  */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((unused))
+#endif
 static int
 env_as_int(const char* v, int fallback) {
     return env_is_set(v) ? atoi(v) : fallback;

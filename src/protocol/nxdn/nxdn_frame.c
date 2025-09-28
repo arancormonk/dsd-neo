@@ -226,7 +226,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             break;
 
         //DCR Data or End Frame
-        case 0x48: pich_tch = 3;
+        case 0x48: pich_tch = 3; /* fall through */
         case 0x4A: sacch2 = 1; break;
 
         //NXDN "Type-D" or "IDAS" Specific Lich Codes

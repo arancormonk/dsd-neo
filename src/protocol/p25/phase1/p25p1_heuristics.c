@@ -239,7 +239,7 @@ evaluate_pdf(SymbolHeuristics* se, int value) {
 /**
  * Logging of the internal PDF values for a given analog value and previous dibit.
  */
-static void
+static __attribute__((unused)) void
 debug_log_pdf(P25Heuristics* heuristics, int previous_dibit, int analog_value) {
     int i;
     float pdfs[4];

@@ -1151,8 +1151,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     snprintf(mode, sizeof mode, "%s", "B");
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == group) {
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)group) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
                         strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
@@ -1164,10 +1164,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 // is_digital = 0;
 
                 //TG hold on EDACS EA -- block non-matching target, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != group) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
                     snprintf(mode, sizeof mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == group) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
                     snprintf(mode, sizeof mode, "%s", "A");
                 }
 
@@ -1303,8 +1303,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 }
 
                 //Get target mode for calls that are in the allow/whitelist
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == target) {
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)target) {
                         strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
@@ -1312,10 +1312,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 }
 
                 //TG hold on EDACS EA I-CALL -- block non-matching target
-                if (state->tg_hold != 0 && state->tg_hold != target) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                     snprintf(mode, sizeof mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == target) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) {
                     snprintf(mode, sizeof mode, "%s", "A");
                 }
 
@@ -1633,18 +1633,18 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 }
 
                 //Get group mode for calls that are in the allow/whitelist
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == group) {
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)group) {
                         strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
                     }
                 }
                 //TG hold on EDACS Standard/Net -- block non-matching target, allow matching group
-                if (state->tg_hold != 0 && state->tg_hold != group) {
+                if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
                     snprintf(mode, sizeof mode, "%s", "B");
                 }
-                if (state->tg_hold != 0 && state->tg_hold == group) {
+                if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
                     snprintf(mode, sizeof mode, "%s", "A");
                 }
 
@@ -1939,8 +1939,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     //Individual calls always remain blocked if in allow/whitelist mode
                     if (is_individual == 0) {
                         //Get group mode for calls that are in the allow/whitelist
-                        for (int i = 0; i < state->group_tally; i++) {
-                            if (state->group_array[i].groupNumber == target) {
+                        for (unsigned int i = 0; i < state->group_tally; i++) {
+                            if (state->group_array[i].groupNumber == (unsigned long)target) {
                                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                                 mode[sizeof(mode) - 1] = '\0';
                                 break;
@@ -1952,10 +1952,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     }
 
                     //TG hold on EDACS STD/NET -- block non-matching abstract target (moved here to fix tuning that occurs on I-CALL during TG HOLD)
-                    if (state->tg_hold != 0 && state->tg_hold != target) {
+                    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                         snprintf(mode, sizeof mode, "%s", "B");
                     }
-                    if (state->tg_hold != 0 && state->tg_hold == target) {
+                    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) {
                         snprintf(mode, sizeof mode, "%s", "A");
                     }
 
@@ -2568,14 +2568,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
 EDACS_END:
 
-    if (timestr != NULL) {
-        /* stack buffers; no free */
-        /* stack buffers; no free */
-    }
-    if (datestr != NULL) {
-        /* stack buffers; no free */
-        /* stack buffers; no free */
-    }
+    (void)timestr;
+    (void)datestr;
 
     fprintf(stderr, "\n");
 

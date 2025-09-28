@@ -23,6 +23,10 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+#ifndef UNUSED
+#define UNUSED(x) (void)(x)
+#endif
+
 // Internal helpers
 static WINDOW*
 ui_make_window(int h, int w, int y, int x) {
@@ -209,8 +213,7 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
     const char* f2 = "h: help  Esc/q: back";
 
     // Layout constants
-    int pad_x = 2;  // left margin inside box
-    int border = 2; // left+right borders
+    int pad_x = 2; // left margin inside box
 
     // Compute minimal width to hold content and footer
     int width = pad_x + ((maxlab > 0) ? maxlab : 1);
@@ -447,6 +450,7 @@ ui_prompt_common_prefill(const char* title, char* buf, size_t cap, const char* p
                 buf[len] = '\0';
                 int cy, cx;
                 getyx(win, cy, cx);
+                UNUSED(cy);
                 if (cx > 4) {
                     mvwaddch(win, 3, 4 + (int)len, ' ');
                     wmove(win, 3, 4 + (int)len);
@@ -631,7 +635,7 @@ io_toggle_cc_candidates(void* vctx) {
     }
 }
 
-static void
+static __attribute__((unused)) void
 io_list_pulse(void* vctx) {
     (void)vctx;
     pulse_list();
@@ -797,8 +801,10 @@ io_set_pulse_out(void* vctx) {
         if (!outs[i].initialized) {
             break;
         }
-        snprintf(buf[n], sizeof buf[n], "[%d] %s %s %s", outs[i].index, outs[i].name, dsd_unicode_or_ascii("—", "-"),
-                 outs[i].description);
+        int name_len = (int)strnlen(outs[i].name, 511);
+        int desc_len = (int)strnlen(outs[i].description, 255);
+        snprintf(buf[n], sizeof buf[n], "[%d] %.*s %s %.*s", outs[i].index, name_len, outs[i].name,
+                 dsd_unicode_or_ascii("—", "-"), desc_len, outs[i].description);
         labels[n] = buf[n];
         names[n] = outs[i].name;
         n++;
@@ -831,8 +837,10 @@ io_set_pulse_in(void* vctx) {
         if (!ins[i].initialized) {
             break;
         }
-        snprintf(buf[n], sizeof buf[n], "[%d] %s %s %s", ins[i].index, ins[i].name, dsd_unicode_or_ascii("—", "-"),
-                 ins[i].description);
+        int name_len2 = (int)strnlen(ins[i].name, 511);
+        int desc_len2 = (int)strnlen(ins[i].description, 255);
+        snprintf(buf[n], sizeof buf[n], "[%d] %.*s %s %.*s", ins[i].index, name_len2, ins[i].name,
+                 dsd_unicode_or_ascii("—", "-"), desc_len2, ins[i].description);
         labels[n] = buf[n];
         names[n] = ins[i].name;
         n++;
@@ -853,7 +861,10 @@ io_set_udp_out(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     char host[256] = {0};
     int port = c->opts->udp_portno > 0 ? c->opts->udp_portno : 23456;
-    snprintf(host, sizeof host, "%s", (c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1"));
+    {
+        const char* src = c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1";
+        snprintf(host, sizeof host, "%.*s", (int)sizeof(host) - 1, src);
+    }
     if (!ui_prompt_string_prefill("UDP blaster host", c->opts->udp_hostname, host, sizeof host)) {
         return;
     }
@@ -1028,7 +1039,7 @@ inv_m17(void* v) {
 
 #ifdef USE_RTLSDR
 // ---- RTL-SDR submenu ----
-static const char*
+static __attribute__((unused)) const char*
 lbl_rtl_summary(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Dev %d  Freq %u Hz  Gain %d  PPM %d  BW %d kHz  SQL %.1f dB  VOL %d", c->opts->rtl_dev_index,
@@ -1272,7 +1283,7 @@ switch_to_udp(void* vctx) {
         snprintf(c->opts->udp_in_bindaddr, sizeof c->opts->udp_in_bindaddr, "%s", "127.0.0.1");
     }
     char addr[128];
-    snprintf(addr, sizeof addr, "%s", c->opts->udp_in_bindaddr);
+    snprintf(addr, sizeof addr, "%.*s", (int)sizeof(addr) - 1, c->opts->udp_in_bindaddr);
     if (!ui_prompt_string_prefill("Enter UDP bind address", c->opts->udp_in_bindaddr, addr, sizeof addr)) {
         return;
     }
@@ -1975,6 +1986,7 @@ ui_menu_keys_security(dsd_opts* opts, dsd_state* state) {
 // Declarative DSP menu with dynamic labels
 static bool
 dsp_cq_on(void* v) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     return cq != 0;
@@ -1982,6 +1994,7 @@ dsp_cq_on(void* v) {
 
 static bool
 dsp_lms_on(void* v) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     return l != 0;
@@ -1989,6 +2002,7 @@ dsp_lms_on(void* v) {
 
 static bool
 dsp_dfe_on(void* v) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     return dfe != 0;
@@ -1996,6 +2010,7 @@ dsp_dfe_on(void* v) {
 
 static const char*
 lbl_onoff_cq(void* v, char* b, size_t n) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     snprintf(b, n, "Toggle CQPSK [%s]", cq ? "Active" : "Inactive");
@@ -2004,6 +2019,7 @@ lbl_onoff_cq(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_fll(void* v, char* b, size_t n) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     snprintf(b, n, "Toggle FLL [%s]", f ? "Active" : "Inactive");
@@ -2012,6 +2028,7 @@ lbl_onoff_fll(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_ted(void* v, char* b, size_t n) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     snprintf(b, n, "Toggle TED [%s]", t ? "Active" : "Inactive");
@@ -2020,6 +2037,7 @@ lbl_onoff_ted(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_iqbal(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = rtl_stream_get_iq_balance();
     snprintf(b, n, "Toggle IQ Balance [%s]", on ? "Active" : "Inactive");
     return b;
@@ -2028,6 +2046,7 @@ lbl_onoff_iqbal(void* v, char* b, size_t n) {
 /* ---- FM AGC / Limiter / DC Block UI helpers ---- */
 static const char*
 lbl_fm_agc(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = rtl_stream_get_fm_agc();
     snprintf(b, n, "FM AGC [%s]", on ? "On" : "Off");
     return b;
@@ -2035,12 +2054,14 @@ lbl_fm_agc(void* v, char* b, size_t n) {
 
 static void
 act_toggle_fm_agc(void* v) {
+    UNUSED(v);
     int on = rtl_stream_get_fm_agc();
     rtl_stream_set_fm_agc(on ? 0 : 1);
 }
 
 static const char*
 lbl_fm_limiter(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = rtl_stream_get_fm_limiter();
     snprintf(b, n, "FM Limiter [%s]", on ? "On" : "Off");
     return b;
@@ -2048,6 +2069,7 @@ lbl_fm_limiter(void* v, char* b, size_t n) {
 
 static const char*
 lbl_fm_agc_auto(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = rtl_stream_get_fm_agc_auto();
     snprintf(b, n, "FM AGC Auto [%s]", on ? "On" : "Off");
     return b;
@@ -2055,18 +2077,21 @@ lbl_fm_agc_auto(void* v, char* b, size_t n) {
 
 static void
 act_toggle_fm_agc_auto(void* v) {
+    UNUSED(v);
     int on = rtl_stream_get_fm_agc_auto();
     rtl_stream_set_fm_agc_auto(on ? 0 : 1);
 }
 
 static void
 act_toggle_fm_limiter(void* v) {
+    UNUSED(v);
     int on = rtl_stream_get_fm_limiter();
     rtl_stream_set_fm_limiter(on ? 0 : 1);
 }
 
 static const char*
 lbl_fm_agc_target(void* v, char* b, size_t n) {
+    UNUSED(v);
     int tgt = 0;
     rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
     snprintf(b, n, "AGC Target: %d (+/-)", tgt);
@@ -2075,6 +2100,7 @@ lbl_fm_agc_target(void* v, char* b, size_t n) {
 
 static void
 act_fm_agc_target_up(void* v) {
+    UNUSED(v);
     int tgt = 0;
     rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
     tgt += 500;
@@ -2086,6 +2112,7 @@ act_fm_agc_target_up(void* v) {
 
 static void
 act_fm_agc_target_dn(void* v) {
+    UNUSED(v);
     int tgt = 0;
     rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
     tgt -= 500;
@@ -2097,6 +2124,7 @@ act_fm_agc_target_dn(void* v) {
 
 static const char*
 lbl_fm_agc_min(void* v, char* b, size_t n) {
+    UNUSED(v);
     int mn = 0;
     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
     snprintf(b, n, "AGC Min: %d (+/-)", mn);
@@ -2105,6 +2133,7 @@ lbl_fm_agc_min(void* v, char* b, size_t n) {
 
 static void
 act_fm_agc_min_up(void* v) {
+    UNUSED(v);
     int mn = 0;
     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
     mn += 500;
@@ -2116,6 +2145,7 @@ act_fm_agc_min_up(void* v) {
 
 static void
 act_fm_agc_min_dn(void* v) {
+    UNUSED(v);
     int mn = 0;
     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
     mn -= 500;
@@ -2127,6 +2157,7 @@ act_fm_agc_min_dn(void* v) {
 
 static const char*
 lbl_fm_agc_alpha_up(void* v, char* b, size_t n) {
+    UNUSED(v);
     int au = 0;
     rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
     int pct = (int)((au * 100 + 16384) / 32768);
@@ -2136,6 +2167,7 @@ lbl_fm_agc_alpha_up(void* v, char* b, size_t n) {
 
 static const char*
 lbl_fm_agc_alpha_down(void* v, char* b, size_t n) {
+    UNUSED(v);
     int ad = 0;
     rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
     int pct = (int)((ad * 100 + 16384) / 32768);
@@ -2145,6 +2177,7 @@ lbl_fm_agc_alpha_down(void* v, char* b, size_t n) {
 
 static void
 act_fm_agc_alpha_up_up(void* v) {
+    UNUSED(v);
     int au = 0;
     rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
     au += 1024;
@@ -2156,6 +2189,7 @@ act_fm_agc_alpha_up_up(void* v) {
 
 static void
 act_fm_agc_alpha_up_dn(void* v) {
+    UNUSED(v);
     int au = 0;
     rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
     au -= 1024;
@@ -2167,6 +2201,7 @@ act_fm_agc_alpha_up_dn(void* v) {
 
 static void
 act_fm_agc_alpha_down_up(void* v) {
+    UNUSED(v);
     int ad = 0;
     rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
     ad += 1024;
@@ -2178,6 +2213,7 @@ act_fm_agc_alpha_down_up(void* v) {
 
 static void
 act_fm_agc_alpha_down_dn(void* v) {
+    UNUSED(v);
     int ad = 0;
     rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
     ad -= 1024;
@@ -2189,6 +2225,7 @@ act_fm_agc_alpha_down_dn(void* v) {
 
 static const char*
 lbl_iq_dc(void* v, char* b, size_t n) {
+    UNUSED(v);
     int k = 0;
     int on = rtl_stream_get_iq_dc(&k);
     snprintf(b, n, "IQ DC Block [%s]", on ? "On" : "Off");
@@ -2197,6 +2234,7 @@ lbl_iq_dc(void* v, char* b, size_t n) {
 
 static void
 act_toggle_iq_dc(void* v) {
+    UNUSED(v);
     int k = 0;
     int on = rtl_stream_get_iq_dc(&k);
     rtl_stream_set_iq_dc(on ? 0 : 1, -1);
@@ -2204,6 +2242,7 @@ act_toggle_iq_dc(void* v) {
 
 static const char*
 lbl_iq_dc_k(void* v, char* b, size_t n) {
+    UNUSED(v);
     int k = 0;
     rtl_stream_get_iq_dc(&k);
     snprintf(b, n, "IQ DC Shift k: %d (+/-)", k);
@@ -2212,6 +2251,7 @@ lbl_iq_dc_k(void* v, char* b, size_t n) {
 
 static void
 act_iq_dc_k_up(void* v) {
+    UNUSED(v);
     int k = 0;
     rtl_stream_get_iq_dc(&k);
     if (k < 15) {
@@ -2222,6 +2262,7 @@ act_iq_dc_k_up(void* v) {
 
 static void
 act_iq_dc_k_dn(void* v) {
+    UNUSED(v);
     int k = 0;
     rtl_stream_get_iq_dc(&k);
     if (k > 6) {
@@ -2232,6 +2273,7 @@ act_iq_dc_k_dn(void* v) {
 
 static const char*
 lbl_ted_sps(void* v, char* b, size_t n) {
+    UNUSED(v);
     int sps = rtl_stream_get_ted_sps();
     snprintf(b, n, "TED SPS: %d (+1/-1)", sps);
     return b;
@@ -2239,6 +2281,7 @@ lbl_ted_sps(void* v, char* b, size_t n) {
 
 static void
 act_ted_sps_up(void* v) {
+    UNUSED(v);
     int sps = rtl_stream_get_ted_sps();
     if (sps < 32) {
         sps++;
@@ -2248,6 +2291,7 @@ act_ted_sps_up(void* v) {
 
 static void
 act_ted_sps_dn(void* v) {
+    UNUSED(v);
     int sps = rtl_stream_get_ted_sps();
     if (sps > 2) {
         sps--;
@@ -2257,6 +2301,7 @@ act_ted_sps_dn(void* v) {
 
 static const char*
 lbl_ted_gain(void* v, char* b, size_t n) {
+    UNUSED(v);
     int g = rtl_stream_get_ted_gain();
     snprintf(b, n, "TED Gain (Q20): %d (+/-)", g);
     return b;
@@ -2264,6 +2309,7 @@ lbl_ted_gain(void* v, char* b, size_t n) {
 
 static void
 act_ted_gain_up(void* v) {
+    UNUSED(v);
     int g = rtl_stream_get_ted_gain();
     if (g < 512) {
         g += 8;
@@ -2273,6 +2319,7 @@ act_ted_gain_up(void* v) {
 
 static void
 act_ted_gain_dn(void* v) {
+    UNUSED(v);
     int g = rtl_stream_get_ted_gain();
     if (g > 16) {
         g -= 8;
@@ -2282,6 +2329,7 @@ act_ted_gain_dn(void* v) {
 
 static void
 act_toggle_iqbal(void* v) {
+    UNUSED(v);
     int on = rtl_stream_get_iq_balance();
     /* If Auto-DSP is active and Manual Override is off, enable Manual Override so the user's
        choice isn't immediately overwritten by auto toggling. */
@@ -2315,6 +2363,7 @@ act_toggle_dsp_panel(void* v) {
 
 static const char*
 lbl_ted_force(void* v, char* b, size_t n) {
+    UNUSED(v);
     int f = rtl_stream_get_ted_force();
     snprintf(b, n, "TED Force [%s]", f ? "Active" : "Inactive");
     return b;
@@ -2322,12 +2371,14 @@ lbl_ted_force(void* v, char* b, size_t n) {
 
 static void
 act_ted_force_toggle(void* v) {
+    UNUSED(v);
     int f = rtl_stream_get_ted_force();
     rtl_stream_set_ted_force(f ? 0 : 1);
 }
 
 static const char*
 lbl_ted_bias(void* v, char* b, size_t n) {
+    UNUSED(v);
     int eb = rtl_stream_ted_bias(NULL);
     snprintf(b, n, "TED Bias (EMA): %d", eb);
     return b;
@@ -2335,6 +2386,7 @@ lbl_ted_bias(void* v, char* b, size_t n) {
 
 static const char*
 lbl_manual_dsp(void* v, char* b, size_t n) {
+    UNUSED(v);
     int man = rtl_stream_get_manual_dsp();
     snprintf(b, n, "Manual DSP Override [%s]", man ? "Active" : "Inactive");
     return b;
@@ -2342,12 +2394,14 @@ lbl_manual_dsp(void* v, char* b, size_t n) {
 
 static void
 act_toggle_manual_dsp(void* v) {
+    UNUSED(v);
     int man = rtl_stream_get_manual_dsp();
     rtl_stream_set_manual_dsp(man ? 0 : 1);
 }
 
 static const char*
 lbl_onoff_auto(void* v, char* b, size_t n) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     snprintf(b, n, "Toggle Auto-DSP [%s]", a ? "Active" : "Inactive");
@@ -2356,6 +2410,7 @@ lbl_onoff_auto(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_lms(void* v, char* b, size_t n) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     snprintf(b, n, "Toggle LMS [%s]", l ? "Active" : "Inactive");
@@ -2364,6 +2419,7 @@ lbl_onoff_lms(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_mf(void* v, char* b, size_t n) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     snprintf(b, n, "Toggle Matched Filter [%s]", mf ? "Active" : "Inactive");
@@ -2372,6 +2428,7 @@ lbl_onoff_mf(void* v, char* b, size_t n) {
 
 static const char*
 lbl_toggle_rrc(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     snprintf(b, n, "Toggle RRC [%s]", on ? "Active" : "Inactive");
@@ -2380,6 +2437,7 @@ lbl_toggle_rrc(void* v, char* b, size_t n) {
 
 static const char*
 lbl_rrc_a_up(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     snprintf(b, n, "RRC alpha +5%% (now %d%%)", a);
@@ -2388,6 +2446,7 @@ lbl_rrc_a_up(void* v, char* b, size_t n) {
 
 static const char*
 lbl_rrc_a_dn(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     snprintf(b, n, "RRC alpha -5%% (now %d%%)", a);
@@ -2396,6 +2455,7 @@ lbl_rrc_a_dn(void* v, char* b, size_t n) {
 
 static const char*
 lbl_rrc_s_up(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     snprintf(b, n, "RRC span +1 (now %d)", s);
@@ -2404,6 +2464,7 @@ lbl_rrc_s_up(void* v, char* b, size_t n) {
 
 static const char*
 lbl_rrc_s_dn(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     snprintf(b, n, "RRC span -1 (now %d)", s);
@@ -2412,6 +2473,7 @@ lbl_rrc_s_dn(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_wl(void* v, char* b, size_t n) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     snprintf(b, n, "Toggle WL [%s]", wl ? "Active" : "Inactive");
@@ -2420,6 +2482,7 @@ lbl_onoff_wl(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_dfe(void* v, char* b, size_t n) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     snprintf(b, n, "Toggle DFE [%s]", dfe ? "Active" : "Inactive");
@@ -2428,6 +2491,7 @@ lbl_onoff_dfe(void* v, char* b, size_t n) {
 
 static const char*
 lbl_dft_cycle(void* v, char* b, size_t n) {
+    UNUSED(v);
     int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     snprintf(b, n, "Cycle DFE taps: %d", dft);
@@ -2436,6 +2500,7 @@ lbl_dft_cycle(void* v, char* b, size_t n) {
 
 static const char*
 lbl_eq_taps(void* v, char* b, size_t n) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     snprintf(b, n, "Set EQ taps 5/7 (now %d)", taps);
@@ -2444,6 +2509,7 @@ lbl_eq_taps(void* v, char* b, size_t n) {
 
 static const char*
 lbl_onoff_dqpsk(void* v, char* b, size_t n) {
+    UNUSED(v);
     int on = 0;
     rtl_stream_cqpsk_get_dqpsk(&on);
     snprintf(b, n, "Toggle DQPSK decision [%s]", on ? "Active" : "Inactive");
@@ -2452,6 +2518,7 @@ lbl_onoff_dqpsk(void* v, char* b, size_t n) {
 
 static void
 act_toggle_cq(void* v) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     rtl_stream_toggle_cqpsk(cq ? 0 : 1);
@@ -2459,6 +2526,7 @@ act_toggle_cq(void* v) {
 
 static void
 act_toggle_fll(void* v) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     rtl_stream_toggle_fll(f ? 0 : 1);
@@ -2466,6 +2534,7 @@ act_toggle_fll(void* v) {
 
 static void
 act_toggle_ted(void* v) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     rtl_stream_toggle_ted(t ? 0 : 1);
@@ -2473,6 +2542,7 @@ act_toggle_ted(void* v) {
 
 static void
 act_toggle_auto(void* v) {
+    UNUSED(v);
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
     rtl_stream_toggle_auto_dsp(a ? 0 : 1);
@@ -2480,6 +2550,7 @@ act_toggle_auto(void* v) {
 
 static void
 act_toggle_lms(void* v) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     rtl_stream_cqpsk_set(l ? 0 : 1, -1, -1, -1, -1, -1, -1, -1, -1);
@@ -2487,6 +2558,7 @@ act_toggle_lms(void* v) {
 
 static void
 act_toggle_mf(void* v) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, mf ? 0 : 1, -1);
@@ -2494,6 +2566,7 @@ act_toggle_mf(void* v) {
 
 static void
 act_toggle_rrc(void* v) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     rtl_stream_cqpsk_set_rrc(on ? 0 : 1, -1, -1);
@@ -2501,6 +2574,7 @@ act_toggle_rrc(void* v) {
 
 static void
 act_rrc_a_up(void* v) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     int na = a + 5;
@@ -2512,6 +2586,7 @@ act_rrc_a_up(void* v) {
 
 static void
 act_rrc_a_dn(void* v) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     int na = a - 5;
@@ -2523,6 +2598,7 @@ act_rrc_a_dn(void* v) {
 
 static void
 act_rrc_s_up(void* v) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     int ns = s + 1;
@@ -2534,6 +2610,7 @@ act_rrc_s_up(void* v) {
 
 static void
 act_rrc_s_dn(void* v) {
+    UNUSED(v);
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     int ns = s - 1;
@@ -2545,11 +2622,13 @@ act_rrc_s_dn(void* v) {
 
 static void
 act_cma(void* v) {
+    UNUSED(v);
     rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, -1, 1500);
 }
 
 static void
 act_toggle_wl(void* v) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     rtl_stream_cqpsk_set(-1, -1, -1, -1, wl ? 0 : 1, -1, -1, -1, -1);
@@ -2557,6 +2636,7 @@ act_toggle_wl(void* v) {
 
 static void
 act_toggle_dfe(void* v) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, dfe ? 0 : 1, dft, -1, -1);
@@ -2564,6 +2644,7 @@ act_toggle_dfe(void* v) {
 
 static void
 act_cycle_dft(void* v) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     int nd = (dft + 1) & 3;
@@ -2572,6 +2653,7 @@ act_cycle_dft(void* v) {
 
 static void
 act_taps_5_7(void* v) {
+    UNUSED(v);
     int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
     int nt = (taps >= 7) ? 5 : 7;
@@ -2580,6 +2662,7 @@ act_taps_5_7(void* v) {
 
 static void
 act_toggle_dqpsk(void* v) {
+    UNUSED(v);
     int on = 0;
     rtl_stream_cqpsk_get_dqpsk(&on);
     extern void rtl_stream_cqpsk_set_dqpsk(int);
@@ -2622,6 +2705,7 @@ cfg_apply(void) {
 
 static const char*
 lbl_p1_win(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P1 Window min total: %d", g_auto_cfg_cache.p25p1_window_min_total);
     return b;
@@ -2629,6 +2713,7 @@ lbl_p1_win(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p1_mod_on(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P1 Moderate On %%: %d", g_auto_cfg_cache.p25p1_moderate_on_pct);
     return b;
@@ -2636,6 +2721,7 @@ lbl_p1_mod_on(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p1_mod_off(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P1 Moderate Off %%: %d", g_auto_cfg_cache.p25p1_moderate_off_pct);
     return b;
@@ -2643,6 +2729,7 @@ lbl_p1_mod_off(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p1_hvy_on(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P1 Heavy On %%: %d", g_auto_cfg_cache.p25p1_heavy_on_pct);
     return b;
@@ -2650,6 +2737,7 @@ lbl_p1_hvy_on(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p1_hvy_off(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P1 Heavy Off %%: %d", g_auto_cfg_cache.p25p1_heavy_off_pct);
     return b;
@@ -2657,6 +2745,7 @@ lbl_p1_hvy_off(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p1_cool(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P1 Cooldown (ms): %d", g_auto_cfg_cache.p25p1_cooldown_ms);
     return b;
@@ -2664,6 +2753,7 @@ lbl_p1_cool(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p2_okmin(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P2 OK min: %d", g_auto_cfg_cache.p25p2_ok_min);
     return b;
@@ -2671,6 +2761,7 @@ lbl_p2_okmin(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p2_margin_on(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P2 Err margin On: %d", g_auto_cfg_cache.p25p2_err_margin_on);
     return b;
@@ -2678,6 +2769,7 @@ lbl_p2_margin_on(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p2_margin_off(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P2 Err margin Off: %d", g_auto_cfg_cache.p25p2_err_margin_off);
     return b;
@@ -2685,6 +2777,7 @@ lbl_p2_margin_off(void* v, char* b, size_t n) {
 
 static const char*
 lbl_p2_cool(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     snprintf(b, n, "P25P2 Cooldown (ms): %d", g_auto_cfg_cache.p25p2_cooldown_ms);
     return b;
@@ -2692,6 +2785,7 @@ lbl_p2_cool(void* v, char* b, size_t n) {
 
 static const char*
 lbl_ema_alpha(void* v, char* b, size_t n) {
+    UNUSED(v);
     cfg_refresh();
     int pct = (int)((g_auto_cfg_cache.ema_alpha_q15 * 100 + 16384) / 32768); // approx
     snprintf(b, n, "EMA alpha (Q15 ~%d%%): %d", pct, g_auto_cfg_cache.ema_alpha_q15);
@@ -2701,6 +2795,7 @@ lbl_ema_alpha(void* v, char* b, size_t n) {
 // Adjusters
 static void
 inc_p1_win(void* v) {
+    UNUSED(v);
     cfg_refresh();
     g_auto_cfg_cache.p25p1_window_min_total += 50;
     cfg_apply();
@@ -2708,6 +2803,7 @@ inc_p1_win(void* v) {
 
 static void
 dec_p1_win(void* v) {
+    UNUSED(v);
     cfg_refresh();
     if (g_auto_cfg_cache.p25p1_window_min_total > 50) {
         g_auto_cfg_cache.p25p1_window_min_total -= 50;
@@ -2735,6 +2831,7 @@ dec_i(int* p, int d, int min) {
 
 static void
 inc_p1_mod_on(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p1_moderate_on_pct, 1, 50);
     cfg_apply();
@@ -2742,6 +2839,7 @@ inc_p1_mod_on(void* v) {
 
 static void
 dec_p1_mod_on(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p1_moderate_on_pct, 1, 1);
     cfg_apply();
@@ -2749,6 +2847,7 @@ dec_p1_mod_on(void* v) {
 
 static void
 inc_p1_mod_off(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p1_moderate_off_pct, 1, 50);
     cfg_apply();
@@ -2756,6 +2855,7 @@ inc_p1_mod_off(void* v) {
 
 static void
 dec_p1_mod_off(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p1_moderate_off_pct, 1, 0);
     cfg_apply();
@@ -2763,6 +2863,7 @@ dec_p1_mod_off(void* v) {
 
 static void
 inc_p1_hvy_on(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p1_heavy_on_pct, 1, 90);
     cfg_apply();
@@ -2770,6 +2871,7 @@ inc_p1_hvy_on(void* v) {
 
 static void
 dec_p1_hvy_on(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p1_heavy_on_pct, 1, 1);
     cfg_apply();
@@ -2777,6 +2879,7 @@ dec_p1_hvy_on(void* v) {
 
 static void
 inc_p1_hvy_off(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p1_heavy_off_pct, 1, 90);
     cfg_apply();
@@ -2784,6 +2887,7 @@ inc_p1_hvy_off(void* v) {
 
 static void
 dec_p1_hvy_off(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p1_heavy_off_pct, 1, 0);
     cfg_apply();
@@ -2791,6 +2895,7 @@ dec_p1_hvy_off(void* v) {
 
 static void
 inc_p1_cool(void* v) {
+    UNUSED(v);
     cfg_refresh();
     g_auto_cfg_cache.p25p1_cooldown_ms += 100;
     cfg_apply();
@@ -2798,6 +2903,7 @@ inc_p1_cool(void* v) {
 
 static void
 dec_p1_cool(void* v) {
+    UNUSED(v);
     cfg_refresh();
     if (g_auto_cfg_cache.p25p1_cooldown_ms > 100) {
         g_auto_cfg_cache.p25p1_cooldown_ms -= 100;
@@ -2807,6 +2913,7 @@ dec_p1_cool(void* v) {
 
 static void
 inc_p2_okmin(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p2_ok_min, 1, 50);
     cfg_apply();
@@ -2814,6 +2921,7 @@ inc_p2_okmin(void* v) {
 
 static void
 dec_p2_okmin(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p2_ok_min, 1, 1);
     cfg_apply();
@@ -2821,6 +2929,7 @@ dec_p2_okmin(void* v) {
 
 static void
 inc_p2_m_on(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p2_err_margin_on, 1, 50);
     cfg_apply();
@@ -2828,6 +2937,7 @@ inc_p2_m_on(void* v) {
 
 static void
 dec_p2_m_on(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p2_err_margin_on, 1, 0);
     cfg_apply();
@@ -2835,6 +2945,7 @@ dec_p2_m_on(void* v) {
 
 static void
 inc_p2_m_off(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.p25p2_err_margin_off, 1, 50);
     cfg_apply();
@@ -2842,6 +2953,7 @@ inc_p2_m_off(void* v) {
 
 static void
 dec_p2_m_off(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.p25p2_err_margin_off, 1, 0);
     cfg_apply();
@@ -2849,6 +2961,7 @@ dec_p2_m_off(void* v) {
 
 static void
 inc_p2_cool(void* v) {
+    UNUSED(v);
     cfg_refresh();
     g_auto_cfg_cache.p25p2_cooldown_ms += 100;
     cfg_apply();
@@ -2856,6 +2969,7 @@ inc_p2_cool(void* v) {
 
 static void
 dec_p2_cool(void* v) {
+    UNUSED(v);
     cfg_refresh();
     if (g_auto_cfg_cache.p25p2_cooldown_ms > 100) {
         g_auto_cfg_cache.p25p2_cooldown_ms -= 100;
@@ -2865,6 +2979,7 @@ dec_p2_cool(void* v) {
 
 static void
 inc_alpha(void* v) {
+    UNUSED(v);
     cfg_refresh();
     inc_i(&g_auto_cfg_cache.ema_alpha_q15, 512, 32768);
     cfg_apply();
@@ -2872,6 +2987,7 @@ inc_alpha(void* v) {
 
 static void
 dec_alpha(void* v) {
+    UNUSED(v);
     cfg_refresh();
     dec_i(&g_auto_cfg_cache.ema_alpha_q15, 512, 1);
     cfg_apply();
@@ -3711,13 +3827,13 @@ act_rtl_opts(void* v) {
 }
 #endif
 
-static void
+static __attribute__((unused)) void
 act_key_entry(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_menu_key_entry(c->opts, c->state);
 }
 
-static void
+static __attribute__((unused)) void
 act_io_opts(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_menu_io_options(c->opts, c->state);

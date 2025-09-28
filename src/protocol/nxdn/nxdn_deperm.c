@@ -1093,7 +1093,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
         cac_message_buffer[i] = trellis_buf[i + 8];
     }
 
-    if (state->nxdn_last_ran != -1) {
+    if (state->nxdn_last_ran != 0xFFFFFFFFu) {
         fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
     } else {
         fprintf(stderr, "        ");

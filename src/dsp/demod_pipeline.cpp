@@ -769,7 +769,6 @@ fm_envelope_agc(struct demod_state* d) {
             clip_run--;
         }
         /* If we're far from full-scale with no clipping for a while, nudge target up */
-        int desired_peak = 28000; /* aim for ~85% FS */
         if (max_abs < 20000 && clip_cnt == 0) {
             if (under_run < MAXC) {
                 under_run++;
@@ -1100,8 +1099,7 @@ gardner_timing_adjust(struct demod_state* d) {
     /* Sync from demod_state to module state */
     d->ted_state.mu_q20 = d->ted_mu_q20;
 
-    ted_config_t cfg = {
-        .enabled = d->ted_enabled, .force = d->ted_force, .gain_q20 = d->ted_gain_q20, .sps = d->ted_sps};
+    ted_config_t cfg = {d->ted_enabled, d->ted_force, d->ted_gain_q20, d->ted_sps};
 
     gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
 

@@ -2028,7 +2028,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int ted_force;
         int mf_enable;
         int rrc_enable, rrc_alpha_q15, rrc_span_syms;
-    } persist = {0};
+    } persist = {};
 
     if (rtl_stream_get_manual_dsp()) {
         persist.use = 1;
@@ -3051,9 +3051,8 @@ dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delt
     }
     /* Hysteresis: engage with margin_on / low ok; relax with margin_off and ok_min */
     int aggressive_on = (err > ok + g_auto_cfg.p25p2_err_margin_on) || (ok < g_auto_cfg.p25p2_ok_min);
-    int aggressive_off = (err <= ok + g_auto_cfg.p25p2_err_margin_off) && (ok >= g_auto_cfg.p25p2_ok_min);
     int moderate_on = (err > 0);
-    int moderate_off = (err == 0) || aggressive_off;
+    /* moderate_off was unused; condition folded into logic below */
 
     int desired = MODE_CLEAN;
     switch (mode) {

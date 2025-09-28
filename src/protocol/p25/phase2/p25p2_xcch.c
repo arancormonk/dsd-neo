@@ -214,7 +214,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             if (ttg != 0) {
                                 int enc_wr = 0;
                                 for (unsigned int xx = 0; xx < state->group_tally; xx++) {
-                                    if (state->group_array[xx].groupNumber == ttg) {
+                                    if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
                                         enc_wr = 1;
                                         break;
                                     }
@@ -354,7 +354,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             if (ttg != 0) {
                                 int enc_wr = 0;
                                 for (unsigned int xx = 0; xx < state->group_tally; xx++) {
-                                    if (state->group_array[xx].groupNumber == ttg) {
+                                    if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
                                         enc_wr = 1;
                                         break;
                                     }

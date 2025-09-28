@@ -244,8 +244,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channelt, suf1, group);
         state->last_active_time = time(NULL);
 
-        for (int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == group) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
+            if (state->group_array[i].groupNumber == (unsigned long)group) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                 mode[sizeof(mode) - 1] = '\0';
@@ -254,10 +254,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         }
 
         //TG hold on P25p1 Ext -- block non-matching target, allow matching group
-        if (state->tg_hold != 0 && state->tg_hold != group) {
+        if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
             sprintf(mode, "%s", "B");
         }
-        if (state->tg_hold != 0 && state->tg_hold == group) {
+        if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
             sprintf(mode, "%s", "A");
         }
 
@@ -339,8 +339,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         p25_format_chan_suffix(state, channelt, -1, suf2, sizeof suf2);
         sprintf(state->active_channel[0], "Active Ch: %04X%s TGT: %u; ", channelt, suf2, (uint32_t)target);
 
-        for (int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == target) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
+            if (state->group_array[i].groupNumber == (unsigned long)target) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                 mode[sizeof(mode) - 1] = '\0';
@@ -438,8 +438,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         }
 
         //telephone only has a target address (manual shows combined source/target of 24-bits)
-        for (int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == target) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
+            if (state->group_array[i].groupNumber == (unsigned long)target) {
                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                 mode[sizeof(mode) - 1] = '\0';
@@ -459,7 +459,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             }
         }
         if (opts->p25_trunk == 0) {
-            if (target == state->lasttg || target == state->lasttgR) {
+            if ((int)target == state->lasttg || (int)target == state->lasttgR) {
                 //P1 FDMA
                 if (state->synctype == 0 || state->synctype == 1) {
                     state->p25_vc_freq[0] = freq;
@@ -516,8 +516,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             }
             state->last_active_time = time(NULL);
 
-            for (int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == group) {
+            for (unsigned int i = 0; i < state->group_tally; i++) {
+                if (state->group_array[i].groupNumber == (unsigned long)group) {
                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
                     strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                     mode[sizeof(mode) - 1] = '\0';
@@ -526,10 +526,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             }
 
             //TG hold on MFID90 GRG -- block non-matching target, allow matching group
-            if (state->tg_hold != 0 && state->tg_hold != group) {
+            if (state->tg_hold != 0 && state->tg_hold != (uint32_t)group) {
                 sprintf(mode, "%s", "B");
             }
-            if (state->tg_hold != 0 && state->tg_hold == group) {
+            if (state->tg_hold != 0 && state->tg_hold == (uint32_t)group) {
                 sprintf(mode, "%s", "A");
             }
 

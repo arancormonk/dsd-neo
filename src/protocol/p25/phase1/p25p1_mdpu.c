@@ -232,7 +232,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             sap = mpdu_byte[1] & 0x3F;
             blks = mpdu_byte[6] & 0x7F;
 
-            if (an == 1 && fmt == 0b10110) { //confirmed data packet header block
+            if (an == 1 && fmt == 0x16) { // 0b10110 -> 0x16; confirmed data packet header block
                 r34 = 1;
             }
 

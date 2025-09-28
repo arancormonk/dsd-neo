@@ -11,6 +11,10 @@ Checks: >
   performance-*,
   readability-*,
   portability-*,
+  # Align with common compiler warnings we gate on in builds
+  clang-diagnostic-sign-compare,
+  clang-diagnostic-implicit-fallthrough,
+  clang-diagnostic-tautological-pointer-compare,
   # Disable known noisy checks even in strict
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
@@ -23,7 +27,7 @@ Checks: >
   -readability-isolate-declaration,
   -readability-non-const-parameter,
   -readability-math-missing-parentheses
-WarningsAsErrors: 'clang-analyzer-*,security-*,bugprone-macro-parentheses,bugprone-branch-clone,bugprone-integer-division,bugprone-signed-char-misuse,bugprone-implicit-widening-of-multiplication-result,bugprone-unsafe-functions'
+WarningsAsErrors: 'clang-analyzer-*,security-*,bugprone-macro-parentheses,bugprone-branch-clone,bugprone-integer-division,bugprone-signed-char-misuse,bugprone-implicit-widening-of-multiplication-result,bugprone-unsafe-functions,clang-diagnostic-sign-compare,clang-diagnostic-implicit-fallthrough,clang-diagnostic-tautological-pointer-compare'
 HeaderFilterRegex: '^(src|include|apps)/'
 FormatStyle: none
 CheckOptions:

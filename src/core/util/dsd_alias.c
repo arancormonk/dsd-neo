@@ -493,8 +493,8 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
                  sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; %s", str, fqs);
     }
 
-    for (int16_t i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == rid) {
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == rid) {
             wr = 1; //already in there, so no need to assign it
             break;
         }
@@ -605,7 +605,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 
     //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
     if (tsrc != 0) {
-        for (int16_t i = 0; i < state->group_tally; i++) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == tsrc) {
                 wr = 1; //already in there, so no need to assign it
                 break;
@@ -669,8 +669,8 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     }
 
     if (rid != 0) {
-        for (int16_t i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == rid) {
+        for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+            if (state->group_array[gi].groupNumber == rid) {
                 wr = 1; //already in there, so no need to assign it
                 break;
             }

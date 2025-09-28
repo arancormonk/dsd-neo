@@ -699,10 +699,10 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 
             //if this is locked out by conditions above, then write it into the TG mode if we have a TG value assigned
             if (enc_lo == 1 && ttg != 0) {
-                int xx = 0;
+                unsigned int xx = 0;
                 int enc_wr = 0;
                 for (xx = 0; xx < state->group_tally; xx++) {
-                    if (state->group_array[xx].groupNumber == ttg) {
+                    if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
                         enc_wr = 1; //already in there, so no need to assign it
                         break;
                     }

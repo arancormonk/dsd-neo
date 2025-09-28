@@ -164,8 +164,8 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     char modeR[8];
     snprintf(modeR, sizeof modeR, "%s", "");
 
-    int TGL = state->lasttg;
-    int TGR = state->lasttgR;
+    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGR = (unsigned long)state->lasttgR;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -174,14 +174,14 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         snprintf(modeR, sizeof modeR, "%s", "B");
     }
 
-    for (i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
-        if (state->group_array[i].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+        if (state->group_array[gi].groupNumber == TGR) {
+            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
             modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
@@ -196,17 +196,17 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     }
 
     //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
         encL = 1;
     }
-    if (state->tg_hold != 0 && state->tg_hold != TGR) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGR) {
         encR = 1;
     }
     //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
         encL = 0;
     }
-    if (state->tg_hold != 0 && state->tg_hold == TGR) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGR) {
         encR = 0;
     }
 
@@ -392,8 +392,8 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     char modeR[8];
     snprintf(modeR, sizeof modeR, "%s", "");
 
-    int TGL = state->lasttg;
-    int TGR = state->lasttgR;
+    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGR = (unsigned long)state->lasttgR;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -402,14 +402,14 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         snprintf(modeR, sizeof modeR, "%s", "B");
     }
 
-    for (i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
-        if (state->group_array[i].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+        if (state->group_array[gi].groupNumber == TGR) {
+            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
             modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
@@ -614,7 +614,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     char modeL[8];
     sprintf(modeL, "%s", "");
 
-    int TGL = state->lasttg;
+    unsigned long TGL = (unsigned long)state->lasttg;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -622,9 +622,9 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         sprintf(modeL, "%s", "B");
     }
 
-    for (int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             break;
         }
@@ -636,11 +636,11 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     }
 
     //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
         encL = 1;
     }
     //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
         encL = 0;
     }
 
@@ -750,9 +750,9 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     char modeL[8];
     sprintf(modeL, "%s", "");
 
-    int TGL = state->lasttg;
+    unsigned long TGL = (unsigned long)state->lasttg;
     if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
-        TGL = state->nxdn_last_tg;
+        TGL = (unsigned long)state->nxdn_last_tg;
     }
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
@@ -761,9 +761,9 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
         sprintf(modeL, "%s", "B");
     }
 
-    for (int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             break;
         }
@@ -775,11 +775,11 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     }
 
     //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
         encL = 1;
     }
     //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
         encL = 0;
     }
 
@@ -824,11 +824,15 @@ void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     int i;
     size_t len = state->audio_out_idx;
+    if (len > 960) {
+        len = 960; // clamp to buffer capacity
+    }
 
     //debug
     // fprintf (stderr, " L LEN: %d", len);
 
-    short mono_samp[len];
+    short mono_samp_buf[960];
+    short* mono_samp = mono_samp_buf;
     memset(mono_samp, 0, len * sizeof(short));
 
     if (opts->slot1_on == 0) {
@@ -836,13 +840,13 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     }
 
     if (len == 160) {
-        for (i = 0; i < len; i++) {
-            mono_samp[i] = state->s_l[i];
+        for (size_t j = 0; j < len; j++) {
+            mono_samp[j] = state->s_l[j];
         }
     } else if (len == 960) {
         state->audio_out_buf_p -= 960; //rewind first
-        for (i = 0; i < len; i++) {
-            mono_samp[i] = *state->audio_out_buf_p;
+        for (size_t j = 0; j < len; j++) {
+            mono_samp[j] = *state->audio_out_buf_p;
             state->audio_out_buf_p++;
         }
     }
@@ -906,11 +910,15 @@ void
 playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
     int i;
     size_t len = state->audio_out_idxR;
+    if (len > 960) {
+        len = 960; // clamp to buffer capacity
+    }
 
     //debug
     // fprintf (stderr, " R LEN: %d", len);
 
-    short mono_samp[len];
+    short mono_samp_buf[960];
+    short* mono_samp = mono_samp_buf;
     memset(mono_samp, 0, len * sizeof(short));
 
     if (opts->slot2_on == 0) {
@@ -918,13 +926,13 @@ playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
     }
 
     if (len == 160) {
-        for (i = 0; i < len; i++) {
-            mono_samp[i] = state->s_r[i];
+        for (size_t j = 0; j < len; j++) {
+            mono_samp[j] = state->s_r[j];
         }
     } else if (len == 960) {
         state->audio_out_buf_pR -= 960; //rewind first
-        for (i = 0; i < len; i++) {
-            mono_samp[i] = *state->audio_out_buf_pR;
+        for (size_t j = 0; j < len; j++) {
+            mono_samp[j] = *state->audio_out_buf_pR;
             state->audio_out_buf_pR++;
         }
     }
@@ -1025,7 +1033,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     char modeL[8];
     sprintf(modeL, "%s", "");
 
-    int TGL = state->lasttg;
+    unsigned long TGL = (unsigned long)state->lasttg;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -1033,9 +1041,9 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         sprintf(modeL, "%s", "B");
     }
 
-    for (int i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             break;
         }
@@ -1047,11 +1055,11 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     }
 
     //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
         encL = 1;
     }
     //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
         encL = 0;
     }
 
@@ -1196,8 +1204,8 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     char modeR[8];
     sprintf(modeR, "%s", "");
 
-    int TGL = state->lasttg;
-    int TGR = state->lasttgR;
+    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGR = (unsigned long)state->lasttgR;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -1206,14 +1214,14 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
         sprintf(modeR, "%s", "B");
     }
 
-    for (i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
-        if (state->group_array[i].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+        if (state->group_array[gi].groupNumber == TGR) {
+            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
             modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
@@ -1534,8 +1542,8 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     char modeR[8];
     sprintf(modeR, "%s", "");
 
-    int TGL = state->lasttg;
-    int TGR = state->lasttgR;
+    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGR = (unsigned long)state->lasttgR;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -1544,14 +1552,14 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         sprintf(modeR, "%s", "B");
     }
 
-    for (i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
-        if (state->group_array[i].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+        if (state->group_array[gi].groupNumber == TGR) {
+            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
             modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
@@ -1566,17 +1574,17 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     }
 
     //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
         encL = 1;
     }
-    if (state->tg_hold != 0 && state->tg_hold != TGR) {
+    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGR) {
         encR = 1;
     }
     //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
         encL = 0;
     }
-    if (state->tg_hold != 0 && state->tg_hold == TGR) {
+    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGR) {
         encR = 0;
     }
 
@@ -1795,8 +1803,8 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     char modeR[8];
     sprintf(modeR, "%s", "");
 
-    int TGL = state->lasttg;
-    int TGR = state->lasttgR;
+    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGR = (unsigned long)state->lasttgR;
 
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
@@ -1805,14 +1813,14 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
         sprintf(modeR, "%s", "B");
     }
 
-    for (i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[i].groupMode, sizeof(modeL) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == TGL) {
+            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
             modeL[sizeof(modeL) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }
-        if (state->group_array[i].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[i].groupMode, sizeof(modeR) - 1);
+        if (state->group_array[gi].groupNumber == TGR) {
+            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
             modeR[sizeof(modeR) - 1] = '\0';
             // break; //need to keep going to check other potential slot group
         }

@@ -229,9 +229,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         groupNumber = state->lasttgR;
     }
 
-    for (i = 0; i < state->group_tally; i++) {
-        if (state->group_array[i].groupNumber == groupNumber) {
-            strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
+    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
+        if (state->group_array[gi].groupNumber == (unsigned long)groupNumber) {
+            strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
             mode[sizeof(mode) - 1] = '\0';
             break;
         }

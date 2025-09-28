@@ -402,8 +402,8 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     }
 
     //Play only voice frames by first looking to see if there is a TCH voice in CommunicationMode,
-    short start = 0;
-    short end = 4;
+    uint32_t start = 0;
+    uint32_t end = 4;
 
     //not really even sure why I made this loop
     //I probably should actually read the manual again

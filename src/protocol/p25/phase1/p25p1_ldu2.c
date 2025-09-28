@@ -339,8 +339,8 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
         int algid_early = (int)strtol(algid_b, NULL, 2);
         int kid_early = (int)strtol(kid_b, NULL, 2);
-        unsigned long long mihex1_e = (unsigned long long)ConvertBitIntoBytes(&mi_b[0], 32);
-        unsigned long long mihex2_e = (unsigned long long)ConvertBitIntoBytes(&mi_b[32], 32);
+        unsigned long long mihex1_e = (unsigned long long)ConvertBitIntoBytes((unsigned char*)&mi_b[0], 32);
+        unsigned long long mihex2_e = (unsigned long long)ConvertBitIntoBytes((unsigned char*)&mi_b[32], 32);
 
         // Do NOT persist early ALGID/KID/MI into state here; bits are not
         // yet fully FEC-corrected and can cause false ENC classification.
@@ -823,8 +823,8 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         if (tsrc
             != 0) //&& opts->p25_trunk == 0 //should never get here if enc, should be zeroed out, but could potentially slip if HDU is missed and offchance of 02 opcode
         {
-            for (int x = 0; x < state->group_tally; x++) {
-                if (state->group_array[x].groupNumber == tsrc) {
+            for (unsigned int x = 0; x < state->group_tally; x++) {
+                if (state->group_array[x].groupNumber == (unsigned long)tsrc) {
                     wr = 1; //already in there, so no need to assign it
                     z = x;
                     break;
@@ -900,10 +900,10 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
         //if this is locked out by conditions above, then write it into the TG mode if we have a TG value assigned
         if (enc_lo == 1 && ttg != 0) {
-            int xx = 0;
+            unsigned int xx = 0;
             int enc_wr = 0;
             for (xx = 0; xx < state->group_tally; xx++) {
-                if (state->group_array[xx].groupNumber == ttg) {
+                if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
                     enc_wr = 1; //already in there, so no need to assign it
                     break;
                 }

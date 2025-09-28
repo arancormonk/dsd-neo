@@ -494,8 +494,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             sprintf(mode, "%s", "B");
                         }
 
-                        for (int i = 0; i < state->group_tally; i++) {
-                            if (state->group_array[i].groupNumber == target) {
+                        for (unsigned int i = 0; i < state->group_tally; i++) {
+                            if (state->group_array[i].groupNumber == (unsigned long)target) {
                                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
                                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                                 mode[sizeof(mode) - 1] = '\0';
@@ -504,10 +504,10 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         }
 
                         //TG hold on DMR T3 Systems -- block non-matching target, allow matching target
-                        if (state->tg_hold != 0 && state->tg_hold != target) {
+                        if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                             sprintf(mode, "%s", "B");
                         }
-                        if (state->tg_hold != 0 && state->tg_hold == target) {
+                        if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) {
                             sprintf(mode, "%s", "A");
                         }
 
@@ -739,10 +739,10 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 }
 
                 //if we have a tg hold in place that matches traffic that was just on this slot (this will override other calls in the opposite slot)
-                if (state->currentslot == 0 && state->tg_hold == state->lasttg && state->tg_hold != 0) {
+                if (state->currentslot == 0 && state->tg_hold == (uint32_t)state->lasttg && state->tg_hold != 0) {
                     clear = 4;
                 }
-                if (state->currentslot == 1 && state->tg_hold == state->lasttgR && state->tg_hold != 0) {
+                if (state->currentslot == 1 && state->tg_hold == (uint32_t)state->lasttgR && state->tg_hold != 0) {
                     clear = 5;
                 }
 
@@ -2112,8 +2112,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                 sprintf(mode, "%s", "B");
                             }
 
-                            for (int i = 0; i < state->group_tally; i++) {
-                                if (state->group_array[i].groupNumber == t_tg[j]) {
+                            for (unsigned int i = 0; i < state->group_tally; i++) {
+                                if (state->group_array[i].groupNumber == (unsigned long)t_tg[j]) {
                                     fprintf(stderr, " [%s]", state->group_array[i].groupName);
                                     strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                                     mode[sizeof(mode) - 1] = '\0';
@@ -2249,7 +2249,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                         //Craft a fake CSBK pdu send it to run as a p_clear to go to rest channel if its available (no calls currently)
                         uint8_t dummy[12];
-                        uint8_t* dbits;
+                        uint8_t* dbits = NULL;
                         memset(dummy, 0, sizeof(dummy));
                         dummy[0] = 46;
                         dummy[1] = 253;
@@ -2386,8 +2386,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     sprintf(mode, "%s", "B");
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == grpAddr) {
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)grpAddr) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
                         strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
@@ -2489,8 +2489,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     sprintf(mode, "%s", "B");
                 }
 
-                for (int i = 0; i < state->group_tally; i++) {
-                    if (state->group_array[i].groupNumber == dtarget) {
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)dtarget) {
                         fprintf(stderr, " [%s]", state->group_array[i].groupName);
                         strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
@@ -2764,8 +2764,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         //this won't work properly on hashed TGT values
                         //unless users load a TGT hash in a csv file
                         //and hope it doesn't clash with other normal TG values
-                        for (int i = 0; i < state->group_tally; i++) {
-                            if (state->group_array[i].groupNumber == t_tg[j + xpt_bank]) {
+                        for (unsigned int i = 0; i < state->group_tally; i++) {
+                            if (state->group_array[i].groupNumber == (unsigned long)t_tg[j + xpt_bank]) {
                                 fprintf(stderr, " [%s]", state->group_array[i].groupName);
                                 strncpy(mode, state->group_array[i].groupMode, sizeof(mode) - 1);
                                 mode[sizeof(mode) - 1] = '\0';

@@ -209,13 +209,13 @@ void
 Hamming_7_4_init() {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_7_4_m_corr, 0xFF, 8); // initialize with all invalid positions
-    Hamming_7_4_m_corr[0b101] = 0;
-    Hamming_7_4_m_corr[0b111] = 1;
-    Hamming_7_4_m_corr[0b110] = 2;
-    Hamming_7_4_m_corr[0b011] = 3;
-    Hamming_7_4_m_corr[0b100] = 4;
-    Hamming_7_4_m_corr[0b010] = 5;
-    Hamming_7_4_m_corr[0b001] = 6;
+    Hamming_7_4_m_corr[5] = 0;
+    Hamming_7_4_m_corr[7] = 1;
+    Hamming_7_4_m_corr[6] = 2;
+    Hamming_7_4_m_corr[3] = 3;
+    Hamming_7_4_m_corr[4] = 4;
+    Hamming_7_4_m_corr[2] = 5;
+    Hamming_7_4_m_corr[1] = 6;
 }
 
 // Not very efficient but encode is used for unit testing only
@@ -275,18 +275,18 @@ void
 Hamming_12_8_init() {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_12_8_m_corr, 0xFF, 16); // initialize with all invalid positions
-    Hamming_12_8_m_corr[0b1110] = 0;
-    Hamming_12_8_m_corr[0b0111] = 1;
-    Hamming_12_8_m_corr[0b1010] = 2;
-    Hamming_12_8_m_corr[0b0101] = 3;
-    Hamming_12_8_m_corr[0b1011] = 4;
-    Hamming_12_8_m_corr[0b1100] = 5;
-    Hamming_12_8_m_corr[0b0110] = 6;
-    Hamming_12_8_m_corr[0b0011] = 7;
-    Hamming_12_8_m_corr[0b1000] = 8;
-    Hamming_12_8_m_corr[0b0100] = 9;
-    Hamming_12_8_m_corr[0b0010] = 10;
-    Hamming_12_8_m_corr[0b0001] = 11;
+    Hamming_12_8_m_corr[14] = 0;
+    Hamming_12_8_m_corr[7] = 1;
+    Hamming_12_8_m_corr[10] = 2;
+    Hamming_12_8_m_corr[5] = 3;
+    Hamming_12_8_m_corr[11] = 4;
+    Hamming_12_8_m_corr[12] = 5;
+    Hamming_12_8_m_corr[6] = 6;
+    Hamming_12_8_m_corr[3] = 7;
+    Hamming_12_8_m_corr[8] = 8;
+    Hamming_12_8_m_corr[4] = 9;
+    Hamming_12_8_m_corr[2] = 10;
+    Hamming_12_8_m_corr[1] = 11;
 }
 
 // Not very efficient but encode is used for unit testing only
@@ -361,19 +361,19 @@ void
 Hamming_13_9_init() {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_13_9_m_corr, 0xFF, 16); // initialize with all invalid positions
-    Hamming_13_9_m_corr[0b1111] = 0;
-    Hamming_13_9_m_corr[0b1110] = 1;
-    Hamming_13_9_m_corr[0b0111] = 2;
-    Hamming_13_9_m_corr[0b1010] = 3;
-    Hamming_13_9_m_corr[0b0101] = 4;
-    Hamming_13_9_m_corr[0b1011] = 5;
-    Hamming_13_9_m_corr[0b1100] = 6;
-    Hamming_13_9_m_corr[0b0110] = 7;
-    Hamming_13_9_m_corr[0b0011] = 8;
-    Hamming_13_9_m_corr[0b1000] = 9;
-    Hamming_13_9_m_corr[0b0100] = 10;
-    Hamming_13_9_m_corr[0b0010] = 11;
-    Hamming_13_9_m_corr[0b0001] = 12;
+    Hamming_13_9_m_corr[15] = 0;
+    Hamming_13_9_m_corr[14] = 1;
+    Hamming_13_9_m_corr[7] = 2;
+    Hamming_13_9_m_corr[10] = 3;
+    Hamming_13_9_m_corr[5] = 4;
+    Hamming_13_9_m_corr[11] = 5;
+    Hamming_13_9_m_corr[12] = 6;
+    Hamming_13_9_m_corr[6] = 7;
+    Hamming_13_9_m_corr[3] = 8;
+    Hamming_13_9_m_corr[8] = 9;
+    Hamming_13_9_m_corr[4] = 10;
+    Hamming_13_9_m_corr[2] = 11;
+    Hamming_13_9_m_corr[1] = 12;
 }
 
 // Not very efficient but encode is used for unit testing only
@@ -450,21 +450,21 @@ void
 Hamming_15_11_init() {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_15_11_m_corr, 0xFF, 16); // initialize with all invalid positions
-    Hamming_15_11_m_corr[0b1001] = 0;
-    Hamming_15_11_m_corr[0b1101] = 1;
-    Hamming_15_11_m_corr[0b1111] = 2;
-    Hamming_15_11_m_corr[0b1110] = 3;
-    Hamming_15_11_m_corr[0b0111] = 4;
-    Hamming_15_11_m_corr[0b1010] = 5;
-    Hamming_15_11_m_corr[0b0101] = 6;
-    Hamming_15_11_m_corr[0b1011] = 7;
-    Hamming_15_11_m_corr[0b1100] = 8;
-    Hamming_15_11_m_corr[0b0110] = 9;
-    Hamming_15_11_m_corr[0b0011] = 10;
-    Hamming_15_11_m_corr[0b1000] = 11;
-    Hamming_15_11_m_corr[0b0100] = 12;
-    Hamming_15_11_m_corr[0b0010] = 13;
-    Hamming_15_11_m_corr[0b0001] = 14;
+    Hamming_15_11_m_corr[9] = 0;
+    Hamming_15_11_m_corr[13] = 1;
+    Hamming_15_11_m_corr[15] = 2;
+    Hamming_15_11_m_corr[14] = 3;
+    Hamming_15_11_m_corr[7] = 4;
+    Hamming_15_11_m_corr[10] = 5;
+    Hamming_15_11_m_corr[5] = 6;
+    Hamming_15_11_m_corr[11] = 7;
+    Hamming_15_11_m_corr[12] = 8;
+    Hamming_15_11_m_corr[6] = 9;
+    Hamming_15_11_m_corr[3] = 10;
+    Hamming_15_11_m_corr[8] = 11;
+    Hamming_15_11_m_corr[4] = 12;
+    Hamming_15_11_m_corr[2] = 13;
+    Hamming_15_11_m_corr[1] = 14;
 }
 
 // Not very efficient but encode is used for unit testing only
@@ -543,22 +543,22 @@ void
 Hamming_16_11_4_init() {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_16_11_4_m_corr, 0xFF, 32); // initialize with all invalid positions
-    Hamming_16_11_4_m_corr[0b10011] = 0;
-    Hamming_16_11_4_m_corr[0b11010] = 1;
-    Hamming_16_11_4_m_corr[0b11111] = 2;
-    Hamming_16_11_4_m_corr[0b11100] = 3;
-    Hamming_16_11_4_m_corr[0b01110] = 4;
-    Hamming_16_11_4_m_corr[0b10101] = 5;
-    Hamming_16_11_4_m_corr[0b01011] = 6;
-    Hamming_16_11_4_m_corr[0b10110] = 7;
-    Hamming_16_11_4_m_corr[0b11001] = 8;
-    Hamming_16_11_4_m_corr[0b01101] = 9;
-    Hamming_16_11_4_m_corr[0b00111] = 10;
-    Hamming_16_11_4_m_corr[0b10000] = 11;
-    Hamming_16_11_4_m_corr[0b01000] = 12;
-    Hamming_16_11_4_m_corr[0b00100] = 13;
-    Hamming_16_11_4_m_corr[0b00010] = 14;
-    Hamming_16_11_4_m_corr[0b00001] = 15;
+    Hamming_16_11_4_m_corr[19] = 0;
+    Hamming_16_11_4_m_corr[26] = 1;
+    Hamming_16_11_4_m_corr[31] = 2;
+    Hamming_16_11_4_m_corr[28] = 3;
+    Hamming_16_11_4_m_corr[14] = 4;
+    Hamming_16_11_4_m_corr[21] = 5;
+    Hamming_16_11_4_m_corr[11] = 6;
+    Hamming_16_11_4_m_corr[22] = 7;
+    Hamming_16_11_4_m_corr[25] = 8;
+    Hamming_16_11_4_m_corr[13] = 9;
+    Hamming_16_11_4_m_corr[7] = 10;
+    Hamming_16_11_4_m_corr[16] = 11;
+    Hamming_16_11_4_m_corr[8] = 12;
+    Hamming_16_11_4_m_corr[4] = 13;
+    Hamming_16_11_4_m_corr[2] = 14;
+    Hamming_16_11_4_m_corr[1] = 15;
 }
 
 // Not very efficient but encode is used for unit testing only

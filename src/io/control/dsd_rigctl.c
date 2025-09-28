@@ -336,7 +336,7 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
 void
 udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
-    size_t err = 0;
+    ssize_t err = 0;
 
     //listen with:
 
@@ -355,11 +355,10 @@ udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     //send audio or data to socket
     err = sendto(opts->udp_sockfd, data, nsam, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
     if (err < 0) {
-        fprintf(stderr, "\n UDP SENDTO ERR %zd",
-                (ssize_t)err); // return value here is ssize_t number of bytes sent, or -1 for failure
+        fprintf(stderr, "\n UDP SENDTO ERR %zd", err);
     }
-    if (err < nsam) {
-        fprintf(stderr, "\n UDP Underflow %ld", err); //I'm not even sure if this is possible
+    if (err >= 0 && (size_t)err < nsam) {
+        fprintf(stderr, "\n UDP Underflow %zd", err); //I'm not even sure if this is possible
     }
 }
 
@@ -393,8 +392,8 @@ udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
         fprintf(stderr, "\n UDP SENDTO ERR %zd",
                 err); // return value here is ssize_t number of bytes sent, or -1 for failure
     }
-    if (err < nsam) {
-        fprintf(stderr, "\n UDP Underflow %ld", err); //I'm not even sure if this is possible
+    if (err >= 0 && (size_t)err < nsam) {
+        fprintf(stderr, "\n UDP Underflow %zd", err); //I'm not even sure if this is possible
     }
 }
 

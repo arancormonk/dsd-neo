@@ -134,11 +134,14 @@ static void
 ui_print_hr(void) {
     int rows = 0, cols = 80;
     getmaxyx(stdscr, rows, cols);
-    if (cols < 1) {
+    (void)rows;
+    (void)rows;
+    if (cols < 1 || rows < 1) {
         cols = 80;
     }
     int y = 0, x = 0;
     getyx(stdscr, y, x);
+    (void)x;
     mvhline(y, 0, '-', cols);
     if (y + 1 < rows) {
         move(y + 1, 0);
@@ -151,12 +154,15 @@ static void
 ui_print_header(const char* title) {
     int rows = 0, cols = 80;
     getmaxyx(stdscr, rows, cols);
+    (void)rows;
+    (void)rows;
     if (cols < 4) {
         cols = 80;
     }
     const char* t = (title && *title) ? title : "";
     int y = 0, x = 0;
     getyx(stdscr, y, x);
+    (void)x;
     addstr("--");
     addstr(t);
     int used = 2 + (int)strlen(t);
@@ -298,7 +304,7 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
 /* Forward declaration for int ascending comparator (used by qsort for percentiles) */
 static int cmp_int_asc(const void* a, const void* b);
 
-static void
+static __attribute__((unused)) void
 snr_hist_push(int mod, double snr) {
     if (snr < -50.0) {
         return;
@@ -331,7 +337,7 @@ snr_hist_push(int mod, double snr) {
     }
 }
 
-static void
+static __attribute__((unused)) void
 print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Preserve the current color pair so our temporary colors don't clear it */
 #ifdef PRETTY_COLORS
@@ -625,6 +631,7 @@ print_dsp_status(void) {
 
 static void
 print_constellation_view(dsd_opts* opts, dsd_state* state) {
+    UNUSED(state);
 #ifdef USE_RTLSDR
     /* Fetch a snapshot of recent I/Q points */
     enum { MAXP = 4096 };
@@ -727,6 +734,8 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         absI[k] = ai;
         absQ[k] = aq;
         /* Approximate magnitude without floating point: sqrt(i*i + q*q). */
+        (void)absI;
+        (void)absQ;
         long ii = (long)i;
         long qq = (long)q;
         long r2 = ii * ii + qq * qq;
@@ -2260,7 +2269,7 @@ ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) {
     }
     int rows = 0, cols = 80;
     getmaxyx(stdscr, rows, cols);
-    if (cols < 1) {
+    if (cols < 1 || rows < 1) {
         cols = 80;
     }
     int shown = 0;
@@ -2333,7 +2342,7 @@ ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
     }
     int rows = 0, cols = 80;
     getmaxyx(stdscr, rows, cols);
-    if (cols < 1) {
+    if (cols < 1 || rows < 1) {
         cols = 80;
     }
     int shown = 0;
@@ -2736,7 +2745,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             //If you MUST have perfectly-accurate source LIDs, look at the logged CC messages yourself - incorrect source LIDs
             //may be displayed if we miss an initial call channel assignment.
             if (state->ea_mode == 1
-                || (state->lastsrc != 0 || edacs_channel_tree[state->edacs_vc_lcn][4] != state->edacs_vc_call_type)) {
+                || (state->lastsrc != 0
+                    || edacs_channel_tree[state->edacs_vc_lcn][4] != (unsigned long long)state->edacs_vc_call_type)) {
                 edacs_channel_tree[state->edacs_vc_lcn][3] = state->lastsrc;
             }
             if (state->ea_mode == 0 && state->lastsrc == 0x800) { //this was from a grant update, so set this to 0
@@ -3649,6 +3659,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             int shown = 0;
             int rows = 0, cols = 80;
             getmaxyx(stdscr, rows, cols);
+            (void)rows;
             if (cols < 1) {
                 cols = 80;
             }
@@ -3727,6 +3738,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             int shown = 0;
             int rows = 0, cols = 80;
             getmaxyx(stdscr, rows, cols);
+            (void)rows;
             if (cols < 1) {
                 cols = 80;
             }
@@ -4011,13 +4023,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("Alias: [%s]", state->generic_talker_alias[0]);
 
         //Group Name Labels from CSV import
-        for (int k = 0; k < state->group_tally; k++) {
-            if (state->group_array[k].groupNumber == state->nxdn_last_tg) {
+        for (unsigned int k = 0; k < state->group_tally; k++) {
+            if (state->group_array[k].groupNumber == (unsigned long)state->nxdn_last_tg) {
                 printw("TG: ");
                 attron(COLOR_PAIR(4));
                 printw(" [%s]", state->group_array[k].groupName);
                 printw("[%s] ", state->group_array[k].groupMode);
-            } else if (state->group_array[k].groupNumber == state->nxdn_last_rid) {
+            } else if (state->group_array[k].groupNumber == (unsigned long)state->nxdn_last_rid) {
                 attron(COLOR_PAIR(4));
                 printw(" [%s]", state->group_array[k].groupName);
             }
@@ -4088,7 +4100,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             //active channel display
             attron(COLOR_PAIR(4));
             for (int i = 0; i < 16; i++) {
-                if (state->active_channel[i] != 0) {
+                if (state->active_channel[i][0] != '\0') {
                     printw("%s", state->active_channel[i]);
                 }
             }
@@ -4143,8 +4155,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //load talker aliases here (Moto, Tait, Harris)
-            for (int16_t i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == state->lastsrc) //or state->lastsrc
+            for (unsigned int i = 0; i < state->group_tally; i++) {
+                if (state->group_array[i].groupNumber == (unsigned long)state->lastsrc) //or state->lastsrc
                 {
                     snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s",
                              state->group_array[i].groupName);
@@ -4174,8 +4186,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //load talker aliases here (Moto, Tait, Harris)
-            for (int16_t i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == state->lastsrc) {
+            for (unsigned int i = 0; i < state->group_tally; i++) {
+                if (state->group_array[i].groupNumber == (unsigned long)state->lastsrc) {
                     snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s",
                              state->group_array[i].groupName);
                     break;
@@ -4183,8 +4195,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             //load talker aliases here (Moto, Tait, Harris)
-            for (int16_t i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == state->lastsrcR) {
+            for (unsigned int i = 0; i < state->group_tally; i++) {
+                if (state->group_array[i].groupNumber == (unsigned long)state->lastsrcR) {
                     snprintf(state->generic_talker_alias[1], sizeof state->generic_talker_alias[1], "%s",
                              state->group_array[i].groupName);
                     break;
@@ -4375,8 +4387,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         //Group Name Labels from CSV import
         if (state->dmrburstL == 16 || state->dmrburstL > 19) {
-            for (int k = 0; k < state->group_tally; k++) {
-                if (state->group_array[k].groupNumber == state->lasttg) {
+            for (unsigned int k = 0; k < state->group_tally; k++) {
+                if (state->group_array[k].groupNumber == (unsigned long)state->lasttg) {
                     attron(COLOR_PAIR(4));
                     printw(" [%s]", state->group_array[k].groupName);
                     printw("[%s] ", state->group_array[k].groupMode);
@@ -4574,8 +4586,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
             //Group Name Labels from CSV import
             if (state->dmrburstR == 16 || state->dmrburstR > 19) {
-                for (int k = 0; k < state->group_tally; k++) {
-                    if (state->group_array[k].groupNumber == state->lasttgR) {
+                for (unsigned int k = 0; k < state->group_tally; k++) {
+                    if (state->group_array[k].groupNumber == (unsigned long)state->lasttgR) {
                         attron(COLOR_PAIR(4));
                         printw(" [%s]", state->group_array[k].groupName);
                         printw("[%s] ", state->group_array[k].groupMode);
@@ -4601,9 +4613,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                 //active channel display
                 attron(COLOR_PAIR(4));
-                for (int i = 0; i < 31; i++) //up to 31 idas channels
+                for (unsigned int i = 0; i < 31; i++) //up to 31 idas channels
                 {
-                    if (state->active_channel[i] != 0) {
+                    if (state->active_channel[i][0] != '\0') {
                         printw("%s", state->active_channel[i]);
                     }
                 }
@@ -4839,9 +4851,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         printw(" TGT [      DATA     ] SRC [%5lld] Data", edacs_channel_tree[i][3]);
                     }
                 }
-                for (int k = 0; k < state->group_tally; k++) {
-                    if ((state->group_array[k].groupNumber == edacs_channel_tree[i][2] && edacs_channel_tree[i][2] != 0)
-                        || (state->group_array[k].groupNumber == edacs_channel_tree[i][3]
+                for (unsigned int k = 0; k < state->group_tally; k++) {
+                    if ((state->group_array[k].groupNumber == (unsigned long)edacs_channel_tree[i][2]
+                         && edacs_channel_tree[i][2] != 0)
+                        || (state->group_array[k].groupNumber == (unsigned long)edacs_channel_tree[i][3]
                             && edacs_channel_tree[i][3] != 0)) {
                         printw(" [%s]", state->group_array[k].groupName);
                         printw("[%s]", state->group_array[k].groupMode);

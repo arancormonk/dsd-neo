@@ -19,5 +19,6 @@ Thumbs.db
 *.gdb
 
 # Log files
+/logs/
 *.log
 *.out

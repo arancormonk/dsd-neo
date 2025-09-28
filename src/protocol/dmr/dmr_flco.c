@@ -615,13 +615,13 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             //experimental TG LO/B if ENC trunked following disabled //DMR -- LO Trunked Enc Calls WIP; #121
             if (opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0) //&& type != 2
             {
-                int i, lo = 0;
+                unsigned int i, lo = 0;
                 uint32_t t = 0;
                 char gm[8];
                 char gn[50];
 
                 //check to see if this group already exists, or has already been locked out, or is allowed
-                for (i = 0; i <= state->group_tally; i++) {
+                for (i = 0; i < state->group_tally; i++) {
                     t = (uint32_t)state->group_array[i].groupNumber;
                     if (target == t && t != 0) {
                         lo = 1;
@@ -745,9 +745,9 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         fprintf(stderr, "%s ", KNRM);
 
         //group labels
-        for (int i = 0; i < state->group_tally; i++) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
             //Remus! Change target to source if you prefer
-            if (state->group_array[i].groupNumber == target) {
+            if (state->group_array[i].groupNumber == (unsigned long)target) {
                 fprintf(stderr, "%s", KCYN);
                 fprintf(stderr, "[%s] ", state->group_array[i].groupName);
                 fprintf(stderr, "%s", KNRM);
@@ -1142,45 +1142,45 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     char ts2_str[25];
     sprintf(ts2_str, "%s", "");
 
-    if (ts1_act == 0b0000) {
+    if (ts1_act == 0x0) {
         sprintf(ts1_str, "%s", "Idle");
-    } else if (ts1_act == 0b0010) {
+    } else if (ts1_act == 0x2) {
         sprintf(ts1_str, "%s", "Group CSBK");
-    } else if (ts1_act == 0b0011) {
+    } else if (ts1_act == 0x3) {
         sprintf(ts1_str, "%s", "Ind CSBK");
-    } else if (ts1_act == 0b1000) {
+    } else if (ts1_act == 0x8) {
         sprintf(ts1_str, "%s", "Group Voice");
-    } else if (ts1_act == 0b1001) {
+    } else if (ts1_act == 0x9) {
         sprintf(ts1_str, "%s", "Ind Voice");
-    } else if (ts1_act == 0b1010) {
+    } else if (ts1_act == 0xA) {
         sprintf(ts1_str, "%s", "Ind Data");
-    } else if (ts1_act == 0b1011) {
+    } else if (ts1_act == 0xB) {
         sprintf(ts1_str, "%s", "Group Data");
-    } else if (ts1_act == 0b1100) {
+    } else if (ts1_act == 0xC) {
         sprintf(ts1_str, "%s", "Group Emergency");
-    } else if (ts1_act == 0b1101) {
+    } else if (ts1_act == 0xD) {
         sprintf(ts1_str, "%s", "Ind Emergency");
     } else {
         sprintf(ts1_str, "Res %X", ts1_act);
     }
 
-    if (ts2_act == 0b0000) {
+    if (ts2_act == 0x0) {
         sprintf(ts2_str, "%s", "Idle");
-    } else if (ts2_act == 0b0010) {
+    } else if (ts2_act == 0x2) {
         sprintf(ts2_str, "%s", "Group CSBK");
-    } else if (ts2_act == 0b0011) {
+    } else if (ts2_act == 0x3) {
         sprintf(ts2_str, "%s", "Ind CSBK");
-    } else if (ts2_act == 0b1000) {
+    } else if (ts2_act == 0x8) {
         sprintf(ts2_str, "%s", "Group Voice");
-    } else if (ts2_act == 0b1001) {
+    } else if (ts2_act == 0x9) {
         sprintf(ts2_str, "%s", "Ind Voice");
-    } else if (ts2_act == 0b1010) {
+    } else if (ts2_act == 0xA) {
         sprintf(ts2_str, "%s", "Ind Data");
-    } else if (ts2_act == 0b1011) {
+    } else if (ts2_act == 0xB) {
         sprintf(ts2_str, "%s", "Group Data");
-    } else if (ts2_act == 0b1100) {
+    } else if (ts2_act == 0xC) {
         sprintf(ts2_str, "%s", "Group Emergency");
-    } else if (ts2_act == 0b1101) {
+    } else if (ts2_act == 0xD) {
         sprintf(ts2_str, "%s", "Ind Emergency");
     } else {
         sprintf(ts2_str, "Res %X", ts1_act);
@@ -1391,7 +1391,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                 // fprintf (stderr, " Busy; ");
 
                 //but nether is the TG on hold
-                if ((state->tg_hold != state->lasttg) && (state->tg_hold != state->lasttgR)) {
+                if ((state->tg_hold != (uint32_t)state->lasttg) && (state->tg_hold != (uint32_t)state->lasttgR)) {
                     //debug
                     // fprintf (stderr, " Neither Slot is TG on Hold; ");
 
@@ -1450,7 +1450,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
             //if both slots are voice,
             if (state->dmrburstL == 16 && state->dmrburstR == 16) {
                 //but nether is the TG on hold
-                if ((state->tg_hold != state->lasttg) && (state->tg_hold != state->lasttgR)) {
+                if ((state->tg_hold != (uint32_t)state->lasttg) && (state->tg_hold != (uint32_t)state->lasttgR)) {
                     //convert xpt_free from lcn to lsn -- up to 8 voice repeaters
                     if (xpt_free == 2) {
                         xpt_free = 3;

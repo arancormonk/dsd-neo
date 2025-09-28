@@ -631,8 +631,14 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
             // Capture as text for event history; if present, prefix for UI clarity
             utf8_to_text(state, 1, len - ptr + 1, input + ptr);
             if (state->event_history_s[0].Event_History_Items[0].text_message[0] != '\0') {
-                snprintf(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "LRRP: %s",
-                         state->event_history_s[0].Event_History_Items[0].text_message);
+                const char* src = (const char*)state->event_history_s[0].Event_History_Items[0].text_message;
+                size_t cap = sizeof(state->dmr_lrrp_gps[0]);
+                if (cap > 7) {
+                    size_t maxcpy = cap - 7 - 1; /* prefix "LRRP: " + N + NUL */
+                    snprintf(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
+                } else {
+                    state->dmr_lrrp_gps[0][0] = '\0';
+                }
                 snprintf(state->event_history_s[0].Event_History_Items[0].gps_s,
                          sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
             }
