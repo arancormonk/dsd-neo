@@ -15,6 +15,17 @@
 #include <dsd-neo/core/synctype.h>
 #include <dsd-neo/runtime/git_ver.h>
 
+// Safe bounded copy helper that tolerates potential overlap
+static inline void
+copy_str_field(char* dst, const char* src, size_t cap) {
+    if (dst == NULL || src == NULL || cap == 0) {
+        return;
+    }
+    size_t n = strnlen(src, cap - 1);
+    memmove(dst, src, n);
+    dst[n] = '\0';
+}
+
 //init each event history struct passed into here
 void
 init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
@@ -89,39 +100,39 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].svc = event_struct->Event_History_Items[i - 1].svc;
         event_struct->Event_History_Items[i].source_id = event_struct->Event_History_Items[i - 1].source_id;
         event_struct->Event_History_Items[i].target_id = event_struct->Event_History_Items[i - 1].target_id;
-        snprintf(event_struct->Event_History_Items[i].src_str, sizeof(event_struct->Event_History_Items[i].src_str),
-                 "%s", event_struct->Event_History_Items[i - 1].src_str);
-        snprintf(event_struct->Event_History_Items[i].tgt_str, sizeof(event_struct->Event_History_Items[i].tgt_str),
-                 "%s", event_struct->Event_History_Items[i - 1].tgt_str);
-        snprintf(event_struct->Event_History_Items[i].t_name, sizeof(event_struct->Event_History_Items[i].t_name), "%s",
-                 event_struct->Event_History_Items[i - 1].t_name);
-        snprintf(event_struct->Event_History_Items[i].s_name, sizeof(event_struct->Event_History_Items[i].s_name), "%s",
-                 event_struct->Event_History_Items[i - 1].s_name);
-        snprintf(event_struct->Event_History_Items[i].t_mode, sizeof(event_struct->Event_History_Items[i].t_mode), "%s",
-                 event_struct->Event_History_Items[i - 1].t_mode);
-        snprintf(event_struct->Event_History_Items[i].s_mode, sizeof(event_struct->Event_History_Items[i].s_mode), "%s",
-                 event_struct->Event_History_Items[i - 1].s_mode);
+        copy_str_field(event_struct->Event_History_Items[i].src_str, event_struct->Event_History_Items[i - 1].src_str,
+                       sizeof event_struct->Event_History_Items[i].src_str);
+        copy_str_field(event_struct->Event_History_Items[i].tgt_str, event_struct->Event_History_Items[i - 1].tgt_str,
+                       sizeof event_struct->Event_History_Items[i].tgt_str);
+        copy_str_field(event_struct->Event_History_Items[i].t_name, event_struct->Event_History_Items[i - 1].t_name,
+                       sizeof event_struct->Event_History_Items[i].t_name);
+        copy_str_field(event_struct->Event_History_Items[i].s_name, event_struct->Event_History_Items[i - 1].s_name,
+                       sizeof event_struct->Event_History_Items[i].s_name);
+        copy_str_field(event_struct->Event_History_Items[i].t_mode, event_struct->Event_History_Items[i - 1].t_mode,
+                       sizeof event_struct->Event_History_Items[i].t_mode);
+        copy_str_field(event_struct->Event_History_Items[i].s_mode, event_struct->Event_History_Items[i - 1].s_mode,
+                       sizeof event_struct->Event_History_Items[i].s_mode);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
-        event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i + 1].event_time;
+        event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
 
         memcpy(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
                sizeof(event_struct->Event_History_Items[0].pdu));
-        snprintf(event_struct->Event_History_Items[i].sysid_string,
-                 sizeof(event_struct->Event_History_Items[i].sysid_string), "%s",
-                 event_struct->Event_History_Items[i - 1].sysid_string);
-        snprintf(event_struct->Event_History_Items[i].alias, sizeof(event_struct->Event_History_Items[i].alias), "%s",
-                 event_struct->Event_History_Items[i - 1].alias);
-        snprintf(event_struct->Event_History_Items[i].gps_s, sizeof(event_struct->Event_History_Items[i].gps_s), "%s",
-                 event_struct->Event_History_Items[i - 1].gps_s);
-        snprintf(event_struct->Event_History_Items[i].text_message,
-                 sizeof(event_struct->Event_History_Items[i].text_message), "%s",
-                 event_struct->Event_History_Items[i - 1].text_message);
-        snprintf(event_struct->Event_History_Items[i].event_string,
-                 sizeof(event_struct->Event_History_Items[i].event_string), "%s",
-                 event_struct->Event_History_Items[i - 1].event_string);
-        snprintf(event_struct->Event_History_Items[i].internal_str,
-                 sizeof(event_struct->Event_History_Items[i].internal_str), "%s",
-                 event_struct->Event_History_Items[i - 1].internal_str);
+        copy_str_field(event_struct->Event_History_Items[i].sysid_string,
+                       event_struct->Event_History_Items[i - 1].sysid_string,
+                       sizeof event_struct->Event_History_Items[i].sysid_string);
+        copy_str_field(event_struct->Event_History_Items[i].alias, event_struct->Event_History_Items[i - 1].alias,
+                       sizeof event_struct->Event_History_Items[i].alias);
+        copy_str_field(event_struct->Event_History_Items[i].gps_s, event_struct->Event_History_Items[i - 1].gps_s,
+                       sizeof event_struct->Event_History_Items[i].gps_s);
+        copy_str_field(event_struct->Event_History_Items[i].text_message,
+                       event_struct->Event_History_Items[i - 1].text_message,
+                       sizeof event_struct->Event_History_Items[i].text_message);
+        copy_str_field(event_struct->Event_History_Items[i].event_string,
+                       event_struct->Event_History_Items[i - 1].event_string,
+                       sizeof event_struct->Event_History_Items[i].event_string);
+        copy_str_field(event_struct->Event_History_Items[i].internal_str,
+                       event_struct->Event_History_Items[i - 1].internal_str,
+                       sizeof event_struct->Event_History_Items[i].internal_str);
     }
 }
 
@@ -142,7 +153,7 @@ write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t 
         fprintf(event_log_file, "\n");
 
         char text_string[2000];
-        sprintf(text_string, "%s", "BUMBLEBEETUNA");
+        snprintf(text_string, sizeof text_string, "%s", "BUMBLEBEETUNA");
         if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].text_message, 13) != 0) {
             fprintf(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
         }
@@ -315,24 +326,24 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     uint32_t target_id = 0;
     char src_str[200];
     memset(src_str, 0, sizeof(src_str));
-    sprintf(src_str, "%s", "BUMBLEBEETUNA");
+    snprintf(src_str, sizeof src_str, "%s", "BUMBLEBEETUNA");
     char tgt_str[200];
     memset(tgt_str, 0, sizeof(tgt_str));
-    sprintf(tgt_str, "%s", "BUMBLEBEETUNA");
+    snprintf(tgt_str, sizeof tgt_str, "%s", "BUMBLEBEETUNA");
 
     //group import items
     char t_name[200];
     memset(t_name, 0, sizeof(t_name));
-    sprintf(t_name, "%s", "BUMBLEBEETUNA");
+    snprintf(t_name, sizeof t_name, "%s", "BUMBLEBEETUNA");
     char s_name[200];
     memset(s_name, 0, sizeof(s_name));
-    sprintf(s_name, "%s", "BUMBLEBEETUNA");
+    snprintf(s_name, sizeof s_name, "%s", "BUMBLEBEETUNA");
     char t_mode[200];
     memset(t_mode, 0, sizeof(t_mode));
-    sprintf(t_mode, "%s", "BUMBLEBEETUNA");
+    snprintf(t_mode, sizeof t_mode, "%s", "BUMBLEBEETUNA");
     char s_mode[200];
     memset(s_mode, 0, sizeof(s_mode));
-    sprintf(s_mode, "%s", "BUMBLEBEETUNA");
+    snprintf(s_mode, sizeof s_mode, "%s", "BUMBLEBEETUNA");
 
     uint16_t svc_opts = 0;
     uint8_t subtype = 0;
@@ -352,7 +363,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     char sysid_string[200];
     memset(sysid_string, 0, sizeof(sysid_string));
-    sprintf(sysid_string, "%s", "");
+    snprintf(sysid_string, sizeof sysid_string, "%s", "");
 
     if (slot == 0) {
         source_id = state->lastsrc;
@@ -394,9 +405,10 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     sys_id5 = state->p2_siteid;
 
     if (sys_id1) {
-        sprintf(sysid_string, "P25_%05X%03X%03X_%d_%d", sys_id1, sys_id2, sys_id3, sys_id4, sys_id5);
+        snprintf(sysid_string, sizeof sysid_string, "P25_%05X%03X%03X_%d_%d", sys_id1, sys_id2, sys_id3, sys_id4,
+                 sys_id5);
     } else {
-        sprintf(sysid_string, "P25_%03X", sys_id3);
+        snprintf(sysid_string, sizeof sysid_string, "P25_%03X", sys_id3);
     }
 
     if (state->lastsynctype == 10 || state->lastsynctype == 11 || state->lastsynctype == 12 || state->lastsynctype == 13
@@ -405,9 +417,9 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         sys_id2 = state->dmr_color_code;
 
         if (sys_id1) {
-            sprintf(sysid_string, "DMR_%X_CC_%d", sys_id1, sys_id2);
+            snprintf(sysid_string, sizeof sysid_string, "DMR_%X_CC_%d", sys_id1, sys_id2);
         } else {
-            sprintf(sysid_string, "DMR_CC_%d", sys_id2);
+            snprintf(sysid_string, sizeof sysid_string, "DMR_CC_%d", sys_id2);
         }
     }
 
@@ -430,9 +442,9 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     ->nxdn_last_ran; //might be an issue on conventional systems that have a different RAN on the tx_rel or idle data bursts
 
             if (sys_id1) {
-                sprintf(sysid_string, "NXDN_%d_%d_RAN_%d", sys_id2, sys_id1, sys_id3);
+                snprintf(sysid_string, sizeof sysid_string, "NXDN_%d_%d_RAN_%d", sys_id2, sys_id1, sys_id3);
             } else {
-                sprintf(sysid_string, "NXDN_RAN_%d", sys_id3);
+                snprintf(sysid_string, sizeof sysid_string, "NXDN_RAN_%d", sys_id3);
             }
         }
 
@@ -462,10 +474,11 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     event_struct->Event_History_Items[0].text_message[k] = 0; //terminate
                 }
             } else {
-                sprintf(event_struct->Event_History_Items[0].text_message, "%s", "BUMBLEBEETUNA");
+                snprintf(event_struct->Event_History_Items[0].text_message,
+                         sizeof event_struct->Event_History_Items[0].text_message, "%s", "BUMBLEBEETUNA");
             }
 
-            sprintf(sysid_string, "%s", "YSF");
+            snprintf(sysid_string, sizeof sysid_string, "%s", "YSF");
 
             char temp_str[20];
             memset(temp_str, 0, sizeof(temp_str));
@@ -480,7 +493,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     temp_str[i] = 0x5F;
                 }
             }
-            sprintf(src_str, "%s", temp_str);
+            snprintf(src_str, sizeof src_str, "%s", temp_str);
 
             //same for tgt str
             memset(temp_str, 0, sizeof(temp_str));
@@ -493,7 +506,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     temp_str[i] = 0x5F;
                 }
             }
-            sprintf(tgt_str, "%s", temp_str);
+            snprintf(tgt_str, sizeof tgt_str, "%s", temp_str);
         }
 
         if (state->lastsynctype == 8 || state->lastsynctype == 9 || state->lastsynctype == 16
@@ -502,9 +515,9 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             target_id = (uint32_t)state->m17_dst;
             source_id = (uint32_t)state->m17_src;
             sys_id1 = state->m17_can;
-            sprintf(sysid_string, "M17_CAN_%d", sys_id1);
-            sprintf(src_str, "%s", state->m17_src_csd);
-            sprintf(tgt_str, "%s", state->m17_dst_csd);
+            snprintf(sysid_string, sizeof sysid_string, "M17_CAN_%d", sys_id1);
+            snprintf(src_str, sizeof src_str, "%s", state->m17_src_csd);
+            snprintf(tgt_str, sizeof tgt_str, "%s", state->m17_dst_csd);
         }
 
         if (state->lastsynctype == 6 || state->lastsynctype == 7 || state->lastsynctype == 18
@@ -668,16 +681,16 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
             if (state->ea_mode == 0) {
                 int afs = state->lasttg;
-                sprintf(src_str, "%s", "");
-                sprintf(tgt_str, "%s", "");
+                snprintf(src_str, sizeof src_str, "%s", "");
+                snprintf(tgt_str, sizeof tgt_str, "%s", "");
                 int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
                 int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
                 int s = afs & state->edacs_s_mask;
-                sprintf(tgt_str, "%03d_AFS_%02d_%02d%01d", afs, a, f, s);
+                snprintf(tgt_str, sizeof tgt_str, "%03d_AFS_%02d_%02d%01d", afs, a, f, s);
                 if (state->lastsrc != 0x800 && state->lastsrc != 0) {
-                    sprintf(src_str, "LID_%d", state->lastsrc);
+                    snprintf(src_str, sizeof src_str, "LID_%d", state->lastsrc);
                 } else {
-                    sprintf(src_str, "LID_UNK");
+                    snprintf(src_str, sizeof src_str, "LID_UNK");
                 }
             }
         }
@@ -688,7 +701,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     uint8_t t_name_loaded = 0;
     uint8_t s_name_loaded = 0;
     if (target_id != 0) {
-        for (int i = 0; i < state->group_tally; i++) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == target_id) {
                 sprintf(t_name, "%s", state->group_array[i].groupName);
                 sprintf(t_mode, "%s", state->group_array[i].groupMode);
@@ -700,7 +713,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     if (source_id != 0) //&& state->gi[slot] == 1
     {
-        for (int i = 0; i < state->group_tally; i++) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
             if (state->group_array[i].groupNumber == source_id) {
                 sprintf(s_name, "%s", state->group_array[i].groupName);
                 sprintf(s_mode, "%s", state->group_array[i].groupMode);
@@ -749,14 +762,21 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         if (opts->playfiles == 0) { //if playing back .mbe files with a time in it, don't set this
             event_struct->Event_History_Items[0].event_time = time(NULL);
         }
-        sprintf(event_struct->Event_History_Items[0].sysid_string, "%s", sysid_string);
-        sprintf(event_struct->Event_History_Items[0].src_str, "%s", src_str);
-        sprintf(event_struct->Event_History_Items[0].tgt_str, "%s", tgt_str);
+        snprintf(event_struct->Event_History_Items[0].sysid_string,
+                 sizeof event_struct->Event_History_Items[0].sysid_string, "%s", sysid_string);
+        snprintf(event_struct->Event_History_Items[0].src_str, sizeof event_struct->Event_History_Items[0].src_str,
+                 "%s", src_str);
+        snprintf(event_struct->Event_History_Items[0].tgt_str, sizeof event_struct->Event_History_Items[0].tgt_str,
+                 "%s", tgt_str);
 
-        sprintf(event_struct->Event_History_Items[0].t_name, "%s", t_name);
-        sprintf(event_struct->Event_History_Items[0].s_name, "%s", s_name);
-        sprintf(event_struct->Event_History_Items[0].t_mode, "%s", t_mode);
-        sprintf(event_struct->Event_History_Items[0].s_mode, "%s", s_mode);
+        snprintf(event_struct->Event_History_Items[0].t_name, sizeof event_struct->Event_History_Items[0].t_name, "%s",
+                 t_name);
+        snprintf(event_struct->Event_History_Items[0].s_name, sizeof event_struct->Event_History_Items[0].s_name, "%s",
+                 s_name);
+        snprintf(event_struct->Event_History_Items[0].t_mode, sizeof event_struct->Event_History_Items[0].t_mode, "%s",
+                 t_mode);
+        snprintf(event_struct->Event_History_Items[0].s_mode, sizeof event_struct->Event_History_Items[0].s_mode, "%s",
+                 s_mode);
     }
 
     //Craft an event string for ncurses event history, and a more complex string for logging
@@ -769,31 +789,31 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         || state->lastsynctype == 31) //YSF Fusion //TODO: Data calls dumping a lot of events as VOICE
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
-        sprintf(event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, state->ysf_tgt,
-                state->ysf_src);
+        snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string,
+                 state->ysf_tgt, state->ysf_src);
     } else if (state->lastsynctype == 16 || state->lastsynctype == 17) //M17
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
         if (state->m17_dst == 0xFFFFFFFFFFFF) {
-            sprintf(event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr, sys_string, "BROADCAST",
-                    state->m17_src_str, state->m17_can);
+            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr,
+                     sys_string, "BROADCAST", state->m17_src_str, state->m17_can);
         } else {
-            sprintf(event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr, sys_string,
-                    state->m17_dst_str, state->m17_src_str, state->m17_can);
+            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr,
+                     sys_string, state->m17_dst_str, state->m17_src_str, state->m17_can);
         }
     } else if (state->lastsynctype == 6 || state->lastsynctype == 7 || state->lastsynctype == 18
                || state->lastsynctype == 19) //DSTAR
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
-        sprintf(event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, state->dstar_dst,
-                state->dstar_src);
+        snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string,
+                 state->dstar_dst, state->dstar_src);
     } else if (state->lastsynctype == 20 || state->lastsynctype == 24 || state->lastsynctype == 21
                || state->lastsynctype == 25 || state->lastsynctype == 22 || state->lastsynctype == 26
                || state->lastsynctype == 23 || state->lastsynctype == 27) //dPMR
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
-        sprintf(event_string, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
-                state->dpmr_color_code, state->dpmr_target_id, state->dpmr_caller_id);
+        snprintf(event_string, sizeof event_string, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr,
+                 sys_string, state->dpmr_color_code, state->dpmr_target_id, state->dpmr_caller_id);
         if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
             size_t rem = sizeof(event_string) - strlen(event_string) - 1;
             if (rem > 0) {
@@ -1046,11 +1066,11 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     else if (state->lastsynctype == 28 || state->lastsynctype == 29) {
         if (sys_id1) {
-            sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; SYS: %d.%d; ", datestr, timestr,
-                    sys_string, target_id, source_id, sys_id3, sys_id2, sys_id1);
+            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; SYS: %d.%d; ",
+                     datestr, timestr, sys_string, target_id, source_id, sys_id3, sys_id2, sys_id1);
         } else {
-            sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; ", datestr, timestr, sys_string, target_id,
-                    source_id, sys_id3);
+            snprintf(event_string, sizeof event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; ", datestr, timestr,
+                     sys_string, target_id, source_id, sys_id3);
         }
         if (enc) {
             size_t rem = sizeof(event_string) - strlen(event_string) - 1;
@@ -1060,7 +1080,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         }
         if (alg_id != 0) {
             char ess_str[30];
-            sprintf(ess_str, "ALG: %d; KID: %02X; ", alg_id, key_id);
+            snprintf(ess_str, sizeof ess_str, "ALG: %d; KID: %02X; ", alg_id, key_id);
             {
                 size_t rem = sizeof(event_string) - strlen(event_string) - 1;
                 if (rem > 0) {
@@ -1083,7 +1103,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     if (t_name_loaded) {
         char group[420];
-        sprintf(group, "TName: %s; Mode: %s; ", t_name, t_mode);
+        snprintf(group, sizeof group, "TName: %s; Mode: %s; ", t_name, t_mode);
         {
             size_t rem = sizeof(event_string) - strlen(event_string) - 1;
             if (rem > 0) {
@@ -1093,7 +1113,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     }
     if (s_name_loaded) {
         char private[420];
-        sprintf(private, "SName: %s; Mode: %s; ", s_name, s_mode);
+        snprintf(private, sizeof private, "SName: %s; Mode: %s; ", s_name, s_mode);
         {
             size_t rem = sizeof(event_string) - strlen(event_string) - 1;
             if (rem > 0) {
@@ -1102,7 +1122,8 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         }
     }
 
-    sprintf(event_struct->Event_History_Items[0].event_string, "%s", event_string);
+    snprintf(event_struct->Event_History_Items[0].event_string,
+             sizeof event_struct->Event_History_Items[0].event_string, "%s", event_string);
 
     /* stack buffers; no free */
 }
@@ -1137,15 +1158,16 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 
     char event_string[2000];
     memset(event_string, 0, sizeof(event_string));
-    sprintf(event_string, "%s %s ", datestr, timestr);
+    snprintf(event_string, sizeof event_string, "%s %s ", datestr, timestr);
     {
         size_t rem = sizeof(event_string) - strlen(event_string) - 1;
         if (rem > 0) {
             strncat(event_string, data_string, rem);
         }
     }
-    sprintf(state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
-            event_string); //could change this to a strncpy to prevent potential overflow
+    snprintf(state->event_history_s[slot].Event_History_Items[0].event_string,
+             sizeof state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
+             event_string); // could change this to a strncpy to prevent potential overflow
 
     /* stack buffers; no free */
 

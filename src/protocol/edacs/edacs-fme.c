@@ -55,76 +55,78 @@ getAfsStringLength(dsd_state* state) {
 int
 getAfsString(dsd_state* state, char* buffer, int a, int f, int s) {
     if (!isCustomAfsString(state)) {
-        sprintf(buffer, "%02d-%02d%01d", a, f, s);
+        /* Fixed-width format: ensure we respect the theoretical length (6) plus NUL */
+        snprintf(buffer, 6 + 1, "%02d-%02d%01d", a, f, s);
         return 6;
     }
 
     int printed_chars = 0;
+    const int need = getAfsStringLength(state);
     switch (state->edacs_a_bits) {
         case 1:
         case 2:
         case 3:
-            sprintf(buffer, "%01d:", a);
+            snprintf(buffer, (size_t)(need - printed_chars + 1), "%01d:", a);
             printed_chars += 1;
             break;
         case 4:
         case 5:
         case 6:
-            sprintf(buffer, "%02d:", a);
+            snprintf(buffer, (size_t)(need - printed_chars + 1), "%02d:", a);
             printed_chars += 2;
             break;
         case 7:
         case 8:
         case 9:
-            sprintf(buffer, "%03d:", a);
+            snprintf(buffer, (size_t)(need - printed_chars + 1), "%03d:", a);
             printed_chars += 3;
             break;
     }
 
-    sprintf(buffer + printed_chars, ":");
+    snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), ":");
     printed_chars++;
 
     switch (state->edacs_f_bits) {
         case 1:
         case 2:
         case 3:
-            sprintf(buffer + printed_chars, "%01d", f);
+            snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), "%01d", f);
             printed_chars += 1;
             break;
         case 4:
         case 5:
         case 6:
-            sprintf(buffer + printed_chars, "%02d", f);
+            snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), "%02d", f);
             printed_chars += 2;
             break;
         case 7:
         case 8:
         case 9:
-            sprintf(buffer + printed_chars, "%03d", f);
+            snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), "%03d", f);
             printed_chars += 3;
             break;
     }
 
-    sprintf(buffer + printed_chars, ":");
+    snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), ":");
     printed_chars++;
 
     switch (state->edacs_s_bits) {
         case 1:
         case 2:
         case 3:
-            sprintf(buffer + printed_chars, "%01d", s);
+            snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), "%01d", s);
             printed_chars += 1;
             break;
         case 4:
         case 5:
         case 6:
-            sprintf(buffer + printed_chars, "%02d", s);
+            snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), "%02d", s);
             printed_chars += 2;
             break;
         case 7:
         case 8:
         case 9:
-            sprintf(buffer + printed_chars, "%03d", s);
+            snprintf(buffer + printed_chars, (size_t)(need - printed_chars + 1), "%03d", s);
             printed_chars += 3;
             break;
     }

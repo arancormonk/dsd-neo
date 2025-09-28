@@ -84,9 +84,9 @@ openPulseOutput(dsd_opts* opts) {
     }
 
     if (err != 0) {
-        fprintf(stderr, "Err: %d; %s; ", err, pa_strerror(err));
+        LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
 #ifdef __CYGWIN__
-        fprintf(stderr, "Please make sure the Pulse Audio Server Backend is running first.");
+        LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
 #endif
         exit(0);
     }
@@ -99,9 +99,9 @@ openPulseOutput(dsd_opts* opts) {
             pa_simple_new(NULL, "DSD-neo", PA_STREAM_PLAYBACK, dev, opts->output_name, &tt, ss, NULL, &err);
 
         if (err != 0) {
-            fprintf(stderr, "Err: %d; %s; ", err, pa_strerror(err));
+            LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
 #ifdef __CYGWIN__
-            fprintf(stderr, "Please make sure the Pulse Audio Server Backend is running first.");
+            LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
 #endif
             exit(0);
         }
@@ -112,9 +112,9 @@ openPulseOutput(dsd_opts* opts) {
             pa_simple_new(NULL, "DSD-neo", PA_STREAM_PLAYBACK, dev, opts->output_name, &ff, fl, NULL, &err);
 
         if (err != 0) {
-            fprintf(stderr, "Err: %d; %s; ", err, pa_strerror(err));
+            LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
 #ifdef __CYGWIN__
-            fprintf(stderr, "Please make sure the Pulse Audio Server Backend is running first.");
+            LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
 #endif
             exit(0);
         }
@@ -163,9 +163,9 @@ openPulseInput(dsd_opts* opts) {
     }
 
     if (err != 0) {
-        fprintf(stderr, "Err: %d; %s; ", err, pa_strerror(err));
+        LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
 #ifdef __CYGWIN__
-        fprintf(stderr, "Please make sure the Pulse Audio Server Backend is running first.");
+        LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
 #endif
         exit(0);
     }
@@ -263,22 +263,22 @@ openOSSOutput(dsd_opts* opts) {
 
             fmt = 0;
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_RESET) < 0) {
-                fprintf(stderr, "ioctl reset error \n");
+                LOG_ERROR("ioctl reset error \n");
             }
 
             fmt = speed;
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SPEED, &fmt) < 0) {
-                fprintf(stderr, "ioctl speed error \n");
+                LOG_ERROR("ioctl speed error \n");
             }
 
             fmt = 0; //this seems okay to be 1 or 0, not sure what the difference really is (works in stereo on 0)
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_STEREO, &fmt) < 0) {
-                fprintf(stderr, "ioctl stereo error \n");
+                LOG_ERROR("ioctl stereo error \n");
             }
 
             fmt = AFMT_S16_LE;
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SETFMT, &fmt) < 0) {
-                fprintf(stderr, "ioctl setfmt error \n");
+                LOG_ERROR("ioctl setfmt error \n");
             }
 
             opts->audio_out_type = 5; //5 for 1 channel - 48k OSS 16-bit short output (matching with input)
@@ -305,12 +305,12 @@ openOSSOutput(dsd_opts* opts) {
 
             fmt = 0;
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_RESET) < 0) {
-                fprintf(stderr, "ioctl reset error \n");
+                LOG_ERROR("ioctl reset error \n");
             }
 
             fmt = AFMT_S16_LE; //Sample Format
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SETFMT, &fmt) < 0) {
-                fprintf(stderr, "ioctl setfmt error \n");
+                LOG_ERROR("ioctl setfmt error \n");
             }
 
             fmt = opts->pulse_digi_out_channels; //number of channels //was 2
@@ -326,7 +326,7 @@ openOSSOutput(dsd_opts* opts) {
             speed = opts->pulse_digi_rate_out; //since we have split input/output, we want to mirror pulse rate out
             fmt = speed;                       //output rate
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SPEED, &fmt) < 0) {
-                fprintf(stderr, "ioctl speed error \n");
+                LOG_ERROR("ioctl speed error \n");
             }
             if (opts->pulse_digi_out_channels == 2) {
                 fmt = 1;
@@ -335,7 +335,7 @@ openOSSOutput(dsd_opts* opts) {
             }
 
             if (ioctl(opts->audio_out_fd, SNDCTL_DSP_STEREO, &fmt) < 0) {
-                fprintf(stderr, "ioctl stereo error \n");
+                LOG_ERROR("ioctl stereo error \n");
             }
 
             //TODO: Multiple output returns based on 8k/1, 8k/2, or maybe 48k/1? (2,3,5)??
