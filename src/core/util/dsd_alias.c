@@ -487,7 +487,7 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
     uint32_t sys = (uint32_t)ConvertBitIntoBytes(&input[92], 12);
     uint32_t rid = (uint32_t)ConvertBitIntoBytes(&input[104], 24);
 
-    sprintf(fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
+    snprintf(fqs, sizeof fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
     if (rid != 0 && state->event_history_s[slot].Event_History_Items[0].source_id == rid) {
         snprintf(state->event_history_s[slot].Event_History_Items[0].alias,
                  sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; %s", str, fqs);
@@ -503,8 +503,10 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
     if (wr == 0) //not already in there, so save it there now
     {
         state->group_array[state->group_tally].groupNumber = rid;
-        sprintf(state->group_array[state->group_tally].groupMode, "%s", "D");
-        sprintf(state->group_array[state->group_tally].groupName, "%s", str);
+        snprintf(state->group_array[state->group_tally].groupMode,
+                 sizeof state->group_array[state->group_tally].groupMode, "%s", "D");
+        snprintf(state->group_array[state->group_tally].groupName,
+                 sizeof state->group_array[state->group_tally].groupName, "%s", str);
         state->group_tally++;
 
         //if we have an opened group file, let's write what info we found into it

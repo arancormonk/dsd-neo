@@ -109,10 +109,10 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         char mfid_string[20];
         char udtf_string[20];
         char sddd_string[20];
-        sprintf(sap_string, "%s", "");
-        sprintf(mfid_string, "%s", "");
-        sprintf(udtf_string, "%s", "");
-        sprintf(sddd_string, "%s", "");
+        snprintf(sap_string, sizeof sap_string, "%s", "");
+        snprintf(mfid_string, sizeof mfid_string, "%s", "");
+        snprintf(udtf_string, sizeof udtf_string, "%s", "");
+        snprintf(sddd_string, sizeof sddd_string, "%s", "");
 
         //see 9.3 - ETSI TS 102 361-1 V2.5.1 (2017-10) for more info
         uint8_t f = dheader_bits[64];                                    //F -- Full message flag (F)
@@ -213,125 +213,127 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         }
 
         if (sap == 0) {
-            sprintf(sap_string, "%s", "UDT Data"); //apparently, both dpf and sap for UDT is 0
+            snprintf(sap_string, sizeof sap_string, "%s", "UDT Data"); //apparently, both dpf and sap for UDT is 0
         } else if (sap == 2) {
-            sprintf(sap_string, "%s", "TCP Comp"); //TCP/IP header compression
+            snprintf(sap_string, sizeof sap_string, "%s", "TCP Comp"); //TCP/IP header compression
         } else if (sap == 3) {
-            sprintf(sap_string, "%s", "UDP Comp"); //UDP/IP header compression
+            snprintf(sap_string, sizeof sap_string, "%s", "UDP Comp"); //UDP/IP header compression
         } else if (sap == 4) {
-            sprintf(sap_string, "%s", "IP Based"); //IP based Packet Data
+            snprintf(sap_string, sizeof sap_string, "%s", "IP Based"); //IP based Packet Data
         } else if (sap == 5) {
-            sprintf(sap_string, "%s", "ARP Prot"); //Address Resoution Protocol (ARP)
+            snprintf(sap_string, sizeof sap_string, "%s", "ARP Prot"); //Address Resoution Protocol (ARP)
         } else if (sap == 9) {
-            sprintf(sap_string, "%s", "EXTD HDR"); //Extended Header (Proprietary)
+            snprintf(sap_string, sizeof sap_string, "%s", "EXTD HDR"); //Extended Header (Proprietary)
         } else if (sap == 10) {
-            sprintf(sap_string, "%s", "Short DT"); //Short Data
+            snprintf(sap_string, sizeof sap_string, "%s", "Short DT"); //Short Data
         } else if (sap == 1 && p_mfid == 0x10) {
-            sprintf(sap_string, "%s", "Moto NET"); //motorola network interface service
+            snprintf(sap_string, sizeof sap_string, "%s", "Moto NET"); //motorola network interface service
         } else {
-            sprintf(sap_string, "%s", "Reserved"); //reserved, or err/unk
+            snprintf(sap_string, sizeof sap_string, "%s", "Reserved"); //reserved, or err/unk
         }
 
         //mfid string handling
         if (dpf == 15) {
             if (p_mfid == 0x10) {
-                sprintf(mfid_string, "%s", "Moto"); //could just also be a generic catch all for DMRA
+                snprintf(mfid_string, sizeof mfid_string, "%s",
+                         "Moto"); //could just also be a generic catch all for DMRA
             } else if (p_mfid == 0x58) {
-                sprintf(mfid_string, "%s", "Tait");
+                snprintf(mfid_string, sizeof mfid_string, "%s", "Tait");
             } else if (p_mfid == 0x68 || p_mfid == 0x08) {
-                sprintf(mfid_string, "%s", "Hytera");
+                snprintf(mfid_string, sizeof mfid_string, "%s", "Hytera");
             } else if (p_mfid == 0x06) {
-                sprintf(mfid_string, "%s", "Trid/Mot");
+                snprintf(mfid_string, sizeof mfid_string, "%s", "Trid/Mot");
             } else if (p_mfid == 0x00) {
-                sprintf(mfid_string, "%s", "Standard");
+                snprintf(mfid_string, sizeof mfid_string, "%s", "Standard");
             } else {
-                sprintf(mfid_string, "%s", "Other");
+                snprintf(mfid_string, sizeof mfid_string, "%s", "Other");
             }
         }
 
         //udt format string handling
         if (dpf == 0) {
             if (udt_format == 0x00) {
-                sprintf(udtf_string, "%s", "Binary");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "Binary");
             } else if (udt_format == 0x01) {
-                sprintf(udtf_string, "%s", "MS/TG Adr");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "MS/TG Adr");
             } else if (udt_format == 0x02) {
-                sprintf(udtf_string, "%s", "4-bit BCD");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "4-bit BCD");
             } else if (udt_format == 0x03) {
-                sprintf(udtf_string, "%s", "ISO7 Char");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "ISO7 Char");
             } else if (udt_format == 0x04) {
-                sprintf(udtf_string, "%s", "ISO8 Char");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "ISO8 Char");
             } else if (udt_format == 0x05) {
-                sprintf(udtf_string, "%s", "NMEA LOCN");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "NMEA LOCN");
             } else if (udt_format == 0x06) {
-                sprintf(udtf_string, "%s", "IP Addr");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "IP Addr");
             } else if (udt_format == 0x07) {
-                sprintf(udtf_string, "%s", "UTF-16"); //16-bit Unicode Chars
+                snprintf(udtf_string, sizeof udtf_string, "%s", "UTF-16"); //16-bit Unicode Chars
             } else if (udt_format == 0x08 || udt_format == 0x09) {
-                sprintf(udtf_string, "%s", "Manu Spec"); //Manufacturer Specific
+                snprintf(udtf_string, sizeof udtf_string, "%s", "Manu Spec"); //Manufacturer Specific
             } else if (udt_format == 0x0A) {
-                sprintf(udtf_string, "%s", "Mixed UTF"); //Appended block contains addr and 16-bit UTF-16BE
+                snprintf(udtf_string, sizeof udtf_string, "%s",
+                         "Mixed UTF"); //Appended block contains addr and 16-bit UTF-16BE
             } else if (udt_format == 0x0B) {
-                sprintf(udtf_string, "%s", "LIP LOCN");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "LIP LOCN");
             } else {
-                sprintf(udtf_string, "%s", "Reserved");
+                snprintf(udtf_string, sizeof udtf_string, "%s", "Reserved");
             }
         }
 
         //short data dd_head format string
         if (dpf == 13) {
             if (dd_format == 0x00) {
-                sprintf(sddd_string, "%s", "Binary");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "Binary");
             } else if (dd_format == 0x01) {
-                sprintf(sddd_string, "%s", "BCD   ");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "BCD   ");
             } else if (dd_format == 0x02) {
-                sprintf(sddd_string, "%s", "7-bit Char");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "7-bit Char");
             } else if (dd_format == 0x03) {
-                sprintf(sddd_string, "%s", "IEC 8859-1");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-1");
             } else if (dd_format == 0x04) {
-                sprintf(sddd_string, "%s", "IEC 8859-2");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-2");
             } else if (dd_format == 0x05) {
-                sprintf(sddd_string, "%s", "IEC 8859-3");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-3");
             } else if (dd_format == 0x06) {
-                sprintf(sddd_string, "%s", "IEC 8859-4");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-4");
             } else if (dd_format == 0x07) {
-                sprintf(sddd_string, "%s", "IEC 8859-5");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-5");
             } else if (dd_format == 0x08) {
-                sprintf(sddd_string, "%s", "IEC 8859-6");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-6");
             } else if (dd_format == 0x09) {
-                sprintf(sddd_string, "%s", "IEC 8859-7");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-7");
             } else if (dd_format == 0x0A) {
-                sprintf(sddd_string, "%s", "IEC 8859-8");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-8");
             } else if (dd_format == 0x0B) {
-                sprintf(sddd_string, "%s", "IEC 8859-9");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-9");
             } else if (dd_format == 0x0C) {
-                sprintf(sddd_string, "%s", "IEC 8859-10");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-10");
             } else if (dd_format == 0x0D) {
-                sprintf(sddd_string, "%s", "IEC 8859-11");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-11");
             } else if (dd_format == 0x0E) {
-                sprintf(sddd_string, "%s", "IEC 8859-13"); //there is no 8059-12
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-13"); //there is no 8059-12
             } else if (dd_format == 0x0F) {
-                sprintf(sddd_string, "%s", "IEC 8859-14");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-14");
             } else if (dd_format == 0x10) {
-                sprintf(sddd_string, "%s", "IEC 8859-15");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-15");
             } else if (dd_format == 0x11) {
-                sprintf(sddd_string, "%s", "IEC 8859-16");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "IEC 8859-16");
             } else if (dd_format == 0x12) {
-                sprintf(sddd_string, "%s", "UTF-8   ");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-8   ");
             } else if (dd_format == 0x13) {
-                sprintf(sddd_string, "%s", "UTF-16  ");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-16  ");
             } else if (dd_format == 0x14) {
-                sprintf(sddd_string, "%s", "UTF-16BE");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-16BE");
             } else if (dd_format == 0x15) {
-                sprintf(sddd_string, "%s", "UTF-16LE");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-16LE");
             } else if (dd_format == 0x16) {
-                sprintf(sddd_string, "%s", "UTF-32  ");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-32  ");
             } else if (dd_format == 0x17) {
-                sprintf(sddd_string, "%s", "UTF-32BE");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-32BE");
             } else if (dd_format == 0x18) {
-                sprintf(sddd_string, "%s", "UTF-32LE");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "UTF-32LE");
             } else {
-                sprintf(sddd_string, "%s", "Reserved");
+                snprintf(sddd_string, sizeof sddd_string, "%s", "Reserved");
             }
         }
 

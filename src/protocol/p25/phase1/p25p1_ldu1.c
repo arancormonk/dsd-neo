@@ -640,11 +640,14 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                 // Only mark as encrypted if ALG is known non-clear (not 0x80 and not 0)
                 if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
                     && state->R == 0) {
-                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                    snprintf(state->group_array[state->group_tally].groupMode,
+                             sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
                 } else {
-                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "D");
+                    snprintf(state->group_array[state->group_tally].groupMode,
+                             sizeof state->group_array[state->group_tally].groupMode, "%s", "D");
                 }
-                sprintf(state->group_array[state->group_tally].groupName, "%s", str);
+                snprintf(state->group_array[state->group_tally].groupName,
+                         sizeof state->group_array[state->group_tally].groupName, "%s", str);
                 state->group_tally++;
             }
 
@@ -654,11 +657,13 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
                 // Only mark as encrypted if ALG is known non-clear (not 0x80 and not 0)
                 if (state->payload_algid != 0x80 && state->payload_algid != 0 && opts->trunk_tune_enc_calls == 0
                     && state->R == 0) {
-                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
+                    snprintf(state->group_array[state->group_tally].groupMode,
+                             sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
                 } else {
-                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "D");
+                    snprintf(state->group_array[state->group_tally].groupMode,
+                             sizeof state->group_array[state->group_tally].groupMode, "%s", "D");
                 }
-                sprintf(state->group_array[z].groupName, "%s", str);
+                snprintf(state->group_array[z].groupName, sizeof state->group_array[z].groupName, "%s", str);
             }
         }
 

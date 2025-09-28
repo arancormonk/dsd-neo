@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>   //for ambe+2 fr
 #include <dsd-neo/protocol/p25/p25p1_const.h> //for imbe fr (7200)
+#include <dsd-neo/runtime/log.h>
 
 void
 saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
@@ -228,7 +229,7 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
 
     opts->mbe_in_f = fopen(opts->mbe_in_file, "ro");
     if (opts->mbe_in_f == NULL) {
-        fprintf(stderr, "Error: could not open %s\n", opts->mbe_in_file);
+        LOG_ERROR("Error: could not open %s\n", opts->mbe_in_file);
     }
 
     //this will check the last 4 characters of the opts->mbe_in_file string
@@ -265,7 +266,7 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
         state->mbe_file_type = 3;
     } else {
         state->mbe_file_type = -1;
-        fprintf(stderr, "Error - unrecognized file type\n");
+        LOG_ERROR("Error - unrecognized file type\n");
 
         //try SDRTrunk JSON format as last resort
         state->mbe_file_type = 3;
@@ -283,7 +284,7 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
             fclose(opts->mbe_out_f);
             opts->mbe_out_f = NULL;
             opts->mbe_out = 0;
-            fprintf(stderr, "\nClosing MBE out file 1.\n");
+            LOG_NOTICE("\nClosing MBE out file 1.\n");
         }
     }
 }
@@ -299,7 +300,7 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
             fclose(opts->mbe_out_fR);
             opts->mbe_out_fR = NULL;
             opts->mbe_outR = 0;
-            fprintf(stderr, "\nClosing MBE out file 2.\n");
+            LOG_NOTICE("\nClosing MBE out file 2.\n");
         }
     }
 }
@@ -325,15 +326,15 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     //phase 1 and provoice
     if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
-        sprintf(ext, ".imb");
+        snprintf(ext, sizeof ext, "%s", ".imb");
     }
     //d-star
     else if ((state->synctype == 6) || (state->synctype == 7) || (state->synctype == 18) || (state->synctype == 19)) {
-        sprintf(ext, ".dmb"); //new dstar file extension to make it read in and process properly
+        snprintf(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
     }
     //dmr, nxdn, phase 2, x2-tdma
     else {
-        sprintf(ext, ".amb");
+        snprintf(ext, sizeof ext, "%s", ".amb");
     }
 
     //reset talkgroup id buffer
@@ -345,13 +346,13 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     state->tgcount = 0;
 
-    sprintf(opts->mbe_out_file, "%s_%s_%04X_S1%s", datestr, timestr, random_number, ext);
+    snprintf(opts->mbe_out_file, sizeof opts->mbe_out_file, "%s_%s_%04X_S1%s", datestr, timestr, random_number, ext);
 
-    sprintf(opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
+    snprintf(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
 
     opts->mbe_out_f = fopen(opts->mbe_out_path, "w");
     if (opts->mbe_out_f == NULL) {
-        fprintf(stderr, "\nError, couldn't open %s for slot 1\n", opts->mbe_out_path);
+        LOG_ERROR("\nError, couldn't open %s for slot 1\n", opts->mbe_out_path);
     } else {
         opts->mbe_out = 1;
         /* Fully buffered output to reduce syscall overhead */
@@ -385,15 +386,15 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     //phase 1 and provoice
     if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
-        sprintf(ext, ".imb");
+        snprintf(ext, sizeof ext, "%s", ".imb");
     }
     //d-star
     else if ((state->synctype == 6) || (state->synctype == 7) || (state->synctype == 18) || (state->synctype == 19)) {
-        sprintf(ext, ".dmb"); //new dstar file extension to make it read in and process properly
+        snprintf(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
     }
     //dmr, nxdn, phase 2, x2-tdma
     else {
-        sprintf(ext, ".amb");
+        snprintf(ext, sizeof ext, "%s", ".amb");
     }
 
     //reset talkgroup id buffer
@@ -405,13 +406,13 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     state->tgcount = 0;
 
-    sprintf(opts->mbe_out_fileR, "%s_%s_%04X_S2%s", datestr, timestr, random_number, ext);
+    snprintf(opts->mbe_out_fileR, sizeof opts->mbe_out_fileR, "%s_%s_%04X_S2%s", datestr, timestr, random_number, ext);
 
-    sprintf(opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
+    snprintf(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
 
     opts->mbe_out_fR = fopen(opts->mbe_out_path, "w");
     if (opts->mbe_out_fR == NULL) {
-        fprintf(stderr, "\nError, couldn't open %s for slot 2\n", opts->mbe_out_path);
+        LOG_ERROR("\nError, couldn't open %s for slot 2\n", opts->mbe_out_path);
     } else {
         opts->mbe_outR = 1;
         /* Fully buffered output to reduce syscall overhead */
@@ -449,7 +450,7 @@ open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext)
     wav = sf_open(temp_filename, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
 
     if (wav == NULL) {
-        fprintf(stderr, "Error - could not open wav output file %s\n", temp_filename);
+        LOG_ERROR("Error - could not open wav output file %s\n", temp_filename);
         return NULL;
     }
 
@@ -580,7 +581,7 @@ openWavOutFile(dsd_opts* opts, dsd_state* state) {
     opts->wav_out_f = sf_open(opts->wav_out_file, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
 
     if (opts->wav_out_f == NULL) {
-        fprintf(stderr, "Error - could not open wav output file %s\n", opts->wav_out_file);
+        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_file);
         return;
     }
 }
@@ -596,7 +597,7 @@ openWavOutFileL(dsd_opts* opts, dsd_state* state) {
     opts->wav_out_f = sf_open(opts->wav_out_file, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
 
     if (opts->wav_out_f == NULL) {
-        fprintf(stderr, "Error - could not open wav output file %s\n", opts->wav_out_file);
+        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_file);
         return;
     }
 }
@@ -613,7 +614,7 @@ openWavOutFileR(dsd_opts* opts, dsd_state* state) {
         sf_open(opts->wav_out_fileR, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
 
     if (opts->wav_out_f == NULL) {
-        fprintf(stderr, "Error - could not open wav output file %s\n", opts->wav_out_fileR);
+        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_fileR);
         return;
     }
 }
@@ -629,7 +630,7 @@ openWavOutFileLR(dsd_opts* opts, dsd_state* state) {
     opts->wav_out_f = sf_open(opts->wav_out_file, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
 
     if (opts->wav_out_f == NULL) {
-        fprintf(stderr, "Error - could not open wav output file %s\n", opts->wav_out_file);
+        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_file);
         return;
     }
 }
@@ -644,7 +645,7 @@ openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
     opts->wav_out_raw = sf_open(opts->wav_out_file_raw, SFM_WRITE, &info);
     if (opts->wav_out_raw == NULL) {
-        fprintf(stderr, "Error - could not open raw wav output file %s\n", opts->wav_out_file_raw);
+        LOG_ERROR("Error - could not open raw wav output file %s\n", opts->wav_out_file_raw);
         return;
     }
 }

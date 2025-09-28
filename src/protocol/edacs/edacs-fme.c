@@ -1141,12 +1141,12 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, "%s", KNRM);
 
                 char mode[8]; //allow, block, digital enc
-                sprintf(mode, "%s", "");
+                snprintf(mode, sizeof mode, "%s", "");
 
                 //if we are using allow/whitelist mode, then write 'B' to mode for block
                 //comparison below will look for an 'A' to write to mode if it is allowed
                 if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
+                    snprintf(mode, sizeof mode, "%s", "B");
                 }
 
                 for (int i = 0; i < state->group_tally; i++) {
@@ -1163,10 +1163,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                 //TG hold on EDACS EA -- block non-matching target, allow matching group
                 if (state->tg_hold != 0 && state->tg_hold != group) {
-                    sprintf(mode, "%s", "B");
+                    snprintf(mode, sizeof mode, "%s", "B");
                 }
                 if (state->tg_hold != 0 && state->tg_hold == group) {
-                    sprintf(mode, "%s", "A");
+                    snprintf(mode, sizeof mode, "%s", "A");
                 }
 
                 //this is working now with the new import setup
@@ -1293,11 +1293,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, "%s", KNRM);
 
                 char mode[8]; //allow, block, digital enc
-                sprintf(mode, "%s", "");
+                snprintf(mode, sizeof mode, "%s", "");
 
                 //if we are using allow/whitelist mode, then write 'B' to mode for block - no allow/whitelist support for i-calls
                 if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
+                    snprintf(mode, sizeof mode, "%s", "B");
                 }
 
                 //Get target mode for calls that are in the allow/whitelist
@@ -1311,10 +1311,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                 //TG hold on EDACS EA I-CALL -- block non-matching target
                 if (state->tg_hold != 0 && state->tg_hold != target) {
-                    sprintf(mode, "%s", "B");
+                    snprintf(mode, sizeof mode, "%s", "B");
                 }
                 if (state->tg_hold != 0 && state->tg_hold == target) {
-                    sprintf(mode, "%s", "A");
+                    snprintf(mode, sizeof mode, "%s", "A");
                 }
 
                 //this is working now with the new import setup
@@ -1440,11 +1440,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, "%s", KNRM);
 
                 char mode[8]; //allow, block, digital enc
-                sprintf(mode, "%s", "");
+                snprintf(mode, sizeof mode, "%s", "");
 
                 //if we are using allow/whitelist mode, then write 'A' to mode for allow - always allow all-calls by default
                 if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "A");
+                    snprintf(mode, sizeof mode, "%s", "A");
                 }
 
                 //TG hold on EDACS ALL-CALL -- block ALL CALL in favor of hold?
@@ -1622,12 +1622,12 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 }
 
                 char mode[8]; //allow, block, digital enc
-                sprintf(mode, "%s", "");
+                snprintf(mode, sizeof mode, "%s", "");
 
                 //if we are using allow/whitelist mode, then write 'B' to mode for block
                 //comparison below will look for an 'A' to write to mode if it is allowed
                 if (opts->trunk_use_allow_list == 1) {
-                    sprintf(mode, "%s", "B");
+                    snprintf(mode, sizeof mode, "%s", "B");
                 }
 
                 //Get group mode for calls that are in the allow/whitelist
@@ -1640,10 +1640,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
                 }
                 //TG hold on EDACS Standard/Net -- block non-matching target, allow matching group
                 if (state->tg_hold != 0 && state->tg_hold != group) {
-                    sprintf(mode, "%s", "B");
+                    snprintf(mode, sizeof mode, "%s", "B");
                 }
                 if (state->tg_hold != 0 && state->tg_hold == group) {
-                    sprintf(mode, "%s", "A");
+                    snprintf(mode, sizeof mode, "%s", "A");
                 }
 
                 //NOTE: Restructured below so that analog and digital are handled the same, just that when
@@ -1926,12 +1926,12 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     }
 
                     char mode[8]; //allow, block, digital enc
-                    sprintf(mode, "%s", "");
+                    snprintf(mode, sizeof mode, "%s", "");
 
                     //if we are using allow/whitelist mode, then write 'B' to mode for block
                     //comparison below will look for an 'A' to write to mode if it is allowed
                     if (opts->trunk_use_allow_list == 1) {
-                        sprintf(mode, "%s", "B");
+                        snprintf(mode, sizeof mode, "%s", "B");
                     }
 
                     //Individual calls always remain blocked if in allow/whitelist mode
@@ -1951,10 +1951,10 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                     //TG hold on EDACS STD/NET -- block non-matching abstract target (moved here to fix tuning that occurs on I-CALL during TG HOLD)
                     if (state->tg_hold != 0 && state->tg_hold != target) {
-                        sprintf(mode, "%s", "B");
+                        snprintf(mode, sizeof mode, "%s", "B");
                     }
                     if (state->tg_hold != 0 && state->tg_hold == target) {
-                        sprintf(mode, "%s", "A");
+                        snprintf(mode, sizeof mode, "%s", "A");
                     }
 
                     //NOTE: Restructured below so that analog and digital are handled the same, just that when
@@ -2091,7 +2091,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                     }
 
                     char mode[8]; //allow, block, digital enc
-                    sprintf(mode, "%s", "");
+                    snprintf(mode, sizeof mode, "%s", "");
 
                     //if we are using allow/whitelist mode, then write 'B' to mode for block
                     //Individual calls always remain blocked if in allow/whitelist mode
@@ -2418,7 +2418,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
                         //if we are using allow/whitelist mode, then write 'A' to mode for allow - always allow all-calls by default
                         if (opts->trunk_use_allow_list == 1) {
-                            sprintf(mode, "%s", "A");
+                            snprintf(mode, sizeof mode, "%s", "A");
                         }
 
                         //NOTE: Restructured below so that analog and digital are handled the same, just that when
@@ -2616,10 +2616,10 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
             state->payload_keyid = 0;
             state->payload_miP = 0;
             //reset some strings
-            sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-            sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-            sprintf(state->active_channel[0], "%s", "");
-            sprintf(state->active_channel[1], "%s", "");
+            snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
+            snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
+            snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
+            snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
             opts->p25_is_tuned = 0;
             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
             if (opts->setmod_bw != 0) {
@@ -2639,10 +2639,10 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
             state->payload_keyid = 0;
             state->payload_miP = 0;
             //reset some strings
-            sprintf(state->call_string[0], "%s", "                     "); //21 spaces
-            sprintf(state->call_string[1], "%s", "                     "); //21 spaces
-            sprintf(state->active_channel[0], "%s", "");
-            sprintf(state->active_channel[1], "%s", "");
+            snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
+            snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
+            snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
+            snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
             opts->p25_is_tuned = 0;
             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
             if (g_rtl_ctx) {

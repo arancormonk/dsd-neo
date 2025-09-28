@@ -55,22 +55,22 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 
     char latstr[3];
     char lonstr[3];
-    sprintf(latstr, "%s", "N");
-    sprintf(lonstr, "%s", "E");
+    snprintf(latstr, sizeof latstr, "%s", "N");
+    snprintf(lonstr, sizeof lonstr, "%s", "E");
 
     const char* deg_glyph = dsd_degrees_glyph();
 
     //lat and lon calculations
     if (lat_sign) {
         lat = 0x800001 - lat;
-        sprintf(latstr, "%s", "S");
+        snprintf(latstr, sizeof latstr, "%s", "S");
         lat_sf = -1.0f;
     }
     latitude = ((double)lat * lat_unit);
 
     if (lon_sign) {
         lon = 0x1000001 - lon;
-        sprintf(lonstr, "%s", "W");
+        snprintf(lonstr, sizeof lonstr, "%s", "W");
         lon_sf = -1.0f;
     }
     longitude = ((double)lon * lon_unit);
@@ -147,17 +147,18 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 
         //save to array for ncurses
         if (pos_err != 0x7) {
-            sprintf(state->dmr_embedded_gps[slot], "%03d; LIP: %.5lf%s%s %.5lf%s%s; Err: %dm; Spd: %d km/h; Dir: %d%s",
-                    add_hash, latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr, position_error, vt, dt,
-                    deg_glyph);
+            snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "%03d; LIP: %.5lf%s%s %.5lf%s%s; Err: %dm; Spd: %d km/h; Dir: %d%s", add_hash, latitude, deg_glyph,
+                     latstr, longitude, deg_glyph, lonstr, position_error, vt, dt, deg_glyph);
         } else {
-            sprintf(state->dmr_embedded_gps[slot],
-                    "%03d; LIP: %.5lf%s%s %.5lf%s%s Unknown Pos Err; Spd: %d km/h; Dir %d%s", add_hash, latitude,
-                    deg_glyph, latstr, longitude, deg_glyph, lonstr, vt, dt, deg_glyph);
+            snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "%03d; LIP: %.5lf%s%s %.5lf%s%s Unknown Pos Err; Spd: %d km/h; Dir %d%s", add_hash, latitude,
+                     deg_glyph, latstr, longitude, deg_glyph, lonstr, vt, dt, deg_glyph);
         }
 
         //save to event history string
-        sprintf(state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
+        snprintf(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                 sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
 
         //save to LRRP report for mapping/logging
         FILE* pFile; //file pointer
@@ -276,11 +277,13 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     }
 
     //save to ncurses string
-    sprintf(state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", latitude, deg_glyph, longitude, deg_glyph);
+    snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", latitude,
+             deg_glyph, longitude, deg_glyph);
 
     //save to event history string
-    sprintf(state->event_history_s[slot].Event_History_Items[0].gps_s, "(%f%s, %f%s)", latitude, deg_glyph, longitude,
-            deg_glyph);
+    snprintf(state->event_history_s[slot].Event_History_Items[0].gps_s,
+             sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "(%f%s, %f%s)", latitude, deg_glyph,
+             longitude, deg_glyph);
 
     //save to LRRP report for mapping/logging
     FILE* pFile; //file pointer
@@ -427,11 +430,13 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     }
 
     //save to ncurses string
-    sprintf(state->dmr_embedded_gps[slot], "(%f%s, %f%s)", latitude, deg_glyph, longitude, deg_glyph);
+    snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "(%f%s, %f%s)", latitude, deg_glyph,
+             longitude, deg_glyph);
 
     //save to event history string
     if (state->event_history_s[slot].Event_History_Items[0].source_id == src && src != 0) {
-        sprintf(state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
+        snprintf(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                 sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
     }
 
     //save to LRRP report for mapping/logging
@@ -577,7 +582,8 @@ harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input) {
     // fprintf (stderr, " SRC: %08d;", src);
 
     //save to array for ncurses
-    sprintf(state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", lat_dec, deg_glyph, lon_dec, deg_glyph);
+    snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", lat_dec,
+             deg_glyph, lon_dec, deg_glyph);
 
     //save to LRRP report for mapping/logging
     FILE* pFile; //file pointer
@@ -643,8 +649,8 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
     char latstr[3];
     char lonstr[3];
-    sprintf(latstr, "%s", "N");
-    sprintf(lonstr, "%s", "E");
+    snprintf(latstr, sizeof latstr, "%s", "N");
+    snprintf(lonstr, sizeof lonstr, "%s", "E");
 
     //run calculations and print
     //7.2.16 and 7.2.17 (two's compliment)
@@ -657,14 +663,14 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     } else {
         if (lat_sign) {
             lat = 0x800001 - lat;
-            sprintf(latstr, "%s", "S");
+            snprintf(latstr, sizeof latstr, "%s", "S");
             lat_sf = -1.0f;
         }
         latitude = ((double)lat * lat_unit);
 
         if (lon_sign) {
             lon = 0x1000001 - lon;
-            sprintf(lonstr, "%s", "W");
+            snprintf(lonstr, sizeof lonstr, "%s", "W");
             lon_sf = -1.0f;
         }
         longitude = ((double)lon * lon_unit);
@@ -685,11 +691,13 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
             //save to array for ncurses
             if (pos_err != 0x7) {
-                sprintf(state->dmr_embedded_gps[slot], "GPS: %.5lf%s%s %.5lf%s%s Err: %dm", latitude, deg_glyph, latstr,
-                        longitude, deg_glyph, lonstr, position_error);
+                snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                         "GPS: %.5lf%s%s %.5lf%s%s Err: %dm", latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr,
+                         position_error);
             } else {
-                sprintf(state->dmr_embedded_gps[slot], "GPS: %.5lf%s%s %.5lf%s%s Unknown Pos Err", latitude, deg_glyph,
-                        latstr, longitude, deg_glyph, lonstr);
+                snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                         "GPS: %.5lf%s%s %.5lf%s%s Unknown Pos Err", latitude, deg_glyph, latstr, longitude, deg_glyph,
+                         lonstr);
             }
 
             uint32_t src = 0;
@@ -702,7 +710,9 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
             //save to event history string
             if (state->event_history_s[slot].Event_History_Items[0].source_id == src) {
-                sprintf(state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
+                snprintf(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                         sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
+                         state->dmr_embedded_gps[slot]);
             }
 
             //save to LRRP report for mapping/logging
@@ -761,9 +771,9 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     char latstr[3];
     char lonstr[3];
     char valid[12];
-    sprintf(latstr, "%s", "N");
-    sprintf(lonstr, "%s", "E");
-    sprintf(valid, "%s", "Current Fix");
+    snprintf(latstr, sizeof latstr, "%s", "N");
+    snprintf(lonstr, sizeof lonstr, "%s", "E");
+    snprintf(valid, sizeof valid, "%s", "Current Fix");
 
     double latitude = 0;
     double longitude = 0;
@@ -775,13 +785,13 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
         latitude = ((double)lat * lat_unit);
         if (lat_sign) {
             latitude -= 90.0f;
-            sprintf(latstr, "%s", "S");
+            snprintf(latstr, sizeof latstr, "%s", "S");
         }
 
         longitude = ((double)lon * lon_unit);
         if (lon_sign) {
             longitude -= 180.0f;
-            sprintf(lonstr, "%s", "W");
+            snprintf(lonstr, sizeof lonstr, "%s", "W");
         }
 
         //sanity check
@@ -791,7 +801,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
             if (expired) {
                 fprintf(stderr, "Last Fix; ");
-                sprintf(valid, "%s", "Last Fix");
+                snprintf(valid, sizeof valid, "%s", "Last Fix");
             } else if (!expired) {
                 fprintf(stderr, "Current Fix; ");
             }
@@ -813,12 +823,15 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
             }
 
             //save to array for ncurses
-            sprintf(state->dmr_embedded_gps[slot], "GPS: %lf%s%s %lf%s%s (%lf, %lf) %s", latitude, deg_glyph, latstr,
-                    longitude, deg_glyph, lonstr, latitude, longitude, valid);
+            snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "GPS: %lf%s%s %lf%s%s (%lf, %lf) %s", latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr,
+                     latitude, longitude, valid);
 
             //save to event history string
             if (state->event_history_s[slot].Event_History_Items[0].source_id == src) {
-                sprintf(state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
+                snprintf(state->event_history_s[slot].Event_History_Items[0].gps_s,
+                         sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
+                         state->dmr_embedded_gps[slot]);
             }
 
             //save to LRRP report for mapping/logging

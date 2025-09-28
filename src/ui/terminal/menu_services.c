@@ -5,6 +5,7 @@
 
 #include <dsd-neo/ui/menu_services.h>
 
+#include <dsd-neo/runtime/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,8 +43,8 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
     struct stat st;
     if (stat(wav_file_directory, &st) == -1) {
-        fprintf(stderr, "%s wav file directory does not exist\n", wav_file_directory);
-        fprintf(stderr, "Creating directory %s to save decoded wav files\n", wav_file_directory);
+        LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
+        LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
         mkdir(wav_file_directory, 0700);
     }
     fprintf(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
@@ -72,7 +73,7 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
     }
     struct stat sb;
     if (stat(filename, &sb) != 0) {
-        fprintf(stderr, "Error, couldn't open %s\n", filename);
+        LOG_ERROR("Error, couldn't open %s\n", filename);
         return -1;
     }
     if (S_ISREG(sb.st_mode)) {
@@ -95,7 +96,7 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
     }
     struct stat sb;
     if (stat(opts->audio_in_dev, &sb) != 0) {
-        fprintf(stderr, "Error, couldn't open %s\n", opts->audio_in_dev);
+        LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
         return -1;
     }
     if (S_ISREG(sb.st_mode)) {
@@ -161,7 +162,7 @@ svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
     opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
     opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
     if (opts->tcp_file_in == NULL) {
-        fprintf(stderr, "Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
+        LOG_ERROR("Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
         if (opts->audio_out_type == 0) {
             snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
             opts->audio_in_type = 0;

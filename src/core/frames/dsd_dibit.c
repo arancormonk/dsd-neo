@@ -32,11 +32,11 @@ print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2) {
     int spectrum[64];
 
     if (state->rf_mod == 0) {
-        sprintf(modulation, "C4FM");
+        snprintf(modulation, sizeof modulation, "C4FM");
     } else if (state->rf_mod == 1) {
-        sprintf(modulation, "QPSK");
+        snprintf(modulation, sizeof modulation, "QPSK");
     } else if (state->rf_mod == 2) {
-        sprintf(modulation, "GFSK");
+        snprintf(modulation, sizeof modulation, "GFSK");
     }
 
     for (i = 0; i < 64; i++) {

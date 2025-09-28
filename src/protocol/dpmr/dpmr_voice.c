@@ -352,7 +352,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
 
         //check other as well before assigning
         if (state->dPMRVoiceFS2Frame.CalledIDOk) {
-            sprintf(state->dpmr_target_id, "%s", CalledID);
+            snprintf(state->dpmr_target_id, sizeof state->dpmr_target_id, "%s", CalledID);
         }
 
     } else {
@@ -369,7 +369,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
 
         //check other as well before assigning
         if (state->dPMRVoiceFS2Frame.CalledIDOk) {
-            sprintf(state->dpmr_caller_id, "%s", CallingID);
+            snprintf(state->dpmr_caller_id, sizeof state->dpmr_caller_id, "%s", CallingID);
         }
 
         //stashed channel code in here, more likely to be correct, but no guarantee

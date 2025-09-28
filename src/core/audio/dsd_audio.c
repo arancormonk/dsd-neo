@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/runtime/log.h>
 
 pa_sample_spec ss;
 pa_sample_spec tt;
@@ -255,7 +256,7 @@ openOSSOutput(dsd_opts* opts) {
             fprintf(stderr, "OSS Output %s.\n", opts->audio_out_dev);
             opts->audio_out_fd = open(opts->audio_out_dev, O_RDWR);
             if (opts->audio_out_fd == -1) {
-                fprintf(stderr, "Error, couldn't open #1 %s\n", opts->audio_out_dev);
+                LOG_ERROR("Error, couldn't open #1 %s\n", opts->audio_out_dev);
                 opts->audio_out = 0;
                 exit(1);
             }
@@ -295,7 +296,7 @@ openOSSOutput(dsd_opts* opts) {
             fprintf(stderr, "OSS Output %s.\n", opts->audio_out_dev);
             opts->audio_out_fd = open(opts->audio_out_dev, O_WRONLY);
             if (opts->audio_out_fd == -1) {
-                fprintf(stderr, "Error, couldn't open %s\n", opts->audio_out_dev);
+                LOG_ERROR("Error, couldn't open %s\n", opts->audio_out_dev);
                 opts->audio_out = 0;
                 exit(1);
             }
@@ -813,7 +814,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file = sf_open_fd(fileno(stdin), SFM_READ, opts->audio_in_file_info, 0);
 
         if (opts->audio_in_file == NULL) {
-            fprintf(stderr, "Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
+            LOG_ERROR("Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
             exit(1);
         }
     }
@@ -850,7 +851,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
         opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
         if (opts->tcp_file_in == NULL) {
-            fprintf(stderr, "Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
+            LOG_ERROR("Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
             exit(1);
         }
     }
@@ -899,7 +900,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
 
         if (opts->audio_in_file == NULL) {
-            fprintf(stderr, "Error, couldn't open file/pipe with libsndfile: %s\n", sf_strerror(NULL));
+            LOG_ERROR("Error, couldn't open file/pipe with libsndfile: %s\n", sf_strerror(NULL));
             exit(1);
         }
     }
@@ -918,7 +919,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
 
         if (opts->audio_in_file == NULL) {
-            fprintf(stderr, "Error, couldn't open %s with libsndfile: %s\n", opts->audio_in_dev, sf_strerror(NULL));
+            LOG_ERROR("Error, couldn't open %s with libsndfile: %s\n", opts->audio_in_dev, sf_strerror(NULL));
             exit(1);
         }
     }
@@ -927,7 +928,7 @@ openAudioInDevice(dsd_opts* opts) {
     else if (strncmp(extension, ".raw", 4) == 0) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
-            fprintf(stderr, "Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
+            LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
             exit(1);
         }
         if (S_ISREG(stat_buf.st_mode)) {
@@ -942,7 +943,7 @@ openAudioInDevice(dsd_opts* opts) {
     else if (strncmp(extension, ".sym", 4) == 0) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
-            fprintf(stderr, "Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
+            LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
             exit(1);
         }
         if (S_ISREG(stat_buf.st_mode)) {
@@ -956,7 +957,7 @@ openAudioInDevice(dsd_opts* opts) {
     else if (strncmp(extension, ".bin", 4) == 0) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
-            fprintf(stderr, "Error, couldn't open bin file %s\n", opts->audio_in_dev);
+            LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
             exit(1);
         }
         if (S_ISREG(stat_buf.st_mode)) {
@@ -970,7 +971,7 @@ openAudioInDevice(dsd_opts* opts) {
     else {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
-            fprintf(stderr, "Error, couldn't open wav file %s\n", opts->audio_in_dev);
+            LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
             exit(1);
         }
         if (S_ISREG(stat_buf.st_mode)) {
@@ -985,7 +986,7 @@ openAudioInDevice(dsd_opts* opts) {
             opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
 
             if (opts->audio_in_file == NULL) {
-                fprintf(stderr, "Error, couldn't open wav file %s\n", opts->audio_in_dev);
+                LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
                 exit(1);
             }
 
@@ -994,7 +995,7 @@ openAudioInDevice(dsd_opts* opts) {
         else //seems this condition is never met
         {
             //opts->audio_in_type = 5; //not sure if this works or needs to openPulse here
-            fprintf(stderr, "Error, couldn't open input file.\n");
+            LOG_ERROR("Error, couldn't open input file.\n");
             exit(1);
         }
     }

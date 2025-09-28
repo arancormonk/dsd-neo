@@ -4146,7 +4146,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             for (int16_t i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == state->lastsrc) //or state->lastsrc
                 {
-                    sprintf(state->generic_talker_alias[0], "%s", state->group_array[i].groupName);
+                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s",
+                             state->group_array[i].groupName);
                     break;
                 }
             }
@@ -4175,7 +4176,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             //load talker aliases here (Moto, Tait, Harris)
             for (int16_t i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == state->lastsrc) {
-                    sprintf(state->generic_talker_alias[0], "%s", state->group_array[i].groupName);
+                    snprintf(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s",
+                             state->group_array[i].groupName);
                     break;
                 }
             }
@@ -4183,7 +4185,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             //load talker aliases here (Moto, Tait, Harris)
             for (int16_t i = 0; i < state->group_tally; i++) {
                 if (state->group_array[i].groupNumber == state->lastsrcR) {
-                    sprintf(state->generic_talker_alias[1], "%s", state->group_array[i].groupName);
+                    snprintf(state->generic_talker_alias[1], sizeof state->generic_talker_alias[1], "%s",
+                             state->group_array[i].groupName);
                     break;
                 }
             }
@@ -4972,7 +4975,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
             char text_string[2000];
             memset(text_string, 0, sizeof(text_string));
-            sprintf(text_string, "%s", "BUMBLEBEETUNA");
+            snprintf(text_string, sizeof text_string, "%s", "BUMBLEBEETUNA");
             if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].event_string, 13) != 0) {
                 memcpy(text_string, state->event_history_s[slot].Event_History_Items[i % 255].event_string,
                        string_size * sizeof(char));
@@ -4985,7 +4988,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("| #%03d \n", i % 255); //empty event, but since we can freely scroll now, keeps things uniform
             }
 
-            sprintf(text_string, "%s", "BUMBLEBEETUNA");
+            snprintf(text_string, sizeof text_string, "%s", "BUMBLEBEETUNA");
             if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].text_message, 13) != 0) {
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want

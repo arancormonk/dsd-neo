@@ -173,9 +173,9 @@ processX2TDMAdata(dsd_opts* opts, dsd_state* state) {
 
     if ((strcmp(sync, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(sync, X2TDMA_BS_DATA_SYNC) == 0)) {
         if (state->currentslot == 0) {
-            sprintf(state->slot0light, "[slot0]");
+            snprintf(state->slot0light, sizeof state->slot0light, "%s", "[slot0]");
         } else {
-            sprintf(state->slot1light, "[slot1]");
+            snprintf(state->slot1light, sizeof state->slot1light, "%s", "[slot1]");
         }
     }
 

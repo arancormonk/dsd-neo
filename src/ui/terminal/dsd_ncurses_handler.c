@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/keymap.h>
 #include <unistd.h>
 #ifdef USE_RTLSDR
@@ -546,7 +547,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
-            fprintf(stderr, "Error, couldn't open %s\n", opts->audio_in_dev);
+            LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
             goto SKIPR;
         }
         if (S_ISREG(stat_buf.st_mode)) {
@@ -563,11 +564,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
         wav_file_directory[1023] = '\0';
         if (stat(wav_file_directory, &st_wav) == -1) {
-            fprintf(stderr, "%s wav file directory does not exist\n", wav_file_directory);
-            fprintf(stderr, "Creating directory %s to save decoded wav files\n", wav_file_directory);
+            LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
+            LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
             mkdir(wav_file_directory, 0700);
         }
-        fprintf(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
+        LOG_NOTICE("\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
         srand(time(
             NULL)); //seed random for filenames (so two filenames aren't the exact same datetime string on initailization)
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
@@ -884,9 +885,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         state->dmr_mfid = -1;         //
 
         //dmr mfid branding and site parms
-        sprintf(state->dmr_branding_sub, "%s", "");
-        sprintf(state->dmr_branding, "%s", "");
-        sprintf(state->dmr_site_parms, "%s", "");
+        snprintf(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "");
+        snprintf(state->dmr_branding, sizeof state->dmr_branding, "%s", "");
+        snprintf(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "");
 
         //DMR Location Area - DMRLA B***S***
         opts->dmr_dmrla_is_set = 0;
@@ -895,7 +896,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         //reset NXDN info
         state->nxdn_location_site_code = 0;
         state->nxdn_location_sys_code = 0;
-        sprintf(state->nxdn_location_category, "%s", " ");
+        snprintf(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
 
         state->nxdn_last_ran = -1; //0
         state->nxdn_ran = 0;       //0
@@ -952,17 +953,17 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
 
             if (opts->tcp_file_in == NULL) {
-                fprintf(stderr, "Error, couldn't Connect to TCP with libsndfile: %s\n", sf_strerror(NULL));
+                LOG_ERROR("Error, couldn't Connect to TCP with libsndfile: %s\n", sf_strerror(NULL));
             } else {
                 //close pulse input if it is currently open
                 if (opts->audio_in_type == 0) {
                     closePulseInput(opts);
                 }
-                fprintf(stderr, "TCP Socket Connected Successfully.\n");
+                LOG_INFO("TCP Socket Connected Successfully.\n");
                 opts->audio_in_type = 8;
             }
         } else {
-            fprintf(stderr, "TCP Socket Connection Error.\n");
+            LOG_ERROR("TCP Socket Connection Error.\n");
         }
     }
 

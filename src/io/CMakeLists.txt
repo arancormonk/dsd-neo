@@ -43,3 +43,4 @@ target_include_directories(dsd-neo_io_control
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${_PUBLIC_INCLUDES}
 )
+target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime)

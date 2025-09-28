@@ -160,9 +160,9 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     //WIP: Mute if on B list (or not W list)
     char modeL[8];
-    sprintf(modeL, "%s", "");
+    snprintf(modeL, sizeof modeL, "%s", "");
     char modeR[8];
-    sprintf(modeR, "%s", "");
+    snprintf(modeR, sizeof modeR, "%s", "");
 
     int TGL = state->lasttg;
     int TGR = state->lasttgR;
@@ -170,8 +170,8 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
     if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-        sprintf(modeR, "%s", "B");
+        snprintf(modeL, sizeof modeL, "%s", "B");
+        snprintf(modeR, sizeof modeR, "%s", "B");
     }
 
     for (i = 0; i < state->group_tally; i++) {
@@ -388,9 +388,9 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     //WIP: Mute if on B list (or not W list)
     char modeL[8];
-    sprintf(modeL, "%s", "");
+    snprintf(modeL, sizeof modeL, "%s", "");
     char modeR[8];
-    sprintf(modeR, "%s", "");
+    snprintf(modeR, sizeof modeR, "%s", "");
 
     int TGL = state->lasttg;
     int TGR = state->lasttgR;
@@ -398,8 +398,8 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     //if we are using allow/whitelist mode, then write 'B' to mode for block
     //comparison below will look for an 'A' to write to mode if it is allowed
     if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-        sprintf(modeR, "%s", "B");
+        snprintf(modeL, sizeof modeL, "%s", "B");
+        snprintf(modeR, sizeof modeR, "%s", "B");
     }
 
     for (i = 0; i < state->group_tally; i++) {

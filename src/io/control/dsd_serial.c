@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/log.h>
 #include <termios.h>
 
 void
@@ -12,7 +13,7 @@ openSerial(dsd_opts* opts, dsd_state* state) {
     fprintf(stderr, "Opening serial port %s and setting baud to %i\n", opts->serial_dev, opts->serial_baud);
     opts->serial_fd = open(opts->serial_dev, O_WRONLY);
     if (opts->serial_fd == -1) {
-        fprintf(stderr, "Error, couldn't open %s\n", opts->serial_dev);
+        LOG_ERROR("Error, couldn't open %s\n", opts->serial_dev);
         exit(1);
     }
 
@@ -55,7 +56,7 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
     char cmd[16];
 
     if (opts->serial_fd > 0) {
-        sprintf(cmd, "\rKEY00\r");
+        snprintf(cmd, sizeof cmd, "\rKEY00\r");
         (void)write(opts->serial_fd, cmd, 7);
         cmd[0] = 2;
         cmd[1] = 75;

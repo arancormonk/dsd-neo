@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/log.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -52,14 +53,14 @@ Connect(char* hostname, int portno) {
     /* socket: create the socket */
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
-        fprintf(stderr, "ERROR opening socket\n");
+        LOG_ERROR("ERROR opening socket\n");
         error("ERROR opening socket");
     }
 
     /* gethostbyname: get the server's DNS entry */
     server = gethostbyname(hostname);
     if (server == NULL) {
-        fprintf(stderr, "ERROR, no such host as %s\n", hostname);
+        LOG_ERROR("ERROR, no such host as %s\n", hostname);
         //exit(0);
         return (0); //return 0, check on other end and configure pulse input
     }
@@ -72,7 +73,7 @@ Connect(char* hostname, int portno) {
 
     /* connect: create a connection with the server */
     if (connect(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr)) < 0) {
-        fprintf(stderr, "ERROR opening socket\n");
+        LOG_ERROR("ERROR opening socket\n");
         return (0);
     }
 
@@ -140,7 +141,7 @@ SetFreq(int sockfd, long int freq) {
     }
     char buf[BUFSIZE];
 
-    sprintf(buf, "F %ld\n", freq);
+    snprintf(buf, sizeof buf, "F %ld\n", freq);
     Send(sockfd, buf);
     Recv(sockfd, buf);
 
@@ -162,8 +163,8 @@ SetModulation(int sockfd, int bandwidth) {
     }
     char buf[BUFSIZE];
     //the bandwidth is now a user/system based configurable variable
-    sprintf(
-        buf, "M NFM %d\n",
+    snprintf(
+        buf, sizeof buf, "M NFM %d\n",
         bandwidth); //SDR++ has changed the token from FM to NFM, even if Ryzerth fixes it later, users may still have an older version
     Send(sockfd, buf);
     Recv(sockfd, buf);
@@ -171,7 +172,7 @@ SetModulation(int sockfd, int bandwidth) {
     //if it fails the first time, send the other token instead
     if (strcmp(buf, "RPRT 1\n") == 0) //sdr++ has a linebreak here, is that in all versions of the protocol?
     {
-        sprintf(buf, "M FM %d\n", bandwidth); //anything not SDR++
+        snprintf(buf, sizeof buf, "M FM %d\n", bandwidth); //anything not SDR++
         Send(sockfd, buf);
         Recv(sockfd, buf);
     }
@@ -226,7 +227,7 @@ bool
 SetSquelchLevel(int sockfd, double dB) {
     char buf[BUFSIZE];
 
-    sprintf(buf, "L SQL %f\n", dB);
+    snprintf(buf, sizeof buf, "L SQL %f\n", dB);
     Send(sockfd, buf);
     Recv(sockfd, buf);
 

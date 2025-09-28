@@ -520,7 +520,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                 source_id = 0;
             }
 
-            sprintf(sysid_string, "%s", "DSTAR");
+            snprintf(sysid_string, sizeof sysid_string, "%s", "DSTAR");
 
             char temp_str[20];
             memset(temp_str, 0, sizeof(temp_str));
@@ -535,7 +535,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     temp_str[i] = 0x5F;
                 }
             }
-            sprintf(src_str, "%s", temp_str);
+            snprintf(src_str, sizeof src_str, "%s", temp_str);
 
             //same for tgt str
             memset(temp_str, 0, sizeof(temp_str));
@@ -548,7 +548,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     temp_str[i] = 0x5F;
                 }
             }
-            sprintf(tgt_str, "%s", temp_str);
+            snprintf(tgt_str, sizeof tgt_str, "%s", temp_str);
         }
 
         if (state->lastsynctype == 20 || state->lastsynctype == 24 || state->lastsynctype == 21
@@ -565,10 +565,10 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                 source_id = 0;
             }
 
-            sprintf(sysid_string, "DPMR_CC_%d", state->dpmr_color_code);
+            snprintf(sysid_string, sizeof sysid_string, "DPMR_CC_%d", state->dpmr_color_code);
 
-            sprintf(src_str, "%s", state->dpmr_caller_id);
-            sprintf(tgt_str, "%s", state->dpmr_target_id);
+            snprintf(src_str, sizeof src_str, "%s", state->dpmr_caller_id);
+            snprintf(tgt_str, sizeof tgt_str, "%s", state->dpmr_target_id);
         }
 
         if (state->lastsynctype == 14 || state->lastsynctype == 15 || state->lastsynctype == 37
@@ -586,7 +586,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             svc_opts = state->edacs_vc_call_type;
             char sup_str[200];
             memset(sup_str, 0, sizeof(sup_str));
-            sprintf(sup_str, "%s", "_");
+            snprintf(sup_str, sizeof sup_str, "%s", "_");
             size_t rem;
             if (svc_opts & 0x02) {
                 rem = sizeof(sup_str) - strlen(sup_str) - 1;

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <math.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -449,10 +450,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     if (opts->tcp_file_in == NULL) {
                         fprintf(stderr, "Error, couldn't Reconnect to TCP with libsndfile: %s\n", sf_strerror(NULL));
                     } else {
-                        fprintf(stderr, "TCP Socket Reconnected Successfully.\n");
+                        LOG_INFO("TCP Socket Reconnected Successfully.\n");
                     }
                 } else {
-                    fprintf(stderr, "TCP Socket Connection Error.\n");
+                    LOG_ERROR("TCP Socket Connection Error.\n");
                 }
 
                 //now retry reading sample
@@ -506,10 +507,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     if (opts->tcp_file_in == NULL) {
                         fprintf(stderr, "Error, couldn't Reconnect to TCP with libsndfile: %s\n", sf_strerror(NULL));
                     } else {
-                        fprintf(stderr, "TCP Socket Reconnected Successfully.\n");
+                        LOG_INFO("TCP Socket Reconnected Successfully.\n");
                     }
                 } else {
-                    fprintf(stderr, "TCP Socket Connection Error.\n");
+                    LOG_ERROR("TCP Socket Connection Error.\n");
                     if (opts->frame_m17 == 1) {
                         goto TCP_RETRY; //if using m17 encoder/decoder, just keep looping to keep alive
                     }

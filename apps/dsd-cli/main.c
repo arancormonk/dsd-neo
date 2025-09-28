@@ -29,6 +29,7 @@
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/log.h>
 
 #include <limits.h>
 #include <signal.h>
@@ -696,11 +697,11 @@ initOpts(dsd_opts* opts) {
     opts->p25tg = 0;
     opts->scoperate = 15;
 #ifdef __CYGWIN__
-    sprintf(opts->audio_in_dev, "/dev/dsp");
-    sprintf(opts->audio_out_dev, "/dev/dsp");
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/dev/dsp");
+    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "/dev/dsp");
 #else
-    sprintf(opts->audio_in_dev, "pulse");
-    sprintf(opts->audio_out_dev, "pulse");
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
 #endif
     opts->audio_in_fd = -1;
     opts->audio_out_fd = -1;
@@ -709,7 +710,7 @@ initOpts(dsd_opts* opts) {
     opts->split = 0;
     opts->playoffset = 0;
     opts->playoffsetR = 0;
-    sprintf(opts->wav_out_dir, "%s", "./WAV");
+    snprintf(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", "./WAV");
     opts->mbe_out_dir[0] = 0;
     opts->mbe_out_file[0] = 0;
     opts->mbe_out_fileR[0] = 0; //second slot on a TDMA system
@@ -746,7 +747,7 @@ initOpts(dsd_opts* opts) {
     opts->static_wav_file = 0; //single static wav file for decoding duration
     //opts->wav_out_fd = -1;
     opts->serial_baud = 115200;
-    sprintf(opts->serial_dev, "/dev/ttyUSB0");
+    snprintf(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
     opts->resume = 0;
     opts->frame_dstar = 1;
     opts->frame_x2tdma = 1;
@@ -813,7 +814,7 @@ initOpts(dsd_opts* opts) {
     opts->wav_interpolator = 1;    //default factor of 1 on 48000; 2 on 96000; sample rate / decimator
     opts->wav_decimator = 48000;   //maybe for future use?
 
-    sprintf(opts->output_name, "AUTO");
+    snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->use_ncurses_terminal = 0;
     opts->ncurses_compact = 0;
@@ -854,29 +855,29 @@ initOpts(dsd_opts* opts) {
     opts->use_rigctl = 0;
     opts->rigctl_sockfd = 0;
     opts->rigctlportno = 4532; //TCP Port Number; GQRX - 7356; SDR++ - 4532
-    sprintf(opts->rigctlhostname, "%s", "localhost");
+    snprintf(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "localhost");
 
     //UDP Socket Blaster Audio
     opts->udp_sockfd = 0;
     opts->udp_sockfdA = 0;
     opts->udp_portno = 23456; //default port, same os OP25's sockaudio.py
-    sprintf(opts->udp_hostname, "%s", "127.0.0.1");
+    snprintf(opts->udp_hostname, sizeof opts->udp_hostname, "%s", "127.0.0.1");
 
     //M17 UDP Port and hostname
     opts->m17_use_ip = 0;     //if enabled, open UDP and broadcast IP frame
     opts->m17_portno = 17000; //default is 17000
     opts->m17_udp_sock = 0;   //actual UDP socket for M17 to send to
-    sprintf(opts->m17_hostname, "%s", "127.0.0.1");
+    snprintf(opts->m17_hostname, sizeof opts->m17_hostname, "%s", "127.0.0.1");
 
     //tcp input options
     opts->tcp_sockfd = 0;
     opts->tcp_portno = 7355; //default favored by SDR++
-    sprintf(opts->tcp_hostname, "%s", "localhost");
+    snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "localhost");
 
     // rtl_tcp defaults
     opts->rtltcp_enabled = 0;
     opts->rtltcp_portno = 1234;
-    sprintf(opts->rtltcp_hostname, "%s", "127.0.0.1");
+    snprintf(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "127.0.0.1");
 
     // UDP direct input defaults
     opts->udp_in_sockfd = 0;
@@ -2294,7 +2295,7 @@ main(int argc, char** argv) {
             //Enable optional retune from P25 LCW explicit updates (format 0x44)
             case 'j':
                 opts.p25_lcw_retune = 1;
-                fprintf(stderr, "P25: Enable LCW explicit retune (0x44).\n");
+                LOG_NOTICE("P25: Enable LCW explicit retune (0x44).\n");
                 break;
             case '^':
                 opts.p25_prefer_candidates = 1;
@@ -2373,7 +2374,7 @@ main(int argc, char** argv) {
                 break;
 
             case 'Q': //'DSP' Structured Output file for OKDMRlib
-                sprintf(wav_file_directory, "./DSP");
+                snprintf(wav_file_directory, sizeof wav_file_directory, "%s", "./DSP");
                 wav_file_directory[1023] = '\0';
                 if (stat(wav_file_directory, &st) == -1) {
                     fprintf(stderr, "-Q %s DSP file directory does not exist\n", wav_file_directory);
@@ -2384,7 +2385,7 @@ main(int argc, char** argv) {
                 }
                 //read in filename
                 strncpy(dsp_filename, optarg, 1023);
-                sprintf(opts.dsp_out_file, "%s/%s", wav_file_directory, dsp_filename);
+                snprintf(opts.dsp_out_file, sizeof opts.dsp_out_file, "%s/%s", wav_file_directory, dsp_filename);
                 fprintf(stderr, "Saving DSP Structured or M17 Float Stream Output to %s\n", opts.dsp_out_file);
                 opts.use_dsp_output = 1;
                 break;
@@ -2641,49 +2642,49 @@ main(int argc, char** argv) {
 
             case 'N':
                 opts.use_ncurses_terminal = 1;
-                fprintf(stderr, "Enabling NCurses Terminal.\n");
+                LOG_NOTICE("Enabling NCurses Terminal.\n");
                 break;
 
             case 'Z':
                 opts.payload = 1;
-                fprintf(stderr, "Logging Frame Payload to console\n");
+                LOG_NOTICE("Logging Frame Payload to console\n");
                 break;
 
             case 'L': //LRRP output to file
                 strncpy(opts.lrrp_out_file, optarg, 1023);
                 opts.lrrp_out_file[1023] = '\0';
                 opts.lrrp_file_output = 1;
-                fprintf(stderr, "Writing + Appending LRRP data to file %s\n", opts.lrrp_out_file);
+                LOG_NOTICE("Writing + Appending LRRP data to file %s\n", opts.lrrp_out_file);
                 break;
 
             case 'J': //Event output to file (J for Journal)
                 strncpy(opts.event_out_file, optarg, 1023);
                 opts.event_out_file[1023] = '\0';
-                fprintf(stderr, "Writing + Appending Event History to file %s\n", opts.event_out_file);
+                LOG_NOTICE("Writing + Appending Event History to file %s\n", opts.event_out_file);
                 break;
 
             case '7': //make a custom wav file directory in the current working directory -- use this before -P
                 strncpy(opts.wav_out_dir, optarg, 511);
                 opts.wav_out_dir[511] = '\0';
                 if (stat(opts.wav_out_dir, &st) == -1) {
-                    fprintf(stderr, "%s directory does not exist\n", opts.wav_out_dir);
-                    fprintf(stderr, "Creating directory %s to save wav files\n", opts.wav_out_dir);
+                    LOG_NOTICE("%s directory does not exist\n", opts.wav_out_dir);
+                    LOG_NOTICE("Creating directory %s to save wav files\n", opts.wav_out_dir);
                     mkdir(opts.wav_out_dir, 0700);
                 } else {
-                    fprintf(stderr, "Writing wav decoded audio files to directory %s\n", opts.wav_out_dir);
+                    LOG_NOTICE("Writing wav decoded audio files to directory %s\n", opts.wav_out_dir);
                 }
                 break;
 
             case 'P': //Per Call Wav Files
-                sprintf(wav_file_directory, "%s", opts.wav_out_dir);
+                snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts.wav_out_dir);
                 wav_file_directory[1023] = '\0';
                 if (stat(wav_file_directory, &st) == -1) {
-                    fprintf(stderr, "-P %s WAV file directory does not exist\n", wav_file_directory);
-                    fprintf(stderr, "Creating directory %s to save decoded wav files\n", wav_file_directory);
+                    LOG_NOTICE("-P %s WAV file directory does not exist\n", wav_file_directory);
+                    LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
                     mkdir(wav_file_directory,
                           0700); //user read write execute, needs execute for some reason or segfault
                 }
-                fprintf(stderr, "Per Call Wav File Enabled.\n");
+                LOG_NOTICE("Per Call Wav File Enabled.\n");
                 srand(time(
                     NULL)); //seed random for filenames (so two filenames aren't the exact same datetime string on initailization)
                 opts.wav_out_f = open_wav_file(opts.wav_out_dir, opts.wav_out_file, 8000, 0);
@@ -2788,7 +2789,7 @@ main(int argc, char** argv) {
                     // opts.setmod_bw = 12000; //safe default on both DMR and P25
                     opts.pulse_digi_rate_out = 8000;
                     opts.pulse_digi_out_channels = 2;
-                    sprintf(opts.output_name, "AUTO");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "AUTO");
                     fprintf(stderr, "Decoding AUTO P25, YSF, DSTAR, X2-TDMA, and DMR\n");
                 } else if (optarg[0]
                            == 'A') //activate analog out and passively monitor it, useful for analog scanning, etc
@@ -2812,7 +2813,7 @@ main(int argc, char** argv) {
                     state.rf_mod = 0;
                     opts.monitor_input_audio = 1;
                     opts.analog_only = 1;
-                    sprintf(opts.output_name, "Analog Monitor");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "Analog Monitor");
                     fprintf(stderr, "Only Monitoring Passive Analog Signal\n");
                 } else if (optarg[0] == 'd') {
                     opts.frame_dstar = 1;
@@ -2832,7 +2833,7 @@ main(int argc, char** argv) {
                     state.dmr_stereo = 0;
                     opts.dmr_mono = 0;
                     state.rf_mod = 0;
-                    sprintf(opts.output_name, "DSTAR");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "DSTAR");
                     fprintf(stderr, "Decoding only DSTAR frames.\n");
                 } else if (optarg[0] == 'x') {
                     opts.frame_dstar = 0;
@@ -2851,7 +2852,7 @@ main(int argc, char** argv) {
                     opts.dmr_stereo = 0;
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
-                    sprintf(opts.output_name, "X2-TDMA");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "X2-TDMA");
                     fprintf(stderr, "Decoding only X2-TDMA frames.\n");
                 } else if (optarg[0] == 'p') {
                     opts.frame_dstar = 0;
@@ -2877,7 +2878,7 @@ main(int argc, char** argv) {
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
                     // opts.setmod_bw = 16000;
-                    sprintf(opts.output_name, "EDACS/PV");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "EDACS/PV");
                     fprintf(stderr, "Setting symbol rate to 9600 / second\n");
                     fprintf(stderr, "Decoding only ProVoice frames.\n");
                     fprintf(stderr, "EDACS Analog Voice Channels are Experimental.\n");
@@ -2925,7 +2926,7 @@ main(int argc, char** argv) {
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
                     // opts.setmod_bw = 12500;
-                    sprintf(opts.output_name, "EDACS/PV");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "EDACS/PV");
                     fprintf(stderr, "Setting symbol rate to 9600 / second\n");
                     fprintf(stderr, "Decoding EDACS STD/NET and ProVoice frames.\n");
                     fprintf(stderr, "EDACS Analog Voice Channels are Experimental.\n");
@@ -2985,7 +2986,7 @@ main(int argc, char** argv) {
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
                     // opts.setmod_bw = 12500;
-                    sprintf(opts.output_name, "EDACS/PV");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "EDACS/PV");
                     fprintf(stderr, "Setting symbol rate to 9600 / second\n");
                     fprintf(stderr, "Decoding EDACS STD/NET w/ ESK and ProVoice frames.\n");
                     fprintf(stderr, "EDACS Analog Voice Channels are Experimental.\n");
@@ -3030,7 +3031,7 @@ main(int argc, char** argv) {
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
                     // opts.setmod_bw = 12500;
-                    sprintf(opts.output_name, "EDACS/PV");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "EDACS/PV");
                     fprintf(stderr, "Setting symbol rate to 9600 / second\n");
                     fprintf(stderr, "Decoding EDACS Extended Addressing and ProVoice frames.\n");
                     fprintf(stderr, "EDACS Analog Voice Channels are Experimental.\n");
@@ -3064,7 +3065,7 @@ main(int argc, char** argv) {
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
                     // opts.setmod_bw = 12500;
-                    sprintf(opts.output_name, "EDACS/PV");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "EDACS/PV");
                     fprintf(stderr, "Setting symbol rate to 9600 / second\n");
                     fprintf(stderr, "Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");
                     fprintf(stderr, "EDACS Analog Voice Channels are Experimental.\n");
@@ -3097,7 +3098,7 @@ main(int argc, char** argv) {
                     opts.ssize = 36; //128 current default, fall back to old default on P1 only systems
                     opts.msize = 15; //1024 current default, fall back to old default on P1 only systems
                     // opts.use_heuristics = 1; //Causes issues with Voice Wide
-                    sprintf(opts.output_name, "P25p1");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "P25p1");
                     fprintf(stderr, "Decoding only P25 Phase 1 frames.\n");
                 } else if (optarg[0] == 'i') {
                     opts.frame_dstar = 0;
@@ -3123,7 +3124,7 @@ main(int argc, char** argv) {
                     state.dmr_stereo = 0;
                     opts.dmr_mono = 0;
                     // opts.setmod_bw = 4000; //causing issues
-                    sprintf(opts.output_name, "NXDN48");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "NXDN48");
                     fprintf(stderr, "Setting symbol rate to 2400 / second\n");
                     fprintf(stderr, "Decoding only NXDN 4800 baud frames.\n");
                 } else if (optarg[0] == 'y') {
@@ -3148,7 +3149,7 @@ main(int argc, char** argv) {
                     opts.dmr_stereo = 0;
                     state.dmr_stereo = 0;
                     opts.dmr_mono = 0;
-                    sprintf(opts.output_name, "YSF");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "YSF");
                     fprintf(stderr, "Decoding only YSF frames. \n");
                 } else if (optarg[0] == '2') {
                     opts.frame_dstar = 0;
@@ -3172,7 +3173,7 @@ main(int argc, char** argv) {
                     state.dmr_stereo = 0;
                     opts.dmr_mono = 0;
                     // opts.setmod_bw = 12000;
-                    sprintf(opts.output_name, "P25p2");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "P25p2");
                     fprintf(stderr, "Decoding 6000 sps P25p2 frames only!\n");
                 } else if (optarg[0] == 's') {
                     opts.frame_dstar = 0;
@@ -3196,7 +3197,7 @@ main(int argc, char** argv) {
                     // opts.setmod_bw = 7000;
                     opts.pulse_digi_rate_out = 8000;
                     opts.pulse_digi_out_channels = 2;
-                    sprintf(opts.output_name, "DMR");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "DMR");
 
                     fprintf(stderr, "Decoding DMR BS/MS Simplex\n");
                 }
@@ -3226,7 +3227,7 @@ main(int argc, char** argv) {
                     opts.pulse_digi_rate_out = 8000;
                     opts.pulse_digi_out_channels = 2;
                     // opts.use_heuristics = 1; //Causes issues with Voice Wide
-                    sprintf(opts.output_name, "TDMA");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "TDMA");
                     fprintf(stderr, "Decoding P25 and DMR\n");
                 } else if (optarg[0] == 'n') {
                     opts.frame_dstar = 0;
@@ -3250,7 +3251,7 @@ main(int argc, char** argv) {
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
                     // opts.setmod_bw = 12000; //causing issues
-                    sprintf(opts.output_name, "NXDN96");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "NXDN96");
                     fprintf(stderr, "Decoding only NXDN 9600 baud frames.\n");
                 } else if (optarg[0] == 'r') {
                     opts.frame_dstar = 0;
@@ -3274,7 +3275,7 @@ main(int argc, char** argv) {
                     opts.dmr_stereo = 1;
                     state.dmr_stereo = 0; //0
                     // opts.setmod_bw = 7000;
-                    sprintf(opts.output_name, "DMR");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "DMR");
                     fprintf(stderr, "-fr / DMR Mono switch has been deprecated.\n");
                     fprintf(stderr, "Decoding DMR BS/MS Simplex\n");
 
@@ -3301,7 +3302,7 @@ main(int argc, char** argv) {
                     opts.dmr_stereo = 0;
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
-                    sprintf(opts.output_name, "dPMR");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "dPMR");
                     fprintf(
                         stderr,
                         "Notice: dPMR cannot autodetect polarity. \n Use -xd option if Inverted Signal expected.\n");
@@ -3328,7 +3329,7 @@ main(int argc, char** argv) {
                     opts.dmr_stereo = 0;
                     opts.dmr_mono = 0;
                     state.dmr_stereo = 0;
-                    sprintf(opts.output_name, "M17");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "M17");
                     fprintf(stderr,
                             "Notice: M17 cannot autodetect polarity. \n Use -xz option if Inverted Signal expected.\n");
                     fprintf(stderr, "Decoding only M17 frames.\n");
@@ -3345,25 +3346,25 @@ main(int argc, char** argv) {
                     opts.use_hpf = 0;
                     opts.use_pbf = 0;
                     opts.dmr_stereo = 0;
-                    sprintf(opts.output_name, "M17 Encoder");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "M17 Encoder");
                 } else if (optarg[0] == 'B') //Captial B to Run the M17 BRT encoder
                 {
                     opts.m17encoderbrt = 1;
                     opts.pulse_digi_rate_out = 48000;
                     opts.pulse_digi_out_channels = 1;
-                    sprintf(opts.output_name, "M17 BERT");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "M17 BERT");
                 } else if (optarg[0] == 'P') //Captial P to Run the M17 PKT encoder
                 {
                     opts.m17encoderpkt = 1;
                     opts.pulse_digi_rate_out = 48000;
                     opts.pulse_digi_out_channels = 1;
-                    sprintf(opts.output_name, "M17 Packet");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "M17 Packet");
                 } else if (optarg[0] == 'U') //Captial U to Run the M17 UDP IPF decoder
                 {
                     opts.m17decoderip = 1;
                     opts.pulse_digi_rate_out = 8000;
                     opts.pulse_digi_out_channels = 1;
-                    sprintf(opts.output_name, "M17 IP Frame");
+                    snprintf(opts.output_name, sizeof opts.output_name, "%s", "M17 IP Frame");
                     fprintf(stderr, "Decoding M17 UDP/IP Frames.\n");
                 }
                 break;
@@ -3464,7 +3465,7 @@ main(int argc, char** argv) {
                 opts.pulse_digi_out_channels = 1;
                 opts.dmr_stereo = 0;
                 state.dmr_stereo = 0;
-                sprintf(opts.output_name, "MBE Playback");
+                snprintf(opts.output_name, sizeof opts.output_name, "%s", "MBE Playback");
                 state.optind = optind;
                 break;
             case 'l': opts.use_cosine_filter = 0; break;
@@ -3864,7 +3865,7 @@ main(int argc, char** argv) {
             rtlsdr_get_device_usb_strings(i, vendor, product, serial);
             fprintf(stderr, "  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
 
-            sprintf(userdev, "%08d", opts.rtl_dev_index);
+            snprintf(userdev, sizeof userdev, "%08d", opts.rtl_dev_index);
 
             //check by index first, then by serial
             if (opts.rtl_dev_index == i) {

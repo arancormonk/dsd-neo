@@ -117,7 +117,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     p25_ga_add(state, (uint32_t)source, (uint16_t)group);
                 }
 
-                sprintf(state->call_string[0], "   Group ");
+                snprintf(state->call_string[0], sizeof state->call_string[0], "   Group ");
                 if (lc_svcopt & 0x80) {
                     dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
                 } else if (lc_svcopt & 0x40) {
@@ -145,7 +145,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 state->gi[0] = 1;
                 state->dmr_so = lc_svcopt;
 
-                sprintf(state->call_string[0], " Private ");
+                snprintf(state->call_string[0], sizeof state->call_string[0], " Private ");
                 if (lc_svcopt & 0x80) {
                     dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
                 } else if (lc_svcopt & 0x40) {
@@ -171,7 +171,8 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     fprintf(stderr, "Ch: %04X TG: %d; ", channel1, group1);
                     char suf[32];
                     p25_format_chan_suffix(state, channel1, -1, suf, sizeof suf);
-                    sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channel1, suf, group1);
+                    snprintf(state->active_channel[0], sizeof state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
+                             channel1, suf, group1);
                     state->last_active_time = time(NULL);
                 }
 
@@ -179,7 +180,8 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     fprintf(stderr, "Ch: %04X TG: %d; ", channel2, group2);
                     char suf[32];
                     p25_format_chan_suffix(state, channel2, -1, suf, sizeof suf);
-                    sprintf(state->active_channel[1], "Active Ch: %04X%s TG: %d; ", channel2, suf, group2);
+                    snprintf(state->active_channel[1], sizeof state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
+                             channel2, suf, group2);
                     state->last_active_time = time(NULL);
                 }
 
@@ -220,7 +222,8 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     //add active channel to string for ncurses display (with FDMA/slot hint)
                     char suf[32];
                     p25_format_chan_suffix(state, channelt, -1, suf, sizeof suf);
-                    sprintf(state->active_channel[0], "Active Ch: %04X%s TG: %d; ", channelt, suf, group1);
+                    snprintf(state->active_channel[0], sizeof state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
+                             channelt, suf, group1);
                     state->last_active_time = time(NULL);
                 }
             }
