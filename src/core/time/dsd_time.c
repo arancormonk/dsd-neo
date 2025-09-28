@@ -98,7 +98,8 @@ getDate() {
     if (ptm == NULL) {
         snprintf(curr, 9, "00000000");
     } else {
-        snprintf(curr, 9, "%04d%02d%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(curr, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -110,7 +111,8 @@ getDate_buf(char out[9]) {
     if (ptm == NULL) {
         snprintf(out, 9, "00000000");
     } else {
-        snprintf(out, 9, "%04d%02d%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(out, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
 }
 
@@ -123,7 +125,8 @@ getDateH() {
     if (ptm == NULL) {
         snprintf(curr, 11, "0000-00-00");
     } else {
-        snprintf(curr, 11, "%04d-%02d-%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(curr, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -135,7 +138,8 @@ getDateH_buf(char out[11]) {
     if (ptm == NULL) {
         snprintf(out, 11, "0000-00-00");
     } else {
-        snprintf(out, 11, "%04d-%02d-%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(out, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
 }
 
@@ -148,7 +152,8 @@ getDateS() {
     if (ptm == NULL) {
         snprintf(curr, 11, "0000/00/00");
     } else {
-        snprintf(curr, 11, "%04d/%02d/%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(curr, 11, "%04u/%02u/%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -160,7 +165,8 @@ getDateS_buf(char out[11]) {
     if (ptm == NULL) {
         snprintf(out, 11, "0000/00/00");
     } else {
-        snprintf(out, 11, "%04d/%02d/%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(out, 11, "%04u/%02u/%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
 }
 
@@ -172,7 +178,8 @@ getDateN(time_t t) {
     if (ptm == NULL) {
         snprintf(curr, 11, "0000-00-00");
     } else {
-        snprintf(curr, 11, "%04d-%02d-%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(curr, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -183,7 +190,8 @@ getDateN_buf(time_t t, char out[11]) {
     if (ptm == NULL) {
         snprintf(out, 11, "0000-00-00");
     } else {
-        snprintf(out, 11, "%04d-%02d-%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(out, 11, "%04u-%02u-%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
 }
 
@@ -218,7 +226,8 @@ getDateF(time_t t) {
     if (ptm == NULL) {
         snprintf(curr, 9, "00000000");
     } else {
-        snprintf(curr, 9, "%04d%02d%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+        snprintf(curr, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+                 (unsigned)ptm->tm_mday);
     }
     return curr;
 }
@@ -226,5 +235,6 @@ getDateF(time_t t) {
 void
 getDateF_buf(time_t t, char out[9]) {
     struct tm* ptm = localtime(&t);
-    snprintf(out, 9, "%04d%02d%02d", ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday);
+    snprintf(out, 9, "%04u%02u%02u", (unsigned)(ptm->tm_year + 1900), (unsigned)(ptm->tm_mon + 1),
+             (unsigned)ptm->tm_mday);
 }

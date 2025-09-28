@@ -10,7 +10,8 @@
 void
 rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t key[], uint8_t cipher[],
                   uint8_t plain[]) {
-    int i, j, count;
+    int i, j;
+    unsigned int count;
     uint8_t t, b;
 
     //init Sbox
@@ -48,7 +49,8 @@ rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t ke
 //this is for PDU usage
 void
 rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output_blocks) {
-    int i, j, x, count;
+    int i, j, x;
+    unsigned int count;
     unsigned int keylength = (unsigned int)keylen;
     unsigned int messagelength = (unsigned int)meslen;
     unsigned int S[256];

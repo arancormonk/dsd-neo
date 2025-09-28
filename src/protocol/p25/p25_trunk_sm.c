@@ -100,7 +100,7 @@ p25_sm_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     }
 
     // Compose final file path
-    int n = snprintf(out, out_len, "%s/p25_cc_%05lX_%03X.txt", path, state->p2_wacn, state->p2_sysid);
+    int n = snprintf(out, out_len, "%s/p25_cc_%05llX_%03llX.txt", path, state->p2_wacn, state->p2_sysid);
     return (n > 0 && (size_t)n < out_len);
 }
 
@@ -400,8 +400,8 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // (e.g., MAC_IDLE on both slots, early ENC lockout, or teardown PDUs).
         if (!forced && !stale_activity && (left_audio || right_audio)) {
             if (opts && opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%d\n", left_audio,
-                        right_audio, recent_voice, opts ? opts->trunk_hangtime : -1);
+                fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%f\n", left_audio,
+                        right_audio, recent_voice, opts ? opts->trunk_hangtime : -1.0);
             }
             p25_sm_log_status(opts, state, "release-deferred-gated");
             return; // keep current VC; do not return to CC yet

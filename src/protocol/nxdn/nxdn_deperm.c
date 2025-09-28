@@ -253,7 +253,7 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
 
     //FIRST! If part of a non_superframe, and CRC is good, send directly to NXDN_Elements_Content_decode
     if (state->nxdn_sacch_non_superframe == TRUE) {
-        if (state->nxdn_last_ran != -1) {
+        if (state->nxdn_last_ran != (unsigned int)-1) {
             fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
         } else {
             fprintf(stderr, "        ");
@@ -332,7 +332,7 @@ nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
         state->nxdn_part_of_frame = part_of_frame;
 
         fprintf(stderr, "%s", KCYN);
-        if (state->nxdn_last_ran != -1) {
+        if (state->nxdn_last_ran != (unsigned int)-1) {
             fprintf(stderr, " RAN %02d ", state->nxdn_last_ran);
         } else {
             fprintf(stderr, "        ");

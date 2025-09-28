@@ -85,7 +85,7 @@ traceBack(int* out, int* m_pathMemory0, int* m_pathMemory1, int* m_pathMemory2, 
     } // end for
 
     return (length);
-}; // end function
+} // end function
 
 // function viterbiDecode
 
@@ -156,7 +156,7 @@ viterbiDecode(int n, int* data, int* m_pathMemory0, int* m_pathMemory1, int* m_p
         m_pathMetric[loop] = tempMetric[loop];
     }; // end for
 
-}; // end function ViterbiDecode
+} // end function ViterbiDecode
 
 // function FECdecoder
 // returns outlen
@@ -216,7 +216,7 @@ FECdecoder(int* in, int* out) {
 
     return (outLen);
 
-}; // end function FECdecoder
+} // end function FECdecoder
 
 // function deinterleave
 void
@@ -241,7 +241,7 @@ deinterleave(int* in, int* out) {
         }; // end elsif - if
     }; // end for
 
-}; // end function deinterleave
+} // end function deinterleave
 
 /// function scramble
 
@@ -283,4 +283,4 @@ scramble(int* in, int* out) {
         }; // end if
     }; // end for
 
-}; // end function scramble
+} // end function scramble

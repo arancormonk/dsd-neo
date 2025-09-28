@@ -187,7 +187,7 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
         while (field) {
 
             if (field_count == 0) {
-                sscanf(field, "%lld", &keynumber);
+                sscanf(field, "%llu", &keynumber);
                 if (keynumber > 0xFFFF) //if larger than 16-bits, get its hash instead
                 {
                     keynumber = keynumber & 0xFFFFFF; //truncate to 24-bits (max allowed)
@@ -201,8 +201,8 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
             }
 
             if (field_count == 1) {
-                sscanf(field, "%lld", &keyvalue);
-                if (keynumber >= 0 && keynumber < 0x1FFFF) {
+                sscanf(field, "%llu", &keyvalue);
+                if (keynumber < 0x1FFFFULL) {
                     state->rkey_array[keynumber] = keyvalue & 0xFFFFFFFFFF; // doesn't exceed 40-bit value
                 }
             }
@@ -248,7 +248,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
             }
 
             if (field_count == 1) {
-                if (keynumber >= 0 && keynumber < 0x1FFFF) {
+                if (keynumber < 0x1FFFFULL) {
                     sscanf(field, "%llX", &state->rkey_array[keynumber]);
                 }
             }
@@ -276,7 +276,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
             field_count++;
         }
 
-        if (keynumber >= 0 && keynumber < 0x1FFFF) {
+        if (keynumber < 0x1FFFFULL) {
             LOG_INFO("Key [%04llX] [%016llX]", keynumber, state->rkey_array[keynumber]);
         } else {
             LOG_INFO("Key [%04llX] [out-of-range]", keynumber);

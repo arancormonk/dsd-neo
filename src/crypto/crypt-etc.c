@@ -75,7 +75,7 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
     char* curr;
     curr = strtok(input, ":"); //should be len (mod) of key (decimal)
     if (curr != NULL) {
-        sscanf(curr, "%hd", &len);
+        sscanf(curr, "%hu", &len);
     } else {
         goto END_KS;
     }

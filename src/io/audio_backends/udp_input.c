@@ -78,7 +78,7 @@ ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
     return w;
 }
 
-static int
+static __attribute__((unused)) int
 ring_read_block(udp_input_ring* r, int16_t* out) {
     pthread_mutex_lock(&r->m);
     while (ring_used(r) == 0) {

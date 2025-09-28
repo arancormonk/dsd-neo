@@ -251,8 +251,9 @@ DSD_NEO_TARGET_ATTR("avx2")
     widen_rotate90_u8_to_s16_bias127_avx2(const unsigned char* src, int16_t* dst, uint32_t len) {
     const __m256i shuffle = _mm256_setr_epi8(0, 1, 3, 2, 4, 5, 7, 6, 8, 9, 11, 10, 12, 13, 15, 14, 0, 1, 3, 2, 4, 5, 7,
                                              6, 8, 9, 11, 10, 12, 13, 15, 14);
-    const __m256i mask_sel = _mm256_setr_epi16(0x0000, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0xFFFF, 0x0000, 0xFFFF, 0x0000,
-                                               0x0000, 0xFFFF, 0x0000, 0xFFFF, 0xFFFF, 0x0000, 0xFFFF);
+    const __m256i mask_sel =
+        _mm256_setr_epi16(0x0000, 0x0000, (short)0xFFFF, 0x0000, (short)0xFFFF, (short)0xFFFF, 0x0000, (short)0xFFFF,
+                          0x0000, 0x0000, (short)0xFFFF, 0x0000, (short)0xFFFF, (short)0xFFFF, 0x0000, (short)0xFFFF);
     const __m256i c127 = _mm256_set1_epi16(127);
     uint32_t i = 0;
     for (; i + 32 <= len; i += 32) {
@@ -321,7 +322,8 @@ DSD_NEO_TARGET_ATTR("ssse3")
     widen_rotate90_u8_to_s16_bias127_ssse3(const unsigned char* src, int16_t* dst, uint32_t len) {
     uint32_t i = 0;
     const __m128i shuffle = _mm_setr_epi8(0, 1, 3, 2, 4, 5, 7, 6, 8, 9, 11, 10, 12, 13, 15, 14);
-    const __m128i mask_sel = _mm_setr_epi16(0x0000, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0xFFFF, 0x0000, 0xFFFF);
+    const __m128i mask_sel =
+        _mm_setr_epi16(0x0000, 0x0000, (short)0xFFFF, 0x0000, (short)0xFFFF, (short)0xFFFF, 0x0000, (short)0xFFFF);
     const __m128i c127 = _mm_set1_epi16(127);
     const __m128i zero = _mm_setzero_si128();
     for (; i + 16 <= len; i += 16) {

@@ -22,7 +22,7 @@ convert_hex_to_dec(uint16_t input) {
     memset(num_str, 0, sizeof(num_str));
     sprintf(num_str, "%X", input);
     input = 0;
-    sscanf(num_str, "%hd", &input);
+    sscanf(num_str, "%hu", &input);
     return input;
 }
 

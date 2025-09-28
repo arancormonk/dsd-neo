@@ -355,8 +355,8 @@ udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     //send audio or data to socket
     err = sendto(opts->udp_sockfd, data, nsam, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
     if (err < 0) {
-        fprintf(stderr, "\n UDP SENDTO ERR %ld",
-                err); //return value here is size_t number of characters sent, or -1 for failure
+        fprintf(stderr, "\n UDP SENDTO ERR %zd",
+                (ssize_t)err); // return value here is ssize_t number of bytes sent, or -1 for failure
     }
     if (err < nsam) {
         fprintf(stderr, "\n UDP Underflow %ld", err); //I'm not even sure if this is possible
@@ -365,7 +365,7 @@ udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
 
 int
 m17_socket_receiver(dsd_opts* opts, void* data) {
-    size_t err = 0;
+    ssize_t err = 0;
     struct sockaddr_in cliaddr;
     socklen_t len = sizeof(cliaddr);
 
@@ -380,7 +380,7 @@ m17_socket_receiver(dsd_opts* opts, void* data) {
 void
 udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
-    size_t err = 0;
+    ssize_t err = 0;
 
     //listen with:
 
@@ -390,8 +390,8 @@ udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     //send audio or data to socket
     err = sendto(opts->udp_sockfdA, data, nsam, 0, (const struct sockaddr*)&addressA, sizeof(struct sockaddr_in));
     if (err < 0) {
-        fprintf(stderr, "\n UDP SENDTO ERR %ld",
-                err); //return value here is size_t number of characters sent, or -1 for failure
+        fprintf(stderr, "\n UDP SENDTO ERR %zd",
+                err); // return value here is ssize_t number of bytes sent, or -1 for failure
     }
     if (err < nsam) {
         fprintf(stderr, "\n UDP Underflow %ld", err); //I'm not even sure if this is possible
@@ -401,7 +401,7 @@ udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
 int
 m17_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
-    unsigned long long int err = 0;
+    ssize_t err = 0;
 
     //See notes in m17.c on line ~3395 regarding usage
 

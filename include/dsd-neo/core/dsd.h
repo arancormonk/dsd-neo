@@ -1396,7 +1396,9 @@ void initState(dsd_state* state);
 void usage();
 void liveScanner(dsd_opts* opts, dsd_state* state);
 void cleanupAndExit(dsd_opts* opts, dsd_state* state);
+#ifdef _MAIN
 int main(int argc, char** argv);
+#endif
 void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
 void processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
                      char imbe7100_fr[7][24]);

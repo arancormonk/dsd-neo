@@ -577,12 +577,13 @@ fll_update_error(struct demod_state* d) {
     d->fll_state.prev_r = d->fll_prev_r;
     d->fll_state.prev_j = d->fll_prev_j;
 
-    fll_config_t cfg = {.enabled = d->fll_enabled,
-                        .alpha_q15 = d->fll_alpha_q15,
-                        .beta_q15 = d->fll_beta_q15,
-                        .deadband_q14 = d->fll_deadband_q14,
-                        .slew_max_q15 = d->fll_slew_max_q15,
-                        .use_lut = fll_lut_enabled};
+    fll_config_t cfg;
+    cfg.enabled = d->fll_enabled;
+    cfg.alpha_q15 = d->fll_alpha_q15;
+    cfg.beta_q15 = d->fll_beta_q15;
+    cfg.deadband_q14 = d->fll_deadband_q14;
+    cfg.slew_max_q15 = d->fll_slew_max_q15;
+    cfg.use_lut = fll_lut_enabled;
 
     /* Use QPSK-friendly symbol-spaced update when CQPSK path is active */
     if (d->cqpsk_enable && d->ted_sps >= 2) {
@@ -618,12 +619,13 @@ fll_mix_and_update(struct demod_state* d) {
     d->fll_state.prev_r = d->fll_prev_r;
     d->fll_state.prev_j = d->fll_prev_j;
 
-    fll_config_t cfg = {.enabled = d->fll_enabled,
-                        .alpha_q15 = d->fll_alpha_q15,
-                        .beta_q15 = d->fll_beta_q15,
-                        .deadband_q14 = d->fll_deadband_q14,
-                        .slew_max_q15 = d->fll_slew_max_q15,
-                        .use_lut = fll_lut_enabled};
+    fll_config_t cfg;
+    cfg.enabled = d->fll_enabled;
+    cfg.alpha_q15 = d->fll_alpha_q15;
+    cfg.beta_q15 = d->fll_beta_q15;
+    cfg.deadband_q14 = d->fll_deadband_q14;
+    cfg.slew_max_q15 = d->fll_slew_max_q15;
+    cfg.use_lut = fll_lut_enabled;
 
     fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
 

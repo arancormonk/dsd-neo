@@ -50,10 +50,10 @@ void pc4encrypt(PC4Context* ctx);
 void pc4decrypt(PC4Context* ctx);
 void binhex(PC4Context* ctx, short* z, int length);
 void hexbin(PC4Context* ctx, short* q, uint8_t w, uint8_t hex);
-static void u64_to_bytes_be(uint64_t val, unsigned char* out);
+static __attribute__((unused)) void u64_to_bytes_be(uint64_t val, unsigned char* out);
 
 /* Encrypt a 49-bit frame (original flow) */
-static void
+static __attribute__((unused)) void
 encrypt_frame_49(short frame_bits_in[49]) {
     for (int i = 0; i < 49; i++) {
         ctx.bits[i] = frame_bits_in[i];
@@ -81,7 +81,7 @@ encrypt_frame_49(short frame_bits_in[49]) {
 }
 
 /* Decrypt a 49-bit frame (original flow) */
-static void
+static __attribute__((unused)) void
 decrypt_frame_49(short frame_bits_in[49]) {
     for (int i = 0; i < 49; i++) {
         ctx.bits[i] = frame_bits_in[i];
@@ -109,7 +109,7 @@ decrypt_frame_49(short frame_bits_in[49]) {
 }
 
 /* Convert 64-bit integer to bytes (big-endian) */
-static void
+static __attribute__((unused)) void
 u64_to_bytes_be(uint64_t val, unsigned char* out) {
     for (int i = 0; i < 8; i++) {
         out[i] = (unsigned char)((val >> (56 - 8 * i)) & 0xFF);

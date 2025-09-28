@@ -73,4 +73,4 @@ calc_fcs(unsigned char* dvstartframe, int size) {
 
     // done
     return (m_crc);
-}; // end function
+} // end function
