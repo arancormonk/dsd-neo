@@ -82,7 +82,7 @@ jobs:
         run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; git config --global --add safe.directory "$(cygpath -u "$GITHUB_WORKSPACE")"'
 
       - name: Restore cygdeps cache
-        uses: actions/cache@v4.2.4
+        uses: actions/cache@v4.3.0
         id: cygdeps-cache
         with:
           path: .cygdeps
@@ -170,7 +170,7 @@ jobs:
 
       - name: Save cygdeps cache (explicit)
         if: steps.cygdeps-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4.2.4
+        uses: actions/cache/save@v4.3.0
         with:
           path: .cygdeps
           key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
