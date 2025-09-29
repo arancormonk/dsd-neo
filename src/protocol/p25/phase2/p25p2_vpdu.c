@@ -2416,8 +2416,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         init_event_history(&state->event_history_s[slot], 0, 1);
                     }
                 }
-                // Gate this slot only
+                // Gate this slot only and flush any queued audio to avoid residue
                 state->p25_p2_audio_allowed[slot] = 0;
+                p25_p2_audio_ring_reset(state, slot);
                 int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");

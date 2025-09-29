@@ -289,6 +289,9 @@ p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot) {
     int eslot = slot & 1;
     int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
     state->p25_p2_audio_allowed[eslot] = 0;
+    // Mirror production behavior: flush any queued audio for this slot so
+    // residual samples do not bleed into playback after gating.
+    p25_p2_audio_ring_reset(state, eslot);
     if (!other_audio) {
         p25_sm_on_release(opts, state);
         return 1;

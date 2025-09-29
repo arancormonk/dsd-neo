@@ -261,6 +261,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // release to CC only if the opposite slot is not active.
                             int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
                             state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
+                            // Flush any residual audio already queued for this slot
+                            p25_p2_audio_ring_reset(state, eslot);
                             if (!other_audio) {
                                 fprintf(
                                     stderr,
@@ -418,6 +420,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // release to CC only if the opposite slot is not active.
                             int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
                             state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
+                            // Flush any residual audio already queued for this slot
+                            p25_p2_audio_ring_reset(state, eslot);
                             if (!other_audio) {
                                 fprintf(
                                     stderr,
@@ -1224,6 +1228,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (enc_suspect) {
                 int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
                 state->p25_p2_audio_allowed[slot] = 0; // gate current slot
+                // Flush any residual audio already queued for this slot
+                p25_p2_audio_ring_reset(state, slot);
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
                     state->p25_sm_force_release = 1;

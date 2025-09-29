@@ -251,6 +251,12 @@ target_include_directories(dsd-neo_test_p25_p2_vpdu_sequence PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_p25_p2_vpdu_sequence PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_VPDU_SEQUENCE COMMAND dsd-neo_test_p25_p2_vpdu_sequence)
 
+# P25 P2 VPDU ENC SVC gating should flush per-slot ring and optionally release
+add_executable(dsd-neo_test_p25_p2_vpdu_enc_flush protocol/p25/test_p25_p2_vpdu_enc_flush.c)
+target_include_directories(dsd-neo_test_p25_p2_vpdu_enc_flush PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_p2_vpdu_enc_flush PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_VPDU_ENC_FLUSH COMMAND dsd-neo_test_p25_p2_vpdu_enc_flush)
+
 # P25 trunk SM CC cache persist/load and candidate iteration
 add_executable(dsd-neo_test_p25_trunk_cc_cache protocol/p25/test_p25_trunk_cc_cache.c)
 target_include_directories(dsd-neo_test_p25_trunk_cc_cache PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
@@ -262,6 +268,12 @@ add_executable(dsd-neo_test_p25_p2_early_enc_lockout protocol/p25/test_p25_p2_ea
 target_include_directories(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
 target_link_libraries(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_EARLY_ENC_LOCKOUT COMMAND dsd-neo_test_p25_p2_early_enc_lockout)
+
+# P25 P2 mid-call ENC flush behavior: ensure per-slot jitter buffer flush
+add_executable(dsd-neo_test_p25_p2_midcall_enc_flush protocol/p25/test_p25_p2_midcall_enc_flush.c)
+target_include_directories(dsd-neo_test_p25_p2_midcall_enc_flush PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
+target_link_libraries(dsd-neo_test_p25_p2_midcall_enc_flush PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_MIDCALL_ENC_FLUSH COMMAND dsd-neo_test_p25_p2_midcall_enc_flush)
 
 # P25 IDEN trust promotion for current site
 add_executable(dsd-neo_test_p25_iden_trust_promote protocol/p25/test_p25_iden_trust_promote.c)
