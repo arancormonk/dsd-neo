@@ -266,8 +266,55 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             goto SKIPCALL;
         }
 
-        //Skip tuning encrypted calls if enc calls are disabled
+        //Skip tuning encrypted calls if enc calls are disabled – emit event immediately
         if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+            if (group > 0) {
+                // Only emit once per TG: check if already marked as DE; if not, mark & emit
+                int idx = -1;
+                for (unsigned int i = 0; i < state->group_tally; i++) {
+                    if (state->group_array[i].groupNumber == (unsigned long)group) {
+                        idx = (int)i;
+                        break;
+                    }
+                }
+                int already_de = 0;
+                if (idx >= 0) {
+                    already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+                }
+                if (!already_de) {
+                    if (idx < 0
+                        && state->group_tally
+                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                        state->group_array[state->group_tally].groupNumber = (uint32_t)group;
+                        snprintf(state->group_array[state->group_tally].groupMode,
+                                 sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
+                        snprintf(state->group_array[state->group_tally].groupName,
+                                 sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                        state->group_tally++;
+                    } else if (idx >= 0) {
+                        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                 "DE");
+                    }
+                    state->lasttg = (uint32_t)group;
+                    state->gi[0] = 0;
+                    state->dmr_so = (uint16_t)svc;
+                    snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                             sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", group);
+                    watchdog_event_current(opts, state, 0);
+                    Event_History_I* eh = &state->event_history_s[0];
+                    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                                sizeof eh->Event_History_Items[0].internal_str)
+                        != 0) {
+                        if (opts->event_out_file[0] != '\0') {
+                            write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
+                                                    eh->Event_History_Items[0].event_string);
+                        }
+                        push_event_history(eh);
+                        init_event_history(eh, 0, 1);
+                    }
+                }
+            }
             goto SKIPCALL;
         }
 
@@ -538,8 +585,54 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
                 goto SKIPCALL;
             }
 
-            //Skip tuning encrypted calls if enc calls are disabled
+            //Skip tuning encrypted calls if enc calls are disabled – emit event immediately
             if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                if (group > 0) {
+                    int idx = -1;
+                    for (unsigned int i = 0; i < state->group_tally; i++) {
+                        if (state->group_array[i].groupNumber == (unsigned long)group) {
+                            idx = (int)i;
+                            break;
+                        }
+                    }
+                    int already_de = 0;
+                    if (idx >= 0) {
+                        already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+                    }
+                    if (!already_de) {
+                        if (idx < 0
+                            && state->group_tally
+                                   < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                            state->group_array[state->group_tally].groupNumber = (uint32_t)group;
+                            snprintf(state->group_array[state->group_tally].groupMode,
+                                     sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
+                            snprintf(state->group_array[state->group_tally].groupName,
+                                     sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                            state->group_tally++;
+                        } else if (idx >= 0) {
+                            snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                     "DE");
+                        }
+                        state->lasttg = (uint32_t)group;
+                        state->gi[0] = 0;
+                        state->dmr_so = (uint16_t)svc;
+                        snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                                 sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", group);
+                        watchdog_event_current(opts, state, 0);
+                        Event_History_I* eh2 = &state->event_history_s[0];
+                        if (strncmp(eh2->Event_History_Items[1].internal_str, eh2->Event_History_Items[0].internal_str,
+                                    sizeof eh2->Event_History_Items[0].internal_str)
+                            != 0) {
+                            if (opts->event_out_file[0] != '\0') {
+                                write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
+                                                        eh2->Event_History_Items[0].event_string);
+                            }
+                            push_event_history(eh2);
+                            init_event_history(eh2, 0, 1);
+                        }
+                    }
+                }
                 goto SKIPCALL;
             }
 

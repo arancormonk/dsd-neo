@@ -41,6 +41,28 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
+// Weak fallbacks for event-history utilities so protocol unit tests can link
+// the P25 library without pulling in the full core/UI events implementation.
+__attribute__((weak)) void
+watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    UNUSED3(opts, state, slot);
+}
+
+__attribute__((weak)) void
+write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
+    UNUSED5(opts, state, slot, swrite, event_string);
+}
+
+__attribute__((weak)) void
+push_event_history(Event_History_I* event_struct) {
+    UNUSED(event_struct);
+}
+
+__attribute__((weak)) void
+init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
+    UNUSED3(event_struct, start, stop);
+}
+
 // Note: Do not use weak symbols here. Windows/COFF linkers handle them
 // differently than ELF and that caused undefined references in CI.
 // Expire regroup/patch entries older than this many seconds
@@ -351,15 +373,98 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    UNUSED2(svc_bits, src);
-    // TG may be used for future gating; tuning logic is centralized here
-    if (tg == 0) {
-        // proceed, some systems use TG 0 for special cases
+    if (!opts || !state) {
+        return;
     }
     // Track RID↔TG mapping when source is known and plausible
     if (src > 0 && tg > 0) {
         p25_ga_add(state, (uint32_t)src, (uint16_t)tg);
     }
+
+    // Centralized gating: ensure we never tune to an encrypted/blocked talkgroup
+    // even if a caller forgets to gate before invoking the SM.
+    // - Respect ENC lockout based on SVC bits when available
+    // - Respect user group list modes ("DE" encrypted lockout, "B" block)
+    // - Respect TG Hold when set (allow only the held TG)
+    if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
+        if (opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: block tune TG=%u (encrypted)\n", (unsigned)tg);
+        }
+        // Emit at most once: only when TG isn't already marked as encrypted (DE)
+        if (tg > 0) {
+            int idx = -1;
+            for (unsigned int i = 0; i < state->group_tally; i++) {
+                if (state->group_array[i].groupNumber == (unsigned long)tg) {
+                    idx = (int)i;
+                    break;
+                }
+            }
+            int already_de = 0;
+            if (idx >= 0) {
+                already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+            }
+            if (!already_de) {
+                if (idx < 0
+                    && state->group_tally < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                    state->group_array[state->group_tally].groupNumber = (uint32_t)tg;
+                    snprintf(state->group_array[state->group_tally].groupMode,
+                             sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
+                    snprintf(state->group_array[state->group_tally].groupName,
+                             sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                    state->group_tally++;
+                } else if (idx >= 0) {
+                    // Keep alias if present; update mode only
+                    snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s", "DE");
+                }
+                state->lasttg = (uint32_t)tg;
+                state->gi[0] = 0;                   // group
+                state->dmr_so = (uint16_t)svc_bits; // reuse field for SVC bits summary
+                snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                         sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                         "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
+                watchdog_event_current(opts, state, 0);
+                Event_History_I* eh = &state->event_history_s[0];
+                if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                            sizeof eh->Event_History_Items[0].internal_str)
+                    != 0) {
+                    if (opts->event_out_file[0] != '\0') {
+                        uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                        write_event_to_log_file(opts, state, 0, swrite, eh->Event_History_Items[0].event_string);
+                    }
+                    push_event_history(eh);
+                    init_event_history(eh, 0, 1);
+                }
+            }
+        }
+        return;
+    }
+
+    // Group list mode check
+    char mode[8] = {0};
+    if (tg > 0) {
+        for (unsigned int i = 0; i < state->group_tally; i++) {
+            if (state->group_array[i].groupNumber == (unsigned long)tg) {
+                snprintf(mode, sizeof mode, "%s", state->group_array[i].groupMode);
+                break;
+            }
+        }
+    }
+    if (strcmp(mode, "DE") == 0 || strcmp(mode, "B") == 0) {
+        if (opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: block tune TG=%u (mode=%s)\n", (unsigned)tg, mode);
+        }
+        return;
+    }
+
+    // TG Hold: when active, allow only matching TG
+    if (state->tg_hold != 0 && (uint32_t)tg != state->tg_hold) {
+        if (opts->verbose > 1) {
+            fprintf(stderr, "\n  P25 SM: block tune TG=%u (TG Hold=%u)\n", (unsigned)tg, state->tg_hold);
+        }
+        return;
+    }
+
+    // Proceed with tuned grant
     p25_handle_grant(opts, state, channel);
 }
 

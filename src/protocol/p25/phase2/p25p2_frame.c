@@ -726,6 +726,17 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                     sprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
                     watchdog_event_current(opts, state, slot);
+                    Event_History_I* eh = &state->event_history_s[slot];
+                    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                                sizeof eh->Event_History_Items[0].internal_str)
+                        != 0) {
+                        if (opts->event_out_file[0] != '\0') {
+                            uint8_t swrite = 1; // P25p2: include slot index in log
+                            write_event_to_log_file(opts, state, slot, swrite, eh->Event_History_Items[0].event_string);
+                        }
+                        push_event_history(eh);
+                        init_event_history(eh, 0, 1);
+                    }
                 }
 
                 // Return to the control channel to avoid tying up the tuner on

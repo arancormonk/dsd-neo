@@ -527,15 +527,17 @@ processHDU(dsd_opts* opts, dsd_state* state) {
                 // Optional: mark TG as ENC LO for visibility when known
                 int ttg = state->lasttg;
                 if (ttg != 0) {
-                    int enc_wr = 0;
+                    int idx = -1;
                     for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                         if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                            enc_wr = 1;
+                            idx = (int)xx;
                             break;
                         }
                     }
-                    if (enc_wr == 0
-                        && state->group_tally
+                    if (idx >= 0) {
+                        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                 "DE");
+                    } else if (state->group_tally
                                < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
                         state->group_array[state->group_tally].groupNumber = ttg;
                         sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");

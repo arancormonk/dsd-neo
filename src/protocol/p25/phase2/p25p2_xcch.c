@@ -212,42 +212,49 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                         } else {
                             // Second consecutive indication for same TG: mark and release
                             if (ttg != 0) {
-                                int enc_wr = 0;
+                                int idx = -1;
+                                int was_de = 0;
                                 for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                                     if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                                        enc_wr = 1;
+                                        idx = (int)xx;
                                         break;
                                     }
                                 }
-                                if (enc_wr == 0
-                                    && state->group_tally
+                                if (idx >= 0) {
+                                    was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+                                    if (!was_de) {
+                                        snprintf(state->group_array[idx].groupMode,
+                                                 sizeof state->group_array[idx].groupMode, "%s", "DE");
+                                    }
+                                } else if (state->group_tally
                                            < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
                                     state->group_array[state->group_tally].groupNumber = ttg;
                                     sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
                                     sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
                                     state->group_tally++;
+                                    was_de = 0;
                                 }
-                                sprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
-                                        "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                                watchdog_event_current(opts, state, eslot);
-                                // Immediately log and push this lockout event so it is not delayed
-                                if (opts->event_out_file[0] != 0) {
-                                    uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
-                                    write_event_to_log_file(
-                                        opts, state, eslot, swrite,
-                                        state->event_history_s[eslot].Event_History_Items[0].event_string);
+                                // Emit only when transitioning to DE (first time this TG is marked)
+                                if (idx < 0 || !was_de) {
+                                    snprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
+                                             sizeof state->event_history_s[eslot].Event_History_Items[0].internal_str,
+                                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                                    watchdog_event_current(opts, state, eslot);
+                                    Event_History_I* eh = &state->event_history_s[eslot];
+                                    if (strncmp(eh->Event_History_Items[1].internal_str,
+                                                eh->Event_History_Items[0].internal_str,
+                                                sizeof eh->Event_History_Items[0].internal_str)
+                                        != 0) {
+                                        if (opts->event_out_file[0] != 0) {
+                                            uint8_t swrite =
+                                                (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                                            write_event_to_log_file(opts, state, eslot, swrite,
+                                                                    eh->Event_History_Items[0].event_string);
+                                        }
+                                        push_event_history(eh);
+                                        init_event_history(eh, 0, 1);
+                                    }
                                 }
-                                push_event_history(&state->event_history_s[eslot]);
-                                init_event_history(&state->event_history_s[eslot], 0, 1);
-                                // Immediately log and push this lockout event so it is not delayed
-                                if (opts->event_out_file[0] != 0) {
-                                    uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
-                                    write_event_to_log_file(
-                                        opts, state, eslot, swrite,
-                                        state->event_history_s[eslot].Event_History_Items[0].event_string);
-                                }
-                                push_event_history(&state->event_history_s[eslot]);
-                                init_event_history(&state->event_history_s[eslot], 0, 1);
                             }
                             state->p25_p2_enc_lo_early++;
                             // Hardened early ENC lockout: mute only this slot, and
@@ -385,15 +392,17 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             state->p25_p2_enc_pending_ttg[eslot] = (uint32_t)ttg;
                         } else {
                             if (ttg != 0) {
-                                int enc_wr = 0;
+                                int idx = -1;
                                 for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                                     if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                                        enc_wr = 1;
+                                        idx = (int)xx;
                                         break;
                                     }
                                 }
-                                if (enc_wr == 0
-                                    && state->group_tally
+                                if (idx >= 0) {
+                                    snprintf(state->group_array[idx].groupMode,
+                                             sizeof state->group_array[idx].groupMode, "%s", "DE");
+                                } else if (state->group_tally
                                            < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
                                     state->group_array[state->group_tally].groupNumber = ttg;
                                     sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");

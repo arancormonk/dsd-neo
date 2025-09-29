@@ -921,9 +921,20 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
             //run a watchdog here so we can update this with the crypto variables and ENC LO
             if (ttg != 0 && enc_wr == 0) //
             {
-                sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                        "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                         sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                         "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
                 watchdog_event_current(opts, state, 0);
+                Event_History_I* eh = &state->event_history_s[0];
+                if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                            sizeof eh->Event_History_Items[0].internal_str)
+                    != 0) {
+                    if (opts->event_out_file[0] != '\0') {
+                        write_event_to_log_file(opts, state, 0, /*swrite*/ 0, eh->Event_History_Items[0].event_string);
+                    }
+                    push_event_history(eh);
+                    init_event_history(eh, 0, 1);
+                }
             }
 
             //return to the control channel

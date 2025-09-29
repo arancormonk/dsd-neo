@@ -509,8 +509,56 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 goto SKIPCALL;
             }
 
-            //Skip tuning encrypted calls if enc calls are disabled
+            //Skip tuning encrypted calls if enc calls are disabled – emit event immediately
             if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                if (group > 0) {
+                    // Emit once per TG: mark DE only if not already, then publish
+                    int idx = -1;
+                    for (unsigned int i = 0; i < state->group_tally; i++) {
+                        if (state->group_array[i].groupNumber == (unsigned long)group) {
+                            idx = (int)i;
+                            break;
+                        }
+                    }
+                    int already_de = 0;
+                    if (idx >= 0) {
+                        already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+                    }
+                    if (!already_de) {
+                        if (idx < 0
+                            && state->group_tally
+                                   < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                            state->group_array[state->group_tally].groupNumber = (uint32_t)group;
+                            snprintf(state->group_array[state->group_tally].groupMode,
+                                     sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
+                            snprintf(state->group_array[state->group_tally].groupName,
+                                     sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                            state->group_tally++;
+                        } else if (idx >= 0) {
+                            snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                     "DE");
+                        }
+                        state->lasttg = (uint32_t)group;
+                        state->gi[0] = 0;
+                        state->dmr_so = (uint16_t)svc;
+                        snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                                 sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", group);
+                        watchdog_event_current(opts, state, 0);
+                        Event_History_I* eh = &state->event_history_s[0];
+                        if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                                    sizeof eh->Event_History_Items[0].internal_str)
+                            != 0) {
+                            if (opts->event_out_file[0] != '\0') {
+                                uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                                write_event_to_log_file(opts, state, 0, swrite,
+                                                        eh->Event_History_Items[0].event_string);
+                            }
+                            push_event_history(eh);
+                            init_event_history(eh, 0, 1);
+                        }
+                    }
+                }
                 goto SKIPCALL;
             }
 
@@ -610,7 +658,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 goto SKIPCALL;
             }
 
-            //Skip tuning encrypted calls if enc calls are disabled
+            //Skip tuning encrypted calls if enc calls are disabled (no event for telephone)
             if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
                 goto SKIPCALL;
             }
@@ -1301,8 +1349,28 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 goto SKIPCALL;
             }
 
-            //Skip tuning encrypted calls if enc calls are disabled
+            //Skip tuning encrypted calls if enc calls are disabled – emit event immediately
             if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                if (group > 0) {
+                    state->lasttg = (uint32_t)group;
+                    state->gi[0] = 0;
+                    state->dmr_so = (uint16_t)svc;
+                    snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
+                             sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
+                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", group);
+                    watchdog_event_current(opts, state, 0);
+                    Event_History_I* eh2 = &state->event_history_s[0];
+                    if (strncmp(eh2->Event_History_Items[1].internal_str, eh2->Event_History_Items[0].internal_str,
+                                sizeof eh2->Event_History_Items[0].internal_str)
+                        != 0) {
+                        if (opts->event_out_file[0] != '\0') {
+                            uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                            write_event_to_log_file(opts, state, 0, swrite, eh2->Event_History_Items[0].event_string);
+                        }
+                        push_event_history(eh2);
+                        init_event_history(eh2, 0, 1);
+                    }
+                }
                 goto SKIPCALL;
             }
 
@@ -2312,24 +2380,41 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 // Mark TG as ENC LO for visibility in UI/event log
                 int ttg = gr;
                 if (ttg != 0) {
-                    int enc_wr = 0;
+                    int idx = -1;
+                    int was_de = 0;
                     for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                         if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                            enc_wr = 1;
+                            idx = (int)xx;
                             break;
                         }
                     }
-                    if (enc_wr == 0
-                        && state->group_tally
+                    if (idx >= 0) {
+                        was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+                        if (!was_de) {
+                            snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                     "DE");
+                        }
+                    } else if (state->group_tally
                                < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
                         state->group_array[state->group_tally].groupNumber = ttg;
                         sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
                         sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
                         state->group_tally++;
                     }
-                    // Optionally emit event text for UI (tests may not link events)
-                    sprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
-                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                    // Emit event only on first mark to DE
+                    if (idx < 0 || !was_de) {
+                        snprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
+                                 sizeof state->event_history_s[slot].Event_History_Items[0].internal_str,
+                                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                        watchdog_event_current(opts, state, slot);
+                        if (opts->event_out_file[0] != '\0') {
+                            uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                            write_event_to_log_file(opts, state, slot, swrite,
+                                                    state->event_history_s[slot].Event_History_Items[0].event_string);
+                        }
+                        push_event_history(&state->event_history_s[slot]);
+                        init_event_history(&state->event_history_s[slot], 0, 1);
+                    }
                 }
                 // Gate this slot only
                 state->p25_p2_audio_allowed[slot] = 0;
@@ -2438,24 +2523,40 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 // Mark target as ENC LO (use same table for display)
                 int ttg = gr;
                 if (ttg != 0) {
-                    int enc_wr = 0;
+                    int idx = -1;
+                    int was_de = 0;
                     for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                         if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                            enc_wr = 1;
+                            idx = (int)xx;
                             break;
                         }
                     }
-                    if (enc_wr == 0
-                        && state->group_tally
+                    if (idx >= 0) {
+                        was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+                        if (!was_de) {
+                            snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                     "DE");
+                        }
+                    } else if (state->group_tally
                                < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
                         state->group_array[state->group_tally].groupNumber = ttg;
                         sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
                         sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
                         state->group_tally++;
                     }
-                    // Optionally emit event text for UI (tests may not link events)
-                    sprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
-                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                    if (idx < 0 || !was_de) {
+                        snprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
+                                 sizeof state->event_history_s[slot].Event_History_Items[0].internal_str,
+                                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                        watchdog_event_current(opts, state, slot);
+                        if (opts->event_out_file[0] != '\0') {
+                            uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                            write_event_to_log_file(opts, state, slot, swrite,
+                                                    state->event_history_s[slot].Event_History_Items[0].event_string);
+                        }
+                        push_event_history(&state->event_history_s[slot]);
+                        init_event_history(&state->event_history_s[slot], 0, 1);
+                    }
                 }
                 // Gate this slot only
                 state->p25_p2_audio_allowed[slot] = 0;
