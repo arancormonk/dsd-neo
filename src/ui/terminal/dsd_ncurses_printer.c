@@ -4144,6 +4144,18 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (state->active_channel[i][0] != '\0') {
                     const char* s = state->active_channel[i];
                     int locked = ui_is_locked_from_label(state, s);
+                    /* Also show disabled classes (global toggles) in red */
+                    if (!locked && opts) {
+                        if (opts->trunk_tune_data_calls == 0 && strstr(s, "Active Data Ch:") != NULL) {
+                            locked = 1;
+                        }
+                        if (!locked && opts->trunk_tune_group_calls == 0 && strstr(s, "TG:") != NULL) {
+                            locked = 1;
+                        }
+                        if (!locked && opts->trunk_tune_private_calls == 0 && strstr(s, "TGT:") != NULL) {
+                            locked = 1;
+                        }
+                    }
                     if (locked) {
                         // Highlight locked-out TGs in red
                         attron(COLOR_PAIR(2));
@@ -4678,6 +4690,18 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     if (state->active_channel[i][0] != '\0') {
                         const char* s = state->active_channel[i];
                         int locked = ui_is_locked_from_label(state, s);
+                        /* Also show disabled classes (global toggles) in red */
+                        if (!locked && opts) {
+                            if (opts->trunk_tune_data_calls == 0 && strstr(s, "Active Data Ch:") != NULL) {
+                                locked = 1;
+                            }
+                            if (!locked && opts->trunk_tune_group_calls == 0 && strstr(s, "TG:") != NULL) {
+                                locked = 1;
+                            }
+                            if (!locked && opts->trunk_tune_private_calls == 0 && strstr(s, "TGT:") != NULL) {
+                                locked = 1;
+                            }
+                        }
                         if (locked) {
                             attron(COLOR_PAIR(2));
                             printw("%s", s);
