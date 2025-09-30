@@ -1800,6 +1800,9 @@ void eot_cc(dsd_opts* opts, dsd_state* state); //end of TX return to CC
 void return_to_cc(dsd_opts* opts, dsd_state* state);
 // Common VC tuning helper: performs rigctl/RTL tune and updates trunk/p25 fields.
 void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq);
+// Control Channel tuning helper used by P25 state machine during CC hunt.
+// Tunes rigctl/RTL to the provided frequency without marking voice-tuned.
+void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq);
 
 //initialize static float filter memory
 void init_rrc_filter_memory();

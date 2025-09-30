@@ -94,9 +94,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     // gates and flush rings before exiting to avoid stale gates
                     // wedging the trunking SM release.
                     if (opcode == 0x0) {
-                        state->p25_p2_audio_allowed[0] = 0;
-                        state->p25_p2_audio_allowed[1] = 0;
-                        p25_p2_audio_ring_reset(state, -1);
+                        // Gate only the indicated slot on MAC_SIGNAL; do not
+                        // disrupt the opposite slot which may still carry
+                        // clear audio. SACCH slot mapping is inverted.
+                        state->p25_p2_audio_allowed[slot] = 0;
+                        p25_p2_audio_ring_reset(state, slot);
                     }
                     state->p2_is_lcch = 0; //turn flag off here
                     //if (state->currentslot == 0) state->dmrburstL = 14;
@@ -119,11 +121,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
-        // Per-slot audio gating: disable both on MAC_SIGNAL
-        state->p25_p2_audio_allowed[0] = 0;
-        state->p25_p2_audio_allowed[1] = 0;
-        // Flush both jitter buffers to avoid stale audio on next voice
-        p25_p2_audio_ring_reset(state, -1);
+        // Per-slot audio gating: disable only the MAC_SIGNAL slot; leave the
+        // opposite slot untouched to prevent stutter on ongoing clear calls.
+        state->p25_p2_audio_allowed[slot] = 0;
+        // Flush this slot's jitter buffer to avoid residue on the next call
+        p25_p2_audio_ring_reset(state, slot);
     }
     //do not permit MAC_PTT with CRC errs, help prevent false positives on calls
     if (opcode == 0x1 && err == 0) {

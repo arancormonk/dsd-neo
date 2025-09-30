@@ -160,9 +160,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         // if (type == 0 && slot == 1) state->dmrburstR = 30;
         // if (type == 1 && slot == 1) state->dmrburstR = 30;
 
-        // Audio gating: disable per-slot audio on MAC_SIGNAL until PTT/ACTIVE arrives
-        state->p25_p2_audio_allowed[0] = 0;
-        state->p25_p2_audio_allowed[1] = 0;
+        // Audio gating: disable only the LCCH/MAC_SIGNAL slot until PTT/ACTIVE arrives;
+        // do not touch the opposite slot to avoid disturbing an ongoing clear call.
+        uint8_t op = (uint8_t)MAC[1];
+        if (op == 0x0) { // SIGNAL
+            state->p25_p2_audio_allowed[slot] = 0;
+            // Do not flush here; SACCH handler performs targeted ring reset.
+        }
 
         //TODO: Iron out issues with audio playing in every non SACCH slot when no voice present
         //without it stuttering during actual voice

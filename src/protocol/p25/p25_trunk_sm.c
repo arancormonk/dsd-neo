@@ -41,6 +41,18 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
+// Weak fallback for CC tuning so unit tests that link only the P25 library
+// can still exercise the state machine without the IO Control library.
+__attribute__((weak)) void
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
+    UNUSED(opts);
+    if (!state || freq <= 0) {
+        return;
+    }
+    state->trunk_cc_freq = (long int)freq;
+    state->last_cc_sync_time = time(NULL);
+}
+
 // Weak fallbacks for event-history utilities so protocol unit tests can link
 // the P25 library without pulling in the full core/UI events implementation.
 __attribute__((weak)) void
@@ -653,6 +665,60 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 opts->p25_is_tuned = 0;
                 opts->trunk_is_tuned = 0;
                 state->last_cc_sync_time = now;
+            }
+        }
+    }
+
+    // If not currently voice-tuned and we haven't observed CC sync for a
+    // while, proactively hunt for a CC. Prefer learned candidates first, then
+    // fall back to the imported LCN/frequency list.
+    if (opts->p25_is_tuned == 0) {
+        double dt_cc = (state->last_cc_sync_time != 0) ? (double)(now - state->last_cc_sync_time) : 1e9;
+        if (dt_cc > (opts->trunk_hangtime + 0.0)) {
+            int tuned = 0;
+            long cand = 0;
+            if (opts->p25_prefer_candidates == 1 && p25_sm_next_cc_candidate(state, &cand) && cand != 0) {
+                trunk_tune_to_cc(opts, state, cand);
+                if (opts->verbose > 0) {
+                    fprintf(stderr, "Tuning to Candidate CC: %.06lf MHz\n", (double)cand / 1000000.0);
+                    if (opts->verbose > 1) {
+                        fprintf(stderr, "\n  P25 SM: CC cand used=%u/%u tunes=%u releases=%u\n",
+                                state->p25_cc_cand_used, state->p25_cc_cand_added, state->p25_sm_tune_count,
+                                state->p25_sm_release_count);
+                    }
+                }
+                tuned = 1;
+            }
+
+            if (!tuned) {
+                if (opts->verbose > 0) {
+                    fprintf(stderr, "Control Channel Signal Lost. Searching for Control Channel.\n");
+                }
+                if (state->lcn_freq_count > 0) {
+                    if (state->lcn_freq_roll >= state->lcn_freq_count) {
+                        state->lcn_freq_roll = 0; // wrap
+                    }
+                    if (state->lcn_freq_roll != 0) {
+                        long prev = state->trunk_lcn_freq[state->lcn_freq_roll - 1];
+                        long cur = state->trunk_lcn_freq[state->lcn_freq_roll];
+                        if (prev == cur) {
+                            state->lcn_freq_roll++;
+                            if (state->lcn_freq_roll >= state->lcn_freq_count) {
+                                state->lcn_freq_roll = 0;
+                            }
+                        }
+                    }
+                    long f = (state->lcn_freq_roll < state->lcn_freq_count)
+                                 ? state->trunk_lcn_freq[state->lcn_freq_roll]
+                                 : 0;
+                    if (f != 0) {
+                        trunk_tune_to_cc(opts, state, f);
+                        if (opts->verbose > 0) {
+                            fprintf(stderr, "Tuning to Frequency: %.06lf MHz\n", (double)f / 1000000.0);
+                        }
+                    }
+                    state->lcn_freq_roll++;
+                }
             }
         }
     }

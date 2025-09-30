@@ -634,3 +634,29 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     state->last_vc_sync_time = time(NULL);
     state->last_cc_sync_time = state->last_vc_sync_time;
 }
+
+// Tune to a Control Channel candidate frequency without marking as voice tuned.
+// Intended for use by the P25 state machine during CC hunting.
+void
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
+    if (!opts || !state || freq <= 0) {
+        return;
+    }
+    // Ensure any queued audio tail plays before changing channels
+    dsd_drain_audio_output(opts);
+    if (opts->use_rigctl == 1) {
+        if (opts->setmod_bw != 0) {
+            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+        }
+        SetFreq(opts->rigctl_sockfd, freq);
+    } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+        if (g_rtl_ctx) {
+            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
+        }
+#endif
+    }
+    // Do not set p25_is_tuned/trunk_is_tuned here; this is a CC hunt action.
+    state->trunk_cc_freq = (long int)freq;
+    state->last_cc_sync_time = time(NULL);
+}
