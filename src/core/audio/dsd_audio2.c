@@ -494,6 +494,25 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
+    // If either slot is gated/enc-muted, explicitly zero that channel in the
+    // interleaved buffers to avoid any leakage on mono/downmix outputs.
+    if (encL || encR) {
+        for (i = 0; i < 320; i += 2) {
+            if (encL) {
+                stereo_samp1[i + 0] = 0.0f;
+                stereo_samp2[i + 0] = 0.0f;
+                stereo_samp3[i + 0] = 0.0f;
+                stereo_samp4[i + 0] = 0.0f;
+            }
+            if (encR) {
+                stereo_samp1[i + 1] = 0.0f;
+                stereo_samp2[i + 1] = 0.0f;
+                stereo_samp3[i + 1] = 0.0f;
+                stereo_samp4[i + 1] = 0.0f;
+            }
+        }
+    }
+
     if (encL && encR) {
         goto END_FS4;
     }

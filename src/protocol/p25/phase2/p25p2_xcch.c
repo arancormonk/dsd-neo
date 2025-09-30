@@ -205,7 +205,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
                     if (enc_suspect) {
                         int ttg = state->lasttg;
-                        uint8_t eslot = state->currentslot;
+                        // SACCH context uses inverted slot mapping; gate the logical slot
+                        // indicated by this SACCH (use 'slot', not state->currentslot).
+                        uint8_t eslot = slot;
                         if (state->p25_p2_enc_pending[eslot] == 0
                             || state->p25_p2_enc_pending_ttg[eslot] != (uint32_t)ttg) {
                             // First indication: remember and wait for confirmation
@@ -299,7 +301,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                         }
                     } else {
                         // Clear pending if condition no longer holds
-                        uint8_t eslot = state->currentslot;
+                        uint8_t eslot = slot;
                         state->p25_p2_enc_pending[eslot] = 0;
                         state->p25_p2_enc_pending_ttg[eslot] = 0;
                     }
@@ -389,7 +391,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
                     if (enc_suspect) {
                         int ttg = state->lasttgR;
-                        uint8_t eslot = state->currentslot;
+                        // SACCH context: use logical slot ('slot')
+                        uint8_t eslot = slot;
                         if (state->p25_p2_enc_pending[eslot] == 0
                             || state->p25_p2_enc_pending_ttg[eslot] != (uint32_t)ttg) {
                             state->p25_p2_enc_pending[eslot] = 1;
@@ -441,7 +444,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             goto END_SMAC;
                         }
                     } else {
-                        uint8_t eslot = state->currentslot;
+                        uint8_t eslot = slot;
                         state->p25_p2_enc_pending[eslot] = 0;
                         state->p25_p2_enc_pending_ttg[eslot] = 0;
                     }
