@@ -721,34 +721,40 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 enc_lo = 0;
             }
 
-            //if this is locked out by conditions above, then write it into the TG mode if we have a TG value assigned
+            // If locked out, mark the TG as DE and emit event only on first transition
             if (enc_lo == 1 && ttg != 0) {
-                unsigned int xx = 0;
-                int enc_wr = 0;
-                for (xx = 0; xx < state->group_tally; xx++) {
+                int idx = -1;
+                for (unsigned int xx = 0; xx < state->group_tally; xx++) {
                     if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                        enc_wr = 1; //already in there, so no need to assign it
+                        idx = (int)xx;
                         break;
                     }
                 }
-
-                //if not already in there, so save it there now
-                if (enc_wr == 0) {
-                    state->group_array[state->group_tally].groupNumber = ttg;
-                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
-                    sprintf(state->group_array[state->group_tally].groupName, "%s",
-                            "ENC LO"); //was xx and not state->group_tally
-                    state->group_tally++;
+                int already_de = 0;
+                if (idx >= 0) {
+                    already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
                 }
+                // Update or create entry (set mode to DE)
+                if (!already_de) {
+                    if (idx < 0
+                        && state->group_tally
+                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+                        state->group_array[state->group_tally].groupNumber = (uint32_t)ttg;
+                        snprintf(state->group_array[state->group_tally].groupMode,
+                                 sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
+                        snprintf(state->group_array[state->group_tally].groupName,
+                                 sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+                        state->group_tally++;
+                    } else if (idx >= 0) {
+                        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
+                                 "DE");
+                    }
 
-                //run a watchdog here so we can update this with the crypto variables and ENC LO
-                //may need to disable this for same reason as below
-                if (ttg != 0 && enc_wr == 0) {
-                    uint8_t slot =
-                        state
-                            ->currentslot; //need to make sure we can verify the slot accuracy on SACCH slots (inverted)
-                    sprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
-                            "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+                    // Emit ENC lockout event only on transition to DE
+                    uint8_t slot = state->currentslot; // verify slot accuracy on SACCH (inverted) elsewhere
+                    snprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
+                             sizeof state->event_history_s[slot].Event_History_Items[0].internal_str,
+                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
                     watchdog_event_current(opts, state, slot);
                     Event_History_I* eh = &state->event_history_s[slot];
                     if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
