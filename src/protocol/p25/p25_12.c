@@ -66,88 +66,92 @@ find_min(uint8_t list[4], int len) {
 
 int
 p25_12(uint8_t* input, uint8_t treturn[12]) {
-    int i, j;
-    int irr_err = 0;
+    /*
+     * Soft-decision (semi-soft) 4-state Viterbi over dibit-pair nibbles.
+     * Branch metric = Hamming distance between observed nibble and expected
+     * transition nibble from p25_dtm[(prev_state<<2)|next_state].
+     * This replaces the greedy FSM walk to improve robustness on marginal SNR.
+     */
+    enum { N_SYMS = 49, N_ST = 4 };
 
+    int i, j;
+
+    /* Deinterleave input dibits (98) into symbol-ordered dibits */
     uint8_t deinterleaved_dibits[98];
     memset(deinterleaved_dibits, 0, sizeof(deinterleaved_dibits));
-
-    //deinterleave our input dibits
     for (i = 0; i < 98; i++) {
         deinterleaved_dibits[p25_interleave[i]] = input[i];
     }
 
-    //pack the input into nibbles (dibit pairs)
-    uint8_t nibs[49];
+    /* Pack dibit pairs into 4-bit nibbles (observations per trellis step) */
+    uint8_t nibs[N_SYMS];
     memset(nibs, 0, sizeof(nibs));
-
-    for (i = 0; i < 49; i++) {
-        nibs[i] = (deinterleaved_dibits[i * 2 + 0] << 2) | (deinterleaved_dibits[i * 2 + 1] << 0);
+    for (i = 0; i < N_SYMS; i++) {
+        nibs[i] = (uint8_t)((deinterleaved_dibits[(i * 2) + 0] << 2) | (deinterleaved_dibits[(i * 2) + 1]));
     }
 
-    //convert our dibit pairs into constellation point values
-    uint8_t point[49];
-    memset(point, 0xFF, sizeof(point));
+    /* Viterbi: path metrics and backpointers */
+    /* Use uint16_t; worst-case metric <= 49*4 = 196 */
+    uint16_t prev_metric[N_ST];
+    uint16_t curr_metric[N_ST];
+    uint8_t backptr[N_SYMS][N_ST];
 
-    for (i = 0; i < 49; i++) {
-        point[i] = p25_constellation_map[nibs[i]];
+    /* Initialize metrics: bias start at state 0 slightly */
+    for (j = 0; j < N_ST; j++) {
+        prev_metric[j] = (uint16_t)((j == 0) ? 0 : 1);
     }
 
-    //debug view points
-    // fprintf (stderr, "\n P =");
-    // for (i = 0; i < 49; i++)
-    //   fprintf (stderr, " %02d", point[i]);
-
-    //convert constellation points into tdibit values using the FSM
-    uint8_t state = 0;
-    uint8_t tdibits[49]; //trellis dibits 1/2 rate
-    memset(tdibits, 0xF, sizeof(tdibits));
-    uint8_t hd[4]; //array of the four fsm words hamming distance
-    memset(hd, 0, sizeof(hd));
-    uint8_t min = 0;
-
-    for (i = 0; i < 49; i++) {
-
-        for (j = 0; j < 4; j++) {
-            if (p25_fsm[(state * 4) + j] == point[i]) {
-                //return our tdibit value and state for the next point
-                tdibits[i] = state = (uint8_t)j;
-                break;
+    for (i = 0; i < N_SYMS; i++) {
+        /* For each candidate next state, pick best predecessor */
+        for (int st_next = 0; st_next < N_ST; st_next++) {
+            uint16_t best = (uint16_t)0xFFFF;
+            uint8_t best_prev = 0;
+            for (int st_prev = 0; st_prev < N_ST; st_prev++) {
+                /* Expected transition nibble from (st_prev -> st_next) */
+                uint8_t expect = p25_dtm[(st_prev << 2) | st_next] & 0xF;
+                /* Hamming distance on 4-bit nibble */
+                uint16_t bm = (uint16_t)count_bits((uint8_t)((nibs[i] ^ expect) & 0xF), 4);
+                uint16_t cost = (uint16_t)(prev_metric[st_prev] + bm);
+                if (cost < best) {
+                    best = cost;
+                    best_prev = (uint8_t)st_prev;
+                }
             }
+            curr_metric[st_next] = best;
+            backptr[i][st_next] = best_prev;
         }
-
-        //if tdibit value is greater than 3, then we have a decoding error
-        if (tdibits[i] == 0xF) {
-            irr_err++; //increment number of errors
-
-            //debug position of error and state value
-            // fprintf (stderr, " %d:%d;", i, state);
-
-            //this method only seems to be reliable up to 1-2 bit errors...sometimes
-            for (j = 0; j < 4; j++) {
-                hd[j] = count_bits(((nibs[i] ^ p25_dtm[(state * 4) + j]) & 0xF), 4);
-            }
-            min = find_min(hd, 4);
-            tdibits[i] = state = min;
-
-            memset(hd, 0, sizeof(hd));
+        /* Roll metrics */
+        for (j = 0; j < N_ST; j++) {
+            prev_metric[j] = curr_metric[j];
         }
     }
 
-    //debug view tdibits/states
-    // fprintf (stderr, "\n T =");
-    // for (i = 0; i < 49; i++)
-    //   fprintf (stderr, " %02d", tdibits[i]);
+    /* Select best ending state */
+    uint16_t best_final = curr_metric[0];
+    int st = 0;
+    for (j = 1; j < N_ST; j++) {
+        if (curr_metric[j] < best_final) {
+            best_final = curr_metric[j];
+            st = j;
+        }
+    }
 
-    //pack tdibits into return payload bytes
+    /* Traceback to recover tdibits (next states) */
+    uint8_t tdibits[N_SYMS];
+    for (i = N_SYMS - 1; i >= 0; i--) {
+        tdibits[i] = (uint8_t)st;
+        st = backptr[i][st];
+        if (i == 0) {
+            break; /* avoid i underflow for unsigned loop */
+        }
+    }
+
+    /* Pack first 48 tdibits into 12 bytes (MSB-first as before) */
     for (i = 0; i < 12; i++) {
-        treturn[i] = (tdibits[(i * 4) + 0] << 6) | (tdibits[(i * 4) + 1] << 4) | (tdibits[(i * 4) + 2] << 2)
-                     | tdibits[(i * 4) + 3];
+        treturn[i] = (uint8_t)((tdibits[(i * 4) + 0] << 6) | (tdibits[(i * 4) + 1] << 4) | (tdibits[(i * 4) + 2] << 2)
+                               | (tdibits[(i * 4) + 3]));
     }
 
-    //trellis point/state err tally
-    // if (irr_err != 0)
-    //   fprintf (stderr, " P_ERR = %d", irr_err);
-
-    return (irr_err);
+    /* Return aggregate metric as a rough error indicator (compat: previous returned count) */
+    return (int)best_final;
 }
