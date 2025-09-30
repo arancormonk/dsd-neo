@@ -86,6 +86,47 @@ gamma_map01(double f) {
     return (double)s_gamma_lut[idx];
 }
 
+/* Determine if an Active Channel label refers to a locked-out target.
+ * Supports both "TG:" (group) and "TGT:" (target/private/data) fields.
+ * Returns 1 when the referenced ID is marked with groupMode "DE" or "B". */
+static int
+ui_is_locked_from_label(const dsd_state* state, const char* label) {
+    if (!state || !label || !*label) {
+        return 0;
+    }
+    /* Try group first ("TG:") */
+    const char* pos = strstr(label, "TG:");
+    if (!pos) {
+        /* Fallback to generic target ("TGT:") often used for private/data */
+        pos = strstr(label, "TGT:");
+    }
+    if (!pos) {
+        return 0;
+    }
+    pos += 3; /* skip TG: or TGT: prefix; both are 3 chars before ':' */
+    if (*pos == ':') {
+        pos++;
+    }
+    while (*pos == ' ') {
+        pos++;
+    }
+    char* endp = NULL;
+    long id = strtol(pos, &endp, 10);
+    if (endp == pos || id <= 0) {
+        return 0;
+    }
+    for (unsigned int k = 0; k < state->group_tally; k++) {
+        if (state->group_array[k].groupNumber == (unsigned long)id) {
+            const char* m = state->group_array[k].groupMode;
+            if (strcmp(m, "DE") == 0 || strcmp(m, "B") == 0) {
+                return 1;
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
 static int
 select_k_int_local(int* a, int n, int k) {
     int lo = 0, hi = n - 1;
@@ -4102,28 +4143,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             for (int i = 0; i < 16; i++) {
                 if (state->active_channel[i][0] != '\0') {
                     const char* s = state->active_channel[i];
-                    int locked = 0;
-                    // Parse TG from the formatted string ("... TG: <num>; ...").
-                    const char* tg_pos = strstr(s, "TG:");
-                    if (tg_pos != NULL) {
-                        tg_pos += 3; // skip "TG:"
-                        while (*tg_pos == ' ') {
-                            tg_pos++;
-                        }
-                        char* endp = NULL;
-                        long tg = strtol(tg_pos, &endp, 10);
-                        if (endp != tg_pos && tg > 0) {
-                            for (unsigned int k = 0; k < state->group_tally; k++) {
-                                if (state->group_array[k].groupNumber == (unsigned long)tg) {
-                                    if (strcmp(state->group_array[k].groupMode, "DE") == 0
-                                        || strcmp(state->group_array[k].groupMode, "B") == 0) {
-                                        locked = 1;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    int locked = ui_is_locked_from_label(state, s);
                     if (locked) {
                         // Highlight locked-out TGs in red
                         attron(COLOR_PAIR(2));
@@ -4657,27 +4677,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 {
                     if (state->active_channel[i][0] != '\0') {
                         const char* s = state->active_channel[i];
-                        int locked = 0;
-                        const char* tg_pos = strstr(s, "TG:");
-                        if (tg_pos != NULL) {
-                            tg_pos += 3;
-                            while (*tg_pos == ' ') {
-                                tg_pos++;
-                            }
-                            char* endp = NULL;
-                            long tg = strtol(tg_pos, &endp, 10);
-                            if (endp != tg_pos && tg > 0) {
-                                for (unsigned int k = 0; k < state->group_tally; k++) {
-                                    if (state->group_array[k].groupNumber == (unsigned long)tg) {
-                                        if (strcmp(state->group_array[k].groupMode, "DE") == 0
-                                            || strcmp(state->group_array[k].groupMode, "B") == 0) {
-                                            locked = 1;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        int locked = ui_is_locked_from_label(state, s);
                         if (locked) {
                             attron(COLOR_PAIR(2));
                             printw("%s", s);
