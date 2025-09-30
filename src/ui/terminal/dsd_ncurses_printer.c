@@ -4101,7 +4101,37 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attron(COLOR_PAIR(4));
             for (int i = 0; i < 16; i++) {
                 if (state->active_channel[i][0] != '\0') {
-                    printw("%s", state->active_channel[i]);
+                    const char* s = state->active_channel[i];
+                    int locked = 0;
+                    // Parse TG from the formatted string ("... TG: <num>; ...").
+                    const char* tg_pos = strstr(s, "TG:");
+                    if (tg_pos != NULL) {
+                        tg_pos += 3; // skip "TG:"
+                        while (*tg_pos == ' ') {
+                            tg_pos++;
+                        }
+                        char* endp = NULL;
+                        long tg = strtol(tg_pos, &endp, 10);
+                        if (endp != tg_pos && tg > 0) {
+                            for (unsigned int k = 0; k < state->group_tally; k++) {
+                                if (state->group_array[k].groupNumber == (unsigned long)tg) {
+                                    if (strcmp(state->group_array[k].groupMode, "DE") == 0
+                                        || strcmp(state->group_array[k].groupMode, "B") == 0) {
+                                        locked = 1;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (locked) {
+                        // Highlight locked-out TGs in red
+                        attron(COLOR_PAIR(2));
+                        printw("%s", s);
+                        attron(COLOR_PAIR(4)); // restore cyan for subsequent items
+                    } else {
+                        printw("%s", s);
+                    }
                 }
             }
 
@@ -4626,7 +4656,35 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 for (unsigned int i = 0; i < 31; i++) //up to 31 idas channels
                 {
                     if (state->active_channel[i][0] != '\0') {
-                        printw("%s", state->active_channel[i]);
+                        const char* s = state->active_channel[i];
+                        int locked = 0;
+                        const char* tg_pos = strstr(s, "TG:");
+                        if (tg_pos != NULL) {
+                            tg_pos += 3;
+                            while (*tg_pos == ' ') {
+                                tg_pos++;
+                            }
+                            char* endp = NULL;
+                            long tg = strtol(tg_pos, &endp, 10);
+                            if (endp != tg_pos && tg > 0) {
+                                for (unsigned int k = 0; k < state->group_tally; k++) {
+                                    if (state->group_array[k].groupNumber == (unsigned long)tg) {
+                                        if (strcmp(state->group_array[k].groupMode, "DE") == 0
+                                            || strcmp(state->group_array[k].groupMode, "B") == 0) {
+                                            locked = 1;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (locked) {
+                            attron(COLOR_PAIR(2));
+                            printw("%s", s);
+                            attron(COLOR_PAIR(4));
+                        } else {
+                            printw("%s", s);
+                        }
                     }
                 }
 
