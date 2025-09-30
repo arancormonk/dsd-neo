@@ -131,8 +131,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x1 && err == 0) {
         fprintf(stderr, " MAC_PTT ");
         fprintf(stderr, "%s", KGRN);
-        //remember, slots are inverted here, so set the opposite ones
-        if (state->currentslot == 1) {
+        // SACCH uses inverted mapping; 'slot' is the logical voice channel
+        if (slot == 0) {
             //reset fourv_counter and dropbyte on PTT
             state->fourv_counter[0] = 0;
             state->voice_counter[0] = 0;
@@ -326,7 +326,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
         }
 
-        if (state->currentslot == 0) {
+        if (slot == 1) {
             //reset fourv_counter and dropbyte on PTT
             state->fourv_counter[1] = 0;
             state->voice_counter[1] = 0;
@@ -512,8 +512,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x2 && err == 0) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
-        //remember, slots are inverted here, so set the opposite ones
-        if (state->currentslot == 1) {
+        // SACCH logical slot index
+        if (slot == 0) {
 
             state->fourv_counter[0] = 0;
             state->voice_counter[0] = 0;
@@ -562,7 +562,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 // state->H = 0; //shim for above (this apply here?)
             }
         }
-        if (state->currentslot == 0) {
+        if (slot == 1) {
 
             state->fourv_counter[1] = 0;
             state->voice_counter[1] = 0;
@@ -633,7 +633,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KNRM);
     }
     if (opcode == 0x3 && err == 0) {
-        if (state->currentslot == 1) {
+        if (slot == 0) {
             state->dmrburstL = 24;
         } else {
             state->dmrburstR = 24;
