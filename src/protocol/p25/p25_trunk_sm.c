@@ -92,6 +92,75 @@ p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
     }
 }
 
+// Central helper: mark a talkgroup as ENC locked-out and emit a single event.
+// No-op if the TG is already marked as encrypted (mode "DE").
+void
+p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits) {
+    if (!opts || !state || tg <= 0) {
+        return;
+    }
+
+    // Locate existing entry
+    int idx = -1;
+    for (unsigned int i = 0; i < state->group_tally; i++) {
+        if (state->group_array[i].groupNumber == (unsigned long)tg) {
+            idx = (int)i;
+            break;
+        }
+    }
+
+    int already_de = 0;
+    if (idx >= 0) {
+        already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
+    }
+    if (already_de) {
+        return; // already marked; event previously emitted
+    }
+
+    // Create or update entry to mark encrypted
+    if (idx < 0 && state->group_tally < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
+        state->group_array[state->group_tally].groupNumber = (uint32_t)tg;
+        snprintf(state->group_array[state->group_tally].groupMode,
+                 sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
+        snprintf(state->group_array[state->group_tally].groupName,
+                 sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
+        state->group_tally++;
+    } else if (idx >= 0) {
+        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s", "DE");
+        // Preserve alias/name if present; avoid overwriting user labels
+        if (strcmp(state->group_array[idx].groupName, "") == 0) {
+            snprintf(state->group_array[idx].groupName, sizeof state->group_array[idx].groupName, "%s", "ENC LO");
+        }
+    }
+
+    // Prepare per-slot context so watchdog composes headers correctly
+    if ((slot & 1) == 0) {
+        state->lasttg = (uint32_t)tg;
+        state->dmr_so = (uint16_t)svc_bits;
+    } else {
+        state->lasttgR = (uint32_t)tg;
+        state->dmr_soR = (uint16_t)svc_bits;
+    }
+    state->gi[slot & 1] = 0; // group
+
+    // Compose event text and push if not a duplicate of the most-recent entry
+    Event_History_I* eh = &state->event_history_s[slot & 1];
+    snprintf(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
+             "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
+    watchdog_event_current(opts, state, (uint8_t)(slot & 1));
+    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                sizeof eh->Event_History_Items[0].internal_str)
+        != 0) {
+        if (opts->event_out_file[0] != '\0') {
+            // P25p2 slots use special swrite handling
+            uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+            write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite, eh->Event_History_Items[0].event_string);
+        }
+        push_event_history(eh);
+        init_event_history(eh, 0, 1);
+    }
+}
+
 // Build a per-system cache file path for CC candidates. Returns 1 on success.
 static int
 p25_sm_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
@@ -402,52 +471,8 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
         if (opts->verbose > 0) {
             fprintf(stderr, "\n  P25 SM: block tune TG=%u (encrypted)\n", (unsigned)tg);
         }
-        // Emit at most once: only when TG isn't already marked as encrypted (DE)
-        if (tg > 0) {
-            int idx = -1;
-            for (unsigned int i = 0; i < state->group_tally; i++) {
-                if (state->group_array[i].groupNumber == (unsigned long)tg) {
-                    idx = (int)i;
-                    break;
-                }
-            }
-            int already_de = 0;
-            if (idx >= 0) {
-                already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
-            }
-            if (!already_de) {
-                if (idx < 0
-                    && state->group_tally < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-                    state->group_array[state->group_tally].groupNumber = (uint32_t)tg;
-                    snprintf(state->group_array[state->group_tally].groupMode,
-                             sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
-                    snprintf(state->group_array[state->group_tally].groupName,
-                             sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-                    state->group_tally++;
-                } else if (idx >= 0) {
-                    // Keep alias if present; update mode only
-                    snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s", "DE");
-                }
-                state->lasttg = (uint32_t)tg;
-                state->gi[0] = 0;                   // group
-                state->dmr_so = (uint16_t)svc_bits; // reuse field for SVC bits summary
-                snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                         sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
-                         "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
-                watchdog_event_current(opts, state, 0);
-                Event_History_I* eh = &state->event_history_s[0];
-                if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
-                            sizeof eh->Event_History_Items[0].internal_str)
-                    != 0) {
-                    if (opts->event_out_file[0] != '\0') {
-                        uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
-                        write_event_to_log_file(opts, state, 0, swrite, eh->Event_History_Items[0].event_string);
-                    }
-                    push_event_history(eh);
-                    init_event_history(eh, 0, 1);
-                }
-            }
-        }
+        // Centralized, once-per-TG emit
+        p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
         return;
     }
 

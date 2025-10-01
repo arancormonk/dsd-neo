@@ -76,6 +76,12 @@ void p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg);
 void p25_ga_remove(dsd_state* state, uint32_t rid, uint16_t tg);
 void p25_ga_tick(dsd_state* state);
 
+// Emit a single encryption lockout event for a talkgroup.
+// Marks the TG as encrypted (mode "DE") if not already and pushes the
+// corresponding event to history/log exactly once per TG until scrubbed.
+// slot: 0 for FDMA/left, 1 for TDMA/right; tg: talkgroup; svc_bits: service bits (optional, pass 0 if unknown).
+void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits);
+
 #ifdef __cplusplus
 }
 #endif

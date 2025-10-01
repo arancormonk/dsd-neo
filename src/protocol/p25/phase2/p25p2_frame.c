@@ -721,53 +721,9 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 enc_lo = 0;
             }
 
-            // If locked out, mark the TG as DE and emit event only on first transition
+            // If locked out, mark DE and emit once for this TG
             if (enc_lo == 1 && ttg != 0) {
-                int idx = -1;
-                for (unsigned int xx = 0; xx < state->group_tally; xx++) {
-                    if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                        idx = (int)xx;
-                        break;
-                    }
-                }
-                int already_de = 0;
-                if (idx >= 0) {
-                    already_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
-                }
-                // Update or create entry (set mode to DE)
-                if (!already_de) {
-                    if (idx < 0
-                        && state->group_tally
-                               < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-                        state->group_array[state->group_tally].groupNumber = (uint32_t)ttg;
-                        snprintf(state->group_array[state->group_tally].groupMode,
-                                 sizeof state->group_array[state->group_tally].groupMode, "%s", "DE");
-                        snprintf(state->group_array[state->group_tally].groupName,
-                                 sizeof state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-                        state->group_tally++;
-                    } else if (idx >= 0) {
-                        snprintf(state->group_array[idx].groupMode, sizeof state->group_array[idx].groupMode, "%s",
-                                 "DE");
-                    }
-
-                    // Emit ENC lockout event only on transition to DE
-                    uint8_t slot = state->currentslot; // verify slot accuracy on SACCH (inverted) elsewhere
-                    snprintf(state->event_history_s[slot].Event_History_Items[0].internal_str,
-                             sizeof state->event_history_s[slot].Event_History_Items[0].internal_str,
-                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                    watchdog_event_current(opts, state, slot);
-                    Event_History_I* eh = &state->event_history_s[slot];
-                    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
-                                sizeof eh->Event_History_Items[0].internal_str)
-                        != 0) {
-                        if (opts->event_out_file[0] != '\0') {
-                            uint8_t swrite = 1; // P25p2: include slot index in log
-                            write_event_to_log_file(opts, state, slot, swrite, eh->Event_History_Items[0].event_string);
-                        }
-                        push_event_history(eh);
-                        init_event_history(eh, 0, 1);
-                    }
-                }
+                p25_emit_enc_lockout_once(opts, state, (uint8_t)state->currentslot, ttg, /*svc_bits*/ 0);
 
                 // Return to the control channel to avoid tying up the tuner on
                 // encrypted traffic when ENC lockout is enabled. The P25 SM
