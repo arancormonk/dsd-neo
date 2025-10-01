@@ -1118,15 +1118,18 @@ rtl_device_set_offset_tuning(struct rtl_device* dev) {
     if (!dev) {
         return -1;
     }
-    dev->offset_tuning = 1;
+    int r = 0;
     if (dev->backend == 0) {
         if (!dev->dev) {
             return -1;
         }
-        return verbose_offset_tuning(dev->dev);
+        r = verbose_offset_tuning(dev->dev);
     } else {
-        return rtl_tcp_send_cmd(dev->sockfd, 0x0A, 1);
+        r = rtl_tcp_send_cmd(dev->sockfd, 0x0A, 1);
     }
+    /* Only mark enabled on success; otherwise ensure fallback paths remain active. */
+    dev->offset_tuning = (r == 0) ? 1 : 0;
+    return r;
 }
 
 int
