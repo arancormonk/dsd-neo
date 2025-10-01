@@ -1398,7 +1398,12 @@ update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int 
     /* Magnitude-squared and center-DC reordering */
     const float eps = 1e-12f;
     for (int k = 0; k < N; k++) {
-        int kk = (k + (N >> 1)) & (N - 1);
+        /* Use arithmetic wrap instead of bitwise to avoid artifacts if N ever
+           deviates from power-of-two. With our API N is still clamped to pow2 */
+        int kk = k + (N >> 1);
+        if (kk >= N) {
+            kk -= N;
+        }
         float re = xr[kk];
         float im = xi[kk];
         float mag2 = re * re + im * im;
@@ -2743,9 +2748,10 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         for (int i = 0; i < N; i++) {
             spec_copy[i] = g_spec_db[i];
         }
-        /* Find strongest bin near DC only (robustness): search within +/- N/8 of center */
+        /* Find strongest bin near DC primarily: widen search to +/- N/4 of center
+           to tolerate larger initial frequency errors. */
         int k_center_i = N >> 1;
-        int W = N >> 3; /* N/8 */
+        int W = N >> 2; /* N/4 */
         if (W < 8) {
             W = 8;
         }
@@ -2905,6 +2911,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         static int awaiting_eval = 0;           /* 1 if last step pending evaluation */
         static int last_dir_applied = 0;        /* +/-1 for last applied change */
         static int last_ppm_after = 0;          /* ppm value after last applied change */
+        static int last_step_size = 1;          /* ppm step size used for last change */
         static double prev_abs_df = 1e12;       /* |df| before last applied change */
         static double prev_demod_snr_db = -1e9; /* demod SNR at last step */
         /* Training + lock policy */
@@ -2936,7 +2943,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
                     dir_calibrated = last_dir_applied;
                     awaiting_eval = 0;
                 } else if (snr_worsened) {
-                    int target_ppm = last_ppm_after - 2 * last_dir_applied;
+                    int target_ppm = last_ppm_after - 2 * last_dir_applied * last_step_size;
                     if (target_ppm > ppm_limit) {
                         target_ppm = ppm_limit;
                     }
@@ -2956,7 +2963,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
                     dir_calibrated = last_dir_applied;
                     awaiting_eval = 0;
                 } else if (cur_abs_df > prev_abs_df + eval_margin_hz) {
-                    int target_ppm = last_ppm_after - 2 * last_dir_applied;
+                    int target_ppm = last_ppm_after - 2 * last_dir_applied * last_step_size;
                     if (target_ppm > ppm_limit) {
                         target_ppm = ppm_limit;
                     }
@@ -2987,6 +2994,16 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         }
         /* Apply mapping sign when calibrated */
         int dir = (dir_calibrated == 0) ? dir_base : (dir_base * dir_calibrated);
+        /* Fast catch-up: choose step size based on estimated absolute ppm */
+        int step_size = 1;
+        double abs_est_ppm = fabs(est_ppm);
+        if (abs_est_ppm >= 50.0) {
+            step_size = 8;
+        } else if (abs_est_ppm >= 25.0) {
+            step_size = 4;
+        } else if (abs_est_ppm >= 12.0) {
+            step_size = 2;
+        }
         if (dir == 0) {
             dir_run = 0;
             run_len = 0;
@@ -3003,8 +3020,12 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
 
         auto now = std::chrono::steady_clock::now();
         bool time_ok = (now >= next_allowed);
-        if (!awaiting_eval && dir != 0 && run_len >= hold_needed && time_ok) {
-            int new_ppm = opts->rtlsdr_ppm_error + dir; /* step size = 1 ppm */
+        int effective_hold = (step_size > 1) ? (hold_needed / 2) : hold_needed;
+        if (effective_hold < 1) {
+            effective_hold = 1;
+        }
+        if (!awaiting_eval && dir != 0 && run_len >= effective_hold && time_ok) {
+            int new_ppm = opts->rtlsdr_ppm_error + dir * step_size; /* variable step size */
             if (new_ppm > ppm_limit) {
                 new_ppm = ppm_limit;
             }
@@ -3017,11 +3038,12 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
                 opts->rtlsdr_ppm_error = new_ppm;
                 last_dir_applied = dir;
                 last_ppm_after = new_ppm;
+                last_step_size = step_size;
                 awaiting_eval = 1; /* evaluate on next allowed window */
                 next_allowed = now + std::chrono::milliseconds(throttle_ms);
                 g_auto_ppm_cooldown.store(throttle_ms / 10, std::memory_order_relaxed);
-                LOG_INFO("AUTO-PPM(spectrum): PWR=%.1f dB, SNR=%.1f dB, df=%.1f Hz, dir=%+d, ppm->%d\n", p_max,
-                         gate_snr_db, df_hz, dir, new_ppm);
+                LOG_INFO("AUTO-PPM(spectrum): PWR=%.1f dB, SNR=%.1f dB, df=%.1f Hz, dir=%+d, step=%d, ppm->%d\n", p_max,
+                         gate_snr_db, df_hz, dir, step_size, new_ppm);
                 if (!train_started) {
                     train_started = 1;
                     train_start = now;
