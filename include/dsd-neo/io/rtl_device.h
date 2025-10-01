@@ -180,6 +180,17 @@ void rtl_device_mute(struct rtl_device* dev, int samples);
  */
 int rtl_device_set_bias_tee(struct rtl_device* dev, int on);
 
+/**
+ * @brief Print tuner type and whether this librtlsdr build is expected to support
+ * hardware offset tuning for the detected tuner. For rtl_tcp backend, prints that
+ * the capability is determined by the server.
+ *
+ * This is a non-invasive probe based on tuner type heuristics (e.g., upstream
+ * librtlsdr disables offset tuning for R820T/R828D). Actual enablement is still
+ * attempted later in the normal initialization sequence.
+ */
+void rtl_device_print_offset_capability(struct rtl_device* dev);
+
 #ifdef __cplusplus
 }
 #endif

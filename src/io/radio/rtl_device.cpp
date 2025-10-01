@@ -671,11 +671,64 @@ verbose_offset_tuning(rtlsdr_dev_t* dev) {
     int r;
     r = rtlsdr_set_offset_tuning(dev, 1);
     if (r != 0) {
-        fprintf(stderr, "WARNING: Failed to set offset tuning.\n");
+        int t = rtlsdr_get_tuner_type(dev);
+        const char* tt = "unknown";
+        switch (t) {
+            case RTLSDR_TUNER_E4000: tt = "E4000"; break;
+            case RTLSDR_TUNER_FC0012: tt = "FC0012"; break;
+            case RTLSDR_TUNER_FC0013: tt = "FC0013"; break;
+            case RTLSDR_TUNER_FC2580: tt = "FC2580"; break;
+            case RTLSDR_TUNER_R820T: tt = "R820T"; break;
+            case RTLSDR_TUNER_R828D: tt = "R828D"; break;
+            default: break;
+        }
+        if (r == -2 && (t == RTLSDR_TUNER_R820T || t == RTLSDR_TUNER_R828D)) {
+            fprintf(stderr, "WARNING: Failed to set offset tuning (err=%d). Not supported by librtlsdr for tuner %s.\n",
+                    r, tt);
+        } else {
+            fprintf(stderr, "WARNING: Failed to set offset tuning (err=%d, tuner=%s).\n", r, tt);
+        }
     } else {
         fprintf(stderr, "Offset tuning mode enabled.\n");
     }
     return r;
+}
+
+/**
+ * @brief Print tuner type and expected hardware offset tuning support for this librtlsdr.
+ *
+ * Note: This is a heuristic based on tuner type. Upstream librtlsdr returns -2 for
+ * R820T/R828D when enabling offset tuning. Forks may differ.
+ */
+void
+rtl_device_print_offset_capability(struct rtl_device* dev) {
+    if (!dev) {
+        return;
+    }
+    if (dev->backend == 1) {
+        fprintf(stderr, "rtl_tcp: offset tuning capability is determined by the server; will attempt enable.\n");
+        return;
+    }
+    if (!dev->dev) {
+        return;
+    }
+    int t = rtlsdr_get_tuner_type(dev->dev);
+    const char* tt = "unknown";
+    switch (t) {
+        case RTLSDR_TUNER_E4000: tt = "E4000"; break;
+        case RTLSDR_TUNER_FC0012: tt = "FC0012"; break;
+        case RTLSDR_TUNER_FC0013: tt = "FC0013"; break;
+        case RTLSDR_TUNER_FC2580: tt = "FC2580"; break;
+        case RTLSDR_TUNER_R820T: tt = "R820T"; break;
+        case RTLSDR_TUNER_R828D: tt = "R828D"; break;
+        default: break;
+    }
+    int supported = 1;
+    if (t == RTLSDR_TUNER_R820T || t == RTLSDR_TUNER_R828D) {
+        supported = 0; /* per upstream librtlsdr */
+    }
+    fprintf(stderr, "RTL tuner: %s; hardware offset tuning supported by this librtlsdr: %s\n", tt,
+            supported ? "yes (expected)" : "no (expected upstream)");
 }
 
 /**

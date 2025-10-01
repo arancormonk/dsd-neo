@@ -915,19 +915,27 @@ controller_thread_fn(void* arg) {
         rtl_device_set_direct_sampling(rtl_device_handle, 1);
     }
 
-    /* Program sample rate before attempting offset tuning to satisfy picky drivers */
-    rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
-    if (dongle.offset_tuning) {
-        rtl_device_set_offset_tuning(rtl_device_handle);
+    /* Try enabling offset tuning before any other tuning calls (rtl_fm order). */
+    {
+        int r = rtl_device_set_offset_tuning(rtl_device_handle);
+        if (r == 0) {
+            dongle.offset_tuning = 1;
+        } else {
+            dongle.offset_tuning = 0;
+        }
     }
 
-    /* Set the frequency after rate/offset */
+    /* Recompute capture parameters now that offset_tuning may have changed. */
+    optimal_settings(s->freqs[0], demod.rate_in);
+
+    /* Set the frequency then sample rate (rtl_fm order). */
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
     LOG_INFO("Oversampling input by: %ix.\n", demod.downsample);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
     LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
 
-    /* Sample rate already applied above */
+    /* Set the sample rate after frequency */
+    rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
@@ -2278,6 +2286,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             return -1;
         } else {
             LOG_INFO("Using rtl_tcp source %s:%d.\n", opts->rtltcp_hostname, opts->rtltcp_portno);
+            rtl_device_print_offset_capability(rtl_device_handle);
         }
     } else {
         rtl_device_handle = rtl_device_create(dongle.dev_index, &input_ring, combine_rotate_enabled);
@@ -2286,6 +2295,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             return -1;
         } else {
             LOG_INFO("Using RTLSDR Device Index: %d. \n", dongle.dev_index);
+            /* Print tuner and expected offset-tuning capability before any attempts */
+            rtl_device_print_offset_capability(rtl_device_handle);
         }
     }
 
@@ -2375,7 +2386,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
     rtl_device_set_ppm(rtl_device_handle, dongle.ppm_error);
 
-    /* Program initial frequency and sample rate before starting async */
+    /* Prepare initial settings; controller thread will program the device. */
     if (controller.freq_len == 0) {
         controller.freqs[controller.freq_len] = 446000000;
         controller.freq_len++;
@@ -2383,25 +2394,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     optimal_settings(controller.freqs[0], demod.rate_in);
     if (dongle.direct_sampling) {
         rtl_device_set_direct_sampling(rtl_device_handle, 1);
-    }
-    /* Apply initial capture (sets frequency and sample rate) before attempting offset tuning. */
-    apply_capture_settings((uint32_t)controller.freqs[0]);
-    /* Prefer hardware offset tuning now that sample rate is set; fallback to fs/4 shift. */
-    {
-        int r = rtl_device_set_offset_tuning(rtl_device_handle);
-        if (r == 0) {
-            dongle.offset_tuning = 1;
-            /* Recompute and reapply capture without fs/4 shift after enabling offset tuning */
-            optimal_settings(controller.freqs[0], demod.rate_in);
-            apply_capture_settings((uint32_t)controller.freqs[0]);
-        } else {
-            dongle.offset_tuning = 0;
-            if (opts && opts->rtltcp_enabled) {
-                LOG_WARNING("rtl_tcp: offset tuning unsupported; fs/4 shift fallback enabled.\n");
-            } else {
-                LOG_WARNING("rtl_usb: offset tuning unsupported; fs/4 shift fallback enabled.\n");
-            }
-        }
     }
     LOG_INFO("Oversampling input by: %ix.\n", demod.downsample);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
