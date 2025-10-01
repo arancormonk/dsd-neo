@@ -330,6 +330,28 @@ rtl_stream_spectrum_get_size(void) {
     return dsd_rtl_stream_spectrum_get_size();
 }
 
+/* Auto-PPM status snapshot */
+extern "C" int dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm,
+                                                  int* last_dir, int* cooldown, int* locked);
+extern "C" int dsd_rtl_stream_auto_ppm_training_active(void);
+extern "C" int dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz);
+
+extern "C" int
+rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
+                               int* cooldown, int* locked) {
+    return dsd_rtl_stream_auto_ppm_get_status(enabled, snr_db, df_hz, est_ppm, last_dir, cooldown, locked);
+}
+
+extern "C" int
+rtl_stream_auto_ppm_training_active(void) {
+    return dsd_rtl_stream_auto_ppm_training_active();
+}
+
+extern "C" int
+rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
+    return dsd_rtl_stream_auto_ppm_get_lock(ppm, snr_db, df_hz);
+}
+
 extern "C" int
 rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);

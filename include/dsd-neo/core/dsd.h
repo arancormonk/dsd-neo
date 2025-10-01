@@ -388,6 +388,10 @@ typedef struct {
     /* Mark when RTL-SDR stream must be destroyed/recreated to apply changes
        that cannot be updated live (e.g., device index, bandwidth, manual gain). */
     int rtl_needs_restart;
+    /* Spectrum-based RTL auto-PPM enable (0=off, 1=on). Mirrors DSD_NEO_AUTO_PPM. */
+    int rtl_auto_ppm;
+    /* Spectrum-based RTL auto-PPM SNR threshold in dB; <=0 means default. */
+    float rtl_auto_ppm_snr_db;
     int monitor_input_audio;
     int analog_only;
     int pulse_raw_rate_in;

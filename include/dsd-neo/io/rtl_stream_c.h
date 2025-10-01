@@ -181,6 +181,22 @@ double rtl_stream_estimate_snr_qpsk_const(void);
  */
 double rtl_stream_estimate_snr_gfsk_eye(void);
 
+/**
+ * @brief Get spectrum-based auto PPM status and last measurements.
+ *
+ * Returns current enable flag and the latest measurement snapshot used by
+ * the spectrum-based auto-PPM routine: SNR in dB, estimated frequency
+ * offset in Hz, estimated PPM error relative to tuned center, last applied
+ * step direction (-1,0,+1), and cooldown countdown (loops).
+ * Any pointer may be NULL. Returns 0 on success.
+ */
+int rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
+                                   int* cooldown, int* locked);
+/** Return 1 if auto-PPM training is active (enabled, not locked, in training window). */
+int rtl_stream_auto_ppm_training_active(void);
+/** Get locked auto-PPM value and lock-time SNR/df snapshot, if available. */
+int rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz);
+
 /* Runtime DSP adjustments and feedback hooks */
 /**
  * @brief Set CQPSK path parameters at runtime; pass -1 to leave any field unchanged.

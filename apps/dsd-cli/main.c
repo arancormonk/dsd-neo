@@ -64,6 +64,8 @@ is_truthy_env(const char* v) {
     if (!v || !*v) {
         return 0;
     }
+
+    /* no argv processing here */
     if (v[0] == '1') {
         return 1;
     }
@@ -1499,8 +1501,10 @@ initOpts(dsd_opts* opts) {
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
-    opts->rtl_pwr = 0;      // mean power approximation level on rtl input signal
-    opts->rtl_bias_tee = 0; // bias tee disabled by default
+    opts->rtl_pwr = 0;                // mean power approximation level on rtl input signal
+    opts->rtl_bias_tee = 0;           // bias tee disabled by default
+    opts->rtl_auto_ppm = 0;           // spectrum-based auto PPM disabled by default
+    opts->rtl_auto_ppm_snr_db = 0.0f; // use default SNR threshold unless overridden
     //end RTL user options
     opts->pulse_raw_rate_in = 48000;
     opts->pulse_raw_rate_out = 48000; //
@@ -2388,6 +2392,10 @@ usage() {
     printf("\n");
     printf("Encoder options:\n");
     printf("  -fZ           M17 Stream Voice Encoder\n");
+    printf("\n");
+    printf("Other options:\n");
+    printf("  --auto-ppm    Enable spectrum-based RTL auto PPM (6 dB gate; 1 ppm step)\n");
+    printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf(" Example: dsd-neo -fZ -M M17:9:DSD-neo:arancormonk -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
@@ -2910,6 +2918,23 @@ main(int argc, char** argv) {
                 calc_start_cli = argv[++i];
                 continue;
             }
+            if (strcmp(argv[i], "--auto-ppm") == 0) {
+                opts.rtl_auto_ppm = 1;
+                setenv("DSD_NEO_AUTO_PPM", "1", 1);
+                continue;
+            }
+            if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {
+                const char* sv = argv[++i];
+                double thr = atof(sv);
+                if (thr > 0.0 && thr < 60.0) {
+                    opts.rtl_auto_ppm_snr_db = (float)thr;
+                    /* Pass to lower layer via env for first-stage init */
+                    char buf[32];
+                    snprintf(buf, sizeof buf, "%.2f", thr);
+                    setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);
+                }
+                continue;
+            }
         }
 
         // If CLI present, set env vars and run calculator
@@ -2941,6 +2966,26 @@ main(int argc, char** argv) {
     // If user provided no CLI args, offer an interactive bootstrap
     if (argc <= 1) {
         bootstrap_interactive(&opts, &state);
+    }
+
+    /* Remove recognized long options so getopt() won't treat them as errors */
+    {
+        int w = 1;
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--auto-ppm") == 0) {
+                continue; /* already consumed above */
+            }
+            if (strcmp(argv[i], "--auto-ppm-snr") == 0) {
+                if (i + 1 < argc) {
+                    i++; /* skip value */
+                }
+                continue;
+            }
+            argv[w++] = argv[i];
+        }
+        argv[w] = NULL;
+        argc = w;
+        optind = 1;
     }
 
     while ((c = getopt(argc, argv,
