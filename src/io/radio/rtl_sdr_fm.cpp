@@ -1366,11 +1366,22 @@ update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int 
     if (N > kSpecMaxN) {
         N = kSpecMaxN;
     }
-    /* Prepare last N complex samples (I/Q) with Hann window */
+    /* Prepare last N complex samples (I/Q) with DC removal and Hann window */
     static float xr[kSpecMaxN];
     static float xi[kSpecMaxN];
     int take = (pairs >= N) ? N : pairs;
     int start = (pairs - take);
+    /* Compute mean I/Q over the slice to reduce DC spur at bin center */
+    double sumI = 0.0, sumQ = 0.0;
+    for (int n = 0; n < take; n++) {
+        int idx = start + n;
+        int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
+        int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
+        sumI += (double)I;
+        sumQ += (double)Q;
+    }
+    float meanI = (take > 0) ? (float)(sumI / (double)take) : 0.0f;
+    float meanQ = (take > 0) ? (float)(sumQ / (double)take) : 0.0f;
     for (int n = 0; n < N; n++) {
         xr[n] = 0.0f;
         xi[n] = 0.0f;
@@ -1380,8 +1391,8 @@ update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int 
         int idx = start + n;
         int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
         int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
-        xr[n] = w * (float)I;
-        xi[n] = w * (float)Q;
+        xr[n] = w * ((float)I - meanI);
+        xi[n] = w * ((float)Q - meanQ);
     }
     fft_rad2(xr, xi, N);
     /* Magnitude-squared and center-DC reordering */
@@ -2767,9 +2778,11 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
             break;
         }
-        /* Require recent direct demod SNR for gating */
+        /* Require recent direct demod SNR for gating; also compute spectral SNR */
         int mid = m / 2; /* still compute median to keep spectrum path consistent */
         std::nth_element(tmp, tmp + mid, tmp + m);
+        float noise_med_db = tmp[mid];
+        float spec_snr_db = p_max - noise_med_db;
         auto nowtp = std::chrono::steady_clock::now();
         long long nowms = std::chrono::duration_cast<std::chrono::milliseconds>(nowtp.time_since_epoch()).count();
         const long long fresh_ms = 800; /* direct SNR must be updated within 0.8 s */
@@ -2785,7 +2798,8 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         bool c4_ok = (c4_src == 1) && (nowms - c4_ms <= fresh_ms);
         bool qp_ok = (qp_src == 1) && (nowms - qp_ms <= fresh_ms);
         bool gf_ok = (gf_src == 1) && (nowms - gf_ms <= fresh_ms);
-        bool have_demod = c4_ok || qp_ok || gf_ok;
+        bool have_demod = c4_ok || qp_ok || gf_ok; /* currently unused for gating */
+        (void)have_demod;
         double gate_snr_db = -100.0;
         if (c4_ok) {
             gate_snr_db = d_c4;
@@ -2796,29 +2810,58 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         if (gf_ok && d_gf > gate_snr_db) {
             gate_snr_db = d_gf;
         }
-        g_auto_ppm_snr_db.store(gate_snr_db, std::memory_order_relaxed);
-        /* Debounce the SNR gate to avoid momentary spikes on noise */
-        static int snr_gate_active = 0;
-        static auto snr_gate_since = std::chrono::steady_clock::now();
-        const int snr_gate_debounce_ms = 5000; /* require 5s continuously above threshold */
+        /* Store spectral SNR for UI */
+        g_auto_ppm_snr_db.store(spec_snr_db, std::memory_order_relaxed);
+        /* Debounce absolute power (peak dB) to avoid brief spikes */
+        static double pwr_thr_db = -80.0;
+        static int pwr_thr_inited = 0;
+        if (!pwr_thr_inited) {
+            if (const char* ep = getenv("DSD_NEO_AUTO_PPM_PWR_DB")) {
+                char* endp = NULL;
+                double v = strtod(ep, &endp);
+                if (endp && ep != endp && v <= 0.0) {
+                    pwr_thr_db = v;
+                }
+            }
+            pwr_thr_inited = 1;
+        }
+        static int pwr_gate_active = 0;
+        static auto pwr_gate_since = std::chrono::steady_clock::now();
+        const int pwr_gate_debounce_ms = 2000; /* require 2s continuously above threshold */
         auto now_gate = std::chrono::steady_clock::now();
-        bool snr_over = have_demod && (gate_snr_db >= snr_thr_db);
-        if (snr_over) {
-            if (!snr_gate_active) {
-                snr_gate_active = 1;
-                snr_gate_since = now_gate;
+        bool pwr_over = (p_max >= (float)pwr_thr_db);
+        if (pwr_over) {
+            if (!pwr_gate_active) {
+                pwr_gate_active = 1;
+                pwr_gate_since = now_gate;
             }
         } else {
-            snr_gate_active = 0;
+            pwr_gate_active = 0;
         }
-        bool snr_debounced =
-            snr_gate_active
-            && (std::chrono::duration_cast<std::chrono::milliseconds>(now_gate - snr_gate_since).count()
-                >= snr_gate_debounce_ms);
-        if (!snr_debounced) {
+        bool pwr_debounced =
+            pwr_gate_active
+            && (std::chrono::duration_cast<std::chrono::milliseconds>(now_gate - pwr_gate_since).count()
+                >= pwr_gate_debounce_ms);
+        /* Also require spectral SNR above a modest threshold (default 6 dB, reuse option if provided) */
+        double spec_thr_db = 6.0;
+        if (opts && opts->rtl_auto_ppm_snr_db > 0.0f && opts->rtl_auto_ppm_snr_db <= 60.0f) {
+            spec_thr_db = (double)opts->rtl_auto_ppm_snr_db;
+        }
+        if (!pwr_debounced || spec_snr_db < spec_thr_db) {
             g_auto_ppm_training.store(0, std::memory_order_relaxed);
             g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
-            break; /* below SNR threshold */
+            break; /* below thresholds */
+        }
+        /* DC spur guard: if max is exactly the center bin and looks spur-like, ignore */
+        if (i_max == k_center_i) {
+            float l = spec_copy[i_max - 1];
+            float r = spec_copy[i_max + 1];
+            float side_max = (l > r) ? l : r;
+            if ((p_max - side_max) > 12.0f) {
+                /* sharp isolated spike at DC: likely residual DC spur */
+                g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
+                break;
+            }
         }
         /* Parabolic interpolation around peak using log-power (dB) */
         int k = i_max;
@@ -2858,11 +2901,12 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         static int dir_run = 0; /* -1,0,+1 (consensus of successive decisions) */
         static int run_len = 0; /* consecutive consistent decisions */
         static auto next_allowed = std::chrono::steady_clock::now();
-        static int dir_calibrated = 0;    /* 0=unknown; +/-1 = mapping sign */
-        static int awaiting_eval = 0;     /* 1 if last step pending evaluation */
-        static int last_dir_applied = 0;  /* +/-1 for last applied change */
-        static int last_ppm_after = 0;    /* ppm value after last applied change */
-        static double prev_abs_df = 1e12; /* |df| before last applied change */
+        static int dir_calibrated = 0;          /* 0=unknown; +/-1 = mapping sign */
+        static int awaiting_eval = 0;           /* 1 if last step pending evaluation */
+        static int last_dir_applied = 0;        /* +/-1 for last applied change */
+        static int last_ppm_after = 0;          /* ppm value after last applied change */
+        static double prev_abs_df = 1e12;       /* |df| before last applied change */
+        static double prev_demod_snr_db = -1e9; /* demod SNR at last step */
         /* Training + lock policy */
         static auto train_start = std::chrono::steady_clock::now();
         static int train_started = 0;
@@ -2873,24 +2917,25 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         const double lock_deadband_hz = 120.0;     /* and within 120 Hz window */
         const double zero_lock_deadband_hz = 60.0; /* tighter window for zero-step lock */
 
-        const int hold_needed = 4;         /* require 4 consistent decisions */
-        const int throttle_ms = 1000;      /* at most 1 adjustment per 1s */
-        const double deadband_ppm = 0.8;   /* ignore tiny offsets */
-        const int ppm_limit = 200;         /* clamp absolute ppm range */
-        const double eval_margin_hz = 120; /* require ~>1/4-bin improvement to accept direction */
+        const int hold_needed = 4;             /* require 4 consistent decisions */
+        const int throttle_ms = 1000;          /* at most 1 adjustment per 1s */
+        const double deadband_ppm = 0.8;       /* ignore tiny offsets */
+        const int ppm_limit = 200;             /* clamp absolute ppm range */
+        const double eval_margin_hz = 120;     /* require ~>1/4-bin improvement to accept direction */
+        const double eval_snr_margin_db = 0.5; /* prefer direction that improves demod SNR by >=0.5 dB */
 
-        /* If evaluating last step, compare |df| to prior |df| and adjust mapping if it worsened */
+        /* If evaluating last step, prefer demod SNR change; fallback to |df| change */
         if (awaiting_eval) {
             double cur_abs_df = fabs(df_hz);
             auto now = std::chrono::steady_clock::now();
             bool time_ok = (now >= next_allowed); /* wait full throttle interval for stable measurement */
             if (time_ok) {
-                if (cur_abs_df + eval_margin_hz < prev_abs_df) {
-                    /* Improved: accept mapping; mark calibrated */
+                bool snr_improved = (gate_snr_db > (prev_demod_snr_db + eval_snr_margin_db));
+                bool snr_worsened = (gate_snr_db + eval_snr_margin_db < prev_demod_snr_db);
+                if (snr_improved) {
                     dir_calibrated = last_dir_applied;
                     awaiting_eval = 0;
-                } else if (cur_abs_df > prev_abs_df + eval_margin_hz) {
-                    /* Worsened: flip mapping and undo with a corrective 2*dir step */
+                } else if (snr_worsened) {
                     int target_ppm = last_ppm_after - 2 * last_dir_applied;
                     if (target_ppm > ppm_limit) {
                         target_ppm = ppm_limit;
@@ -2900,8 +2945,28 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
                     }
                     if (target_ppm != opts->rtlsdr_ppm_error) {
                         opts->rtlsdr_ppm_error = target_ppm;
-                        LOG_INFO("AUTO-PPM(spectrum): flip dir (|df| worsened). df=%.1f->%.1f Hz, ppm->%d\n",
-                                 prev_abs_df, cur_abs_df, target_ppm);
+                        LOG_INFO("AUTO-PPM(spectrum): flip dir (SNR %.1f->%.1f dB). ppm->%d\n", prev_demod_snr_db,
+                                 gate_snr_db, target_ppm);
+                    }
+                    dir_calibrated = -last_dir_applied;
+                    awaiting_eval = 0;
+                    next_allowed = now + std::chrono::milliseconds(throttle_ms);
+                    g_auto_ppm_cooldown.store(throttle_ms / 10, std::memory_order_relaxed);
+                } else if (cur_abs_df + eval_margin_hz < prev_abs_df) {
+                    dir_calibrated = last_dir_applied;
+                    awaiting_eval = 0;
+                } else if (cur_abs_df > prev_abs_df + eval_margin_hz) {
+                    int target_ppm = last_ppm_after - 2 * last_dir_applied;
+                    if (target_ppm > ppm_limit) {
+                        target_ppm = ppm_limit;
+                    }
+                    if (target_ppm < -ppm_limit) {
+                        target_ppm = -ppm_limit;
+                    }
+                    if (target_ppm != opts->rtlsdr_ppm_error) {
+                        opts->rtlsdr_ppm_error = target_ppm;
+                        LOG_INFO("AUTO-PPM(spectrum): flip dir (|df| %.1f->%.1f Hz). ppm->%d\n", prev_abs_df,
+                                 cur_abs_df, target_ppm);
                     }
                     dir_calibrated = -last_dir_applied;
                     awaiting_eval = 0;
@@ -2948,14 +3013,15 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             }
             if (new_ppm != opts->rtlsdr_ppm_error) {
                 prev_abs_df = fabs(df_hz);
+                prev_demod_snr_db = gate_snr_db;
                 opts->rtlsdr_ppm_error = new_ppm;
                 last_dir_applied = dir;
                 last_ppm_after = new_ppm;
                 awaiting_eval = 1; /* evaluate on next allowed window */
                 next_allowed = now + std::chrono::milliseconds(throttle_ms);
                 g_auto_ppm_cooldown.store(throttle_ms / 10, std::memory_order_relaxed);
-                LOG_INFO("AUTO-PPM(spectrum): SNR=%.1f dB, df=%.1f Hz, dir=%+d, ppm->%d\n", gate_snr_db, df_hz, dir,
-                         new_ppm);
+                LOG_INFO("AUTO-PPM(spectrum): PWR=%.1f dB, SNR=%.1f dB, df=%.1f Hz, dir=%+d, ppm->%d\n", p_max,
+                         gate_snr_db, df_hz, dir, new_ppm);
                 if (!train_started) {
                     train_started = 1;
                     train_start = now;
@@ -2969,7 +3035,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         auto now2 = std::chrono::steady_clock::now();
         if (!train_started) {
             /* Start the training window only after gate debounce is satisfied */
-            if (snr_debounced) {
+            if (pwr_debounced) {
                 train_started = 1;
                 train_start = now2;
             }
@@ -2995,7 +3061,8 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
                 g_auto_ppm_locked.store(1, std::memory_order_relaxed);
                 g_auto_ppm_training.store(0, std::memory_order_relaxed);
                 g_auto_ppm_lock_ppm.store(opts->rtlsdr_ppm_error, std::memory_order_relaxed);
-                g_auto_ppm_lock_snr_db.store(gate_snr_db, std::memory_order_relaxed);
+                /* Store peak power at lock for UI */
+                g_auto_ppm_lock_snr_db.store(p_max, std::memory_order_relaxed);
                 g_auto_ppm_lock_df_hz.store(df_hz, std::memory_order_relaxed);
                 LOG_INFO("AUTO-PPM(spectrum): training complete, locked (elapsed=%d ms, steps=%d, |df|=%.1f Hz)\n",
                          elapsed_ms, train_steps, fabs(df_hz));
