@@ -2918,11 +2918,33 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         static auto train_start = std::chrono::steady_clock::now();
         static int train_started = 0;
         static int train_steps = 0;
-        const int train_max_ms = 15000;            /* train for up to 15 seconds */
-        const int train_max_steps = 8;             /* or up to 8 steps */
-        const int lock_hold_ms = 3000;             /* lock if stable for 3 seconds */
-        const double lock_deadband_hz = 120.0;     /* and within 120 Hz window */
-        const double zero_lock_deadband_hz = 60.0; /* tighter window for zero-step lock */
+        const int train_max_ms = 15000;             /* train for up to 15 seconds */
+        const int train_max_steps = 8;              /* or up to 8 steps */
+        const int lock_hold_ms = 3000;              /* lock if stable for 3 seconds */
+        static double lock_deadband_hz = 120.0;     /* and within 120 Hz window */
+        static double zero_lock_deadband_hz = 60.0; /* tighter window for zero-step lock */
+        /* Only allow zero-step lock when estimated offset is very small. This
+           prevents premature lock at 0 when a meaningful offset remains. */
+        static double zero_lock_max_est_ppm = 0.6; /* require |est_ppm| <= 0.6 */
+        /* One-time env overrides for lock thresholds */
+        static int zero_thr_inited = 0;
+        if (!zero_thr_inited) {
+            if (const char* ep = getenv("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM")) {
+                char* endp = NULL;
+                double v = strtod(ep, &endp);
+                if (endp && ep != endp && v >= 0.0 && v <= 2.0) {
+                    zero_lock_max_est_ppm = v;
+                }
+            }
+            if (const char* eh = getenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ")) {
+                char* endp = NULL;
+                double v = strtod(eh, &endp);
+                if (endp && eh != endp && v >= 10.0 && v <= 500.0) {
+                    zero_lock_deadband_hz = v;
+                }
+            }
+            zero_thr_inited = 1;
+        }
 
         const int hold_needed = 4;             /* require 4 consistent decisions */
         const int throttle_ms = 1000;          /* at most 1 adjustment per 1s */
@@ -3075,9 +3097,12 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             int since_change_ms =
                 (int)std::chrono::duration_cast<std::chrono::milliseconds>(now2 - last_change).count();
             bool stable_ok = (since_change_ms >= lock_hold_ms && fabs(df_hz) <= lock_deadband_hz);
-            /* Allow lock without steps when df is stably near zero (tight band) */
-            bool stable_zero_ok = (train_steps == 0) && stable_ok && (fabs(df_hz) <= zero_lock_deadband_hz);
-            /* Lock if: lots of steps, or (>=1 step and time/stability satisfied), or (zero-step tight stability) */
+            /* Allow lock without steps only when df is stably near zero and
+               the estimated offset is tiny (avoid false zero locks). */
+            bool significant_offset = (fabs(est_ppm) > deadband_ppm);
+            bool stable_zero_ok = (train_steps == 0) && stable_ok && (fabs(df_hz) <= zero_lock_deadband_hz)
+                                  && (!significant_offset) && (fabs(est_ppm) <= zero_lock_max_est_ppm);
+            /* Lock if: lots of steps, or (>=1 step and time/stability satisfied), or (permissible zero-step lock) */
             bool can_lock = steps_over || ((train_steps >= 1) && (time_over || stable_ok)) || stable_zero_ok;
             if (can_lock) {
                 g_auto_ppm_locked.store(1, std::memory_order_relaxed);
