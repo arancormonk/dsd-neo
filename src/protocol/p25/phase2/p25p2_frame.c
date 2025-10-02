@@ -747,15 +747,33 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 enc_lo = 0;
             }
 
-            // If locked out, mark DE and emit once for this TG
+            // If locked out, mark DE and emit once for this TG, then apply
+            // per-slot gating consistent with SACCH/FACCH handling: mute only
+            // the encrypted slot and return to CC only if the opposite slot is
+            // not active.
             if (enc_lo == 1 && ttg != 0) {
-                p25_emit_enc_lockout_once(opts, state, (uint8_t)state->currentslot, ttg, /*svc_bits*/ 0);
+                int eslot = state->currentslot & 1;
+                p25_emit_enc_lockout_once(opts, state, (uint8_t)eslot, ttg, /*svc_bits*/ 0);
 
-                // Return to the control channel to avoid tying up the tuner on
-                // encrypted traffic when ENC lockout is enabled. The P25 SM
-                // will handle cleanup and CC return consistently across I/O backends.
-                fprintf(stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
-                p25_sm_on_release(opts, state);
+                // Gate only this slot and flush any queued audio for it
+                state->p25_p2_audio_allowed[eslot] = 0;
+                p25_p2_audio_ring_reset(state, eslot);
+
+                int other = eslot ^ 1;
+                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
+                if (!other_audio) {
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking; Other slot active; stay on VC. \n");
+                    // Keep encryption fields intact so gating remains correct; clear banner only.
+                    if (eslot == 0) {
+                        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+                    } else {
+                        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+                    }
+                }
             }
         }
 #endif //P25p2_ENC_LO

@@ -140,7 +140,7 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     //TODO: add option to bypass enc with a toggle as well
 
-    //Per-slot audio gating (P25p2): mute when audio not allowed
+    // Per-slot audio gating (P25p2): mute when audio not allowed
     if (!state->p25_p2_audio_allowed[0]) {
         encL = 1;
     }

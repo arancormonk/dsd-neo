@@ -263,7 +263,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             state->p25_p2_enc_lo_early++;
                             // Hardened early ENC lockout: mute only this slot, and
                             // release to CC only if the opposite slot is not active.
-                            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+                            int other = eslot ^ 1;
+                            int other_audio =
+                                state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                             state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
                             // Flush any residual audio already queued for this slot
                             p25_p2_audio_ring_reset(state, eslot);
@@ -423,7 +425,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             state->p25_p2_enc_lo_early++;
                             // Hardened early ENC lockout: mute only this slot, and
                             // release to CC only if the opposite slot is not active.
-                            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+                            int other = eslot ^ 1;
+                            int other_audio =
+                                state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                             state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
                             // Flush any residual audio already queued for this slot
                             p25_p2_audio_ring_reset(state, eslot);

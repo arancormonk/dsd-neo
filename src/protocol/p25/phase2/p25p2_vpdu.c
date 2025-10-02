@@ -2215,16 +2215,29 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "TGT: %d; ", add);
             fprintf(stderr, "CC: %03X; ", cc);
 
-            // Clear per-slot audio gating so the SM can immediately return to CC
-            // without being blocked by stale slot activity.
-            state->p25_p2_audio_allowed[0] = 0;
-            state->p25_p2_audio_allowed[1] = 0;
-            // Mark both bursts idle to keep legacy checks consistent
-            state->dmrburstL = 24;
-            state->dmrburstR = 24;
+            // Gate only the logical slot indicated by this vPDU and let the
+            // state machine decide whether to return to CC based on the
+            // opposite slot's activity. This prevents dropping an active clear
+            // call on the other timeslot when a release applies to a single
+            // stream.
+            int eslot = slot; // vPDU uses current logical slot mapping
+            state->p25_p2_audio_allowed[eslot] = 0;
+            // Flush any residual audio queued for this slot to avoid artifact bleed
+            p25_p2_audio_ring_reset(state, eslot);
 
-            // Return to CC on explicit release
-            p25_sm_on_release(opts, state);
+            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+            if (!other_audio) {
+                // Force release so SM ignores any stale gates and returns to CC
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            } else {
+                // Keep VC; other slot still has audio. Clear banner for this slot.
+                if (eslot == 0) {
+                    snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+                } else {
+                    snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+                }
+            }
         }
 
         //1 or 21, group voice channel message, abb and ext
@@ -2324,7 +2337,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 // Gate this slot only and flush any queued audio to avoid residue
                 state->p25_p2_audio_allowed[slot] = 0;
                 p25_p2_audio_ring_reset(state, slot);
-                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                int other = slot ^ 1;
+                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
                     state->p25_sm_force_release = 1;
@@ -2332,16 +2346,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
-                    // UI hygiene: clear V XTRA and banner for this slot
+                    // Keep encryption fields intact so gating remains correct; clear banner only.
                     if (slot == 0) {
-                        state->payload_algid = 0;
-                        state->payload_keyid = 0;
-                        state->payload_miP = 0ULL;
                         snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
                     } else {
-                        state->payload_algidR = 0;
-                        state->payload_keyidR = 0;
-                        state->payload_miN = 0ULL;
                         snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
                     }
                 }
@@ -2434,7 +2442,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 }
                 // Gate this slot only
                 state->p25_p2_audio_allowed[slot] = 0;
-                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                int other = slot ^ 1;
+                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
                     state->p25_sm_force_release = 1;
@@ -2442,16 +2451,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
-                    // UI hygiene: clear V XTRA and banner for this slot
+                    // Keep encryption fields intact so gating remains correct; clear banner only.
                     if (slot == 0) {
-                        state->payload_algid = 0;
-                        state->payload_keyid = 0;
-                        state->payload_miP = 0ULL;
                         snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
                     } else {
-                        state->payload_algidR = 0;
-                        state->payload_keyidR = 0;
-                        state->payload_miN = 0ULL;
                         snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
                     }
                 }
