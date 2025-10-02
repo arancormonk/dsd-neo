@@ -157,6 +157,9 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
     // Update FEC counters once per message
     if (err == 0) {
+        // Refresh CC activity on any good TSBK decode to keep the SM from
+        // hunting prematurely when CC is healthy but TSBK cadence is sparse.
+        state->last_cc_sync_time = time(NULL);
         state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
         rtl_stream_p25p1_ber_update(1, 0);

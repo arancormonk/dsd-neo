@@ -2556,6 +2556,8 @@ usage() {
     printf("  -e            Enable Tune to Data Calls (DMR TIII, Cap+, NXDN Type-C)\n");
     printf("                 (NOTE: No Clear Distinction between Cap+ Private Voice Calls and Data Calls -- Both "
            "enabled with Data Calls \n");
+    printf("  --enc-lockout  P25: Do not tune encrypted calls (ENC lockout On)\n");
+    printf("  --enc-follow   P25: Allow encrypted calls (ENC lockout Off; default)\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
@@ -2935,6 +2937,18 @@ main(int argc, char** argv) {
                 }
                 continue;
             }
+            if (strcmp(argv[i], "--enc-lockout") == 0) {
+                // P25: do not tune encrypted calls (same effect as UI 'e' when toggled on)
+                opts.trunk_tune_enc_calls = 0;
+                LOG_NOTICE("P25: Encrypted call lockout: On.\n");
+                continue;
+            }
+            if (strcmp(argv[i], "--enc-follow") == 0) {
+                // P25: allow tuning encrypted calls (default)
+                opts.trunk_tune_enc_calls = 1;
+                LOG_NOTICE("P25: Encrypted call lockout: Off (follow encrypted).\n");
+                continue;
+            }
         }
 
         // If CLI present, set env vars and run calculator
@@ -2979,6 +2993,12 @@ main(int argc, char** argv) {
                 if (i + 1 < argc) {
                     i++; /* skip value */
                 }
+                continue;
+            }
+            if (strcmp(argv[i], "--enc-lockout") == 0) {
+                continue;
+            }
+            if (strcmp(argv[i], "--enc-follow") == 0) {
                 continue;
             }
             argv[w++] = argv[i];

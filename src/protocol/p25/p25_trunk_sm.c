@@ -716,7 +716,19 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     // fall back to the imported LCN/frequency list.
     if (opts->p25_is_tuned == 0) {
         double dt_cc = (state->last_cc_sync_time != 0) ? (double)(now - state->last_cc_sync_time) : 1e9;
-        if (dt_cc > (opts->trunk_hangtime + 0.0)) {
+        // Add a small grace window before hunting to avoid thrashing on brief
+        // CC fades between TSBKs. Allow override via env var DSD_NEO_P25_CC_GRACE.
+        double cc_grace = 2.0; // seconds
+        {
+            const char* s = getenv("DSD_NEO_P25_CC_GRACE");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 30.0) {
+                    cc_grace = v;
+                }
+            }
+        }
+        if (dt_cc > (opts->trunk_hangtime + cc_grace)) {
             int tuned = 0;
             long cand = 0;
             if (opts->p25_prefer_candidates == 1 && p25_sm_next_cc_candidate(state, &cand) && cand != 0) {
