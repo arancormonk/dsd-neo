@@ -1,6 +1,6 @@
 # DSD-neo
 
-A modular and performance‑enhanced version of the well-known Digital Speech Decoder (DSD) with a modern CMake build, split into focused libraries (runtime, DSP, IO, FEC, crypto, protocol, core) and a thin CLI.
+A modular and performance‑enhanced version of the well-known Digital Speech Decoder (DSD) with a modern CMake build, split into focused libraries (runtime, DSP, IO, FEC, crypto, protocol, core, ui) and a thin CLI.
 
 Project homepage: https://github.com/arancormonk/dsd-neo
 
@@ -41,6 +41,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
   - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and generic IQ TCP (`-i tcp[:host:port]`, SDR++/GRC 7355).
   - UDP audio in/out: receive PCM16 over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts.
+  - M17 UDP/IP in/out: dedicated M17 frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
 
 - Built‑in trunking workflow
 
@@ -50,7 +51,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - RTL‑SDR quality‑of‑life features
 
   - Bias‑tee control (when supported by your librtlsdr), manual or auto gain, power squelch, adjustable tuner bandwidth, and per‑run PPM correction.
-  - Optional auto‑PPM drift correction driven by the timing error detector for long runs without user intervention.
+  - Optional spectrum‑based auto‑PPM drift correction with SNR/power gating and short training/lock, for long unattended runs.
   - rtl_tcp niceties: configurable prebuffering to reduce dropouts and settings tuned for stable network use.
 
 - RTL‑SDR optimizations and diagnostics
@@ -158,6 +159,39 @@ cmake --build build/dev-release --target uninstall
 - Optional backends (auto‑detected):
   - `RTLSDR_FOUND` — Builds RTL‑SDR radio front‑end (`-DUSE_RTLSDR`).
   - `CODEC2_FOUND` — Enables Codec2 support (`-DUSE_CODEC2`).
+
+## Runtime Tuning (Environment/CLI)
+
+- Auto‑PPM (RTL‑SDR only): spectrum‑based drift correction with training/lock.
+  - CLI: `--auto-ppm`, `--auto-ppm-snr <dB>` (default 6).
+  - Env: `DSD_NEO_AUTO_PPM=1`, `DSD_NEO_AUTO_PPM_SNR_DB=<dB>`,
+    `DSD_NEO_AUTO_PPM_PWR_DB=<dB>` (absolute peak gate, default −80),
+    `DSD_NEO_AUTO_PPM_ZEROLOCK_PPM=<ppm>` (zero‑step lock guard, default 0.6),
+    `DSD_NEO_AUTO_PPM_ZEROLOCK_HZ=<Hz>` (default 60),
+    `DSD_NEO_AUTO_PPM_FREEZE=0/1` (freeze/allow retunes during training; default freeze).
+  - Behavior: estimates df via parabolic peak interpolation near DC; applies ±1 ppm steps with throttling, direction self‑calibration (SNR/|df| improvement), and locks after short stability.
+
+- Resampler (polyphase L/M):
+  - Env: `DSD_NEO_RESAMP=48000` (default) or `off/0` to disable; sets demod/output target rate and L/M design.
+
+- FLL/TED controls:
+  - Env: `DSD_NEO_FLL=1`, `DSD_NEO_FLL_LUT=1`, `DSD_NEO_FLL_ALPHA/BETA/DEADBAND/SLEW` (Q15/Q14 gains),
+    `DSD_NEO_TED=1`, `DSD_NEO_TED_SPS=<int>`, `DSD_NEO_TED_GAIN=<Q20>`, `DSD_NEO_TED_FORCE=1`.
+
+- FM/C4FM stabilization:
+  - Env: `DSD_NEO_FM_AGC=1`, `DSD_NEO_FM_AGC_TARGET/MIN/ALPHA_UP/ALPHA_DOWN`,
+    `DSD_NEO_FM_LIMITER=1` (constant‑envelope limiter),
+    `DSD_NEO_IQ_DC_BLOCK=1`, `DSD_NEO_IQ_DC_SHIFT=<k>`.
+
+- Digital SNR squelch:
+  - Env: `DSD_NEO_SNR_SQL_DB=<dB>` — skips expensive sync when estimated SNR below threshold for relevant modes.
+
+- Capture/retune behavior:
+  - Env: `DSD_NEO_DISABLE_FS4_SHIFT=1` (disable +fs/4 capture shift when offset tuning is off),
+    `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1`, `DSD_NEO_RETUNE_DRAIN_MS=<ms>`.
+
+- Rig control defaults:
+  - TCP rigctl default port 4532 (SDR++). CLI: `-U <port>`, bandwidth `-B <Hz>`.
 
 ## Using The CLI
 
