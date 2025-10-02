@@ -668,6 +668,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
         // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
+        // Clear Packet/Data flag for this slot on IDLE
+        state->p25_call_is_packet[slot] = 0;
         // If both logical channels are idle, return to CC
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
             state->p25_sm_force_release = 1;
@@ -699,12 +701,17 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Enable audio per policy (respect encryption and key presence)
         {
             int allow_audio = 0;
-            int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-            unsigned long long key = (slot == 0) ? state->R : state->RR;
-            int aes_loaded = state->aes_key_loaded[slot];
-            if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                allow_audio = 1; // clear or decryptable with key
+            // Do not enable audio for sessions marked as Packet/Data
+            if (state->p25_call_is_packet[slot]) {
+                allow_audio = 0;
+            } else {
+                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+                unsigned long long key = (slot == 0) ? state->R : state->RR;
+                int aes_loaded = state->aes_key_loaded[slot];
+                if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
+                    || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
+                    allow_audio = 1; // clear or decryptable with key
+                }
             }
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }

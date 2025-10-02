@@ -467,6 +467,13 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
     // - Respect ENC lockout based on SVC bits when available
     // - Respect user group list modes ("DE" encrypted lockout, "B" block)
     // - Respect TG Hold when set (allow only the held TG)
+    // - Respect Data-call policy (svc bit 0x10) when data tuning is disabled
+    if ((svc_bits & 0x10) && opts->trunk_tune_data_calls == 0) {
+        if (opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: block tune TG=%u (data call; tuning disabled)\n", (unsigned)tg);
+        }
+        return;
+    }
     if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
         if (opts->verbose > 0) {
             fprintf(stderr, "\n  P25 SM: block tune TG=%u (encrypted)\n", (unsigned)tg);
@@ -507,7 +514,14 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
 
 void
 dsd_p25_sm_on_indiv_grant_impl(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    UNUSED2(svc_bits, src);
+    UNUSED(src);
+    // Respect Data-call policy (svc bit 0x10) when data tuning is disabled
+    if ((svc_bits & 0x10) && opts->trunk_tune_data_calls == 0) {
+        if (opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: block tune DST=%u (data call; tuning disabled)\n", (unsigned)dst);
+        }
+        return;
+    }
     if (dst == 0) {
         // proceed regardless
     }
@@ -585,6 +599,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_enc_pending[1] = 0;
     state->p25_p2_enc_pending_ttg[0] = 0;
     state->p25_p2_enc_pending_ttg[1] = 0;
+    // Clear per-slot Packet/Data flags
+    state->p25_call_is_packet[0] = 0;
+    state->p25_call_is_packet[1] = 0;
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
 }

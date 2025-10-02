@@ -559,6 +559,9 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // Clear P25p2 per-slot audio gating
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
+    // Clear P25p2 per-slot Packet/Data flags
+    state->p25_call_is_packet[0] = 0;
+    state->p25_call_is_packet[1] = 0;
     state->p25_p2_active_slot = -1;
     // Do not alter user slot On/Off toggles here; UI controls own persistence.
 

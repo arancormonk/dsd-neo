@@ -1009,6 +1009,7 @@ typedef struct {
     // P25 current-call flags (per logical slot; FDMA uses slot 0)
     uint8_t p25_call_emergency[2]; // 1 if current call is emergency
     uint8_t p25_call_priority[2];  // 0..7 call priority (0 if unknown)
+    uint8_t p25_call_is_packet[2]; // 1 if call/service marked as packet (data), else 0
 
     //experimental symbol file capture read throttle
     int symbol_throttle; //throttle speed

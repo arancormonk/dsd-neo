@@ -461,6 +461,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (svc & 0x40) {
                 fprintf(stderr, " Encrypted");
             }
+            // Track Packet/Data bit for this slot so XCCH can avoid audio gating
+            state->p25_call_is_packet[state->currentslot & 1] = (uint8_t)((svc & 0x10) ? 1 : 0);
 
             if (opts->payload == 1) //hide behind payload due to len
             {
@@ -569,6 +571,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (svc & 0x40) {
                 fprintf(stderr, " Encrypted");
             }
+            // Track Packet/Data bit for this slot so XCCH can avoid audio gating
+            state->p25_call_is_packet[state->currentslot & 1] = (uint8_t)((svc & 0x10) ? 1 : 0);
 
             if (opts->payload == 1) //hide behind payload due to len
             {
@@ -890,7 +894,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 }
                 for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                     if (state->group_array[gi].groupNumber == (unsigned long)tunable_group) {
-                        fprintf(stderr, " [%s]", state->group_array[i].groupName);
+                        fprintf(stderr, " [%s]", state->group_array[gi].groupName);
                         strncpy(mode, state->group_array[gi].groupMode, sizeof(mode) - 1);
                         mode[sizeof(mode) - 1] = '\0';
                         break;
@@ -1370,7 +1374,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             for (unsigned int gi = 0; gi < state->group_tally; gi++) {
                 if (state->group_array[gi].groupNumber == (unsigned long)target) {
-                    fprintf(stderr, " [%s]", state->group_array[i].groupName);
+                    fprintf(stderr, " [%s]", state->group_array[gi].groupName);
                     snprintf(mode, sizeof mode, "%s", state->group_array[gi].groupMode);
                     break;
                 }
