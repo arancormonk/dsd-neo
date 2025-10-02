@@ -123,9 +123,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KNRM);
         // Per-slot audio gating: disable only the MAC_SIGNAL slot; leave the
         // opposite slot untouched to prevent stutter on ongoing clear calls.
+        // Do NOT flush the per-slot jitter ring here; allow any queued
+        // frames to drain naturally to avoid cutting tails.
         state->p25_p2_audio_allowed[slot] = 0;
-        // Flush this slot's jitter buffer to avoid residue on the next call
-        p25_p2_audio_ring_reset(state, slot);
     }
     //do not permit MAC_PTT with CRC errs, help prevent false positives on calls
     if (opcode == 0x1 && err == 0) {
@@ -537,8 +537,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
             //blank the call string here -- slot variable is already flipped accordingly for sacch
             sprintf(state->call_string[slot], "%s", "                     "); //21 spaces -- wrong placement!
-            // Flush ring for this slot on PTT end
-            p25_p2_audio_ring_reset(state, slot);
+
+            // Do not flush the per-slot jitter ring on PTT end; allow queued
+            // audio to drain so short calls and endings are not cut off.
+            // Instead, gate this slot so no new frames are queued.
+            state->p25_p2_audio_allowed[slot] = 0;
 
             // If both logical channels are idle, return to CC
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
@@ -604,10 +607,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
         }
 
-        // Disable audio for this slot
+        // Disable audio for this slot. Do not flush the jitter ring; let it
+        // drain to avoid chopping tails when IDLE arrives closely after voice.
         state->p25_p2_audio_allowed[slot] = 0;
-        // Flush ring for this slot to drop any residual samples
-        p25_p2_audio_ring_reset(state, slot);
         // Message-driven retune: if the opposite slot is idle/unknown, treat
         // this slot as idle and return to CC immediately (applies to clear and
         // encrypted-followed calls). Otherwise, defer until both slots are IDLE

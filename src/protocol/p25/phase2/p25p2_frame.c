@@ -609,6 +609,19 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             state->payload_algid = (essb_hex1 >> 24) & 0xFF;
             state->payload_keyid = (essb_hex1 >> 8) & 0xFFFF;
             state->payload_miP = ((essb_hex1 & 0xFF) << 56) | ((essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
+            // Fallback: if SACCH/FACCH MAC_PTT was missed but ESS indicates
+            // clear or decryptable audio, allow this slot's audio now.
+            if (state->p25_p2_audio_allowed[0] == 0) {
+                int alg = state->payload_algid;
+                int allow = ((alg == 0 || alg == 0x80)
+                             || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
+                                 || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)))
+                                ? 1
+                                : 0;
+                if (allow) {
+                    state->p25_p2_audio_allowed[0] = 1;
+                }
+            }
             if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
                 fprintf(stderr, "\n");
                 fprintf(stderr, " VCH 1 -");
@@ -643,6 +656,19 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             state->payload_algidR = (essb_hex1 >> 24) & 0xFF;
             state->payload_keyidR = (essb_hex1 >> 8) & 0xFFFF;
             state->payload_miN = ((essb_hex1 & 0xFF) << 56) | ((essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
+            // Fallback: if SACCH/FACCH MAC_PTT was missed but ESS indicates
+            // clear or decryptable audio, allow this slot's audio now.
+            if (state->p25_p2_audio_allowed[1] == 0) {
+                int alg = state->payload_algidR;
+                int allow = ((alg == 0 || alg == 0x80)
+                             || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0)
+                                 || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1)))
+                                ? 1
+                                : 0;
+                if (allow) {
+                    state->p25_p2_audio_allowed[1] = 1;
+                }
+            }
             if (state->payload_algidR != 0x80 && state->payload_algidR != 0x0) {
                 fprintf(stderr, "\n");
                 fprintf(stderr, " VCH 2 -");
