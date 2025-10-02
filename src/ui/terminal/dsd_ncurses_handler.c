@@ -77,10 +77,12 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     //and Windows Powershell right-click doing a copy and paste
     //and sendign tons of garbage getch chars here and changing things
     if (c == DSD_KEY_ESC) {
-        //TODO: Find way to getch all the chars immediately after, or just
-        //run getch in a loop in case of somebody copying and pasting a ton of things accidentally
-        for (int i = 0; i < 100000; i++) { //wonder how slow this will be
-            getch();
+        // Drain any pending escape sequence bytes without spinning for long periods.
+        // getch() is configured non-blocking via timeout(0) in ncursesPrinter.
+        // Read until the input queue is empty (ERR), then return.
+        int ch;
+        while ((ch = getch()) != ERR) {
+            (void)ch; // discard
         }
         return 1;
     }
