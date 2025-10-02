@@ -161,24 +161,8 @@ cmake --build build/dev-release --target uninstall
 
 ## Using The CLI
 
-- Binary path: `build/<preset>/apps/dsd-cli/dsd-neo`
-- Show help/usage: `dsd-neo -h`
-- Common inputs:
-  - PulseAudio input: `-i pulse` (default). List devices: `-O`.
-  - WAV input (48 kHz mono): `-i file.wav` or with custom rate `-s 96000`.
-  - RTL‑SDR: `-i rtl` for defaults, or `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`.
-  - RTL‑TCP: `-i rtltcp[:host:port]` (default 127.0.0.1:1234). Optional trailing fields mirror RTL‑SDR, including `bias` (forwarded to the rtl_tcp server when supported).
-  - TCP (SDR++ / GRC): `-i tcp[:host:port]` (default port 7355).
-  - UDP PCM input: `-i udp[:bind_addr:port]` (PCM16 at 48 kHz by default).
-  - M17 UDP/IP: `-i m17udp[:bind_addr:port]` and/or `-o m17udp[:host:port]`.
-  - UDP audio output: `-o udp[:host:port]` (default 127.0.0.1:23456).
-- Quick examples:
-  - Play saved MBE files: `dsd-neo -r *.mbe`
-  - UDP in to Pulse out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse -N`
-  - Trunking with TCP control: `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N 2> log.txt`
-  - Trunking with RTL‑SDR: `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> log.txt`
-
-If `help2man` is available during build, a `dsd-neo(1)` man page is generated and installed from the binary’s `-h` output.
+- See the friendly CLI guide: [docs/cli.md](docs/cli.md)
+  - Or run `dsd-neo -h` for quick usage in your terminal.
 
 ## Tests and Examples
 
