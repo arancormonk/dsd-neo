@@ -868,17 +868,28 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         state->voice_counter[1] = 0;
     }
 
-    processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
-    if (state->currentslot == 0) {
-        memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        // memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
-        memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
+    // Gate first 2V AMBE decode like subsequent frames to avoid decoding
+    // encrypted audio when ENC lockout is enabled or audio is otherwise
+    // disallowed for this slot.
+    if (state->p25_p2_audio_allowed[state->currentslot]) {
+        processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
+        if (state->currentslot == 0) {
+            memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
+            // memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
+            memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
+        } else {
+            memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+            // memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
+            memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
+        }
     } else {
-        memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-        // memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
-        memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
+        if (state->currentslot == 0) {
+            memset(state->f_l4[0], 0, sizeof(state->f_l4[0]));
+        } else {
+            memset(state->f_r4[0], 0, sizeof(state->f_r4[0]));
+        }
     }
 
     if (state->p25_p2_audio_allowed[state->currentslot]) {
