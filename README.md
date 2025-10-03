@@ -193,6 +193,15 @@ cmake --build build/dev-release --target uninstall
 - Rig control defaults:
   - TCP rigctl default port 4532 (SDR++). CLI: `-U <port>`, bandwidth `-B <Hz>`.
 
+- RTL‑TCP networking:
+  - Env: `DSD_NEO_TCP_PREBUF_MS=<ms>` — prebuffer before starting demod (default 200, clamp 5–500).
+  - Env: `DSD_NEO_TCP_RCVBUF=<bytes>` — OS socket receive buffer (default ~4 MiB, OS‑capped).
+  - Env: `DSD_NEO_TCP_BUFSZ=<bytes>` — user‑space read size per `recv` (default ~16 KiB for rtl_tcp).
+  - Env: `DSD_NEO_TCP_WAITALL=0/1` — require full reads (`MSG_WAITALL`) for steadier cadence (default off for rtl_tcp).
+  - Env: `DSD_NEO_TCP_STATS=1` — print periodic throughput/queue stats.
+  - CLI: `--rtltcp-autotune` — enable adaptive tuning of buffering/recv size for imperfect networks.
+  - Behavior: TCP keepalive is enabled; if the link drops, the client auto‑reconnects and reapplies tuner settings.
+
 ## Using The CLI
 
 - See the friendly CLI guide: [docs/cli.md](docs/cli.md)

@@ -453,8 +453,9 @@ typedef struct {
     int m17_udp_sock;  //actual UDP socket for M17 to send to
     int tcp_sockfd;
     int tcp_portno;
-    int rtltcp_enabled; // 1 when using rtl_tcp backend
-    int rtltcp_portno;  // default 1234
+    int rtltcp_enabled;  // 1 when using rtl_tcp backend
+    int rtltcp_portno;   // default 1234
+    int rtltcp_autotune; // 1 to enable rtl_tcp network auto-tuning (adaptive buffering)
     int wav_sample_rate;
     int wav_interpolator;
     int wav_decimator;

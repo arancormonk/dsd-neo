@@ -1003,4 +1003,33 @@ svc_rtl_set_bias_tee(dsd_opts* opts, int on) {
     }
     return 0;
 }
+
+int
+svc_rtltcp_set_autotune(dsd_opts* opts, int on) {
+    if (!opts) {
+        return -1;
+    }
+    opts->rtltcp_autotune = on ? 1 : 0;
+    /* Update env so future restarts inherit */
+    setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
+    if (g_rtl_ctx) {
+        /* Apply live when RTL stream is active */
+        rtl_stream_set_rtltcp_autotune(opts->rtltcp_autotune);
+    }
+    return 0;
+}
+
+int
+svc_rtl_set_auto_ppm(dsd_opts* opts, int on) {
+    if (!opts) {
+        return -1;
+    }
+    opts->rtl_auto_ppm = on ? 1 : 0;
+    /* Update env for persistence */
+    setenv("DSD_NEO_AUTO_PPM", on ? "1" : "0", 1);
+    if (g_rtl_ctx) {
+        rtl_stream_set_auto_ppm(on ? 1 : 0);
+    }
+    return 0;
+}
 #endif

@@ -56,6 +56,8 @@ void dsd_rtl_stream_clear_output(void);
 long int dsd_rtl_stream_return_pwr(void);
 unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_ted_bias(void);
+int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
+int dsd_rtl_stream_get_rtltcp_autotune(void);
 #ifdef __cplusplus
 }
 #endif
@@ -1296,6 +1298,8 @@ static std::atomic<int> g_spec_N{256}; /* default N */
 
 /* Auto-PPM status (spectrum-based) */
 static std::atomic<int> g_auto_ppm_enabled{0};
+/* User override for auto-PPM: -1 = follow env/opts; 0 = force off; 1 = force on */
+static std::atomic<int> g_auto_ppm_user_en{-1};
 static std::atomic<int> g_auto_ppm_locked{0};
 static std::atomic<int> g_auto_ppm_training{0};
 static std::atomic<int> g_auto_ppm_lock_ppm{0};
@@ -2130,6 +2134,8 @@ start_threads_and_async(void) {
 extern "C" int dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm,
                                                   int* last_dir, int* cooldown, int* locked);
 extern "C" int dsd_rtl_stream_auto_ppm_training_active(void);
+extern "C" void dsd_rtl_stream_set_auto_ppm(int onoff);
+extern "C" int dsd_rtl_stream_get_auto_ppm(void);
 
 /* Option B: Perform a short auto-PPM pre-training window at startup before returning control,
    so trunking/hunt logic begins after a stable PPM lock when possible. */
@@ -2295,8 +2301,15 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     dongle.buf_len = (uint32_t)ACTUAL_BUF_LENGTH;
 
     if (opts && opts->rtltcp_enabled) {
-        rtl_device_handle =
-            rtl_device_create_tcp(opts->rtltcp_hostname, opts->rtltcp_portno, &input_ring, combine_rotate_enabled);
+        int autotune = opts->rtltcp_autotune;
+        if (!autotune) {
+            const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
+            if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
+                autotune = 1;
+            }
+        }
+        rtl_device_handle = rtl_device_create_tcp(opts->rtltcp_hostname, opts->rtltcp_portno, &input_ring,
+                                                  combine_rotate_enabled, autotune);
         if (!rtl_device_handle) {
             LOG_ERROR("Failed to connect rtl_tcp at %s:%d.\n", opts->rtltcp_hostname, opts->rtltcp_portno);
             return -1;
@@ -2705,8 +2718,18 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             }
         }
         /* Allow CLI/opts to enable even if env unset */
-        if (opts && opts->rtl_auto_ppm) {
-            enabled = 1;
+        /* Runtime user override takes precedence; otherwise follow opts */
+        {
+            int u = g_auto_ppm_user_en.load(std::memory_order_relaxed);
+            if (u == 0) {
+                enabled = 0;
+            } else if (u == 1) {
+                enabled = 1;
+            } else {
+                if (opts) {
+                    enabled = (opts->rtl_auto_ppm != 0) ? 1 : 0;
+                }
+            }
         }
         g_auto_ppm_enabled.store(enabled, std::memory_order_relaxed);
         if (!g_auto_ppm_locked.load(std::memory_order_relaxed) && enabled) {
@@ -3837,6 +3860,25 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* aut
     return 0;
 }
 
+/* ---- Auto-PPM runtime control (UI/CLI) ---- */
+extern "C" void
+dsd_rtl_stream_set_auto_ppm(int onoff) {
+    g_auto_ppm_user_en.store(onoff ? 1 : 0, std::memory_order_relaxed);
+}
+
+extern "C" int
+dsd_rtl_stream_get_auto_ppm(void) {
+    int u = g_auto_ppm_user_en.load(std::memory_order_relaxed);
+    if (u == 0) {
+        return 0;
+    }
+    if (u == 1) {
+        return 1;
+    }
+    /* Fallback to last enabled value */
+    return g_auto_ppm_enabled.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
 extern "C" void
 rtl_stream_toggle_auto_dsp(int onoff) {
     g_auto_dsp_enable.store(onoff ? 1 : 0);
@@ -3998,4 +4040,20 @@ dsd_rtl_stream_clear_output(void) {
     ring_clear(outp);
     /* Wake producer waiting for space */
     safe_cond_signal(&outp->space, &outp->ready_m);
+}
+
+extern "C" int
+dsd_rtl_stream_set_rtltcp_autotune(int onoff) {
+    if (!rtl_device_handle) {
+        return -1;
+    }
+    return rtl_device_set_tcp_autotune(rtl_device_handle, onoff ? 1 : 0);
+}
+
+extern "C" int
+dsd_rtl_stream_get_rtltcp_autotune(void) {
+    if (!rtl_device_handle) {
+        return 0;
+    }
+    return rtl_device_get_tcp_autotune(rtl_device_handle);
 }

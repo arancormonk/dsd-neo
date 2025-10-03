@@ -102,6 +102,8 @@ int svc_rtl_set_bandwidth(dsd_opts* opts, int khz);
 int svc_rtl_set_sql_db(dsd_opts* opts, double dB);
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 int svc_rtl_set_bias_tee(dsd_opts* opts, int on);
+int svc_rtltcp_set_autotune(dsd_opts* opts, int on);
+int svc_rtl_set_auto_ppm(dsd_opts* opts, int on);
 #endif
 
 #ifdef __cplusplus

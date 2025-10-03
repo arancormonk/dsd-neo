@@ -1585,6 +1585,7 @@ initOpts(dsd_opts* opts) {
     opts->rtltcp_enabled = 0;
     opts->rtltcp_portno = 1234;
     snprintf(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", "127.0.0.1");
+    opts->rtltcp_autotune = 0; // default off; enable via CLI --rtltcp-autotune or env
 
     // UDP direct input defaults
     opts->udp_in_sockfd = 0;
@@ -2396,6 +2397,7 @@ usage() {
     printf("Other options:\n");
     printf("  --auto-ppm    Enable spectrum-based RTL auto PPM (6 dB gate; 1 ppm step)\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
+    printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
     printf(" Example: dsd-neo -fZ -M M17:9:DSD-neo:arancormonk -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
@@ -2900,6 +2902,11 @@ main(int argc, char** argv) {
         const char* calc_start_cli = NULL;
 
         for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
+                opts.rtltcp_autotune = 1;
+                setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
+                continue;
+            }
             if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {
                 calc_csv_cli = argv[++i];
                 continue;
@@ -2988,6 +2995,9 @@ main(int argc, char** argv) {
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--auto-ppm") == 0) {
                 continue; /* already consumed above */
+            }
+            if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
+                continue;
             }
             if (strcmp(argv[i], "--auto-ppm-snr") == 0) {
                 if (i + 1 < argc) {

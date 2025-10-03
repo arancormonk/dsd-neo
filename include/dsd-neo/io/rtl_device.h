@@ -50,7 +50,7 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
-                                         int combine_rotate_enabled);
+                                         int combine_rotate_enabled, int autotune_enabled);
 
 /**
  * @brief Destroy an RTL-SDR device and free resources.
@@ -190,6 +190,11 @@ int rtl_device_set_bias_tee(struct rtl_device* dev, int on);
  * attempted later in the normal initialization sequence.
  */
 void rtl_device_print_offset_capability(struct rtl_device* dev);
+
+/* RTL-TCP networking: enable/disable adaptive buffering at runtime.
+ * No-ops for USB backend. Returns 0 on success. */
+int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
+int rtl_device_get_tcp_autotune(struct rtl_device* dev);
 
 #ifdef __cplusplus
 }

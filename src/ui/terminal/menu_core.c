@@ -1135,6 +1135,38 @@ lbl_rtl_bias(void* v, char* b, size_t n) {
 }
 
 static void
+rtl_toggle_rtltcp_autotune(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    svc_rtltcp_set_autotune(c->opts, c->opts->rtltcp_autotune ? 0 : 1);
+}
+
+static const char*
+lbl_rtl_rtltcp_autotune(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "RTL-TCP Adaptive Networking: %s", (c->opts->rtltcp_autotune ? "On" : "Off"));
+    return b;
+}
+
+static void
+rtl_toggle_auto_ppm(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    svc_rtl_set_auto_ppm(c->opts, c->opts->rtl_auto_ppm ? 0 : 1);
+}
+
+static const char*
+lbl_rtl_auto_ppm(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    int on = c->opts->rtl_auto_ppm ? 1 : 0;
+    /* If stream active, reflect runtime state */
+    if (g_rtl_ctx) {
+        extern int rtl_stream_get_auto_ppm(void);
+        on = rtl_stream_get_auto_ppm();
+    }
+    snprintf(b, n, "Auto-PPM (Spectrum): %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
 ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
     static const NcMenuItem items[] = {
@@ -1157,11 +1189,21 @@ ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
         {.id = "bw", .label = "Set Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
         {.id = "sql", .label = "Set Squelch (dB)...", .help = "More negative -> tighter.", .on_select = rtl_set_sql},
         {.id = "vol", .label = "Set Volume Multiplier...", .help = "0..3 sample scaler.", .on_select = rtl_set_vol},
+        {.id = "auto_ppm",
+         .label = "Auto-PPM (Spectrum)",
+         .label_fn = lbl_rtl_auto_ppm,
+         .help = "Enable/disable spectrum-based auto PPM tracking",
+         .on_select = rtl_toggle_auto_ppm},
         {.id = "bias",
          .label = "Toggle Bias Tee",
          .label_fn = lbl_rtl_bias,
          .help = "Enable/disable 5V bias tee (USB or rtl_tcp)",
          .on_select = rtl_toggle_bias},
+        {.id = "rtltcp_autotune",
+         .label = "RTL-TCP Adaptive Networking",
+         .label_fn = lbl_rtl_rtltcp_autotune,
+         .help = "Enable/disable adaptive buffering for rtl_tcp",
+         .on_select = rtl_toggle_rtltcp_autotune},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }

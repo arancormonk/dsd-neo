@@ -117,6 +117,9 @@ int rtl_stream_set_bias_tee(int on);
  * the RTL stream/device is not available.
  */
 int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
+/* RTL-TCP adaptive networking (0/1) */
+int rtl_stream_get_rtltcp_autotune(void);
+void rtl_stream_set_rtltcp_autotune(int onoff);
 
 /**
  * @brief Get smoothed TED residual (EMA of Gardner error) from demod pipeline.
@@ -196,6 +199,9 @@ int rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, 
 int rtl_stream_auto_ppm_training_active(void);
 /** Get locked auto-PPM value and lock-time SNR/df snapshot, if available. */
 int rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz);
+/** Runtime toggle for auto-PPM (0/1). */
+void rtl_stream_set_auto_ppm(int onoff);
+int rtl_stream_get_auto_ppm(void);
 
 /* Runtime DSP adjustments and feedback hooks */
 /**

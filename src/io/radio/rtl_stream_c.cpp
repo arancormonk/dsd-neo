@@ -49,6 +49,12 @@ void dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
 void dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
 /* Gain query helper implemented in rtl_sdr_fm.cpp */
 int dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
+/* Auto-PPM runtime toggle */
+void dsd_rtl_stream_set_auto_ppm(int onoff);
+int dsd_rtl_stream_get_auto_ppm(void);
+/* RTL-TCP autotune control */
+int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
+int dsd_rtl_stream_get_rtltcp_autotune(void);
 /* Eye-based SNR fallback */
 double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 double dsd_rtl_stream_estimate_snr_qpsk_const(void);
@@ -352,6 +358,16 @@ rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
     return dsd_rtl_stream_auto_ppm_get_lock(ppm, snr_db, df_hz);
 }
 
+extern "C" void
+rtl_stream_set_auto_ppm(int onoff) {
+    dsd_rtl_stream_set_auto_ppm(onoff);
+}
+
+extern "C" int
+rtl_stream_get_auto_ppm(void) {
+    return dsd_rtl_stream_get_auto_ppm();
+}
+
 extern "C" int
 rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
@@ -462,4 +478,14 @@ rtl_stream_get_iq_balance(void) {
     /* implemented in rtl_sdr_fm.cpp as dsd_rtl_stream_get_iq_balance */
     extern int dsd_rtl_stream_get_iq_balance(void);
     return dsd_rtl_stream_get_iq_balance();
+}
+
+extern "C" int
+rtl_stream_get_rtltcp_autotune(void) {
+    return dsd_rtl_stream_get_rtltcp_autotune();
+}
+
+extern "C" void
+rtl_stream_set_rtltcp_autotune(int onoff) {
+    (void)dsd_rtl_stream_set_rtltcp_autotune(onoff);
 }

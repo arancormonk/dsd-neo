@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 /* Networking for rtl_tcp backend */
 #include <arpa/inet.h>
@@ -71,6 +72,7 @@ struct rtl_device {
     std::atomic<int> run;
     int agc_mode; /* cached for TCP backend */
     int bias_tee_on;
+    int tcp_autotune; /* adaptive recv/buffering */
     /* TCP stats (optional) */
     uint64_t tcp_bytes_total;
     uint64_t tcp_bytes_window;
@@ -262,6 +264,28 @@ tcp_connect_host(const char* host, int port) {
         fprintf(stderr, "rtl_tcp: ERROR opening socket\n");
         return -1;
     }
+    /* Best-effort: enable TCP keepalive to detect half-open links */
+    {
+        int opt = 1;
+        (void)setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
+#if defined(TCP_KEEPIDLE)
+        int idle = 15; /* seconds before starting keepalive probes */
+        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+#endif
+#if defined(TCP_KEEPCNT)
+        int cnt = 4; /* number of probes */
+        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+#endif
+#if defined(TCP_KEEPINTVL)
+        int intvl = 5; /* seconds between probes */
+        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+#endif
+#if defined(TCP_USER_TIMEOUT)
+        /* Optional fail-fast if ACKs are not received within timeout (ms) */
+        int uto = 20000; /* 20s */
+        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_USER_TIMEOUT, &uto, sizeof(uto));
+#endif
+    }
     struct hostent* server = gethostbyname(host);
     if (!server) {
         fprintf(stderr, "rtl_tcp: ERROR, no such host as %s\n", host);
@@ -376,10 +400,112 @@ tcp_thread_fn(void* arg) {
             waitall = 0;
         }
     }
+    /* Autotune can override BUFSZ/WAITALL adaptively. Initial state considers env, but
+       each loop consults s->tcp_autotune so UI/runtime toggles take effect live. */
+    int autotune_init = s->tcp_autotune;
+    if (!autotune_init) {
+        const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
+        if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
+            autotune_init = 1;
+            s->tcp_autotune = 1; /* make it observable to loop */
+        }
+    }
+
+    /* Track deltas for adaptive decisions */
+    uint64_t prev_drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
+    uint64_t prev_rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
+    uint64_t prev_res_full = s->reserve_full_events;
+    struct timespec auto_last;
+    clock_gettime(CLOCK_MONOTONIC, &auto_last);
     while (s->run.load() && exitflag == 0) {
+        /* Light backpressure: if ring is nearly full, yield briefly */
+        int autotune = s->tcp_autotune;
+        if (autotune && s->input_ring) {
+            const size_t SLICE = (s->buf_len > 0 ? (size_t)s->buf_len : 16384);
+            size_t free_sp = input_ring_free(s->input_ring);
+            if (free_sp < (SLICE * 2)) {
+                struct timespec ts = {0, 500000}; /* 0.5 ms */
+                nanosleep(&ts, NULL);
+            }
+        }
         ssize_t r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
         if (r <= 0) {
-            break;
+            /* Connection stalled or closed. Attempt auto-reconnect unless shutting down. */
+            if (!s->run.load() || exitflag) {
+                break;
+            }
+            fprintf(stderr, "rtl_tcp: connection lost; attempting to reconnect to %s:%d...\n", s->host, s->port);
+            /* Preserve current device state to replay after reconnect */
+            const uint32_t prev_freq = s->freq;
+            const uint32_t prev_rate = s->rate;
+            const int prev_gain = s->gain;
+            const int prev_agc = s->agc_mode;
+            const int prev_ppm = s->ppm_error;
+            const int prev_direct = s->direct_sampling;
+            const int prev_bias = s->bias_tee_on;
+            const int prev_offset = s->offset_tuning;
+
+            if (s->sockfd >= 0) {
+                shutdown(s->sockfd, SHUT_RDWR);
+                close(s->sockfd);
+                s->sockfd = -1;
+            }
+            /* Backoff loop */
+            int attempt = 0;
+            while (s->run.load() && exitflag == 0) {
+                attempt++;
+                int newsfd = tcp_connect_host(s->host, s->port);
+                if (newsfd >= 0) {
+                    s->sockfd = newsfd;
+                    fprintf(stderr, "rtl_tcp: reconnected on attempt %d.\n", attempt);
+                    /* Reinitialize stream framing and pending state */
+                    rtl_tcp_skip_header(s->sockfd);
+                    s->tcp_pending_len = 0;
+                    /* Replay essential device state to server */
+                    if (prev_freq > 0) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x01, prev_freq);
+                    }
+                    if (prev_rate > 0) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x02, prev_rate);
+                    }
+                    if (prev_agc) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x03, 0); /* tuner auto */
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x08, (uint32_t)env_agc_want());
+                    } else {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x03, 1);
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x04, (uint32_t)prev_gain);
+                    }
+                    if (prev_ppm != 0) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x05, (uint32_t)prev_ppm);
+                    }
+                    if (prev_direct) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x09, (uint32_t)prev_direct);
+                    }
+                    if (prev_offset) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x0A, 1);
+                    }
+                    if (prev_bias) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x0E, 1);
+                    }
+                    /* Resume recv loop */
+                    r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
+                    if (r > 0) {
+                        /* Continue with normal processing */
+                        break;
+                    }
+                    /* Immediate failure: close and retry */
+                    shutdown(s->sockfd, SHUT_RDWR);
+                    close(s->sockfd);
+                    s->sockfd = -1;
+                }
+                int backoff_ms = 200 * (attempt < 10 ? attempt : 10); /* up to ~2s */
+                struct timespec ts = {backoff_ms / 1000, (backoff_ms % 1000) * 1000000L};
+                nanosleep(&ts, NULL);
+            }
+            if (s->sockfd < 0 || r <= 0) {
+                /* Could not reconnect or no data after reconnect; exit */
+                break;
+            }
         }
         uint32_t len = (uint32_t)r;
         /* Stats: bytes in */
@@ -532,7 +658,8 @@ tcp_thread_fn(void* arg) {
             }
         }
 
-        if (s->stats_enabled) {
+        /* Once per ~1s: optional stats print and adaptive tuning */
+        {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             long sec = (long)(now.tv_sec - s->stats_last_ts.tv_sec);
@@ -541,7 +668,7 @@ tcp_thread_fn(void* arg) {
                 sec -= 1;
                 nsec += 1000000000L;
             }
-            if (sec >= 1) {
+            if (s->stats_enabled && sec >= 1) {
                 double dt = (double)sec + (double)nsec / 1e9;
                 double mbps = (double)s->tcp_bytes_window / dt / (1024.0 * 1024.0);
                 double exp_bps = (s->rate > 0) ? (double)(s->rate * 2ULL) : 0.0;
@@ -553,6 +680,66 @@ tcp_thread_fn(void* arg) {
                         (unsigned long long)rdto);
                 s->tcp_bytes_window = 0ULL;
                 s->stats_last_ts = now;
+            }
+            /* Adaptive block ~1s cadence */
+            long a_sec = (long)(now.tv_sec - auto_last.tv_sec);
+            long a_nsec = (long)(now.tv_nsec - auto_last.tv_nsec);
+            if (a_nsec < 0) {
+                a_sec -= 1;
+                a_nsec += 1000000000L;
+            }
+            autotune = s->tcp_autotune;
+            if (autotune && a_sec >= 1) {
+                uint64_t drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
+                uint64_t rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
+                uint64_t resf = s->reserve_full_events;
+                uint64_t d_drops = (drops >= prev_drops) ? (drops - prev_drops) : 0ULL;
+                uint64_t d_rdto = (rdto >= prev_rdto) ? (rdto - prev_rdto) : 0ULL;
+                uint64_t d_resf = (resf >= prev_res_full) ? (resf - prev_res_full) : 0ULL;
+                prev_drops = drops;
+                prev_rdto = rdto;
+                prev_res_full = resf;
+                /* If we're overflowing frequently, shrink BUFSZ and ensure WAITALL=0 */
+                if (d_drops > 0 || d_resf > 0) {
+                    if (BUFSZ > 16384) {
+                        BUFSZ = BUFSZ / 2;
+                        if (BUFSZ < 16384) {
+                            BUFSZ = 16384;
+                        }
+                        unsigned char* nb = (unsigned char*)realloc(u8, BUFSZ);
+                        if (nb) {
+                            u8 = nb;
+                        }
+                    }
+                    waitall = 0;
+                } else if (d_rdto > 5) {
+                    /* Consumer is starved: shrink BUFSZ to deliver smaller, faster packets */
+                    if (BUFSZ > 8192) {
+                        BUFSZ = BUFSZ / 2;
+                        if (BUFSZ < 8192) {
+                            BUFSZ = 8192;
+                        }
+                        unsigned char* nb = (unsigned char*)realloc(u8, BUFSZ);
+                        if (nb) {
+                            u8 = nb;
+                        }
+                    }
+                    waitall = 0;
+                } else {
+                    /* Quiet period: slowly grow BUFSZ up to 64 KiB for efficiency */
+                    if (BUFSZ < 65536) {
+                        size_t nsz = BUFSZ + (BUFSZ / 2);
+                        if (nsz > 65536) {
+                            nsz = 65536;
+                        }
+                        unsigned char* nb = (unsigned char*)realloc(u8, nsz);
+                        if (nb) {
+                            u8 = nb;
+                            BUFSZ = nsz;
+                        }
+                    }
+                }
+                auto_last = now;
             }
         }
     }
@@ -882,8 +1069,8 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
 }
 
 struct rtl_device*
-rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
-                      int combine_rotate_enabled_param) {
+rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int combine_rotate_enabled_param,
+                      int autotune_enabled) {
     if (!input_ring || !host || port <= 0) {
         return NULL;
     }
@@ -903,6 +1090,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->port = port;
     dev->run.store(0);
     dev->agc_mode = 1;
+    dev->tcp_autotune = autotune_enabled ? 1 : 0;
     dev->offset_tuning = 0;
     dev->tcp_pending = NULL;
     dev->tcp_pending_len = 0;
@@ -934,6 +1122,13 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
             dev->stats_enabled = 1;
             clock_gettime(CLOCK_MONOTONIC, &dev->stats_last_ts);
             fprintf(stderr, "rtl_tcp: stats enabled.\n");
+        }
+    }
+    /* Initialize autotune from env if not already enabled by caller */
+    if (!dev->tcp_autotune) {
+        const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
+        if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
+            dev->tcp_autotune = 1;
         }
     }
     return dev;
@@ -1322,4 +1517,27 @@ rtl_device_set_bias_tee(struct rtl_device* dev, int on) {
     fprintf(stderr, "NOTE: librtlsdr built without bias tee API; ignoring bias setting on USB.\n");
     return 0;
 #endif
+}
+
+int
+rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff) {
+    if (!dev) {
+        return -1;
+    }
+    if (dev->backend != 1) {
+        return 0; /* not applicable for USB */
+    }
+    dev->tcp_autotune = onoff ? 1 : 0;
+    return 0;
+}
+
+int
+rtl_device_get_tcp_autotune(struct rtl_device* dev) {
+    if (!dev) {
+        return 0;
+    }
+    if (dev->backend != 1) {
+        return 0;
+    }
+    return dev->tcp_autotune ? 1 : 0;
 }
