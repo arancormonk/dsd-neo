@@ -2482,7 +2482,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->p25_cc_freq = cc_freq;
                 long neigh_a[1] = {state->p25_cc_freq};
                 p25_sm_on_neighbor_update(opts, state, neigh_a, 1);
-                state->p25_cc_is_tdma = 1; // flag on for CC tuning purposes when system is qpsk
+                state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
 
                 // Only update system identity and potentially reset IDEN tables when
                 // values are sane (non-zero) and we have a valid frequency mapping.
@@ -2531,7 +2531,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->p25_cc_freq = nf1;
                 long neigh_b[2] = {nf1, nf2};
                 p25_sm_on_neighbor_update(opts, state, neigh_b, 2);
-                state->p25_cc_is_tdma = 1;    //flag on for CC tuning purposes when system is qpsk
+                state->p25_sys_is_tdma = 1;   // system carries Phase 2 voice (TDMA present)
                 if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
                     if ((lwacn != 0 || lsysid != 0)
                         && ((state->p2_wacn != 0 || state->p2_sysid != 0)

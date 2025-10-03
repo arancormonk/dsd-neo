@@ -73,11 +73,12 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
             return 0;
         }
     } else {
-        // Fallback: if the control channel is TDMA but we have not yet seen
-        // an IDEN_UP_TDMA for this iden, assume 2 slots/carrier. This avoids
-        // early mis-tunes where a TDMA grant arrives before the IDEN table is
-        // populated, which would otherwise be treated as FDMA (denom=1).
-        if (state->p25_cc_is_tdma == 1) {
+        // Fallback: if the system is known to carry Phase 2 (TDMA) voice but
+        // we have not yet seen an IDEN_UP_TDMA for this iden, assume 2
+        // slots/carrier. This avoids early mis-tunes where a TDMA grant
+        // arrives before the IDEN table is populated, which would otherwise be
+        // treated as FDMA (denom=1).
+        if (state->p25_sys_is_tdma == 1) {
             denom = 2;
             if (opts && opts->verbose > 1) {
                 fprintf(stderr, "\n  P25 FREQ: iden %d tdma unknown; fallback denom=2 (P2 CC)", iden);
@@ -145,7 +146,7 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
         if (type >= 0 && type <= 15) {
             denom = slots_per_carrier[type];
         }
-    } else if (state->p25_cc_is_tdma == 1) {
+    } else if (state->p25_sys_is_tdma == 1) {
         // Conservative fallback when TDMA IDEN not yet learned
         denom = 2;
     }

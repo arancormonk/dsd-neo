@@ -62,8 +62,8 @@ main(void) {
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
 
-    // Control channel is TDMA; IDEN TDMA unknown for id=1
-    st.p25_cc_is_tdma = 1;
+    // System carries TDMA voice; IDEN TDMA unknown for id=1
+    st.p25_sys_is_tdma = 1;
     int id = 1;
     st.p25_chan_tdma[id] = 0;             // unknown
     st.p25_chan_type[id] = 4;             // type doesn't matter without tdma flag

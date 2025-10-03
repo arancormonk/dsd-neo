@@ -927,7 +927,8 @@ typedef struct {
     uint8_t p25_iden_trust[16];
 
     //p25 frequency storage for trunking and display in ncurses
-    int p25_cc_is_tdma; //flag to tell us that the P25 control channel is TDMA so we can change symbol rate when required
+    int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)
+    int p25_sys_is_tdma; // system hint: 1 when P25p2 voice observed (TDMA present)
 
     // P25 CC hunting candidates discovered from RFSS/Adjacent/Network messages
     int p25_cc_cand_count;

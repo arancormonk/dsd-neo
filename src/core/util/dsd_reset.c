@@ -191,6 +191,10 @@ resetState(dsd_state* state) {
     memset(state->p25_aff_rid, 0, sizeof(state->p25_aff_rid));
     memset(state->p25_aff_last_seen, 0, sizeof(state->p25_aff_last_seen));
 
+    // Reset P25 CC/system TDMA hints
+    state->p25_cc_is_tdma = 0;
+    state->p25_sys_is_tdma = 0;
+
     // Reset P25 Group Affiliation table
     state->p25_ga_count = 0;
     memset(state->p25_ga_rid, 0, sizeof(state->p25_ga_rid));

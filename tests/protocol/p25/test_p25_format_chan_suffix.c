@@ -56,11 +56,11 @@ main(void) {
     p25_format_chan_suffix(&st2, ch, -1, buf, sizeof buf);
     rc |= expect_eq_str("fdma suffix empty", buf, "");
 
-    // Case 3: CC is TDMA but IDEN TDMA unknown → fallback denom=2
+    // Case 3: System has Phase 2 TDMA voice but IDEN TDMA unknown → fallback denom=2
     dsd_state st3;
     memset(&st3, 0, sizeof st3);
     st3.p25_chan_tdma[id] = 0; // unknown
-    st3.p25_cc_is_tdma = 1;
+    st3.p25_sys_is_tdma = 1;
     ch = (uint16_t)((id << 12) | 0x0007); // raw 7 -> FDMA 3, slot 2 (1-based)
     memset(buf, 0, sizeof buf);
     p25_format_chan_suffix(&st3, ch, -1, buf, sizeof buf);
