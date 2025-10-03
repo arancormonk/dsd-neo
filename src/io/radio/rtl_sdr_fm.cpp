@@ -1982,16 +1982,9 @@ configure_from_env_and_opts(dsd_opts* opts) {
         demod.cqpsk_rrc_span_syms = v;
     }
 
-    /* FM/C4FM amplitude AGC (pre-discriminator): default on for FM-like digital modes
-       such as P25 P1, DMR, NXDN, dPMR, ProVoice; off for CQPSK (P25 P2) by default. */
+    /* FM/C4FM amplitude AGC (pre-discriminator): default OFF for all modes.
+       Users can enable via env `DSD_NEO_FM_AGC=1` or the UI toggle. */
     int default_fm_agc = 0;
-    if (opts) {
-        default_fm_agc =
-            (opts->frame_p25p1 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
-             || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->analog_only == 1)
-                ? 1
-                : 0;
-    }
     demod.fm_agc_enable = cfg->fm_agc_is_set ? (cfg->fm_agc_enable != 0) : default_fm_agc;
     demod.fm_agc_target_rms = cfg->fm_agc_target_is_set ? cfg->fm_agc_target_rms : 10000;
     demod.fm_agc_min_rms = cfg->fm_agc_min_is_set ? cfg->fm_agc_min_rms : 2000;

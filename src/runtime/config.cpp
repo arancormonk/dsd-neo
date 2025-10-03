@@ -197,7 +197,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     /* FM/C4FM amplitude AGC (pre-discriminator) */
     const char* fm_agc = getenv("DSD_NEO_FM_AGC");
     c.fm_agc_is_set = env_is_set(fm_agc);
-    c.fm_agc_enable = c.fm_agc_is_set ? (atoi(fm_agc) != 0) : 0; /* default decided by mode later */
+    c.fm_agc_enable = c.fm_agc_is_set ? (atoi(fm_agc) != 0) : 0; /* default off unless overridden */
 
     const char* fm_tgt = getenv("DSD_NEO_FM_AGC_TARGET");
     c.fm_agc_target_is_set = env_is_set(fm_tgt);

@@ -94,8 +94,8 @@ extern "C" {
  * FM/C4FM amplitude stabilization (pre-discriminator)
  * - DSD_NEO_FM_AGC
  *     Enable a constant-envelope limiter/AGC on complex I/Q before FM discrimination. Helps stabilize
- *     RTL-SDR amplitude bounce (e.g., +/-3 dB) that can raise P25 P1 error rates. Default: on for RO2/digital.
- *     Values: 1 enable, 0 disable.
+ *     RTL-SDR amplitude bounce (e.g., +/-3 dB) that can raise P25 P1 error rates.
+ *     Default: off for all modes. Values: 1 enable, 0 disable.
  * - DSD_NEO_FM_AGC_TARGET
  *     Target RMS amplitude of the complex envelope |z| in int16 units after decimation. Typical 8000..12000.
  *     Default: 10000.

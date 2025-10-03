@@ -179,7 +179,7 @@ cmake --build build/dev-release --target uninstall
     `DSD_NEO_TED=1`, `DSD_NEO_TED_SPS=<int>`, `DSD_NEO_TED_GAIN=<Q20>`, `DSD_NEO_TED_FORCE=1`.
 
 - FM/C4FM stabilization:
-  - Env: `DSD_NEO_FM_AGC=1`, `DSD_NEO_FM_AGC_TARGET/MIN/ALPHA_UP/ALPHA_DOWN`,
+  - Env: `DSD_NEO_FM_AGC=1` (default off), `DSD_NEO_FM_AGC_TARGET/MIN/ALPHA_UP/ALPHA_DOWN`,
     `DSD_NEO_FM_LIMITER=1` (constant‑envelope limiter),
     `DSD_NEO_IQ_DC_BLOCK=1`, `DSD_NEO_IQ_DC_SHIFT=<k>`.
 
