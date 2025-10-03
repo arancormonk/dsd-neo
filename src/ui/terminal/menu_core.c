@@ -993,6 +993,61 @@ io_toggle_cosine(void* vctx) {
 }
 
 static void
+io_set_input_volume(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    int m = c->opts->input_volume_multiplier;
+    if (m < 1) {
+        m = 1;
+    }
+    if (m > 16) {
+        m = 16;
+    }
+    if (ui_prompt_int_prefill("Input Volume Multiplier (1..16)", m, &m)) {
+        if (m < 1) {
+            m = 1;
+        }
+        if (m > 16) {
+            m = 16;
+        }
+        c->opts->input_volume_multiplier = m;
+        ui_statusf("Input Volume set to %dX", m);
+    }
+}
+
+static void
+io_input_vol_up(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    int m = c->opts->input_volume_multiplier;
+    if (m < 16) {
+        m++;
+    }
+    c->opts->input_volume_multiplier = m;
+    ui_statusf("Input Volume: %dX", m);
+}
+
+static void
+io_input_vol_dn(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    int m = c->opts->input_volume_multiplier;
+    if (m > 1) {
+        m--;
+    }
+    c->opts->input_volume_multiplier = m;
+    ui_statusf("Input Volume: %dX", m);
+}
+
+static const char*
+lbl_input_volume(void* vctx, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)vctx;
+    int m = c->opts->input_volume_multiplier;
+    if (m < 1) {
+        m = 1;
+    }
+    snprintf(b, n, "Input Volume: %dX", m);
+    return b;
+}
+
+static void
 io_toggle_p25_rrc(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     c->opts->p25_c4fm_rrc_fixed = c->opts->p25_c4fm_rrc_fixed ? 0 : 1;
@@ -1776,6 +1831,19 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
          .on_select = io_set_udp_out},
         {.id = "gain_d", .label = "Set Digital Output Gain...", .help = "0=auto; 1..50.", .on_select = io_set_gain_dig},
         {.id = "gain_a", .label = "Set Analog Output Gain...", .help = "0..100.", .on_select = io_set_gain_ana},
+        {.id = "in_vol_set",
+         .label = "Set Input Volume...",
+         .label_fn = lbl_input_volume,
+         .help = "Scale non-RTL inputs by N (1..16).",
+         .on_select = io_set_input_volume},
+        {.id = "in_vol_up",
+         .label = "Input Volume +1X",
+         .help = "Increase non-RTL input gain.",
+         .on_select = io_input_vol_up},
+        {.id = "in_vol_dn",
+         .label = "Input Volume -1X",
+         .help = "Decrease non-RTL input gain.",
+         .on_select = io_input_vol_dn},
         {.id = "monitor",
          .label = "Toggle Source Audio Monitor",
          .label_fn = lbl_monitor,

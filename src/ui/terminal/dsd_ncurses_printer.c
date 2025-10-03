@@ -2856,6 +2856,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (opts->use_rigctl == 1) {
             printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
         }
+        printw(" IV: %iX;", opts->input_volume_multiplier);
         printw("\n");
     }
 
@@ -2864,6 +2865,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (opts->use_rigctl == 1) {
             printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
         }
+        printw(" IV: %iX;", opts->input_volume_multiplier);
         printw("\n");
     }
 
@@ -2885,6 +2887,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (opts->use_rigctl == 1) {
             printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
         }
+        printw(" IV: %iX;", opts->input_volume_multiplier);
         printw("\n");
     }
 
@@ -2897,11 +2900,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("Pkts:%llu Drops:%llu", (unsigned long long)opts->udp_in_packets,
                    (unsigned long long)opts->udp_in_drops);
         }
+        printw(" IV: %iX;", opts->input_volume_multiplier);
         printw("\n");
     }
 
     if (opts->audio_in_type == 2) {
-        printw("| WAV Audio Input: %s; %d kHz; \n", opts->audio_in_dev, opts->wav_sample_rate);
+        printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate);
+        printw(" IV: %iX;\n", opts->input_volume_multiplier);
     }
 
     if (opts->audio_in_type == 1) {

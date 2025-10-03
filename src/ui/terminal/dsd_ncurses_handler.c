@@ -1169,12 +1169,26 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
     }
 
-    if (c == DSD_KEY_RTL_VOL_CYCLE && opts->audio_in_type == 3) //'v' key, cycle rtl volume multiplier, when active
+    if (c == DSD_KEY_RTL_VOL_CYCLE) //'v' key: cycle volume multiplier
     {
-        if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
-            opts->rtl_volume_multiplier++;
+        if (opts->audio_in_type == 3) {
+            // RTL input volume multiplier
+            if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
+                opts->rtl_volume_multiplier++;
+            } else {
+                opts->rtl_volume_multiplier = 1;
+            }
+            snprintf(state->ui_msg, sizeof state->ui_msg, "RTL Volume: %dX", opts->rtl_volume_multiplier);
+            state->ui_msg_expire = time(NULL) + 2;
         } else {
-            opts->rtl_volume_multiplier = 1;
+            // Non-RTL input volume multiplier (Pulse/WAV/OSS/TCP/UDP)
+            if (opts->input_volume_multiplier == 1 || opts->input_volume_multiplier == 2) {
+                opts->input_volume_multiplier++;
+            } else {
+                opts->input_volume_multiplier = 1;
+            }
+            snprintf(state->ui_msg, sizeof state->ui_msg, "Input Volume: %dX", opts->input_volume_multiplier);
+            state->ui_msg_expire = time(NULL) + 2;
         }
     }
 

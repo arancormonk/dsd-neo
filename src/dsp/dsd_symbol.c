@@ -374,6 +374,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         if (opts->audio_in_type == 0) //pulse audio
         {
             pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+            if (opts->input_volume_multiplier > 1) {
+                int v = (int)sample * opts->input_volume_multiplier;
+                if (v > 32767) {
+                    v = 32767;
+                } else if (v < -32768) {
+                    v = -32768;
+                }
+                sample = (short)v;
+            }
         }
 
         else if (opts->audio_in_type == 5) //OSS
@@ -385,6 +394,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         else if (opts->audio_in_type == 1) //won't work in windows, needs posix pipe (mintty)
         {
             result = sf_read_short(opts->audio_in_file, &sample, 1);
+            if (opts->input_volume_multiplier > 1) {
+                int v = (int)sample * opts->input_volume_multiplier;
+                if (v > 32767) {
+                    v = 32767;
+                } else if (v < -32768) {
+                    v = -32768;
+                }
+                sample = (short)v;
+            }
             if (result == 0) {
                 sf_close(opts->audio_in_file);
                 cleanupAndExit(opts, state);
@@ -394,6 +412,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         //since we can not worry about getch/stdin conflict
         else if (opts->audio_in_type == 2) {
             result = sf_read_short(opts->audio_in_file, &sample, 1);
+            if (opts->input_volume_multiplier > 1) {
+                int v = (int)sample * opts->input_volume_multiplier;
+                if (v > 32767) {
+                    v = 32767;
+                } else if (v < -32768) {
+                    v = -32768;
+                }
+                sample = (short)v;
+            }
             if (result == 0) {
 
                 sf_close(opts->audio_in_file);
@@ -429,6 +456,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         else if (opts->audio_in_type == 8) {
 #ifdef __CYGWIN__
             result = sf_read_short(opts->tcp_file_in, &sample, 1);
+            if (opts->input_volume_multiplier > 1) {
+                int v = (int)sample * opts->input_volume_multiplier;
+                if (v > 32767) {
+                    v = 32767;
+                } else if (v < -32768) {
+                    v = -32768;
+                }
+                sample = (short)v;
+            }
             if (result == 0) {
                 fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in 3 seconds.\n");
                 sample = 0;
@@ -482,6 +518,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
 #else
             result = sf_read_short(opts->tcp_file_in, &sample, 1);
+            if (opts->input_volume_multiplier > 1) {
+                int v = (int)sample * opts->input_volume_multiplier;
+                if (v > 32767) {
+                    v = 32767;
+                } else if (v < -32768) {
+                    v = -32768;
+                }
+                sample = (short)v;
+            }
             if (result == 0) {
             TCP_RETRY:
                 if (exitflag == 1) {
@@ -536,6 +581,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             if (!udp_input_read_sample(opts, &sample)) {
                 cleanupAndExit(opts, state);
             }
+            if (opts->input_volume_multiplier > 1) {
+                int v = (int)sample * opts->input_volume_multiplier;
+                if (v > 32767) {
+                    v = 32767;
+                } else if (v < -32768) {
+                    v = -32768;
+                }
+                sample = (short)v;
+            }
         }
 
         //BUG REPORT: 1. DMR Simplex doesn't work with raw wav files. 2. Using the monitor w/ wav file saving may produce undecodable wav files.
@@ -557,9 +611,22 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             state->analog_out[state->analog_sample_counter++] = sample;
 
             if (state->analog_sample_counter == 960) {
-                //get an pwr value if not using the rtl built in version
-                if (opts->audio_in_type != 3 && opts->monitor_input_audio == 1) {
+                //measure input power for non-RTL inputs
+                if (opts->audio_in_type != 3) {
                     opts->rtl_pwr = raw_pwr(state->analog_out, 960, 1);
+                    // Optional: warn on persistently low input level
+                    if (opts->input_warn_db < 0.0) {
+                        double db = pwr_to_dB(opts->rtl_pwr);
+                        time_t now = time(NULL);
+                        if (db <= opts->input_warn_db
+                            && (opts->last_input_warn_time == 0
+                                || (int)(now - opts->last_input_warn_time) >= opts->input_warn_cooldown_sec)) {
+                            LOG_WARNING(
+                                "Input level low (%.1f dBFS). Consider raising sender gain or use --input-volume.\n",
+                                db);
+                            opts->last_input_warn_time = now;
+                        }
+                    }
                 }
 
                 //raw wav file saving -- only write when not NXDN, dPMR, or M17 due to noise that can cause tons of false positives when no sync

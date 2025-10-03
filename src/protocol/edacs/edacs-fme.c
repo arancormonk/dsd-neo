@@ -226,16 +226,43 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         if (opts->audio_in_type == 0) {
             for (i = 0; i < 960; i++) {
                 pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog1[i] = sample;
             }
 
             for (i = 0; i < 960; i++) {
                 pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog2[i] = sample;
             }
 
             for (i = 0; i < 960; i++) {
                 pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog3[i] = sample;
             }
             //this pwr will only work properly (for now) with squelch enabled in SDR++ or other
@@ -264,6 +291,15 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog1[i] = sample;
             }
 
@@ -275,6 +311,15 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog2[i] = sample;
             }
 
@@ -285,6 +330,15 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
+                }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
                 }
                 analog3[i] = sample;
             }
@@ -299,17 +353,44 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 if (!udp_input_read_sample(opts, &sample)) {
                     sample = 0;
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog1[i] = sample;
             }
             for (i = 0; i < 960; i++) {
                 if (!udp_input_read_sample(opts, &sample)) {
                     sample = 0;
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 analog2[i] = sample;
             }
             for (i = 0; i < 960; i++) {
                 if (!udp_input_read_sample(opts, &sample)) {
                     sample = 0;
+                }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
                 }
                 analog3[i] = sample;
             }

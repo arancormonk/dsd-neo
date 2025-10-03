@@ -1493,6 +1493,8 @@ initOpts(dsd_opts* opts) {
     opts->rtl_squelch_level = dB_to_pwr(-110);
     opts->rtl_volume_multiplier =
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
+    // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
+    opts->input_volume_multiplier = 1;
     opts->rtl_udp_port =
         0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
     opts->rtl_bandwidth = 12;   //default is 12, reverted back to normal on this (no inherent benefit)
@@ -1677,6 +1679,11 @@ initOpts(dsd_opts* opts) {
             LOG_NOTICE("DMR TIII: Heuristic LCN fill enabled via DSD_NEO_DMR_T3_HEUR.\n");
         }
     }
+
+    // Low input level warning defaults
+    opts->input_warn_db = -40.0;        // warn if below -40 dBFS
+    opts->input_warn_cooldown_sec = 10; // rate-limit warnings
+    opts->last_input_warn_time = 0;
 
 } //initopts
 
@@ -2310,6 +2317,8 @@ usage() {
 #endif
     // printf ("                (Windows - '\directory\audio file.wav' backslash, not forward slash)\n");
     printf("  -s <rate>     Sample Rate of wav input files (48000 or 96000) Mono only!\n");
+    printf("      --input-volume <N>  Scale non-RTL input samples by N (integer 1..16).\n");
+    printf("      --input-level-warn-db <dB>  Warn if input power below dBFS (default -40).\n");
 #ifdef __CYGWIN__
     printf("  -o <device>   Audio output device (default is /dev/dsp)\n");
     printf("                pulse for pulse audio (will require pactl running in Cygwin)\n");
@@ -2900,6 +2909,9 @@ main(int argc, char** argv) {
         const char* calc_ccf_cli = NULL;
         const char* calc_ccl_cli = NULL;
         const char* calc_start_cli = NULL;
+        // New: input volume and low-level warn threshold (dBFS)
+        const char* input_vol_cli = NULL;
+        const char* input_warn_db_cli = NULL;
 
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
@@ -2930,6 +2942,14 @@ main(int argc, char** argv) {
             if (strcmp(argv[i], "--auto-ppm") == 0) {
                 opts.rtl_auto_ppm = 1;
                 setenv("DSD_NEO_AUTO_PPM", "1", 1);
+                continue;
+            }
+            if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {
+                input_vol_cli = argv[++i];
+                continue;
+            }
+            if (strcmp(argv[i], "--input-level-warn-db") == 0 && i + 1 < argc) {
+                input_warn_db_cli = argv[++i];
                 continue;
             }
             if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {
@@ -2982,6 +3002,62 @@ main(int argc, char** argv) {
             int rc = run_t3_lcn_calc_from_csv(calc_csv_env);
             return rc;
         }
+
+        // Apply input volume and warn threshold if provided via CLI
+        if (input_vol_cli) {
+            int mv = atoi(input_vol_cli);
+            if (mv < 1) {
+                mv = 1;
+            }
+            if (mv > 16) {
+                mv = 16;
+            }
+            opts.input_volume_multiplier = mv;
+            char b[16];
+            snprintf(b, sizeof b, "%d", mv);
+            setenv("DSD_NEO_INPUT_VOLUME", b, 1);
+            LOG_NOTICE("Input volume multiplier: %dx\n", mv);
+        } else {
+            const char* ev = getenv("DSD_NEO_INPUT_VOLUME");
+            if (ev && *ev) {
+                int mv = atoi(ev);
+                if (mv < 1) {
+                    mv = 1;
+                }
+                if (mv > 16) {
+                    mv = 16;
+                }
+                opts.input_volume_multiplier = mv;
+                LOG_NOTICE("Input volume multiplier (env): %dx\n", mv);
+            }
+        }
+        if (input_warn_db_cli) {
+            double thr = atof(input_warn_db_cli);
+            if (thr < -200.0) {
+                thr = -200.0;
+            }
+            if (thr > 0.0) {
+                thr = 0.0;
+            }
+            opts.input_warn_db = thr;
+            char b[32];
+            snprintf(b, sizeof b, "%.1f", thr);
+            setenv("DSD_NEO_INPUT_WARN_DB", b, 1);
+            LOG_NOTICE("Low input warning threshold: %.1f dBFS\n", thr);
+        } else {
+            const char* ew = getenv("DSD_NEO_INPUT_WARN_DB");
+            if (ew && *ew) {
+                double thr = atof(ew);
+                if (thr < -200.0) {
+                    thr = -200.0;
+                }
+                if (thr > 0.0) {
+                    thr = 0.0;
+                }
+                opts.input_warn_db = thr;
+                LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", thr);
+            }
+        }
     }
 
     // If user provided no CLI args, offer an interactive bootstrap
@@ -2997,6 +3073,18 @@ main(int argc, char** argv) {
                 continue; /* already consumed above */
             }
             if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
+                continue;
+            }
+            if (strcmp(argv[i], "--input-volume") == 0) {
+                if (i + 1 < argc) {
+                    i++;
+                }
+                continue;
+            }
+            if (strcmp(argv[i], "--input-level-warn-db") == 0) {
+                if (i + 1 < argc) {
+                    i++;
+                }
                 continue;
             }
             if (strcmp(argv[i], "--auto-ppm-snr") == 0) {

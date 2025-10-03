@@ -381,6 +381,8 @@ typedef struct {
     int rtl_gain_value;
     int rtl_squelch_level;
     int rtl_volume_multiplier;
+    /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
+    int input_volume_multiplier;
     int rtl_udp_port;
     int rtl_bandwidth;
     int rtl_bias_tee; /* 1 to enable RTL-SDR bias tee (if supported) */
@@ -393,6 +395,12 @@ typedef struct {
     /* Spectrum-based RTL auto-PPM SNR threshold in dB; <=0 means default. */
     float rtl_auto_ppm_snr_db;
     int monitor_input_audio;
+    /* Warn when input level is below this dBFS threshold (e.g., -40). */
+    double input_warn_db;
+    /* Minimum seconds between repeated low-level warnings. */
+    int input_warn_cooldown_sec;
+    /* Last time a low-level input warning was emitted. */
+    time_t last_input_warn_time;
     int analog_only;
     int pulse_raw_rate_in;
     int pulse_raw_rate_out;

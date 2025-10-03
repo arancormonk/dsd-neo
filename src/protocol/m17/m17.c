@@ -13,6 +13,7 @@
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_input.h>
@@ -1906,6 +1907,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (j = 0; j < dec; j++) {
                     pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 voice1[i] = sample; //only store the 6th sample
             }
 
@@ -1913,6 +1923,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+                    }
+                    if (opts->input_volume_multiplier > 1) {
+                        int v = (int)sample * opts->input_volume_multiplier;
+                        if (v > 32767) {
+                            v = 32767;
+                        } else if (v < -32768) {
+                            v = -32768;
+                        }
+                        sample = (short)v;
                     }
                     voice2[i] = sample; //only store the 6th sample
                 }
@@ -1925,6 +1944,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     result = sf_read_short(opts->audio_in_file, &sample, 1);
+                }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
                 }
                 voice1[i] = sample;
                 if (result == 0) {
@@ -1940,6 +1968,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         result = sf_read_short(opts->audio_in_file, &sample, 1);
+                    }
+                    if (opts->input_volume_multiplier > 1) {
+                        int v = (int)sample * opts->input_volume_multiplier;
+                        if (v > 32767) {
+                            v = 32767;
+                        } else if (v < -32768) {
+                            v = -32768;
+                        }
+                        sample = (short)v;
                     }
                     voice2[i] = sample;
                     if (result == 0) {
@@ -1959,6 +1996,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (j = 0; j < dec; j++) {
                     read(opts->audio_in_fd, &sample, 2);
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 voice1[i] = sample;
             }
 
@@ -1966,6 +2012,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         read(opts->audio_in_fd, &sample, 2);
+                    }
+                    if (opts->input_volume_multiplier > 1) {
+                        int v = (int)sample * opts->input_volume_multiplier;
+                        if (v > 32767) {
+                            v = 32767;
+                        } else if (v < -32768) {
+                            v = -32768;
+                        }
+                        sample = (short)v;
                     }
                     voice2[i] = sample;
                 }
@@ -1978,6 +2033,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
                 }
                 voice1[i] = sample;
                 if (result == 0) {
@@ -1993,6 +2057,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                    }
+                    if (opts->input_volume_multiplier > 1) {
+                        int v = (int)sample * opts->input_volume_multiplier;
+                        if (v > 32767) {
+                            v = 32767;
+                        } else if (v < -32768) {
+                            v = -32768;
+                        }
+                        sample = (short)v;
                     }
                     voice2[i] = sample;
                     if (result == 0) {
@@ -2013,6 +2086,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         result = 0;
                     }
                 }
+                if (opts->input_volume_multiplier > 1) {
+                    int v = (int)sample * opts->input_volume_multiplier;
+                    if (v > 32767) {
+                        v = 32767;
+                    } else if (v < -32768) {
+                        v = -32768;
+                    }
+                    sample = (short)v;
+                }
                 voice1[i] = sample;
                 if (result == 0) {
                     fprintf(stderr, "UDP input stopped.\n");
@@ -2027,6 +2109,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         if (!udp_input_read_sample(opts, &sample)) {
                             result = 0;
                         }
+                    }
+                    if (opts->input_volume_multiplier > 1) {
+                        int v = (int)sample * opts->input_volume_multiplier;
+                        if (v > 32767) {
+                            v = 32767;
+                        } else if (v < -32768) {
+                            v = -32768;
+                        }
+                        sample = (short)v;
                     }
                     voice2[i] = sample;
                     if (result == 0) {
@@ -2091,6 +2182,17 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         //read in power value for vox function; use mean power (RMS^2 proxy) for consistency with rtl_pwr
         if (opts->audio_in_type != 3) {
             opts->rtl_pwr = raw_pwr(voice1, nsam, 1);
+            if (opts->input_warn_db < 0.0) {
+                double db = pwr_to_dB(opts->rtl_pwr);
+                time_t now = time(NULL);
+                if (db <= opts->input_warn_db
+                    && (opts->last_input_warn_time == 0
+                        || (int)(now - opts->last_input_warn_time) >= opts->input_warn_cooldown_sec)) {
+                    LOG_WARNING("Input level low (%.1f dBFS). Consider raising sender gain or use --input-volume.\n",
+                                db);
+                    opts->last_input_warn_time = now;
+                }
+            }
         }
 
         //low pass filter
