@@ -224,21 +224,54 @@ struct RtlSdrInternals {
 static struct RtlSdrInternals* g_stream = NULL;
 
 /*
- * Pick a hardware tuner bandwidth. Default 0 lets the driver choose.
- * Optionally override via env DSD_NEO_TUNER_BW_HZ with a positive integer.
+ * Pick a hardware tuner bandwidth.
+ *
+ * Priority:
+ *  - If env DSD_NEO_TUNER_BW_HZ is set:
+ *      - value "auto" or 0 => return 0 (driver automatic)
+ *      - positive integer => clamp and use that value (in Hz)
+ *  - Otherwise, prefer setting BW ~= capture sample rate to avoid
+ *    overly narrow IF filtering across retunes/hops.
+ *  - As a conservative fallback, derive from DSP bandwidth with a
+ *    safety margin and clamp to practical bounds.
  */
 static uint32_t
 choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
-    (void)capture_rate_hz;
-    (void)dsp_bw_hz;
     const char* e = getenv("DSD_NEO_TUNER_BW_HZ");
     if (e && *e) {
+        if (strcasecmp(e, "auto") == 0) {
+            return 0; /* driver automatic */
+        }
         long v = strtol(e, NULL, 10);
-        if (v >= 0 && v <= 10000000) {
-            return (uint32_t)v;
+        if (v >= 0 && v <= 20000000) {
+            return (uint32_t)v; /* allow explicit 0 => auto */
         }
     }
-    return 0; /* auto */
+
+    /* If we have a valid capture rate, use that directly. Many
+       applications (e.g., rtl_433) set tuner BW ~= sample rate. */
+    if (capture_rate_hz >= 225000 && capture_rate_hz <= 5000000) {
+        return capture_rate_hz;
+    }
+
+    /* Fallback: derive from DSP bandwidth with margin (x8),
+       clamped to a practical range. */
+    uint32_t bw = 0;
+    if (dsp_bw_hz > 0) {
+        uint64_t hinted = (uint64_t)dsp_bw_hz * 8ULL; /* generous guard */
+        if (hinted < 100000ULL) {
+            hinted = 100000ULL; /* min 100 kHz */
+        }
+        if (hinted > 3000000ULL) {
+            hinted = 3000000ULL; /* max 3 MHz */
+        }
+        bw = (uint32_t)hinted;
+    }
+    if (bw == 0) {
+        /* Last-resort default */
+        bw = 1200000; /* 1.2 MHz */
+    }
+    return bw;
 }
 
 /**

@@ -928,7 +928,11 @@ verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
     if (r != 0) {
         fprintf(stderr, "WARNING: Failed to set tuner bandwidth to %u Hz.\n", bw_hz);
     } else {
-        fprintf(stderr, "Tuner bandwidth set to %u Hz.\n", bw_hz);
+        if (bw_hz == 0) {
+            fprintf(stderr, "Tuner bandwidth set to auto (driver).\n");
+        } else {
+            fprintf(stderr, "Tuner bandwidth set to %u Hz.\n", bw_hz);
+        }
     }
     return r;
 }
