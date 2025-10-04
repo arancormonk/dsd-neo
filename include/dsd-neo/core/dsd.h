@@ -995,6 +995,8 @@ typedef struct {
     uint16_t p25_patch_key[8]; // Key ID
     uint8_t p25_patch_alg[8];  // ALG (vendor-specific)
     uint8_t p25_patch_ssn[8];  // SSN
+    // Whether p25_patch_key[i] has been explicitly set by a GRG command
+    uint8_t p25_patch_key_valid[8];
 
     // P25 affiliated RIDs tracking (simple fixed-size table)
     // Tracks up to 256 recent unit registrations (RIDs) with last-seen time for aging.

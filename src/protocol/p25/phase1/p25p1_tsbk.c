@@ -219,7 +219,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
             int active = (tga & 0x1) ? 1 : 0;
             p25_patch_update(state, sg, is_patch, active);
-            p25_patch_set_kas(state, sg, -1, -1, ssn);
+            // TSBK form carries KEY and SSN; ALG not present here.
+            p25_patch_set_kas(state, sg, key, -1, ssn);
         }
     } else if (protectbit == 0 && err == 0 && (tsbk_byte[0] & 0x3F) == 0x3B) {
         // Network Status Broadcast (Abbreviated)

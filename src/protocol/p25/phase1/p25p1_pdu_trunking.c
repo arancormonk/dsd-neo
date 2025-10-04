@@ -267,7 +267,9 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         }
 
         //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-        if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+        //Override when Harris GRG policy indicates KEY=0000 for this TG/SG
+        if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
+            && !p25_patch_sg_key_is_clear(state, group)) {
             p25_emit_enc_lockout_once(opts, state, 0, group, svc);
             goto SKIPCALL;
         }
@@ -540,7 +542,8 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
             }
 
             //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+            //Harris GRG KEY=0000 policy override: if SG policy is clear, allow tuning
+            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_sg_key_is_clear(state, group)) {
                 p25_emit_enc_lockout_once(opts, state, 0, group, svc);
                 goto SKIPCALL;
             }

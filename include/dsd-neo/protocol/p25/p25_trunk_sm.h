@@ -61,6 +61,13 @@ void p25_patch_clear_sg(dsd_state* state, int sgid);
 // Set optional Key/Alg/SSN context for an SG
 void p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn);
 
+// Return 1 if TG is a WGID within an active SG whose explicitly signaled KEY
+// is 0 (clear). Used to override ENC lockout when Harris GRG commands state
+// clear operation for a patch/regroup.
+int p25_patch_tg_key_is_clear(const dsd_state* state, int tg);
+// Return 1 if an SGID has explicit KEY=0 (clear) policy and is active.
+int p25_patch_sg_key_is_clear(const dsd_state* state, int sgid);
+
 // --- Affiliation (RID) tracking ---
 // Record a RID as affiliated/registered on this system (updates last_seen or adds new entry).
 void p25_aff_register(dsd_state* state, uint32_t rid);

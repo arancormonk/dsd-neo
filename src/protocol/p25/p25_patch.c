@@ -55,6 +55,7 @@ p25_patch_sweep_stale(dsd_state* state) {
                 state->p25_patch_key[w] = state->p25_patch_key[i];
                 state->p25_patch_alg[w] = state->p25_patch_alg[i];
                 state->p25_patch_ssn[w] = state->p25_patch_ssn[i];
+                state->p25_patch_key_valid[w] = state->p25_patch_key_valid[i];
             }
             w++;
         }
@@ -102,6 +103,7 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
     state->p25_patch_last_update[idx] = now;
     state->p25_patch_wgid_count[idx] = 0;
     state->p25_patch_wuid_count[idx] = 0;
+    state->p25_patch_key_valid[idx] = 0;
 }
 
 int
@@ -332,6 +334,7 @@ p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn) {
     }
     if (key >= 0) {
         state->p25_patch_key[idx] = (uint16_t)key;
+        state->p25_patch_key_valid[idx] = 1;
     }
     if (alg >= 0) {
         state->p25_patch_alg[idx] = (uint8_t)alg;
@@ -339,4 +342,60 @@ p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn) {
     if (ssn >= 0) {
         state->p25_patch_ssn[idx] = (uint8_t)(ssn & 0x1F);
     }
+}
+
+// Return 1 if the given talkgroup (assumed WGID) is a member of an active
+// regroup/patch whose policy key has been explicitly signaled as 0 (clear).
+// Returns 0 otherwise.
+int
+p25_patch_tg_key_is_clear(const dsd_state* state, int tg) {
+    if (!state || tg <= 0) {
+        return 0;
+    }
+    // Copy pointer (const) usage only
+    const dsd_state* s = state;
+    time_t now = time(NULL);
+    for (int i = 0; i < s->p25_patch_count && i < 8; i++) {
+        if (!s->p25_patch_active[i]) {
+            continue;
+        }
+        // Ignore stale entries defensively (should be swept by caller periodically)
+        if (s->p25_patch_last_update[i] > 0 && (now - s->p25_patch_last_update[i]) > P25_PATCH_TTL_SECONDS) {
+            continue;
+        }
+        uint8_t cnt = s->p25_patch_wgid_count[i];
+        for (int k = 0; k < cnt && k < 8; k++) {
+            if (s->p25_patch_wgid[i][k] == (uint16_t)tg) {
+                if (s->p25_patch_key_valid[i] && s->p25_patch_key[i] == 0) {
+                    return 1; // explicit KEY=0000 policy for this SG/WG
+                }
+                return 0; // membership found but key not clear (or unknown)
+            }
+        }
+    }
+    return 0;
+}
+
+// Return 1 if the given SGID has an explicitly signaled KEY of 0 (clear) and
+// is currently active. Returns 0 otherwise.
+int
+p25_patch_sg_key_is_clear(const dsd_state* state, int sgid) {
+    if (!state || sgid <= 0) {
+        return 0;
+    }
+    const dsd_state* s = state;
+    time_t now = time(NULL);
+    for (int i = 0; i < s->p25_patch_count && i < 8; i++) {
+        if (!s->p25_patch_active[i]) {
+            continue;
+        }
+        if (s->p25_patch_sgid[i] != (uint16_t)sgid) {
+            continue;
+        }
+        if (s->p25_patch_last_update[i] > 0 && (now - s->p25_patch_last_update[i]) > P25_PATCH_TTL_SECONDS) {
+            continue;
+        }
+        return (s->p25_patch_key_valid[i] && s->p25_patch_key[i] == 0) ? 1 : 0;
+    }
+    return 0;
 }

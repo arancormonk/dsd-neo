@@ -516,7 +516,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+            //Override when Harris GRG policy indicates KEY=0000 for this TG/SG
+            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
+                && !p25_patch_sg_key_is_clear(state, group)) {
                 p25_emit_enc_lockout_once(opts, state, 0, group, svc);
                 goto SKIPCALL;
             }
@@ -853,8 +855,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 goto SKIPCALL;
             }
 
-            //Skip tuning encrypted calls if enc calls are disabled
-            if ((svc1 & 0x40) && (svc2 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+            //Skip tuning encrypted calls if enc calls are disabled (override if either TG has KEY=0000 policy)
+            if ((svc1 & 0x40) && (svc2 & 0x40) && opts->trunk_tune_enc_calls == 0
+                && !p25_patch_tg_key_is_clear(state, group1) && !p25_patch_tg_key_is_clear(state, group2)
+                && !p25_patch_sg_key_is_clear(state, group1) && !p25_patch_sg_key_is_clear(state, group2)) {
                 goto SKIPCALL;
             }
 
@@ -872,12 +876,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int j = 0; j < loop; j++) {
                 //test svc opts for enc to tune or skip
                 if (j == 0) {
-                    if ((svc1 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                    if ((svc1 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group1)
+                        && !p25_patch_sg_key_is_clear(state, group1)) {
                         j++; //skip to next
                     }
                 }
                 if (j == 1) {
-                    if ((svc2 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                    if ((svc2 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group2)
+                        && !p25_patch_sg_key_is_clear(state, group2)) {
                         goto SKIPCALL; //skip to end
                     }
                 }
@@ -1046,8 +1052,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 goto SKIPCALL;
             }
 
-            //Skip tuning encrypted calls if enc calls are disabled
-            if ((so1 & 0x40) && (so2 & 0x40) && (so3 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+            //Skip tuning encrypted calls if enc calls are disabled (override if any TG has KEY=0000 policy)
+            if ((so1 & 0x40) && (so2 & 0x40) && (so3 & 0x40) && opts->trunk_tune_enc_calls == 0
+                && !p25_patch_tg_key_is_clear(state, group1) && !p25_patch_tg_key_is_clear(state, group2)
+                && !p25_patch_tg_key_is_clear(state, group3) && !p25_patch_sg_key_is_clear(state, group1)
+                && !p25_patch_sg_key_is_clear(state, group2) && !p25_patch_sg_key_is_clear(state, group3)) {
                 goto SKIPCALL; //this?
             }
 
@@ -1060,17 +1069,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             for (int j = 0; j < loop; j++) {
                 //test svc opts for enc to tune or skip
                 if (j == 0) {
-                    if ((so1 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                    if ((so1 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group1)
+                        && !p25_patch_sg_key_is_clear(state, group1)) {
                         j++; //skip to next
                     }
                 }
                 if (j == 1) {
-                    if ((so2 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                    if ((so2 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group2)
+                        && !p25_patch_sg_key_is_clear(state, group2)) {
                         j++; //skip to next
                     }
                 }
                 if (j == 2) {
-                    if ((so3 & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                    if ((so3 & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group3)
+                        && !p25_patch_sg_key_is_clear(state, group3)) {
                         goto SKIPCALL; //skip to end
                     }
                 }
@@ -1311,7 +1323,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             //Skip tuning encrypted calls if enc calls are disabled – emit event immediately (once)
-            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0) {
+            //Override when Harris GRG policy indicates KEY=0000 for this TG/SG
+            if ((svc & 0x40) && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
+                && !p25_patch_sg_key_is_clear(state, group)) {
                 p25_emit_enc_lockout_once(opts, state, 0, group, svc);
                 goto SKIPCALL;
             }
@@ -2334,7 +2348,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
                 // Mark TG as ENC LO for visibility in UI/event log
                 int ttg = gr;
-                if (ttg != 0) {
+                if (ttg != 0 && !p25_patch_tg_key_is_clear(state, ttg) && !p25_patch_sg_key_is_clear(state, ttg)) {
                     // Mark and emit once via centralized helper
                     p25_emit_enc_lockout_once(opts, state, (uint8_t)slot, ttg, /*svc_bits*/ 0);
                 }
@@ -2438,9 +2452,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             // VPDU fallback for UU_V: encrypted per SVC and ENC lockout enabled
             if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-                // Mark target as ENC LO (use same table for display)
+                // Mark target as ENC LO (use same table for display), unless GRG policy is KEY=0000
                 int ttg = gr;
-                if (ttg != 0) {
+                if (ttg != 0 && !p25_patch_tg_key_is_clear(state, ttg) && !p25_patch_sg_key_is_clear(state, ttg)) {
                     // Mark and emit once via centralized helper
                     p25_emit_enc_lockout_once(opts, state, (uint8_t)slot, ttg, /*svc_bits*/ 0);
                 }

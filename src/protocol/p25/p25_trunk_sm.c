@@ -475,12 +475,20 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
         return;
     }
     if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: block tune TG=%u (encrypted)\n", (unsigned)tg);
+        // Harris regroup/patch override: if GRG policy signals KEY=0000 (clear)
+        // for this WGID, do not block tuning even if SVC marks it encrypted.
+        if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
+            if (opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: ENC lockout override TG=%u (Harris GRG KEY=0000)\n", (unsigned)tg);
+            }
+        } else {
+            if (opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: block tune TG=%u (encrypted)\n", (unsigned)tg);
+            }
+            // Centralized, once-per-TG emit
+            p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
+            return;
         }
-        // Centralized, once-per-TG emit
-        p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
-        return;
     }
 
     // Group list mode check

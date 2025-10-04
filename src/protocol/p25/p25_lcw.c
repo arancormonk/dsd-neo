@@ -208,8 +208,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                         if (state->tg_hold != 0 && state->tg_hold != group1) {
                             // skip retune due to TG hold mismatch
                         } else {
-                            // ENC gating from service options
-                            if ((lc_svcopt & 0x40) && opts->trunk_tune_enc_calls == 0) {
+                            // ENC gating from service options, with Harris GRG KEY=0000 override
+                            if ((lc_svcopt & 0x40) && opts->trunk_tune_enc_calls == 0
+                                && !p25_patch_tg_key_is_clear(state, group1)) {
                                 // skip encrypted when not allowed
                             } else {
                                 // Dispatch to SM; SM will compute frequency and decide if a tune is appropriate
