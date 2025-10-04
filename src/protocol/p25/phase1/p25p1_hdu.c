@@ -207,8 +207,8 @@ void
 processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_hdu++;
 
-    // Mark recent activity when HDU is received to cover call setup.
-    state->last_vc_sync_time = time(NULL);
+    // Defer last_vc_sync_time refresh until after FEC success to avoid
+    // extending hangtime due to false HDU decodes during signal loss.
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
@@ -271,6 +271,8 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         // 9 errors of 4 bits.
         update_error_stats(&state->p25_heuristics, 20 * 6 + 16 * 6, 9 * 4);
     } else {
+        // Passed FEC checks: mark recent activity for trunk hangtime tracking.
+        state->last_vc_sync_time = time(NULL);
         // The hex words passed the Reed-Solomon check. This means that very likely they are correct and we
         // can trust that the digitizer did a good job with them. In other words, each analog value was
         // correctly assigned to a dibit. This is extremely useful information for the digitizer and we are

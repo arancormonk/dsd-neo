@@ -31,9 +31,8 @@ void
 processLDU1(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_ldu1++;
 
-    // Mark recent voice activity so trunk hangtime logic does not bounce
-    // back to the control channel mid-call.
-    state->last_vc_sync_time = time(NULL);
+    // Do not refresh last_vc_sync_time until after FEC checks succeed to
+    // avoid extending hangtime due to false decodes when signal is lost.
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
@@ -377,6 +376,9 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         // were 7 errors of 2 bits.
         update_error_stats(&state->p25_heuristics, 12 * 6 + 12 * 6, 7 * 2);
     } else {
+        // Passed FEC checks: mark recent voice activity for trunk hangtime
+        // tracking so we don't prematurely return to CC mid-call.
+        state->last_vc_sync_time = time(NULL);
         // Same comments as in processHDU. See there.
 
         char fixed_parity[12 * 6];
