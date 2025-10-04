@@ -229,5 +229,8 @@ main(void) {
     // source may be 0 unless prior LCW set it
     rc |= expect_eq_int("src default", g_last_src, 0);
 
+    // Gating cases are covered in a separate test without overriding
+    // p25_sm_on_group_grant so the implementation’s gating logic runs.
+
     return rc;
 }

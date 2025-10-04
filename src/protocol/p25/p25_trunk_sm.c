@@ -144,20 +144,25 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     state->gi[slot & 1] = 0; // group
 
     // Compose event text and push if not a duplicate of the most-recent entry
-    Event_History_I* eh = &state->event_history_s[slot & 1];
-    snprintf(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
-             "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
-    watchdog_event_current(opts, state, (uint8_t)(slot & 1));
-    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
-                sizeof eh->Event_History_Items[0].internal_str)
-        != 0) {
-        if (opts->event_out_file[0] != '\0') {
-            // P25p2 slots use special swrite handling
-            uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
-            write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite, eh->Event_History_Items[0].event_string);
+    Event_History_I* eh = (state->event_history_s != NULL) ? &state->event_history_s[slot & 1] : NULL;
+    if (eh) {
+        snprintf(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
+                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
+        watchdog_event_current(opts, state, (uint8_t)(slot & 1));
+        if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
+                    sizeof eh->Event_History_Items[0].internal_str)
+            != 0) {
+            if (opts->event_out_file[0] != '\0') {
+                // P25p2 slots use special swrite handling
+                uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite,
+                                        eh->Event_History_Items[0].event_string);
+            }
+            push_event_history(eh);
+            init_event_history(eh, 0, 1);
         }
-        push_event_history(eh);
-        init_event_history(eh, 0, 1);
+    } else if (opts && opts->verbose > 1) {
+        fprintf(stderr, "\n  P25 SM: ENC lockout event skipped (no event_history_s)\n");
     }
 }
 
@@ -691,16 +696,16 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     if (opts->p25_is_tuned == 1) {
         double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
         int is_p2_vc = (state->p25_p2_active_slot != -1);
-        // Safety: if we've exceeded hangtime (by a small margin), aggressively
-        // clear per-slot audio gates so stale 'allowed' flags cannot wedge the
-        // release logic when voice has clearly stopped.
-        if (is_p2_vc && dt > (opts->trunk_hangtime + 1.0)) {
+        // Safety: once hangtime has expired, aggressively clear per-slot audio
+        // gates so stale 'allowed' flags cannot wedge the release logic when
+        // voice has clearly stopped.
+        if (is_p2_vc && dt >= opts->trunk_hangtime) {
             state->p25_p2_audio_allowed[0] = 0;
             state->p25_p2_audio_allowed[1] = 0;
         }
         int both_slots_idle =
             (!is_p2_vc) ? 1 : (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
-        if (dt > (opts->trunk_hangtime + 1.5) && both_slots_idle) {
+        if (dt >= opts->trunk_hangtime && both_slots_idle) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);

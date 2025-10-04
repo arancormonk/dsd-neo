@@ -106,6 +106,23 @@ target_include_directories(dsd-neo_test_p25_p1_lcw_sm PRIVATE ${PROJECT_SOURCE_D
 target_link_libraries(dsd-neo_test_p25_p1_lcw_sm PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_LCW_SM COMMAND dsd-neo_test_p25_p1_lcw_sm)
 
+# P25 P1 LCW gating (Packet/Encrypted SVC bits)
+add_executable(dsd-neo_test_p25_p1_lcw_gating protocol/p25/test_p25_p1_lcw_gating.c)
+target_include_directories(dsd-neo_test_p25_p1_lcw_gating PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_p1_lcw_gating PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_LCW_GATING COMMAND dsd-neo_test_p25_p1_lcw_gating)
+
+# P25 P2 trunk SM fuzzer (slot flips, MAC-like idle/signal, ENC pending)
+add_executable(dsd-neo_test_p25_p2_sm_fuzz protocol/p25/test_p25_p2_sm_fuzz.c)
+target_include_directories(dsd-neo_test_p25_p2_sm_fuzz PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_p2_sm_fuzz PRIVATE dsd-neo_proto_p25 dsd-neo_core)
+add_test(NAME P25_P2_SM_FUZZ COMMAND dsd-neo_test_p25_p2_sm_fuzz)
+# P25 LCW Call Termination (0x4F) -> SM release
+add_executable(dsd-neo_test_p25_lcw_call_term protocol/p25/test_p25_lcw_call_term.c)
+target_include_directories(dsd-neo_test_p25_lcw_call_term PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_lcw_call_term PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_LCW_CALL_TERM COMMAND dsd-neo_test_p25_lcw_call_term)
+
 # P25 P1 LDU header gating decisions
 add_executable(dsd-neo_test_p25_p1_ldu_gating protocol/p25/test_p25_p1_ldu_gating.c)
 target_include_directories(dsd-neo_test_p25_p1_ldu_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -353,6 +370,19 @@ add_executable(dsd-neo_test_p25_next_cc_candidate_edges protocol/p25/test_p25_ne
 target_include_directories(dsd-neo_test_p25_next_cc_candidate_edges PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_next_cc_candidate_edges PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_NEXT_CC_CANDIDATE_EDGES COMMAND dsd-neo_test_p25_next_cc_candidate_edges)
+
+# P25 neighbor update spam (bounded CC candidates + iteration)
+add_executable(dsd-neo_test_p25_neighbor_spam protocol/p25/test_p25_neighbor_spam.c)
+target_include_directories(dsd-neo_test_p25_neighbor_spam PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_neighbor_spam PRIVATE dsd-neo_proto_p25 dsd-neo_core)
+add_test(NAME P25_NEIGHBOR_SPAM COMMAND dsd-neo_test_p25_neighbor_spam)
+
+# P25 trunk SM fuzz (liveness under randomized sequences)
+add_executable(dsd-neo_test_p25_trunk_sm_fuzz protocol/p25/test_p25_trunk_sm_fuzz.c)
+# Include local P25 stubs first (e.g., mbelib.h)
+target_include_directories(dsd-neo_test_p25_trunk_sm_fuzz PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_trunk_sm_fuzz PRIVATE dsd-neo_proto_p25 dsd-neo_core)
+add_test(NAME P25_TRUNK_SM_FUZZ COMMAND dsd-neo_test_p25_trunk_sm_fuzz)
 
 # DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
 add_executable(dsd-neo_test_dmr_t3_sm_clamp

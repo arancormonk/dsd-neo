@@ -1329,7 +1329,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 // frame processing stalls due to marginal signal.
                 if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
                     double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
-                    if (dt > (opts->trunk_hangtime + 0.5)) {
+                    // Be decisive once hangtime has expired; avoid extra delay.
+                    if (dt >= opts->trunk_hangtime) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);
                     }
