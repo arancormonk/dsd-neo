@@ -31,8 +31,23 @@ void
 processLDU1(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_ldu1++;
 
-    // Do not refresh last_vc_sync_time until after FEC checks succeed to
-    // avoid extending hangtime due to false decodes when signal is lost.
+    // Hysteresis: if we have very recent activity within a fraction of the
+    // hangtime window, refresh the timer early to avoid thrashing between the
+    // VC and CC on marginal signals. Otherwise, defer updates until after FEC
+    // checks succeed (below).
+    {
+        time_t now = time(NULL);
+        double hold_hyst = opts->trunk_hangtime * 0.75;
+        if (hold_hyst < 0.75) {
+            hold_hyst = 0.75; // minimum grace window
+        }
+        if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
+            state->last_vc_sync_time = now;
+        }
+    }
+    // Otherwise, do not refresh last_vc_sync_time until after FEC checks
+    // succeed to avoid extending hangtime due to false decodes when signal is
+    // lost.
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
