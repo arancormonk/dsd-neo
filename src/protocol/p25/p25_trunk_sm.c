@@ -703,8 +703,13 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             state->p25_p2_audio_allowed[0] = 0;
             state->p25_p2_audio_allowed[1] = 0;
         }
-        int both_slots_idle =
-            (!is_p2_vc) ? 1 : (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
+        // Treat a slot as non-idle if SACCH indicates MAC_PTT/ACTIVE (20..22)
+        // even if the per-slot audio gate is still closed (e.g., pre‑ESS).
+        int left_mac_active = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
+        int right_mac_active = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
+        int left_idle = (state->p25_p2_audio_allowed[0] == 0) && !left_mac_active;
+        int right_idle = (state->p25_p2_audio_allowed[1] == 0) && !right_mac_active;
+        int both_slots_idle = (!is_p2_vc) ? 1 : (left_idle && right_idle);
         if (dt >= opts->trunk_hangtime && both_slots_idle) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;

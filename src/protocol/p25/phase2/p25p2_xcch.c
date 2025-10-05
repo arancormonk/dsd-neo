@@ -614,23 +614,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Disable audio for this slot. Do not flush the jitter ring; let it
         // drain to avoid chopping tails when IDLE arrives closely after voice.
         state->p25_p2_audio_allowed[slot] = 0;
-        // Message-driven retune: if the opposite slot is idle/unknown, treat
-        // this slot as idle and return to CC immediately (applies to clear and
-        // encrypted-followed calls). Otherwise, defer until both slots are IDLE
-        // or an explicit vPDU Release arrives.
+        // Hardened behavior: only force release to CC when BOTH logical
+        // channels are explicitly idle. Otherwise, allow hangtime fallback
+        // to manage teardown to avoid chopping ongoing calls.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            int other_dmr = (slot == 0) ? state->dmrburstR : state->dmrburstL;
-            int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
-            int other_idle = (other_dmr == 24) || (other_dmr == 0 && other_audio == 0);
-            if (other_idle) {
-                if (slot == 0) {
-                    state->dmrburstL = 24;
-                } else {
-                    state->dmrburstR = 24;
-                }
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            } else if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+            if (state->dmrburstL == 24 && state->dmrburstR == 24) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }
@@ -1120,23 +1108,11 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
 
         // Disable audio for this slot (FACCH uses current slot index)
         state->p25_p2_audio_allowed[slot] = 0;
-        // Message-driven retune: if the other slot is idle/unknown, mark this
-        // slot idle and return to CC immediately (applies to clear and ENC-followed).
-        // Otherwise, defer until both slots are IDLE.
+        // Hardened behavior: only force release to CC when BOTH logical
+        // channels are explicitly idle. Otherwise, allow hangtime fallback
+        // to manage teardown.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            int slot = state->currentslot; // re-evaluate for safety
-            int other_dmr = (slot == 0) ? state->dmrburstR : state->dmrburstL;
-            int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
-            int other_idle = (other_dmr == 24) || (other_dmr == 0 && other_audio == 0);
-            if (other_idle) {
-                if (slot == 0) {
-                    state->dmrburstL = 24;
-                } else {
-                    state->dmrburstR = 24;
-                }
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            } else if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+            if (state->dmrburstL == 24 && state->dmrburstR == 24) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }

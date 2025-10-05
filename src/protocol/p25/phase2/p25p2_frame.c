@@ -612,10 +612,17 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             // Fallback: if SACCH/FACCH MAC_PTT was missed but ESS indicates
             // clear or decryptable audio, allow this slot's audio now.
             if (state->p25_p2_audio_allowed[0] == 0) {
+                // Harden ESS-driven enablement: only permit during an active
+                // call context for this logical slot (observed via recent
+                // MAC_PTT/ACTIVE on SACCH/FACCH). This prevents stray ESS
+                // decodes from re-opening audio gates after call teardown and
+                // wedging the trunking SM on a dead VC.
+                int in_call = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
                 int alg = state->payload_algid;
-                int allow = ((alg == 0 || alg == 0x80)
-                             || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
-                                 || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)))
+                int allow = (in_call
+                             && ((alg == 0 || alg == 0x80)
+                                 || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
+                                     || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1))))
                                 ? 1
                                 : 0;
                 if (allow) {
@@ -659,10 +666,14 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             // Fallback: if SACCH/FACCH MAC_PTT was missed but ESS indicates
             // clear or decryptable audio, allow this slot's audio now.
             if (state->p25_p2_audio_allowed[1] == 0) {
+                // Harden ESS-driven enablement with active-call context on
+                // the right logical slot to avoid stale re-enables.
+                int in_call = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
                 int alg = state->payload_algidR;
-                int allow = ((alg == 0 || alg == 0x80)
-                             || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0)
-                                 || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1)))
+                int allow = (in_call
+                             && ((alg == 0 || alg == 0x80)
+                                 || (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0)
+                                     || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1))))
                                 ? 1
                                 : 0;
                 if (allow) {
@@ -1036,8 +1047,16 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         int p2_pending_release = 0;
         if (duid_decoded == 13 && opts->p25_is_tuned == 1
             && ((now - state->last_vc_sync_time) > opts->trunk_hangtime)) { // MAC_SIGNAL hangtime expiry
+            // Do not treat channel as idle if SACCH recently indicated
+            // MAC_PTT/ACTIVE on either logical channel; this avoids bouncing
+            // back to CC during the first moments after a tune when audio
+            // gates are not yet open but valid voice is present.
+            int left_mac_active = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
+            int right_mac_active = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
             if (opts->p25_trunk == 1) {
-                p2_pending_release = 1; // handle after LCCH is processed below
+                if (!(left_mac_active || right_mac_active)) {
+                    p2_pending_release = 1; // handle after LCCH is processed below
+                }
             } else {
                 // Non-trunking: minimal reset
                 state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;

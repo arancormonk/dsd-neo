@@ -387,6 +387,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " Call Termination; TGT: %d;", tgt);
                 memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
                 if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+                    // Force release so the SM does not defer due to any stale
+                    // per-slot audio gates when an explicit call termination is received.
+                    state->p25_sm_force_release = 1;
                     p25_sm_on_release(opts, state);
                 }
             }
