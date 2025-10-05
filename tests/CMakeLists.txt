@@ -274,6 +274,7 @@ target_include_directories(dsd-neo_test_p25_p2_vpdu_enc_flush PRIVATE ${PROJECT_
 target_link_libraries(dsd-neo_test_p25_p2_vpdu_enc_flush PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_VPDU_ENC_FLUSH COMMAND dsd-neo_test_p25_p2_vpdu_enc_flush)
 
+
 # P25 trunk SM CC cache persist/load and candidate iteration
 add_executable(dsd-neo_test_p25_trunk_cc_cache protocol/p25/test_p25_trunk_cc_cache.c)
 target_include_directories(dsd-neo_test_p25_trunk_cc_cache PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
@@ -328,6 +329,12 @@ add_executable(dsd-neo_test_p25_patch_tracking protocol/p25/test_p25_patch_track
 target_include_directories(dsd-neo_test_p25_patch_tracking PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_patch_tracking PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_PATCH_TRACKING COMMAND dsd-neo_test_p25_patch_tracking)
+
+# P25 P2 SM should defer release when right slot has activity
+add_executable(dsd-neo_test_p25_p2_sm_right_slot_active protocol/p25/test_p25_p2_sm_right_slot_active.c)
+target_include_directories(dsd-neo_test_p25_p2_sm_right_slot_active PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_p2_sm_right_slot_active PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_SM_RIGHT_SLOT_ACTIVE COMMAND dsd-neo_test_p25_p2_sm_right_slot_active)
 
 # P25 grant trust clamp
 add_executable(dsd-neo_test_p25_grant_trust_clamp protocol/p25/test_p25_grant_trust_clamp.c)
