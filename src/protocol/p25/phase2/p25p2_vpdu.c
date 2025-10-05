@@ -2243,7 +2243,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Flush any residual audio queued for this slot to avoid artifact bleed
             p25_p2_audio_ring_reset(state, eslot);
 
-            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1];
+            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1] || state->p25_p2_audio_ring_count[eslot ^ 1] > 0
+                              || ((eslot ^ 1) == 0 ? (state->dmrburstL >= 20 && state->dmrburstL <= 22)
+                                                   : (state->dmrburstR >= 20 && state->dmrburstR <= 22));
             if (!other_audio) {
                 // Force release so SM ignores any stale gates and returns to CC
                 state->p25_sm_force_release = 1;
@@ -2356,7 +2358,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->p25_p2_audio_allowed[slot] = 0;
                 p25_p2_audio_ring_reset(state, slot);
                 int other = slot ^ 1;
-                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
+                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0
+                                  || (other == 0 ? (state->dmrburstL >= 20 && state->dmrburstL <= 22)
+                                                 : (state->dmrburstR >= 20 && state->dmrburstR <= 22));
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
                     state->p25_sm_force_release = 1;

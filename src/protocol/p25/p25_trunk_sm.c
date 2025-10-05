@@ -558,8 +558,14 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // Determine activity using P25-specific gates and a short recent-voice window.
         // Avoid relying on DMR burst flags here, as they may be stale across protocol transitions
         // and can wedge the state machine on a dead VC.
-        int left_audio = (state->p25_p2_audio_allowed[0] != 0);
-        int right_audio = (state->p25_p2_audio_allowed[1] != 0);
+        // Treat a slot as active if audio is allowed, or if SACCH indicates
+        // MAC_PTT/ACTIVE (pre‑ESS gate), or if the jitter buffer has queued
+        // audio. This prevents early releases when slot 2 has just gone
+        // active but the audio gate is not yet open.
+        int left_audio = (state->p25_p2_audio_allowed[0] != 0) || (state->dmrburstL >= 20 && state->dmrburstL <= 22)
+                         || (state->p25_p2_audio_ring_count[0] > 0);
+        int right_audio = (state->p25_p2_audio_allowed[1] != 0) || (state->dmrburstR >= 20 && state->dmrburstR <= 22)
+                          || (state->p25_p2_audio_ring_count[1] > 0);
         time_t now = time(NULL);
         int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= opts->trunk_hangtime);
         int stale_activity =

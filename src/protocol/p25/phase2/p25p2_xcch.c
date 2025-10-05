@@ -718,7 +718,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
             int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
             if (enc_suspect) {
-                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                int other_audio = state->p25_p2_audio_allowed[slot ^ 1] || state->p25_p2_audio_ring_count[slot ^ 1] > 0
+                                  || (((slot ^ 1) == 0) ? (state->dmrburstL >= 20 && state->dmrburstL <= 22)
+                                                        : (state->dmrburstR >= 20 && state->dmrburstR <= 22));
                 state->p25_p2_audio_allowed[slot] = 0; // gate current slot
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
