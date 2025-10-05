@@ -15,13 +15,21 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/log.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+// socket timeouts
+#include <sys/time.h>
 
 //UDP Specific
 #include <arpa/inet.h>
+/* For TCP options like TCP_NODELAY on POSIX platforms */
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)    \
+    || defined(__CYGWIN__)
+#include <netinet/tcp.h>
+#endif
 
 #define BUFSIZE        1024
 #define FREQ_MAX       4096
@@ -77,6 +85,27 @@ Connect(char* hostname, int portno) {
         return (0);
     }
 
+    /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
+    {
+        int to_ms = 1500;
+        const char* et = getenv("DSD_NEO_RIGCTL_RCVTIMEO");
+        if (!et) {
+            et = getenv("DSD_NEO_TCP_RCVTIMEO"); /* fallback to generic if set */
+        }
+        if (et && et[0] != '\0') {
+            int v = atoi(et);
+            if (v >= 100 && v <= 60000) {
+                to_ms = v;
+            }
+        }
+        struct timeval tv;
+        tv.tv_sec = to_ms / 1000;
+        tv.tv_usec = (suseconds_t)((long)(to_ms % 1000) * 1000L);
+        (void)setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        int nodelay = 1;
+        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    }
+
     return sockfd;
 }
 
@@ -89,7 +118,8 @@ Send(int sockfd, char* buf) {
 
     n = write(sockfd, buf, strlen(buf));
     if (n < 0) {
-        error("ERROR writing to socket");
+        // Non-fatal: allow control plane hiccups without exiting
+        return false;
     }
     return true;
 }
@@ -102,8 +132,12 @@ Recv(int sockfd, char* buf) {
     int n;
 
     n = read(sockfd, buf, BUFSIZE);
-    if (n < 0) {
-        error("ERROR reading from socket");
+    if (n <= 0) {
+        // Timeout or error: treat as soft failure so callers can continue
+        if (buf) {
+            buf[0] = '\0';
+        }
+        return false;
     }
     buf[n] = '\0';
     return true;
@@ -565,26 +599,28 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_active_slot = -1;
     // Do not alter user slot On/Off toggles here; UI controls own persistence.
 
-    //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
-    //RIGCTL
-    if (opts->p25_trunk == 1 && opts->use_rigctl == 1) {
-        if (opts->setmod_bw != 0) {
-            SetModulation(opts->rigctl_sockfd, opts->setmod_bw); // cached internally
+    // Tune back to the control channel when known (best-effort). Avoid
+    // sending a zero/unknown frequency to the tuner which can wedge the
+    // pipeline at DC and delay CC hunting.
+    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0) {
+        // RIGCTL
+        if (opts->use_rigctl == 1) {
+            if (opts->setmod_bw != 0) {
+                SetModulation(opts->rigctl_sockfd, opts->setmod_bw); // cached internally
+            }
+            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq); // cached internally
         }
-        SetFreq(opts->rigctl_sockfd, state->p25_cc_freq); // cached internally
-    }
-
-//rtl
+// RTL
 #ifdef USE_RTLSDR
-    if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
-        if (g_rtl_ctx) {
-            rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq); // cached internally
+        if (opts->audio_in_type == 3) {
+            if (g_rtl_ctx) {
+                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq); // cached internally
+            }
         }
-    }
 #endif
-
-    state->last_cc_sync_time = now;
-    state->trunk_cc_freq = state->p25_cc_freq;
+        state->last_cc_sync_time = now;
+        state->trunk_cc_freq = state->p25_cc_freq;
+    }
 
     //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
     if (state->p25_cc_is_tdma == 0) {

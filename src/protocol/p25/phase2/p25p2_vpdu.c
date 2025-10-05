@@ -2276,6 +2276,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             fprintf(stderr, "\n VCH %d - TG: %d; SRC: %d; ", slot + 1, gr, src);
+            // Mark recent slot activity on group voice MAC (Extended/Abbrev)
+            state->p25_p2_last_mac_active[slot] = time(NULL);
 
             if (MAC[1 + len_a] == 0x21) {
                 fprintf(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, src);
@@ -2394,6 +2396,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
 
             fprintf(stderr, "\n VCH %d - TGT: %d; SRC %d; ", slot + 1, gr, src);
+            // Mark recent slot activity on unit-to-unit voice MAC (Extended/Abbrev)
+            state->p25_p2_last_mac_active[slot] = time(NULL);
 
             if (MAC[1 + len_a] == 0x22) {
                 fprintf(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, src);

@@ -532,10 +532,21 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 if (exitflag == 1) {
                     cleanupAndExit(opts, state); //needed to break the loop on ctrl+c
                 }
-                fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in 3 seconds.\n");
+                // shorter backoff on TCP input stall to avoid wedging decode/SM
+                int backoff_ms = 300; // default 300ms
+                const char* eb = getenv("DSD_NEO_TCPIN_BACKOFF_MS");
+                if (eb && eb[0] != '\0') {
+                    int v = atoi(eb);
+                    if (v >= 50 && v <= 5000) {
+                        backoff_ms = v;
+                    }
+                }
+                fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
                 sample = 0;
                 sf_close(opts->tcp_file_in); //close current connection on this end
-                sleep(3);                    //halt all processing and wait 3 seconds
+                // short throttle to avoid busy loop, but keep UI/SM responsive
+                struct timespec ts = {backoff_ms / 1000, (backoff_ms % 1000) * 1000000L};
+                nanosleep(&ts, NULL);
 
                 //attempt to reconnect to socket
                 opts->tcp_sockfd = 0;
@@ -556,8 +567,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     }
                 } else {
                     LOG_ERROR("TCP Socket Connection Error.\n");
+                    // If using M17 or other keepalive mode, keep trying quickly
                     if (opts->frame_m17 == 1) {
-                        goto TCP_RETRY; //if using m17 encoder/decoder, just keep looping to keep alive
+                        goto TCP_RETRY;
                     }
                 }
 
@@ -694,12 +706,16 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     // if (opts->audio_out_type == 2 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
                     //   write (opts->audio_out_fd, state->analog_out, 960*2);
 
-                    // Update CC sync time for UI/scan responsiveness, but do not
-                    // let the source-audio monitor refresh last_vc_sync_time while
-                    // tuned to a trunked VC. That timer should reflect actual
-                    // digital voice activity; noise or analog monitor audio can
-                    // otherwise wedge the P25 trunk SM hangtime logic.
-                    state->last_cc_sync_time = time(NULL);
+                    // UI/scan heartbeat: avoid refreshing timers that the
+                    // trunk SM depends on for hangtime and CC hunting logic.
+                    // - Do NOT refresh last_cc_sync_time while trunking is
+                    //   enabled and we are not voice‑tuned; the SM needs that
+                    //   timer to age so CC hunting can start.
+                    // - Do NOT refresh last_vc_sync_time while voice‑tuned; it
+                    //   must reflect actual digital voice activity only.
+                    if (opts->p25_trunk != 1) {
+                        state->last_cc_sync_time = time(NULL);
+                    }
                     if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1)) {
                         state->last_vc_sync_time = time(NULL);
                     }

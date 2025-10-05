@@ -383,7 +383,7 @@ p25_nb_tick(dsd_state* state) {
 // Internal helper: compute and tune to a P25 VC, set symbol/slot appropriately
 static void
 p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
-    if (freq == 0 || opts->p25_is_tuned == 1) {
+    if (freq == 0) {
         return;
     }
     if (opts->p25_trunk != 1) {
@@ -412,8 +412,10 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
         state->p25_p2_active_slot = -1;
     }
 
-    // Tune via common helper
-    trunk_tune_to_freq(opts, state, freq);
+    // Tune via common helper only if not already tuned to this freq
+    if (!(opts->p25_is_tuned == 1 && state->p25_vc_freq[0] == freq)) {
+        trunk_tune_to_freq(opts, state, freq);
+    }
     // Reset Phase 2 per-slot audio gate and jitter buffers on new VC
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
@@ -619,9 +621,14 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_enc_pending[1] = 0;
     state->p25_p2_enc_pending_ttg[0] = 0;
     state->p25_p2_enc_pending_ttg[1] = 0;
+    // Clear END_PTT markers
+    state->p25_p2_last_end_ptt[0] = 0;
+    state->p25_p2_last_end_ptt[1] = 0;
     // Clear per-slot Packet/Data flags
     state->p25_call_is_packet[0] = 0;
     state->p25_call_is_packet[1] = 0;
+    // Clear Phase 1 TDU marker
+    state->p25_p1_last_tdu = 0;
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
 }
@@ -717,20 +724,162 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
         }
         int is_p2_vc = (state->p25_p2_active_slot != -1);
-        // Safety: once hangtime has expired, aggressively clear per-slot audio
-        // gates so stale 'allowed' flags cannot wedge the release logic when
-        // voice has clearly stopped.
-        if (is_p2_vc && dt >= opts->trunk_hangtime) {
-            state->p25_p2_audio_allowed[0] = 0;
-            state->p25_p2_audio_allowed[1] = 0;
+
+        // Early teardown on MAC_END_PTT once per-slot jitter/audio drains.
+        // If an END_PTT was observed and both slots have drained (or the
+        // opposite slot is not active), return to CC immediately without
+        // waiting for MAC_IDLE.
+        if (is_p2_vc) {
+            double tail_ms_cfg = 500.0; // max tail wait
+            {
+                const char* s = getenv("DSD_NEO_P25_TAIL_MS");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v <= 5000.0) {
+                        tail_ms_cfg = v;
+                    }
+                }
+            }
+            int ldrain = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_ring_count[0] == 0);
+            int rdrain = (state->p25_p2_audio_allowed[1] == 0 && state->p25_p2_audio_ring_count[1] == 0);
+            double lend_ms = (state->p25_p2_last_end_ptt[0] ? (now - state->p25_p2_last_end_ptt[0]) * 1000.0 : 0.0);
+            double rend_ms = (state->p25_p2_last_end_ptt[1] ? (now - state->p25_p2_last_end_ptt[1]) * 1000.0 : 0.0);
+            int left_end = state->p25_p2_last_end_ptt[0] != 0;
+            int right_end = state->p25_p2_last_end_ptt[1] != 0;
+            int end_seen = left_end || right_end;
+            // Treat tail exceeded as drained
+            if (left_end && !ldrain && lend_ms >= tail_ms_cfg) {
+                ldrain = 1;
+            }
+            if (right_end && !rdrain && rend_ms >= tail_ms_cfg) {
+                rdrain = 1;
+            }
+            // Opposite slot activity consideration (recent MAC_ACTIVE hold)
+            int other_active = 0;
+            double mac_hold = 2.0;
+            {
+                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        mac_hold = v;
+                    }
+                }
+            }
+            if (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold) {
+                other_active = 1;
+            }
+            if (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
+                other_active = 1;
+            }
+            if (end_seen) {
+                int drained_both = ldrain && rdrain;
+                int drained_left_only = left_end && ldrain && !other_active;
+                int drained_right_only = right_end && rdrain && !other_active;
+                if (drained_both || drained_left_only || drained_right_only) {
+                    if (opts->verbose > 0) {
+                        fprintf(stderr, "\n  P25 SM: Release on END_PTT drain (L:%d R:%d)\n", ldrain, rdrain);
+                    }
+                    if (state->p25_cc_freq != 0) {
+                        state->p25_sm_force_release = 1;
+                        p25_sm_on_release(opts, state);
+                    } else {
+                        state->p25_p2_audio_allowed[0] = 0;
+                        state->p25_p2_audio_allowed[1] = 0;
+                        state->p25_p2_active_slot = -1;
+                        state->p25_vc_freq[0] = 0;
+                        state->p25_vc_freq[1] = 0;
+                        opts->p25_is_tuned = 0;
+                        opts->trunk_is_tuned = 0;
+                        state->last_cc_sync_time = now;
+                    }
+                    return;
+                }
+            }
+        } else {
+            // Phase 1 early teardown: if TDULC/TDU was observed recently and
+            // no new voice has refreshed last_vc_sync_time within a small tail
+            // window, return to CC immediately (no need to wait for LCW).
+            double tail_ms_cfg = 300.0; // default 300ms for P1
+            {
+                const char* s = getenv("DSD_NEO_P25P1_TAIL_MS");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v <= 3000.0) {
+                        tail_ms_cfg = v;
+                    }
+                }
+            }
+            if (state->p25_p1_last_tdu != 0 && dt_since_tune >= vc_grace) {
+                double since_tdu = (double)(now - state->p25_p1_last_tdu) * 1000.0;
+                double since_voice =
+                    (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) * 1000.0 : 1e12;
+                if (since_tdu >= tail_ms_cfg && since_voice >= tail_ms_cfg) {
+                    if (opts->verbose > 0) {
+                        fprintf(stderr, "\n  P25 SM: Release on P1 TDU drain\n");
+                    }
+                    if (state->p25_cc_freq != 0) {
+                        state->p25_sm_force_release = 1;
+                        p25_sm_on_release(opts, state);
+                    } else {
+                        opts->p25_is_tuned = 0;
+                        opts->trunk_is_tuned = 0;
+                        state->p25_vc_freq[0] = 0;
+                        state->p25_vc_freq[1] = 0;
+                        state->last_cc_sync_time = now;
+                    }
+                    return;
+                }
+            }
         }
-        // Treat a slot as non-idle if SACCH indicates MAC_PTT/ACTIVE (20..22)
-        // even if the per-slot audio gate is still closed (e.g., pre‑ESS).
-        int left_mac_active = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
-        int right_mac_active = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
-        int left_idle = (state->p25_p2_audio_allowed[0] == 0) && !left_mac_active;
-        int right_idle = (state->p25_p2_audio_allowed[1] == 0) && !right_mac_active;
-        int both_slots_idle = (!is_p2_vc) ? 1 : (left_idle && right_idle);
+
+        // Additional guard: if we have lost sync (no valid synctype) while
+        // voice tuned for longer than hangtime + grace, treat as stale VC and
+        // force release regardless of slot gates.
+        if (state->lastsynctype < 0 && dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
+            if (opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: Forced release (no sync; dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
+            }
+            if (state->p25_cc_freq != 0) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            } else {
+                state->p25_p2_audio_allowed[0] = 0;
+                state->p25_p2_audio_allowed[1] = 0;
+                state->p25_p2_active_slot = -1;
+                state->p25_vc_freq[0] = 0;
+                state->p25_vc_freq[1] = 0;
+                opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
+                state->last_cc_sync_time = now;
+            }
+            return; // done this tick
+        }
+        // Determine per-slot activity: use audio gate or queued audio. Also
+        // honor recent MAC_ACTIVE/PTT indications to bridge initial setup and
+        // short fades; after hangtime expires, ignore stale MAC flags but keep
+        // a small recent MAC hold window.
+        int left_has_audio = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
+        int right_has_audio = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
+        int left_active = left_has_audio;
+        int right_active = right_has_audio;
+        double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+        {
+            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    mac_hold = v;
+                }
+            }
+        }
+        if (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold) {
+            left_active = 1;
+        }
+        if (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
+            right_active = 1;
+        }
+        int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
         if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
@@ -746,6 +895,34 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 opts->p25_is_tuned = 0;
                 opts->trunk_is_tuned = 0;
                 state->last_cc_sync_time = now;
+            }
+        } else if (dt >= (opts->trunk_hangtime + 3.0)) {
+            // Safety net: after hangtime + 3s, force release even if stale
+            // per-slot gates or jitter buffers still read as active. This
+            // covers loss-of-signal cases where no further frames arrive to
+            // clear audio gates or MAC flags.
+            double extra = 3.0;
+            const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v <= 10.0) {
+                    extra = v;
+                }
+            }
+            if (dt >= (opts->trunk_hangtime + extra)) {
+                if (state->p25_cc_freq != 0) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    state->p25_p2_audio_allowed[0] = 0;
+                    state->p25_p2_audio_allowed[1] = 0;
+                    state->p25_p2_active_slot = -1;
+                    state->p25_vc_freq[0] = 0;
+                    state->p25_vc_freq[1] = 0;
+                    opts->p25_is_tuned = 0;
+                    opts->trunk_is_tuned = 0;
+                    state->last_cc_sync_time = now;
+                }
             }
         }
     }

@@ -905,6 +905,13 @@ typedef struct {
     int p25_p2_audio_ring_count[2];
     // P25p2 currently active voice slot (0 or 1), -1 when unknown/idle
     int p25_p2_active_slot;
+    // P25p2 recent MAC_ACTIVE/PTT timestamps per slot (guards early bounce)
+    time_t p25_p2_last_mac_active[2];
+    // P25p2 recent MAC_END_PTT timestamps per slot (enables early teardown
+    // once per-slot jitter/audio has drained)
+    time_t p25_p2_last_end_ptt[2];
+    // P25p1 recent TDU/TDULC timestamp (enables early teardown on Phase 1)
+    time_t p25_p1_last_tdu;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;

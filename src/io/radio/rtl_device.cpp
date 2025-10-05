@@ -18,6 +18,7 @@
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
+#include <errno.h>
 #include <math.h>
 #include <pthread.h>
 #include <rtl-sdr.h>
@@ -33,6 +34,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 /* For TCP options like TCP_NODELAY on POSIX platforms */
 #if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)    \
@@ -417,6 +419,17 @@ tcp_thread_fn(void* arg) {
     uint64_t prev_res_full = s->reserve_full_events;
     struct timespec auto_last;
     clock_gettime(CLOCK_MONOTONIC, &auto_last);
+    /* Less aggressive reconnect: allow a few consecutive timeouts before
+       declaring the connection lost. Default 3; override via
+       DSD_NEO_TCP_MAX_TIMEOUTS. */
+    int timeout_limit = 3;
+    if (const char* etl = getenv("DSD_NEO_TCP_MAX_TIMEOUTS")) {
+        int v = atoi(etl);
+        if (v >= 1 && v <= 100) {
+            timeout_limit = v;
+        }
+    }
+    int consec_timeouts = 0;
     while (s->run.load() && exitflag == 0) {
         /* Light backpressure: if ring is nearly full, yield briefly */
         int autotune = s->tcp_autotune;
@@ -430,11 +443,23 @@ tcp_thread_fn(void* arg) {
         }
         ssize_t r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
         if (r <= 0) {
-            /* Connection stalled or closed. Attempt auto-reconnect unless shutting down. */
+            /* Timeout or connection closed. On timeout, tolerate up to
+               timeout_limit consecutive occurrences before reconnecting. */
             if (!s->run.load() || exitflag) {
                 break;
             }
-            fprintf(stderr, "rtl_tcp: connection lost; attempting to reconnect to %s:%d...\n", s->host, s->port);
+            int e = errno;
+            int is_timeout = (r < 0) && (e == EAGAIN || e == EWOULDBLOCK || e == EINTR);
+            if (is_timeout) {
+                consec_timeouts++;
+                if (consec_timeouts < timeout_limit) {
+                    /* Try again without reconnecting */
+                    continue;
+                }
+            }
+            /* Either closed, hard error, or too many consecutive timeouts. */
+            consec_timeouts = 0;
+            fprintf(stderr, "rtl_tcp: input stalled; attempting to reconnect to %s:%d...\n", s->host, s->port);
             /* Preserve current device state to replay after reconnect */
             const uint32_t prev_freq = s->freq;
             const uint32_t prev_rate = s->rate;
@@ -461,6 +486,30 @@ tcp_thread_fn(void* arg) {
                     /* Reinitialize stream framing and pending state */
                     rtl_tcp_skip_header(s->sockfd);
                     s->tcp_pending_len = 0;
+                    /* Reapply socket options: RCVBUF/NODELAY/RCVTIMEO */
+                    {
+                        int rcvbuf = 4 * 1024 * 1024; /* 4 MB */
+                        if (const char* eb = getenv("DSD_NEO_TCP_RCVBUF")) {
+                            int v = atoi(eb);
+                            if (v > 0) {
+                                rcvbuf = v;
+                            }
+                        }
+                        (void)setsockopt(s->sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+                        int nodelay = 1;
+                        (void)setsockopt(s->sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+                        struct timeval rcvto;
+                        int to_ms = 2000;
+                        if (const char* et = getenv("DSD_NEO_TCP_RCVTIMEO")) {
+                            int v = atoi(et);
+                            if (v >= 100 && v <= 60000) {
+                                to_ms = v;
+                            }
+                        }
+                        rcvto.tv_sec = to_ms / 1000;
+                        rcvto.tv_usec = (to_ms % 1000) * 1000;
+                        (void)setsockopt(s->sockfd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
+                    }
                     /* Replay essential device state to server */
                     if (prev_freq > 0) {
                         (void)rtl_tcp_send_cmd(s->sockfd, 0x01, prev_freq);
@@ -507,6 +556,8 @@ tcp_thread_fn(void* arg) {
                 break;
             }
         }
+        /* Successful read: reset timeout counter */
+        consec_timeouts = 0;
         uint32_t len = (uint32_t)r;
         /* Stats: bytes in */
         if (s->stats_enabled) {
@@ -1117,6 +1168,19 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
         (void)setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
         int nodelay = 1;
         (void)setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+        /* Hard fix: apply a receive timeout so stalled connections don't appear
+           as a P25 wedge. Default 2 seconds; override via DSD_NEO_TCP_RCVTIMEO (ms). */
+        struct timeval rcvto;
+        int to_ms = 2000;
+        if (const char* et = getenv("DSD_NEO_TCP_RCVTIMEO")) {
+            int v = atoi(et);
+            if (v >= 100 && v <= 60000) {
+                to_ms = v;
+            }
+        }
+        rcvto.tv_sec = to_ms / 1000;
+        rcvto.tv_usec = (to_ms % 1000) * 1000;
+        (void)setsockopt(sfd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
     }
     dev->sockfd = sfd;
     fprintf(stderr, "rtl_tcp: Connected to %s:%d\n", host, port);

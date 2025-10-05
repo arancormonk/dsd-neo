@@ -27,6 +27,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <locale.h>
 
@@ -61,7 +62,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     // fallbacks even if frame processing stalls due to signal loss.
     static time_t last_tick = 0;
     if (now != last_tick) {
-        p25_sm_tick(opts, state);
+        p25_sm_try_tick(opts, state);
         last_tick = now;
     }
     /* detects frame sync and returns frame type
@@ -1342,13 +1343,29 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                     }
                     int is_p2_vc = (state->p25_p2_active_slot != -1);
-                    // Treat a slot as non-idle if SACCH indicates MAC_PTT/ACTIVE (20..22)
-                    // even if the per-slot audio gate is still closed (e.g., pre‑ESS).
-                    int left_mac_active = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
-                    int right_mac_active = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
-                    int left_idle = (state->p25_p2_audio_allowed[0] == 0) && !left_mac_active;
-                    int right_idle = (state->p25_p2_audio_allowed[1] == 0) && !right_mac_active;
-                    int both_slots_idle = (!is_p2_vc) ? 1 : (left_idle && right_idle);
+                    int left_has_audio = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
+                    int right_has_audio = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
+                    int left_active = left_has_audio;
+                    int right_active = right_has_audio;
+                    double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                    {
+                        const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                        if (s && s[0] != '\0') {
+                            double v = atof(s);
+                            if (v >= 0.0 && v < 10.0) {
+                                mac_hold = v;
+                            }
+                        }
+                    }
+                    if (state->p25_p2_last_mac_active[0] != 0
+                        && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold) {
+                        left_active = 1;
+                    }
+                    if (state->p25_p2_last_mac_active[1] != 0
+                        && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
+                        right_active = 1;
+                    }
+                    int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
                     if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);

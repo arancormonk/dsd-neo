@@ -131,6 +131,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x1 && err == 0) {
         fprintf(stderr, " MAC_PTT ");
         fprintf(stderr, "%s", KGRN);
+        // Mark recent activity for this logical slot to avoid early bounce
+        state->p25_p2_last_mac_active[slot] = time(NULL);
         // SACCH uses inverted mapping; 'slot' is the logical voice channel
         if (slot == 0) {
             //reset fourv_counter and dropbyte on PTT
@@ -516,6 +518,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x2 && err == 0) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
+        // Mark end-of-PTT for this logical slot to allow SM tick to release
+        // early once per-slot audio/jitter drains.
+        state->p25_p2_last_end_ptt[slot] = time(NULL);
         // SACCH logical slot index
         if (slot == 0) {
 
@@ -687,6 +692,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, " MAC_ACTIVE ");
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
+        // Mark recent activity for this logical slot to avoid early bounce
+        state->p25_p2_last_mac_active[slot] = time(NULL);
         fprintf(stderr, "%s", KNRM);
         // Enable audio per policy (respect encryption and key presence)
         {

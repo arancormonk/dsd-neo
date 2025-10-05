@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <time.h>
 
 // Uncomment for some verbose debug info
 //#define TDULC_DEBUG
@@ -279,6 +280,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
                irrecoverable_errors);
 
     // Next we should find an status dibit
+    // Register a Phase 1 termination boundary to allow early teardown on TDULC
+    state->p25_p1_last_tdu = time(NULL);
     if (status_count != 35) {
         fprintf(stderr, "%s", KRED);
         fprintf(stderr, "*** SYNC ERROR\n");

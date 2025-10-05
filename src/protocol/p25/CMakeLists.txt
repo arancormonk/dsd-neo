@@ -7,6 +7,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   p25_lcw.c
   p25_trunk_sm.c
   p25_trunk_sm_wrap.c
+  p25_sm_watchdog.c
   p25_patch.c
   p25_test_shim.c
   p25_test_lcw_shim.c

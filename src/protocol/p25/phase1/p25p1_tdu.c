@@ -6,6 +6,7 @@
 
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <time.h>
 
 void
 processTDU(dsd_opts* opts, dsd_state* state) {
@@ -50,6 +51,9 @@ processTDU(dsd_opts* opts, dsd_state* state) {
         state->aout_gain = opts->audio_gain;
     }
 
+    // Mark Phase 1 termination boundary for early teardown and reset
+    // encryption indicators so the next LDU starts muted
+    state->p25_p1_last_tdu = time(NULL);
     // Reset encryption indicators at TDU boundary so the next LDU starts muted
     // until we positively identify clear payload (prevents brief encrypted bursts).
     state->payload_miP = 0;
