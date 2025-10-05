@@ -487,6 +487,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d] Source [%d]", svc, channel, group, source);
             freq = process_channel_to_freq(opts, state, channel);
 
+            // Persist SVC bits for event history (per-slot)
+            if ((state->currentslot & 1) == 0) {
+                state->dmr_so = (uint16_t)svc;
+            } else {
+                state->dmr_soR = (uint16_t)svc;
+            }
+
             //add active channel to string for ncurses display
             char suf_gvg[32];
             p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_gvg, sizeof suf_gvg);
@@ -607,6 +614,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n  CHAN: %04X; Timer: %f Seconds; Target: %d;", channel, (float)timer * 0.1f,
                     target); //timer unit is 100 ms, or 0.1 seconds
             freq = process_channel_to_freq(opts, state, channel);
+
+            // Persist SVC bits for event history (per-slot)
+            if ((state->currentslot & 1) == 0) {
+                state->dmr_so = (uint16_t)svc;
+            } else {
+                state->dmr_soR = (uint16_t)svc;
+            }
 
             //add active channel to string for ncurses display
             if (channel != 0 && channel != 0xFFFF) {
@@ -2315,6 +2329,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, " Group Voice");
             state->gi[slot] = 0;
 
+            // Persist SVC bits for event history (per-slot)
+            if ((slot & 1) == 0) {
+                state->dmr_so = (uint16_t)svc;
+            } else {
+                state->dmr_soR = (uint16_t)svc;
+            }
+
             sprintf(state->call_string[slot], "   Group ");
             if (svc & 0x80) {
                 dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
@@ -2428,6 +2449,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             fprintf(stderr, " Unit to Unit Voice");
             state->gi[slot] = 1;
+
+            // Persist SVC bits for event history (per-slot)
+            if ((slot & 1) == 0) {
+                state->dmr_so = (uint16_t)svc;
+            } else {
+                state->dmr_soR = (uint16_t)svc;
+            }
 
             sprintf(state->call_string[slot], " Private ");
             if (svc & 0x80) {
