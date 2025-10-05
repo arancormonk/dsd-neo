@@ -31,6 +31,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     state->last_vc_sync_time = time(NULL);
+    state->p25_last_vc_tune_time = state->last_vc_sync_time;
 }
 
 // Weak fallback for return_to_cc so unit tests that link only the P25 library
@@ -701,6 +702,20 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     // against cases where frame processing halts due to signal loss.
     if (opts->p25_is_tuned == 1) {
         double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
+        double dt_since_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+        // Small startup grace window after a VC tune to avoid bouncing back to
+        // CC before MAC_PTT/ACTIVE and audio arrive. Override via
+        // DSD_NEO_P25_VC_GRACE (seconds).
+        double vc_grace = 1.5; // seconds
+        {
+            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    vc_grace = v;
+                }
+            }
+        }
         int is_p2_vc = (state->p25_p2_active_slot != -1);
         // Safety: once hangtime has expired, aggressively clear per-slot audio
         // gates so stale 'allowed' flags cannot wedge the release logic when
@@ -716,7 +731,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         int left_idle = (state->p25_p2_audio_allowed[0] == 0) && !left_mac_active;
         int right_idle = (state->p25_p2_audio_allowed[1] == 0) && !right_mac_active;
         int both_slots_idle = (!is_p2_vc) ? 1 : (left_idle && right_idle);
-        if (dt >= opts->trunk_hangtime && both_slots_idle) {
+        if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);

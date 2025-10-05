@@ -636,6 +636,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     // to CC before we have a chance to acquire sync on the new VC.
     state->last_vc_sync_time = time(NULL);
     state->last_cc_sync_time = state->last_vc_sync_time;
+    state->p25_last_vc_tune_time = state->last_vc_sync_time;
 }
 
 // Tune to a Control Channel candidate frequency without marking as voice tuned.

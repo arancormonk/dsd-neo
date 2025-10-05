@@ -1232,9 +1232,21 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
     if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
         time_t now2 = time(NULL);
         int no_recent_voice =
-            (state->last_vc_sync_time != 0 && (now2 - state->last_vc_sync_time) > opts->trunk_hangtime);
+            (state->last_vc_sync_time != 0) && ((now2 - state->last_vc_sync_time) > opts->trunk_hangtime);
         int both_slots_idle = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
-        if (no_recent_voice && both_slots_idle) {
+        double dt_since_tune =
+            (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+        double vc_grace = 1.5; // seconds; override with DSD_NEO_P25_VC_GRACE
+        {
+            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    vc_grace = v;
+                }
+            }
+        }
+        if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {
             state->p25_sm_force_release = 1;
             p25_sm_on_release(opts, state);
         }

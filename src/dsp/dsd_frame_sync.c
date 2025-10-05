@@ -1322,15 +1322,34 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     fprintf(stderr, "Sync: no sync\n");
                     // fprintf (stderr,"Press CTRL + C to close.\n");
                 }
-                // Defensive trunking fallback: if we are tuned to a P25 VC
-                // and have not observed recent voice activity beyond hangtime,
-                // force a safe return to the control channel. This protects
-                // against sites that stop emitting MAC_SIGNAL/IDLE or when
-                // frame processing stalls due to marginal signal.
+                // Defensive trunking fallback: if tuned to a P25 VC and voice
+                // activity is stale beyond hangtime, consider a safe return to
+                // the control channel. Mirror the P25 SM tick's gating so we do
+                // not thrash back to CC while a slot still indicates ACTIVE.
                 if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
                     double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
-                    // Be decisive once hangtime has expired; avoid extra delay.
-                    if (dt >= opts->trunk_hangtime) {
+                    double dt_since_tune =
+                        (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+                    // Startup grace after a VC tune to avoid bouncing before PTT/audio
+                    double vc_grace = 1.5; // seconds
+                    {
+                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                        if (s && s[0] != '\0') {
+                            double v = atof(s);
+                            if (v >= 0.0 && v < 10.0) {
+                                vc_grace = v;
+                            }
+                        }
+                    }
+                    int is_p2_vc = (state->p25_p2_active_slot != -1);
+                    // Treat a slot as non-idle if SACCH indicates MAC_PTT/ACTIVE (20..22)
+                    // even if the per-slot audio gate is still closed (e.g., pre‑ESS).
+                    int left_mac_active = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
+                    int right_mac_active = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
+                    int left_idle = (state->p25_p2_audio_allowed[0] == 0) && !left_mac_active;
+                    int right_idle = (state->p25_p2_audio_allowed[1] == 0) && !right_mac_active;
+                    int both_slots_idle = (!is_p2_vc) ? 1 : (left_idle && right_idle);
+                    if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);
                     }
