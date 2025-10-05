@@ -187,6 +187,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         //fprintf (stderr,"\nSymbol Timing:\n");
         //printw("\nSymbol Timing:\n");
     }
+    /* Simple hysteresis for modulation auto-detect to avoid rapid flapping
+     * between C4FM/QPSK/GFSK when scanning for sync on marginal signals. The
+     * vote counters persist across calls to getFrameSync to carry momentum. */
+    static int vote_qpsk = 0;
+    static int vote_c4fm = 0;
+    static int vote_gfsk = 0;
+
     while (sync == 0) {
 
         t++;
@@ -213,57 +220,66 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             state->sidx++;
         }
 
-        if (lastt == t_max) //issue for QPSK on shorter sync pattern? //23
-        {
+        if (lastt == t_max) {
             lastt = 0;
+            /* Decide preferred modulation for this window */
+            int want_mod = 0; /* 0=C4FM, 1=QPSK, 2=GFSK */
             if (state->numflips > opts->mod_threshold) {
-                /* Treat as QPSK irrespective of mod_qpsk; allow auto-detect to engage CQPSK path. */
-                state->rf_mod = 1;
-                /* Auto-enable CQPSK/LSM DSP path and loops when QPSK detected */
+                want_mod = 1; /* QPSK */
+            } else if (state->numflips > 18 && opts->mod_gfsk == 1) {
+                want_mod = 2; /* GFSK */
+            } else {
+                want_mod = 0; /* C4FM */
+            }
+
+            /* Update votes (require 2 consecutive windows before switching) */
+            if (want_mod == 1) {
+                vote_qpsk++;
+                vote_c4fm = 0;
+                vote_gfsk = 0;
+            } else if (want_mod == 2) {
+                vote_gfsk++;
+                vote_qpsk = 0;
+                vote_c4fm = 0;
+            } else {
+                vote_c4fm++;
+                vote_qpsk = 0;
+                vote_gfsk = 0;
+            }
+
+            int do_switch = -1; /* -1=no-op, else new rf_mod */
+            if (want_mod == 1 && vote_qpsk >= 2 && state->rf_mod != 1) {
+                do_switch = 1;
+            } else if (want_mod == 2 && vote_gfsk >= 2 && state->rf_mod != 2) {
+                do_switch = 2;
+            } else if (want_mod == 0 && vote_c4fm >= 2 && state->rf_mod != 0) {
+                do_switch = 0;
+            }
+
+            if (do_switch >= 0) {
+                state->rf_mod = do_switch;
 #ifdef USE_RTLSDR
-                int cq = 0, f = 0, t = 0, a = 0; /* a=auto-dsp enable */
+                int cq = 0, f = 0, t = 0, a = 0;
                 rtl_stream_dsp_get(&cq, &f, &t, &a);
                 if (a && !rtl_stream_get_manual_dsp()) {
-                    /* Disable generic IQ balance; enable CQPSK chain */
-                    rtl_stream_toggle_iq_balance(0);
-                    rtl_stream_toggle_cqpsk(1);
-                    rtl_stream_toggle_fll(1);
-                    rtl_stream_toggle_ted(1);
-                    /* Enable LMS + WL with modest defaults, MF on, brief CMA */
-                    rtl_stream_cqpsk_set(1, 5, 2, 6, 1, 0, 0, 1, 1200);
-                }
-#endif
-            } else if (state->numflips > 18) {
-                if (opts->mod_gfsk == 1) {
-                    state->rf_mod = 2;
-                    /* Disable CQPSK path outside QPSK; enable generic IQ balance */
-#ifdef USE_RTLSDR
-                    int cq2 = 0, f2 = 0, t2 = 0, a2 = 0;
-                    rtl_stream_dsp_get(&cq2, &f2, &t2, &a2);
-                    if (a2 && !rtl_stream_get_manual_dsp()) {
+                    if (do_switch == 1) {
+                        /* Switch to CQPSK path */
+                        rtl_stream_toggle_iq_balance(0);
+                        rtl_stream_toggle_cqpsk(1);
+                        rtl_stream_toggle_fll(1);
+                        rtl_stream_toggle_ted(1);
+                        rtl_stream_cqpsk_set(1, 5, 2, 6, 1, 0, 0, 1, 1200);
+                    } else {
+                        /* Switch away from CQPSK path */
                         rtl_stream_toggle_iq_balance(1);
                         rtl_stream_toggle_cqpsk(0);
                         rtl_stream_toggle_fll(0);
                         rtl_stream_toggle_ted(0);
                     }
-#endif
                 }
-            } else {
-                if (opts->mod_c4fm == 1) {
-                    state->rf_mod = 0;
-                    /* Disable CQPSK path outside QPSK; enable generic IQ balance */
-#ifdef USE_RTLSDR
-                    int cq3 = 0, f3 = 0, t3 = 0, a3 = 0;
-                    rtl_stream_dsp_get(&cq3, &f3, &t3, &a3);
-                    if (a3 && !rtl_stream_get_manual_dsp()) {
-                        rtl_stream_toggle_iq_balance(1);
-                        rtl_stream_toggle_cqpsk(0);
-                        rtl_stream_toggle_fll(0);
-                        rtl_stream_toggle_ted(0);
-                    }
 #endif
-                }
             }
+
             state->numflips = 0;
         } else {
             lastt++;
