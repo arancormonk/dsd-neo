@@ -612,8 +612,12 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             fprintf(stderr, "%s", KRED);
             fprintf(stderr, "Encrypted ");
 
-            //experimental TG LO/B if ENC trunked following disabled //DMR -- LO Trunked Enc Calls WIP; #121
-            if (opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0) //&& type != 2
+            // experimental TG LO/B if ENC trunked following disabled //DMR -- LO Trunked Enc Calls WIP; #121
+            // When ENC lockout is enabled, mark TG as locked out and only request
+            // a return to CC if the opposite slot is not actively carrying clear
+            // voice. This prevents muting clear audio when an encrypted call
+            // shares the carrier on the other TDMA slot.
+            if (opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0) // && type != 2
             {
                 unsigned int i, lo = 0;
                 uint32_t t = 0;
@@ -649,14 +653,36 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
                     watchdog_event_current(opts, state, slot);
                 }
 
-                //Craft a fake CSBK pdu send it to run as a p_clear to return to CC if available
-                uint8_t dummy[12];
-                uint8_t dbits_local[1] = {0};
-                memset(dummy, 0, sizeof(dummy));
-                dummy[0] = 46;
-                dummy[1] = 255;
-                if ((strcmp(gm, "B") == 0) && (strcmp(gn, "ENC LO") == 0)) { //&& (opts->trunk_tune_data_calls == 0)
-                    dmr_cspdu(opts, state, dbits_local, dummy, 1, 0);
+                // Determine whether the opposite slot is carrying an active voice burst.
+                // Only request a return to CC (via a synthetic P_CLEAR) when the
+                // opposite slot is not active. Otherwise, keep the VC and let the
+                // audio path mute only this encrypted slot so the clear slot can play.
+                int eslot = state->currentslot & 1;
+                int other = eslot ^ 1;
+                int other_voice = 0;
+                if (other == 0) {
+                    other_voice = (state->dmrburstL == 16);
+                } else {
+                    other_voice = (state->dmrburstR == 16);
+                }
+
+                if (!other_voice) {
+                    // Craft a fake CSBK PDU and send it to run as a P_CLEAR to return to CC if available
+                    uint8_t dummy[12];
+                    uint8_t dbits_local[1] = {0};
+                    memset(dummy, 0, sizeof(dummy));
+                    dummy[0] = 46;
+                    dummy[1] = 255;
+                    if ((strcmp(gm, "B") == 0) && (strcmp(gn, "ENC LO") == 0)) {
+                        dmr_cspdu(opts, state, dbits_local, dummy, 1, 0);
+                    }
+                } else {
+                    // Opposite slot has clear voice; do not P_CLEAR. The mixer will
+                    // mute this encrypted TG per-slot while continuing clear audio.
+                    if (opts->verbose > 0) {
+                        fprintf(stderr,
+                                " ENC lockout: other slot active with clear voice; stay on VC, mute enc slot. ");
+                    }
                 }
             }
         }
