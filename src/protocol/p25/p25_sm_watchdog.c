@@ -14,6 +14,7 @@ extern volatile uint8_t exitflag;
 static pthread_t g_p25_sm_wd_thread;
 static atomic_int g_p25_sm_wd_running = 0;
 static atomic_int g_p25_sm_tick_lock = 0;
+static atomic_int g_p25_sm_in_tick = 0;
 static dsd_opts* g_opts = NULL;
 static dsd_state* g_state = NULL;
 
@@ -25,7 +26,9 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1)) {
         /* Only one tick runs at a time across all callers. */
+        atomic_store(&g_p25_sm_in_tick, 1);
         p25_sm_tick(opts, state);
+        atomic_store(&g_p25_sm_in_tick, 0);
         atomic_store(&g_p25_sm_tick_lock, 0);
     }
 }
@@ -64,4 +67,9 @@ p25_sm_watchdog_stop(void) {
     if (was != 0) {
         pthread_join(g_p25_sm_wd_thread, NULL);
     }
+}
+
+int
+p25_sm_in_tick(void) {
+    return atomic_load(&g_p25_sm_in_tick) ? 1 : 0;
 }

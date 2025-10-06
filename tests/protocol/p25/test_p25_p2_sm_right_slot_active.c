@@ -72,10 +72,9 @@ main(void) {
     // Treat as P2 VC active on slot 2
     st.p25_p2_active_slot = 1;
 
-    // Case 1: MAC_ACTIVE on right slot (dmrburstR=21) should defer release
+    // Case 1: Recent MAC_ACTIVE on right slot should defer release
     g_return_to_cc_called = 0;
-    st.dmrburstL = 0;
-    st.dmrburstR = 21; // ACTIVE
+    st.p25_p2_last_mac_active[1] = time(NULL);
     int before = st.p25_sm_release_count;
     p25_sm_on_release(&opts, &st);
     rc |= expect_eq_int("rel count inc", st.p25_sm_release_count, before + 1);
@@ -83,7 +82,7 @@ main(void) {
 
     // Case 2: jitter ring backlog on right should also defer
     g_return_to_cc_called = 0;
-    st.dmrburstR = 0;
+    st.p25_p2_last_mac_active[1] = 0;
     st.p25_p2_audio_ring_count[1] = 5;
     before = st.p25_sm_release_count;
     p25_sm_on_release(&opts, &st);

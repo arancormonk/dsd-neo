@@ -559,17 +559,27 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
     if (is_p2_vc) {
         // Determine activity using P25-specific gates and a short recent-voice window.
-        // Avoid relying on DMR burst flags here, as they may be stale across protocol transitions
-        // and can wedge the state machine on a dead VC.
-        // Treat a slot as active if audio is allowed, or if SACCH indicates
-        // MAC_PTT/ACTIVE (pre‑ESS gate), or if the jitter buffer has queued
-        // audio. This prevents early releases when slot 2 has just gone
-        // active but the audio gate is not yet open.
-        int left_audio = (state->p25_p2_audio_allowed[0] != 0) || (state->dmrburstL >= 20 && state->dmrburstL <= 22)
-                         || (state->p25_p2_audio_ring_count[0] > 0);
-        int right_audio = (state->p25_p2_audio_allowed[1] != 0) || (state->dmrburstR >= 20 && state->dmrburstR <= 22)
-                          || (state->p25_p2_audio_ring_count[1] > 0);
+        // Do NOT rely on DMR burst flags here; they can be stale across protocol
+        // transitions and wedge the SM on a dead VC.
+        // Treat a slot as active if audio is allowed, jitter has queued audio,
+        // or we saw recent MAC_ACTIVE/PTT on that slot.
         time_t now = time(NULL);
+        double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+        {
+            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    mac_hold = v;
+                }
+            }
+        }
+        int left_audio =
+            (state->p25_p2_audio_allowed[0] != 0) || (state->p25_p2_audio_ring_count[0] > 0)
+            || (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
+        int right_audio =
+            (state->p25_p2_audio_allowed[1] != 0) || (state->p25_p2_audio_ring_count[1] > 0)
+            || (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
         int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= opts->trunk_hangtime);
         int stale_activity =
             (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) > (opts->trunk_hangtime + 2));

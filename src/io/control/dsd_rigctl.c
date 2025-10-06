@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <netdb.h>
@@ -561,7 +562,11 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
     // Before moving away from the current VC, ensure any queued audio is
     // played to completion to avoid carrying tail audio into the next call.
-    dsd_drain_audio_output(opts);
+    // When called from the P25 SM tick context, skip the blocking drain to
+    // avoid holding the SM tick lock on slow or stalled audio backends.
+    if (!p25_sm_in_tick()) {
+        dsd_drain_audio_output(opts);
+    }
     //extra safeguards due to sync issues with NXDN
     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
@@ -651,7 +656,10 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
         return;
     }
     // Ensure any queued audio tail plays before changing channels
-    dsd_drain_audio_output(opts);
+    // Avoid blocking drain when invoked from SM tick context.
+    if (!p25_sm_in_tick()) {
+        dsd_drain_audio_output(opts);
+    }
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
             SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
@@ -683,7 +691,10 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
         return;
     }
     // Ensure any queued audio tail plays before changing channels
-    dsd_drain_audio_output(opts);
+    // Avoid blocking drain when invoked from SM tick context.
+    if (!p25_sm_in_tick()) {
+        dsd_drain_audio_output(opts);
+    }
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
             SetModulation(opts->rigctl_sockfd, opts->setmod_bw);

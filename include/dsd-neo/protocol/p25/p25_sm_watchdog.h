@@ -24,6 +24,9 @@ void p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 void p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
 void p25_sm_watchdog_stop(void);
 
+/* Returns 1 while a P25 SM tick is executing on the current thread. */
+int p25_sm_in_tick(void);
+
 #ifdef __cplusplus
 }
 #endif
