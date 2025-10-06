@@ -96,6 +96,10 @@ ncursesMenu(dsd_opts* opts, dsd_state* state) {
     // Mark menu open so the main loop (e.g., frame sync) suppresses processing
     state->menuopen = 1;
 
+    // Reset P25p2 per-slot jitter rings so stale buffers don't hold SM gates
+    // while decode is paused during the blocking menu loop.
+    p25_p2_audio_ring_reset(state, -1);
+
     // Update sync time so we don't immediately go CC hunting when exiting the menu
     state->last_cc_sync_time = time(NULL);
 

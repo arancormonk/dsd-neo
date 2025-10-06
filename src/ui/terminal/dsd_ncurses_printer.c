@@ -2278,6 +2278,20 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         }
         printw("| P2 slot: %s; jitter S1:%d/3 S2:%d/3\n", (act == 0) ? "1" : (act == 1) ? "2" : "-", lfill, rfill);
         lines++;
+
+        // SM Gate introspection: show the conditions that can hold release
+        // Left/right: audio_allowed, ring_count, delta since last MAC_ACTIVE
+        time_t now = time(NULL);
+        double l_dmac =
+            (state->p25_p2_last_mac_active[0] != 0) ? (double)(now - state->p25_p2_last_mac_active[0]) : -1.0;
+        double r_dmac =
+            (state->p25_p2_last_mac_active[1] != 0) ? (double)(now - state->p25_p2_last_mac_active[1]) : -1.0;
+        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
+        double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
+        printw("| SM Gate: L[a=%d rc=%d dMAC=%4.1fs]  R[a=%d rc=%d dMAC=%4.1fs]  dt=%4.1fs tune=%4.1fs\n",
+               state->p25_p2_audio_allowed[0] ? 1 : 0, state->p25_p2_audio_ring_count[0], l_dmac,
+               state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, dt, dt_tune);
+        lines++;
     }
 
     /* P1 DUID histogram (since last reset/tune) */

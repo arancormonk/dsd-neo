@@ -41,8 +41,15 @@ p25_sm_watchdog_thread(void* arg) {
         if (g_opts && g_state && g_opts->p25_trunk == 1) {
             p25_sm_try_tick(g_opts, g_state);
         }
-        ts.tv_sec = 1;
-        ts.tv_nsec = 0;
+        // When ncurses UI is enabled, tick more frequently to avoid long
+        // perceived wedges while UI rendering competes with decode paths.
+        if (g_opts && g_opts->use_ncurses_terminal == 1) {
+            ts.tv_sec = 0;
+            ts.tv_nsec = 500000000L; // 0.5s
+        } else {
+            ts.tv_sec = 1;
+            ts.tv_nsec = 0;
+        }
         nanosleep(&ts, NULL);
     }
     return NULL;

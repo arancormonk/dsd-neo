@@ -840,6 +840,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             // Immediately gate off P25p2 audio until next MAC_PTT decision
             state->p25_p2_audio_allowed[0] = 0;
             state->p25_p2_audio_allowed[1] = 0;
+            // Also reset any queued jitter buffers so stale frames do not keep
+            // the SM release gate active after lockout is toggled on.
+            p25_p2_audio_ring_reset(state, -1);
         } else {
             // Disable ENC lockout
             opts->trunk_tune_enc_calls = 1;

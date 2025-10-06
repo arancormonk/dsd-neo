@@ -612,11 +612,27 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
                 }
             }
         }
+        // Ignore ring_count as an activity source if no recent MAC_ACTIVE/PTT
+        // has been observed on that slot within a short ring-hold window.
+        double ring_hold = 0.75; // seconds; override via DSD_NEO_P25_RING_HOLD
+        {
+            const char* s = getenv("DSD_NEO_P25_RING_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v <= 5.0) {
+                    ring_hold = v;
+                }
+            }
+        }
+        int left_ring = (state->p25_p2_audio_ring_count[0] > 0) && (state->p25_p2_last_mac_active[0] != 0)
+                        && ((double)(now - state->p25_p2_last_mac_active[0]) <= ring_hold);
+        int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active[1] != 0)
+                         && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
         int left_audio =
-            (state->p25_p2_audio_allowed[0] != 0) || (state->p25_p2_audio_ring_count[0] > 0)
+            (state->p25_p2_audio_allowed[0] != 0) || left_ring
             || (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
         int right_audio =
-            (state->p25_p2_audio_allowed[1] != 0) || (state->p25_p2_audio_ring_count[1] > 0)
+            (state->p25_p2_audio_allowed[1] != 0) || right_ring
             || (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
         int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= opts->trunk_hangtime);
         int stale_activity =
@@ -626,8 +642,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // (e.g., MAC_IDLE on both slots, early ENC lockout, or teardown PDUs).
         if (!forced && !stale_activity && (left_audio || right_audio)) {
             if (opts && opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%f\n", left_audio,
-                        right_audio, recent_voice, opts ? opts->trunk_hangtime : -1.0);
+                fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%f (lr=%d rr=%d)\n",
+                        left_audio, right_audio, recent_voice, opts ? opts->trunk_hangtime : -1.0, left_ring,
+                        right_ring);
             }
             p25_sm_log_status(opts, state, "release-deferred-gated");
             return; // keep current VC; do not return to CC yet
