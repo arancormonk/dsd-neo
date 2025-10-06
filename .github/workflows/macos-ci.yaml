@@ -368,7 +368,7 @@ jobs:
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2.3.3
+        uses: softprops/action-gh-release@v2.3.4
         with:
           files: ${{ steps.dmg.outputs.DMG_PATH }}
           name: ${{ steps.dmg.outputs.ART_NAME }}
