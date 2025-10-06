@@ -2257,9 +2257,35 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Flush any residual audio queued for this slot to avoid artifact bleed
             p25_p2_audio_ring_reset(state, eslot);
 
-            int other_audio = state->p25_p2_audio_allowed[eslot ^ 1] || state->p25_p2_audio_ring_count[eslot ^ 1] > 0
-                              || ((eslot ^ 1) == 0 ? (state->dmrburstL >= 20 && state->dmrburstL <= 22)
-                                                   : (state->dmrburstR >= 20 && state->dmrburstR <= 22));
+            // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
+            double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+            {
+                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        mac_hold = v;
+                    }
+                }
+            }
+            time_t now2 = time(NULL);
+            int os = eslot ^ 1;
+            double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
+            {
+                const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
+                if (s2 && s2[0] != '\0') {
+                    double v2 = atof(s2);
+                    if (v2 >= 0.0 && v2 <= 5.0) {
+                        voice_hold = v2;
+                    }
+                }
+            }
+            int recent_voice =
+                (state->last_vc_sync_time != 0) && ((double)(now2 - state->last_vc_sync_time) <= voice_hold);
+            int other_audio = state->p25_p2_audio_allowed[os] || (state->p25_p2_audio_ring_count[os] > 0)
+                              || (state->p25_p2_last_mac_active[os] != 0
+                                  && (double)(now2 - state->p25_p2_last_mac_active[os]) <= mac_hold)
+                              || recent_voice;
             if (!other_audio) {
                 // Force release so SM ignores any stale gates and returns to CC
                 state->p25_sm_force_release = 1;
@@ -2381,9 +2407,33 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->p25_p2_audio_allowed[slot] = 0;
                 p25_p2_audio_ring_reset(state, slot);
                 int other = slot ^ 1;
-                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0
-                                  || (other == 0 ? (state->dmrburstL >= 20 && state->dmrburstL <= 22)
-                                                 : (state->dmrburstR >= 20 && state->dmrburstR <= 22));
+                double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                {
+                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                    if (s && s[0] != '\0') {
+                        double v = atof(s);
+                        if (v >= 0.0 && v < 10.0) {
+                            mac_hold = v;
+                        }
+                    }
+                }
+                time_t now2 = time(NULL);
+                double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
+                {
+                    const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
+                    if (s2 && s2[0] != '\0') {
+                        double v2 = atof(s2);
+                        if (v2 >= 0.0 && v2 <= 5.0) {
+                            voice_hold = v2;
+                        }
+                    }
+                }
+                int recent_voice =
+                    (state->last_vc_sync_time != 0) && ((double)(now2 - state->last_vc_sync_time) <= voice_hold);
+                int other_audio = state->p25_p2_audio_allowed[other] || (state->p25_p2_audio_ring_count[other] > 0)
+                                  || (state->p25_p2_last_mac_active[other] != 0
+                                      && (double)(now2 - state->p25_p2_last_mac_active[other]) <= mac_hold)
+                                  || recent_voice;
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
                     state->p25_sm_force_release = 1;

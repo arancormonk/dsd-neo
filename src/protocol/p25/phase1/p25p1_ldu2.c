@@ -35,6 +35,21 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     // Hysteresis: if we have very recent activity within a fraction of the
     // hangtime window, refresh the timer early to avoid thrashing between the
     // VC and CC on marginal signals. Otherwise, defer updates until after FEC
+    // checks succeed (below).
+    {
+        time_t now = time(NULL);
+        double hold_hyst = opts->trunk_hangtime * 0.75;
+        if (hold_hyst < 0.75) {
+            hold_hyst = 0.75; // minimum grace window
+        }
+        if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
+            state->last_vc_sync_time = now;
+        }
+    }
+
+    // Hysteresis: if we have very recent activity within a fraction of the
+    // hangtime window, refresh the timer early to avoid thrashing between the
+    // VC and CC on marginal signals. Otherwise, defer updates until after FEC
     // success (below), so hangtime is not extended by false decodes when the
     // signal is gone.
     {

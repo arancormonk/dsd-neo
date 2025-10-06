@@ -727,9 +727,36 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             }
             int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
             if (enc_suspect) {
-                int other_audio = state->p25_p2_audio_allowed[slot ^ 1] || state->p25_p2_audio_ring_count[slot ^ 1] > 0
-                                  || (((slot ^ 1) == 0) ? (state->dmrburstL >= 20 && state->dmrburstL <= 22)
-                                                        : (state->dmrburstR >= 20 && state->dmrburstR <= 22));
+                // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
+                double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                {
+                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                    if (s && s[0] != '\0') {
+                        double v = atof(s);
+                        if (v >= 0.0 && v < 10.0) {
+                            mac_hold = v;
+                        }
+                    }
+                }
+                time_t now2 = time(NULL);
+                int os = slot ^ 1;
+                // Recent-voice tail window to bridge short gaps even if MAC_ACTIVE and rings are momentarily quiet
+                double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
+                {
+                    const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
+                    if (s2 && s2[0] != '\0') {
+                        double v2 = atof(s2);
+                        if (v2 >= 0.0 && v2 <= 5.0) {
+                            voice_hold = v2;
+                        }
+                    }
+                }
+                int recent_voice =
+                    (state->last_vc_sync_time != 0) && ((double)(now2 - state->last_vc_sync_time) <= voice_hold);
+                int other_audio = state->p25_p2_audio_allowed[os] || (state->p25_p2_audio_ring_count[os] > 0)
+                                  || (state->p25_p2_last_mac_active[os] != 0
+                                      && (double)(now2 - state->p25_p2_last_mac_active[os]) <= mac_hold)
+                                  || recent_voice;
                 state->p25_p2_audio_allowed[slot] = 0; // gate current slot
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
@@ -1123,7 +1150,25 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // channels are explicitly idle. Otherwise, allow hangtime fallback
         // to manage teardown.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            if (state->dmrburstL == 24 && state->dmrburstR == 24) {
+            // Only force release if both slots are idle by P25 metrics
+            double mac_hold = 2.0; // seconds
+            {
+                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        mac_hold = v;
+                    }
+                }
+            }
+            time_t now2 = time(NULL);
+            int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)
+                           || (state->p25_p2_last_mac_active[0] != 0
+                               && (double)(now2 - state->p25_p2_last_mac_active[0]) <= mac_hold);
+            int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
+                           || (state->p25_p2_last_mac_active[1] != 0
+                               && (double)(now2 - state->p25_p2_last_mac_active[1]) <= mac_hold);
+            if (!l_active && !r_active) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }
@@ -1179,9 +1224,28 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         p25_p2_audio_ring_reset(state, slot);
         // Only return to CC when both slots are IDLE (not merely audio-gated),
         // or upon explicit vPDU release. This avoids bouncing on encrypted calls.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
-            state->p25_sm_force_release = 1;
-            p25_sm_on_release(opts, state);
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+            double mac_hold = 2.0; // seconds
+            {
+                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        mac_hold = v;
+                    }
+                }
+            }
+            time_t now2 = time(NULL);
+            int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)
+                           || (state->p25_p2_last_mac_active[0] != 0
+                               && (double)(now2 - state->p25_p2_last_mac_active[0]) <= mac_hold);
+            int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
+                           || (state->p25_p2_last_mac_active[1] != 0
+                               && (double)(now2 - state->p25_p2_last_mac_active[1]) <= mac_hold);
+            if (!l_active && !r_active) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            }
         }
     }
     if (opcode == 0x4 && err == 0) {
