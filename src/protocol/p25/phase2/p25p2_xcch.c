@@ -687,20 +687,19 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Mark recent activity for this logical slot to avoid early bounce
         state->p25_p2_last_mac_active[slot] = time(NULL);
         fprintf(stderr, "%s", KNRM);
-        // Enable audio per policy (respect encryption and key presence)
+        // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
             int allow_audio = 0;
-            // Do not enable audio for sessions marked as Packet/Data
-            if (state->p25_call_is_packet[slot]) {
-                allow_audio = 0;
+            int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+            unsigned long long key = (slot == 0) ? state->R : state->RR;
+            int aes_loaded = state->aes_key_loaded[slot];
+            // If stream is clear or decryptable, enable regardless of a stale Packet/Data flag
+            if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
+                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
+                allow_audio = 1;
             } else {
-                int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-                unsigned long long key = (slot == 0) ? state->R : state->RR;
-                int aes_loaded = state->aes_key_loaded[slot];
-                if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                    || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                    allow_audio = 1; // clear or decryptable with key
-                }
+                // Otherwise, suppress audio for Packet/Data sessions
+                allow_audio = state->p25_call_is_packet[slot] ? 0 : allow_audio;
             }
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }
@@ -1266,7 +1265,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 0, FMAC);
         fprintf(stderr, "%s", KNRM);
-        // Enable audio per policy (respect encryption and key presence)
+        // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
             int allow_audio = 0;
             int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
@@ -1275,6 +1274,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (alg == 0 || alg == 0x80 || ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
                 || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
                 allow_audio = 1; // clear or decryptable with key
+            } else {
+                allow_audio = state->p25_call_is_packet[slot] ? 0 : allow_audio;
             }
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }

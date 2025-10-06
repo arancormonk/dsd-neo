@@ -95,58 +95,12 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     memset(stereo_samp2, 0.0f, sizeof(stereo_samp2));
     memset(stereo_samp3, 0.0f, sizeof(stereo_samp3));
 
-    //dmr enc checkdown for whether or not to fill the stereo sample or not for playback or writing
-    encL = (state->dmr_so >> 6) & 0x1;
-    encR = (state->dmr_soR >> 6) & 0x1;
-
-    //checkdown to see if we can lift the 'mute' if a key is available
-    if (encL) {
-        if (state->payload_algid == 0) {
-            if (state->K != 0 || state->K1 != 0) {
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x02 || state->payload_algid == 0x21 || state->payload_algid == 0x22) {
-            if (state->R != 0) {
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x24 || state->payload_algid == 0x25) {
-            //going to need a better check for this later on, or seperated keys or something
-            if (state->aes_key_loaded[0] == 1) {
-                encL = 0;
-            }
-        }
-    }
-
-    if (encR) {
-        if (state->payload_algidR == 0) {
-            if (state->K != 0 || state->K1 != 0) {
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x02 || state->payload_algidR == 0x21 || state->payload_algidR == 0x22) {
-            if (state->RR != 0) {
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x24 || state->payload_algidR == 0x25) {
-            //going to need a better check for this later on, or seperated keys or something
-            if (state->aes_key_loaded[1] == 1) {
-                encR = 0;
-            }
-        }
-    }
-
-    //debug disable enc check for AES testing
-    // encL = 0;
-    // encR = 0;
-
     //TODO: add option to bypass enc with a toggle as well
 
-    // Per-slot audio gating (P25p2): mute when audio not allowed
-    if (!state->p25_p2_audio_allowed[0]) {
-        encL = 1;
-    }
-    if (!state->p25_p2_audio_allowed[1]) {
-        encR = 1;
-    }
+    // Per-slot audio gating (P25p2): take precedence over SVC enc bits
+    // If audio is allowed for a slot, force unmute for that slot; otherwise mute it.
+    encL = state->p25_p2_audio_allowed[0] ? 0 : 1;
+    encR = state->p25_p2_audio_allowed[1] ? 0 : 1;
 
     //CHEAT: Using the slot on/off, use that to set encL or encR back on
     //as a simple way to turn off voice synthesis in a particular slot
@@ -1766,49 +1720,18 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     short empty[320];
     memset(empty, 0, sizeof(empty));
 
-    //p25p2 enc checkdown for whether or not to fill the stereo sample or not for playback or writing
-    encL = encR = 1;
-    if (state->payload_algid == 0 || state->payload_algid == 0x80) {
+    // Per-slot audio gating (P25p2): take precedence over SVC enc bits
+    // If audio is allowed for a slot, force unmute for that slot; otherwise mute it.
+    if (state->p25_p2_audio_allowed[0]) {
         encL = 0;
+    } else {
+        encL = 1;
     }
-    if (state->payload_algidR == 0 || state->payload_algidR == 0x80) {
+    if (state->p25_p2_audio_allowed[1]) {
         encR = 0;
+    } else {
+        encR = 1;
     }
-
-    //checkdown to see if we can lift the 'mute' if a key is available
-    if (encL) {
-        //RC4 or DES
-        if (state->payload_algid == 0xAA || state->payload_algid == 0x81) {
-            if (state->R != 0) {
-                encL = 0;
-            }
-        }
-
-        //AES
-        if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
-            if (state->aes_key_loaded[0] == 1) {
-                encL = 0;
-            }
-        }
-    }
-
-    if (encR) {
-        //RC4 or DES
-        if (state->payload_algidR == 0xAA || state->payload_algidR == 0x81) {
-            if (state->RR != 0) {
-                encR = 0;
-            }
-        }
-
-        //AES
-        if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
-            if (state->aes_key_loaded[1] == 1) {
-                encR = 0;
-            }
-        }
-    }
-
-    // Per-slot audio gating (P25p2): mute when audio not allowed
     if (!state->p25_p2_audio_allowed[0]) {
         encL = 1;
     }
