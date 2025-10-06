@@ -86,6 +86,19 @@ p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
     if (!opts || !state) {
         return;
     }
+    // Capture last reason/tag for ncurses UI diagnostics
+    if (tag && tag[0] != '\0') {
+        snprintf(state->p25_sm_last_reason, sizeof state->p25_sm_last_reason, "%s", tag);
+        state->p25_sm_last_reason_time = time(NULL);
+        // Push into ring buffer of recent tags
+        int idx = state->p25_sm_tag_head % 8;
+        snprintf(state->p25_sm_tags[idx], sizeof state->p25_sm_tags[idx], "%s", tag);
+        state->p25_sm_tag_time[idx] = state->p25_sm_last_reason_time;
+        state->p25_sm_tag_head++;
+        if (state->p25_sm_tag_count < 8) {
+            state->p25_sm_tag_count++;
+        }
+    }
     if (opts->verbose > 1) {
         fprintf(stderr, "\n  P25 SM: %s tunes=%u releases=%u cc_cand add=%u used=%u count=%d idx=%d\n",
                 tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added,
@@ -589,6 +602,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     // still active. This prevents dropping an in-progress call on the opposite
     // timeslot when only one slot sends an END/IDLE indication.
     state->p25_sm_release_count++;
+    if (state) {
+        state->p25_sm_last_release_time = time(NULL);
+    }
 
     int forced = (state && state->p25_sm_force_release) ? 1 : 0;
     if (state) {

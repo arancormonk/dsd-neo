@@ -961,6 +961,16 @@ typedef struct {
     // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;
+    // Timestamp of last p25_sm_on_release() (0 when none yet)
+    time_t p25_sm_last_release_time;
+    // Last SM status/reason tag (e.g., "after-tune", "release-deferred-gated") and timestamp
+    char p25_sm_last_reason[32];
+    time_t p25_sm_last_reason_time;
+    // Ring buffer of recent SM tags (for ncurses diagnostics)
+    int p25_sm_tag_count;      // number of valid entries (<= 8)
+    int p25_sm_tag_head;       // next write index (monotonic)
+    char p25_sm_tags[8][32];   // recent tags (text)
+    time_t p25_sm_tag_time[8]; // per-tag timestamp
 
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes

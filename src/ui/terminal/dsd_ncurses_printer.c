@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/synctype.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
@@ -2065,6 +2066,9 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
     return 1;
 }
 
+/* Forward decls for helpers used below */
+static long int ui_guess_active_vc_freq(const dsd_state* state);
+
 /* Print P25 P1/P2 decoder metrics. Returns number of lines printed. */
 /* Small percentile helper for u8 rings (len <= 64) */
 static int
@@ -2114,6 +2118,14 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     int is_p25p2 = (lls == 35 || lls == 36);
 
     if (is_p25p1 || is_p25p2) {
+        /* Current vs previous sync types (helps spot stuck transitions) */
+        int cur = lls;
+        int prev = state->lastsynctype;
+        const char* cur_s = (cur >= 0 && cur < 44) ? SyncTypes[cur] : "-";
+        const char* prev_s = (prev >= 0 && prev < 44) ? SyncTypes[prev] : "-";
+        printw("| Sync: cur:%s(%d) prev:%s(%d)\n", cur_s, cur, prev_s, prev);
+        lines++;
+
         /* P25p1 voice error snapshot (IMBE ECC) + moving average */
         double avgv = 0.0;
         if (compute_p25p1_voice_avg_err(state, &avgv)) {
@@ -2236,6 +2248,110 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                state->p25_cc_cand_count);
         lines++;
 
+        /* CC/VC frequency snapshot (best-effort) */
+        long cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+        long vc = ui_guess_active_vc_freq(state);
+        char cc_buf[48];
+        char vc_buf[48];
+        if (cc != 0) {
+            snprintf(cc_buf, sizeof cc_buf, "%.6lf MHz", (double)cc / 1000000.0);
+        } else {
+            snprintf(cc_buf, sizeof cc_buf, "-");
+        }
+        if (vc != 0) {
+            snprintf(vc_buf, sizeof vc_buf, "%.6lf MHz", (double)vc / 1000000.0);
+        } else {
+            snprintf(vc_buf, sizeof vc_buf, "-");
+        }
+        printw("| CC/VC: CC:%s VC:%s\n", cc_buf, vc_buf);
+        lines++;
+
+        /* Time since last SM release (if any) */
+        if (state->p25_sm_last_release_time != 0) {
+            time_t now = time(NULL);
+            double dt_rel = (double)(now - state->p25_sm_last_release_time);
+            printw("| SM Last: release d=%4.1fs\n", dt_rel);
+            lines++;
+        }
+
+        /* Last SM reason/tag (from SM internal status logs) */
+        if (state->p25_sm_last_reason[0] != '\0' && state->p25_sm_last_reason_time != 0) {
+            time_t now = time(NULL);
+            double dt_tag = (double)(now - state->p25_sm_last_reason_time);
+            printw("| SM Last: %s d=%4.1fs\n", state->p25_sm_last_reason, dt_tag);
+            lines++;
+        }
+
+        /* Recent SM tags (up to 3 most recent) */
+        if (state->p25_sm_tag_count > 0) {
+            time_t now = time(NULL);
+            ui_print_lborder_green();
+            addstr(" SM Tags: ");
+            int shown = 0;
+            for (int k = 0; k < state->p25_sm_tag_count && k < 3; k++) {
+                int idx = (state->p25_sm_tag_head - 1 - k) % 8;
+                if (idx < 0) {
+                    idx += 8;
+                }
+                const char* t = state->p25_sm_tags[idx];
+                double dt = (double)(now - state->p25_sm_tag_time[idx]);
+                if (shown > 0) {
+                    addstr(" | ");
+                }
+                printw("%s(%0.1fs)", t[0] ? t : "-", dt);
+                shown++;
+            }
+            addch('\n');
+            lines++;
+        }
+
+        /* SM Path: compress recent tags into coarse transitions (oldest→newest) */
+        if (state->p25_sm_tag_count > 0) {
+            char path[64] = {0};
+            int n = state->p25_sm_tag_count;
+            if (n > 6) {
+                n = 6;
+            }
+            int wrote = 0;
+            for (int k = n - 1; k >= 0; k--) {
+                int idx = (state->p25_sm_tag_head - 1 - k) % 8;
+                if (idx < 0) {
+                    idx += 8;
+                }
+                const char* t = state->p25_sm_tags[idx];
+                char sym = 0;
+                if (strstr(t, "after-tune") != NULL) {
+                    sym = 'V';
+                } else if (strstr(t, "after-release") != NULL) {
+                    sym = 'R';
+                } else if (strstr(t, "release-") != NULL) {
+                    sym = 'H'; /* hold/delayed/gated */
+                } else if (strstr(t, "after-neigh") != NULL) {
+                    sym = 'N';
+                } else if (strstr(t, "tick") != NULL) {
+                    sym = 'T';
+                } else {
+                    sym = '?';
+                }
+                int m = (int)strlen(path);
+                if (m + 3 < (int)sizeof(path)) {
+                    if (wrote > 0) {
+                        path[m++] = '\xE2'; /* UTF-8 right arrow '→' */
+                        path[m++] = '\x86';
+                        path[m++] = '\x92';
+                    }
+                    path[m++] = sym;
+                    path[m] = '\0';
+                    wrote++;
+                }
+            }
+            ui_print_lborder_green();
+            addstr(" SM Path: ");
+            addstr(path[0] ? path : "-");
+            addch('\n');
+            lines++;
+        }
+
         /* IDEN trust summary */
         int iden_total = 0, iden_conf = 0;
         for (int i = 0; i < 16; i++) {
@@ -2291,6 +2407,32 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         printw("| SM Gate: L[a=%d rc=%d dMAC=%4.1fs]  R[a=%d rc=%d dMAC=%4.1fs]  dt=%4.1fs tune=%4.1fs\n",
                state->p25_p2_audio_allowed[0] ? 1 : 0, state->p25_p2_audio_ring_count[0], l_dmac,
                state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, dt, dt_tune);
+        lines++;
+    }
+
+    /* Additional Phase 1 state-machine diagnostics (timers/flags) */
+    if (is_p25p1 && opts && opts->p25_trunk == 1) {
+        time_t now = time(NULL);
+        double dt_cc = (state->last_cc_sync_time != 0) ? (double)(now - state->last_cc_sync_time) : -1.0;
+        double dt_vc = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
+        double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
+        double tdu_age = (state->p25_p1_last_tdu != 0) ? (double)(now - state->p25_p1_last_tdu) : -1.0;
+        printw("| SM Timers: dCC=%4.1fs dVC=%4.1fs dTune=%4.1fs TDU_age=%4.1fs\n", dt_cc, dt_vc, dt_tune, tdu_age);
+        lines++;
+
+        // Show lightweight flags/policy that affect tune/release behavior
+        int tuned = (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0;
+        int tick = p25_sm_in_tick();
+        unsigned int hold = state->tg_hold;
+        printw("| SM Flags: tuned:%d force_rel:%d tick:%d hold:%s\n", tuned, state->p25_sm_force_release ? 1 : 0, tick,
+               (hold != 0) ? "on" : "-");
+        lines++;
+
+        // Compact policy summary for quick sanity checks
+        const char* pol_data = (opts->trunk_tune_data_calls == 1) ? "on" : "off";
+        const char* pol_priv = (opts->trunk_tune_private_calls == 1) ? "on" : "off";
+        const char* pol_enc = (opts->trunk_tune_enc_calls == 1) ? "follow" : "lockout";
+        printw("| Policy: data:%s priv:%s enc:%s hang:%.1fs\n", pol_data, pol_priv, pol_enc, opts->trunk_hangtime);
         lines++;
     }
 
