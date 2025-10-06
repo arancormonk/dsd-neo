@@ -80,14 +80,16 @@ main(void) {
     rc |= expect_eq_int("rel count inc", st.p25_sm_release_count, before + 1);
     rc |= expect_eq_int("deferred due to R ACTIVE", g_return_to_cc_called, 0);
 
-    // Case 2: jitter ring backlog on right should also defer
+    // Case 2: ring backlog without recent MAC/PTT should NOT defer
+    // We intentionally clear last_mac_active and set ring_count to ensure
+    // stale jitter alone does not wedge the SM on a dead VC.
     g_return_to_cc_called = 0;
     st.p25_p2_last_mac_active[1] = 0;
     st.p25_p2_audio_ring_count[1] = 5;
     before = st.p25_sm_release_count;
     p25_sm_on_release(&opts, &st);
     rc |= expect_eq_int("rel count inc 2", st.p25_sm_release_count, before + 1);
-    rc |= expect_eq_int("deferred due to R ring", g_return_to_cc_called, 0);
+    rc |= expect_eq_int("no defer on stale ring", g_return_to_cc_called, 1);
 
     // Case 3: forced release ignores gates and calls return_to_cc
     g_return_to_cc_called = 0;
