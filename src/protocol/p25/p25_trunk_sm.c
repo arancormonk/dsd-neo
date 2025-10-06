@@ -208,8 +208,16 @@ p25_sm_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
 #endif
     }
 
-    // Compose final file path
-    int n = snprintf(out, out_len, "%s/p25_cc_%05llX_%03llX.txt", path, state->p2_wacn, state->p2_sysid);
+    // Compose final file path. Prefer scoping by RFSS/SITE when known to avoid
+    // co-mingling CC candidates across sites in the same system. Fall back to
+    // system-only scope when RFSS/SITE are unknown.
+    int n = 0;
+    if (state->p2_rfssid > 0 && state->p2_siteid > 0) {
+        n = snprintf(out, out_len, "%s/p25_cc_%05llX_%03llX_R%03d_S%03d.txt", path, state->p2_wacn, state->p2_sysid,
+                     state->p2_rfssid, state->p2_siteid);
+    } else {
+        n = snprintf(out, out_len, "%s/p25_cc_%05llX_%03llX.txt", path, state->p2_wacn, state->p2_sysid);
+    }
     return (n > 0 && (size_t)n < out_len);
 }
 
@@ -531,16 +539,38 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
 void
 dsd_p25_sm_on_indiv_grant_impl(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     UNUSED(src);
-    // Respect Data-call policy (svc bit 0x10) when data tuning is disabled
+    // Centralized gating mirroring group-grant policy to avoid accidental
+    // bypass when new call paths reach the SM directly.
+    // 1) Respect Data-call policy (svc bit 0x10) when data tuning is disabled
     if ((svc_bits & 0x10) && opts->trunk_tune_data_calls == 0) {
         if (opts->verbose > 0) {
             fprintf(stderr, "\n  P25 SM: block tune DST=%u (data call; tuning disabled)\n", (unsigned)dst);
         }
         return;
     }
-    if (dst == 0) {
-        // proceed regardless
+    // 2) Respect Private-call tuning policy
+    if (opts->trunk_tune_private_calls == 0) {
+        if (opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: block tune DST=%u (private calls disabled)\n", (unsigned)dst);
+        }
+        return;
     }
+    // 3) Respect ENC policy (svc bit 0x40) for private calls
+    if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
+        if (opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: block tune DST=%u (encrypted; tuning disabled)\n", (unsigned)dst);
+        }
+        return;
+    }
+    // 4) TG Hold: when active, suppress individual calls entirely
+    if (state->tg_hold != 0) {
+        if (opts->verbose > 1) {
+            fprintf(stderr, "\n  P25 SM: block tune DST=%u (TG Hold active)\n", (unsigned)dst);
+        }
+        return;
+    }
+
+    // Proceed with tuned grant
     p25_handle_grant(opts, state, channel);
 }
 

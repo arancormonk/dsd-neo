@@ -1051,8 +1051,20 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // MAC_PTT/ACTIVE on either logical channel; this avoids bouncing
             // back to CC during the first moments after a tune when audio
             // gates are not yet open but valid voice is present.
-            int left_mac_active = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
-            int right_mac_active = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
+            double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+            {
+                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        mac_hold = v;
+                    }
+                }
+            }
+            int left_mac_active =
+                (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
+            int right_mac_active =
+                (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
             if (opts->p25_trunk == 1) {
                 if (!(left_mac_active || right_mac_active)) {
                     p2_pending_release = 1; // handle after LCCH is processed below

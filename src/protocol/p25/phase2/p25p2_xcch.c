@@ -619,15 +619,10 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Disable audio for this slot. Do not flush the jitter ring; let it
         // drain to avoid chopping tails when IDLE arrives closely after voice.
         state->p25_p2_audio_allowed[slot] = 0;
-        // Hardened behavior: only force release to CC when BOTH logical
-        // channels are explicitly idle. Otherwise, allow hangtime fallback
-        // to manage teardown to avoid chopping ongoing calls.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            if (state->dmrburstL == 24 && state->dmrburstR == 24) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            }
-        }
+        // Do not force release here; rely on the trunking SM tick and
+        // hangtime/grace logic to decide teardown. Immediate release on
+        // back-to-back MAC_IDLE can bounce on marginal signals before
+        // MAC_ACTIVE is observed.
 
         fprintf(stderr, "%s", KNRM);
     }
@@ -663,11 +658,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         state->p25_p2_audio_allowed[slot] = 0;
         // Clear Packet/Data flag for this slot on IDLE
         state->p25_call_is_packet[slot] = 0;
-        // If both logical channels are idle, return to CC
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
-            state->p25_sm_force_release = 1;
-            p25_sm_on_release(opts, state);
-        }
+        // Do not force release here; allow the SM tick to handle return to CC
+        // based on per-slot audio gates, jitter state, and hangtime.
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim
