@@ -1047,6 +1047,24 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         int p2_pending_release = 0;
         if (duid_decoded == 13 && opts->p25_is_tuned == 1
             && ((now - state->last_vc_sync_time) > opts->trunk_hangtime)) { // MAC_SIGNAL hangtime expiry
+            // Also respect a small grace window after VC tune so we don't
+            // bounce back to CC before audio gates open on fresh calls.
+            double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+            {
+                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        vc_grace = v;
+                    }
+                }
+            }
+            double dt_since_tune =
+                (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+            if (dt_since_tune < vc_grace) {
+                // Too soon after tuning; skip early release this cycle
+                goto after_mac_signal_idle_check;
+            }
             // Do not treat channel as idle if SACCH recently indicated
             // MAC_PTT/ACTIVE on either logical channel; this avoids bouncing
             // back to CC during the first moments after a tune when audio
@@ -1080,6 +1098,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
                 opts->p25_is_tuned = 0;
             }
         }
+    after_mac_signal_idle_check:
 
         if (duid_decoded == 13 && ((now - state->last_active_time) > 2)
             && opts->p25_is_tuned == 0) //should we use && opts->p25_is_tuned == 1?

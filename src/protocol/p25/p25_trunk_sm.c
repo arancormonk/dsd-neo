@@ -924,8 +924,25 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // honor recent MAC_ACTIVE/PTT indications to bridge initial setup and
         // short fades; after hangtime expires, ignore stale MAC flags but keep
         // a small recent MAC hold window.
-        int left_has_audio = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
-        int right_has_audio = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
+        // Treat jitter ring_count as activity only if we have seen a recent
+        // MAC_ACTIVE/PTT on that slot. This avoids stale ring_count values
+        // holding the SM release gate when decode stalls (e.g., ncurses UI).
+        double ring_hold = 0.75; // seconds; override via DSD_NEO_P25_RING_HOLD
+        {
+            const char* s = getenv("DSD_NEO_P25_RING_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v <= 5.0) {
+                    ring_hold = v;
+                }
+            }
+        }
+        int left_ring = (state->p25_p2_audio_ring_count[0] > 0) && (state->p25_p2_last_mac_active[0] != 0)
+                        && ((double)(now - state->p25_p2_last_mac_active[0]) <= ring_hold);
+        int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active[1] != 0)
+                         && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
+        int left_has_audio = state->p25_p2_audio_allowed[0] || left_ring;
+        int right_has_audio = state->p25_p2_audio_allowed[1] || right_ring;
         int left_active = left_has_audio;
         int right_active = right_has_audio;
         double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
