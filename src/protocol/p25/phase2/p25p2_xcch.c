@@ -708,7 +708,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Fallback early ENC lockout on MAC_ACTIVE: if encryption lockout is
         // enabled and the stream is encrypted without a usable key, mute only
         // this slot and return to CC if the opposite slot is not active.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        // Hardened: require an encrypted MAC_PTT to have set enc_pending for
+        // this logical slot before acting. This avoids bouncing on first
+        // MAC_ACTIVE before ALG/KID arrive.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0
+            && state->p25_p2_enc_pending[slot] == 1) {
             int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
             unsigned long long key = (slot == 0) ? state->R : state->RR;
             int aes_loaded = state->aes_key_loaded[slot];
@@ -1275,8 +1279,10 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }
 
-        // Fallback early ENC lockout on MAC_ACTIVE (FACCH path)
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        // Fallback early ENC lockout on MAC_ACTIVE (FACCH path). Hardened with
+        // enc_pending prerequisite to avoid bouncing without PTT context.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0
+            && state->p25_p2_enc_pending[slot] == 1) {
             int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
             unsigned long long key = (slot == 0) ? state->R : state->RR;
             int aes_loaded = state->aes_key_loaded[slot];
