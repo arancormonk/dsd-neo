@@ -1555,27 +1555,56 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         memcpy(state->f_r, state->audio_out_temp_bufR, sizeof(state->f_r));
     }
 
-    //if using anything but DMR Stereo, borrowing state->dmr_encL to signal enc or clear for other types
-    if (opts->dmr_mono == 0 && opts->dmr_stereo == 0 && (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0)) {
-        state->debug_audio_errors += state->errs2;
-        if (opts->audio_out == 1 && opts->floating_point == 0) //&& opts->pulse_digi_rate_out == 8000
-        {
-            processAudio(opts, state);
+    // If using anything but DMR Stereo, handle other protocols (P25, NXDN, etc.).
+    // For P25 Phase 2, do NOT rely on dmr_encL (which reflects slot 1 only). Instead,
+    // allow audio based on the per-slot P25 gate so a clear slot can play while the
+    // opposite slot is encrypted.
+    if (opts->dmr_mono == 0 && opts->dmr_stereo == 0) {
+        int allow_other = 0;
+        int is_p25p2 = (state->synctype == 35 || state->synctype == 36);
+        if (is_p25p2) {
+            allow_other = (state->p25_p2_audio_allowed[state->currentslot] != 0);
+        } else {
+            allow_other = (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
+        }
+        if (allow_other) {
+            state->debug_audio_errors += state->errs2;
+            if (opts->audio_out == 1 && opts->floating_point == 0) {
+                if (is_p25p2 && state->currentslot == 1) {
+                    // Use right-channel processing when current slot is 2
+                    processAudioR(opts, state);
+                } else {
+                    processAudio(opts, state);
+                }
+            }
         }
         //   if (opts->audio_out == 1)
         //   {
         //     playSynthesizedVoice (opts, state);
         //   }
 
-        memcpy(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l)); //P25p1 FDMA 8k/1 channel -f1 switch
+        // Update monitor buffer using the slot-appropriate temp buffer
+        if (is_p25p2 && state->currentslot == 1) {
+            memcpy(state->f_l, state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
+        } else {
+            memcpy(state->f_l, state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf)); //P25p1 FDMA 8k/1
+        }
     }
 
     //still need this for any switch that opens a 1 channel output config
     if (opts->static_wav_file == 0) {
         //if using anything but DMR Stereo, borrowing state->dmr_encL to signal enc or clear for other types
-        if (opts->wav_out_f != NULL && opts->dmr_stereo == 0
-            && (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0)) {
-            writeSynthesizedVoice(opts, state);
+        if (opts->wav_out_f != NULL && opts->dmr_stereo == 0) {
+            int allow_wav = 0;
+            int is_p25p2 = (state->synctype == 35 || state->synctype == 36);
+            if (is_p25p2) {
+                allow_wav = (state->p25_p2_audio_allowed[state->currentslot] != 0);
+            } else {
+                allow_wav = (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
+            }
+            if (allow_wav) {
+                writeSynthesizedVoice(opts, state);
+            }
         }
     }
 

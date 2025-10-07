@@ -97,6 +97,10 @@ void dsd_p25p2_min_set_callbacks(dsd_p25p2_min_sm* sm, dsd_p25p2_min_on_tune_vc_
 // Override timing parameters (pass negative to keep existing)
 void dsd_p25p2_min_configure(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace_s);
 
+// Extended configuration: set all timing knobs at once (pass negative to keep existing).
+void dsd_p25p2_min_configure_ex(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace_s, double min_follow_dwell_s,
+                                double grant_voice_timeout_s, double retune_backoff_s);
+
 // Feed an event into the SM. Uses self-contained clocks; does not write global timers.
 void dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, const dsd_p25p2_min_evt* ev);
 

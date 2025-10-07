@@ -595,6 +595,9 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    // Reset voice activity timer to avoid carrying over a stale recent-voice
+    // window into the next VC follow and to help the SM's idle fallback.
+    state->last_vc_sync_time = 0;
     // Clear P25p2 per-slot audio gating
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;

@@ -18,6 +18,37 @@
 #endif
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
+// Clear per-slot audio gates, small audio rings, encryption indicators, and
+// UI call banners for both logical slots. Intended for use on call teardown
+// before returning to the control channel.
+static void
+p25_p2_teardown_call(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    p25_p2_audio_ring_reset(state, -1);
+    state->p25_p2_last_mac_active[0] = 0;
+    state->p25_p2_last_mac_active[1] = 0;
+    state->p25_p2_last_end_ptt[0] = 0;
+    state->p25_p2_last_end_ptt[1] = 0;
+    state->p25_call_is_packet[0] = 0;
+    state->p25_call_is_packet[1] = 0;
+    state->p25_call_emergency[0] = 0;
+    state->p25_call_emergency[1] = 0;
+    state->p25_call_priority[0] = 0;
+    state->p25_call_priority[1] = 0;
+    state->payload_algid = 0;
+    state->payload_keyid = 0;
+    state->payload_miP = 0ULL;
+    state->payload_algidR = 0;
+    state->payload_keyidR = 0;
+    state->payload_miN = 0ULL;
+    snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+    snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+}
+
 //DUID Look Up Table from OP25
 static const int16_t duid_lookup[256] =
     {
@@ -775,6 +806,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
                     state->p25_sm_force_release = 1;
+                    p25_p2_teardown_call(state);
                     p25_sm_on_release(opts, state);
                 } else {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking; Other slot active; stay on VC. \n");
@@ -1159,6 +1191,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // perform the centralized release now that LCCH processing has
             // cleared per-slot audio gates.
             if (p2_pending_release) {
+                p25_p2_teardown_call(state);
                 p25_sm_on_release(opts, state);
             }
         } else if (duid_decoded == 4) {
@@ -1279,6 +1312,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         }
         if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {
             state->p25_sm_force_release = 1;
+            p25_p2_teardown_call(state);
             p25_sm_on_release(opts, state);
         }
     }

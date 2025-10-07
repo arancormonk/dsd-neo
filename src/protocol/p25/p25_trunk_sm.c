@@ -3,7 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
+#include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 #include <errno.h>
@@ -82,30 +84,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
 // Expire regroup/patch entries older than this many seconds
 #define P25_PATCH_TTL_SECONDS 600
 
-static void
-p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
-    if (!opts || !state) {
-        return;
-    }
-    // Capture last reason/tag for ncurses UI diagnostics
-    if (tag && tag[0] != '\0') {
-        snprintf(state->p25_sm_last_reason, sizeof state->p25_sm_last_reason, "%s", tag);
-        state->p25_sm_last_reason_time = time(NULL);
-        // Push into ring buffer of recent tags
-        int idx = state->p25_sm_tag_head % 8;
-        snprintf(state->p25_sm_tags[idx], sizeof state->p25_sm_tags[idx], "%s", tag);
-        state->p25_sm_tag_time[idx] = state->p25_sm_last_reason_time;
-        state->p25_sm_tag_head++;
-        if (state->p25_sm_tag_count < 8) {
-            state->p25_sm_tag_count++;
-        }
-    }
-    if (opts->verbose > 1) {
-        fprintf(stderr, "\n  P25 SM: %s tunes=%u releases=%u cc_cand add=%u used=%u count=%d idx=%d\n",
-                tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added,
-                state->p25_cc_cand_used, state->p25_cc_cand_count, state->p25_cc_cand_idx);
-    }
-}
+// UI/status tagging moved to p25_sm_ui.c
 
 // Return 1 when running in a stripped-down "basic" mode that disables added
 // safeties/fallbacks and post-hang gating. Enabled via either of these env vars:
@@ -185,7 +164,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
                     sizeof eh->Event_History_Items[0].internal_str)
             != 0) {
             if (opts->event_out_file[0] != '\0') {
-                // P25p2 slots use special swrite handling
+                // TDMA slots use special swrite handling
                 uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
                 write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite,
                                         eh->Event_History_Items[0].event_string);
@@ -194,230 +173,11 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
             init_event_history(eh, 0, 1);
         }
     } else if (opts && opts->verbose > 1) {
-        fprintf(stderr, "\n  P25 SM: ENC lockout event skipped (no event_history_s)\n");
+        p25_sm_log_status(opts, state, "enc-lo-skip-nohist");
     }
-}
-
-// Build a per-system cache file path for CC candidates. Returns 1 on success.
-static int
-p25_sm_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
-    if (!state || !out || out_len == 0) {
-        return 0;
-    }
-    // Require system identity to be known
-    if (state->p2_wacn == 0 || state->p2_sysid == 0) {
-        return 0;
-    }
-
-    // Allow override via env var
-    const char* root = getenv("DSD_NEO_CACHE_DIR");
-    char path[1024] = {0};
-    if (root && root[0] != '\0') {
-        snprintf(path, sizeof(path), "%s", root);
-    } else {
-        const char* home = getenv("HOME");
-#ifdef _WIN32
-        if (!home || home[0] == '\0') {
-            home = getenv("LOCALAPPDATA");
-        }
-#endif
-        if (home && home[0] != '\0') {
-            snprintf(path, sizeof(path), "%s/.cache/dsd-neo", home);
-        } else {
-            // Fallback to CWD
-            snprintf(path, sizeof(path), ".dsdneo_cache");
-        }
-    }
-
-    // Ensure directory exists (best-effort)
-    struct stat st;
-    if (stat(path, &st) != 0) {
-#ifdef _WIN32
-        (void)_mkdir(path);
-#else
-        (void)mkdir(path, 0700);
-#endif
-    }
-
-    // Compose final file path. Prefer scoping by RFSS/SITE when known to avoid
-    // co-mingling CC candidates across sites in the same system. Fall back to
-    // system-only scope when RFSS/SITE are unknown.
-    int n = 0;
-    if (state->p2_rfssid > 0 && state->p2_siteid > 0) {
-        n = snprintf(out, out_len, "%s/p25_cc_%05llX_%03llX_R%03d_S%03d.txt", path, state->p2_wacn, state->p2_sysid,
-                     state->p2_rfssid, state->p2_siteid);
-    } else {
-        n = snprintf(out, out_len, "%s/p25_cc_%05llX_%03llX.txt", path, state->p2_wacn, state->p2_sysid);
-    }
-    return (n > 0 && (size_t)n < out_len);
-}
-
-// Load cached CC candidates for this system if not already loaded.
-static void
-p25_sm_try_load_cache(dsd_opts* opts, dsd_state* state) {
-    if (!state || state->p25_cc_cache_loaded) {
-        return;
-    }
-    // Optional opt-in via env flag; default On
-    int enable = 1;
-    const char* env = getenv("DSD_NEO_CC_CACHE");
-    if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
-        enable = 0;
-    }
-    if (!enable) {
-        state->p25_cc_cache_loaded = 1; // mark checked to avoid repeated attempts
-        return;
-    }
-
-    char fpath[1024];
-    if (!p25_sm_build_cache_path(state, fpath, sizeof(fpath))) {
-        return; // system identity not known yet or path failed
-    }
-
-    FILE* fp = fopen(fpath, "r");
-    if (!fp) {
-        state->p25_cc_cache_loaded = 1; // nothing to load
-        return;
-    }
-
-    // Initialize if needed
-    if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
-        state->p25_cc_cand_count = 0;
-        state->p25_cc_cand_idx = 0;
-    }
-
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        char* end = NULL;
-        long f = strtol(line, &end, 10);
-        if (end == line) {
-            continue; // no number parsed
-        }
-        if (f == 0 || f == state->p25_cc_freq) {
-            continue;
-        }
-        // dedup
-        int exists = 0;
-        for (int k = 0; k < state->p25_cc_cand_count; k++) {
-            if (state->p25_cc_candidates[k] == f) {
-                exists = 1;
-                break;
-            }
-        }
-        if (!exists) {
-            if (state->p25_cc_cand_count < 16) {
-                state->p25_cc_candidates[state->p25_cc_cand_count++] = f;
-            }
-        }
-    }
-    fclose(fp);
-    state->p25_cc_cache_loaded = 1;
-    if (opts && opts->verbose > 0 && state->p25_cc_cand_count > 0) {
-        fprintf(stderr, "\n  P25 SM: Loaded %d CC candidates from cache\n", state->p25_cc_cand_count);
-    }
-}
-
-// Persist the current CC candidate list to disk (best-effort).
-static void
-p25_sm_persist_cache(dsd_opts* opts, dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    // Optional opt-in via env flag; default On
-    int enable = 1;
-    const char* env = getenv("DSD_NEO_CC_CACHE");
-    if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
-        enable = 0;
-    }
-    if (!enable) {
-        return;
-    }
-
-    char fpath[1024];
-    if (!p25_sm_build_cache_path(state, fpath, sizeof(fpath))) {
-        return;
-    }
-    FILE* fp = fopen(fpath, "w");
-    if (!fp) {
-        if (opts && opts->verbose > 1) {
-            fprintf(stderr, "\n  P25 SM: Failed to open CC cache for write: %s (errno=%d)\n", fpath, errno);
-        }
-        return;
-    }
-    for (int i = 0; i < state->p25_cc_cand_count; i++) {
-        if (state->p25_cc_candidates[i] != 0) {
-            fprintf(fp, "%ld\n", state->p25_cc_candidates[i]);
-        }
-    }
-    fclose(fp);
 }
 
 // (moved) Patch group tracking lives in p25_patch.c
-
-// ---- Neighbor (adjacent) frequency helpers ----
-
-#define P25_NB_TTL_SEC ((time_t)30 * 60)
-
-static void
-p25_nb_add(dsd_state* state, long freq) {
-    if (!state || freq <= 0) {
-        return;
-    }
-    // Dedup update
-    for (int i = 0; i < state->p25_nb_count && i < 32; i++) {
-        if (state->p25_nb_freq[i] == freq) {
-            state->p25_nb_last_seen[i] = time(NULL);
-            return;
-        }
-    }
-    int idx = state->p25_nb_count;
-    if (idx < 0) {
-        idx = 0;
-    }
-    if (idx >= 32) {
-        // Replace stalest entry
-        int repl = 0;
-        time_t oldest = state->p25_nb_last_seen[0];
-        for (int i = 1; i < 32; i++) {
-            if (state->p25_nb_last_seen[i] < oldest) {
-                oldest = state->p25_nb_last_seen[i];
-                repl = i;
-            }
-        }
-        idx = repl;
-    } else {
-        state->p25_nb_count = idx + 1;
-    }
-    state->p25_nb_freq[idx] = freq;
-    state->p25_nb_last_seen[idx] = time(NULL);
-}
-
-static void
-p25_nb_tick(dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    time_t now = time(NULL);
-    int w = 0;
-    for (int i = 0; i < state->p25_nb_count && i < 32; i++) {
-        long f = state->p25_nb_freq[i];
-        time_t last = state->p25_nb_last_seen[i];
-        int keep = (f != 0) && (last == 0 || (now - last) <= P25_NB_TTL_SEC);
-        if (keep) {
-            if (w != i) {
-                state->p25_nb_freq[w] = state->p25_nb_freq[i];
-                state->p25_nb_last_seen[w] = state->p25_nb_last_seen[i];
-            }
-            w++;
-        }
-    }
-    // Zero out the tail
-    for (int i = w; i < state->p25_nb_count && i < 32; i++) {
-        state->p25_nb_freq[i] = 0;
-        state->p25_nb_last_seen[i] = 0;
-    }
-    state->p25_nb_count = w;
-}
 
 // Internal helper: compute and tune to a P25 VC, set symbol/slot appropriately
 static void
@@ -455,7 +215,7 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
     if (!(opts->p25_is_tuned == 1 && state->p25_vc_freq[0] == freq)) {
         trunk_tune_to_freq(opts, state, freq);
     }
-    // Reset Phase 2 per-slot audio gate and jitter buffers on new VC
+    // Reset per-slot audio gate and jitter buffers on new VC
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     p25_p2_audio_ring_reset(state, -1);
@@ -468,17 +228,16 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
     state->payload_miP = 0ULL;
     state->payload_miN = 0ULL;
     state->p25_sm_tune_count++;
-    if (opts->verbose > 0) {
-        fprintf(stderr, "\n  P25 SM: Tune VC ch=0x%04X freq=%.6lf MHz tdma=%d\n", channel, (double)freq / 1000000.0,
-                is_tdma);
-    }
     p25_sm_log_status(opts, state, "after-tune");
 }
 
 // Compute frequency from explicit channel and call p25_tune_to_vc
 // Retune backoff window (file-scope) to curb immediate VC↔CC ping‑pong.
+// Track by TDMA slot as well so a new grant on the opposite slot at the same
+// RF can proceed immediately.
 static time_t s_retune_block_until = 0;
 static long s_retune_block_freq = 0;
+static int s_retune_block_slot = -1; // -1 when not applicable
 
 static void
 p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
@@ -488,28 +247,32 @@ p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
     if (freq == 0) {
         return;
     }
-    // Retune backoff: block immediate re-tune to the same VC after a recent return
+    // Determine TDMA slot (when applicable)
+    int is_tdma = 0;
+    if (iden >= 0 && iden < 16) {
+        is_tdma = state->p25_chan_tdma[iden];
+    }
+    int grant_slot = is_tdma ? (chan16 & 1) : -1;
+
+    // Retune backoff: block immediate re-tune to the same VC/slot after a recent return.
     time_t now = time(NULL);
-    if (s_retune_block_until != 0 && now < s_retune_block_until && s_retune_block_freq == freq) {
-        if (opts && opts->verbose > 1) {
-            fprintf(stderr, "\n  P25 SM: grant blocked by backoff (%.1fs left)\n",
-                    (double)(s_retune_block_until - now));
-        }
-        p25_sm_log_status(opts, state, "grant-blocked");
+    if (s_retune_block_until != 0 && now < s_retune_block_until && s_retune_block_freq == freq
+        && s_retune_block_slot == grant_slot) {
+        p25_sm_log_status(opts, state, "grant-blocked-backoff");
         return;
     }
-    // If channel not provided via explicit map, enforce IDEN trust: only tune
-    // using IDEN params that were confirmed on the current CC.
+    // If channel not provided via explicit map, enforce IDEN trust only when
+    // we are not parked on a known CC. While on CC, allow tuning when a
+    // frequency could be computed (above) to avoid missing early calls before
+    // IDEN records are promoted to trusted.
     if (state->trunk_chan_map[chan16] == 0) {
-        uint8_t trust = (iden >= 0 && iden < 16) ? state->p25_iden_trust[iden] : 0;
-        int prov_unset =
-            (iden >= 0 && iden < 16) ? (state->p25_iden_wacn[iden] == 0 && state->p25_iden_sysid[iden] == 0) : 1;
         int on_cc = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0);
-        if (iden < 0 || iden > 15 || (trust < 2 && !(on_cc && prov_unset))) {
-            if (opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: block tune ch=0x%04X (iden %d unconfirmed)\n", chan16, iden);
+        if (!on_cc) {
+            uint8_t trust = (iden >= 0 && iden < 16) ? state->p25_iden_trust[iden] : 0;
+            if (iden < 0 || iden > 15 || trust < 2) {
+                p25_sm_log_status(opts, state, "grant-blocked-iden");
+                return;
             }
-            return;
         }
     }
     p25_tune_to_vc(opts, state, freq, channel);
@@ -538,22 +301,16 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
     // - Respect TG Hold when set (allow only the held TG)
     // - Respect Data-call policy (svc bit 0x10) when data tuning is disabled
     if ((svc_bits & 0x10) && opts->trunk_tune_data_calls == 0) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: block tune TG=%u (data call; tuning disabled)\n", (unsigned)tg);
-        }
+        p25_sm_log_status(opts, state, "grant-blocked-data");
         return;
     }
     if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
         // Harris regroup/patch override: if GRG policy signals KEY=0000 (clear)
         // for this WGID, do not block tuning even if SVC marks it encrypted.
         if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
-            if (opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: ENC lockout override TG=%u (Harris GRG KEY=0000)\n", (unsigned)tg);
-            }
+            p25_sm_log_status(opts, state, "enc-override-clear");
         } else {
-            if (opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: block tune TG=%u (encrypted)\n", (unsigned)tg);
-            }
+            p25_sm_log_status(opts, state, "grant-blocked-enc");
             // Centralized, once-per-TG emit
             p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
             return;
@@ -571,17 +328,13 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
         }
     }
     if (strcmp(mode, "DE") == 0 || strcmp(mode, "B") == 0) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: block tune TG=%u (mode=%s)\n", (unsigned)tg, mode);
-        }
+        p25_sm_log_status(opts, state, "grant-blocked-mode");
         return;
     }
 
     // TG Hold: when active, allow only matching TG
     if (state->tg_hold != 0 && (uint32_t)tg != state->tg_hold) {
-        if (opts->verbose > 1) {
-            fprintf(stderr, "\n  P25 SM: block tune TG=%u (TG Hold=%u)\n", (unsigned)tg, state->tg_hold);
-        }
+        p25_sm_log_status(opts, state, "grant-blocked-hold");
         return;
     }
 
@@ -596,30 +349,22 @@ dsd_p25_sm_on_indiv_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
     // bypass when new call paths reach the SM directly.
     // 1) Respect Data-call policy (svc bit 0x10) when data tuning is disabled
     if ((svc_bits & 0x10) && opts->trunk_tune_data_calls == 0) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: block tune DST=%u (data call; tuning disabled)\n", (unsigned)dst);
-        }
+        p25_sm_log_status(opts, state, "indiv-blocked-data");
         return;
     }
     // 2) Respect Private-call tuning policy
     if (opts->trunk_tune_private_calls == 0) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: block tune DST=%u (private calls disabled)\n", (unsigned)dst);
-        }
+        p25_sm_log_status(opts, state, "indiv-blocked-private");
         return;
     }
     // 3) Respect ENC policy (svc bit 0x40) for private calls
     if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
-        if (opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: block tune DST=%u (encrypted; tuning disabled)\n", (unsigned)dst);
-        }
+        p25_sm_log_status(opts, state, "indiv-blocked-enc");
         return;
     }
     // 4) TG Hold: when active, suppress individual calls entirely
     if (state->tg_hold != 0) {
-        if (opts->verbose > 1) {
-            fprintf(stderr, "\n  P25 SM: block tune DST=%u (TG Hold active)\n", (unsigned)dst);
-        }
+        p25_sm_log_status(opts, state, "indiv-blocked-hold");
         return;
     }
 
@@ -629,7 +374,7 @@ dsd_p25_sm_on_indiv_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
 
 void
 dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
-    // Centralized release handling. For Phase 2 (TDMA) voice channels with two
+    // Centralized release handling. For TDMA voice channels with two
     // logical slots, do not return to the control channel if the other slot is
     // still active. This prevents dropping an in-progress call on the opposite
     // timeslot when only one slot sends an END/IDLE indication.
@@ -644,9 +389,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
     if (p25_sm_basic_mode()) {
-        if (opts && opts->verbose > 0) {
-            fprintf(stderr, "\n  P25 SM: [basic] Release -> CC\n");
-        }
+        p25_sm_log_status(opts, state, "release-cc");
         // Flush per-slot audio gates and jitter buffers on release
         state->p25_p2_audio_allowed[0] = 0;
         state->p25_p2_audio_allowed[1] = 0;
@@ -738,74 +481,81 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // and recent-voice window when explicitly requested by higher layers
         // (e.g., MAC_IDLE on both slots, early ENC lockout, or teardown PDUs).
         if (!forced && !stale_activity && (left_audio || right_audio)) {
-            if (opts && opts->verbose > 0) {
-                fprintf(stderr,
-                        "\n  P25 SM: Release ignored (audio gate%s) L=%d R=%d recent=%d hang=%f (lr=%d rr=%d)\n",
-                        (!recent_voice ? "+post-hang" : ""), left_audio, right_audio, recent_voice,
-                        opts ? opts->trunk_hangtime : -1.0, left_ring, right_ring);
-            }
             p25_sm_log_status(opts, state, (!recent_voice) ? "release-deferred-posthang" : "release-deferred-gated");
             return; // keep current VC; do not return to CC yet
         }
         // If neither slot has audio and we were not forced here, still respect
         // a brief hangtime based on the most recent voice activity.
         if (!forced && recent_voice) {
-            if (opts && opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Release delayed (recent voice within hangtime)\n");
-            }
             p25_sm_log_status(opts, state, "release-delayed-recent");
             return;
         }
     }
 
-    // Either not a P25p2 VC or no other slot is active: return to CC.
-    if (opts && opts->verbose > 0) {
-        fprintf(stderr, "\n  P25 SM: Release -> CC\n");
+    // Either not a TDMA VC or no other slot is active: return to CC.
+    p25_sm_log_status(opts, state, "release-cc");
+    // Reduce side effects: rely on decode/audio teardown to clear per-slot
+    // gates and encryption indicators on TDMA. Always reset the small SM
+    // watchdog and clear per-slot audio gates + MAC/ring hints to prevent
+    // any residual post-hang activity from carrying over after a return.
+    if (forced) {
+        // Full cleanup (legacy behavior)
+        state->p25_p2_audio_allowed[0] = 0;
+        state->p25_p2_audio_allowed[1] = 0;
+        p25_p2_audio_ring_reset(state, -1);
+        state->p25_p2_last_mac_active[0] = 0;
+        state->p25_p2_last_mac_active[1] = 0;
+        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+        state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
+        state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
+        state->payload_algid = 0;
+        state->payload_algidR = 0;
+        state->payload_keyid = 0;
+        state->payload_keyidR = 0;
+        state->payload_miP = 0;
+        state->payload_miN = 0;
+        state->p25_p2_enc_pending[0] = 0;
+        state->p25_p2_enc_pending[1] = 0;
+        state->p25_p2_enc_pending_ttg[0] = 0;
+        state->p25_p2_enc_pending_ttg[1] = 0;
+        state->p25_p2_last_end_ptt[0] = 0;
+        state->p25_p2_last_end_ptt[1] = 0;
+        state->p25_call_is_packet[0] = 0;
+        state->p25_call_is_packet[1] = 0;
+        state->p25_p1_last_tdu = 0;
+    } else {
+        // Light cleanup on non-forced release as well: clear gates + hints.
+        state->p25_p2_audio_allowed[0] = 0;
+        state->p25_p2_audio_allowed[1] = 0;
+        p25_p2_audio_ring_reset(state, -1);
+        state->p25_p2_last_mac_active[0] = 0;
+        state->p25_p2_last_mac_active[1] = 0;
     }
-    // Flush per-slot audio gates and jitter buffers on release
-    state->p25_p2_audio_allowed[0] = 0;
-    state->p25_p2_audio_allowed[1] = 0;
-    p25_p2_audio_ring_reset(state, -1);
-    // Clear any stale MAC_ACTIVE/PTT timestamps so post-hang gating cannot
-    // persist across VC->CC transitions on silent or marginal channels.
-    state->p25_p2_last_mac_active[0] = 0;
-    state->p25_p2_last_mac_active[1] = 0;
-    // Clear call string banners to avoid stale "Group Encrypted" in UI
-    snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
-    snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
-    // Clear P25 call flags
-    state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
-    state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
-    // Reset encryption detection fields to avoid stale ALG/KID/MI affecting next call
-    state->payload_algid = 0;
-    state->payload_algidR = 0;
-    state->payload_keyid = 0;
-    state->payload_keyidR = 0;
-    state->payload_miP = 0;
-    state->payload_miN = 0;
-    // Clear early ENC pending flags
-    state->p25_p2_enc_pending[0] = 0;
-    state->p25_p2_enc_pending[1] = 0;
-    state->p25_p2_enc_pending_ttg[0] = 0;
-    state->p25_p2_enc_pending_ttg[1] = 0;
-    // Clear END_PTT markers
-    state->p25_p2_last_end_ptt[0] = 0;
-    state->p25_p2_last_end_ptt[1] = 0;
-    // Clear per-slot Packet/Data flags
-    state->p25_call_is_packet[0] = 0;
-    state->p25_call_is_packet[1] = 0;
-    // Clear Phase 1 TDU marker
-    state->p25_p1_last_tdu = 0;
     // Reset SM post-hang watchdog
     state->p25_sm_posthang_start = 0;
     // Capture last VC frequency before return_to_cc clears it
     long last_vc = state->p25_vc_freq[0] ? state->p25_vc_freq[0] : state->trunk_vc_freq[0];
+    int last_slot = state->p25_p2_active_slot;
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
-    // Program short backoff against re-tuning the same VC immediately
-    if (last_vc != 0) {
+    // Program short backoff against re-tuning the same VC immediately.
+    // Apply only for TDMA voice channels to prevent slot-thrash; allow
+    // immediate re-tune on single-carrier voice grants.
+    if (last_vc != 0 && last_slot != -1) {
         s_retune_block_freq = last_vc;
-        s_retune_block_until = time(NULL) + 3; // seconds
+        s_retune_block_slot = last_slot;
+        double backoff_s = 1.0; // default shorter backoff
+        const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+        if (sb && sb[0] != '\0') {
+            double v = atof(sb);
+            if (v >= 0.0 && v <= 10.0) {
+                backoff_s = v;
+            }
+        }
+        s_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
+    } else {
+        s_retune_block_slot = -1;
     }
 }
 
@@ -816,7 +566,7 @@ dsd_p25_sm_on_neighbor_update_impl(dsd_opts* opts, dsd_state* state, const long*
         return;
     }
     // Lazy-load any persisted candidates once system identity is known
-    p25_sm_try_load_cache(opts, state);
+    p25_cc_try_load_cache(opts, state);
     // Initialize if needed
     if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
         state->p25_cc_cand_count = 0;
@@ -858,13 +608,11 @@ dsd_p25_sm_on_neighbor_update_impl(dsd_opts* opts, dsd_state* state, const long*
             }
             state->p25_cc_cand_added++;
         }
-        if (opts->verbose > 1) {
-            fprintf(stderr, "\n  P25 SM: Add CC cand=%.6lf MHz (count=%d)\n", (double)f / 1000000.0,
-                    state->p25_cc_cand_count);
-        }
+        // Optionally log via status tag; detailed frequency print omitted
+        p25_sm_log_status(opts, state, "cc-cand-add");
     }
     // Best-effort persistence for warm start in future runs
-    p25_sm_persist_cache(opts, state);
+    p25_cc_persist_cache(opts, state);
     p25_sm_log_status(opts, state, "after-neigh");
 }
 
@@ -879,17 +627,15 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
 
     const time_t now = time(NULL);
 
-    // Minimal P25p2 SM: if currently in a P25p2 sync context, delegate VC
-    // follow/hang/return decisions entirely to the minimal SM to avoid
-    // conflicting gates. This bypasses legacy P2 gating and safeties.
-    if (state->lastsynctype == 35 || state->lastsynctype == 36) {
-        dsd_p25p2_min_tick(dsd_p25p2_min_get(), opts, state);
-        return;
-    }
+    // Drive the minimal follower each tick so it can honor GRANT/ACTIVE/IDLE
+    // events observed on both single-carrier and TDMA voice channels. The
+    // follower's return callback uses the public SM release path, which keeps
+    // existing gating consistent.
+    dsd_p25p2_min_tick(dsd_p25p2_min_get(), opts, state);
 
     // If currently tuned to a P25 VC and we've observed no recent voice
     // activity for longer than hangtime, force a safe return to CC. This
-    // complements the inline fallbacks in the P25p2 frame path and protects
+    // complements the inline fallbacks in the TDMA frame path and protects
     // against cases where frame processing halts due to signal loss.
     if (opts->p25_is_tuned == 1) {
         double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
@@ -909,35 +655,15 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         }
         int is_p2_vc = (state->p25_p2_active_slot != -1);
 
-        // Unconditional release after hangtime (no gates/no safeties).
-        if (dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
-            if (opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: [basic-all] Forced release (dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
-            }
-            if (state->p25_cc_freq != 0) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            } else {
-                state->p25_p2_audio_allowed[0] = 0;
-                state->p25_p2_audio_allowed[1] = 0;
-                state->p25_p2_active_slot = -1;
-                state->p25_vc_freq[0] = 0;
-                state->p25_vc_freq[1] = 0;
-                opts->p25_is_tuned = 0;
-                opts->trunk_is_tuned = 0;
-                state->last_cc_sync_time = now;
-            }
-            p25_sm_log_status(opts, state, "tick-basic-all-release");
-            return;
-        }
+        // Note: do not unconditionally release here; rely on the post-hang
+        // gating and safety-net logic below. An unconditional release causes
+        // premature VC->CC bounce before MAC/voice activity appears.
         if (p25_sm_basic_mode()) {
             // Basic mode: unconditionally release after hangtime (and grace)
             // when voice activity is stale, without post-hang gating or extra
             // safety windows.
             if (dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
-                if (opts->verbose > 0) {
-                    fprintf(stderr, "\n  P25 SM: [basic] Forced release (dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
-                }
+                p25_sm_log_status(opts, state, "tick-basic-release");
                 if (state->p25_cc_freq != 0) {
                     state->p25_sm_force_release = 1;
                     p25_sm_on_release(opts, state);
@@ -971,8 +697,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
             if (dt >= (opts->trunk_hangtime + extra) && dt_since_tune >= vc_grace) {
                 if (opts->verbose > 1) {
-                    fprintf(stderr, "\n  P25 SM: Tick safety-net forced release (dt=%.1f ht=%.1f + extra=%.1f)\n", dt,
-                            opts->trunk_hangtime, extra);
+                    p25_sm_log_status(opts, state, "tick-safety-net");
                 }
                 if (state->p25_cc_freq != 0) {
                     state->p25_sm_force_release = 1;
@@ -1014,11 +739,6 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 }
             }
             if (dt >= (opts->trunk_hangtime + extra + margin) && dt_since_tune >= vc_grace) {
-                if (opts->verbose > 0) {
-                    fprintf(stderr,
-                            "\n  P25 SM: Ultra-failsafe forced release (dt=%.1f ht=%.1f extra=%.1f margin=%.1f)\n", dt,
-                            opts->trunk_hangtime, extra, margin);
-                }
                 if (state->p25_cc_freq != 0) {
                     state->p25_sm_force_release = 1;
                     p25_sm_on_release(opts, state);
@@ -1037,8 +757,8 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        // Mismatch guard: if we still believe we are on a Phase 2 VC
-        // (per-slot SM state), but current sync is not P25p2 and hangtime
+        // Mismatch guard: if we still believe we are on a TDMA VC
+        // (per-slot SM state), but current sync is not TDMA and hangtime
         // + extra has elapsed since last voice, treat this as a stale P2 VC
         // and force release. This covers cases where the decoder drifted to a
         // P1/CC context but stale P2 gates kept post-hang logic alive.
@@ -1051,9 +771,15 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     extra = v;
                 }
             }
-            if (dt >= (opts->trunk_hangtime + extra) && dt_since_tune >= vc_grace) {
+            // Prefer an earlier teardown on no-sync when both slots show no
+            // audio or MAC-gated jitter, ignoring mac_recent holds. This
+            // prevents multi-second wedges after MAC_END/IDLE storms.
+            int nosync_idle = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_ring_count[0] == 0
+                               && state->p25_p2_audio_allowed[1] == 0 && state->p25_p2_audio_ring_count[1] == 0);
+            if ((nosync_idle && dt >= opts->trunk_hangtime && dt_since_tune >= vc_grace)
+                || (dt >= (opts->trunk_hangtime + extra) && dt_since_tune >= vc_grace)) {
                 if (opts->verbose > 0) {
-                    fprintf(stderr, "\n  P25 SM: Forced release (P2 state, P1/other sync; dt=%.1f)\n", dt);
+                    p25_sm_log_status(opts, state, "tick-safety-net-nosync");
                 }
                 if (state->p25_cc_freq != 0) {
                     state->p25_sm_force_release = 1;
@@ -1126,7 +852,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 int drained_right_only = right_end && rdrain && !other_active;
                 if (drained_both || drained_left_only || drained_right_only) {
                     if (opts->verbose > 0) {
-                        fprintf(stderr, "\n  P25 SM: Release on END_PTT drain (L:%d R:%d)\n", ldrain, rdrain);
+                        p25_sm_log_status(opts, state, "release-end-ptt-drain");
                     }
                     if (state->p25_cc_freq != 0) {
                         state->p25_sm_force_release = 1;
@@ -1163,9 +889,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 double since_voice =
                     (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) * 1000.0 : 1e12;
                 if (since_tdu >= tail_ms_cfg && since_voice >= tail_ms_cfg) {
-                    if (opts->verbose > 0) {
-                        fprintf(stderr, "\n  P25 SM: Release on P1 TDU drain\n");
-                    }
+                    p25_sm_log_status(opts, state, "release-p1-tdu-drain");
                     if (state->p25_cc_freq != 0) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);
@@ -1256,7 +980,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // on marginal signals during real calls.
         if (state->lastsynctype < 0 && dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime && both_slots_idle) {
             if (opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Forced release (no sync; dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
+                p25_sm_log_status(opts, state, "tick-nosync-release");
             }
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
@@ -1331,10 +1055,68 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     return;
                 }
             }
-            if (opts->verbose > 1) {
-                fprintf(stderr, "\n  P25 SM: Tick held by post-hang gate (L:%d R:%d)\n", left_active, right_active);
-            }
+            // Post-hang gating: report via status tag only
             p25_sm_log_status(opts, state, "tick-posthang-gate");
+        }
+    }
+
+    // Final idle fallback: if decode reports we are still on a P25p2 voice
+    // sync, but both slots are idle well past hangtime (no audio gate, no
+    // MAC-gated jitter, no recent MAC activity), force a release even if the
+    // p25_is_tuned flag is inconsistent. This protects against rare flag
+    // mismatches that can wedge the tuner on a dead VC while the SM believes
+    // it is on CC.
+    {
+        const time_t now2 = time(NULL);
+        double dt_v = (state->last_vc_sync_time != 0) ? (double)(now2 - state->last_vc_sync_time) : 1e9;
+        double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+        int cur_is_p2 = (state->lastsynctype == 35 || state->lastsynctype == 36);
+        double mac_hold2 = 3.0;
+        {
+            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    mac_hold2 = v;
+                }
+            }
+        }
+        int l_recent =
+            (state->p25_p2_last_mac_active[0] != 0) && ((double)(now2 - state->p25_p2_last_mac_active[0]) <= mac_hold2);
+        int r_recent =
+            (state->p25_p2_last_mac_active[1] != 0) && ((double)(now2 - state->p25_p2_last_mac_active[1]) <= mac_hold2);
+        int l_ring = (state->p25_p2_audio_ring_count[0] > 0) && l_recent;
+        int r_ring = (state->p25_p2_audio_ring_count[1] > 0) && r_recent;
+        int l_act = state->p25_p2_audio_allowed[0] || l_ring || l_recent;
+        int r_act = state->p25_p2_audio_allowed[1] || r_ring || r_recent;
+        int idle = (l_act == 0 && r_act == 0);
+        double vc_grace2 = 1.5;
+        {
+            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    vc_grace2 = v;
+                }
+            }
+        }
+        if (cur_is_p2 && idle && dt_v >= opts->trunk_hangtime && dt_tune >= vc_grace2) {
+            if (state->p25_cc_freq != 0) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            } else {
+                // Minimal teardown to enable CC hunt
+                state->p25_p2_audio_allowed[0] = 0;
+                state->p25_p2_audio_allowed[1] = 0;
+                state->p25_p2_active_slot = -1;
+                state->p25_vc_freq[0] = 0;
+                state->p25_vc_freq[1] = 0;
+                opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
+                state->last_cc_sync_time = now2;
+            }
+            p25_sm_log_status(opts, state, "tick-idle-fallback");
+            return;
         }
     }
 
@@ -1361,11 +1143,9 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             if (opts->p25_prefer_candidates == 1 && p25_sm_next_cc_candidate(state, &cand) && cand != 0) {
                 trunk_tune_to_cc(opts, state, cand);
                 if (opts->verbose > 0) {
-                    fprintf(stderr, "Tuning to Candidate CC: %.06lf MHz\n", (double)cand / 1000000.0);
+                    p25_sm_log_status(opts, state, "cc-cand-tune");
                     if (opts->verbose > 1) {
-                        fprintf(stderr, "\n  P25 SM: CC cand used=%u/%u tunes=%u releases=%u\n",
-                                state->p25_cc_cand_used, state->p25_cc_cand_added, state->p25_sm_tune_count,
-                                state->p25_sm_release_count);
+                        p25_sm_log_status(opts, state, "cc-hunt-tune");
                     }
                 }
                 tuned = 1;
@@ -1373,7 +1153,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
 
             if (!tuned) {
                 if (opts->verbose > 0) {
-                    fprintf(stderr, "Control Channel Signal Lost. Searching for Control Channel.\n");
+                    p25_sm_log_status(opts, state, "cc-lost-hunting");
                 }
                 if (state->lcn_freq_count > 0) {
                     if (state->lcn_freq_roll >= state->lcn_freq_count) {
@@ -1395,7 +1175,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     if (f != 0) {
                         trunk_tune_to_cc(opts, state, f);
                         if (opts->verbose > 0) {
-                            fprintf(stderr, "Tuning to Frequency: %.06lf MHz\n", (double)f / 1000000.0);
+                            p25_sm_log_status(opts, state, "cc-fallback-tune");
                         }
                     }
                     state->lcn_freq_roll++;

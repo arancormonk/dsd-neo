@@ -4,8 +4,10 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static inline time_t
@@ -66,6 +68,24 @@ dsd_p25p2_min_configure(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace
     }
     if (vc_grace_s >= 0.0) {
         sm->vc_grace_s = vc_grace_s;
+    }
+}
+
+void
+dsd_p25p2_min_configure_ex(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace_s, double min_follow_dwell_s,
+                           double grant_voice_timeout_s, double retune_backoff_s) {
+    if (!sm) {
+        return;
+    }
+    dsd_p25p2_min_configure(sm, hangtime_s, vc_grace_s);
+    if (min_follow_dwell_s >= 0.0) {
+        sm->min_follow_dwell_s = min_follow_dwell_s;
+    }
+    if (grant_voice_timeout_s >= 0.0) {
+        sm->grant_voice_timeout_s = grant_voice_timeout_s;
+    }
+    if (retune_backoff_s >= 0.0) {
+        sm->retune_backoff_s = retune_backoff_s;
     }
 }
 
@@ -162,6 +182,44 @@ dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* stat
     if (!sm || !ev) {
         return;
     }
+    // Apply configuration based on options/env once at first use
+    if (opts && sm->hangtime_s == 1.0) {
+        double hang = (opts->trunk_hangtime > 0.0) ? opts->trunk_hangtime : sm->hangtime_s;
+        double grace = sm->vc_grace_s;
+        const char* s;
+        s = getenv("DSD_NEO_P25_VC_GRACE");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                grace = v;
+            }
+        }
+        double min_follow = sm->min_follow_dwell_s;
+        s = getenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 5.0) {
+                min_follow = v;
+            }
+        }
+        double gvt = sm->grant_voice_timeout_s;
+        s = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                gvt = v;
+            }
+        }
+        double backoff = sm->retune_backoff_s;
+        s = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                backoff = v;
+            }
+        }
+        dsd_p25p2_min_configure_ex(sm, hang, grace, min_follow, gvt, backoff);
+    }
     switch (ev->type) {
         case DSD_P25P2_MIN_EV_GRANT: on_grant(sm, opts, state, ev->channel, ev->freq_hz); break;
         case DSD_P25P2_MIN_EV_PTT:
@@ -181,6 +239,11 @@ void
 dsd_p25p2_min_tick(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state) {
     if (!sm) {
         return;
+    }
+    // Apply configuration on first tick if not yet applied
+    if (opts && sm->hangtime_s == 1.0) {
+        const dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_NOSYNC, -1, 0, 0};
+        dsd_p25p2_min_handle_event(sm, opts, state, &ev);
     }
     time_t t = now_s();
     if (sm->state == DSD_P25P2_MIN_ARMED) {
@@ -215,17 +278,15 @@ dsd_p25p2_min_tick(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state) {
 extern void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq);
 extern void return_to_cc(dsd_opts* opts, dsd_state* state);
 
-static void
-min_tune_cb(dsd_opts* opts, dsd_state* state, long freq_hz, int channel) {
-    UNUSED(channel);
-    if (freq_hz > 0) {
-        trunk_tune_to_freq(opts, state, (long)freq_hz);
-    }
-}
+// Note: tuning is performed by higher-level trunking logic. The minimal
+// state machine records grant context and transitions state but does not
+// directly initiate tuning.
 
 static void
 min_return_cb(dsd_opts* opts, dsd_state* state) {
-    return_to_cc(opts, state);
+    // Use the public SM release path so teardown resets and backoff
+    // are applied consistently across callers.
+    p25_sm_on_release(opts, state);
 }
 
 static dsd_p25p2_min_sm g_min_sm;
@@ -286,7 +347,10 @@ dsd_p25p2_min_sm*
 dsd_p25p2_min_get(void) {
     if (!g_min_sm_inited) {
         dsd_p25p2_min_init(&g_min_sm);
-        dsd_p25p2_min_set_callbacks(&g_min_sm, min_tune_cb, min_return_cb, min_state_cb);
+        // Do not perform tuning here; grant handling and gating happen in the
+        // higher-level trunking path. Still use state-change and return callbacks
+        // so teardown resets are centralized.
+        dsd_p25p2_min_set_callbacks(&g_min_sm, /*on_tune_vc*/ NULL, min_return_cb, min_state_cb);
         g_min_sm_inited = 1;
     }
     return &g_min_sm;

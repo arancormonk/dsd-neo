@@ -281,6 +281,18 @@ target_include_directories(dsd-neo_test_p25_trunk_cc_cache PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_p25_trunk_cc_cache PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_TRUNK_CC_CACHE COMMAND dsd-neo_test_p25_trunk_cc_cache)
 
+# P25 CC cache path builder (identity and RFSS/SITE scoping)
+add_executable(dsd-neo_test_p25_cc_cache_path protocol/p25/test_p25_cc_cache_path.c)
+target_include_directories(dsd-neo_test_p25_cc_cache_path PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_cc_cache_path PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_CC_CACHE_PATH COMMAND dsd-neo_test_p25_cc_cache_path)
+
+# Minimal call follower core transitions
+add_executable(dsd-neo_test_p25_min_follower_core protocol/p25/test_p25_min_follower_core.c)
+target_include_directories(dsd-neo_test_p25_min_follower_core PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_min_follower_core PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MIN_FOLLOWER_CORE COMMAND dsd-neo_test_p25_min_follower_core)
+
 # P25 P2 early ENC lockout per-slot gating (stay on VC when other slot active)
 add_executable(dsd-neo_test_p25_p2_early_enc_lockout protocol/p25/test_p25_p2_early_enc_lockout.c)
 target_include_directories(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})

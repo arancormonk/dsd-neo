@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 
 #include <dsd-neo/protocol/p25/p25_lsd.h>
+#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
@@ -118,6 +119,11 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     }
     if (opts->floating_point == 1 && opts->pulse_digi_out_channels == 2) {
         playSynthesizedVoiceFS(opts, state);
+    }
+    // Inform the call follower that voice is active on the current channel
+    {
+        dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, 0, 0, 0};
+        dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
     }
 
     // IMBE 2
