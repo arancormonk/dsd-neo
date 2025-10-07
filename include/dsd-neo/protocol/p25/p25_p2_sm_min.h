@@ -27,9 +27,10 @@ extern "C" {
 
 typedef enum {
     DSD_P25P2_MIN_IDLE = 0,
-    DSD_P25P2_MIN_FOLLOWING_VC = 1,
-    DSD_P25P2_MIN_HANG = 2,
-    DSD_P25P2_MIN_RETURN_CC = 3
+    DSD_P25P2_MIN_ARMED = 1,        // tuned on GRANT, awaiting PTT/ACTIVE
+    DSD_P25P2_MIN_FOLLOWING_VC = 2, // voice seen; actively following
+    DSD_P25P2_MIN_HANG = 3,         // both slots quiet; hang timer running
+    DSD_P25P2_MIN_RETURN_CC = 4
 } dsd_p25p2_min_state_e;
 
 typedef enum {
@@ -56,8 +57,11 @@ typedef void (*dsd_p25p2_min_on_state_change_cb)(dsd_opts* opts, dsd_state* stat
 
 typedef struct {
     // Config
-    double hangtime_s; // hangtime in seconds (e.g., 1.0)
-    double vc_grace_s; // grace window after tune before eligible for release (e.g., 1.5)
+    double hangtime_s;            // hangtime in seconds (e.g., 1.0)
+    double vc_grace_s;            // grace window after tune before eligible for release (e.g., 1.5)
+    double min_follow_dwell_s;    // minimal dwell after first voice to avoid ping-pong (e.g., 0.7)
+    double grant_voice_timeout_s; // max wait from GRANT (ARMED) to PTT/ACTIVE before returning (e.g., 2.0)
+    double retune_backoff_s;      // ignore grants to same freq within this window after a return (e.g., 3.0)
 
     // Current state and VC context
     dsd_p25p2_min_state_e state;
@@ -71,11 +75,16 @@ typedef struct {
     time_t t_last_tune;
     time_t t_last_voice;
     time_t t_hang_start;
+    time_t t_follow_start;
 
     // Callbacks
     dsd_p25p2_min_on_tune_vc_cb on_tune_vc;
     dsd_p25p2_min_on_return_cc_cb on_return_cc;
     dsd_p25p2_min_on_state_change_cb on_state_change;
+
+    // Backoff bookkeeping
+    long last_return_freq;
+    time_t t_last_return;
 } dsd_p25p2_min_sm;
 
 // Initialize with defaults: hangtime 1.0s, vc_grace 1.5s. Callbacks are NULL.

@@ -13,6 +13,9 @@ now_s(void) {
     return time(NULL);
 }
 
+// Forward UI tag helper
+static void min_tag(dsd_state* state, const char* tag);
+
 static void
 sm_set_state(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, dsd_p25p2_min_state_e next, const char* reason) {
     if (!sm) {
@@ -36,6 +39,9 @@ dsd_p25p2_min_init(dsd_p25p2_min_sm* sm) {
     memset(sm, 0, sizeof(*sm));
     sm->hangtime_s = 1.0;
     sm->vc_grace_s = 1.5;
+    sm->min_follow_dwell_s = 0.7;
+    sm->grant_voice_timeout_s = 2.0;
+    sm->retune_backoff_s = 3.0;
     sm->state = DSD_P25P2_MIN_IDLE;
 }
 
@@ -66,6 +72,14 @@ dsd_p25p2_min_configure(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace
 static void
 on_grant(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, int channel, long freq_hz) {
     time_t t = now_s();
+    // Backoff: ignore grants to same freq shortly after a return to avoid ping‑pong
+    if (sm->last_return_freq != 0 && sm->t_last_return != 0 && freq_hz != 0) {
+        double since_ret = (double)(t - sm->t_last_return);
+        if (freq_hz == sm->last_return_freq && since_ret >= 0.0 && since_ret < sm->retune_backoff_s) {
+            min_tag(state, "min-ignore-grant-backoff");
+            return;
+        }
+    }
     sm->vc_channel = channel;
     sm->vc_freq_hz = freq_hz;
     sm->t_last_tune = t;
@@ -74,7 +88,8 @@ on_grant(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, int channel, lo
     if (sm->on_tune_vc && freq_hz > 0) {
         sm->on_tune_vc(opts, state, freq_hz, channel);
     }
-    sm_set_state(sm, opts, state, DSD_P25P2_MIN_FOLLOWING_VC, "grant");
+    // Arm and wait for PTT/ACTIVE before following
+    sm_set_state(sm, opts, state, DSD_P25P2_MIN_ARMED, "grant");
 }
 
 static void
@@ -87,9 +102,10 @@ on_voice(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, int slot, const
         sm->slot_active[slot] = 1;
     }
     sm->t_last_voice = t;
-    // If we were in HANG, pop back to FOLLOWING_VC on voice
-    if (sm->state == DSD_P25P2_MIN_HANG) {
+    // If ARMED or HANG, start following and dwell timer
+    if (sm->state == DSD_P25P2_MIN_ARMED || sm->state == DSD_P25P2_MIN_HANG) {
         sm_set_state(sm, opts, state, DSD_P25P2_MIN_FOLLOWING_VC, "voice");
+        sm->t_follow_start = t;
     }
 }
 
@@ -112,7 +128,7 @@ static void
 on_nosync(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state) {
     time_t t = now_s();
     double dt_tune = (sm->t_last_tune != 0) ? (double)(t - sm->t_last_tune) : 1e9;
-    if (sm->state == DSD_P25P2_MIN_FOLLOWING_VC && dt_tune >= sm->vc_grace_s) {
+    if ((sm->state == DSD_P25P2_MIN_FOLLOWING_VC || sm->state == DSD_P25P2_MIN_ARMED) && dt_tune >= sm->vc_grace_s) {
         // If not seeing slot activity and past grace, go to HANG
         if (sm->slot_active[0] == 0 && sm->slot_active[1] == 0) {
             sm->t_hang_start = t;
@@ -129,12 +145,15 @@ maybe_return_cc(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, const ch
         sm->on_return_cc(opts, state);
     }
     // Reset VC context and go IDLE
+    sm->last_return_freq = sm->vc_freq_hz;
+    sm->t_last_return = now_s();
     sm->vc_freq_hz = 0;
     sm->vc_channel = 0;
     sm->slot_active[0] = sm->slot_active[1] = 0;
     sm->t_last_tune = 0;
     sm->t_last_voice = 0;
     sm->t_hang_start = 0;
+    sm->t_follow_start = 0;
     sm_set_state(sm, opts, state, DSD_P25P2_MIN_IDLE, "returned");
 }
 
@@ -164,12 +183,20 @@ dsd_p25p2_min_tick(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state) {
         return;
     }
     time_t t = now_s();
-    if (sm->state == DSD_P25P2_MIN_FOLLOWING_VC) {
+    if (sm->state == DSD_P25P2_MIN_ARMED) {
+        // Wait for PTT/ACTIVE up to timeout; if none, return to CC
+        double dt_tune = (sm->t_last_tune != 0) ? (double)(t - sm->t_last_tune) : 1e9;
+        if (dt_tune >= sm->grant_voice_timeout_s && sm->slot_active[0] == 0 && sm->slot_active[1] == 0) {
+            maybe_return_cc(sm, opts, state, "armed-timeout");
+            return;
+        }
+    } else if (sm->state == DSD_P25P2_MIN_FOLLOWING_VC) {
         // If no voice observed since tune and beyond grace+hang → return
         double dt_tune = (sm->t_last_tune != 0) ? (double)(t - sm->t_last_tune) : 1e9;
         double dt_voice = (sm->t_last_voice != 0) ? (double)(t - sm->t_last_voice) : 1e9;
-        if (dt_tune >= sm->vc_grace_s && dt_voice >= sm->hangtime_s && sm->slot_active[0] == 0
-            && sm->slot_active[1] == 0) {
+        double dt_follow = (sm->t_follow_start != 0) ? (double)(t - sm->t_follow_start) : 0.0;
+        if (dt_tune >= sm->vc_grace_s && dt_voice >= sm->hangtime_s && dt_follow >= sm->min_follow_dwell_s
+            && sm->slot_active[0] == 0 && sm->slot_active[1] == 0) {
             maybe_return_cc(sm, opts, state, "follow->return");
             return;
         }
@@ -225,6 +252,7 @@ static const char*
 min_state_name(dsd_p25p2_min_state_e s) {
     switch (s) {
         case DSD_P25P2_MIN_IDLE: return "IDLE";
+        case DSD_P25P2_MIN_ARMED: return "ARMED";
         case DSD_P25P2_MIN_FOLLOWING_VC: return "FOLLOW";
         case DSD_P25P2_MIN_HANG: return "HANG";
         case DSD_P25P2_MIN_RETURN_CC: return "RETURN";
@@ -239,6 +267,8 @@ min_state_cb(dsd_opts* opts, dsd_state* state, dsd_p25p2_min_state_e old_state, 
     // Tag: short label for ncurses “SM Tags” line
     if (new_state == DSD_P25P2_MIN_FOLLOWING_VC) {
         min_tag(state, "min-follow");
+    } else if (new_state == DSD_P25P2_MIN_ARMED) {
+        min_tag(state, "min-armed");
     } else if (new_state == DSD_P25P2_MIN_HANG) {
         min_tag(state, "min-hang");
     } else if (new_state == DSD_P25P2_MIN_RETURN_CC) {

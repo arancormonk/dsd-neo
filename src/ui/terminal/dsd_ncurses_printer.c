@@ -2449,11 +2449,12 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, r_act, dt, dt_tune);
         lines++;
 
-        // Minimal SM configuration (hangtime/grace) to aid tuning
+        // Minimal SM configuration (hang/grace/dwell/voice-wait/backoff) to aid tuning
         {
             dsd_p25p2_min_sm* msm = dsd_p25p2_min_get();
             if (msm) {
-                printw("| minSM: hang:%.1fs grace:%.1fs\n", msm->hangtime_s, msm->vc_grace_s);
+                printw("| minSM: hang:%.1fs grace:%.1fs dwell:%.1fs vwait:%.1fs backoff:%.1fs\n", msm->hangtime_s,
+                       msm->vc_grace_s, msm->min_follow_dwell_s, msm->grant_voice_timeout_s, msm->retune_backoff_s);
                 lines++;
             }
         }
