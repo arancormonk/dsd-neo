@@ -293,6 +293,12 @@ target_include_directories(dsd-neo_test_p25_min_follower_core PRIVATE ${PROJECT_
 target_link_libraries(dsd-neo_test_p25_min_follower_core PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_MIN_FOLLOWER_CORE COMMAND dsd-neo_test_p25_min_follower_core)
 
+# P25 min follower: ensure its return forces trunk SM release past gating
+add_executable(dsd-neo_test_p25_min_return_forces_release protocol/p25/test_p25_min_return_forces_release.c)
+target_include_directories(dsd-neo_test_p25_min_return_forces_release PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_min_return_forces_release PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MIN_RETURN_FORCES_RELEASE COMMAND dsd-neo_test_p25_min_return_forces_release)
+
 # P25 P2 early ENC lockout per-slot gating (stay on VC when other slot active)
 add_executable(dsd-neo_test_p25_p2_early_enc_lockout protocol/p25/test_p25_p2_early_enc_lockout.c)
 target_include_directories(dsd-neo_test_p25_p2_early_enc_lockout PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})

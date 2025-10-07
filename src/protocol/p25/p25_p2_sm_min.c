@@ -286,6 +286,11 @@ static void
 min_return_cb(dsd_opts* opts, dsd_state* state) {
     // Use the public SM release path so teardown resets and backoff
     // are applied consistently across callers.
+    // Force the release so higher-level post-hang gating cannot defer the
+    // return when minimal SM has decided to go back to CC.
+    if (state) {
+        state->p25_sm_force_release = 1;
+    }
     p25_sm_on_release(opts, state);
 }
 
