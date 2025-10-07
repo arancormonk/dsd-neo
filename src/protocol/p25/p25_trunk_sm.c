@@ -476,12 +476,26 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
 }
 
 // Compute frequency from explicit channel and call p25_tune_to_vc
+// Retune backoff window (file-scope) to curb immediate VC↔CC ping‑pong.
+static time_t s_retune_block_until = 0;
+static long s_retune_block_freq = 0;
+
 static void
 p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
     uint16_t chan16 = (uint16_t)channel;
     int iden = (chan16 >> 12) & 0xF;
     long freq = process_channel_to_freq(opts, state, channel);
     if (freq == 0) {
+        return;
+    }
+    // Retune backoff: block immediate re-tune to the same VC after a recent return
+    time_t now = time(NULL);
+    if (s_retune_block_until != 0 && now < s_retune_block_until && s_retune_block_freq == freq) {
+        if (opts && opts->verbose > 1) {
+            fprintf(stderr, "\n  P25 SM: grant blocked by backoff (%.1fs left)\n",
+                    (double)(s_retune_block_until - now));
+        }
+        p25_sm_log_status(opts, state, "grant-blocked");
         return;
     }
     // If channel not provided via explicit map, enforce IDEN trust: only tune
@@ -784,8 +798,15 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_last_tdu = 0;
     // Reset SM post-hang watchdog
     state->p25_sm_posthang_start = 0;
+    // Capture last VC frequency before return_to_cc clears it
+    long last_vc = state->p25_vc_freq[0] ? state->p25_vc_freq[0] : state->trunk_vc_freq[0];
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
+    // Program short backoff against re-tuning the same VC immediately
+    if (last_vc != 0) {
+        s_retune_block_freq = last_vc;
+        s_retune_block_until = time(NULL) + 3; // seconds
+    }
 }
 
 void
