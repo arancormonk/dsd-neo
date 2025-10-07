@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 #include <errno.h>
@@ -104,6 +105,23 @@ p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
                 tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added,
                 state->p25_cc_cand_used, state->p25_cc_cand_count, state->p25_cc_cand_idx);
     }
+}
+
+// Return 1 when running in a stripped-down "basic" mode that disables added
+// safeties/fallbacks and post-hang gating. Enabled via either of these env vars:
+//  - DSD_NEO_P25_SM_BASIC=1
+//  - DSD_NEO_P25_SM_NO_SAFETY=1
+static int
+p25_sm_basic_mode(void) {
+    const char* s = getenv("DSD_NEO_P25_SM_BASIC");
+    if (s && s[0] != '\0' && !(s[0] == '0' || s[0] == 'n' || s[0] == 'N' || s[0] == 'f' || s[0] == 'F')) {
+        return 1;
+    }
+    s = getenv("DSD_NEO_P25_SM_NO_SAFETY");
+    if (s && s[0] != '\0' && !(s[0] == '0' || s[0] == 'n' || s[0] == 'N' || s[0] == 'f' || s[0] == 'F')) {
+        return 1;
+    }
+    return 0;
 }
 
 // Central helper: mark a talkgroup as ENC locked-out and emit a single event.
@@ -611,6 +629,34 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         state->p25_sm_force_release = 0; // consume one-shot flag
     }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
+    if (p25_sm_basic_mode()) {
+        if (opts && opts->verbose > 0) {
+            fprintf(stderr, "\n  P25 SM: [basic] Release -> CC\n");
+        }
+        // Flush per-slot audio gates and jitter buffers on release
+        state->p25_p2_audio_allowed[0] = 0;
+        state->p25_p2_audio_allowed[1] = 0;
+        p25_p2_audio_ring_reset(state, -1);
+        state->p25_p2_last_mac_active[0] = 0;
+        state->p25_p2_last_mac_active[1] = 0;
+        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
+        state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
+        state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
+        state->payload_algid = state->payload_algidR = 0;
+        state->payload_keyid = state->payload_keyidR = 0;
+        state->payload_miP = 0;
+        state->payload_miN = 0;
+        state->p25_p2_enc_pending[0] = state->p25_p2_enc_pending[1] = 0;
+        state->p25_p2_enc_pending_ttg[0] = state->p25_p2_enc_pending_ttg[1] = 0;
+        state->p25_p2_last_end_ptt[0] = state->p25_p2_last_end_ptt[1] = 0;
+        state->p25_call_is_packet[0] = state->p25_call_is_packet[1] = 0;
+        state->p25_p1_last_tdu = 0;
+        state->p25_sm_posthang_start = 0;
+        return_to_cc(opts, state);
+        p25_sm_log_status(opts, state, "after-release");
+        return;
+    }
     if (is_p2_vc) {
         // Determine activity using P25-specific gates and a short recent-voice window.
         // Do NOT rely on DMR burst flags here; they can be stale across protocol
@@ -630,7 +676,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         }
         // Ignore ring_count as an activity source if no recent MAC_ACTIVE/PTT
         // has been observed on that slot within a short ring-hold window.
-        double ring_hold = 0.75; // seconds; override via DSD_NEO_P25_RING_HOLD
+        double ring_hold = 0.75; // seconds; override via DSD_NEO_P25_RING_HOLD (clamped to safety-net)
         {
             const char* s = getenv("DSD_NEO_P25_RING_HOLD");
             if (s && s[0] != '\0') {
@@ -638,6 +684,21 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
                 if (v >= 0.0 && v <= 5.0) {
                     ring_hold = v;
                 }
+            }
+        }
+        // Clamp ring_hold so ring-gated activity can never outlive the
+        // safety-net window. If EXTRA is smaller, use it as an upper bound.
+        {
+            double extra = 3.0;
+            const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+            if (se && se[0] != '\0') {
+                double ve = atof(se);
+                if (ve >= 0.0 && ve <= 10.0) {
+                    extra = ve;
+                }
+            }
+            if (ring_hold > extra) {
+                ring_hold = extra;
             }
         }
         int left_ring = (state->p25_p2_audio_ring_count[0] > 0) && (state->p25_p2_last_mac_active[0] != 0)
@@ -691,6 +752,10 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     p25_p2_audio_ring_reset(state, -1);
+    // Clear any stale MAC_ACTIVE/PTT timestamps so post-hang gating cannot
+    // persist across VC->CC transitions on silent or marginal channels.
+    state->p25_p2_last_mac_active[0] = 0;
+    state->p25_p2_last_mac_active[1] = 0;
     // Clear call string banners to avoid stale "Group Encrypted" in UI
     snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
     snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
@@ -717,6 +782,8 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_call_is_packet[1] = 0;
     // Clear Phase 1 TDU marker
     state->p25_p1_last_tdu = 0;
+    // Reset SM post-hang watchdog
+    state->p25_sm_posthang_start = 0;
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
 }
@@ -791,6 +858,14 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
 
     const time_t now = time(NULL);
 
+    // Minimal P25p2 SM: if currently in a P25p2 sync context, delegate VC
+    // follow/hang/return decisions entirely to the minimal SM to avoid
+    // conflicting gates. This bypasses legacy P2 gating and safeties.
+    if (state->lastsynctype == 35 || state->lastsynctype == 36) {
+        dsd_p25p2_min_tick(dsd_p25p2_min_get(), opts, state);
+        return;
+    }
+
     // If currently tuned to a P25 VC and we've observed no recent voice
     // activity for longer than hangtime, force a safe return to CC. This
     // complements the inline fallbacks in the P25p2 frame path and protects
@@ -812,6 +887,170 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
         }
         int is_p2_vc = (state->p25_p2_active_slot != -1);
+
+        // Unconditional release after hangtime (no gates/no safeties).
+        if (dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
+            if (opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: [basic-all] Forced release (dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
+            }
+            if (state->p25_cc_freq != 0) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            } else {
+                state->p25_p2_audio_allowed[0] = 0;
+                state->p25_p2_audio_allowed[1] = 0;
+                state->p25_p2_active_slot = -1;
+                state->p25_vc_freq[0] = 0;
+                state->p25_vc_freq[1] = 0;
+                opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
+                state->last_cc_sync_time = now;
+            }
+            p25_sm_log_status(opts, state, "tick-basic-all-release");
+            return;
+        }
+        if (p25_sm_basic_mode()) {
+            // Basic mode: unconditionally release after hangtime (and grace)
+            // when voice activity is stale, without post-hang gating or extra
+            // safety windows.
+            if (dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
+                if (opts->verbose > 0) {
+                    fprintf(stderr, "\n  P25 SM: [basic] Forced release (dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
+                }
+                if (state->p25_cc_freq != 0) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    state->p25_p2_audio_allowed[0] = 0;
+                    state->p25_p2_audio_allowed[1] = 0;
+                    state->p25_p2_active_slot = -1;
+                    state->p25_vc_freq[0] = 0;
+                    state->p25_vc_freq[1] = 0;
+                    opts->p25_is_tuned = 0;
+                    opts->trunk_is_tuned = 0;
+                    state->last_cc_sync_time = now;
+                }
+                p25_sm_log_status(opts, state, "tick-basic-release");
+                return;
+            }
+        }
+        int cur_is_p25p2_sync = (state->lastsynctype == 35 || state->lastsynctype == 36);
+
+        // Global safety net: after hangtime + EXTRA seconds without voice,
+        // force release regardless of per-slot gates or jitter. Place this
+        // early to avoid being short-circuited by post-hang gating branches.
+        {
+            double extra = 3.0;
+            const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v <= 10.0) {
+                    extra = v;
+                }
+            }
+            if (dt >= (opts->trunk_hangtime + extra) && dt_since_tune >= vc_grace) {
+                if (opts->verbose > 1) {
+                    fprintf(stderr, "\n  P25 SM: Tick safety-net forced release (dt=%.1f ht=%.1f + extra=%.1f)\n", dt,
+                            opts->trunk_hangtime, extra);
+                }
+                if (state->p25_cc_freq != 0) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    state->p25_p2_audio_allowed[0] = 0;
+                    state->p25_p2_audio_allowed[1] = 0;
+                    state->p25_p2_active_slot = -1;
+                    state->p25_vc_freq[0] = 0;
+                    state->p25_vc_freq[1] = 0;
+                    opts->p25_is_tuned = 0;
+                    opts->trunk_is_tuned = 0;
+                    state->last_cc_sync_time = now;
+                }
+                p25_sm_log_status(opts, state, "tick-safety-net");
+                return; // done this tick
+            }
+        }
+
+        // Ultra-failsafe: after hangtime + (extra + margin) seconds, force
+        // release unconditionally (regardless of slot activity, sync, or
+        // ring/MAC gating). This prevents any lingering state from wedging
+        // the tuner on a dead VC under unexpected conditions.
+        {
+            double extra = 3.0;
+            const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+            if (se && se[0] != '\0') {
+                double ve = atof(se);
+                if (ve >= 0.0 && ve <= 10.0) {
+                    extra = ve;
+                }
+            }
+            double margin = 5.0; // seconds
+            const char* sm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
+            if (sm && sm[0] != '\0') {
+                double vm = atof(sm);
+                if (vm >= 0.0 && vm <= 30.0) {
+                    margin = vm;
+                }
+            }
+            if (dt >= (opts->trunk_hangtime + extra + margin) && dt_since_tune >= vc_grace) {
+                if (opts->verbose > 0) {
+                    fprintf(stderr,
+                            "\n  P25 SM: Ultra-failsafe forced release (dt=%.1f ht=%.1f extra=%.1f margin=%.1f)\n", dt,
+                            opts->trunk_hangtime, extra, margin);
+                }
+                if (state->p25_cc_freq != 0) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    state->p25_p2_audio_allowed[0] = 0;
+                    state->p25_p2_audio_allowed[1] = 0;
+                    state->p25_p2_active_slot = -1;
+                    state->p25_vc_freq[0] = 0;
+                    state->p25_vc_freq[1] = 0;
+                    opts->p25_is_tuned = 0;
+                    opts->trunk_is_tuned = 0;
+                    state->last_cc_sync_time = now;
+                }
+                p25_sm_log_status(opts, state, "tick-safety-net-hard");
+                return;
+            }
+        }
+
+        // Mismatch guard: if we still believe we are on a Phase 2 VC
+        // (per-slot SM state), but current sync is not P25p2 and hangtime
+        // + extra has elapsed since last voice, treat this as a stale P2 VC
+        // and force release. This covers cases where the decoder drifted to a
+        // P1/CC context but stale P2 gates kept post-hang logic alive.
+        if (is_p2_vc && !cur_is_p25p2_sync) {
+            double extra = 3.0;
+            const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v <= 10.0) {
+                    extra = v;
+                }
+            }
+            if (dt >= (opts->trunk_hangtime + extra) && dt_since_tune >= vc_grace) {
+                if (opts->verbose > 0) {
+                    fprintf(stderr, "\n  P25 SM: Forced release (P2 state, P1/other sync; dt=%.1f)\n", dt);
+                }
+                if (state->p25_cc_freq != 0) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    state->p25_p2_audio_allowed[0] = 0;
+                    state->p25_p2_audio_allowed[1] = 0;
+                    state->p25_p2_active_slot = -1;
+                    state->p25_vc_freq[0] = 0;
+                    state->p25_vc_freq[1] = 0;
+                    opts->p25_is_tuned = 0;
+                    opts->trunk_is_tuned = 0;
+                    state->last_cc_sync_time = now;
+                }
+                p25_sm_log_status(opts, state, "tick-safety-net-nosync");
+                return;
+            }
+        }
 
         // Early teardown on MAC_END_PTT once per-slot jitter/audio drains.
         // If an END_PTT was observed and both slots have drained (or the
@@ -945,6 +1184,22 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                         && ((double)(now - state->p25_p2_last_mac_active[0]) <= ring_hold);
         int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active[1] != 0)
                          && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
+        // If rings are non-zero but older than ring_hold (no recent MAC),
+        // they are stale. When beyond hangtime grace, proactively flush to
+        // avoid indefinite post-hang gating on residual buffered samples.
+        if (dt >= opts->trunk_hangtime && dt_since_tune >= vc_grace) {
+            int l_stale_ring = (state->p25_p2_audio_ring_count[0] > 0)
+                               && (state->p25_p2_last_mac_active[0] == 0
+                                   || (double)(now - state->p25_p2_last_mac_active[0]) > ring_hold);
+            int r_stale_ring = (state->p25_p2_audio_ring_count[1] > 0)
+                               && (state->p25_p2_last_mac_active[1] == 0
+                                   || (double)(now - state->p25_p2_last_mac_active[1]) > ring_hold);
+            if (l_stale_ring || r_stale_ring) {
+                p25_p2_audio_ring_reset(state, (l_stale_ring && r_stale_ring) ? -1 : (l_stale_ring ? 0 : 1));
+                left_ring = right_ring = 0; // treated as drained
+                p25_sm_log_status(opts, state, "tick-ring-flush");
+            }
+        }
         int left_has_audio = state->p25_p2_audio_allowed[0] || left_ring;
         int right_has_audio = state->p25_p2_audio_allowed[1] || right_ring;
         // After hangtime, do not let stale audio_allowed hold activity: require
@@ -997,6 +1252,10 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
             return; // done this tick
         }
+        if (dt < opts->trunk_hangtime || both_slots_idle) {
+            // Not in post-hang gating; reset watchdog
+            state->p25_sm_posthang_start = 0;
+        }
         if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
@@ -1016,38 +1275,45 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         } else if (dt >= opts->trunk_hangtime && dt_since_tune >= vc_grace && is_p2_vc && !both_slots_idle) {
             // Post-hangtime gating is keeping the VC active (recent MAC or
             // MAC-gated ring). Record a light-weight tag for UI diagnostics.
+            // Start/advance watchdog to break pathological wedges where gates
+            // are refreshed without genuine voice (e.g., stray vendor PDUs).
+            if (state->p25_sm_posthang_start == 0) {
+                state->p25_sm_posthang_start = now;
+            } else {
+                double extra = 3.0;
+                const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v <= 10.0) {
+                        extra = v;
+                    }
+                }
+                if ((double)(now - state->p25_sm_posthang_start) >= extra) {
+                    if (opts->verbose > 0) {
+                        fprintf(stderr, "\n  P25 SM: Post-hang watchdog forced release (held %.1fs >= extra %.1f)\n",
+                                (double)(now - state->p25_sm_posthang_start), extra);
+                    }
+                    state->p25_sm_posthang_start = 0;
+                    if (state->p25_cc_freq != 0) {
+                        state->p25_sm_force_release = 1;
+                        p25_sm_on_release(opts, state);
+                    } else {
+                        state->p25_p2_audio_allowed[0] = 0;
+                        state->p25_p2_audio_allowed[1] = 0;
+                        state->p25_p2_active_slot = -1;
+                        state->p25_vc_freq[0] = 0;
+                        state->p25_vc_freq[1] = 0;
+                        opts->p25_is_tuned = 0;
+                        opts->trunk_is_tuned = 0;
+                        state->last_cc_sync_time = now;
+                    }
+                    return;
+                }
+            }
             if (opts->verbose > 1) {
                 fprintf(stderr, "\n  P25 SM: Tick held by post-hang gate (L:%d R:%d)\n", left_active, right_active);
             }
             p25_sm_log_status(opts, state, "tick-posthang-gate");
-        } else if (dt >= (opts->trunk_hangtime + 3.0)) {
-            // Safety net: after hangtime + 3s, force release even if stale
-            // per-slot gates or jitter buffers still read as active. This
-            // covers loss-of-signal cases where no further frames arrive to
-            // clear audio gates or MAC flags.
-            double extra = 3.0;
-            const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v <= 10.0) {
-                    extra = v;
-                }
-            }
-            if (dt >= (opts->trunk_hangtime + extra)) {
-                if (state->p25_cc_freq != 0) {
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                } else {
-                    state->p25_p2_audio_allowed[0] = 0;
-                    state->p25_p2_audio_allowed[1] = 0;
-                    state->p25_p2_active_slot = -1;
-                    state->p25_vc_freq[0] = 0;
-                    state->p25_vc_freq[1] = 0;
-                    opts->p25_is_tuned = 0;
-                    opts->trunk_is_tuned = 0;
-                    state->last_cc_sync_time = now;
-                }
-            }
         }
     }
 

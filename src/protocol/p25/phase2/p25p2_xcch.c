@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -131,6 +132,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x1 && err == 0) {
         fprintf(stderr, " MAC_PTT ");
         fprintf(stderr, "%s", KGRN);
+        // Minimal SM: PTT event for logical slot
+        {
+            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_PTT, slot, 0, 0};
+            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+        }
         // Mark recent activity for this logical slot to avoid early bounce
         state->p25_p2_last_mac_active[slot] = time(NULL);
         // SACCH uses inverted mapping; 'slot' is the logical voice channel
@@ -518,6 +524,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x2 && err == 0) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
+        // Minimal SM: END event for logical slot
+        {
+            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_END, slot, 0, 0};
+            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+        }
         // Mark end-of-PTT for this logical slot to allow SM tick to release
         // early once per-slot audio/jitter drains.
         state->p25_p2_last_end_ptt[slot] = time(NULL);
@@ -636,6 +647,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
+        // Minimal SM: IDLE event for logical slot
+        {
+            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_IDLE, slot, 0, 0};
+            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+        }
 
         // if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1)
         // {
@@ -1265,6 +1281,11 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 0, FMAC);
         fprintf(stderr, "%s", KNRM);
+        // Minimal SM: ACTIVE event for logical slot
+        {
+            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, slot, 0, 0};
+            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+        }
         // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
             int allow_audio = 0;

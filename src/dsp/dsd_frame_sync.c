@@ -27,6 +27,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <locale.h>
@@ -1359,10 +1360,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                     }
                     int is_p2_vc = (state->p25_p2_active_slot != -1);
-                    int left_has_audio = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
-                    int right_has_audio = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
-                    int left_active = left_has_audio;
-                    int right_active = right_has_audio;
+                    // Mirror trunk SM gating: treat jitter ring as activity
+                    // only when gated by recent MAC_ACTIVE/PTT on that slot;
+                    // after hangtime, ignore stale audio_allowed alone.
+                    double ring_hold = 0.75; // seconds; DSD_NEO_P25_RING_HOLD
+                    {
+                        const char* s = getenv("DSD_NEO_P25_RING_HOLD");
+                        if (s && s[0] != '\0') {
+                            double v = atof(s);
+                            if (v >= 0.0 && v <= 5.0) {
+                                ring_hold = v;
+                            }
+                        }
+                    }
                     double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
                     {
                         const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
@@ -1373,19 +1383,32 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             }
                         }
                     }
-                    if (state->p25_p2_last_mac_active[0] != 0
-                        && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold) {
-                        left_active = 1;
+                    double l_dmac = (state->p25_p2_last_mac_active[0] != 0)
+                                        ? (double)(now - state->p25_p2_last_mac_active[0])
+                                        : 1e9;
+                    double r_dmac = (state->p25_p2_last_mac_active[1] != 0)
+                                        ? (double)(now - state->p25_p2_last_mac_active[1])
+                                        : 1e9;
+                    int l_ring = (state->p25_p2_audio_ring_count[0] > 0) && (l_dmac <= ring_hold);
+                    int r_ring = (state->p25_p2_audio_ring_count[1] > 0) && (r_dmac <= ring_hold);
+                    int left_has_audio = state->p25_p2_audio_allowed[0] || l_ring;
+                    int right_has_audio = state->p25_p2_audio_allowed[1] || r_ring;
+                    if (dt >= opts->trunk_hangtime) {
+                        left_has_audio = l_ring;
+                        right_has_audio = r_ring;
                     }
-                    if (state->p25_p2_last_mac_active[1] != 0
-                        && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
-                        right_active = 1;
-                    }
+                    int left_active = left_has_audio || (l_dmac <= mac_hold);
+                    int right_active = right_has_audio || (r_dmac <= mac_hold);
                     int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
                     if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);
                     }
+                }
+                // Minimal SM: notify no-sync to help it consider HANG
+                {
+                    dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_NOSYNC, -1, 0, 0};
+                    dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
                 }
                 noCarrier(opts, state);
 

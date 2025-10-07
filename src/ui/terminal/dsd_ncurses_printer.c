@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/synctype.h>
+#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -2396,7 +2397,8 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         lines++;
 
         // SM Gate introspection: show the conditions that can hold release
-        // Left/right: audio_allowed, ring_count, delta since last MAC_ACTIVE
+        // Left/right: audio_allowed, ring_count, delta since last MAC_ACTIVE,
+        // and the computed active flags used by the trunk SM tick logic.
         time_t now = time(NULL);
         double l_dmac =
             (state->p25_p2_last_mac_active[0] != 0) ? (double)(now - state->p25_p2_last_mac_active[0]) : -1.0;
@@ -2404,10 +2406,57 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             (state->p25_p2_last_mac_active[1] != 0) ? (double)(now - state->p25_p2_last_mac_active[1]) : -1.0;
         double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
         double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
-        printw("| SM Gate: L[a=%d rc=%d dMAC=%4.1fs]  R[a=%d rc=%d dMAC=%4.1fs]  dt=%4.1fs tune=%4.1fs\n",
-               state->p25_p2_audio_allowed[0] ? 1 : 0, state->p25_p2_audio_ring_count[0], l_dmac,
-               state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, dt, dt_tune);
+        // Compute the same per-slot activity booleans as in the SM tick
+        double ring_hold = 0.75; // seconds; DSD_NEO_P25_RING_HOLD
+        {
+            const char* s = getenv("DSD_NEO_P25_RING_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v <= 5.0) {
+                    ring_hold = v;
+                }
+            }
+        }
+        double mac_hold = 3.0; // seconds; DSD_NEO_P25_MAC_HOLD
+        {
+            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+            if (s && s[0] != '\0') {
+                double v = atof(s);
+                if (v >= 0.0 && v < 10.0) {
+                    mac_hold = v;
+                }
+            }
+        }
+        // After hangtime, ignore stale audio_allowed alone; require ring gated by MAC recency
+        int l_ring = (state->p25_p2_audio_ring_count[0] > 0) && (l_dmac >= 0.0) && (l_dmac <= ring_hold);
+        int r_ring = (state->p25_p2_audio_ring_count[1] > 0) && (r_dmac >= 0.0) && (r_dmac <= ring_hold);
+        int l_has = state->p25_p2_audio_allowed[0] || l_ring;
+        int r_has = state->p25_p2_audio_allowed[1] || r_ring;
+        if (opts && dt >= opts->trunk_hangtime) {
+            l_has = l_ring;
+            r_has = r_ring;
+        }
+        int l_act = l_has;
+        int r_act = r_has;
+        if (l_dmac >= 0.0 && l_dmac <= mac_hold) {
+            l_act = 1;
+        }
+        if (r_dmac >= 0.0 && r_dmac <= mac_hold) {
+            r_act = 1;
+        }
+        printw("| SM Gate: L[a=%d rc=%d dMAC=%4.1fs act=%d]  R[a=%d rc=%d dMAC=%4.1fs act=%d]  dt=%4.1fs tune=%4.1fs\n",
+               state->p25_p2_audio_allowed[0] ? 1 : 0, state->p25_p2_audio_ring_count[0], l_dmac, l_act,
+               state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, r_act, dt, dt_tune);
         lines++;
+
+        // Minimal SM configuration (hangtime/grace) to aid tuning
+        {
+            dsd_p25p2_min_sm* msm = dsd_p25p2_min_get();
+            if (msm) {
+                printw("| minSM: hang:%.1fs grace:%.1fs\n", msm->hangtime_s, msm->vc_grace_s);
+                lines++;
+            }
+        }
     }
 
     /* Additional Phase 1 state-machine diagnostics (timers/flags) */

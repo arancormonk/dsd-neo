@@ -971,6 +971,8 @@ typedef struct {
     int p25_sm_tag_head;       // next write index (monotonic)
     char p25_sm_tags[8][32];   // recent tags (text)
     time_t p25_sm_tag_time[8]; // per-tag timestamp
+    // Watchdog start time for prolonged post-hang gating on P25p2 VCs
+    time_t p25_sm_posthang_start;
 
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes

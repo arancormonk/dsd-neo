@@ -336,6 +336,12 @@ target_include_directories(dsd-neo_test_p25_p2_sm_right_slot_active PRIVATE ${PR
 target_link_libraries(dsd-neo_test_p25_p2_sm_right_slot_active PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_SM_RIGHT_SLOT_ACTIVE COMMAND dsd-neo_test_p25_p2_sm_right_slot_active)
 
+# P25 P2 SM safety-net release after hangtime+extra
+add_executable(dsd-neo_test_p25_p2_sm_safety_net_release protocol/p25/test_p25_p2_sm_safety_net_release.c)
+target_include_directories(dsd-neo_test_p25_p2_sm_safety_net_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_p2_sm_safety_net_release PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_SM_SAFETY_NET_RELEASE COMMAND dsd-neo_test_p25_p2_sm_safety_net_release)
+
 # P25 grant trust clamp
 add_executable(dsd-neo_test_p25_grant_trust_clamp protocol/p25/test_p25_grant_trust_clamp.c)
 target_include_directories(dsd-neo_test_p25_grant_trust_clamp PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
