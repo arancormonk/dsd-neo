@@ -303,11 +303,11 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     //checkdown to see if we can lift the 'mute' if a key is available
     if (encL) {
-        if (state->payload_algid == 0xAA || state->payload_algid == 0x81) {
-            if (state->R != 0) {
+        if (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F) {
+            if (state->R != 0) { // RC4/DES/DES-XL
                 encL = 0;
             }
-        } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
+        } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) { // AES-256/128
             if (state->aes_key_loaded[0] == 1) {
                 encL = 0;
             }
@@ -315,15 +315,15 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     }
 
     if (encR) {
-        if (state->payload_algidR == 0xAA) {
+        if (state->payload_algidR == 0xAA) { // RC4
             if (state->RR != 0) {
                 encR = 0;
             }
-        } else if (state->payload_algidR == 0x81) {
-            if (state->R != 0) {
+        } else if (state->payload_algidR == 0x81 || state->payload_algidR == 0x9F) { // DES-56 / DES-XL
+            if (state->RR != 0) {                                                    // use right-slot key
                 encR = 0;
             }
-        } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
+        } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) { // AES-256/128
             if (state->aes_key_loaded[1] == 1) {
                 encR = 0;
             }
@@ -1470,8 +1470,8 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
 
     //checkdown to see if we can lift the 'mute' if a key is available
     if (encL) {
-        if (state->payload_algid == 0xAA || state->payload_algid == 0x81) {
-            if (state->R != 0) {
+        if (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F) {
+            if (state->R != 0) { // RC4/DES/DES-XL
                 encL = 0;
             }
         } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
@@ -1486,8 +1486,8 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
             if (state->RR != 0) {
                 encR = 0;
             }
-        } else if (state->payload_algidR == 0x81) {
-            if (state->R != 0) {
+        } else if (state->payload_algidR == 0x81 || state->payload_algidR == 0x9F) { // DES/DES-XL
+            if (state->RR != 0) {                                                    // use right-slot key
                 encR = 0;
             }
         } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {

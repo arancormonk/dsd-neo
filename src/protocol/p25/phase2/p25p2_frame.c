@@ -802,7 +802,22 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 p25_p2_audio_ring_reset(state, eslot);
 
                 int other = eslot ^ 1;
-                int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
+                // Consider per-slot gate, ring, and recent MAC_ACTIVE recency on other slot
+                time_t now_hold = time(NULL);
+                double mac_hold = 3.0; // seconds; env override aligns with SM/xCCH
+                {
+                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                    if (s && s[0] != '\0') {
+                        double v = atof(s);
+                        if (v >= 0.0 && v < 10.0) {
+                            mac_hold = v;
+                        }
+                    }
+                }
+                int other_recent = (state->p25_p2_last_mac_active[other] != 0)
+                                   && ((double)(now_hold - state->p25_p2_last_mac_active[other]) <= mac_hold);
+                int other_audio =
+                    state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
                     state->p25_sm_force_release = 1;

@@ -272,8 +272,25 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // Hardened early ENC lockout: mute only this slot, and
                             // release to CC only if the opposite slot is not active.
                             int other = eslot ^ 1;
-                            int other_audio =
-                                state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
+                            // Consider per-slot audio gate, queued jitter frames, and
+                            // very recent MAC_ACTIVE on the opposite slot to avoid
+                            // tearing down a clear call that is just starting up.
+                            time_t now_hold = time(NULL);
+                            double mac_hold = 3.0; // seconds; env override aligns with SM
+                            {
+                                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                                if (s && s[0] != '\0') {
+                                    double v = atof(s);
+                                    if (v >= 0.0 && v < 10.0) {
+                                        mac_hold = v;
+                                    }
+                                }
+                            }
+                            int other_recent =
+                                (state->p25_p2_last_mac_active[other] != 0)
+                                && ((double)(now_hold - state->p25_p2_last_mac_active[other]) <= mac_hold);
+                            int other_audio = state->p25_p2_audio_allowed[other]
+                                              || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                             state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
                             // Flush any residual audio already queued for this slot
                             p25_p2_audio_ring_reset(state, eslot);
@@ -1315,7 +1332,23 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
             int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
             if (enc_suspect) {
-                int other_audio = state->p25_p2_audio_allowed[slot ^ 1];
+                // Consider ring fill and recent MAC activity on the opposite slot
+                int other = (slot ^ 1) & 1;
+                time_t now2 = time(NULL);
+                double mac_hold = 3.0;
+                {
+                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
+                    if (s && s[0] != '\0') {
+                        double v = atof(s);
+                        if (v >= 0.0 && v < 10.0) {
+                            mac_hold = v;
+                        }
+                    }
+                }
+                int other_recent = (state->p25_p2_last_mac_active[other] != 0)
+                                   && ((double)(now2 - state->p25_p2_last_mac_active[other]) <= mac_hold);
+                int other_audio =
+                    state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                 state->p25_p2_audio_allowed[slot] = 0; // gate current slot
                 // Flush any residual audio already queued for this slot
                 p25_p2_audio_ring_reset(state, slot);
