@@ -192,11 +192,16 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
         return;
     }
 
-    // TDMA channel detection by channel iden type
+    // TDMA channel detection by channel iden type. If TDMA not yet learned for
+    // this IDEN but the system is known to carry Phase 2 voice, treat as TDMA
+    // so slot tracking and symbol timing are set correctly on early grants.
     int iden = (channel >> 12) & 0xF;
     int is_tdma = 0;
     if (iden >= 0 && iden < 16) {
-        is_tdma = state->p25_chan_tdma[iden];
+        is_tdma = (state->p25_chan_tdma[iden] & 0x1) ? 1 : 0;
+        if (!is_tdma && state->p25_sys_is_tdma == 1) {
+            is_tdma = 1; // conservative fallback until IDEN_UP_TDMA arrives
+        }
     }
 
     if (is_tdma) {
@@ -211,24 +216,27 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
         state->p25_p2_active_slot = -1;
     }
 
-    // Tune via common helper only if not already tuned to this freq
-    if (!(opts->p25_is_tuned == 1 && state->p25_vc_freq[0] == freq)) {
+    // Tune via common helper only if not already tuned to this freq. Avoid
+    // clearing gates/contexts on duplicate GRANTs while already on the VC,
+    // which previously caused audible bounce and premature returns.
+    int already_tuned_same = (opts->p25_is_tuned == 1 && state->p25_vc_freq[0] == freq);
+    if (!already_tuned_same) {
         trunk_tune_to_freq(opts, state, freq);
+        // Reset per-slot audio gate and jitter buffers on new VC
+        state->p25_p2_audio_allowed[0] = 0;
+        state->p25_p2_audio_allowed[1] = 0;
+        p25_p2_audio_ring_reset(state, -1);
+        // Clear any stale encryption context so early ENC checks on MAC_ACTIVE
+        // do not inherit ALG/KID/MI from a prior call before MAC_PTT arrives.
+        state->payload_algid = 0;
+        state->payload_algidR = 0;
+        state->payload_keyid = 0;
+        state->payload_keyidR = 0;
+        state->payload_miP = 0ULL;
+        state->payload_miN = 0ULL;
+        state->p25_sm_tune_count++;
+        p25_sm_log_status(opts, state, "after-tune");
     }
-    // Reset per-slot audio gate and jitter buffers on new VC
-    state->p25_p2_audio_allowed[0] = 0;
-    state->p25_p2_audio_allowed[1] = 0;
-    p25_p2_audio_ring_reset(state, -1);
-    // Clear any stale encryption context so early ENC checks on MAC_ACTIVE
-    // do not inherit ALG/KID/MI from a prior call before MAC_PTT arrives.
-    state->payload_algid = 0;
-    state->payload_algidR = 0;
-    state->payload_keyid = 0;
-    state->payload_keyidR = 0;
-    state->payload_miP = 0ULL;
-    state->payload_miN = 0ULL;
-    state->p25_sm_tune_count++;
-    p25_sm_log_status(opts, state, "after-tune");
 }
 
 // Compute frequency from explicit channel and call p25_tune_to_vc
@@ -250,7 +258,10 @@ p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
     // Determine TDMA slot (when applicable)
     int is_tdma = 0;
     if (iden >= 0 && iden < 16) {
-        is_tdma = state->p25_chan_tdma[iden];
+        is_tdma = (state->p25_chan_tdma[iden] & 0x1) ? 1 : 0;
+        if (!is_tdma && state->p25_sys_is_tdma == 1) {
+            is_tdma = 1; // conservative fallback until IDEN_UP_TDMA arrives
+        }
     }
     int grant_slot = is_tdma ? (chan16 & 1) : -1;
 
@@ -386,6 +397,20 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     int forced = (state && state->p25_sm_force_release) ? 1 : 0;
     if (state) {
         state->p25_sm_force_release = 0; // consume one-shot flag
+    }
+    // Snapshot whether we observed MAC_ACTIVE/PTT after the last tune so we
+    // can decide later if a retune backoff is appropriate. This must be
+    // captured before we clear per-slot MAC hints below.
+    int had_mac_since_tune = 0;
+    if (state) {
+        time_t t_tune_snapshot = state->p25_last_vc_tune_time;
+        if (t_tune_snapshot != 0) {
+            time_t lmac_snap = state->p25_p2_last_mac_active[0];
+            time_t rmac_snap = state->p25_p2_last_mac_active[1];
+            if ((lmac_snap != 0 && lmac_snap >= t_tune_snapshot) || (rmac_snap != 0 && rmac_snap >= t_tune_snapshot)) {
+                had_mac_since_tune = 1;
+            }
+        }
     }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
     if (p25_sm_basic_mode()) {
@@ -539,21 +564,36 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     int last_slot = state->p25_p2_active_slot;
     return_to_cc(opts, state);
     p25_sm_log_status(opts, state, "after-release");
-    // Program short backoff against re-tuning the same VC immediately.
+    // Program short backoff against re-tuning the same VC immediately, but
+    // only when the last VC had no MAC_ACTIVE/PTT since tune (i.e., a dead
+    // grant bounce). For normal calls with voice, allow immediate follow-up
+    // grants on the same VC/slot without backoff.
     // Apply only for TDMA voice channels to prevent slot-thrash; allow
     // immediate re-tune on single-carrier voice grants.
     if (last_vc != 0 && last_slot != -1) {
-        s_retune_block_freq = last_vc;
-        s_retune_block_slot = last_slot;
-        double backoff_s = 1.0; // default shorter backoff
-        const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
-        if (sb && sb[0] != '\0') {
-            double v = atof(sb);
-            if (v >= 0.0 && v <= 10.0) {
-                backoff_s = v;
+        // Consider any sign of voice/audio as proof this was a normal call:
+        // - MAC_ACTIVE/PTT since tune (captured in had_mac_since_tune)
+        // - Per-slot audio was allowed at release time
+        // - Per-slot jitter ring has queued samples
+        int had_audio_flags = (state->p25_p2_audio_allowed[0] != 0) || (state->p25_p2_audio_allowed[1] != 0);
+        int had_ring_samples = (state->p25_p2_audio_ring_count[0] > 0) || (state->p25_p2_audio_ring_count[1] > 0);
+        int had_voice = had_mac_since_tune || had_audio_flags || had_ring_samples;
+        int apply_backoff = had_voice ? 0 : 1;
+        if (apply_backoff) {
+            s_retune_block_freq = last_vc;
+            s_retune_block_slot = last_slot;
+            double backoff_s = 1.0; // default shorter backoff
+            const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+            if (sb && sb[0] != '\0') {
+                double v = atof(sb);
+                if (v >= 0.0 && v <= 10.0) {
+                    backoff_s = v;
+                }
             }
+            s_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
+        } else {
+            s_retune_block_slot = -1; // disable slot-specific block
         }
-        s_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
     } else {
         s_retune_block_slot = -1;
     }
