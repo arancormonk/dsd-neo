@@ -72,10 +72,13 @@ main(void) {
     // Treat as P2 VC active (slot assigned)
     st.p25_p2_active_slot = 0;
 
-    // Case 1: audio gates active → release deferred
+    // Case 1: audio gates active → release deferred (within hangtime)
     g_return_to_cc_called = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0;
+    // Mark recent voice so that audio gates are considered "active" under
+    // current semantics (stale gates alone should not defer post-hangtime).
+    st.last_vc_sync_time = time(NULL);
     int before_rel = st.p25_sm_release_count;
     p25_sm_on_release(&opts, &st);
     rc |= expect_eq_int("rel count inc", st.p25_sm_release_count, before_rel + 1);
