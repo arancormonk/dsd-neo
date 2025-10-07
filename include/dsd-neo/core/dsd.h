@@ -57,10 +57,20 @@
 #include <unistd.h>
 
 #include <math.h>
-#ifndef MBELIB_NO_HEADERS
+#if !defined(MBELIB_NO_HEADERS)
+#if defined(__has_include)
+#if __has_include(<mbelib.h>)
 #include <mbelib.h>
 #else
-// Forward declare when headers are not available in unit tests
+#define MBELIB_NO_HEADERS 1
+// Forward declare when headers are not available in unit tests/CI
+typedef struct mbe_parms mbe_parms;
+#endif
+#else
+#include <mbelib.h>
+#endif
+#else
+// Forward declare when headers are not available in unit tests/CI
 typedef struct mbe_parms mbe_parms;
 #endif
 #include <sndfile.h>
