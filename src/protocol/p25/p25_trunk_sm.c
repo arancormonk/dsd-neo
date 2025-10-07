@@ -644,13 +644,19 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
                         && ((double)(now - state->p25_p2_last_mac_active[0]) <= ring_hold);
         int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active[1] != 0)
                          && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
-        int left_audio =
-            (state->p25_p2_audio_allowed[0] != 0) || left_ring
-            || (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
-        int right_audio =
-            (state->p25_p2_audio_allowed[1] != 0) || right_ring
-            || (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
+        int mac_recent_l =
+            (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
+        int mac_recent_r =
+            (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
+        int left_audio = (state->p25_p2_audio_allowed[0] != 0) || left_ring || mac_recent_l;
+        int right_audio = (state->p25_p2_audio_allowed[1] != 0) || right_ring || mac_recent_r;
         int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= opts->trunk_hangtime);
+        // After hangtime, require recent MAC activity (or ring gated by MAC) to
+        // treat a slot as active; ignore stale audio_allowed alone.
+        if (!recent_voice) {
+            left_audio = (left_ring || mac_recent_l);
+            right_audio = (right_ring || mac_recent_r);
+        }
         int stale_activity =
             (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) > (opts->trunk_hangtime + 2));
         // Treat forced release as an unconditional directive: ignore audio gates
@@ -658,11 +664,12 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // (e.g., MAC_IDLE on both slots, early ENC lockout, or teardown PDUs).
         if (!forced && !stale_activity && (left_audio || right_audio)) {
             if (opts && opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Release ignored (audio gate) L=%d R=%d recent=%d hang=%f (lr=%d rr=%d)\n",
-                        left_audio, right_audio, recent_voice, opts ? opts->trunk_hangtime : -1.0, left_ring,
-                        right_ring);
+                fprintf(stderr,
+                        "\n  P25 SM: Release ignored (audio gate%s) L=%d R=%d recent=%d hang=%f (lr=%d rr=%d)\n",
+                        (!recent_voice ? "+post-hang" : ""), left_audio, right_audio, recent_voice,
+                        opts ? opts->trunk_hangtime : -1.0, left_ring, right_ring);
             }
-            p25_sm_log_status(opts, state, "release-deferred-gated");
+            p25_sm_log_status(opts, state, (!recent_voice) ? "release-deferred-posthang" : "release-deferred-gated");
             return; // keep current VC; do not return to CC yet
         }
         // If neither slot has audio and we were not forced here, still respect
@@ -959,6 +966,12 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                          && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
         int left_has_audio = state->p25_p2_audio_allowed[0] || left_ring;
         int right_has_audio = state->p25_p2_audio_allowed[1] || right_ring;
+        // After hangtime, do not let stale audio_allowed hold activity: require
+        // recent MAC (handled below) or ring gated by MAC recency.
+        if (dt >= opts->trunk_hangtime) {
+            left_has_audio = left_ring;
+            right_has_audio = right_ring;
+        }
         int left_active = left_has_audio;
         int right_active = right_has_audio;
         double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
@@ -994,6 +1007,13 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 opts->trunk_is_tuned = 0;
                 state->last_cc_sync_time = now;
             }
+        } else if (dt >= opts->trunk_hangtime && dt_since_tune >= vc_grace && is_p2_vc && !both_slots_idle) {
+            // Post-hangtime gating is keeping the VC active (recent MAC or
+            // MAC-gated ring). Record a light-weight tag for UI diagnostics.
+            if (opts->verbose > 1) {
+                fprintf(stderr, "\n  P25 SM: Tick held by post-hang gate (L:%d R:%d)\n", left_active, right_active);
+            }
+            p25_sm_log_status(opts, state, "tick-posthang-gate");
         } else if (dt >= (opts->trunk_hangtime + 3.0)) {
             // Safety net: after hangtime + 3s, force release even if stale
             // per-slot gates or jitter buffers still read as active. This
