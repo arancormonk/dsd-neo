@@ -1069,7 +1069,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // MAC_PTT/ACTIVE on either logical channel; this avoids bouncing
             // back to CC during the first moments after a tune when audio
             // gates are not yet open but valid voice is present.
-            double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+            double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {

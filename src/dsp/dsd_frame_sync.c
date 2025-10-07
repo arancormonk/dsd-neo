@@ -1363,7 +1363,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     int right_has_audio = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
                     int left_active = left_has_audio;
                     int right_active = right_has_audio;
-                    double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                    double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
                     {
                         const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                         if (s && s[0] != '\0') {

@@ -618,7 +618,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // Treat a slot as active if audio is allowed, jitter has queued audio,
         // or we saw recent MAC_ACTIVE/PTT on that slot.
         time_t now = time(NULL);
-        double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+        double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
         {
             const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
             if (s && s[0] != '\0') {
@@ -844,7 +844,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
             // Opposite slot activity consideration (recent MAC_ACTIVE hold)
             int other_active = 0;
-            double mac_hold = 2.0;
+            double mac_hold = 3.0;
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {
@@ -974,7 +974,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         }
         int left_active = left_has_audio;
         int right_active = right_has_audio;
-        double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+        double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
         {
             const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
             if (s && s[0] != '\0') {

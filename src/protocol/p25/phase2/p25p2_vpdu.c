@@ -2258,7 +2258,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             p25_p2_audio_ring_reset(state, eslot);
 
             // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
-            double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+            double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {
@@ -2270,7 +2270,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
             time_t now2 = time(NULL);
             int os = eslot ^ 1;
-            double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
+            double voice_hold = 1.0; // seconds; override via DSD_NEO_P25_VOICE_HOLD
             {
                 const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
                 if (s2 && s2[0] != '\0') {
@@ -2407,7 +2407,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->p25_p2_audio_allowed[slot] = 0;
                 p25_p2_audio_ring_reset(state, slot);
                 int other = slot ^ 1;
-                double mac_hold = 2.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                     if (s && s[0] != '\0') {
