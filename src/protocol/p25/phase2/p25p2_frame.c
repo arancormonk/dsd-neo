@@ -1117,12 +1117,12 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr, " DUID: %d", p2_duid_complete);
             if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0 && state->p2_wacn != 0xFFFFF
                 && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF) {
-                // Only refresh "recent voice" timer when audio for this slot is
-                // actually allowed (clear or decryptable). This prevents an
-                // encrypted-only slot from keeping the hangtime alive after a
-                // clear call on the opposite slot has ended when ENC lockout is
-                // enabled.
-                if (state->p25_p2_audio_allowed[state->currentslot]) {
+                // Refresh recent-voice on valid voice frames when audio is
+                // allowed OR when ENC follow is enabled. This avoids rapid
+                // VC↔CC bounce on encrypted calls we are following, while
+                // still allowing ENC-lockout policy to end calls quickly when
+                // not following.
+                if (state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1) {
                     state->last_vc_sync_time = now;
                 }
                 process_4V(opts, state);
@@ -1133,7 +1133,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // fprintf (stderr, " DUID: %d", p2_duid_complete);
             if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0 && state->p2_wacn != 0xFFFFF
                 && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF) {
-                if (state->p25_p2_audio_allowed[state->currentslot]) {
+                if (state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1) {
                     state->last_vc_sync_time = now;
                 }
                 process_2V(opts, state);

@@ -921,28 +921,9 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        // Additional guard: if we have lost sync (no valid synctype) while
-        // voice tuned for longer than hangtime + grace, treat as stale VC and
-        // force release regardless of slot gates.
-        if (state->lastsynctype < 0 && dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
-            if (opts->verbose > 0) {
-                fprintf(stderr, "\n  P25 SM: Forced release (no sync; dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
-            }
-            if (state->p25_cc_freq != 0) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            } else {
-                state->p25_p2_audio_allowed[0] = 0;
-                state->p25_p2_audio_allowed[1] = 0;
-                state->p25_p2_active_slot = -1;
-                state->p25_vc_freq[0] = 0;
-                state->p25_vc_freq[1] = 0;
-                opts->p25_is_tuned = 0;
-                opts->trunk_is_tuned = 0;
-                state->last_cc_sync_time = now;
-            }
-            return; // done this tick
-        }
+        // Note: defer the "no sync" forced-release guard until after
+        // evaluating per-slot activity to avoid bouncing during brief sync
+        // drops when MAC activity indicates an active call.
         // Determine per-slot activity: use audio gate or queued audio. Also
         // honor recent MAC_ACTIVE/PTT indications to bridge initial setup and
         // short fades; after hangtime expires, ignore stale MAC flags but keep
@@ -991,6 +972,31 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             right_active = 1;
         }
         int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
+
+        // Additional guard: if we have lost sync (no valid synctype) while
+        // voice tuned for longer than hangtime + grace, treat as stale VC and
+        // force release only when both slots are idle (no recent MAC or
+        // MAC-gated jitter activity). This prevents sub-second VC↔CC bounce
+        // on marginal signals during real calls.
+        if (state->lastsynctype < 0 && dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime && both_slots_idle) {
+            if (opts->verbose > 0) {
+                fprintf(stderr, "\n  P25 SM: Forced release (no sync; dt=%.1f ht=%.1f)\n", dt, opts->trunk_hangtime);
+            }
+            if (state->p25_cc_freq != 0) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            } else {
+                state->p25_p2_audio_allowed[0] = 0;
+                state->p25_p2_audio_allowed[1] = 0;
+                state->p25_p2_active_slot = -1;
+                state->p25_vc_freq[0] = 0;
+                state->p25_vc_freq[1] = 0;
+                opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
+                state->last_cc_sync_time = now;
+            }
+            return; // done this tick
+        }
         if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
