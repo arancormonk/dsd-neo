@@ -35,11 +35,11 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     //reset block counter to 1
     state->data_block_counter[slot] = 1;
 
-    // Accept headers when CRC is good, or when relaxed CRC bypass is enabled.
-    // This restores ARS/LRRP decoding on systems using RAS or with minor header
-    // corruption when the user explicitly disables aggressive frame sync.
-    if (IrrecoverableErrors == 0 && (CRCCorrect == 1 || opts->aggressive_framesync == 0)) //&&CRCCorrect == 1
-    {
+    // DMR headers: accept if CRC is good, in globally relaxed mode (-F), or when
+    // DMR default-relax is enabled. Strict callers (tests) set aggressive_framesync=1
+    // and leave dmr_crc_relaxed_default=0 to force rejection on CRC fail.
+    if (IrrecoverableErrors == 0
+        && (CRCCorrect == 1 || opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default)) {
         // Reset confirmed-data DBSN tracking on new header
         state->data_dbsn_have[slot] = 0;
         state->data_dbsn_expected[slot] = 0;
@@ -1393,7 +1393,7 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                 sprintf(state->dmr_lrrp_gps[slot], "%s", enc_str);
                 watchdog_event_datacall(opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot],
                                         enc_str, slot);
-            } else if (CRCCorrect || opts->aggressive_framesync == 0) {
+            } else if (opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default) {
                 //may need to make adjustments for various compressed headers for starting point, etc?
                 if (state->data_header_sap[slot] == 4) //IP based
                 {

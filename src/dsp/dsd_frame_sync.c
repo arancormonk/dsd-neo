@@ -233,7 +233,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 want_mod = 0; /* C4FM */
             }
 
-            /* Update votes (require 2 consecutive windows before switching) */
+            /* Update votes (use hysteresis; be more eager for GFSK to avoid misclassification dwell) */
             if (want_mod == 1) {
                 vote_qpsk++;
                 vote_c4fm = 0;
@@ -249,10 +249,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
 
             int do_switch = -1; /* -1=no-op, else new rf_mod */
+            /*
+             * Require 2 consecutive windows for C4FM<->QPSK to prevent flapping on marginal signals.
+             * For GFSK (DMR/dPMR/NXDN), permit immediate switch on first qualifying window to minimize
+             * misclassification time that can corrupt early bursts and elevate audio errors.
+             */
             if (want_mod == 1 && vote_qpsk >= 2 && state->rf_mod != 1) {
                 do_switch = 1;
-            } else if (want_mod == 2 && vote_gfsk >= 2 && state->rf_mod != 2) {
-                do_switch = 2;
+            } else if (want_mod == 2 && vote_gfsk >= 1 && state->rf_mod != 2) {
+                do_switch = 2; /* eager switch to GFSK on first vote */
             } else if (want_mod == 0 && vote_c4fm >= 2 && state->rf_mod != 0) {
                 do_switch = 0;
             }
@@ -525,6 +530,21 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->last_cc_sync_time = now;
                     return (1);
                 }
+            }
+            /* When DMR/dPMR/NXDN are enabled targets, proactively disable FM AGC/limiter which can
+             * distort 2-level/FSK symbol envelopes and elevate early audio errors under marginal SNR.
+             * Also force FLL/TED off for FSK paths. */
+            if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)) {
+                extern void rtl_stream_set_fm_agc(int onoff);
+                extern void rtl_stream_set_fm_limiter(int onoff);
+                extern void rtl_stream_toggle_iq_balance(int onoff);
+                extern void rtl_stream_toggle_fll(int onoff);
+                extern void rtl_stream_toggle_ted(int onoff);
+                rtl_stream_set_fm_agc(0);
+                rtl_stream_set_fm_limiter(0);
+                rtl_stream_toggle_iq_balance(0);
+                rtl_stream_toggle_fll(0);
+                rtl_stream_toggle_ted(0);
             }
             if (opts->frame_x2tdma == 1) {
                 if ((strcmp(synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
@@ -893,6 +913,14 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + (lmax)) / 2;
                     state->min = ((state->min) + (lmin)) / 2;
                     state->directmode = 0;
+                    /* Force GFSK mode and stable symbol timing for DMR */
+                    state->rf_mod = 2; /* GFSK */
+                    if (state->samplesPerSymbol != 10) {
+                        state->samplesPerSymbol = 10;
+                    }
+                    if (state->symbolCenter < 2 || state->symbolCenter > 8) {
+                        state->symbolCenter = 5; /* middle of 0..9 */
+                    }
                     if (opts->inverted_dmr == 0) {
                         // data frame
                         sprintf(state->ftype, "DMR ");
@@ -923,6 +951,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + (lmin)) / 2;
                     //state->currentslot = 0;
                     state->directmode = 1; //Direct mode
+                    state->rf_mod = 2;
+                    if (state->samplesPerSymbol != 10) {
+                        state->samplesPerSymbol = 10;
+                    }
+                    if (state->symbolCenter < 2 || state->symbolCenter > 8) {
+                        state->symbolCenter = 5;
+                    }
                     if (opts->inverted_dmr == 0) {
                         // data frame
                         sprintf(state->ftype, "DMR ");
@@ -983,6 +1018,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     state->directmode = 0;
+                    state->rf_mod = 2;
+                    if (state->samplesPerSymbol != 10) {
+                        state->samplesPerSymbol = 10;
+                    }
+                    if (state->symbolCenter < 2 || state->symbolCenter > 8) {
+                        state->symbolCenter = 5;
+                    }
                     if (opts->inverted_dmr == 0) {
                         // voice frame
                         sprintf(state->ftype, "DMR ");
@@ -1018,6 +1060,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->directmode = 1;       //Direct mode
                     if (opts->inverted_dmr == 0) //&& opts->dmr_stereo == 1
                     {
+                        state->rf_mod = 2;
+                        if (state->samplesPerSymbol != 10) {
+                            state->samplesPerSymbol = 10;
+                        }
+                        if (state->symbolCenter < 2 || state->symbolCenter > 8) {
+                            state->symbolCenter = 5;
+                        }
                         // voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
@@ -1048,6 +1097,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->directmode = 1;       //Direct mode
                     if (opts->inverted_dmr == 0) //&& opts->dmr_stereo == 1
                     {
+                        state->rf_mod = 2;
+                        if (state->samplesPerSymbol != 10) {
+                            state->samplesPerSymbol = 10;
+                        }
+                        if (state->symbolCenter < 2 || state->symbolCenter > 8) {
+                            state->symbolCenter = 5;
+                        }
                         // voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {

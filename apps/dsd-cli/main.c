@@ -1538,6 +1538,8 @@ initOpts(dsd_opts* opts) {
     opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
     opts->aggressive_framesync = 1;
+    /* DMR: relax CRC gating by default (others remain strict unless -F). */
+    opts->dmr_crc_relaxed_default = 1;
 
 //this may not matter so much, since its already checked later on
 //but better safe than sorry I guess
