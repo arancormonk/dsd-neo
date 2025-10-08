@@ -315,12 +315,9 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     }
 
     if (encR) {
-        if (state->payload_algidR == 0xAA) { // RC4
-            if (state->RR != 0) {
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x81 || state->payload_algidR == 0x9F) { // DES-56 / DES-XL
-            if (state->RR != 0) {                                                    // use right-slot key
+        if (state->payload_algidR == 0xAA || state->payload_algidR == 0x81
+            || state->payload_algidR == 0x9F) { // RC4 / DES-56 / DES-XL
+            if (state->RR != 0) {               // use right-slot key
                 encR = 0;
             }
         } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) { // AES-256/128
@@ -1482,12 +1479,9 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     }
 
     if (encR) {
-        if (state->payload_algidR == 0xAA) {
-            if (state->RR != 0) {
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x81 || state->payload_algidR == 0x9F) { // DES/DES-XL
-            if (state->RR != 0) {                                                    // use right-slot key
+        if (state->payload_algidR == 0xAA || state->payload_algidR == 0x81
+            || state->payload_algidR == 0x9F) { // RC4 / DES / DES-XL
+            if (state->RR != 0) {               // use right-slot key
                 encR = 0;
             }
         } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
