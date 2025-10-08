@@ -1533,7 +1533,7 @@ initOpts(dsd_opts* opts) {
     opts->ncurses_compact = 1;
 #endif
     opts->payload = 0;
-    opts->p25_auto_adapt = 0; // adaptive P25 follower disabled by default
+    opts->p25_auto_adapt = 1; // adaptive P25 follower enabled by default
     opts->inverted_dpmr = 0;
     opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
@@ -2293,7 +2293,8 @@ usage() {
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("  -j            Enable P25 LCW explicit retune (format 0x44)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
-    printf("      --p25-auto-adapt   Enable per-site adaptive follower timing (beta)\n");
+    printf("      --p25-auto-adapt       Ensure per-site adaptive follower timing is enabled (beta; default On)\n");
+    printf("      --no-p25-auto-adapt    Disable per-site adaptive follower timing (CLI override)\n");
     printf("\n");
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
@@ -2939,6 +2940,12 @@ main(int argc, char** argv) {
                 opts.p25_auto_adapt = 1;
                 setenv("DSD_NEO_P25_AUTO_ADAPT", "1", 1);
                 LOG_NOTICE("P25: Auto-Adapt enabled (CLI).\n");
+                continue;
+            }
+            if (strcmp(argv[i], "--no-p25-auto-adapt") == 0) {
+                opts.p25_auto_adapt = 0;
+                setenv("DSD_NEO_P25_AUTO_ADAPT", "0", 1);
+                LOG_NOTICE("P25: Auto-Adapt disabled (CLI).\n");
                 continue;
             }
             if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {

@@ -19,6 +19,15 @@
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
+
+// Weak fallback so unit tests that link only the P25 library do not need the
+// IO Radio library just for Auto-DSP status. Returns zeros.
+__attribute__((weak)) void
+rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+}
 #endif
 
 // Weak fallback for trunk_tune_to_freq so unit tests that link only the P25
@@ -750,6 +759,48 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         }
         int cur_is_p25p2_sync = (state->lastsynctype == 35 || state->lastsynctype == 36);
 
+        // Optional Phase 1 elevated-error hold: when average IMBE error is
+        // elevated on P25p1, extend hangtime-based release checks slightly to
+        // avoid VC↔CC thrash on marginal signals.
+        double p1_err_hold_s = 0.0;
+        if (!is_p2_vc && dt_since_tune >= vc_grace) {
+            double thr_pct = 8.0; // default threshold percent
+            double add_s = 2.0;   // additional seconds to hold
+            const char* sp = getenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
+            if (sp && sp[0] != '\0') {
+                double v = atof(sp);
+                if (v >= 0.0 && v <= 100.0) {
+                    thr_pct = v;
+                }
+            }
+            const char* ss = getenv("DSD_NEO_P25P1_ERR_HOLD_S");
+            if (ss && ss[0] != '\0') {
+                double v = atof(ss);
+                if (v >= 0.0 && v <= 10.0) {
+                    add_s = v;
+                }
+            }
+            double avg_pct = -1.0;
+            if (state->p25_p1_voice_err_hist_len > 0) {
+                int len = state->p25_p1_voice_err_hist_len;
+                if (len > 0) {
+                    avg_pct = (double)state->p25_p1_voice_err_hist_sum / (double)len;
+                }
+            }
+#ifdef USE_RTLSDR
+            if (avg_pct < 0.0) {
+                rtl_auto_dsp_status st = {0};
+                rtl_stream_auto_dsp_get_status(&st);
+                if (st.p25p1_ema_pct > 0) {
+                    avg_pct = (double)st.p25p1_ema_pct;
+                }
+            }
+#endif
+            if (avg_pct >= 0.0 && avg_pct >= thr_pct) {
+                p1_err_hold_s = add_s;
+            }
+        }
+
         // Global safety net: after hangtime + EXTRA seconds without voice,
         // force release regardless of per-slot gates or jitter. Place this
         // early to avoid being short-circuited by post-hang gating branches.
@@ -762,7 +813,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     extra = v;
                 }
             }
-            if (dt >= (opts->trunk_hangtime + extra) && dt_since_tune >= vc_grace) {
+            if (dt >= (opts->trunk_hangtime + extra + p1_err_hold_s) && dt_since_tune >= vc_grace) {
                 if (opts->verbose > 1) {
                     p25_sm_log_status(opts, state, "tick-safety-net");
                 }
@@ -1045,7 +1096,8 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // force release only when both slots are idle (no recent MAC or
         // MAC-gated jitter activity). This prevents sub-second VC↔CC bounce
         // on marginal signals during real calls.
-        if (state->lastsynctype < 0 && dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime && both_slots_idle) {
+        if (state->lastsynctype < 0 && dt_since_tune >= vc_grace && dt >= (opts->trunk_hangtime + p1_err_hold_s)
+            && both_slots_idle) {
             if (opts->verbose > 0) {
                 p25_sm_log_status(opts, state, "tick-nosync-release");
             }
@@ -1068,7 +1120,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             // Not in post-hang gating; reset watchdog
             state->p25_sm_posthang_start = 0;
         }
-        if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
+        if (dt >= (opts->trunk_hangtime + p1_err_hold_s) && both_slots_idle && dt_since_tune >= vc_grace) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);

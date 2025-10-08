@@ -59,6 +59,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-O` List PulseAudio input sources and output sinks
 - `-j` P25: enable LCW explicit retune (format 0x44)
 - `-^` P25: prefer CC candidates during control channel hunt
+ - `--p25-auto-adapt` enable per‑site adaptive follower timing (default On)
+ - `--no-p25-auto-adapt` disable adaptive follower timing (CLI override)
 
 ## Recording & Files
 
@@ -131,6 +133,9 @@ Notes
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–24000 by mode)
 - Hang time after voice/sync loss (seconds): `-t <secs>`
+  - Env (advanced): When P25 Phase 1 voice error rate is elevated, extend hangtime to reduce VC↔CC thrash:
+    - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 8.0)
+    - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` (default 2.0)
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
