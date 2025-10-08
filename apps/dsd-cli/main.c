@@ -4665,7 +4665,7 @@ main(int argc, char** argv) {
     {
         uint8_t rtl_ok = 0;
         //use to list out all detected RTL dongles
-        char vendor[256], product[256], serial[256], userdev[256];
+        char vendor[256], product[256], serial[256];
         int device_count = 0;
 
 #ifdef USE_RTLSDR
@@ -4776,16 +4776,15 @@ main(int argc, char** argv) {
         for (int i = 0; i < device_count; i++) {
             rtlsdr_get_device_usb_strings(i, vendor, product, serial);
             LOG_NOTICE("  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
-
-            snprintf(userdev, sizeof userdev, "%08d", opts.rtl_dev_index);
-
-            //check by index first, then by serial
             if (opts.rtl_dev_index == i) {
                 LOG_NOTICE("Selected Device #%d with Serial Number: %s \n", i, serial);
-            } else if (strcmp(userdev, serial) == 0) {
-                LOG_NOTICE("Selected Device #%d with Serial Number: %s \n", i, serial);
-                opts.rtl_dev_index = i;
             }
+        }
+
+        // Guard against out-of-range index
+        if (opts.rtl_dev_index < 0 || opts.rtl_dev_index >= device_count) {
+            LOG_WARNING("Requested RTL device index %d out of range; using 0\n", opts.rtl_dev_index);
+            opts.rtl_dev_index = 0;
         }
 
         if (opts.rtl_volume_multiplier > 3 || opts.rtl_volume_multiplier < 0) {
@@ -4827,7 +4826,6 @@ main(int argc, char** argv) {
         UNUSED(vendor);
         UNUSED(product);
         UNUSED(serial);
-        UNUSED(userdev);
         UNUSED(device_count);
 #endif
     }
