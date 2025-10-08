@@ -580,10 +580,27 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             // Instead, gate this slot so no new frames are queued.
             state->p25_p2_audio_allowed[slot] = 0;
 
-            // If both logical channels are idle, return to CC
+            // If both logical channels are idle, return to CC — but respect a
+            // short post-tune grace so we don't bounce on quick follow-ups when
+            // early MAC_PTT/ACTIVE PDUs were missed.
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
+                double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+                {
+                    const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                    if (s && s[0] != '\0') {
+                        double v = atof(s);
+                        if (v >= 0.0 && v < 10.0) {
+                            vc_grace = v;
+                        }
+                    }
+                }
+                time_t now2 = time(NULL);
+                double dt_since_tune =
+                    (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+                if (dt_since_tune >= vc_grace) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                }
             }
 
             //reset gain
@@ -1251,8 +1268,19 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // Flush ring for this slot to drop any residual samples
         p25_p2_audio_ring_reset(state, slot);
         // Only return to CC when both slots are IDLE (not merely audio-gated),
-        // or upon explicit vPDU release. This avoids bouncing on encrypted calls.
+        // and respect a short post-tune grace. This avoids bouncing on very
+        // short follow-up calls where early MAC PDUs were missed.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+            double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+            {
+                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        vc_grace = v;
+                    }
+                }
+            }
             double mac_hold = 3.0; // seconds
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
@@ -1270,7 +1298,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
                            || (state->p25_p2_last_mac_active[1] != 0
                                && (double)(now2 - state->p25_p2_last_mac_active[1]) <= mac_hold);
-            if (!l_active && !r_active) {
+            double dt_since_tune =
+                (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+            if (!l_active && !r_active && dt_since_tune >= vc_grace) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
             }

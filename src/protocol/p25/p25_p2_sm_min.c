@@ -42,8 +42,12 @@ dsd_p25p2_min_init(dsd_p25p2_min_sm* sm) {
     sm->hangtime_s = 1.0;
     sm->vc_grace_s = 1.5;
     sm->min_follow_dwell_s = 0.7;
-    sm->grant_voice_timeout_s = 2.0;
-    sm->retune_backoff_s = 3.0;
+    // Raise grant→voice timeout to reduce early VC→CC bounce on systems
+    // that delay MAC_PTT/ACTIVE after issuing a grant.
+    sm->grant_voice_timeout_s = 4.0;
+    // Shorten re‑tune backoff so a quick follow‑up grant to the same VC/slot
+    // is not ignored for long after an early (pre‑voice) return.
+    sm->retune_backoff_s = 1.0;
     sm->state = DSD_P25P2_MIN_IDLE;
 }
 

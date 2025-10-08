@@ -16,6 +16,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 // Clear per-slot audio gates, small audio rings, encryption indicators, and
@@ -450,6 +451,32 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     int r = 0;
     int s = 0;
     int t = 0;
+
+    // Notify minimal P25p2 follower that voice activity is present on this slot
+    {
+        dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
+        dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+    }
+    // For a brief grace period after tuning to a VC, treat decoded voice
+    // frames as recent voice even if audio gates have not opened yet. This
+    // prevents post-hang logic from bouncing back to CC before early voice
+    // PTT/ACTIVE/ESS can arrive.
+    {
+        time_t now = time(NULL);
+        double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                vc_grace = v;
+            }
+        }
+        double dt_since_tune =
+            (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+        if (dt_since_tune < vc_grace) {
+            state->last_vc_sync_time = now;
+        }
+    }
     for (int x = 0; x < 72; x++) {
         int ww = *w;
         if (ww == 0) {
@@ -879,6 +906,30 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     int r = 0;
     int s = 0;
     int t = 0;
+
+    // Notify minimal P25p2 follower that voice activity is present on this slot
+    {
+        dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
+        dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+    }
+    // Also refresh recent-voice during a short post-tune grace, even if
+    // audio gates are not yet open.
+    {
+        time_t now = time(NULL);
+        double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                vc_grace = v;
+            }
+        }
+        double dt_since_tune =
+            (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+        if (dt_since_tune < vc_grace) {
+            state->last_vc_sync_time = now;
+        }
+    }
     for (int x = 0; x < 72; x++) {
         int ww = *w;
         if (ww == 0) {

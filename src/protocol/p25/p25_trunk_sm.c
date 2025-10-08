@@ -571,6 +571,23 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     // Apply only for TDMA voice channels to prevent slot-thrash; allow
     // immediate re-tune on single-carrier voice grants.
     if (last_vc != 0 && last_slot != -1) {
+        // Measure how long we were on this VC since the last tune. If we are
+        // returning very shortly after tuning (no MAC voice observed), treat
+        // this as a pre‑voice bounce and do not apply a retune backoff so a
+        // subsequent grant to the same VC/slot can be honored immediately.
+        time_t now_bk = time(NULL);
+        double dt_since_tune =
+            (state && state->p25_last_vc_tune_time != 0) ? (double)(now_bk - state->p25_last_vc_tune_time) : 1e9;
+        double grant_voice_to = 4.0; // seconds; keep in sync with minimal SM default
+        {
+            const char* sg = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
+            if (sg && sg[0] != '\0') {
+                double vg = atof(sg);
+                if (vg >= 0.0 && vg <= 10.0) {
+                    grant_voice_to = vg;
+                }
+            }
+        }
         // Consider any sign of voice/audio as proof this was a normal call:
         // - MAC_ACTIVE/PTT since tune (captured in had_mac_since_tune)
         // - Per-slot audio was allowed at release time
@@ -580,17 +597,22 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         int had_voice = had_mac_since_tune || had_audio_flags || had_ring_samples;
         int apply_backoff = had_voice ? 0 : 1;
         if (apply_backoff) {
-            s_retune_block_freq = last_vc;
-            s_retune_block_slot = last_slot;
-            double backoff_s = 1.0; // default shorter backoff
-            const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
-            if (sb && sb[0] != '\0') {
-                double v = atof(sb);
-                if (v >= 0.0 && v <= 10.0) {
-                    backoff_s = v;
+            // Skip backoff for pre‑voice bounce (returned before voice timeout)
+            if (dt_since_tune < (grant_voice_to + 0.1)) {
+                s_retune_block_slot = -1; // no block
+            } else {
+                s_retune_block_freq = last_vc;
+                s_retune_block_slot = last_slot;
+                double backoff_s = 1.0; // default shorter backoff
+                const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+                if (sb && sb[0] != '\0') {
+                    double v = atof(sb);
+                    if (v >= 0.0 && v <= 10.0) {
+                        backoff_s = v;
+                    }
                 }
+                s_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
             }
-            s_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
         } else {
             s_retune_block_slot = -1; // disable slot-specific block
         }
