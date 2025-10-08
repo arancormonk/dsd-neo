@@ -1533,6 +1533,7 @@ initOpts(dsd_opts* opts) {
     opts->ncurses_compact = 1;
 #endif
     opts->payload = 0;
+    opts->p25_auto_adapt = 0; // adaptive P25 follower disabled by default
     opts->inverted_dpmr = 0;
     opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
@@ -2267,6 +2268,15 @@ initState(dsd_state* state) {
     state->ui_msg[0] = '\0';
     state->ui_msg_expire = 0;
 
+    // Initialize P25 adaptive follower fields
+    state->p25_adapt_vc_grace_s = 0.0;
+    state->p25_adapt_grant_voice_to_s = 0.0;
+    state->p25_adapt_min_follow_dwell_s = 0.0;
+    state->p25_adapt_retune_backoff_s = 0.0;
+    state->p25_adapt_ema_g2v_s = 0.0;
+    state->p25_adapt_have_g2v = 0;
+    state->p25_adapt_updated_for_tune = 0;
+
 } //init_state
 
 void
@@ -2283,6 +2293,7 @@ usage() {
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("  -j            Enable P25 LCW explicit retune (format 0x44)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
+    printf("      --p25-auto-adapt   Enable per-site adaptive follower timing (beta)\n");
     printf("\n");
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
@@ -2924,6 +2935,12 @@ main(int argc, char** argv) {
                 setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
                 continue;
             }
+            if (strcmp(argv[i], "--p25-auto-adapt") == 0) {
+                opts.p25_auto_adapt = 1;
+                setenv("DSD_NEO_P25_AUTO_ADAPT", "1", 1);
+                LOG_NOTICE("P25: Auto-Adapt enabled (CLI).\n");
+                continue;
+            }
             if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {
                 calc_csv_cli = argv[++i];
                 continue;
@@ -3006,6 +3023,15 @@ main(int argc, char** argv) {
         if (calc_csv_env && *calc_csv_env) {
             int rc = run_t3_lcn_calc_from_csv(calc_csv_env);
             return rc;
+        }
+
+        // P25 Auto-Adapt via environment
+        if (!opts.p25_auto_adapt) {
+            const char* eaa = getenv("DSD_NEO_P25_AUTO_ADAPT");
+            if (is_truthy_env(eaa)) {
+                opts.p25_auto_adapt = 1;
+                LOG_NOTICE("P25: Auto-Adapt enabled (env).\n");
+            }
         }
 
         // Apply input volume and warn threshold if provided via CLI

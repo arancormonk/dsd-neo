@@ -83,6 +83,8 @@ void svc_toggle_lcw_retune(dsd_opts* opts);
 void svc_toggle_dmr_le(dsd_opts* opts);
 void svc_set_slot_pref(dsd_opts* opts, int pref01);
 void svc_set_slots_onoff(dsd_opts* opts, int mask);
+// P25 adaptive follower toggle
+void svc_toggle_p25_auto_adapt(dsd_opts* opts);
 
 // Per-protocol inversion toggles
 void svc_toggle_inv_x2(dsd_opts* opts);

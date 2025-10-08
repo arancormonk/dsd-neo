@@ -82,6 +82,7 @@ static void act_crc_relax(void* v);
 static void act_trunk_toggle(void* v);
 static void act_scan_toggle(void* v);
 static void act_lcw_toggle(void* v);
+static void act_p25_auto_adapt(void* v);
 static void act_setmod_bw(void* v);
 static void act_import_chan(void* v);
 static void act_import_group(void* v);
@@ -1634,6 +1635,13 @@ lbl_lcw(void* v, char* b, size_t n) {
 }
 
 static const char*
+lbl_p25_auto_adapt(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "P25 Auto-Adapt (beta) [%s]", (c && c->opts && c->opts->p25_auto_adapt) ? "On" : "Off");
+    return b;
+}
+
+static const char*
 lbl_allow(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Allow/White List [%s]", c->opts->trunk_use_allow_list ? "Active" : "Inactive");
@@ -1963,6 +1971,11 @@ ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_lcw,
          .help = "Enable LCW explicit retune.",
          .on_select = act_lcw_toggle},
+        {.id = "p25_auto_adapt",
+         .label = "P25 Auto-Adapt (beta)",
+         .label_fn = lbl_p25_auto_adapt,
+         .help = "Enable/disable per-site adaptive follower timing.",
+         .on_select = act_p25_auto_adapt},
         {.id = "p2params",
          .label = "Set P25 Phase 2 Parameters",
          .help = "Set WACN/SYSID/NAC manually.",
@@ -3756,6 +3769,13 @@ act_scan_toggle(void* v) {
 static void
 act_lcw_toggle(void* v) {
     svc_toggle_lcw_retune(((UiCtx*)v)->opts);
+}
+
+static void
+act_p25_auto_adapt(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    svc_toggle_p25_auto_adapt(c->opts);
+    ui_statusf("P25 Auto-Adapt: %s", c->opts->p25_auto_adapt ? "On" : "Off");
 }
 
 static void

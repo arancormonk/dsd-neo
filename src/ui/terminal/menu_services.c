@@ -139,6 +139,14 @@ svc_stop_symbol_saving(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+void
+svc_toggle_p25_auto_adapt(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->p25_auto_adapt = opts->p25_auto_adapt ? 0 : 1;
+}
+
 int
 svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
     if (!opts || !host || port <= 0) {

@@ -585,7 +585,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             // early MAC_PTT/ACTIVE PDUs were missed.
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
                 double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-                {
+                if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
+                    vc_grace = state->p25_adapt_vc_grace_s;
+                } else {
                     const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                     if (s && s[0] != '\0') {
                         double v = atof(s);
@@ -1272,7 +1274,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // short follow-up calls where early MAC PDUs were missed.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
             double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-            {
+            if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
+                vc_grace = state->p25_adapt_vc_grace_s;
+            } else {
                 const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                 if (s && s[0] != '\0') {
                     double v = atof(s);
