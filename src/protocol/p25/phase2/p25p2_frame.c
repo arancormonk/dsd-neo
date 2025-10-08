@@ -478,7 +478,9 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         double dt_since_tune =
             (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
         if (dt_since_tune < vc_grace) {
-            state->last_vc_sync_time = now;
+            if (state) {
+                state->last_vc_sync_time = now;
+            }
         }
     }
     // P25 auto-adapt: seed grant→voice EMA on first voice after tune and
@@ -975,7 +977,9 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         double dt_since_tune =
             (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
         if (dt_since_tune < vc_grace) {
-            state->last_vc_sync_time = now;
+            if (state) {
+                state->last_vc_sync_time = now;
+            }
         }
         if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_updated_for_tune == 0) {
             double dt = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
@@ -1028,7 +1032,9 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         double dt_since_tune =
             (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
         if (dt_since_tune < vc_grace) {
-            state->last_vc_sync_time = now;
+            if (state) {
+                state->last_vc_sync_time = now;
+            }
         }
     }
     for (int x = 0; x < 72; x++) {
