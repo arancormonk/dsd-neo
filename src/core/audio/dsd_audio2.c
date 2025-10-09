@@ -416,23 +416,24 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    // If either slot is gated/enc-muted, explicitly zero that channel in the
-    // interleaved buffers to avoid any leakage on mono/downmix outputs.
-    if (encL || encR) {
+    // If exactly one slot is active (the other enc-muted), duplicate the
+    // active slot onto both channels so users with stereo sinks hear it.
+    if (!encL && encR) {
         for (i = 0; i < 320; i += 2) {
-            if (encL) {
-                stereo_samp1[i + 0] = 0.0f;
-                stereo_samp2[i + 0] = 0.0f;
-                stereo_samp3[i + 0] = 0.0f;
-                stereo_samp4[i + 0] = 0.0f;
-            }
-            if (encR) {
-                stereo_samp1[i + 1] = 0.0f;
-                stereo_samp2[i + 1] = 0.0f;
-                stereo_samp3[i + 1] = 0.0f;
-                stereo_samp4[i + 1] = 0.0f;
-            }
+            stereo_samp1[i + 1] = stereo_samp1[i + 0];
+            stereo_samp2[i + 1] = stereo_samp2[i + 0];
+            stereo_samp3[i + 1] = stereo_samp3[i + 0];
+            stereo_samp4[i + 1] = stereo_samp4[i + 0];
         }
+        encR = 0; // treat as stereo-duplicated
+    } else if (encL && !encR) {
+        for (i = 0; i < 320; i += 2) {
+            stereo_samp1[i + 0] = stereo_samp1[i + 1];
+            stereo_samp2[i + 0] = stereo_samp2[i + 1];
+            stereo_samp3[i + 0] = stereo_samp3[i + 1];
+            stereo_samp4[i + 0] = stereo_samp4[i + 1];
+        }
+        encL = 0; // treat as stereo-duplicated
     }
 
     if (encL && encR) {
@@ -1612,6 +1613,26 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         if (!encR) {
             stereo_samp4[i * 2 + 1] = state->s_r4[3][i];
         }
+    }
+
+    // If exactly one slot is active (the other enc-muted), duplicate the
+    // active slot onto both channels so users with stereo sinks hear it.
+    if (!encL && encR) {
+        for (i = 0; i < 320; i += 2) {
+            stereo_samp1[i + 1] = stereo_samp1[i + 0];
+            stereo_samp2[i + 1] = stereo_samp2[i + 0];
+            stereo_samp3[i + 1] = stereo_samp3[i + 0];
+            stereo_samp4[i + 1] = stereo_samp4[i + 0];
+        }
+        encR = 0;
+    } else if (encL && !encR) {
+        for (i = 0; i < 320; i += 2) {
+            stereo_samp1[i + 0] = stereo_samp1[i + 1];
+            stereo_samp2[i + 0] = stereo_samp2[i + 1];
+            stereo_samp3[i + 0] = stereo_samp3[i + 1];
+            stereo_samp4[i + 0] = stereo_samp4[i + 1];
+        }
+        encL = 0;
     }
 
     //at this point, if both channels are still flagged as enc, then we can skip all playback/writing functions
