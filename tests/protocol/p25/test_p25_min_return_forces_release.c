@@ -4,9 +4,11 @@
  */
 
 /*
- * Verify that when the minimal P25p2 follower decides to return to CC, it
- * forces a trunk SM release even if TDMA post-hang gating would normally
- * defer the release (e.g., due to audio_allowed/ring/MAC hints).
+ * Verify minimal P25p2 follower return behavior:
+ * - When gates indicate ongoing activity, the follower should NOT force a
+ *   release (trunk SM gating defers the return).
+ * - When both slots are idle (no audio gate, no ring, no recent MAC), the
+ *   follower forces a release and we return to CC.
  */
 
 #include <stdint.h>
@@ -95,15 +97,28 @@ main(void) {
     p25_sm_on_release(&opts, &st);
     rc |= expect_eq_int("non-forced release deferred (no return)", g_return_to_cc_called, 0);
 
-    // Now use the minimal follower to request a return. Its callback should
-    // force release so gating cannot defer the return.
+    // Now use the minimal follower to request a return while gates suggest
+    // activity. Its callback should NOT force release; gating should still
+    // defer the return.
     dsd_p25p2_min_sm* sm = dsd_p25p2_min_get();
     dsd_p25p2_min_configure_ex(sm, /*hang*/ 0.1, /*grace*/ 0.05, /*dwell*/ 0.01, /*gvt*/ 0.1, /*backoff*/ 0.1);
     sm->state = DSD_P25P2_MIN_HANG;
     sm->t_hang_start = now - 1; // beyond hang -> tick should request return
     g_return_to_cc_called = 0;
     dsd_p25p2_min_tick(sm, &opts, &st);
-    rc |= expect_eq_int("minSM forced return invoked", g_return_to_cc_called > 0, 1);
+    rc |= expect_eq_int("minSM should NOT force return while active", g_return_to_cc_called, 0);
+
+    // Clear gates: no audio allowed, no ring, and no recent MAC. Now minimal
+    // follower should force the release and return_to_cc should be called.
+    st.p25_p2_audio_allowed[0] = st.p25_p2_audio_allowed[1] = 0;
+    st.p25_p2_audio_ring_count[0] = st.p25_p2_audio_ring_count[1] = 0;
+    st.p25_p2_last_mac_active_m[0] = 0.0;
+    st.p25_p2_last_mac_active_m[1] = 0.0;
+    g_return_to_cc_called = 0;
+    sm->state = DSD_P25P2_MIN_HANG;
+    sm->t_hang_start = time(NULL) - 1;
+    dsd_p25p2_min_tick(sm, &opts, &st);
+    rc |= expect_eq_int("minSM forced return when idle", g_return_to_cc_called > 0, 1);
 
     return rc;
 }

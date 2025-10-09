@@ -635,18 +635,18 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
             left_ring = (state->p25_p2_audio_ring_count[0] > 0)
                         && ((nowm_rel - state->p25_p2_last_mac_active_m[0]) <= ring_hold);
         } else if (state->p25_p2_last_mac_active[0] != 0) {
-            mac_recent_l = (((double)(time(NULL) - state->p25_p2_last_mac_active[0])) <= mac_hold);
+            mac_recent_l = (((double)(now - state->p25_p2_last_mac_active[0])) <= mac_hold);
             left_ring = (state->p25_p2_audio_ring_count[0] > 0)
-                        && (((double)(time(NULL) - state->p25_p2_last_mac_active[0])) <= ring_hold);
+                        && (((double)(now - state->p25_p2_last_mac_active[0])) <= ring_hold);
         }
         if (state->p25_p2_last_mac_active_m[1] > 0.0) {
             mac_recent_r = ((nowm_rel - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
             right_ring = (state->p25_p2_audio_ring_count[1] > 0)
                          && ((nowm_rel - state->p25_p2_last_mac_active_m[1]) <= ring_hold);
         } else if (state->p25_p2_last_mac_active[1] != 0) {
-            mac_recent_r = (((double)(time(NULL) - state->p25_p2_last_mac_active[1])) <= mac_hold);
+            mac_recent_r = (((double)(now - state->p25_p2_last_mac_active[1])) <= mac_hold);
             right_ring = (state->p25_p2_audio_ring_count[1] > 0)
-                         && (((double)(time(NULL) - state->p25_p2_last_mac_active[1])) <= ring_hold);
+                         && (((double)(now - state->p25_p2_last_mac_active[1])) <= ring_hold);
         }
         int left_audio = (state->p25_p2_audio_allowed[0] != 0) || left_ring || mac_recent_l;
         int right_audio = (state->p25_p2_audio_allowed[1] != 0) || right_ring || mac_recent_r;
@@ -655,7 +655,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         if (state->last_vc_sync_time_m > 0.0) {
             recent_voice = ((nowm_rel - state->last_vc_sync_time_m) <= trunk_hang);
         } else if (state->last_vc_sync_time != 0) {
-            recent_voice = (((double)(time(NULL) - state->last_vc_sync_time)) <= trunk_hang);
+            recent_voice = (((double)(now - state->last_vc_sync_time)) <= trunk_hang);
         }
         // After hangtime, require recent MAC activity (or ring gated by MAC) to
         // treat a slot as active; ignore stale audio_allowed alone.
@@ -667,7 +667,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         if (state->last_vc_sync_time_m > 0.0) {
             stale_activity = ((nowm_rel - state->last_vc_sync_time_m) > (trunk_hang + 2));
         } else if (state->last_vc_sync_time != 0) {
-            stale_activity = (((double)(time(NULL) - state->last_vc_sync_time)) > (trunk_hang + 2));
+            stale_activity = (((double)(now - state->last_vc_sync_time)) > (trunk_hang + 2));
         }
         // Treat forced release as an unconditional directive: ignore audio gates
         // and recent-voice window when explicitly requested by higher layers
@@ -1138,10 +1138,26 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             if (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
                 other_active = 1;
             }
+            // New talker safeguard: if a MAC_ACTIVE/PTT has occurred on the
+            // same slot after the last END_PTT (within mac_hold), do not
+            // force an early release even if the per-slot jitter/audio has
+            // drained. This prevents mid-call bounce when talkers hand off.
+            int l_after_end_mac_recent = 0;
+            int r_after_end_mac_recent = 0;
+            if (left_end && state->p25_p2_last_mac_active[0] != 0
+                && state->p25_p2_last_mac_active[0] >= state->p25_p2_last_end_ptt[0]
+                && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold) {
+                l_after_end_mac_recent = 1;
+            }
+            if (right_end && state->p25_p2_last_mac_active[1] != 0
+                && state->p25_p2_last_mac_active[1] >= state->p25_p2_last_end_ptt[1]
+                && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
+                r_after_end_mac_recent = 1;
+            }
             if (end_seen) {
-                int drained_both = ldrain && rdrain;
-                int drained_left_only = left_end && ldrain && !other_active;
-                int drained_right_only = right_end && rdrain && !other_active;
+                int drained_both = ldrain && rdrain && !l_after_end_mac_recent && !r_after_end_mac_recent;
+                int drained_left_only = left_end && ldrain && !other_active && !l_after_end_mac_recent;
+                int drained_right_only = right_end && rdrain && !other_active && !r_after_end_mac_recent;
                 if (drained_both || drained_left_only || drained_right_only) {
                     if (opts->verbose > 0) {
                         p25_sm_log_status(opts, state, "release-end-ptt-drain");

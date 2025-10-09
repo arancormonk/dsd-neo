@@ -458,32 +458,15 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
         dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
     }
-    // For a brief grace period after tuning to a VC, treat decoded voice
-    // frames as recent voice even if audio gates have not opened yet. This
-    // prevents post-hang logic from bouncing back to CC before early voice
-    // PTT/ACTIVE/ESS can arrive.
+    // Mark recent voice on every decoded 4V frame. This keeps the SM's
+    // last_vc_sync_time fresh throughout the call, preventing post-hang
+    // watchdog from tearing down an active VC.
     {
         time_t now = time(NULL);
         double nowm = dsd_time_now_monotonic_s();
-        double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-        if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_vc_grace_s > 0.0) {
-            vc_grace = state->p25_adapt_vc_grace_s;
-        } else {
-            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    vc_grace = v;
-                }
-            }
-        }
-        double dt_since_tune =
-            (state && state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
-        if (dt_since_tune < vc_grace) {
-            if (state) {
-                state->last_vc_sync_time = now;
-                state->last_vc_sync_time_m = nowm;
-            }
+        if (state) {
+            state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = nowm;
         }
     }
     // P25 auto-adapt: seed grant→voice EMA on first voice after tune and
@@ -962,28 +945,13 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
         dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
     }
-    // Also refresh recent-voice during a short post-tune grace, even if
-    // audio gates are not yet open. Seed auto-adapt like in 4V.
+    // Mark recent voice on this path as well (seed auto-adapt below).
     {
         time_t now = time(NULL);
-        double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-        if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_vc_grace_s > 0.0) {
-            vc_grace = state->p25_adapt_vc_grace_s;
-        } else {
-            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    vc_grace = v;
-                }
-            }
-        }
-        double dt_since_tune =
-            (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
-        if (dt_since_tune < vc_grace) {
-            if (state) {
-                state->last_vc_sync_time = now;
-            }
+        double nowm = dsd_time_now_monotonic_s();
+        if (state) {
+            state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = nowm;
         }
         if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_updated_for_tune == 0) {
             double dt = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
@@ -1021,24 +989,13 @@ process_2V(dsd_opts* opts, dsd_state* state) {
             }
         }
     }
-    // Also refresh recent-voice during a short post-tune grace, even if
-    // audio gates are not yet open.
+    // Mark recent voice for this decode path as well.
     {
         time_t now = time(NULL);
-        double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-        if (s && s[0] != '\0') {
-            double v = atof(s);
-            if (v >= 0.0 && v < 10.0) {
-                vc_grace = v;
-            }
-        }
-        double dt_since_tune =
-            (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
-        if (dt_since_tune < vc_grace) {
-            if (state) {
-                state->last_vc_sync_time = now;
-            }
+        double nowm = dsd_time_now_monotonic_s();
+        if (state) {
+            state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = nowm;
         }
     }
     for (int x = 0; x < 72; x++) {

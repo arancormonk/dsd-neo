@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
@@ -309,11 +310,25 @@ extern void return_to_cc(dsd_opts* opts, dsd_state* state);
 
 static void
 min_return_cb(dsd_opts* opts, dsd_state* state) {
-    // Use the public SM release path so teardown resets and backoff
-    // are applied consistently across callers.
-    // Force the release so higher-level post-hang gating cannot defer the
-    // return when minimal SM has decided to go back to CC.
+    // Use the public SM release path so teardown resets and backoff are applied
+    // consistently across callers.
+    // Only force the release when both slots look idle: no audio gate, no
+    // queued jitter audio, and no recent MAC_ACTIVE/PTT within the MAC hold
+    // window. Otherwise, request a normal (non-forced) release and let the
+    // higher-level trunk SM gating decide whether to defer.
+    int do_force = 0;
     if (state) {
+        double nowm = dsd_time_now_monotonic_s();
+        double mac_hold = state->p25_cfg_mac_hold_s > 0.0 ? state->p25_cfg_mac_hold_s : 3.0;
+        int l_recent =
+            (state->p25_p2_last_mac_active_m[0] > 0.0) && ((nowm - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
+        int r_recent =
+            (state->p25_p2_last_mac_active_m[1] > 0.0) && ((nowm - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
+        int l_gate = state->p25_p2_audio_allowed[0] || state->p25_p2_audio_ring_count[0] > 0 || l_recent;
+        int r_gate = state->p25_p2_audio_allowed[1] || state->p25_p2_audio_ring_count[1] > 0 || r_recent;
+        do_force = (l_gate == 0 && r_gate == 0);
+    }
+    if (state && do_force) {
         state->p25_sm_force_release = 1;
     }
     p25_sm_on_release(opts, state);
