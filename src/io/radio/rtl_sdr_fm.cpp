@@ -2505,14 +2505,43 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* For rtl_tcp sources, optionally prebuffer before starting demod/controller
        to reduce initial under-runs and jitter on the consumer side. */
     if (opts && opts->rtltcp_enabled) {
-        int pre_ms = 200; /* default deeper prebuffer for rtltcp */
+        int pre_ms = 1000; /* default deeper prebuffer for rtltcp */
         if (const char* e = getenv("DSD_NEO_TCP_PREBUF_MS")) {
             int v = atoi(e);
-            if (v >= 5 && v <= 500) {
+            if (v >= 5 && v <= 1000) {
                 pre_ms = v;
             }
         }
-        size_t target = (size_t)((double)dongle.rate * 2.0 * ((double)pre_ms / 1000.0));
+
+        /* Compute desired prebuffer in int16 samples (I+Q), and ensure the
+           input ring is large enough so that half the ring equals the
+           requested prebuffer. This provides headroom while starting demod. */
+        size_t desired_prebuf = (size_t)((double)dongle.rate * 2.0 * ((double)pre_ms / 1000.0));
+        if (desired_prebuf < 16384) {
+            desired_prebuf = 16384;
+        }
+        size_t min_capacity = desired_prebuf * 2; /* use <= 50% for prebuffer */
+        if (min_capacity > input_ring.capacity) {
+            int16_t* nb = (int16_t*)dsd_neo_aligned_malloc(min_capacity * sizeof(int16_t));
+            if (nb) {
+                if (input_ring.buffer) {
+                    dsd_neo_aligned_free(input_ring.buffer);
+                }
+                input_ring.buffer = nb;
+                input_ring.capacity = min_capacity;
+                input_ring.head.store(0);
+                input_ring.tail.store(0);
+                LOG_INFO("rtltcp resized input ring to %zu samples (%.2f MiB) for ~%d ms prebuffer.\n",
+                         input_ring.capacity, (double)input_ring.capacity * sizeof(int16_t) / (1024.0 * 1024.0),
+                         pre_ms);
+            } else {
+                LOG_WARNING("rtltcp: allocation for %zu samples (%.2f MiB) failed; using existing ring (%zu).\n",
+                            min_capacity, (double)min_capacity * sizeof(int16_t) / (1024.0 * 1024.0),
+                            input_ring.capacity);
+            }
+        }
+
+        size_t target = desired_prebuf;
         /* Guard against unreasonable target */
         if (target < 16384) {
             target = 16384;
@@ -2520,6 +2549,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         if (target > (input_ring.capacity / 2)) {
             target = input_ring.capacity / 2;
         }
+
+        /* Announce computed prebuffer duration at current sample rate */
+        double target_sec = (dongle.rate > 0) ? ((double)target / (2.0 * (double)dongle.rate)) : 0.0;
+        LOG_INFO("rtltcp prebuffer target: %zu samples (%.3f s at %u Hz).\n", target, target_sec,
+                 (unsigned)dongle.rate);
 
         /* Begin async capture first, then wait for ring to accumulate */
         LOG_INFO("Starting RTL async read (rtltcp prebuffer %d ms)...\n", pre_ms);

@@ -194,7 +194,11 @@ cmake --build build/dev-release --target uninstall
   - TCP rigctl default port 4532 (SDR++). CLI: `-U <port>`, bandwidth `-B <Hz>`.
 
 - RTL‑TCP networking:
-  - Env: `DSD_NEO_TCP_PREBUF_MS=<ms>` — prebuffer before starting demod (default 200, clamp 5–500).
+  - Env: `DSD_NEO_TCP_PREBUF_MS=<ms>` — prebuffer before starting demod (default 1000, clamp 5–1000).
+  - Behavior: when using RTL‑TCP, the input ring auto‑resizes so that the
+    requested prebuffer fits within ~50%% of the ring (to leave headroom),
+    yielding an effective prebuffer close to the requested duration at the
+    active sample rate.
   - Env: `DSD_NEO_TCP_RCVBUF=<bytes>` — OS socket receive buffer (default ~4 MiB, OS‑capped).
   - Env: `DSD_NEO_TCP_BUFSZ=<bytes>` — user‑space read size per `recv` (default ~16 KiB for rtl_tcp).
   - Env: `DSD_NEO_TCP_WAITALL=0/1` — require full reads (`MSG_WAITALL`) for steadier cadence (default off for rtl_tcp).
