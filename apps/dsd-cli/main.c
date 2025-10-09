@@ -1689,6 +1689,17 @@ initOpts(dsd_opts* opts) {
     opts->input_warn_cooldown_sec = 10; // rate-limit warnings
     opts->last_input_warn_time = 0;
 
+    // P25 SM unified follower config (CLI-mirrored; values <=0 mean unset)
+    opts->p25_vc_grace_s = 0.0;
+    opts->p25_min_follow_dwell_s = 0.0;
+    opts->p25_grant_voice_to_s = 0.0;
+    opts->p25_retune_backoff_s = 0.0;
+    opts->p25_force_release_extra_s = 0.0;
+    opts->p25_force_release_margin_s = 0.0;
+    opts->p25_p1_err_hold_pct = 0.0;
+    opts->p25_p1_err_hold_s = 0.0;
+    opts->p25_sm_basic_mode = 0;
+
 } //initopts
 
 static void*
@@ -2297,6 +2308,16 @@ usage() {
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
     printf("      --p25-auto-adapt       Ensure per-site adaptive follower timing is enabled (beta; default On)\n");
     printf("      --no-p25-auto-adapt    Disable per-site adaptive follower timing (CLI override)\n");
+    printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
+    printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");
+    printf("      --p25-grant-voice-timeout <s>  P25: Max seconds from grant to voice before returning\n");
+    printf("      --p25-retune-backoff <s>  P25: Block immediate re-tune to same VC for N seconds after return\n");
+    printf("      --p25-force-release-extra <s>  P25: Safety-net extra seconds beyond hangtime\n");
+    printf("      --p25-force-release-margin <s> P25: Safety-net hard margin seconds beyond extra\n");
+    printf("      --p25-p1-err-hold-pct <pct>   P25p1: IMBE error %% threshold to extend hang\n");
+    printf("      --p25-p1-err-hold-sec <s>     P25p1: Additional seconds to hold when threshold exceeded\n");
+    printf("      --p25-sm-basic         P25: Enable basic SM mode (disable added safeties)\n");
+    printf("      --no-p25-sm-basic      P25: Disable basic SM mode\n");
     printf("\n");
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
@@ -2948,6 +2969,83 @@ main(int argc, char** argv) {
                 opts.p25_auto_adapt = 0;
                 setenv("DSD_NEO_P25_AUTO_ADAPT", "0", 1);
                 LOG_NOTICE("P25: Auto-Adapt disabled (CLI).\n");
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {
+                opts.p25_vc_grace_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_vc_grace_s);
+                setenv("DSD_NEO_P25_VC_GRACE", buf, 1);
+                LOG_NOTICE("P25: VC grace set to %.2fs (CLI).\n", opts.p25_vc_grace_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-min-follow-dwell") == 0 && i + 1 < argc) {
+                opts.p25_min_follow_dwell_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_min_follow_dwell_s);
+                setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);
+                LOG_NOTICE("P25: Min follow dwell set to %.2fs (CLI).\n", opts.p25_min_follow_dwell_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-grant-voice-timeout") == 0 && i + 1 < argc) {
+                opts.p25_grant_voice_to_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_grant_voice_to_s);
+                setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);
+                LOG_NOTICE("P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts.p25_grant_voice_to_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-retune-backoff") == 0 && i + 1 < argc) {
+                opts.p25_retune_backoff_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_retune_backoff_s);
+                setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);
+                LOG_NOTICE("P25: Retune backoff set to %.2fs (CLI).\n", opts.p25_retune_backoff_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {
+                opts.p25_force_release_extra_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_force_release_extra_s);
+                setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);
+                LOG_NOTICE("P25: Safety-net extra set to %.2fs (CLI).\n", opts.p25_force_release_extra_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-force-release-margin") == 0 && i + 1 < argc) {
+                opts.p25_force_release_margin_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_force_release_margin_s);
+                setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);
+                LOG_NOTICE("P25: Safety-net margin set to %.2fs (CLI).\n", opts.p25_force_release_margin_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {
+                opts.p25_p1_err_hold_pct = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.1f", opts.p25_p1_err_hold_pct);
+                setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);
+                LOG_NOTICE("P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts.p25_p1_err_hold_pct);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-p1-err-hold-sec") == 0 && i + 1 < argc) {
+                opts.p25_p1_err_hold_s = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", opts.p25_p1_err_hold_s);
+                setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);
+                LOG_NOTICE("P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts.p25_p1_err_hold_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-sm-basic") == 0) {
+                opts.p25_sm_basic_mode = 1;
+                setenv("DSD_NEO_P25_SM_BASIC", "1", 1);
+                LOG_NOTICE("P25: SM basic mode enabled (CLI).\n");
+                continue;
+            }
+            if (strcmp(argv[i], "--no-p25-sm-basic") == 0) {
+                opts.p25_sm_basic_mode = 0;
+                setenv("DSD_NEO_P25_SM_BASIC", "0", 1);
+                setenv("DSD_NEO_P25_SM_NO_SAFETY", "0", 1);
+                LOG_NOTICE("P25: SM basic mode disabled (CLI).\n");
                 continue;
             }
             if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {

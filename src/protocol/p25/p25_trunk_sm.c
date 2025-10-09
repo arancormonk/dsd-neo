@@ -297,6 +297,11 @@ p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
             }
         }
     }
+    // Notify the minimal follower of the grant so it can arm timing/backoff
+    {
+        dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel, freq};
+        dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
+    }
     p25_tune_to_vc(opts, state, freq, channel);
 }
 
@@ -424,7 +429,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         }
     }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
-    if (p25_sm_basic_mode()) {
+    if ((opts && opts->p25_sm_basic_mode) || p25_sm_basic_mode()) {
         p25_sm_log_status(opts, state, "release-cc");
         // Flush per-slot audio gates and jitter buffers on release
         state->p25_p2_audio_allowed[0] = 0;
@@ -595,8 +600,8 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         time_t now_bk = time(NULL);
         double dt_since_tune =
             (state && state->p25_last_vc_tune_time != 0) ? (double)(now_bk - state->p25_last_vc_tune_time) : 1e9;
-        double grant_voice_to = 4.0; // seconds; keep in sync with minimal SM default
-        {
+        double grant_voice_to = (opts->p25_grant_voice_to_s > 0.0) ? opts->p25_grant_voice_to_s : 4.0; // seconds
+        if (!(opts->p25_grant_voice_to_s > 0.0)) {
             const char* sg = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
             if (sg && sg[0] != '\0') {
                 double vg = atof(sg);
@@ -620,12 +625,14 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
             } else {
                 s_retune_block_freq = last_vc;
                 s_retune_block_slot = last_slot;
-                double backoff_s = 1.0; // default shorter backoff
-                const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
-                if (sb && sb[0] != '\0') {
-                    double v = atof(sb);
-                    if (v >= 0.0 && v <= 10.0) {
-                        backoff_s = v;
+                double backoff_s = (opts->p25_retune_backoff_s > 0.0) ? opts->p25_retune_backoff_s : 1.0;
+                if (!(opts->p25_retune_backoff_s > 0.0)) {
+                    const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+                    if (sb && sb[0] != '\0') {
+                        double v = atof(sb);
+                        if (v >= 0.0 && v <= 10.0) {
+                            backoff_s = v;
+                        }
                     }
                 }
                 s_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
@@ -727,11 +734,15 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
             vc_grace = state->p25_adapt_vc_grace_s;
         } else {
-            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    vc_grace = v;
+            if (opts->p25_vc_grace_s > 0.0) {
+                vc_grace = opts->p25_vc_grace_s;
+            } else {
+                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        vc_grace = v;
+                    }
                 }
             }
         }
@@ -740,7 +751,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // Note: do not unconditionally release here; rely on the post-hang
         // gating and safety-net logic below. An unconditional release causes
         // premature VC->CC bounce before MAC/voice activity appears.
-        if (p25_sm_basic_mode()) {
+        if ((opts && opts->p25_sm_basic_mode) || p25_sm_basic_mode()) {
             // Basic mode: unconditionally release after hangtime (and grace)
             // when voice activity is stale, without post-hang gating or extra
             // safety windows.
@@ -770,20 +781,24 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // avoid VC↔CC thrash on marginal signals.
         double p1_err_hold_s = 0.0;
         if (!is_p2_vc && dt_since_tune >= vc_grace) {
-            double thr_pct = 8.0; // default threshold percent
-            double add_s = 2.0;   // additional seconds to hold
-            const char* sp = getenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
-            if (sp && sp[0] != '\0') {
-                double v = atof(sp);
-                if (v >= 0.0 && v <= 100.0) {
-                    thr_pct = v;
+            double thr_pct = (opts->p25_p1_err_hold_pct > 0.0) ? opts->p25_p1_err_hold_pct : 8.0; // default threshold
+            double add_s = (opts->p25_p1_err_hold_s > 0.0) ? opts->p25_p1_err_hold_s : 2.0;       // additional seconds
+            if (!(opts->p25_p1_err_hold_pct > 0.0)) {
+                const char* sp = getenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
+                if (sp && sp[0] != '\0') {
+                    double v = atof(sp);
+                    if (v >= 0.0 && v <= 100.0) {
+                        thr_pct = v;
+                    }
                 }
             }
-            const char* ss = getenv("DSD_NEO_P25P1_ERR_HOLD_S");
-            if (ss && ss[0] != '\0') {
-                double v = atof(ss);
-                if (v >= 0.0 && v <= 10.0) {
-                    add_s = v;
+            if (!(opts->p25_p1_err_hold_s > 0.0)) {
+                const char* ss = getenv("DSD_NEO_P25P1_ERR_HOLD_S");
+                if (ss && ss[0] != '\0') {
+                    double v = atof(ss);
+                    if (v >= 0.0 && v <= 10.0) {
+                        add_s = v;
+                    }
                 }
             }
             double avg_pct = -1.0;
@@ -811,12 +826,14 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // force release regardless of per-slot gates or jitter. Place this
         // early to avoid being short-circuited by post-hang gating branches.
         {
-            double extra = 3.0;
-            const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v <= 10.0) {
-                    extra = v;
+            double extra = (opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 3.0;
+            if (!(opts->p25_force_release_extra_s > 0.0)) {
+                const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v <= 10.0) {
+                        extra = v;
+                    }
                 }
             }
             if (dt >= (opts->trunk_hangtime + extra + p1_err_hold_s) && dt_since_tune >= vc_grace) {
@@ -846,20 +863,24 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // ring/MAC gating). This prevents any lingering state from wedging
         // the tuner on a dead VC under unexpected conditions.
         {
-            double extra = 3.0;
-            const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
-            if (se && se[0] != '\0') {
-                double ve = atof(se);
-                if (ve >= 0.0 && ve <= 10.0) {
-                    extra = ve;
+            double extra = (opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 3.0;
+            if (!(opts->p25_force_release_extra_s > 0.0)) {
+                const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+                if (se && se[0] != '\0') {
+                    double ve = atof(se);
+                    if (ve >= 0.0 && ve <= 10.0) {
+                        extra = ve;
+                    }
                 }
             }
-            double margin = 5.0; // seconds
-            const char* sm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
-            if (sm && sm[0] != '\0') {
-                double vm = atof(sm);
-                if (vm >= 0.0 && vm <= 30.0) {
-                    margin = vm;
+            double margin = (opts->p25_force_release_margin_s > 0.0) ? opts->p25_force_release_margin_s : 5.0;
+            if (!(opts->p25_force_release_margin_s > 0.0)) {
+                const char* sm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
+                if (sm && sm[0] != '\0') {
+                    double vm = atof(sm);
+                    if (vm >= 0.0 && vm <= 30.0) {
+                        margin = vm;
+                    }
                 }
             }
             if (dt >= (opts->trunk_hangtime + extra + margin) && dt_since_tune >= vc_grace) {
