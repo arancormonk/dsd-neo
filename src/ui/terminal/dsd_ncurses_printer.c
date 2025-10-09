@@ -2243,10 +2243,18 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
 
     /* Trunking state-machine counters and IDEN trust summary (trunking only) */
     if (opts && opts->p25_trunk == 1) {
-        /* SM counters */
-        printw("| SM: tunes %u rel %u/%u; CC cands add:%u used:%u count:%d\n", state->p25_sm_tune_count,
-               state->p25_sm_release_count, state->p25_sm_cc_return_count, state->p25_cc_cand_added,
-               state->p25_cc_cand_used, state->p25_cc_cand_count);
+        /* SM counters + concise mode */
+        const char* sm_mode;
+        switch (state->p25_sm_mode) {
+            case DSD_P25_SM_MODE_ON_CC: sm_mode = "CC"; break;
+            case DSD_P25_SM_MODE_ON_VC: sm_mode = "VC"; break;
+            case DSD_P25_SM_MODE_HANG: sm_mode = "HANG"; break;
+            case DSD_P25_SM_MODE_HUNTING: sm_mode = "HUNT"; break;
+            default: sm_mode = "?"; break;
+        }
+        printw("| SM: mode:%s tunes %u rel %u/%u; CC cands add:%u used:%u count:%d\n", sm_mode,
+               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_sm_cc_return_count,
+               state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count);
         lines++;
 
         /* CC/VC frequency snapshot (best-effort) */

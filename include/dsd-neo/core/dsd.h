@@ -1001,6 +1001,16 @@ typedef struct {
     // Watchdog start time for prolonged post-hang gating on P25p2 VCs
     time_t p25_sm_posthang_start;
 
+    // High-level SM mode for UI/telemetry (distinct from minimal P25p2 follower)
+    // 0=unknown, 1=on CC, 2=on VC (grant-following or armed), 3=hang, 4=hunting CC
+    int p25_sm_mode;
+
+    // Retune backoff bookkeeping (moved from static file-scope into state for determinism)
+    // Blocks immediate re-tune to same VC/slot after a recent return
+    time_t p25_retune_block_until;
+    long p25_retune_block_freq;
+    int p25_retune_block_slot; // -1 when N/A
+
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes
     unsigned int p25_p1_fec_err;    // count of CRC16/1/2-rate header/FEC failures

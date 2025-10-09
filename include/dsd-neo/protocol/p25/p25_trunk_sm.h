@@ -11,6 +11,15 @@
 extern "C" {
 #endif
 
+// High-level trunk SM mode (for UI/telemetry)
+typedef enum {
+    DSD_P25_SM_MODE_UNKNOWN = 0,
+    DSD_P25_SM_MODE_ON_CC = 1,
+    DSD_P25_SM_MODE_ON_VC = 2,
+    DSD_P25_SM_MODE_HANG = 3,
+    DSD_P25_SM_MODE_HUNTING = 4,
+} dsd_p25_sm_mode_e;
+
 // Initialize any internal P25 trunking state (noop for now)
 void p25_sm_init(dsd_opts* opts, dsd_state* state);
 
