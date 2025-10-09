@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
@@ -296,6 +297,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     // Next we should find an status dibit
     // Register a Phase 1 termination boundary to allow early teardown on TDULC
     state->p25_p1_last_tdu = time(NULL);
+    state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
     if (status_count != 35) {
         fprintf(stderr, "%s", KRED);

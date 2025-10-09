@@ -240,8 +240,8 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
     int already_tuned_same = (opts->p25_is_tuned == 1 && state->p25_vc_freq[0] == freq);
     if (!already_tuned_same) {
         trunk_tune_to_freq(opts, state, freq);
-        // High-level SM mode: now on VC (grant-following or armed)
-        state->p25_sm_mode = DSD_P25_SM_MODE_ON_VC;
+        // High-level SM mode: tuned to VC and awaiting voice (ARMED)
+        state->p25_sm_mode = DSD_P25_SM_MODE_ARMED;
         // Reset per-slot audio gate and jitter buffers on new VC
         state->p25_p2_audio_allowed[0] = 0;
         state->p25_p2_audio_allowed[1] = 0;
@@ -310,6 +310,8 @@ p25_handle_grant(dsd_opts* opts, dsd_state* state, int channel) {
         dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel, freq};
         dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
     }
+    // Expose ARMED state immediately on grant
+    state->p25_sm_mode = DSD_P25_SM_MODE_ARMED;
     p25_tune_to_vc(opts, state, freq, channel);
 }
 
@@ -390,6 +392,40 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
             double v = atof(sc);
             if (v >= 0.0 && v < 30.0) {
                 state->p25_cfg_cc_grace_s = v;
+            }
+        }
+    }
+    // Ring hold (bound by safety-net extra later)
+    state->p25_cfg_ring_hold_s = 0.75;
+    {
+        const char* sr = getenv("DSD_NEO_P25_RING_HOLD");
+        if (sr && sr[0] != '\0') {
+            double v = atof(sr);
+            if (v >= 0.0 && v <= 5.0) {
+                state->p25_cfg_ring_hold_s = v;
+            }
+        }
+    }
+    // Force-release safety-net parameters
+    state->p25_cfg_force_rel_extra_s =
+        (opts && opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 3.0;
+    if (!(opts && opts->p25_force_release_extra_s > 0.0)) {
+        const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+        if (se && se[0] != '\0') {
+            double v = atof(se);
+            if (v >= 0.0 && v <= 10.0) {
+                state->p25_cfg_force_rel_extra_s = v;
+            }
+        }
+    }
+    state->p25_cfg_force_rel_margin_s =
+        (opts && opts->p25_force_release_margin_s > 0.0) ? opts->p25_force_release_margin_s : 5.0;
+    if (!(opts && opts->p25_force_release_margin_s > 0.0)) {
+        const char* sm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
+        if (sm && sm[0] != '\0') {
+            double v = atof(sm);
+            if (v >= 0.0 && v <= 30.0) {
+                state->p25_cfg_force_rel_margin_s = v;
             }
         }
     }
@@ -507,15 +543,14 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     // Snapshot whether we observed MAC_ACTIVE/PTT after the last tune so we
     // can decide later if a retune backoff is appropriate. This must be
     // captured before we clear per-slot MAC hints below.
+    const double nowm_rel = dsd_time_now_monotonic_s();
     int had_mac_since_tune = 0;
-    if (state) {
-        time_t t_tune_snapshot = state->p25_last_vc_tune_time;
-        if (t_tune_snapshot != 0) {
-            time_t lmac_snap = state->p25_p2_last_mac_active[0];
-            time_t rmac_snap = state->p25_p2_last_mac_active[1];
-            if ((lmac_snap != 0 && lmac_snap >= t_tune_snapshot) || (rmac_snap != 0 && rmac_snap >= t_tune_snapshot)) {
-                had_mac_since_tune = 1;
-            }
+    if (state && state->p25_last_vc_tune_time_m > 0.0) {
+        double lmac = state->p25_p2_last_mac_active_m[0];
+        double rmac = state->p25_p2_last_mac_active_m[1];
+        double tune_m = state->p25_last_vc_tune_time_m;
+        if ((lmac > 0.0 && lmac >= tune_m) || (rmac > 0.0 && rmac >= tune_m)) {
+            had_mac_since_tune = 1;
         }
     }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
@@ -541,6 +576,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_last_end_ptt[0] = state->p25_p2_last_end_ptt[1] = 0;
         state->p25_call_is_packet[0] = state->p25_call_is_packet[1] = 0;
         state->p25_p1_last_tdu = 0;
+        state->p25_p1_last_tdu_m = 0.0;
         state->p25_sm_posthang_start = 0;
         return_to_cc(opts, state);
         if (state) {
@@ -593,25 +629,46 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
                 ring_hold = extra;
             }
         }
-        int left_ring = (state->p25_p2_audio_ring_count[0] > 0) && (state->p25_p2_last_mac_active[0] != 0)
-                        && ((double)(now - state->p25_p2_last_mac_active[0]) <= ring_hold);
-        int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active[1] != 0)
-                         && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
-        int mac_recent_l =
-            (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
-        int mac_recent_r =
-            (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
+        int mac_recent_l = 0, mac_recent_r = 0, left_ring = 0, right_ring = 0;
+        if (state->p25_p2_last_mac_active_m[0] > 0.0) {
+            mac_recent_l = ((nowm_rel - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
+            left_ring = (state->p25_p2_audio_ring_count[0] > 0)
+                        && ((nowm_rel - state->p25_p2_last_mac_active_m[0]) <= ring_hold);
+        } else if (state->p25_p2_last_mac_active[0] != 0) {
+            mac_recent_l = (((double)(time(NULL) - state->p25_p2_last_mac_active[0])) <= mac_hold);
+            left_ring = (state->p25_p2_audio_ring_count[0] > 0)
+                        && (((double)(time(NULL) - state->p25_p2_last_mac_active[0])) <= ring_hold);
+        }
+        if (state->p25_p2_last_mac_active_m[1] > 0.0) {
+            mac_recent_r = ((nowm_rel - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
+            right_ring = (state->p25_p2_audio_ring_count[1] > 0)
+                         && ((nowm_rel - state->p25_p2_last_mac_active_m[1]) <= ring_hold);
+        } else if (state->p25_p2_last_mac_active[1] != 0) {
+            mac_recent_r = (((double)(time(NULL) - state->p25_p2_last_mac_active[1])) <= mac_hold);
+            right_ring = (state->p25_p2_audio_ring_count[1] > 0)
+                         && (((double)(time(NULL) - state->p25_p2_last_mac_active[1])) <= ring_hold);
+        }
         int left_audio = (state->p25_p2_audio_allowed[0] != 0) || left_ring || mac_recent_l;
         int right_audio = (state->p25_p2_audio_allowed[1] != 0) || right_ring || mac_recent_r;
         double trunk_hang = (opts ? opts->trunk_hangtime : 1.0);
-        int recent_voice = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= trunk_hang);
+        int recent_voice = 0;
+        if (state->last_vc_sync_time_m > 0.0) {
+            recent_voice = ((nowm_rel - state->last_vc_sync_time_m) <= trunk_hang);
+        } else if (state->last_vc_sync_time != 0) {
+            recent_voice = (((double)(time(NULL) - state->last_vc_sync_time)) <= trunk_hang);
+        }
         // After hangtime, require recent MAC activity (or ring gated by MAC) to
         // treat a slot as active; ignore stale audio_allowed alone.
         if (!recent_voice) {
             left_audio = (left_ring || mac_recent_l);
             right_audio = (right_ring || mac_recent_r);
         }
-        int stale_activity = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) > (trunk_hang + 2));
+        int stale_activity = 0;
+        if (state->last_vc_sync_time_m > 0.0) {
+            stale_activity = ((nowm_rel - state->last_vc_sync_time_m) > (trunk_hang + 2));
+        } else if (state->last_vc_sync_time != 0) {
+            stale_activity = (((double)(time(NULL) - state->last_vc_sync_time)) > (trunk_hang + 2));
+        }
         // Treat forced release as an unconditional directive: ignore audio gates
         // and recent-voice window when explicitly requested by higher layers
         // (e.g., MAC_IDLE on both slots, early ENC lockout, or teardown PDUs).
@@ -631,7 +688,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
 
     // Either not a TDMA VC or no other slot is active: return to CC.
     p25_sm_log_status(opts, state, "release-cc");
-    state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+    state->p25_sm_mode = DSD_P25_SM_MODE_RETURNING;
     // Reduce side effects: rely on decode/audio teardown to clear per-slot
     // gates and encryption indicators on TDMA. Always reset the small SM
     // watchdog and clear per-slot audio gates + MAC/ring hints to prevent
@@ -662,6 +719,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         state->p25_call_is_packet[0] = 0;
         state->p25_call_is_packet[1] = 0;
         state->p25_p1_last_tdu = 0;
+        state->p25_p1_last_tdu_m = 0.0;
     } else {
         // Light cleanup on non-forced release as well: clear gates + hints.
         state->p25_p2_audio_allowed[0] = 0;
@@ -672,6 +730,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     }
     // Reset SM post-hang watchdog
     state->p25_sm_posthang_start = 0;
+    state->p25_sm_posthang_start_m = 0.0;
     // Capture last VC frequency before return_to_cc clears it
     long last_vc = state->p25_vc_freq[0] ? state->p25_vc_freq[0] : state->trunk_vc_freq[0];
     int last_slot = state->p25_p2_active_slot;
@@ -680,6 +739,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         state->p25_sm_cc_return_count++;
     }
     p25_sm_log_status(opts, state, "after-release");
+    state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
     // Program short backoff against re-tuning the same VC immediately, but
     // only when the last VC had no MAC_ACTIVE/PTT since tune (i.e., a dead
     // grant bounce). For normal calls with voice, allow immediate follow-up
@@ -691,20 +751,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // returning very shortly after tuning (no MAC voice observed), treat
         // this as a pre‑voice bounce and do not apply a retune backoff so a
         // subsequent grant to the same VC/slot can be honored immediately.
-        time_t now_bk = time(NULL);
         double dt_since_tune =
-            (state && state->p25_last_vc_tune_time != 0) ? (double)(now_bk - state->p25_last_vc_tune_time) : 1e9;
-        double grant_voice_to =
-            (opts && opts->p25_grant_voice_to_s > 0.0) ? opts->p25_grant_voice_to_s : 4.0; // seconds
-        if (!(opts && opts->p25_grant_voice_to_s > 0.0)) {
-            const char* sg = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
-            if (sg && sg[0] != '\0') {
-                double vg = atof(sg);
-                if (vg >= 0.0 && vg <= 10.0) {
-                    grant_voice_to = vg;
-                }
-            }
-        }
+            (state && state->p25_last_vc_tune_time_m > 0.0) ? (nowm_rel - state->p25_last_vc_tune_time_m) : 1e9;
+        double grant_voice_to = state->p25_cfg_grant_voice_to_s;
         // Consider any sign of voice/audio as proof this was a normal call:
         // - MAC_ACTIVE/PTT since tune (captured in had_mac_since_tune)
         // - Per-slot audio was allowed at release time
@@ -811,7 +860,9 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     // complements the inline fallbacks in the TDMA frame path and protects
     // against cases where frame processing halts due to signal loss.
     if (opts->p25_is_tuned == 1) {
-        double dt = (state->last_vc_sync_time_m > 0.0) ? (nowm - state->last_vc_sync_time_m) : 1e9;
+        double dt = (state->last_vc_sync_time_m > 0.0)
+                        ? (nowm - state->last_vc_sync_time_m)
+                        : ((state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9);
         double dt_since_tune = (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
         // Small startup grace window after a VC tune to avoid bouncing back to
         // CC before MAC_PTT/ACTIVE and audio arrive. Override via
@@ -822,6 +873,25 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             vc_grace = state->p25_adapt_vc_grace_s;
         }
         int is_p2_vc = (state->p25_p2_active_slot != -1);
+        // Update high-level SM mode exposure (ARMED vs FOLLOW) while tuned
+        if (opts->p25_is_tuned == 1) {
+            double mac_hold = state->p25_cfg_mac_hold_s;
+            int mac_recent_l = (state->p25_p2_last_mac_active_m[0] > 0.0)
+                                   ? ((nowm - state->p25_p2_last_mac_active_m[0]) <= mac_hold)
+                                   : 0;
+            int mac_recent_r = (state->p25_p2_last_mac_active_m[1] > 0.0)
+                                   ? ((nowm - state->p25_p2_last_mac_active_m[1]) <= mac_hold)
+                                   : 0;
+            int follow_ind =
+                (state->last_vc_sync_time_m > 0.0 && (nowm - state->last_vc_sync_time_m) <= opts->trunk_hangtime)
+                || (state->p25_p2_audio_allowed[0] != 0) || (state->p25_p2_audio_allowed[1] != 0) || mac_recent_l
+                || mac_recent_r;
+            if (follow_ind) {
+                state->p25_sm_mode = DSD_P25_SM_MODE_FOLLOW;
+            } else if (dt_since_tune < vc_grace) {
+                state->p25_sm_mode = DSD_P25_SM_MODE_ARMED;
+            }
+        }
 
         // Note: do not unconditionally release here; rely on the post-hang
         // gating and safety-net logic below. An unconditional release causes
@@ -1106,10 +1176,13 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     }
                 }
             }
-            if (state->p25_p1_last_tdu != 0 && dt_since_tune >= vc_grace) {
-                double since_tdu = (double)(now - state->p25_p1_last_tdu) * 1000.0;
+            if ((state->p25_p1_last_tdu_m > 0.0 || state->p25_p1_last_tdu != 0) && dt_since_tune >= vc_grace) {
+                double since_tdu = (state->p25_p1_last_tdu_m > 0.0) ? (nowm - state->p25_p1_last_tdu_m) * 1000.0
+                                                                    : (double)(now - state->p25_p1_last_tdu) * 1000.0;
                 double since_voice =
-                    (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) * 1000.0 : 1e12;
+                    (state->last_vc_sync_time_m > 0.0)
+                        ? (nowm - state->last_vc_sync_time_m) * 1000.0
+                        : ((state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) * 1000.0 : 1e12);
                 if (since_tdu >= tail_ms_cfg && since_voice >= tail_ms_cfg) {
                     p25_sm_log_status(opts, state, "release-p1-tdu-drain");
                     if (state->p25_cc_freq != 0) {
@@ -1238,21 +1311,16 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             // are refreshed without genuine voice (e.g., stray vendor PDUs).
             if (state->p25_sm_posthang_start == 0) {
                 state->p25_sm_posthang_start = now;
+                state->p25_sm_posthang_start_m = nowm;
             } else {
-                double extra = 3.0;
-                const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v <= 10.0) {
-                        extra = v;
-                    }
-                }
-                if ((double)(now - state->p25_sm_posthang_start) >= extra) {
+                double extra = state->p25_cfg_force_rel_extra_s;
+                if ((nowm - state->p25_sm_posthang_start_m) >= extra) {
                     if (opts->verbose > 0) {
                         fprintf(stderr, "\n  P25 SM: Post-hang watchdog forced release (held %.1fs >= extra %.1f)\n",
-                                (double)(now - state->p25_sm_posthang_start), extra);
+                                (nowm - state->p25_sm_posthang_start_m), extra);
                     }
                     state->p25_sm_posthang_start = 0;
+                    state->p25_sm_posthang_start_m = 0.0;
                     if (state->p25_cc_freq != 0) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);

@@ -18,6 +18,10 @@ typedef enum {
     DSD_P25_SM_MODE_ON_VC = 2,
     DSD_P25_SM_MODE_HANG = 3,
     DSD_P25_SM_MODE_HUNTING = 4,
+    // Extended states for richer UI/telemetry across P1/P2
+    DSD_P25_SM_MODE_ARMED = 5,     // tuned to VC, awaiting PTT/ACTIVE
+    DSD_P25_SM_MODE_FOLLOW = 6,    // following active voice
+    DSD_P25_SM_MODE_RETURNING = 7, // teardown in progress back to CC
 } dsd_p25_sm_mode_e;
 
 // Initialize any internal P25 trunking state (noop for now)

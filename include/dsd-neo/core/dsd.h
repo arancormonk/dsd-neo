@@ -942,8 +942,9 @@ typedef struct {
     // P25p2 recent MAC_END_PTT timestamps per slot (enables early teardown
     // once per-slot jitter/audio has drained)
     time_t p25_p2_last_end_ptt[2];
-    // P25p1 recent TDU/TDULC timestamp (enables early teardown on Phase 1)
-    time_t p25_p1_last_tdu;
+    // P25p1 recent TDU/TDULC timestamps (enables early teardown on Phase 1)
+    time_t p25_p1_last_tdu;   // wall clock (legacy)
+    double p25_p1_last_tdu_m; // monotonic seconds (preferred)
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;
@@ -1030,6 +1031,9 @@ typedef struct {
     double p25_cfg_retune_backoff_s;
     double p25_cfg_mac_hold_s;
     double p25_cfg_cc_grace_s;
+    double p25_cfg_ring_hold_s;        // seconds to honor audio ring after recent MAC
+    double p25_cfg_force_rel_extra_s;  // safety-net extra seconds beyond hang
+    double p25_cfg_force_rel_margin_s; // safety-net hard margin seconds beyond extra
 
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes

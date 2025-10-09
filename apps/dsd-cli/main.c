@@ -3003,6 +3003,14 @@ main(int argc, char** argv) {
                 LOG_NOTICE("P25: Retune backoff set to %.2fs (CLI).\n", opts.p25_retune_backoff_s);
                 continue;
             }
+            if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {
+                double v = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", v);
+                setenv("DSD_NEO_P25_CC_GRACE", buf, 1);
+                LOG_NOTICE("P25: CC hunt grace set to %.2fs (CLI).\n", v);
+                continue;
+            }
             if (strcmp(argv[i], "--p25-force-release-extra") == 0 && i + 1 < argc) {
                 opts.p25_force_release_extra_s = atof(argv[++i]);
                 char buf[32];
@@ -3017,6 +3025,22 @@ main(int argc, char** argv) {
                 snprintf(buf, sizeof buf, "%.3f", opts.p25_force_release_margin_s);
                 setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);
                 LOG_NOTICE("P25: Safety-net margin set to %.2fs (CLI).\n", opts.p25_force_release_margin_s);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {
+                double v = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", v);
+                setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);
+                LOG_NOTICE("P25: MAC hold set to %.2fs (CLI).\n", v);
+                continue;
+            }
+            if (strcmp(argv[i], "--p25-ring-hold") == 0 && i + 1 < argc) {
+                double v = atof(argv[++i]);
+                char buf[32];
+                snprintf(buf, sizeof buf, "%.3f", v);
+                setenv("DSD_NEO_P25_RING_HOLD", buf, 1);
+                LOG_NOTICE("P25: Ring hold set to %.2fs (CLI).\n", v);
                 continue;
             }
             if (strcmp(argv[i], "--p25-p1-err-hold-pct") == 0 && i + 1 < argc) {

@@ -17,6 +17,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -2250,6 +2251,9 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             case DSD_P25_SM_MODE_ON_VC: sm_mode = "VC"; break;
             case DSD_P25_SM_MODE_HANG: sm_mode = "HANG"; break;
             case DSD_P25_SM_MODE_HUNTING: sm_mode = "HUNT"; break;
+            case DSD_P25_SM_MODE_ARMED: sm_mode = "ARM"; break;
+            case DSD_P25_SM_MODE_FOLLOW: sm_mode = "FOL"; break;
+            case DSD_P25_SM_MODE_RETURNING: sm_mode = "RET"; break;
             default: sm_mode = "?"; break;
         }
         printw("| SM: mode:%s tunes %u rel %u/%u; CC cands add:%u used:%u count:%d\n", sm_mode,
@@ -2471,10 +2475,20 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     /* Additional Phase 1 state-machine diagnostics (timers/flags) */
     if (is_p25p1 && opts && opts->p25_trunk == 1) {
         time_t now = time(NULL);
-        double dt_cc = (state->last_cc_sync_time != 0) ? (double)(now - state->last_cc_sync_time) : -1.0;
-        double dt_vc = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
-        double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
-        double tdu_age = (state->p25_p1_last_tdu != 0) ? (double)(now - state->p25_p1_last_tdu) : -1.0;
+        double nowm = dsd_time_now_monotonic_s();
+        double dt_cc = (state->last_cc_sync_time_m > 0.0)
+                           ? (nowm - state->last_cc_sync_time_m)
+                           : ((state->last_cc_sync_time != 0) ? (double)(now - state->last_cc_sync_time) : -1.0);
+        double dt_vc = (state->last_vc_sync_time_m > 0.0)
+                           ? (nowm - state->last_vc_sync_time_m)
+                           : ((state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0);
+        double dt_tune =
+            (state->p25_last_vc_tune_time_m > 0.0)
+                ? (nowm - state->p25_last_vc_tune_time_m)
+                : ((state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0);
+        double tdu_age = (state->p25_p1_last_tdu_m > 0.0)
+                             ? (nowm - state->p25_p1_last_tdu_m)
+                             : ((state->p25_p1_last_tdu != 0) ? (double)(now - state->p25_p1_last_tdu) : -1.0);
         printw("| SM Timers: dCC=%4.1fs dVC=%4.1fs dTune=%4.1fs TDU_age=%4.1fs\n", dt_cc, dt_vc, dt_tune, tdu_age);
         lines++;
 

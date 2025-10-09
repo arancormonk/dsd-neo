@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -55,6 +56,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     // Mark Phase 1 termination boundary for early teardown and reset
     // encryption indicators so the next LDU starts muted
     state->p25_p1_last_tdu = time(NULL);
+    state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
     // Reset encryption indicators at TDU boundary so the next LDU starts muted
     // until we positively identify clear payload (prevents brief encrypted bursts).
     state->payload_miP = 0;

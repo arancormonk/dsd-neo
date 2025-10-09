@@ -613,3 +613,33 @@ add_executable(dsd-neo_test_p25_sm_cand_cooldown protocol/p25/test_p25_sm_cand_c
 target_include_directories(dsd-neo_test_p25_sm_cand_cooldown PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_sm_cand_cooldown PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CAND_COOLDOWN COMMAND dsd-neo_test_p25_sm_cand_cooldown)
+
+# P25 retune backoff respects TDMA slot (same RF)
+add_executable(dsd-neo_test_p25_retune_backoff_slot protocol/p25/test_p25_retune_backoff_slot.c)
+target_include_directories(dsd-neo_test_p25_retune_backoff_slot PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_retune_backoff_slot PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_RETUNE_BACKOFF_SLOT COMMAND dsd-neo_test_p25_retune_backoff_slot)
+
+# P25 TG Hold gating
+add_executable(dsd-neo_test_p25_tg_hold_gate protocol/p25/test_p25_tg_hold_gate.c)
+target_include_directories(dsd-neo_test_p25_tg_hold_gate PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_tg_hold_gate PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_TG_HOLD_GATE COMMAND dsd-neo_test_p25_tg_hold_gate)
+
+# P25 ENC override via regroup KEY=0
+add_executable(dsd-neo_test_p25_enc_override_clear protocol/p25/test_p25_enc_override_clear.c)
+target_include_directories(dsd-neo_test_p25_enc_override_clear PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_enc_override_clear PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_ENC_OVERRIDE_CLEAR COMMAND dsd-neo_test_p25_enc_override_clear)
+
+# P25 basic mode sanity
+add_executable(dsd-neo_test_p25_sm_basic_mode protocol/p25/test_p25_sm_basic_mode.c)
+target_include_directories(dsd-neo_test_p25_sm_basic_mode PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_sm_basic_mode PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_SM_BASIC_MODE COMMAND dsd-neo_test_p25_sm_basic_mode)
+
+# P25 individual grant gating
+add_executable(dsd-neo_test_p25_indiv_gating protocol/p25/test_p25_indiv_gating.c)
+target_include_directories(dsd-neo_test_p25_indiv_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_indiv_gating PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_INDIV_GATING COMMAND dsd-neo_test_p25_indiv_gating)
