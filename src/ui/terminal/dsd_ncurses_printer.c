@@ -2244,9 +2244,9 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     /* Trunking state-machine counters and IDEN trust summary (trunking only) */
     if (opts && opts->p25_trunk == 1) {
         /* SM counters */
-        printw("| SM: tunes %u releases %u; CC cands add:%u used:%u count:%d\n", state->p25_sm_tune_count,
-               state->p25_sm_release_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
-               state->p25_cc_cand_count);
+        printw("| SM: tunes %u rel %u/%u; CC cands add:%u used:%u count:%d\n", state->p25_sm_tune_count,
+               state->p25_sm_release_count, state->p25_sm_cc_return_count, state->p25_cc_cand_added,
+               state->p25_cc_cand_used, state->p25_cc_cand_count);
         lines++;
 
         /* CC/VC frequency snapshot (best-effort) */

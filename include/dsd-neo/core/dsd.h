@@ -971,8 +971,9 @@ typedef struct {
     uint8_t p25_cc_cache_loaded; // 1 once we attempted to load per-system cache
 
     // P25 SM metrics
-    unsigned int p25_sm_tune_count;    // number of VC tunes via SM
-    unsigned int p25_sm_release_count; // number of releases via SM
+    unsigned int p25_sm_tune_count;      // number of VC tunes via SM
+    unsigned int p25_sm_release_count;   // number of release requests via SM
+    unsigned int p25_sm_cc_return_count; // number of actual returns to CC via SM
     // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;

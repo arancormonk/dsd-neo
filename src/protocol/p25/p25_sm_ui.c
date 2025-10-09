@@ -30,8 +30,9 @@ p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {
         }
     }
     if (opts->verbose > 1) {
-        fprintf(stderr, "\n  P25 SM: %s tunes=%u releases=%u cc_cand add=%u used=%u count=%d idx=%d\n",
-                tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_cc_cand_added,
-                state->p25_cc_cand_used, state->p25_cc_cand_count, state->p25_cc_cand_idx);
+        fprintf(stderr, "\n  P25 SM: %s tunes=%u rel=%u/%u cc_cand add=%u used=%u count=%d idx=%d\n",
+                tag ? tag : "status", state->p25_sm_tune_count, state->p25_sm_release_count,
+                state->p25_sm_cc_return_count, state->p25_cc_cand_added, state->p25_cc_cand_used,
+                state->p25_cc_cand_count, state->p25_cc_cand_idx);
     }
 }

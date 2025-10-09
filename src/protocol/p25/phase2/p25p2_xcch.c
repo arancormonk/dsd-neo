@@ -646,6 +646,36 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             //blank the call string here -- slot variable is already flipped accordingly for sacch
             sprintf(state->call_string[slot], "%s", "                     "); //21 spaces -- wrong placement!
 
+            // Do not flush the per-slot jitter ring on PTT end; allow queued
+            // audio to drain so short calls and endings are not cut off.
+            // Instead, gate this slot so no new frames are queued.
+            state->p25_p2_audio_allowed[slot] = 0;
+
+            // If both logical channels are idle, return to CC — but respect a
+            // short post-tune grace so we don't bounce on quick follow-ups when
+            // early MAC_PTT/ACTIVE PDUs were missed.
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+                double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+                if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
+                    vc_grace = state->p25_adapt_vc_grace_s;
+                } else {
+                    const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                    if (s && s[0] != '\0') {
+                        double v = atof(s);
+                        if (v >= 0.0 && v < 10.0) {
+                            vc_grace = v;
+                        }
+                    }
+                }
+                time_t now2 = time(NULL);
+                double dt_since_tune =
+                    (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+                if (dt_since_tune >= vc_grace) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                }
+            }
+
             //reset gain
             if (opts->floating_point == 1) {
                 state->aout_gainR = opts->audio_gain;

@@ -447,6 +447,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         state->p25_p1_last_tdu = 0;
         state->p25_sm_posthang_start = 0;
         return_to_cc(opts, state);
+        if (state) {
+            state->p25_sm_cc_return_count++;
+        }
         p25_sm_log_status(opts, state, "after-release");
         return;
     }
@@ -574,6 +577,9 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
     long last_vc = state->p25_vc_freq[0] ? state->p25_vc_freq[0] : state->trunk_vc_freq[0];
     int last_slot = state->p25_p2_active_slot;
     return_to_cc(opts, state);
+    if (state) {
+        state->p25_sm_cc_return_count++;
+    }
     p25_sm_log_status(opts, state, "after-release");
     // Program short backoff against re-tuning the same VC immediately, but
     // only when the last VC had no MAC_ACTIVE/PTT since tune (i.e., a dead
