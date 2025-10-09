@@ -836,14 +836,39 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_ENC) //'e' key, toggle tune enc calls (P25 only on certain grants)
     {
         if (opts->trunk_tune_enc_calls == 1) {
-            // Enable ENC lockout
+            // Enable ENC lockout (do not globally flush both rings; only gate encrypted slot(s) immediately)
             opts->trunk_tune_enc_calls = 0;
-            // Immediately gate off P25p2 audio until next MAC_PTT decision
-            state->p25_p2_audio_allowed[0] = 0;
-            state->p25_p2_audio_allowed[1] = 0;
-            // Also reset any queued jitter buffers so stale frames do not keep
-            // the SM release gate active after lockout is toggled on.
-            p25_p2_audio_ring_reset(state, -1);
+            // Check current per-slot encryption status and gate only those slots lacking keys
+            // Slot 0
+            {
+                int alg = state->payload_algid;
+                int have_key = 0;
+                if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0) {
+                    have_key = 1;
+                }
+                if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1) {
+                    have_key = 1;
+                }
+                if (alg != 0 && alg != 0x80 && have_key == 0) {
+                    state->p25_p2_audio_allowed[0] = 0;
+                    p25_p2_audio_ring_reset(state, 0);
+                }
+            }
+            // Slot 1
+            {
+                int alg = state->payload_algidR;
+                int have_key = 0;
+                if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0) {
+                    have_key = 1;
+                }
+                if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1) {
+                    have_key = 1;
+                }
+                if (alg != 0 && alg != 0x80 && have_key == 0) {
+                    state->p25_p2_audio_allowed[1] = 0;
+                    p25_p2_audio_ring_reset(state, 1);
+                }
+            }
         } else {
             // Disable ENC lockout
             opts->trunk_tune_enc_calls = 1;

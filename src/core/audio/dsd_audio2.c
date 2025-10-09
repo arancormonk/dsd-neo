@@ -97,10 +97,21 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     //TODO: add option to bypass enc with a toggle as well
 
-    // Per-slot audio gating (P25p2): take precedence over SVC enc bits
-    // If audio is allowed for a slot, force unmute for that slot; otherwise mute it.
-    encL = state->p25_p2_audio_allowed[0] ? 0 : 1;
-    encR = state->p25_p2_audio_allowed[1] ? 0 : 1;
+    // DMR per-slot ENC gating: derive from decoder-side flags and user policy.
+    // Unmute if either the stream is clear or user elected to unmute enc.
+    // These mirror dsd_mbe.c logic used for 16-bit path, but kept local here for float path.
+    encL = 1;
+    encR = 1;
+    {
+        int l_is_enc = state->dmr_encL != 0; // decoder flagged L as encrypted
+        int r_is_enc = state->dmr_encR != 0; // decoder flagged R as encrypted
+        if (!l_is_enc || opts->dmr_mute_encL == 0) {
+            encL = 0;
+        }
+        if (!r_is_enc || opts->dmr_mute_encR == 0) {
+            encR = 0;
+        }
+    }
 
     //CHEAT: Using the slot on/off, use that to set encL or encR back on
     //as a simple way to turn off voice synthesis in a particular slot
@@ -205,28 +216,73 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         goto FS3_END;
     }
 
+    // If only one slot is active, duplicate to both channels for stereo sinks
+    if (!encL && encR) {
+        for (i = 0; i < 320; i += 2) {
+            stereo_samp1[i + 1] = stereo_samp1[i + 0];
+            stereo_samp2[i + 1] = stereo_samp2[i + 0];
+            stereo_samp3[i + 1] = stereo_samp3[i + 0];
+        }
+        encR = 0;
+    } else if (encL && !encR) {
+        for (i = 0; i < 320; i += 2) {
+            stereo_samp1[i + 0] = stereo_samp1[i + 1];
+            stereo_samp2[i + 0] = stereo_samp2[i + 1];
+            stereo_samp3[i + 0] = stereo_samp3[i + 1];
+        }
+        encL = 0;
+    }
+
     if (opts->audio_out == 1) {
-        if (opts->audio_out_type == 0) //Pulse Audio
-        {
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * sizeof(float), NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, (size_t)320u * sizeof(float), NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, (size_t)320u * sizeof(float), NULL);
-        }
-
-        if (opts->audio_out_type == 8) //UDP Audio
-        {
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
-        }
-
-        //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
-
-        if (opts->audio_out_type == 1) //STDOUT (still need these seperated? or not really?)
-        {
-            write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
-            write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
-            write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
+        if (opts->pulse_digi_out_channels == 1) {
+            // Mix down to mono respecting which side(s) are active
+            float mono1[160], mono2[160], mono3[160];
+            memset(mono1, 0, sizeof(mono1));
+            memset(mono2, 0, sizeof(mono2));
+            memset(mono3, 0, sizeof(mono3));
+            for (i = 0; i < 160; i++) {
+                int l_on0 = !encL;
+                int r_on0 = !encR;
+                mono1[i] = (l_on0 && !r_on0)   ? state->f_l4[0][i]
+                           : (!l_on0 && r_on0) ? state->f_r4[0][i]
+                           : (l_on0 && r_on0)  ? 0.5f * (state->f_l4[0][i] + state->f_r4[0][i])
+                                               : 0.0f;
+                mono2[i] = (l_on0 && !r_on0)   ? state->f_l4[1][i]
+                           : (!l_on0 && r_on0) ? state->f_r4[1][i]
+                           : (l_on0 && r_on0)  ? 0.5f * (state->f_l4[1][i] + state->f_r4[1][i])
+                                               : 0.0f;
+                mono3[i] = (l_on0 && !r_on0)   ? state->f_l4[2][i]
+                           : (!l_on0 && r_on0) ? state->f_r4[2][i]
+                           : (l_on0 && r_on0)  ? 0.5f * (state->f_l4[2][i] + state->f_r4[2][i])
+                                               : 0.0f;
+            }
+            if (opts->audio_out_type == 0) { // Pulse mono
+                pa_simple_write(opts->pulse_digi_dev_out, mono1, (size_t)160u * sizeof(float), NULL);
+                pa_simple_write(opts->pulse_digi_dev_out, mono2, (size_t)160u * sizeof(float), NULL);
+                pa_simple_write(opts->pulse_digi_dev_out, mono3, (size_t)160u * sizeof(float), NULL);
+            } else if (opts->audio_out_type == 8) { // UDP mono
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono1);
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono2);
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono3);
+            } else if (opts->audio_out_type == 1) { // STDOUT mono
+                write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
+                write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
+                write(opts->audio_out_fd, mono3, (size_t)160u * sizeof(float));
+            }
+        } else {
+            if (opts->audio_out_type == 0) { // Pulse stereo
+                pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * sizeof(float), NULL);
+                pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, (size_t)320u * sizeof(float), NULL);
+                pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, (size_t)320u * sizeof(float), NULL);
+            } else if (opts->audio_out_type == 8) { // UDP stereo
+                udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
+                udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
+                udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
+            } else if (opts->audio_out_type == 1) { // STDOUT stereo
+                write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
+                write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
+                write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
+            }
         }
     }
 
