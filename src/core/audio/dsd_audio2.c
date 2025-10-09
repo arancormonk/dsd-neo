@@ -292,40 +292,11 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     float empty[320]; //this is used to see if we want to play a single 2v or double 2v or not
 
-    //p25p2 enc checkdown for whether or not to fill the stereo sample or not for playback or writing
-    encL = encR = 1;
-    if (state->payload_algid == 0 || state->payload_algid == 0x80) {
-        encL = 0;
-    }
-    if (state->payload_algidR == 0 || state->payload_algidR == 0x80) {
-        encR = 0;
-    }
-
-    //checkdown to see if we can lift the 'mute' if a key is available
-    if (encL) {
-        if (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F) {
-            if (state->R != 0) { // RC4/DES/DES-XL
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) { // AES-256/128
-            if (state->aes_key_loaded[0] == 1) {
-                encL = 0;
-            }
-        }
-    }
-
-    if (encR) {
-        if (state->payload_algidR == 0xAA || state->payload_algidR == 0x81
-            || state->payload_algidR == 0x9F) { // RC4 / DES-56 / DES-XL
-            if (state->RR != 0) {               // use right-slot key
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) { // AES-256/128
-            if (state->aes_key_loaded[1] == 1) {
-                encR = 0;
-            }
-        }
-    }
+    // Per-slot audio gating for P25p2:
+    // Use the centralized gate set by SACCH/FACCH/ESS logic so encrypted
+    // slot mute (lockout) never impacts the clear slot. This mirrors FS3 behavior.
+    encL = state->p25_p2_audio_allowed[0] ? 0 : 1;
+    encR = state->p25_p2_audio_allowed[1] ? 0 : 1;
 
     //CHEAT: Using the slot on/off, use that to set encL or encR back on
     //as a simple way to turn off voice synthesis in a particular slot
@@ -468,13 +439,76 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         goto END_FS4;
     }
 
+    // If output is mono, mix active channels into one buffer per frame span
+    if (opts->pulse_digi_out_channels == 1) {
+        float mono1[160], mono2[160], mono3[160], mono4[160];
+        memset(mono1, 0, sizeof(mono1));
+        memset(mono2, 0, sizeof(mono2));
+        memset(mono3, 0, sizeof(mono3));
+        memset(mono4, 0, sizeof(mono4));
+        for (i = 0; i < 160; i++) {
+            // choose R if only R active, L if only L active, else average
+            int l_on0 = (!encL && l_ok[0]);
+            int r_on0 = (!encR && r_ok[0]);
+            int l_on1 = (!encL && l_ok[1]);
+            int r_on1 = (!encR && r_ok[1]);
+            int l_on2 = (!encL && l_ok[2]);
+            int r_on2 = (!encR && r_ok[2]);
+            int l_on3 = (!encL && l_ok[3]);
+            int r_on3 = (!encR && r_ok[3]);
+            mono1[i] = (l_on0 && !r_on0)   ? lf[0][i]
+                       : (!l_on0 && r_on0) ? rf[0][i]
+                       : (l_on0 && r_on0)  ? 0.5f * (lf[0][i] + rf[0][i])
+                                           : 0.0f;
+            mono2[i] = (l_on1 && !r_on1)   ? lf[1][i]
+                       : (!l_on1 && r_on1) ? rf[1][i]
+                       : (l_on1 && r_on1)  ? 0.5f * (lf[1][i] + rf[1][i])
+                                           : 0.0f;
+            mono3[i] = (l_on2 && !r_on2)   ? lf[2][i]
+                       : (!l_on2 && r_on2) ? rf[2][i]
+                       : (l_on2 && r_on2)  ? 0.5f * (lf[2][i] + rf[2][i])
+                                           : 0.0f;
+            mono4[i] = (l_on3 && !r_on3)   ? lf[3][i]
+                       : (!l_on3 && r_on3) ? rf[3][i]
+                       : (l_on3 && r_on3)  ? 0.5f * (lf[3][i] + rf[3][i])
+                                           : 0.0f;
+        }
+        if (opts->audio_out == 1 && opts->audio_out_type == 0) { // Pulse Audio mono
+            pa_simple_write(opts->pulse_digi_dev_out, mono1, (size_t)160u * sizeof(float), NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, mono2, (size_t)160u * sizeof(float), NULL);
+            if (!dsd_is_all_zero_f(mono3, 160)) {
+                pa_simple_write(opts->pulse_digi_dev_out, mono3, (size_t)160u * sizeof(float), NULL);
+            }
+            if (!dsd_is_all_zero_f(mono4, 160)) {
+                pa_simple_write(opts->pulse_digi_dev_out, mono4, (size_t)160u * sizeof(float), NULL);
+            }
+        } else if (opts->audio_out == 1 && opts->audio_out_type == 8) { // UDP mono
+            udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono1);
+            udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono2);
+            if (!dsd_is_all_zero_f(mono3, 160)) {
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono3);
+            }
+            if (!dsd_is_all_zero_f(mono4, 160)) {
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono4);
+            }
+        } else if (opts->audio_out == 1 && opts->audio_out_type == 1) { // STDOUT mono
+            write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
+            write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
+            if (!dsd_is_all_zero_f(mono3, 160)) {
+                write(opts->audio_out_fd, mono3, (size_t)160u * sizeof(float));
+            }
+            if (!dsd_is_all_zero_f(mono4, 160)) {
+                write(opts->audio_out_fd, mono4, (size_t)160u * sizeof(float));
+            }
+        }
+        goto END_FS4;
+    }
+
+    // Stereo output (2ch)
     if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
     {
-        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * sizeof(float),
-                        NULL); //switch to sizeof(stereo_samp1) * 2?
+        pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * sizeof(float), NULL);
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, (size_t)320u * sizeof(float), NULL);
-        //only play these two if not a single 2v or double 2v (minor skip can still occur on a 4v and 2v combo, but will probably only be perceivable if one is a tone)
-        // Avoid float memcmp; treat near-zero as zero
         if (!dsd_is_all_zero_f(stereo_samp3, 320)) {
             pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, (size_t)320u * sizeof(float), NULL);
         }
@@ -487,7 +521,6 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     {
         udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
         udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
-        //only play these two if not a single 2v or double 2v (minor skip can still occur on a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (!dsd_is_all_zero_f(stereo_samp3, 320)) {
             udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
         }
@@ -496,13 +529,10 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    //No OSS, since we can't use float output, but the STDOUT can with play, aplay, etc
-
     if (opts->audio_out == 1 && opts->audio_out_type == 1) //STDOUT
     {
         write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
         write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
-        //only play these two if not a single 2v or double 2v (minor skip can still occur on  a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (!dsd_is_all_zero_f(stereo_samp3, 320)) {
             write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
         }
@@ -1456,40 +1486,11 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     memset(empty, 0, sizeof(empty));
     memset(empss, 0, sizeof(empss));
 
-    //p25p2 enc checkdown for whether or not to fill the stereo sample or not for playback or writing
-    encL = encR = 1;
-    if (state->payload_algid == 0 || state->payload_algid == 0x80) {
-        encL = 0;
-    }
-    if (state->payload_algidR == 0 || state->payload_algidR == 0x80) {
-        encR = 0;
-    }
-
-    //checkdown to see if we can lift the 'mute' if a key is available
-    if (encL) {
-        if (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F) {
-            if (state->R != 0) { // RC4/DES/DES-XL
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
-            if (state->aes_key_loaded[0] == 1) {
-                encL = 0;
-            }
-        }
-    }
-
-    if (encR) {
-        if (state->payload_algidR == 0xAA || state->payload_algidR == 0x81
-            || state->payload_algidR == 0x9F) { // RC4 / DES / DES-XL
-            if (state->RR != 0) {               // use right-slot key
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
-            if (state->aes_key_loaded[1] == 1) {
-                encR = 0;
-            }
-        }
-    }
+    // P25p2 per-slot gate: mirror FS4 float behavior using centralized
+    // p25_p2_audio_allowed flags so ENC lockout on one slot never mutes the
+    // clear slot in short/16-bit output modes either.
+    encL = state->p25_p2_audio_allowed[0] ? 0 : 1;
+    encR = state->p25_p2_audio_allowed[1] ? 0 : 1;
 
     //TODO: add option to bypass enc with a toggle as well
 
@@ -1618,11 +1619,99 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         goto SS4_END;
     }
 
+    // Handle mono output by collapsing active slot(s) into a single channel
+    if (opts->pulse_digi_out_channels == 1) {
+        short mono1[160], mono2[160], mono3[160], mono4[160];
+        memset(mono1, 0, sizeof(mono1));
+        memset(mono2, 0, sizeof(mono2));
+        memset(mono3, 0, sizeof(mono3));
+        memset(mono4, 0, sizeof(mono4));
+        for (i = 0; i < 160; i++) {
+            int l1 = (!encL) ? state->s_l4[0][i] : 0;
+            int r1 = (!encR) ? state->s_r4[0][i] : 0;
+            int l2 = (!encL) ? state->s_l4[1][i] : 0;
+            int r2 = (!encR) ? state->s_r4[1][i] : 0;
+            int l3 = (!encL) ? state->s_l4[2][i] : 0;
+            int r3 = (!encR) ? state->s_r4[2][i] : 0;
+            int l4 = (!encL) ? state->s_l4[3][i] : 0;
+            int r4 = (!encR) ? state->s_r4[3][i] : 0;
+            int m1 = (l1 && !r1) ? l1 : (!l1 && r1) ? r1 : (l1 && r1) ? ((l1 + r1) / 2) : 0;
+            int m2 = (l2 && !r2) ? l2 : (!l2 && r2) ? r2 : (l2 && r2) ? ((l2 + r2) / 2) : 0;
+            int m3 = (l3 && !r3) ? l3 : (!l3 && r3) ? r3 : (l3 && r3) ? ((l3 + r3) / 2) : 0;
+            int m4 = (l4 && !r4) ? l4 : (!l4 && r4) ? r4 : (l4 && r4) ? ((l4 + r4) / 2) : 0;
+            // clamp to short
+            if (m1 > 32767) {
+                m1 = 32767;
+            } else if (m1 < -32768) {
+                m1 = -32768;
+            }
+            if (m2 > 32767) {
+                m2 = 32767;
+            } else if (m2 < -32768) {
+                m2 = -32768;
+            }
+            if (m3 > 32767) {
+                m3 = 32767;
+            } else if (m3 < -32768) {
+                m3 = -32768;
+            }
+            if (m4 > 32767) {
+                m4 = 32767;
+            } else if (m4 < -32768) {
+                m4 = -32768;
+            }
+            mono1[i] = (short)m1;
+            mono2[i] = (short)m2;
+            mono3[i] = (short)m3;
+            mono4[i] = (short)m4;
+        }
+        if (opts->audio_out == 1 && opts->audio_out_type == 0) { // Pulse mono
+            pa_simple_write(opts->pulse_digi_dev_out, mono1, (size_t)160u * sizeof(short), NULL);
+            pa_simple_write(opts->pulse_digi_dev_out, mono2, (size_t)160u * sizeof(short), NULL);
+            if (memcmp(empss, mono3, sizeof(empss)) != 0) {
+                pa_simple_write(opts->pulse_digi_dev_out, mono3, (size_t)160u * sizeof(short), NULL);
+            }
+            if (memcmp(empss, mono4, sizeof(empss)) != 0) {
+                pa_simple_write(opts->pulse_digi_dev_out, mono4, (size_t)160u * sizeof(short), NULL);
+            }
+        } else if (opts->audio_out == 1 && opts->audio_out_type == 8) { // UDP mono
+            udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono1);
+            udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono2);
+            if (memcmp(empss, mono3, sizeof(empss)) != 0) {
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono3);
+            }
+            if (memcmp(empss, mono4, sizeof(empss)) != 0) {
+                udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono4);
+            }
+        } else if (opts->audio_out == 1
+                   && (opts->audio_out_type == 1 || opts->audio_out_type == 2)) { // STDOUT/OSS mono
+            write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(short));
+            write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(short));
+            if (memcmp(empss, mono3, sizeof(empss)) != 0) {
+                write(opts->audio_out_fd, mono3, (size_t)160u * sizeof(short));
+            }
+            if (memcmp(empss, mono4, sizeof(empss)) != 0) {
+                write(opts->audio_out_fd, mono4, (size_t)160u * sizeof(short));
+            }
+        }
+        if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
+            sf_write_short(opts->wav_out_f, mono1, 160);
+            sf_write_short(opts->wav_out_f, mono2, 160);
+            if (memcmp(empss, mono3, sizeof(empss)) != 0) {
+                sf_write_short(opts->wav_out_f, mono3, 160);
+            }
+            if (memcmp(empss, mono4, sizeof(empss)) != 0) {
+                sf_write_short(opts->wav_out_f, mono4, 160);
+            }
+        }
+        goto SS4_END;
+    }
+
+    // Stereo output (2ch)
     if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
     {
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp1, (size_t)320u * sizeof(short), NULL);
         pa_simple_write(opts->pulse_digi_dev_out, stereo_samp2, (size_t)320u * sizeof(short), NULL);
-        //only play these two if not a single 2v or double 2v (minor skip can still occur on a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
             pa_simple_write(opts->pulse_digi_dev_out, stereo_samp3, (size_t)320u * sizeof(short), NULL);
         }
@@ -1635,7 +1724,6 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     {
         udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
         udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp2);
-        //only play these two if not a single 2v or double 2v (minor skip can still occur on a 4v and 2v combo, but will probably only be perceivable if one is a tone)
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
             udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp3);
         }
@@ -1648,7 +1736,6 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     {
         write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
         write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
-        //only play these two if not a single 2v or double 2v
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
             write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(short));
         }
@@ -1660,8 +1747,6 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         sf_write_short(opts->wav_out_f, stereo_samp1, 320);
         sf_write_short(opts->wav_out_f, stereo_samp2, 320);
-
-        //only write these two if not a single 2v or double 2v
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
             sf_write_short(opts->wav_out_f, stereo_samp3, 320);
         }

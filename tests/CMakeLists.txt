@@ -242,6 +242,12 @@ target_include_directories(dsd-neo_test_p25_p2_aach_cach_map PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_p25_p2_aach_cach_map PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_AACH_CACH_MAP COMMAND dsd-neo_test_p25_p2_aach_cach_map)
 
+# P25 P2 mixer gate honors per-slot gates
+add_executable(dsd-neo_test_p25_p2_mixer_gate protocol/p25/test_p25_p2_mixer_gate.c)
+target_include_directories(dsd-neo_test_p25_p2_mixer_gate PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_p2_mixer_gate PRIVATE dsd-neo_core)
+add_test(NAME P25_P2_MIXER_GATE COMMAND dsd-neo_test_p25_p2_mixer_gate)
+
 # Additional targeted coverage tests
 add_executable(dsd-neo_test_p25_p2_vpdu_core protocol/p25/test_p25_p2_vpdu_core.c)
 target_include_directories(dsd-neo_test_p25_p2_vpdu_core PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
