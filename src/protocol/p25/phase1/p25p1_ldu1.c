@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
@@ -44,6 +45,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         }
         if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
             state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         }
     }
     // Otherwise, do not refresh last_vc_sync_time until after FEC checks
@@ -400,6 +402,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         // Passed FEC checks: mark recent voice activity for trunk hangtime
         // tracking so we don't prematurely return to CC mid-call.
         state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         // Same comments as in processHDU. See there.
 
         char fixed_parity[12 * 6];

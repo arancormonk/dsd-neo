@@ -618,6 +618,10 @@ typedef struct {
     // Timestamp of last tune to a VC (used to provide a short startup grace
     // window so we don't bounce back to CC before MAC_PTT/ACTIVE/audio arrives)
     time_t p25_last_vc_tune_time;
+    // Monotonic twins for SM timing (seconds)
+    double last_cc_sync_time_m;
+    double last_vc_sync_time_m;
+    double p25_last_vc_tune_time_m;
     time_t
         last_active_time; //time the a 'call grant' was received, used to clear the active_channel strings after x seconds
     time_t
@@ -933,6 +937,8 @@ typedef struct {
     int p25_p2_active_slot;
     // P25p2 recent MAC_ACTIVE/PTT timestamps per slot (guards early bounce)
     time_t p25_p2_last_mac_active[2];
+    // Monotonic twins for last MAC_ACTIVE/PTT per slot
+    double p25_p2_last_mac_active_m[2];
     // P25p2 recent MAC_END_PTT timestamps per slot (enables early teardown
     // once per-slot jitter/audio has drained)
     time_t p25_p2_last_end_ptt[2];
@@ -978,6 +984,11 @@ typedef struct {
     // P25 CC hunting candidates discovered from RFSS/Adjacent/Network messages
     int p25_cc_cand_count;
     int p25_cc_cand_idx;
+    // Optional cooldown window per candidate to avoid immediate re-tries (monotonic seconds)
+    double p25_cc_cand_cool_until[16];
+    // Candidate evaluation tracking (current freq and start time in monotonic seconds)
+    long p25_cc_eval_freq;
+    double p25_cc_eval_start_m;
     // Persisted CC cache bookkeeping
     uint8_t p25_cc_cache_loaded; // 1 once we attempted to load per-system cache
 
@@ -1000,6 +1011,8 @@ typedef struct {
     time_t p25_sm_tag_time[8]; // per-tag timestamp
     // Watchdog start time for prolonged post-hang gating on P25p2 VCs
     time_t p25_sm_posthang_start;
+    // Monotonic twin for post-hang watchdog (seconds)
+    double p25_sm_posthang_start_m;
 
     // High-level SM mode for UI/telemetry (distinct from minimal P25p2 follower)
     // 0=unknown, 1=on CC, 2=on VC (grant-following or armed), 3=hang, 4=hunting CC
@@ -1010,6 +1023,13 @@ typedef struct {
     time_t p25_retune_block_until;
     long p25_retune_block_freq;
     int p25_retune_block_slot; // -1 when N/A
+    // Cached P25 SM tunables (seconds), resolved once at p25_sm_init()
+    double p25_cfg_vc_grace_s;
+    double p25_cfg_grant_voice_to_s;
+    double p25_cfg_min_follow_dwell_s;
+    double p25_cfg_retune_backoff_s;
+    double p25_cfg_mac_hold_s;
+    double p25_cfg_cc_grace_s;
 
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes

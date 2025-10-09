@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -715,9 +716,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     //   must reflect actual digital voice activity only.
                     if (opts->p25_trunk != 1) {
                         state->last_cc_sync_time = time(NULL);
+                        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                     }
                     if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1)) {
                         state->last_vc_sync_time = time(NULL);
+                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                     }
                 }
 

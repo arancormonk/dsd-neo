@@ -19,6 +19,7 @@
 
 #define main dsd_neo_main_decl
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #undef main
 
@@ -84,10 +85,13 @@ main(void) {
 
     // Seed tune time well in the past to bypass VC_GRACE
     time_t now = time(NULL);
+    double nowm = dsd_time_now_monotonic_s();
     st.p25_last_vc_tune_time = now - 10;
+    st.p25_last_vc_tune_time_m = nowm - 10.0;
 
     // Seed with recent MAC on left slot (within default mac_hold=3s)
     st.p25_p2_last_mac_active[0] = now - 1;
+    st.p25_p2_last_mac_active_m[0] = nowm - 1.0;
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_allowed[1] = 0;
     st.p25_p2_audio_ring_count[0] = 0;
@@ -96,6 +100,7 @@ main(void) {
     // Case 1: dt below hangtime → should NOT release
     g_return_to_cc_called = 0;
     st.last_vc_sync_time = now - 1; // 1s < 2.0s
+    st.last_vc_sync_time_m = nowm - 1.0;
     p25_sm_tick(&opts, &st);
     rc |= expect_eq_int("no release before hangtime", g_return_to_cc_called, 0);
 
@@ -104,17 +109,25 @@ main(void) {
     // Exercise the path but do not assert a strict outcome here.
     g_return_to_cc_called = 0;
     now = time(NULL);
+    nowm = dsd_time_now_monotonic_s();
     st.p25_last_vc_tune_time = now - 10;
-    st.last_vc_sync_time = now - 3;         // 3s > 2.0s
+    st.p25_last_vc_tune_time_m = nowm - 10.0;
+    st.last_vc_sync_time = now - 3; // 3s > 2.0s
+    st.last_vc_sync_time_m = nowm - 3.0;
     st.p25_p2_last_mac_active[0] = now - 1; // still recent
+    st.p25_p2_last_mac_active_m[0] = nowm - 1.0;
     p25_sm_tick(&opts, &st);
 
     // Case 3: dt past hangtime with stale MAC → SHOULD release
     g_return_to_cc_called = 0;
     now = time(NULL);
+    nowm = dsd_time_now_monotonic_s();
     st.p25_last_vc_tune_time = now - 10;
-    st.last_vc_sync_time = now - 3;          // 3s > 2.0s
+    st.p25_last_vc_tune_time_m = nowm - 10.0;
+    st.last_vc_sync_time = now - 3; // 3s > 2.0s
+    st.last_vc_sync_time_m = nowm - 3.0;
     st.p25_p2_last_mac_active[0] = now - 10; // stale beyond mac_hold
+    st.p25_p2_last_mac_active_m[0] = nowm - 10.0;
     p25_sm_tick(&opts, &st);
     if (g_return_to_cc_called < 1) {
         rc |= expect_eq_int("forced release after hangtime when idle", g_return_to_cc_called, 1);

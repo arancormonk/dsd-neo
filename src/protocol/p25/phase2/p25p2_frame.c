@@ -16,6 +16,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
@@ -463,6 +464,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     // PTT/ACTIVE/ESS can arrive.
     {
         time_t now = time(NULL);
+        double nowm = dsd_time_now_monotonic_s();
         double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
         if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_vc_grace_s > 0.0) {
             vc_grace = state->p25_adapt_vc_grace_s;
@@ -476,18 +478,20 @@ process_4V(dsd_opts* opts, dsd_state* state) {
             }
         }
         double dt_since_tune =
-            (state && state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+            (state && state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
         if (dt_since_tune < vc_grace) {
             if (state) {
                 state->last_vc_sync_time = now;
+                state->last_vc_sync_time_m = nowm;
             }
         }
     }
     // P25 auto-adapt: seed grant→voice EMA on first voice after tune and
     // reconfigure minimal follower dwell/timeout/backoff.
     if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_updated_for_tune == 0) {
-        time_t now = time(NULL);
-        double dt = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
+        double dt = (state->p25_last_vc_tune_time_m > 0.0)
+                        ? (double)(dsd_time_now_monotonic_s() - state->p25_last_vc_tune_time_m)
+                        : -1.0;
         if (dt >= 0.0 && dt < 8.0) {
             double alpha = 0.3; // EMA smoothing
             if (state->p25_adapt_have_g2v == 0) {
@@ -876,7 +880,6 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 
                 int other = eslot ^ 1;
                 // Consider per-slot gate, ring, and recent MAC_ACTIVE recency on other slot
-                time_t now_hold = time(NULL);
                 double mac_hold = 3.0; // seconds; env override aligns with SM/xCCH
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
@@ -887,8 +890,9 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                         }
                     }
                 }
-                int other_recent = (state->p25_p2_last_mac_active[other] != 0)
-                                   && ((double)(now_hold - state->p25_p2_last_mac_active[other]) <= mac_hold);
+                double nowm_hold = dsd_time_now_monotonic_s();
+                int other_recent = (state->p25_p2_last_mac_active_m[other] > 0.0)
+                                   && ((nowm_hold - state->p25_p2_last_mac_active_m[other]) <= mac_hold);
                 int other_audio =
                     state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                 if (!other_audio) {
@@ -1284,10 +1288,10 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
                     }
                 }
             }
-            int left_mac_active =
-                (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold);
-            int right_mac_active =
-                (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold);
+            int left_mac_active = (state->p25_p2_last_mac_active_m[0] > 0.0
+                                   && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
+            int right_mac_active = (state->p25_p2_last_mac_active_m[1] > 0.0
+                                    && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
             if (opts->p25_trunk == 1) {
                 if (!(left_mac_active || right_mac_active)) {
                     p2_pending_release = 1; // handle after LCCH is processed below

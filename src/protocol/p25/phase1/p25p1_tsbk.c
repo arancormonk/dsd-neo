@@ -14,6 +14,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 void
@@ -160,6 +161,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         // Refresh CC activity on any good TSBK decode to keep the SM from
         // hunting prematurely when CC is healthy but TSBK cadence is sparse.
         state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
         rtl_stream_p25p1_ber_update(1, 0);

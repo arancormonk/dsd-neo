@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -273,6 +274,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     } else {
         // Passed FEC checks: mark recent activity for trunk hangtime tracking.
         state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         // The hex words passed the Reed-Solomon check. This means that very likely they are correct and we
         // can trust that the digitizer did a good job with them. In other words, each analog value was
         // correctly assigned to a dibit. This is extremely useful information for the digitizer and we are

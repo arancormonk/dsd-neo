@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
@@ -139,6 +140,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         }
         // Mark recent activity for this logical slot to avoid early bounce
         state->p25_p2_last_mac_active[slot] = time(NULL);
+        state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
+        state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
         // SACCH uses inverted mapping; 'slot' is the logical voice channel
         if (slot == 0) {
             //reset fourv_counter and dropbyte on PTT
@@ -275,7 +278,6 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // Consider per-slot audio gate, queued jitter frames, and
                             // very recent MAC_ACTIVE on the opposite slot to avoid
                             // tearing down a clear call that is just starting up.
-                            time_t now_hold = time(NULL);
                             double mac_hold = 3.0; // seconds; env override aligns with SM
                             {
                                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
@@ -286,9 +288,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                                     }
                                 }
                             }
-                            int other_recent =
-                                (state->p25_p2_last_mac_active[other] != 0)
-                                && ((double)(now_hold - state->p25_p2_last_mac_active[other]) <= mac_hold);
+                            double nowm = dsd_time_now_monotonic_s();
+                            int other_recent = (state->p25_p2_last_mac_active_m[other] > 0.0)
+                                               && ((nowm - state->p25_p2_last_mac_active_m[other]) <= mac_hold);
                             int other_audio = state->p25_p2_audio_allowed[other]
                                               || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                             state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
@@ -768,6 +770,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         process_MAC_VPDU(opts, state, 1, SMAC);
         // Mark recent activity for this logical slot to avoid early bounce
         state->p25_p2_last_mac_active[slot] = time(NULL);
+        state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
         fprintf(stderr, "%s", KNRM);
         // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
@@ -1238,13 +1241,12 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                     }
                 }
             }
-            time_t now2 = time(NULL);
             int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)
-                           || (state->p25_p2_last_mac_active[0] != 0
-                               && (double)(now2 - state->p25_p2_last_mac_active[0]) <= mac_hold);
+                           || (state->p25_p2_last_mac_active_m[0] > 0.0
+                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
             int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
-                           || (state->p25_p2_last_mac_active[1] != 0
-                               && (double)(now2 - state->p25_p2_last_mac_active[1]) <= mac_hold);
+                           || (state->p25_p2_last_mac_active_m[1] > 0.0
+                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
             if (!l_active && !r_active) {
                 state->p25_sm_force_release = 1;
                 p25_sm_on_release(opts, state);
@@ -1327,11 +1329,11 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
             time_t now2 = time(NULL);
             int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)
-                           || (state->p25_p2_last_mac_active[0] != 0
-                               && (double)(now2 - state->p25_p2_last_mac_active[0]) <= mac_hold);
+                           || (state->p25_p2_last_mac_active_m[0] > 0.0
+                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
             int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
-                           || (state->p25_p2_last_mac_active[1] != 0
-                               && (double)(now2 - state->p25_p2_last_mac_active[1]) <= mac_hold);
+                           || (state->p25_p2_last_mac_active_m[1] > 0.0
+                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
             double dt_since_tune =
                 (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
             if (!l_active && !r_active && dt_since_tune >= vc_grace) {
@@ -1398,7 +1400,6 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (enc_suspect) {
                 // Consider ring fill and recent MAC activity on the opposite slot
                 int other = (slot ^ 1) & 1;
-                time_t now2 = time(NULL);
                 double mac_hold = 3.0;
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
@@ -1409,8 +1410,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                         }
                     }
                 }
-                int other_recent = (state->p25_p2_last_mac_active[other] != 0)
-                                   && ((double)(now2 - state->p25_p2_last_mac_active[other]) <= mac_hold);
+                double nowm3 = dsd_time_now_monotonic_s();
+                int other_recent = (state->p25_p2_last_mac_active_m[other] > 0.0)
+                                   && ((nowm3 - state->p25_p2_last_mac_active_m[other]) <= mac_hold);
                 int other_audio =
                     state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                 state->p25_p2_audio_allowed[slot] = 0; // gate current slot

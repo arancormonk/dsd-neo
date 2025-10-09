@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 
@@ -45,6 +46,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         }
         if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
             state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         }
     }
 
@@ -61,6 +63,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         }
         if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
             state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         }
     }
 

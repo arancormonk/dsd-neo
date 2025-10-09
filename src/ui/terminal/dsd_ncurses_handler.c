@@ -11,6 +11,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/keymap.h>
@@ -918,6 +919,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         // opts->p25_is_tuned = 0;
         state->last_cc_sync_time = 0;
         state->last_vc_sync_time = 0;
+        state->last_vc_sync_time_m = 0.0;
         noCarrier(opts, state);
     }
 
@@ -1041,6 +1043,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 #endif
 
         state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 
         //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
         if (state->p25_cc_is_tdma == 0) {
@@ -1110,6 +1113,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
                 fprintf(stderr, "\n User Activated Candidate Cycle;  Tuning to Candidate: %.06lf MHz\n",
                         (double)cand / 1000000);
                 state->last_cc_sync_time = time(NULL);
+                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                 return 1;
             }
         }
@@ -1156,6 +1160,7 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         }
         state->lcn_freq_roll++;
         state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 
         //may need to test to see if we want to do the conditional below or not for symbol rate flipping
 

@@ -13,6 +13,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
@@ -598,6 +599,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // Reset voice activity timer to avoid carrying over a stale recent-voice
     // window into the next VC follow and to help the SM's idle fallback.
     state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
     // Clear P25p2 per-slot audio gating
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
@@ -627,6 +629,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
         }
 #endif
         state->last_cc_sync_time = now;
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         state->trunk_cc_freq = state->p25_cc_freq;
     }
 
@@ -682,8 +685,11 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     // Reset activity timers so noCarrier() does not immediately force a return
     // to CC before we have a chance to acquire sync on the new VC.
     state->last_vc_sync_time = time(NULL);
+    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
     state->last_cc_sync_time = state->last_vc_sync_time;
+    state->last_cc_sync_time_m = state->last_vc_sync_time_m;
     state->p25_last_vc_tune_time = state->last_vc_sync_time;
+    state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
 // Tune to a Control Channel candidate frequency without marking as voice tuned.
@@ -713,4 +719,5 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
     // Do not set p25_is_tuned/trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;
     state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 }

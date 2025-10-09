@@ -191,6 +191,9 @@ dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* stat
         double hang = (opts->trunk_hangtime > 0.0) ? opts->trunk_hangtime : sm->hangtime_s;
         // Prefer CLI/opts overrides when provided; fall back to env, then defaults
         double grace = (opts->p25_vc_grace_s > 0.0) ? opts->p25_vc_grace_s : sm->vc_grace_s;
+        if (state && state->p25_cfg_vc_grace_s > 0.0) {
+            grace = state->p25_cfg_vc_grace_s;
+        }
         if (!(opts->p25_vc_grace_s > 0.0)) {
             const char* s = getenv("DSD_NEO_P25_VC_GRACE");
             if (s && s[0] != '\0') {
@@ -202,6 +205,9 @@ dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* stat
         }
         double min_follow =
             (opts->p25_min_follow_dwell_s > 0.0) ? opts->p25_min_follow_dwell_s : sm->min_follow_dwell_s;
+        if (state && state->p25_cfg_min_follow_dwell_s > 0.0) {
+            min_follow = state->p25_cfg_min_follow_dwell_s;
+        }
         if (!(opts->p25_min_follow_dwell_s > 0.0)) {
             const char* s = getenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
             if (s && s[0] != '\0') {
@@ -212,6 +218,9 @@ dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* stat
             }
         }
         double gvt = (opts->p25_grant_voice_to_s > 0.0) ? opts->p25_grant_voice_to_s : sm->grant_voice_timeout_s;
+        if (state && state->p25_cfg_grant_voice_to_s > 0.0) {
+            gvt = state->p25_cfg_grant_voice_to_s;
+        }
         if (!(opts->p25_grant_voice_to_s > 0.0)) {
             const char* s = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
             if (s && s[0] != '\0') {
@@ -222,6 +231,9 @@ dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* stat
             }
         }
         double backoff = (opts->p25_retune_backoff_s > 0.0) ? opts->p25_retune_backoff_s : sm->retune_backoff_s;
+        if (state && state->p25_cfg_retune_backoff_s > 0.0) {
+            backoff = state->p25_cfg_retune_backoff_s;
+        }
         if (!(opts->p25_retune_backoff_s > 0.0)) {
             const char* s = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
             if (s && s[0] != '\0') {

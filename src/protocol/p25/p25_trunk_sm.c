@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
@@ -42,8 +43,12 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
-    state->last_vc_sync_time = time(NULL);
-    state->p25_last_vc_tune_time = state->last_vc_sync_time;
+    time_t nowt = time(NULL);
+    double nowm = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = nowt;
+    state->p25_last_vc_tune_time = nowt;
+    state->last_vc_sync_time_m = nowm;
+    state->p25_last_vc_tune_time_m = nowm;
 }
 
 // Weak fallback for return_to_cc so unit tests that link only the P25 library
@@ -63,7 +68,10 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
         return;
     }
     state->trunk_cc_freq = (long int)freq;
-    state->last_cc_sync_time = time(NULL);
+    time_t nowt = time(NULL);
+    double nowm = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = nowt;
+    state->last_cc_sync_time_m = nowm;
     state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
 }
 
@@ -317,6 +325,80 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_retune_block_until = 0;
     state->p25_retune_block_freq = 0;
     state->p25_retune_block_slot = -1;
+    // Cache SM tunables once (prefer CLI, then env, then defaults)
+    // VC grace
+    state->p25_cfg_vc_grace_s = (opts && opts->p25_vc_grace_s > 0.0) ? opts->p25_vc_grace_s : 1.5;
+    if (!(opts && opts->p25_vc_grace_s > 0.0)) {
+        const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
+        if (sg && sg[0] != '\0') {
+            double v = atof(sg);
+            if (v >= 0.0 && v < 10.0) {
+                state->p25_cfg_vc_grace_s = v;
+            }
+        }
+    }
+    // Grant→voice timeout
+    state->p25_cfg_grant_voice_to_s = (opts && opts->p25_grant_voice_to_s > 0.0) ? opts->p25_grant_voice_to_s : 4.0;
+    if (!(opts && opts->p25_grant_voice_to_s > 0.0)) {
+        const char* sg = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
+        if (sg && sg[0] != '\0') {
+            double v = atof(sg);
+            if (v >= 0.0 && v <= 10.0) {
+                state->p25_cfg_grant_voice_to_s = v;
+            }
+        }
+    }
+    // Minimal follower dwell
+    state->p25_cfg_min_follow_dwell_s =
+        (opts && opts->p25_min_follow_dwell_s > 0.0) ? opts->p25_min_follow_dwell_s : 0.7;
+    if (!(opts && opts->p25_min_follow_dwell_s > 0.0)) {
+        const char* sd = getenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
+        if (sd && sd[0] != '\0') {
+            double v = atof(sd);
+            if (v >= 0.0 && v < 5.0) {
+                state->p25_cfg_min_follow_dwell_s = v;
+            }
+        }
+    }
+    // Retune backoff
+    state->p25_cfg_retune_backoff_s = (opts && opts->p25_retune_backoff_s > 0.0) ? opts->p25_retune_backoff_s : 1.0;
+    if (!(opts && opts->p25_retune_backoff_s > 0.0)) {
+        const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+        if (sb && sb[0] != '\0') {
+            double v = atof(sb);
+            if (v >= 0.0 && v <= 10.0) {
+                state->p25_cfg_retune_backoff_s = v;
+            }
+        }
+    }
+    // MAC hold
+    state->p25_cfg_mac_hold_s = 3.0;
+    {
+        const char* sm = getenv("DSD_NEO_P25_MAC_HOLD");
+        if (sm && sm[0] != '\0') {
+            double v = atof(sm);
+            if (v >= 0.0 && v < 10.0) {
+                state->p25_cfg_mac_hold_s = v;
+            }
+        }
+    }
+    // CC grace
+    state->p25_cfg_cc_grace_s = 2.0;
+    {
+        const char* sc = getenv("DSD_NEO_P25_CC_GRACE");
+        if (sc && sc[0] != '\0') {
+            double v = atof(sc);
+            if (v >= 0.0 && v < 30.0) {
+                state->p25_cfg_cc_grace_s = v;
+            }
+        }
+    }
+    // Clear CC candidate cooldowns and eval tracking
+    state->p25_cc_eval_freq = 0;
+    state->p25_cc_eval_start_m = 0.0;
+    for (int i = 0; i < 16; i++) {
+        state->p25_cc_cand_cool_until[i] = 0.0;
+    }
 }
 
 void
@@ -638,16 +720,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
             } else {
                 state->p25_retune_block_freq = last_vc;
                 state->p25_retune_block_slot = last_slot;
-                double backoff_s = (opts->p25_retune_backoff_s > 0.0) ? opts->p25_retune_backoff_s : 1.0;
-                if (!(opts->p25_retune_backoff_s > 0.0)) {
-                    const char* sb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
-                    if (sb && sb[0] != '\0') {
-                        double v = atof(sb);
-                        if (v >= 0.0 && v <= 10.0) {
-                            backoff_s = v;
-                        }
-                    }
-                }
+                double backoff_s = (state->p25_cfg_retune_backoff_s > 0.0) ? state->p25_cfg_retune_backoff_s : 1.0;
                 state->p25_retune_block_until = time(NULL) + (time_t)(backoff_s + 0.5);
             }
         } else {
@@ -725,6 +798,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     }
 
     const time_t now = time(NULL);
+    const double nowm = dsd_time_now_monotonic_s();
 
     // Drive the minimal follower each tick so it can honor GRANT/ACTIVE/IDLE
     // events observed on both single-carrier and TDMA voice channels. The
@@ -737,27 +811,15 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     // complements the inline fallbacks in the TDMA frame path and protects
     // against cases where frame processing halts due to signal loss.
     if (opts->p25_is_tuned == 1) {
-        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
-        double dt_since_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+        double dt = (state->last_vc_sync_time_m > 0.0) ? (nowm - state->last_vc_sync_time_m) : 1e9;
+        double dt_since_tune = (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
         // Small startup grace window after a VC tune to avoid bouncing back to
         // CC before MAC_PTT/ACTIVE and audio arrive. Override via
         // DSD_NEO_P25_VC_GRACE (seconds).
-        double vc_grace = 1.5; // seconds
+        double vc_grace = state->p25_cfg_vc_grace_s;
         // Prefer adapted value when enabled
         if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
             vc_grace = state->p25_adapt_vc_grace_s;
-        } else {
-            if (opts->p25_vc_grace_s > 0.0) {
-                vc_grace = opts->p25_vc_grace_s;
-            } else {
-                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        vc_grace = v;
-                    }
-                }
-            }
         }
         int is_p2_vc = (state->p25_p2_active_slot != -1);
 
@@ -782,6 +844,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     opts->p25_is_tuned = 0;
                     opts->trunk_is_tuned = 0;
                     state->last_cc_sync_time = now;
+                    state->last_cc_sync_time_m = nowm;
                 }
                 p25_sm_log_status(opts, state, "tick-basic-release");
                 return;
@@ -865,6 +928,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     opts->p25_is_tuned = 0;
                     opts->trunk_is_tuned = 0;
                     state->last_cc_sync_time = now;
+                    state->last_cc_sync_time_m = nowm;
                 }
                 p25_sm_log_status(opts, state, "tick-safety-net");
                 return; // done this tick
@@ -1083,20 +1147,20 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 }
             }
         }
-        int left_ring = (state->p25_p2_audio_ring_count[0] > 0) && (state->p25_p2_last_mac_active[0] != 0)
-                        && ((double)(now - state->p25_p2_last_mac_active[0]) <= ring_hold);
-        int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active[1] != 0)
-                         && ((double)(now - state->p25_p2_last_mac_active[1]) <= ring_hold);
+        int left_ring = (state->p25_p2_audio_ring_count[0] > 0) && (state->p25_p2_last_mac_active_m[0] > 0.0)
+                        && ((nowm - state->p25_p2_last_mac_active_m[0]) <= ring_hold);
+        int right_ring = (state->p25_p2_audio_ring_count[1] > 0) && (state->p25_p2_last_mac_active_m[1] > 0.0)
+                         && ((nowm - state->p25_p2_last_mac_active_m[1]) <= ring_hold);
         // If rings are non-zero but older than ring_hold (no recent MAC),
         // they are stale. When beyond hangtime grace, proactively flush to
         // avoid indefinite post-hang gating on residual buffered samples.
         if (dt >= opts->trunk_hangtime && dt_since_tune >= vc_grace) {
             int l_stale_ring = (state->p25_p2_audio_ring_count[0] > 0)
-                               && (state->p25_p2_last_mac_active[0] == 0
-                                   || (double)(now - state->p25_p2_last_mac_active[0]) > ring_hold);
+                               && (state->p25_p2_last_mac_active_m[0] <= 0.0
+                                   || (nowm - state->p25_p2_last_mac_active_m[0]) > ring_hold);
             int r_stale_ring = (state->p25_p2_audio_ring_count[1] > 0)
-                               && (state->p25_p2_last_mac_active[1] == 0
-                                   || (double)(now - state->p25_p2_last_mac_active[1]) > ring_hold);
+                               && (state->p25_p2_last_mac_active_m[1] <= 0.0
+                                   || (nowm - state->p25_p2_last_mac_active_m[1]) > ring_hold);
             if (l_stale_ring || r_stale_ring) {
                 p25_p2_audio_ring_reset(state, (l_stale_ring && r_stale_ring) ? -1 : (l_stale_ring ? 0 : 1));
                 left_ring = right_ring = 0; // treated as drained
@@ -1113,20 +1177,11 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         }
         int left_active = left_has_audio;
         int right_active = right_has_audio;
-        double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
-        {
-            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    mac_hold = v;
-                }
-            }
-        }
-        if (state->p25_p2_last_mac_active[0] != 0 && (double)(now - state->p25_p2_last_mac_active[0]) <= mac_hold) {
+        double mac_hold = state->p25_cfg_mac_hold_s;
+        if (state->p25_p2_last_mac_active_m[0] > 0.0 && (nowm - state->p25_p2_last_mac_active_m[0]) <= mac_hold) {
             left_active = 1;
         }
-        if (state->p25_p2_last_mac_active[1] != 0 && (double)(now - state->p25_p2_last_mac_active[1]) <= mac_hold) {
+        if (state->p25_p2_last_mac_active_m[1] > 0.0 && (nowm - state->p25_p2_last_mac_active_m[1]) <= mac_hold) {
             right_active = 1;
         }
         int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
@@ -1226,20 +1281,11 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     // mismatches that can wedge the tuner on a dead VC while the SM believes
     // it is on CC.
     {
-        const time_t now2 = time(NULL);
-        double dt_v = (state->last_vc_sync_time != 0) ? (double)(now2 - state->last_vc_sync_time) : 1e9;
-        double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+        const time_t now2 = now;
+        double dt_v = (state->last_vc_sync_time_m > 0.0) ? (nowm - state->last_vc_sync_time_m) : 1e9;
+        double dt_tune = (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
         int cur_is_p2 = (state->lastsynctype == 35 || state->lastsynctype == 36);
-        double mac_hold2 = 3.0;
-        {
-            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    mac_hold2 = v;
-                }
-            }
-        }
+        double mac_hold2 = state->p25_cfg_mac_hold_s;
         int l_recent =
             (state->p25_p2_last_mac_active[0] != 0) && ((double)(now2 - state->p25_p2_last_mac_active[0]) <= mac_hold2);
         int r_recent =
@@ -1275,6 +1321,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                 opts->p25_is_tuned = 0;
                 opts->trunk_is_tuned = 0;
                 state->last_cc_sync_time = now2;
+                state->last_cc_sync_time_m = nowm;
                 state->p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
             }
             p25_sm_log_status(opts, state, "tick-idle-fallback");
@@ -1286,19 +1333,10 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
     // while, proactively hunt for a CC. Prefer learned candidates first, then
     // fall back to the imported LCN/frequency list.
     if (opts->p25_is_tuned == 0) {
-        double dt_cc = (state->last_cc_sync_time != 0) ? (double)(now - state->last_cc_sync_time) : 1e9;
+        double dt_cc = (state->last_cc_sync_time_m > 0.0) ? (nowm - state->last_cc_sync_time_m) : 1e9;
         // Add a small grace window before hunting to avoid thrashing on brief
         // CC fades between TSBKs. Allow override via env var DSD_NEO_P25_CC_GRACE.
-        double cc_grace = 2.0; // seconds
-        {
-            const char* s = getenv("DSD_NEO_P25_CC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 30.0) {
-                    cc_grace = v;
-                }
-            }
-        }
+        double cc_grace = state->p25_cfg_cc_grace_s;
         if (dt_cc > (opts->trunk_hangtime + cc_grace)) {
             state->p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
             int tuned = 0;
@@ -1306,6 +1344,9 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             if (opts->p25_prefer_candidates == 1 && p25_sm_next_cc_candidate(state, &cand) && cand != 0) {
                 trunk_tune_to_cc(opts, state, cand);
                 state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+                // Start CC candidate evaluation
+                state->p25_cc_eval_freq = cand;
+                state->p25_cc_eval_start_m = nowm;
                 if (opts->verbose > 0) {
                     p25_sm_log_status(opts, state, "cc-cand-tune");
                     if (opts->verbose > 1) {
@@ -1349,6 +1390,27 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         }
     }
 
+    // CC candidate evaluation cooldown handler: if we tuned to a CC candidate
+    // and no CC activity appeared within a short window, penalize that
+    // candidate for a while to avoid immediate re-tries.
+    if (state->p25_cc_eval_freq != 0 && state->p25_sm_mode == DSD_P25_SM_MODE_ON_CC) {
+        double eval_dt = (state->p25_cc_eval_start_m > 0.0) ? (nowm - state->p25_cc_eval_start_m) : 0.0;
+        double eval_window_s = 3.0;
+        if (eval_dt >= eval_window_s) {
+            int stale = (state->last_cc_sync_time_m == 0.0) || ((nowm - state->last_cc_sync_time_m) >= eval_window_s);
+            if (stale) {
+                for (int i = 0; i < state->p25_cc_cand_count && i < 16; i++) {
+                    if (state->p25_cc_candidates[i] == state->p25_cc_eval_freq) {
+                        state->p25_cc_cand_cool_until[i] = nowm + 10.0; // cool down ~10s
+                        break;
+                    }
+                }
+            }
+            state->p25_cc_eval_freq = 0;
+            state->p25_cc_eval_start_m = 0.0;
+        }
+    }
+
     // Age-out any stale affiliated RIDs (runs at ~1 Hz)
     p25_aff_tick(state);
     // Age-out Group Affiliation pairs
@@ -1362,12 +1424,19 @@ dsd_p25_sm_next_cc_candidate_impl(dsd_state* state, long* out_freq) {
     if (!state || !out_freq) {
         return 0;
     }
+    double nowm = dsd_time_now_monotonic_s();
     for (int tries = 0; tries < state->p25_cc_cand_count; tries++) {
         if (state->p25_cc_cand_idx >= state->p25_cc_cand_count) {
             state->p25_cc_cand_idx = 0;
         }
-        long f = state->p25_cc_candidates[state->p25_cc_cand_idx++];
+        int idx = state->p25_cc_cand_idx++;
+        long f = state->p25_cc_candidates[idx];
         if (f != 0 && f != state->p25_cc_freq) {
+            // Skip candidates currently in cooldown
+            double cool_until = (idx >= 0 && idx < 16) ? state->p25_cc_cand_cool_until[idx] : 0.0;
+            if (cool_until > 0.0 && nowm < cool_until) {
+                continue;
+            }
             *out_freq = f;
             state->p25_cc_cand_used++;
             return 1;
