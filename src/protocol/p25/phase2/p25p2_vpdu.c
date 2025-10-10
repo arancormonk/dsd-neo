@@ -267,6 +267,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                    // ENC lockout: these MFID90 GRG grants do not carry SVC bits. When
+                    // ENC lockout is enabled, be conservative and avoid tuning unless a
+                    // Harris regroup/patch policy explicitly indicates KEY=0000 (clear)
+                    // for this TG/SG.
+                    if (opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, sgroup)
+                        && !p25_patch_sg_key_is_clear(state, sgroup)) {
+                        goto SKIPCALL;
+                    }
                     p25_sm_on_group_grant(opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
                 }
             }
@@ -333,6 +341,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                    // ENC lockout conservative gating for MFID90 GRG without SVC bits
+                    if (opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, sgroup)
+                        && !p25_patch_sg_key_is_clear(state, sgroup)) {
+                        goto SKIPCALL;
+                    }
                     p25_sm_on_group_grant(opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
                 }
             }
@@ -440,6 +453,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 //check to see if the group candidate is blocked first
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                     if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
+                        // ENC lockout conservative gating for MFID90 GRG Update without SVC bits
+                        if (opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, tunable_group)
+                            && !p25_patch_sg_key_is_clear(state, tunable_group)) {
+                            goto SKIPCALL;
+                        }
                         p25_sm_on_group_grant(opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
                         j = 8; //break loop
                     }
@@ -776,6 +794,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                    // ENC lockout: these UU grants do not carry SVC bits; when enabled,
+                    // skip tuning rather than risking an ENC follow.
+                    if (opts->trunk_tune_enc_calls == 0) {
+                        goto SKIPCALL;
+                    }
                     p25_sm_on_indiv_grant(opts, state, channel, /*svc_bits*/ 0, target, source);
                 }
             }
@@ -1465,6 +1488,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+                    // ENC lockout: no SVC bits in this UU data form; be conservative
+                    if (opts->trunk_tune_enc_calls == 0) {
+                        goto SKIPCALL;
+                    }
                     p25_sm_on_indiv_grant(opts, state, channelt, /*svc_bits*/ 0, (int)target, /*src*/ 0);
                 }
             }

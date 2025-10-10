@@ -130,6 +130,8 @@ main(void) {
 
     // Case A: group calls gated off -> no tune
     opts.trunk_tune_group_calls = 0;
+    // Not testing ENC gating here; allow encrypted to ensure unknown-SVC paths do not block
+    opts.trunk_tune_enc_calls = 1;
     int before = st.p25_sm_tune_count;
     process_MAC_VPDU(&opts, &st, 0 /*FACCH path*/, MAC);
     rc |= expect_true("group gating honored", st.p25_sm_tune_count == before);
@@ -155,12 +157,14 @@ main(void) {
     // Reset tuned flag before private tests to allow tuning path
     opts.p25_is_tuned = 0;
     opts.trunk_tune_private_calls = 0;
+    opts.trunk_tune_enc_calls = 1; // ensure ENC gating does not suppress UU grant
     before = st.p25_sm_tune_count;
     process_MAC_VPDU(&opts, &st, 0, MAC2);
     rc |= expect_true("private gating honored", st.p25_sm_tune_count == before);
 
     opts.p25_is_tuned = 0;
     opts.trunk_tune_private_calls = 1;
+    opts.trunk_tune_enc_calls = 1; // ensure ENC gating does not suppress UU grant
     before = st.p25_sm_tune_count;
     process_MAC_VPDU(&opts, &st, 0, MAC2);
     rc |= expect_true("private allowed tunes", st.p25_sm_tune_count == before + 1);

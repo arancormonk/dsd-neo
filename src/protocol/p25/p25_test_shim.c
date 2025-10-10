@@ -250,6 +250,10 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     opts.p25_is_tuned = 0;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_private_calls = 1;
+    // Tests that use this capture helper are not about ENC gating; default to
+    // following encrypted calls so vendor-specific grants (without SVC bits)
+    // do not get conservatively gated.
+    opts.trunk_tune_enc_calls = 1;
     state.p25_cc_freq = p25_cc_freq;
     state.p25_chan_iden = iden & 0xF;
     state.p25_chan_type[state.p25_chan_iden] = type & 0xF;
