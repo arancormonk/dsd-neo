@@ -5321,10 +5321,64 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     //only print event history if enabled
     attron(COLOR_PAIR(4)); //cyan for history
     {
-        char hdr[160];
-        snprintf(hdr, sizeof(hdr), "Latest Event History ([|])  Slot %d (\\)  Cycle (h): Short/Long/Off",
-                 state->eh_slot + 1);
-        ui_print_header(hdr);
+        /* Custom header to underline active Cycle (h) mode */
+        int rows = 0, cols = 80;
+        getmaxyx(stdscr, rows, cols);
+        if (cols < 4) {
+            cols = 80;
+        }
+        int y = 0, x0 = 0;
+        getyx(stdscr, y, x0);
+        (void)x0;
+
+        /* Left prefix and static portion */
+        addstr("--");
+        printw("Latest Event History ([|])  Slot %d (\\)  Cycle (h): ", state->eh_slot + 1);
+
+        /* Underline the active cycle indicator based on opts->ncurses_history
+           0 = Off, 1 = Short, 2 = Long */
+        const int hist = opts->ncurses_history % 3;
+
+        if (hist == 1) {
+            attron(A_UNDERLINE);
+        }
+        addstr("Short");
+        if (hist == 1) {
+            attroff(A_UNDERLINE);
+        }
+
+        addch('/');
+
+        if (hist == 2) {
+            attron(A_UNDERLINE);
+        }
+        addstr("Long");
+        if (hist == 2) {
+            attroff(A_UNDERLINE);
+        }
+
+        addch('/');
+
+        if (hist == 0) {
+            attron(A_UNDERLINE);
+        }
+        addstr("Off");
+        if (hist == 0) {
+            attroff(A_UNDERLINE);
+        }
+
+        /* Fill remainder of line with '-' and advance to next line */
+        int used_y = 0, used = 0;
+        getyx(stdscr, used_y, used);
+        (void)used_y;
+        if (used < cols) {
+            mvhline(y, used, '-', cols - used);
+        }
+        if (y + 1 < rows) {
+            move(y + 1, 0);
+        } else {
+            addch('\n');
+        }
     }
     if (opts->ncurses_history != 0) {
         for (uint16_t i = (state->eh_index + 1); i < (state->eh_index + 11); i++) {

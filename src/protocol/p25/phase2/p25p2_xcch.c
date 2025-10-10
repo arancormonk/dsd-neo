@@ -123,11 +123,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
-        // Per-slot audio gating: disable only the MAC_SIGNAL slot; leave the
-        // opposite slot untouched to prevent stutter on ongoing clear calls.
-        // Do NOT flush the per-slot jitter ring here; allow any queued
-        // frames to drain naturally to avoid cutting tails.
-        state->p25_p2_audio_allowed[slot] = 0;
+        // Do not change per-slot audio gating on MAC_SIGNAL. LCCH/MAC_SIGNAL
+        // indicates control traffic on the logical channel but not an explicit
+        // end of PTT; premature gating here can suppress a clear call that
+        // arrives on the opposite slot while an encrypted call is ongoing.
+        // Audio gating is managed on MAC_PTT/ACTIVE (enable) and MAC_END/IDLE (disable).
     }
     //do not permit MAC_PTT with CRC errs, help prevent false positives on calls
     if (opcode == 0x1 && err == 0) {
