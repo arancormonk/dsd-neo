@@ -228,8 +228,8 @@ ui_print_lborder(void) {
     attr_get(&saved_attrs, &saved_pair, NULL);
     attron(COLOR_PAIR(4));
     addch('|');
-    /* Restore whatever color pair was active before drawing the border */
-    attron(COLOR_PAIR(saved_pair));
+    /* Restore whatever attributes/pair was active before drawing the border */
+    attr_set(saved_attrs, saved_pair, NULL);
 }
 
 /* Print a single left border '|' using the Active/Green color (pair 3)
@@ -241,8 +241,8 @@ ui_print_lborder_green(void) {
     attr_get(&saved_attrs, &saved_pair, NULL);
     attron(COLOR_PAIR(3));
     addch('|');
-    /* Restore previously active color pair */
-    attron(COLOR_PAIR(saved_pair));
+    /* Restore previously active attributes/pair */
+    attr_set(saved_attrs, saved_pair, NULL);
 }
 
 /* Classify whether a channel mapping matches the active P25 IDEN parameters. */
@@ -457,9 +457,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     }
 #ifdef PRETTY_COLORS
     /* Restore previously active color pair (e.g., green call banner) */
-    if (saved_pair >= 0) {
-        attron(COLOR_PAIR(saved_pair));
-    }
+    attr_set(saved_attrs, saved_pair, NULL);
 #endif
 }
 
@@ -509,9 +507,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db) {
 #endif
 #ifdef PRETTY_COLORS
     /* Restore previously active color pair (e.g., green call banner) */
-    if (saved_pair >= 0) {
-        attron(COLOR_PAIR(saved_pair));
-    }
+    attr_set(saved_attrs, saved_pair, NULL);
 #endif
 }
 
@@ -543,55 +539,64 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     mbe_printVersion(mbeversionstr);
     setlocale(LC_ALL, "");
     initscr(); //Initialize NCURSES screen window
+    // Improve ESC-key responsiveness and UI ergonomics
+    set_escdelay(25);
+    curs_set(0); // hide cursor in main UI (menus will show it when needed)
+    timeout(0);  // non-blocking input on stdscr; menus use blocking wtimeout
     start_color();
     // Ensure special keys (arrows, keypad Enter) are decoded as KEY_* constants
     keypad(stdscr, TRUE);
 
+    if (has_colors()) {
+        // Respect terminal themes: use default colors when supported
+        use_default_colors();
+        assume_default_colors(-1, -1);
 #ifdef PRETTY_COLORS
-    init_pair(1, COLOR_YELLOW, COLOR_BLACK);  //Yellow/Amber for frame sync/control channel, NV style
-    init_pair(2, COLOR_RED, COLOR_BLACK);     //Red for Terminated Calls
-    init_pair(3, COLOR_GREEN, COLOR_BLACK);   //Green for Active Calls
-    init_pair(4, COLOR_CYAN, COLOR_BLACK);    //Cyan for Site Extra and Patches
-    init_pair(5, COLOR_MAGENTA, COLOR_BLACK); //Magenta for no frame sync/signal
-    init_pair(6, COLOR_WHITE, COLOR_BLACK);   //White Card Color Scheme
-    init_pair(7, COLOR_BLUE, COLOR_BLACK);    //Blue on Black
-    init_pair(8, COLOR_BLACK, COLOR_WHITE);   //Black on White
-    init_pair(9, COLOR_RED, COLOR_WHITE);     //Red on White
-    init_pair(10, COLOR_BLUE, COLOR_WHITE);   //Blue on White
-    /* Quality bands for SNR sparkline */
-    init_pair(11, COLOR_GREEN, COLOR_BLACK);  //good
-    init_pair(12, COLOR_YELLOW, COLOR_BLACK); //moderate
-    init_pair(13, COLOR_RED, COLOR_BLACK);    //poor
-    init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status (explicit yellow)
-    /* IDEN color palette (per-bandplan); 8 slots, wrap IDEN nibble modulo 8 */
-    init_pair(21, COLOR_YELLOW, COLOR_BLACK);
-    init_pair(22, COLOR_GREEN, COLOR_BLACK);
-    init_pair(23, COLOR_CYAN, COLOR_BLACK);
-    init_pair(24, COLOR_MAGENTA, COLOR_BLACK);
-    init_pair(25, COLOR_BLUE, COLOR_BLACK);
-    init_pair(26, COLOR_WHITE, COLOR_BLACK);
-    init_pair(27, COLOR_RED, COLOR_BLACK);
-    init_pair(28, COLOR_BLACK, COLOR_WHITE); /* high contrast alt */
+        init_pair(1, COLOR_YELLOW, COLOR_BLACK);  //Yellow/Amber for frame sync/control channel, NV style
+        init_pair(2, COLOR_RED, COLOR_BLACK);     //Red for Terminated Calls
+        init_pair(3, COLOR_GREEN, COLOR_BLACK);   //Green for Active Calls
+        init_pair(4, COLOR_CYAN, COLOR_BLACK);    //Cyan for Site Extra and Patches
+        init_pair(5, COLOR_MAGENTA, COLOR_BLACK); //Magenta for no frame sync/signal
+        init_pair(6, COLOR_WHITE, COLOR_BLACK);   //White Card Color Scheme
+        init_pair(7, COLOR_BLUE, COLOR_BLACK);    //Blue on Black
+        init_pair(8, COLOR_BLACK, COLOR_WHITE);   //Black on White
+        init_pair(9, COLOR_RED, COLOR_WHITE);     //Red on White
+        init_pair(10, COLOR_BLUE, COLOR_WHITE);   //Blue on White
+        /* Quality bands for SNR sparkline */
+        init_pair(11, COLOR_GREEN, COLOR_BLACK);  //good
+        init_pair(12, COLOR_YELLOW, COLOR_BLACK); //moderate
+        init_pair(13, COLOR_RED, COLOR_BLACK);    //poor
+        init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status (explicit yellow)
+        /* IDEN color palette (per-bandplan); 8 slots, wrap IDEN nibble modulo 8 */
+        init_pair(21, COLOR_YELLOW, COLOR_BLACK);
+        init_pair(22, COLOR_GREEN, COLOR_BLACK);
+        init_pair(23, COLOR_CYAN, COLOR_BLACK);
+        init_pair(24, COLOR_MAGENTA, COLOR_BLACK);
+        init_pair(25, COLOR_BLUE, COLOR_BLACK);
+        init_pair(26, COLOR_WHITE, COLOR_BLACK);
+        init_pair(27, COLOR_RED, COLOR_BLACK);
+        init_pair(28, COLOR_BLACK, COLOR_WHITE); /* high contrast alt */
 #else
-    init_pair(1, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(2, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(3, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(4, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(5, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(6, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(7, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
-    init_pair(8, COLOR_BLACK, COLOR_WHITE);  //White Card Color Scheme
-    init_pair(9, COLOR_BLACK, COLOR_WHITE);  //White Card Color Scheme
-    init_pair(10, COLOR_BLACK, COLOR_WHITE); //White Card Color Scheme
-    init_pair(11, COLOR_WHITE, COLOR_BLACK); //fallback
-    init_pair(12, COLOR_WHITE, COLOR_BLACK);
-    init_pair(13, COLOR_WHITE, COLOR_BLACK);
-    init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status stays yellow even on white card scheme
-    /* IDEN color palette fallback */
-    for (int p = 21; p <= 28; p++) {
-        init_pair(p, COLOR_WHITE, COLOR_BLACK);
-    }
+        init_pair(1, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(2, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(3, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(4, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(5, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(6, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(7, COLOR_WHITE, COLOR_BLACK);  //White Card Color Scheme
+        init_pair(8, COLOR_BLACK, COLOR_WHITE);  //White Card Color Scheme
+        init_pair(9, COLOR_BLACK, COLOR_WHITE);  //White Card Color Scheme
+        init_pair(10, COLOR_BLACK, COLOR_WHITE); //White Card Color Scheme
+        init_pair(11, COLOR_WHITE, COLOR_BLACK); //fallback
+        init_pair(12, COLOR_WHITE, COLOR_BLACK);
+        init_pair(13, COLOR_WHITE, COLOR_BLACK);
+        init_pair(14, COLOR_YELLOW, COLOR_BLACK); //DSP status stays yellow even on white card scheme
+        /* IDEN color palette fallback */
+        for (int p = 21; p <= 28; p++) {
+            init_pair(p, COLOR_WHITE, COLOR_BLACK);
+        }
 #endif
+    }
 
     noecho();
     cbreak();
@@ -666,9 +671,7 @@ print_dsp_status(void) {
     attroff(COLOR_PAIR(4));
     /* Restore previously active color pair (e.g., banner color) */
 #ifdef PRETTY_COLORS
-    if (saved_pair >= 0) {
-        attron(COLOR_PAIR(saved_pair));
-    }
+    attr_set(saved_attrs, saved_pair, NULL);
 #endif
 #endif
 }
@@ -2709,7 +2712,7 @@ ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) {
             printw(" R:%lld I:%lld", state->p25_iden_rfss[id], state->p25_iden_site[id]);
         }
         addch('\n');
-        attron(COLOR_PAIR(saved_pair));
+        attr_set(saved_attrs, saved_pair, NULL);
     }
 }
 
@@ -2859,7 +2862,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
                 if (is_iden) {
                     attron(COLOR_PAIR(ui_iden_color_pair(iden)));
                     printw("CH %04X[I%d]: %010.06lf MHz", i & 0xFFFF, iden & 0xF, (double)f / 1000000.0);
-                    attron(COLOR_PAIR(saved_pair));
+                    attr_set(saved_attrs, saved_pair, NULL);
                 } else {
                     printw("CH %04X: %010.06lf MHz", i & 0xFFFF, (double)f / 1000000.0);
                 }
@@ -2927,7 +2930,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
                 if (is_iden) {
                     attron(COLOR_PAIR(ui_iden_color_pair(iden)));
                     printw("CH %04X[I%d]: %010.06lf MHz", found_ch & 0xFFFF, iden & 0xF, (double)f / 1000000.0);
-                    attron(COLOR_PAIR(saved_pair));
+                    attr_set(saved_attrs, saved_pair, NULL);
                 } else {
                     printw("CH %04X: %010.06lf MHz", found_ch & 0xFFFF, (double)f / 1000000.0);
                 }
@@ -2989,8 +2992,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_in_type != 1) //can't run getch/menu when using STDIN -
     {
-        timeout(0);  //
-        c = getch(); //
+        c = getch(); // non-blocking (set once in ncursesOpen)
+        if (c == KEY_RESIZE) {
+            // Force a full redraw on next refresh to avoid artifacts
+            clearok(stdscr, TRUE);
+            c = -1; // ignore as input
+        }
     }
 
     //Variable reset/set section
@@ -3062,12 +3069,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attroff(COLOR_PAIR(2));
             ui_print_hr();
 #ifdef PRETTY_COLORS
-            // Restore whichever color was active before the toast (e.g., cyan UI)
-            if (saved_pair >= 0) {
-                attron(COLOR_PAIR(saved_pair));
-            } else {
-                attron(COLOR_PAIR(4));
-            }
+            // Restore whichever color/attrs were active before the toast
+            attr_set(saved_attrs, saved_pair, NULL);
 #endif
         } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
             // clear stale message
