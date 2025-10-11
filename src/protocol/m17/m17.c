@@ -16,8 +16,8 @@
 #include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/io/udp_input.h>
 #endif
+#include <dsd-neo/io/udp_input.h>
 
 //try to find a fancy lfsr or calculation for this and not an array if possible
 uint8_t m17_scramble[369] = {

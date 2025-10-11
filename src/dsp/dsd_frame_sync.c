@@ -534,6 +534,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* When DMR/dPMR/NXDN are enabled targets, proactively disable FM AGC/limiter which can
              * distort 2-level/FSK symbol envelopes and elevate early audio errors under marginal SNR.
              * Also force FLL/TED off for FSK paths. */
+#ifdef USE_RTLSDR
             if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)) {
                 extern void rtl_stream_set_fm_agc(int onoff);
                 extern void rtl_stream_set_fm_limiter(int onoff);
@@ -546,6 +547,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 rtl_stream_toggle_fll(0);
                 rtl_stream_toggle_ted(0);
             }
+#endif
             if (opts->frame_x2tdma == 1) {
                 if ((strcmp(synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
                     state->carrier = 1;
