@@ -38,71 +38,120 @@ ted_init_state(ted_state_t* state) {
  */
 void
 gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x, int* N, int16_t* y) {
+    if (!config || !state || !x || !N || !y) {
+        return;
+    }
     if (!config->enabled || config->sps <= 1) {
         return;
     }
 
     /* Guard: run TED only when we're near symbol rate to keep CPU low.
        Skip when samples-per-symbol is very high unless explicitly forced. */
-    int sps = config->sps;
+    const int sps = config->sps;
     if (sps > 12 && !config->force) {
         return;
     }
 
-    int mu = state->mu_q20;      /* Q20 */
-    int gain = config->gain_q20; /* Q20 */
-    const int buf_len = *N;
-    int out_n = 0;
+    int mu = state->mu_q20;            /* Q20 fractional phase [0,1) */
+    const int gain = config->gain_q20; /* small integer gain */
+    const int buf_len = *N;            /* interleaved I/Q length */
     const int one = (1 << 20);
+    const int mu_nom = one / (sps > 0 ? sps : 1); /* Q20 increment per complex sample */
 
-    int mu_nom = one / (sps > 0 ? sps : 1); /* Q20 increment per complex sample */
+    if (buf_len < 6) {
+        return;
+    }
 
-    for (int n = 0; n + 3 < buf_len; n += 2) {
-        int a = n;     /* base complex sample index */
-        int b = n + 2; /* next complex sample index */
-        if (b + 1 >= buf_len) {
-            break;
-        }
+    const int nc = buf_len >> 1; /* complex sample count */
+    const int half = sps >> 1;   /* half symbol in complex samples */
 
+    int out_n = 0; /* interleaved I/Q index for output */
+
+    for (int n_c = 0; n_c + 1 < nc; n_c++) {
+        /* Base and next complex sample indices */
+        int a_c = n_c;
+        int b_c = n_c + 1;
+
+        int a = a_c << 1;
+        int b = b_c << 1;
+
+        /* Interpolation fraction from mu (Q20) */
         int frac = mu & (one - 1); /* 0..one-1 */
         int inv = one - frac;
 
-        /* Linear interpolation between x[a] and x[b] (complex) */
+        /* Linear interpolation y_mid between x[a_c] and x[b_c] (complex) */
         int32_t ar = x[a];
         int32_t aj = x[a + 1];
         int32_t br = x[b];
         int32_t bj = x[b + 1];
-        int32_t ir = (int32_t)(((int64_t)inv * ar + (int64_t)frac * br) >> 20);
-        int32_t ij = (int32_t)(((int64_t)inv * aj + (int64_t)frac * bj) >> 20);
-        y[out_n++] = (int16_t)ir;
-        y[out_n++] = (int16_t)ij;
+        int32_t yr = (int32_t)(((int64_t)inv * ar + (int64_t)frac * br) >> 20);
+        int32_t yj = (int32_t)(((int64_t)inv * aj + (int64_t)frac * bj) >> 20);
+        y[out_n++] = (int16_t)yr;
+        y[out_n++] = (int16_t)yj;
 
-        /* Gardner error using previous and next symbol-spaced samples */
-        int km1 = a - 2;
-        if (km1 < 0) {
-            km1 = 0;
+        /* Sample at ±T/2 around current mid-sample using same frac.
+           Use clamped indices to avoid boundary overruns. */
+        int l_c = a_c - half;
+        int r_c = a_c + half;
+        if (l_c < 0) {
+            l_c = 0;
         }
-        int kp1 = b + 2;
-        if (kp1 + 1 >= buf_len) {
-            kp1 = b;
+        if (l_c >= nc - 1) {
+            l_c = nc - 2;
+        }
+        if (r_c < 0) {
+            r_c = 0;
+        }
+        if (r_c >= nc - 1) {
+            r_c = nc - 2;
         }
 
-        int16_t xr1 = x[kp1];
-        int16_t xj1 = x[kp1 + 1];
-        int16_t xrm = x[km1];
-        int16_t xjm = x[km1 + 1];
-        int16_t dr = xr1 - xrm;
-        int16_t dj = xj1 - xjm;
-        int32_t e = (int32_t)dr * (int32_t)ir + (int32_t)dj * (int32_t)ij; /* Q0 */
+        int l0 = l_c << 1;
+        int l1 = l0 + 2;
+        int r0 = r_c << 1;
+        int r1 = r0 + 2;
 
-        /* Update fractional phase: nominal advance + small correction */
-        int64_t corr = ((int64_t)gain * (int64_t)e) >> 15; /* scale */
-        mu += mu_nom + (int)corr;
+        int32_t lr = (int32_t)(((int64_t)inv * x[l0] + (int64_t)frac * x[l1]) >> 20);
+        int32_t lj = (int32_t)(((int64_t)inv * x[l0 + 1] + (int64_t)frac * x[l1 + 1]) >> 20);
+        int32_t rr = (int32_t)(((int64_t)inv * x[r0] + (int64_t)frac * x[r1]) >> 20);
+        int32_t rj = (int32_t)(((int64_t)inv * x[r0 + 1] + (int64_t)frac * x[r1 + 1]) >> 20);
 
-        /* Smooth residual using simple EMA with small weight. Use shift to avoid FP. */
+        /* Gardner error: Re{ (x(+T/2) - x(-T/2)) * conj(y_mid) } */
+        int32_t dr = (int32_t)(rr - lr);
+        int32_t dj = (int32_t)(rj - lj);
+        int64_t e = (int64_t)dr * (int64_t)yr + (int64_t)dj * (int64_t)yj; /* Q0 */
+
+        /* Normalize by instantaneous power to keep scale stable. */
+        int64_t p2 = (int64_t)yr * (int64_t)yr + (int64_t)yj * (int64_t)yj;
+        if (p2 < 1) {
+            p2 = 1;
+        }
+        /* e_norm in Q15 in range roughly [-1,1] */
+        int32_t e_norm_q15 = (int32_t)((e << 15) / p2);
+        if (e_norm_q15 > 32767) {
+            e_norm_q15 = 32767;
+        }
+        if (e_norm_q15 < -32768) {
+            e_norm_q15 = -32768;
+        }
+
+        /* Update fractional phase: nominal advance + small correction.
+           Scale to Q20 with conservative shift to avoid runaway. */
+        int32_t corr = (int32_t)(((int64_t)gain * (int64_t)e_norm_q15) >> 10); /* Q20 step units */
+
+        /* Bound correction to avoid large jumps (<= ~1/2 nominal step). */
+        if (corr > (mu_nom >> 1)) {
+            corr = (mu_nom >> 1);
+        }
+        if (corr < -(mu_nom >> 1)) {
+            corr = -(mu_nom >> 1);
+        }
+        mu += mu_nom + corr;
+
+        /* Smooth residual using simple EMA with small weight (alpha≈1/64). */
         int ee = state->e_ema;
-        /* alpha ≈ 1/64 => k=6 */
-        ee += (int)((e - ee) >> 6);
+        int e_i32 = (int)e; /* compression to int32 is fine for EMA */
+        ee += (int)((e_i32 - ee) >> 6);
         state->e_ema = ee;
 
         /* Wrap mu to [0, one) */

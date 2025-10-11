@@ -2767,7 +2767,18 @@ static void
 act_ted_force_toggle(void* v) {
     UNUSED(v);
     int f = rtl_stream_get_ted_force();
-    rtl_stream_set_ted_force(f ? 0 : 1);
+    if (!f) {
+        // Enabling force: also ensure TED itself is enabled so forcing has effect.
+        rtl_stream_set_ted_force(1);
+        int cq = 0, fl = 0, t = 0, a = 0;
+        rtl_stream_dsp_get(&cq, &fl, &t, &a);
+        if (!t) {
+            rtl_stream_toggle_ted(1);
+        }
+    } else {
+        // Disabling force leaves TED enable state unchanged.
+        rtl_stream_set_ted_force(0);
+    }
 }
 
 static const char*

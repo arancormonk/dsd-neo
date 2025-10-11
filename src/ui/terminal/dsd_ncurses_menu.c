@@ -45,6 +45,7 @@ typedef struct {
     int have;
     int manual_override;
     int cqpsk_enable, fll_enable, ted_enable, auto_dsp_enable;
+    int ted_force;
     int lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps, mf_enable, cma;
     int rrc_enable, rrc_alpha_percent, rrc_span_syms;
     int dqpsk_enable;
@@ -60,6 +61,7 @@ dsp_capture_snapshot(DspMenuSnapshot* s) {
     s->have = 1;
     s->manual_override = rtl_stream_get_manual_dsp();
     rtl_stream_dsp_get(&s->cqpsk_enable, &s->fll_enable, &s->ted_enable, &s->auto_dsp_enable);
+    s->ted_force = rtl_stream_get_ted_force();
     rtl_stream_cqpsk_get(&s->lms_enable, &s->taps, &s->mu_q15, &s->update_stride, &s->wl_enable, &s->dfe_enable,
                          &s->dfe_taps, &s->mf_enable, &s->cma);
     rtl_stream_cqpsk_get_rrc(&s->rrc_enable, &s->rrc_alpha_percent, &s->rrc_span_syms);
@@ -79,6 +81,8 @@ dsp_apply_snapshot(const DspMenuSnapshot* s) {
     rtl_stream_toggle_cqpsk(s->cqpsk_enable);
     rtl_stream_toggle_fll(s->fll_enable);
     rtl_stream_toggle_ted(s->ted_enable);
+    // Ensure TED force state is restored as well
+    rtl_stream_set_ted_force(s->ted_force);
     // CQPSK runtime params (leave -1 to keep from snapshot when not relevant)
     rtl_stream_cqpsk_set(s->lms_enable, s->taps, s->mu_q15, s->update_stride, s->wl_enable, s->dfe_enable, s->dfe_taps,
                          s->mf_enable, -1);
