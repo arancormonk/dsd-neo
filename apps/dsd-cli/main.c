@@ -37,9 +37,10 @@
 #include <signal.h>
 #include <stdlib.h>
 
+#include <dsd-neo/io/udp_input.h>
+
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/io/udp_input.h>
 #include <rtl-sdr.h>
 #endif
 
