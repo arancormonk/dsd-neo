@@ -703,12 +703,13 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             // Fallback: if SACCH/FACCH MAC_PTT was missed but ESS indicates
             // clear or decryptable audio, allow this slot's audio now.
             if (state->p25_p2_audio_allowed[0] == 0) {
-                // Harden ESS-driven enablement: only permit during an active
-                // call context for this logical slot (observed via recent
-                // MAC_PTT/ACTIVE on SACCH/FACCH). This prevents stray ESS
-                // decodes from re-opening audio gates after call teardown and
-                // wedging the trunking SM on a dead VC.
-                int in_call = (state->dmrburstL >= 20 && state->dmrburstL <= 22);
+                // ESS-driven enablement: permit during an active call context
+                // OR when we are in the middle of a voice frame (2V/4V) on
+                // this path. Using the local 'voice' indicator allows opening
+                // gates at the very start of a call before MAC_PTT/ACTIVE
+                // arrives, reducing missed first syllables, while still
+                // protecting against stale re-enables after teardown.
+                int in_call = ((state->dmrburstL >= 20 && state->dmrburstL <= 22) || voice);
                 int alg = state->payload_algid;
                 int allow = (in_call
                              && ((alg == 0 || alg == 0x80)
@@ -757,9 +758,9 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
             // Fallback: if SACCH/FACCH MAC_PTT was missed but ESS indicates
             // clear or decryptable audio, allow this slot's audio now.
             if (state->p25_p2_audio_allowed[1] == 0) {
-                // Harden ESS-driven enablement with active-call context on
-                // the right logical slot to avoid stale re-enables.
-                int in_call = (state->dmrburstR >= 20 && state->dmrburstR <= 22);
+                // ESS-driven enablement with active-call OR immediate voice
+                // context for the right slot, mirroring left-slot handling.
+                int in_call = ((state->dmrburstR >= 20 && state->dmrburstR <= 22) || voice);
                 int alg = state->payload_algidR;
                 int allow = (in_call
                              && ((alg == 0 || alg == 0x80)
@@ -879,10 +880,29 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 int other_audio =
                     state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
                 if (!other_audio) {
-                    fprintf(stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
-                    state->p25_sm_force_release = 1;
-                    p25_p2_teardown_call(state);
-                    p25_sm_on_release(opts, state);
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking; ");
+                    // Defer return to CC within VC grace to protect opposite-slot clear calls
+                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                    if (!(state->p25_cfg_vc_grace_s > 0.0)) {
+                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                        if (s && s[0] != '\0') {
+                            double v = atof(s);
+                            if (v >= 0.0 && v < 10.0) {
+                                vc_grace = v;
+                            }
+                        }
+                    }
+                    double nowm = dsd_time_now_monotonic_s();
+                    double dt_since_tune =
+                        (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
+                    if (dt_since_tune >= vc_grace) {
+                        fprintf(stderr, "Return to CC; \n");
+                        state->p25_sm_force_release = 1;
+                        p25_p2_teardown_call(state);
+                        p25_sm_on_release(opts, state);
+                    } else {
+                        fprintf(stderr, "Defer (VC grace); stay on VC. \n");
+                    }
                 } else {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking; Other slot active; stay on VC. \n");
                     // Keep encryption fields intact so gating remains correct; clear banner only.
@@ -1022,7 +1042,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         w++;
     }
 
-    //collect ESS_A and then run process_ESS
+    //collect ESS_A (both parts)
     for (short i = 0; i < 96; i++) {
         ess_a[state->currentslot][i] = p2xbit[i + 148 + vc_counter];
     }
@@ -1031,6 +1051,11 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     {
         ess_a[state->currentslot][i + 96] = p2xbit[i + 246 + vc_counter];
     }
+
+    // Run ESS processing early so ALG/KID decisions can enable audio gates
+    // before decoding the first two AMBE frames. This helps avoid missing the
+    // beginning of clear calls when early MAC_PTT/ACTIVE are missed.
+    process_ESS(opts, state);
 
     if (opts->payload == 1) {
         fprintf(stderr, "\n");
@@ -1047,7 +1072,8 @@ process_2V(dsd_opts* opts, dsd_state* state) {
 
     // Gate first 2V AMBE decode like subsequent frames to avoid decoding
     // encrypted audio when ENC lockout is enabled or audio is otherwise
-    // disallowed for this slot.
+    // disallowed for this slot. ESS has already run above to open audio early
+    // when clear/decryptable.
     if (state->p25_p2_audio_allowed[state->currentslot]) {
         processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
         if (state->currentslot == 0) {
@@ -1090,7 +1116,6 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         }
     }
     // if (state->currentslot == 0) state->voice_counter[0] = 0; if (state->currentslot == 1) state->voice_counter[1] = 0;
-    process_ESS(opts, state);
 
     //reset drop bytes after a 2V
     if (state->currentslot == 0 && state->payload_algid == 0xAA) {

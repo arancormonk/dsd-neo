@@ -12,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -161,13 +162,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         // if (type == 0 && slot == 1) state->dmrburstR = 30;
         // if (type == 1 && slot == 1) state->dmrburstR = 30;
 
-        // Audio gating: disable only the LCCH/MAC_SIGNAL slot until PTT/ACTIVE arrives;
-        // do not touch the opposite slot to avoid disturbing an ongoing clear call.
-        uint8_t op = (uint8_t)MAC[1];
-        if (op == 0x0) { // SIGNAL
-            state->p25_p2_audio_allowed[slot] = 0;
-            // Do not flush here; SACCH handler performs targeted ring reset.
-        }
+        // Do not change per-slot audio gating on MAC_SIGNAL. Gating is
+        // controlled by MAC_PTT/END and ESS fallback so clear opposite-slot
+        // calls don’t get muted by periodic LCCH signaling.
 
         //TODO: Iron out issues with audio playing in every non SACCH slot when no voice present
         //without it stuttering during actual voice
@@ -2348,9 +2345,27 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                                   && (double)(now2 - state->p25_p2_last_mac_active[os]) <= mac_hold)
                               || recent_voice;
             if (!other_audio) {
-                // Force release so SM ignores any stale gates and returns to CC
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
+                // Only force release outside the VC grace window to avoid dropping
+                // an opposite-slot clear call that hasn't opened its gates yet.
+                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                if (!(state->p25_cfg_vc_grace_s > 0.0)) {
+                    const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
+                    if (sg && sg[0] != '\0') {
+                        double vg = atof(sg);
+                        if (vg >= 0.0 && vg < 10.0) {
+                            vc_grace = vg;
+                        }
+                    }
+                }
+                double nowm3 = dsd_time_now_monotonic_s();
+                double dt_since_tune3 =
+                    (state->p25_last_vc_tune_time_m > 0.0) ? (nowm3 - state->p25_last_vc_tune_time_m) : 1e9;
+                if (dt_since_tune3 >= vc_grace) {
+                    state->p25_sm_force_release = 1;
+                    p25_sm_on_release(opts, state);
+                } else {
+                    // Keep VC during grace; banner for this slot will be cleared below on END/IDLE
+                }
             } else {
                 // Keep VC; other slot still has audio. Clear banner for this slot.
                 if (eslot == 0) {
@@ -2496,9 +2511,30 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                                       && (double)(now2 - state->p25_p2_last_mac_active[other]) <= mac_hold)
                                   || recent_voice;
                 if (!other_audio) {
-                    fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
+                    // Defer immediate return to CC during a short post‑tune grace to
+                    // avoid dropping a clear opposite-slot call that has not yet opened
+                    // its audio gates.
+                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                    if (!(state->p25_cfg_vc_grace_s > 0.0)) {
+                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                        if (s && s[0] != '\0') {
+                            double v = atof(s);
+                            if (v >= 0.0 && v < 10.0) {
+                                vc_grace = v;
+                            }
+                        }
+                    }
+                    double nowm = dsd_time_now_monotonic_s();
+                    double dt_since_tune =
+                        (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
+                    if (dt_since_tune >= vc_grace) {
+                        fprintf(stderr, "Return to CC; \n");
+                        state->p25_sm_force_release = 1;
+                        p25_sm_on_release(opts, state);
+                    } else {
+                        fprintf(stderr, "Defer (VC grace); stay on VC. \n");
+                    }
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
@@ -2610,9 +2646,27 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 int other = slot ^ 1;
                 int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                 if (!other_audio) {
-                    fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Return to CC; \n");
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
+                    fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
+                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                    if (!(state->p25_cfg_vc_grace_s > 0.0)) {
+                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                        if (s && s[0] != '\0') {
+                            double v = atof(s);
+                            if (v >= 0.0 && v < 10.0) {
+                                vc_grace = v;
+                            }
+                        }
+                    }
+                    double nowm = dsd_time_now_monotonic_s();
+                    double dt_since_tune =
+                        (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
+                    if (dt_since_tune >= vc_grace) {
+                        fprintf(stderr, "Return to CC; \n");
+                        state->p25_sm_force_release = 1;
+                        p25_sm_on_release(opts, state);
+                    } else {
+                        fprintf(stderr, "Defer (VC grace); stay on VC. \n");
+                    }
                 } else {
                     fprintf(stderr,
                             " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");

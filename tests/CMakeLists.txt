@@ -180,6 +180,12 @@ target_include_directories(dsd-neo_test_p25_p2_audio_gating PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_p25_p2_audio_gating PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_AUDIO_GATING COMMAND dsd-neo_test_p25_p2_audio_gating)
 
+# Ensure LCCH MAC_SIGNAL never flips P25p2 audio gates
+add_executable(dsd-neo_test_p25_p2_lcch_signal_gate protocol/p25/test_p25_p2_lcch_signal_gate.c)
+target_include_directories(dsd-neo_test_p25_p2_lcch_signal_gate PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_lcch_signal_gate PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_LCCH_SIGNAL_GATE COMMAND dsd-neo_test_p25_p2_lcch_signal_gate)
+
 # P25 P2 audio enable on PTT via SACCH
 add_executable(dsd-neo_test_p25_p2_audio_enable protocol/p25/test_p25_p2_audio_enable.c)
 target_include_directories(dsd-neo_test_p25_p2_audio_enable PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25 ${_PUBLIC_INCLUDES})

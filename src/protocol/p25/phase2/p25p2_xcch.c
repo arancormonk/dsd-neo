@@ -297,11 +297,29 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // Flush any residual audio already queued for this slot
                             p25_p2_audio_ring_reset(state, eslot);
                             if (!other_audio) {
-                                fprintf(
-                                    stderr,
-                                    " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Return to CC; \n");
-                                state->p25_sm_force_release = 1;
-                                p25_sm_on_release(opts, state);
+                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); ");
+                                // Defer CC return within a short VC grace window after tuning
+                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                                if (!(state->p25_cfg_vc_grace_s > 0.0)) {
+                                    const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
+                                    if (sg && sg[0] != '\0') {
+                                        double vg = atof(sg);
+                                        if (vg >= 0.0 && vg < 10.0) {
+                                            vc_grace = vg;
+                                        }
+                                    }
+                                }
+                                double nowm2 = dsd_time_now_monotonic_s();
+                                double dt_since_tune2 = (state->p25_last_vc_tune_time_m > 0.0)
+                                                            ? (nowm2 - state->p25_last_vc_tune_time_m)
+                                                            : 1e9;
+                                if (dt_since_tune2 >= vc_grace) {
+                                    fprintf(stderr, "Return to CC; \n");
+                                    state->p25_sm_force_release = 1;
+                                    p25_sm_on_release(opts, state);
+                                } else {
+                                    fprintf(stderr, "Defer (VC grace); stay on VC. \n");
+                                }
                             } else {
                                 fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
                                                 "slot active; stay on VC. \n");
@@ -459,12 +477,32 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // Flush any residual audio already queued for this slot
                             p25_p2_audio_ring_reset(state, eslot);
                             if (!other_audio) {
-                                fprintf(
-                                    stderr,
-                                    " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Return to CC; \n");
-                                // Force release so SM ignores any stale gates
-                                state->p25_sm_force_release = 1;
-                                p25_sm_on_release(opts, state);
+                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); ");
+                                // Defer CC return within a short VC grace window after tuning
+                                // so we don't drop a clear opposite-slot call whose gates haven't
+                                // opened yet.
+                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                                if (!(state->p25_cfg_vc_grace_s > 0.0)) {
+                                    const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                                    if (s && s[0] != '\0') {
+                                        double v = atof(s);
+                                        if (v >= 0.0 && v < 10.0) {
+                                            vc_grace = v;
+                                        }
+                                    }
+                                }
+                                double nowm = dsd_time_now_monotonic_s();
+                                double dt_since_tune = (state->p25_last_vc_tune_time_m > 0.0)
+                                                           ? (nowm - state->p25_last_vc_tune_time_m)
+                                                           : 1e9;
+                                if (dt_since_tune >= vc_grace) {
+                                    fprintf(stderr, "Return to CC; \n");
+                                    // Force release so SM ignores any stale gates
+                                    state->p25_sm_force_release = 1;
+                                    p25_sm_on_release(opts, state);
+                                } else {
+                                    fprintf(stderr, "Defer (VC grace); stay on VC. \n");
+                                }
                             } else {
                                 fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
                                                 "slot active; stay on VC. \n");
