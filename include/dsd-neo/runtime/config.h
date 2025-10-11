@@ -256,6 +256,14 @@ typedef struct dsdneoRuntimeConfig {
     int fm_cma_warmup; /* samples; <=0 => continuous */
     int fm_cma_strength_is_set;
     int fm_cma_strength; /* 0=Light, 1=Medium, 2=Strong */
+
+    /* C4FM symbol-domain DD equalizer (prototype) */
+    int c4fm_dd_eq_is_set;
+    int c4fm_dd_eq_enable;
+    int c4fm_dd_eq_taps_is_set;
+    int c4fm_dd_eq_taps; /* odd: 3,5,7,9 */
+    int c4fm_dd_eq_mu_is_set;
+    int c4fm_dd_eq_mu_q15; /* 1..64 */
 }
 
 dsdneoRuntimeConfig;
@@ -278,6 +286,10 @@ void dsd_neo_config_init(const dsd_opts* opts);
  * @return Pointer to config or NULL.
  */
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
+
+/* Runtime updaters for DD equalizer (UI control) */
+void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
+void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
 
 #ifdef __cplusplus
 }

@@ -19,7 +19,16 @@
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/mem.h>
+
+/* Provide weak references so unit tests that do not link RTL stream still link. */
+extern "C" {
+#ifdef __GNUC__
+__attribute__((weak)) void rtl_stream_auto_dsp_get_status(struct rtl_auto_dsp_status* out);
+__attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*, int*);
+#endif
+}
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -963,20 +972,29 @@ fm_cma_equalize(struct demod_state* d) {
         return;
     }
 
-    /* Adaptive 5-tap symmetric, real FIR (linear-phase), CMA-like update.
-       Layout: [t2, t1, t0, t1, t2], applied identically to I and Q.
+    /* Adaptive odd-tap (5/7/9) symmetric, real FIR (linear-phase), CMA-like update.
+       Layout (taps=2H+1): [tH..t2, t1, t0, t1, t2..tH], applied identically to I and Q.
        Preserves FM phase; adapts to reduce envelope ripple for short multipath.
        Controlled by fm_cma_mu_q15 (step) and fm_cma_warmup (samples, 0=continuous). */
-    if (d->fm_cma_taps == 5) {
+    if (d->fm_cma_taps >= 5) {
         const int N = d->lp_len >> 1; /* complex samples */
         int16_t* in = d->lowpassed;
         int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
 
+        int taps = d->fm_cma_taps;
+        if (taps >= 9) {
+            taps = 9;
+        } else if (taps >= 7) {
+            taps = 7;
+        } else {
+            taps = 5;
+        }
+        const int H = (taps - 1) >> 1;
+
         /* Static state for taps and warmup countdown */
         static int inited = 0;
-        static int t0_q15 = 32768; /* identity */
-        static int t1_q15 = 0;
-        static int t2_q15 = 0;
+        static int t_q15[5] = {32768, 0, 0, 0, 0}; /* supports up to taps=9 (H<=4) */
+        static int prev_taps = 0;
         static int prev_mu = 0;
         static int warm_rem = 0; /* remaining samples to adapt; 0=stop, big->continuous */
         static int prev_warm_cfg = 0;
@@ -984,13 +1002,13 @@ fm_cma_equalize(struct demod_state* d) {
 
         if (!inited) {
             inited = 1;
-            t0_q15 = 32768;
-            t1_q15 = 0;
-            t2_q15 = 0;
+            t_q15[0] = 32768;
+            t_q15[1] = t_q15[2] = t_q15[3] = t_q15[4] = 0;
             prev_mu = 0;
             warm_rem = 0;
             prev_warm_cfg = 0;
             prev_strength = -1;
+            prev_taps = taps;
         }
         /* Map strength to a simple mu scaling: Light=0.75, Medium=1.0, Strong=1.5 */
         double mu_scale = 1.0;
@@ -1010,18 +1028,25 @@ fm_cma_equalize(struct demod_state* d) {
         if (mu_q15 > 64) {
             mu_q15 = 64;
         }
-        if (mu_q15 != prev_mu || prev_strength != s) {
+        if (mu_q15 != prev_mu || prev_strength != s || prev_taps != taps) {
             prev_mu = mu_q15;
             prev_strength = s;
+            prev_taps = taps;
         }
+        int reset_guard = 0;
         int warm_cfg = d->fm_cma_warmup; /* <=0: continuous */
         if (warm_cfg != prev_warm_cfg) {
+            /* On warmup reconfiguration, reset taps to identity and restart guard.
+               This avoids stale equalizer states carrying across mode/site changes. */
             prev_warm_cfg = warm_cfg;
             if (warm_cfg <= 0) {
                 warm_rem = 1000000000; /* effectively continuous */
             } else {
                 warm_rem = warm_cfg;
             }
+            t_q15[0] = 32768; /* identity */
+            t_q15[1] = t_q15[2] = t_q15[3] = t_q15[4] = 0;
+            reset_guard = 1;
         }
 
         /* Compute reference envelope target R^2 from input block */
@@ -1037,9 +1062,11 @@ fm_cma_equalize(struct demod_state* d) {
         }
 
         /* Convert taps to double */
-        double t0 = (double)t0_q15 / 32768.0;
-        double t1 = (double)t1_q15 / 32768.0;
-        double t2 = (double)t2_q15 / 32768.0;
+        double t0 = (double)t_q15[0] / 32768.0;
+        double t1 = (double)((H >= 1) ? t_q15[1] : 0) / 32768.0;
+        double t2 = (double)((H >= 2) ? t_q15[2] : 0) / 32768.0;
+        double t3 = (double)((H >= 3) ? t_q15[3] : 0) / 32768.0;
+        double t4 = (double)((H >= 4) ? t_q15[4] : 0) / 32768.0;
 
         /* Adaptation guard state */
         static int guard_inited = 0;
@@ -1048,7 +1075,7 @@ fm_cma_equalize(struct demod_state* d) {
         static double mu_guard_scale = 1.0;
         static int acc_accepts = 0;
         static int acc_rejects = 0;
-        if (!guard_inited) {
+        if (!guard_inited || reset_guard) {
             guard_inited = 1;
             freeze_blocks_rem = 0;
             reject_streak = 0;
@@ -1058,9 +1085,23 @@ fm_cma_equalize(struct demod_state* d) {
         }
 
         int adapt_this = (warm_rem > 0 && freeze_blocks_rem <= 0) ? 1 : 0;
+        /* Gate adaptation using P25p1 RS errors (requires RTL stream path) */
+        if (adapt_this) {
+#ifdef USE_RTLSDR
+            struct rtl_auto_dsp_status st;
+            st.p25p1_mode = st.p25p1_ema_pct = st.p25p1_since_ms = 0;
+            st.p25p2_mode = st.p25p2_since_ms = 0;
+            rtl_stream_auto_dsp_get_status(&st);
+            int auto_on = 0;
+            rtl_stream_dsp_get(NULL, NULL, NULL, &auto_on);
+            if (auto_on && st.p25p1_mode == 0 && st.p25p1_ema_pct <= 2) {
+                adapt_this = 0;
+            }
+#endif
+        }
 
         /* Accumulate normalized gradients and baseline cost over block */
-        double g0 = 0.0, g1 = 0.0, g2 = 0.0;
+        double g0 = 0.0, g1 = 0.0, g2 = 0.0, g3 = 0.0, g4 = 0.0;
         double sum_e2_old = 0.0;
         int clip_cnt_old = 0;
 
@@ -1069,6 +1110,10 @@ fm_cma_equalize(struct demod_state* d) {
             int nm1 = (n - 1 < 0) ? 0 : (n - 1);
             int np1 = (n + 1 < N) ? (n + 1) : (N - 1);
             int np2 = (n + 2 < N) ? (n + 2) : (N - 1);
+            int nm3 = (n - 3 < 0) ? 0 : (n - 3);
+            int np3 = (n + 3 < N) ? (n + 3) : (N - 1);
+            int nm4 = (n - 4 < 0) ? 0 : (n - 4);
+            int np4 = (n + 4 < N) ? (n + 4) : (N - 1);
             /* Gather neighborhood */
             int16_t im2 = in[(size_t)(nm2 << 1) + 0];
             int16_t jm2 = in[(size_t)(nm2 << 1) + 1];
@@ -1088,8 +1133,14 @@ fm_cma_equalize(struct demod_state* d) {
             double xi1 = (double)jm1 + (double)jp1;
             double xr0 = (double)i0;
             double xi0 = (double)j0;
-            double yI = t2 * xr2 + t1 * xr1 + t0 * xr0;
-            double yQ = t2 * xi2 + t1 * xi1 + t0 * xi0;
+            double xr3 = (double)in[(size_t)(nm3 << 1) + 0] + (double)in[(size_t)(np3 << 1) + 0];
+            double xi3 = (double)in[(size_t)(nm3 << 1) + 1] + (double)in[(size_t)(np3 << 1) + 1];
+            double xr4 = (double)in[(size_t)(nm4 << 1) + 0] + (double)in[(size_t)(np4 << 1) + 0];
+            double xi4 = (double)in[(size_t)(nm4 << 1) + 1] + (double)in[(size_t)(np4 << 1) + 1];
+            double yI = t0 * xr0 + t1 * xr1 + ((H >= 2) ? (t2 * xr2) : 0.0) + ((H >= 3) ? (t3 * xr3) : 0.0)
+                        + ((H >= 4) ? (t4 * xr4) : 0.0);
+            double yQ = t0 * xi0 + t1 * xi1 + ((H >= 2) ? (t2 * xi2) : 0.0) + ((H >= 3) ? (t3 * xi3) : 0.0)
+                        + ((H >= 4) ? (t4 * xi4) : 0.0);
 
             /* Write to output after computing y (track clipping) */
             int yi_q0 = (int)lrint(yI);
@@ -1117,12 +1168,20 @@ fm_cma_equalize(struct demod_state* d) {
             g0 += (e / norm) * r0;
             g1 += (e / norm) * r1;
             g2 += (e / norm) * r2;
+            if (H >= 3) {
+                double r3 = yI * xr3 + yQ * xi3;
+                g3 += (e / norm) * r3;
+            }
+            if (H >= 4) {
+                double r4 = yI * xr4 + yQ * xi4;
+                g4 += (e / norm) * r4;
+            }
         }
 
         /* Apply block update with small normalized step using stability guard */
         if (adapt_this) {
             double J_old = (N > 0) ? (sum_e2_old / (double)N) : 0.0;
-            double prev0 = t0, prev1 = t1, prev2 = t2;
+            double prev0 = t0, prev1 = t1, prev2 = t2, prev3 = t3, prev4 = t4;
             double mu = ((double)mu_q15 / 32768.0) * mu_scale * mu_guard_scale;
             double invN = (N > 0) ? (1.0 / (double)N) : 0.0;
 
@@ -1130,6 +1189,8 @@ fm_cma_equalize(struct demod_state* d) {
             double c0 = t0 - (mu * (2.0 * g0) * invN / (R2 + 1e-6));
             double c1 = t1 - (mu * (2.0 * g1) * invN / (R2 + 1e-6));
             double c2 = t2 - (mu * (2.0 * g2) * invN / (R2 + 1e-6));
+            double c3 = t3 - (mu * (2.0 * g3) * invN / (R2 + 1e-6));
+            double c4 = t4 - (mu * (2.0 * g4) * invN / (R2 + 1e-6));
             /* Clamp */
             if (c0 < 0.5) {
                 c0 = 0.5;
@@ -1150,7 +1211,8 @@ fm_cma_equalize(struct demod_state* d) {
                 c2 = 0.5;
             }
             /* Renormalize */
-            double sumc = c0 + 2.0 * c1 + 2.0 * c2;
+            double sumc =
+                c0 + 2.0 * c1 + 2.0 * ((H >= 2) ? c2 : 0.0) + 2.0 * ((H >= 3) ? c3 : 0.0) + 2.0 * ((H >= 4) ? c4 : 0.0);
             if (fabs(sumc) < 1e-6) {
                 sumc = 1.0;
             }
@@ -1158,6 +1220,8 @@ fm_cma_equalize(struct demod_state* d) {
             c0 *= sfnc;
             c1 *= sfnc;
             c2 *= sfnc;
+            c3 *= sfnc;
+            c4 *= sfnc;
 
             /* Evaluate candidate cost and clipping */
             double sum_e2_new = 0.0;
@@ -1167,6 +1231,10 @@ fm_cma_equalize(struct demod_state* d) {
                 int nm1 = (n - 1 < 0) ? 0 : (n - 1);
                 int np1 = (n + 1 < N) ? (n + 1) : (N - 1);
                 int np2 = (n + 2 < N) ? (n + 2) : (N - 1);
+                int nm3 = (n - 3 < 0) ? 0 : (n - 3);
+                int np3 = (n + 3 < N) ? (n + 3) : (N - 1);
+                int nm4 = (n - 4 < 0) ? 0 : (n - 4);
+                int np4 = (n + 4 < N) ? (n + 4) : (N - 1);
                 int16_t im2 = in[(size_t)(nm2 << 1) + 0];
                 int16_t jm2 = in[(size_t)(nm2 << 1) + 1];
                 int16_t im1 = in[(size_t)(nm1 << 1) + 0];
@@ -1183,8 +1251,14 @@ fm_cma_equalize(struct demod_state* d) {
                 double xi1 = (double)jm1 + (double)jp1;
                 double xr0 = (double)i0;
                 double xi0 = (double)j0;
-                double yI2 = c2 * xr2 + c1 * xr1 + c0 * xr0;
-                double yQ2 = c2 * xi2 + c1 * xi1 + c0 * xi0;
+                double xr3 = (double)in[(size_t)(nm3 << 1) + 0] + (double)in[(size_t)(np3 << 1) + 0];
+                double xi3 = (double)in[(size_t)(nm3 << 1) + 1] + (double)in[(size_t)(np3 << 1) + 1];
+                double xr4 = (double)in[(size_t)(nm4 << 1) + 0] + (double)in[(size_t)(np4 << 1) + 0];
+                double xi4 = (double)in[(size_t)(nm4 << 1) + 1] + (double)in[(size_t)(np4 << 1) + 1];
+                double yI2 = c0 * xr0 + c1 * xr1 + ((H >= 2) ? (c2 * xr2) : 0.0) + ((H >= 3) ? (c3 * xr3) : 0.0)
+                             + ((H >= 4) ? (c4 * xr4) : 0.0);
+                double yQ2 = c0 * xi0 + c1 * xi1 + ((H >= 2) ? (c2 * xi2) : 0.0) + ((H >= 3) ? (c3 * xi3) : 0.0)
+                             + ((H >= 4) ? (c4 * xi4) : 0.0);
                 double yy2 = yI2 * yI2 + yQ2 * yQ2;
                 double e2 = yy2 - R2;
                 sum_e2_new += e2 * e2;
@@ -1200,8 +1274,10 @@ fm_cma_equalize(struct demod_state* d) {
             double J_new = (N > 0) ? (sum_e2_new / (double)N) : J_old;
             double eps = 0.01;           /* require ~1% improvement */
             double clip_thr_frac = 0.01; /* ~1% */
-            double delta0 = c0 - prev0, delta1 = c1 - prev1, delta2 = c2 - prev2;
-            double delta_norm = sqrt(delta0 * delta0 + 2.0 * delta1 * delta1 + 2.0 * delta2 * delta2);
+            double delta0 = c0 - prev0, delta1 = c1 - prev1, delta2 = c2 - prev2, delta3 = c3 - prev3,
+                   delta4 = c4 - prev4;
+            double delta_norm = sqrt(delta0 * delta0 + 2.0 * delta1 * delta1 + 2.0 * delta2 * delta2
+                                     + 2.0 * delta3 * delta3 + 2.0 * delta4 * delta4);
             double delta_max = 0.40;
             double clip_frac_old = (double)clip_cnt_old / (double)(N > 0 ? N : 1);
             double clip_frac_new = (double)clip_cnt_new / (double)(N > 0 ? N : 1);
@@ -1225,26 +1301,55 @@ fm_cma_equalize(struct demod_state* d) {
                 t0 = c0;
                 t1 = c1;
                 t2 = c2;
-                t0_q15 = (int)lrint(t0 * 32768.0);
-                t1_q15 = (int)lrint(t1 * 32768.0);
-                t2_q15 = (int)lrint(t2 * 32768.0);
-                if (t0_q15 > 32767) {
-                    t0_q15 = 32767;
+                t3 = c3;
+                t4 = c4;
+                int tq0 = (int)lrint(t0 * 32768.0);
+                int tq1 = (int)lrint(t1 * 32768.0);
+                int tq2 = (int)lrint(t2 * 32768.0);
+                int tq3 = (int)lrint(t3 * 32768.0);
+                int tq4 = (int)lrint(t4 * 32768.0);
+                if (tq0 > 32767) {
+                    tq0 = 32767;
                 }
-                if (t0_q15 < -32768) {
-                    t0_q15 = -32768;
+                if (tq0 < -32768) {
+                    tq0 = -32768;
                 }
-                if (t1_q15 > 32767) {
-                    t1_q15 = 32767;
+                if (tq1 > 32767) {
+                    tq1 = 32767;
                 }
-                if (t1_q15 < -32768) {
-                    t1_q15 = -32768;
+                if (tq1 < -32768) {
+                    tq1 = -32768;
                 }
-                if (t2_q15 > 32767) {
-                    t2_q15 = 32767;
+                if (tq2 > 32767) {
+                    tq2 = 32767;
                 }
-                if (t2_q15 < -32768) {
-                    t2_q15 = -32768;
+                if (tq2 < -32768) {
+                    tq2 = -32768;
+                }
+                if (tq3 > 32767) {
+                    tq3 = 32767;
+                }
+                if (tq3 < -32768) {
+                    tq3 = -32768;
+                }
+                if (tq4 > 32767) {
+                    tq4 = 32767;
+                }
+                if (tq4 < -32768) {
+                    tq4 = -32768;
+                }
+                t_q15[0] = tq0;
+                if (H >= 1) {
+                    t_q15[1] = tq1;
+                }
+                if (H >= 2) {
+                    t_q15[2] = tq2;
+                }
+                if (H >= 3) {
+                    t_q15[3] = tq3;
+                }
+                if (H >= 4) {
+                    t_q15[4] = tq4;
                 }
                 /* Consume warmup samples */
                 if (warm_rem < N) {
@@ -1264,6 +1369,8 @@ fm_cma_equalize(struct demod_state* d) {
                 t0 = prev0;
                 t1 = prev1;
                 t2 = prev2;
+                t3 = prev3;
+                t4 = prev4;
                 /* Do not decrement warm_rem on reject; adjust step based on trend */
                 if (J_new < J_old) {
                     /* Trending better; gently increase step to reach acceptance */
@@ -1600,7 +1707,13 @@ full_demod(struct demod_state* d) {
        3) Optional per-sample limiter to clamp fast AM ripple (skipped when 1-tap CMA is active)
        4) FM/C4FM CMA/smoother/adaptive FIR */
     iq_dc_block(d);
-    int skip_agc_lim = (d->fm_cma_enable && d->fm_cma_taps == 1) ? 1 : 0;
+    /*
+     * Skip block AGC/limiter when FM CMA is actively adapting. For 1-tap CMA this was
+     * already the case; extend to 5-tap adaptive smoother so the CMA sees true envelope
+     * ripple rather than a pre-limited signal. Keep AGC/limiter for the fixed 3-tap
+     * pre-smoother (it does not adapt and benefits from stabilized levels).
+     */
+    int skip_agc_lim = (d->fm_cma_enable && (d->fm_cma_taps == 1 || d->fm_cma_taps >= 5)) ? 1 : 0;
     if (!skip_agc_lim) {
         fm_envelope_agc(d);
         fm_constant_envelope_limiter(d);

@@ -2184,6 +2184,104 @@ lbl_fm_cma(void* v, char* b, size_t n) {
     return b;
 }
 
+/* ---- C4FM DD Equalizer (symbol-domain) ---- */
+static const char*
+lbl_c4fm_dd(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int on = rtl_stream_get_c4fm_dd_eq();
+    snprintf(b, n, "C4FM DD Equalizer [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_c4fm_dd(void* v) {
+    UNUSED(v);
+    int on = rtl_stream_get_c4fm_dd_eq();
+    rtl_stream_set_c4fm_dd_eq(on ? 0 : 1);
+}
+
+static const char*
+lbl_c4fm_dd_params(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int taps = 0, mu = 0;
+    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
+    if (taps <= 0) {
+        taps = 3;
+    }
+    if (mu <= 0) {
+        mu = 2;
+    }
+    snprintf(b, n, "DD Taps/Mu: %d / %d", taps, mu);
+    return b;
+}
+
+static void
+act_c4fm_dd_taps_cycle(void* v) {
+    UNUSED(v);
+    int taps = 0, mu = 0;
+    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
+    int nt;
+    if (taps < 5) {
+        nt = 5;
+    } else if (taps < 7) {
+        nt = 7;
+    } else if (taps < 9) {
+        nt = 9;
+    } else {
+        nt = 3;
+    }
+    rtl_stream_set_c4fm_dd_eq_params(nt, -1);
+}
+
+static void
+act_c4fm_dd_mu_up(void* v) {
+    UNUSED(v);
+    int taps = 0, mu = 0;
+    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
+    if (mu < 64) {
+        mu++;
+    }
+    rtl_stream_set_c4fm_dd_eq_params(-1, mu);
+}
+
+static void
+act_c4fm_dd_mu_dn(void* v) {
+    UNUSED(v);
+    int taps = 0, mu = 0;
+    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
+    if (mu > 1) {
+        mu--;
+    }
+    rtl_stream_set_c4fm_dd_eq_params(-1, mu);
+}
+
+/* ---- One-click C4FM robustness preset ---- */
+static const char*
+lbl_c4fm_robust(void* v, char* b, size_t n) {
+    UNUSED(v);
+    snprintf(b, n, "C4FM Robustness Preset (apply)");
+    return b;
+}
+
+static void
+act_c4fm_robust(void* v) {
+    UNUSED(v);
+    /* Enable DD eq with modest settings */
+    rtl_stream_set_c4fm_dd_eq(1);
+    rtl_stream_set_c4fm_dd_eq_params(5, 2);
+    /* Enable adaptive CMA with longer span; medium strength, continuous */
+    rtl_stream_set_fm_cma(1);
+    rtl_stream_set_fm_cma_params(7, 2, 0);
+    rtl_stream_set_fm_cma_strength(1);
+    /* Ensure limiter/AGC won't fight CMA */
+    rtl_stream_set_fm_limiter(0);
+    rtl_stream_set_fm_agc(0);
+    /* Enable TED and force it for FM/C4FM; set SPS ~10 */
+    rtl_stream_toggle_ted(1);
+    rtl_stream_set_ted_force(1);
+    rtl_stream_set_ted_sps(10);
+}
+
 static void
 act_toggle_fm_cma(void* v) {
     UNUSED(v);
@@ -2196,18 +2294,22 @@ lbl_fm_cma_taps(void* v, char* b, size_t n) {
     UNUSED(v);
     int taps = 0;
     rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
-    /* 1: complex gain (CMA), 3: fixed smoother, 5: adaptive symmetric FIR */
+    /* 1: complex gain (CMA), 3: fixed smoother, 5/7/9: adaptive symmetric FIR */
     const char* desc;
     if (taps <= 1) {
         desc = "Complex gain (no multipath mitigation)";
         taps = 1;
     } else if (taps == 3) {
         desc = "3-tap short-echo smoother";
-    } else {
+    } else if (taps == 5) {
         desc = "5-tap adaptive symmetric FIR";
-        taps = 5;
+    } else if (taps == 7) {
+        desc = "7-tap adaptive symmetric FIR";
+    } else {
+        desc = "9-tap adaptive symmetric FIR";
+        taps = 9;
     }
-    snprintf(b, n, "CMA Taps (1/3/5): %d  —  %s", taps, desc);
+    snprintf(b, n, "CMA Taps (1/3/5/7/9): %d  —  %s", taps, desc);
     return b;
 }
 
@@ -2221,8 +2323,12 @@ act_fm_cma_taps_cycle(void* v) {
         nt = 3; /* 1 -> 3 */
     } else if (taps < 5) {
         nt = 5; /* 3 -> 5 */
+    } else if (taps < 7) {
+        nt = 7; /* 5 -> 7 */
+    } else if (taps < 9) {
+        nt = 9; /* 7 -> 9 */
     } else {
-        nt = 1; /* 5 -> 1 */
+        nt = 1; /* 9 -> 1 */
     }
     rtl_stream_set_fm_cma_params(nt, -1, -1);
 }
@@ -2252,7 +2358,7 @@ lbl_fm_cma_guard(void* v, char* b, size_t n) {
     int enabled = rtl_stream_get_fm_cma();
     int taps = 0, mu = 0, warm = 0;
     rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
-    if (!enabled || taps != 5) {
+    if (!enabled || (taps != 5 && taps != 7 && taps != 9)) {
         snprintf(b, n, "CMA Adaptive: (n/a)");
         return b;
     }
@@ -3470,8 +3576,8 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
         {.id = "fm_cma_t",
          .label = "CMA Taps (status)",
          .label_fn = lbl_fm_cma_taps,
-         .help = "1: gain, 3: fixed smoother, 5: adaptive symmetric FIR."},
-        {.id = "fm_cma_t*", .label = "Cycle CMA Taps 1/3/5", .on_select = act_fm_cma_taps_cycle},
+         .help = "1: gain, 3: fixed smoother, 5/7/9: adaptive symmetric FIR."},
+        {.id = "fm_cma_t*", .label = "Cycle CMA Taps 1/3/5/7/9", .on_select = act_fm_cma_taps_cycle},
         {.id = "fm_cma_guard",
          .label = "CMA Adaptive (status)",
          .label_fn = lbl_fm_cma_guard,
@@ -3490,6 +3596,23 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "0=continuous; otherwise samples."},
         {.id = "fm_cma_w+", .label = "Warmup +5000", .on_select = act_fm_cma_warm_up},
         {.id = "fm_cma_w-", .label = "Warmup -5000", .on_select = act_fm_cma_warm_dn},
+        {.id = "c4fm_robust",
+         .label = "C4FM Robustness Preset",
+         .label_fn = lbl_c4fm_robust,
+         .help = "Applies: DD EQ (5/2), CMA (7/2, Medium), TED On/Force, SPS=10; disables FM AGC/Limiter.",
+         .on_select = act_c4fm_robust},
+        {.id = "c4fm_dd",
+         .label = "C4FM DD Equalizer",
+         .label_fn = lbl_c4fm_dd,
+         .help = "Toggle symbol-domain DD equalizer for C4FM.",
+         .on_select = act_toggle_c4fm_dd},
+        {.id = "c4fm_dd_p",
+         .label = "DD EQ (status)",
+         .label_fn = lbl_c4fm_dd_params,
+         .help = "Taps/Mu for C4FM DD equalizer."},
+        {.id = "c4fm_dd_t*", .label = "Cycle DD Taps 3/5/7/9", .on_select = act_c4fm_dd_taps_cycle},
+        {.id = "c4fm_dd_mu+", .label = "DD Mu +1", .on_select = act_c4fm_dd_mu_up},
+        {.id = "c4fm_dd_mu-", .label = "DD Mu -1", .on_select = act_c4fm_dd_mu_dn},
         {.id = "auto_status",
          .label = "Auto-DSP Status",
          .label_fn = lbl_auto_status,

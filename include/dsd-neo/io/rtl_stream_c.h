@@ -184,6 +184,12 @@ double rtl_stream_estimate_snr_qpsk_const(void);
  */
 double rtl_stream_estimate_snr_gfsk_eye(void);
 
+/* C4FM DD equalizer (symbol-domain) runtime control */
+void rtl_stream_set_c4fm_dd_eq(int onoff);
+int rtl_stream_get_c4fm_dd_eq(void);
+void rtl_stream_set_c4fm_dd_eq_params(int taps, int mu_q15);
+void rtl_stream_get_c4fm_dd_eq_params(int* taps, int* mu_q15);
+
 /**
  * @brief Get spectrum-based auto PPM status and last measurements.
  *

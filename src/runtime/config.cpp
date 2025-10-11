@@ -245,6 +245,17 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.fm_cma_strength_is_set = env_is_set(fcma_s);
     c.fm_cma_strength = c.fm_cma_strength_is_set ? atoi(fcma_s) : 1;
 
+    /* C4FM DD equalizer (symbol-domain prototype) */
+    const char* dd = getenv("DSD_NEO_C4FM_DD_EQ");
+    const char* dd_t = getenv("DSD_NEO_C4FM_DD_EQ_TAPS");
+    const char* dd_m = getenv("DSD_NEO_C4FM_DD_EQ_MU");
+    c.c4fm_dd_eq_is_set = env_is_set(dd);
+    c.c4fm_dd_eq_enable = c.c4fm_dd_eq_is_set ? (atoi(dd) != 0) : 0;
+    c.c4fm_dd_eq_taps_is_set = env_is_set(dd_t);
+    c.c4fm_dd_eq_taps = c.c4fm_dd_eq_taps_is_set ? atoi(dd_t) : 3;
+    c.c4fm_dd_eq_mu_is_set = env_is_set(dd_m);
+    c.c4fm_dd_eq_mu_q15 = c.c4fm_dd_eq_mu_is_set ? atoi(dd_m) : 2;
+
     g_config = c;
     g_config_inited = 1;
 }
@@ -258,4 +269,66 @@ dsd_neo_config_init(const dsd_opts* opts) {
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
     return g_config_inited ? &g_config : NULL;
+}
+
+void
+dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15) {
+    if (!g_config_inited) {
+        memset(&g_config, 0, sizeof(g_config));
+        g_config_inited = 1;
+    }
+    if (enable >= 0) {
+        g_config.c4fm_dd_eq_is_set = 1;
+        g_config.c4fm_dd_eq_enable = enable ? 1 : 0;
+    }
+    if (taps >= 0) {
+        int v = taps;
+        if (v < 3) {
+            v = 3;
+        }
+        if (v > 9) {
+            v = 9;
+        }
+        if ((v & 1) == 0) {
+            v++;
+        }
+        g_config.c4fm_dd_eq_taps_is_set = 1;
+        g_config.c4fm_dd_eq_taps = v;
+    }
+    if (mu_q15 >= 0) {
+        int v = mu_q15;
+        if (v < 1) {
+            v = 1;
+        }
+        if (v > 64) {
+            v = 64;
+        }
+        g_config.c4fm_dd_eq_mu_is_set = 1;
+        g_config.c4fm_dd_eq_mu_q15 = v;
+    }
+}
+
+void
+dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15) {
+    if (!g_config_inited) {
+        if (enable) {
+            *enable = 0;
+        }
+        if (taps) {
+            *taps = 3;
+        }
+        if (mu_q15) {
+            *mu_q15 = 2;
+        }
+        return;
+    }
+    if (enable) {
+        *enable = g_config.c4fm_dd_eq_enable ? 1 : 0;
+    }
+    if (taps) {
+        *taps = g_config.c4fm_dd_eq_taps_is_set ? g_config.c4fm_dd_eq_taps : 3;
+    }
+    if (mu_q15) {
+        *mu_q15 = g_config.c4fm_dd_eq_mu_is_set ? g_config.c4fm_dd_eq_mu_q15 : 2;
+    }
 }

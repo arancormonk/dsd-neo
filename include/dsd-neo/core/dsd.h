@@ -714,6 +714,20 @@ typedef struct {
     int symbolcnt;
     int symbolc;
 
+    /* C4FM symbol-domain DD equalizer (prototype). Applies a short odd-tap
+       FIR across symbol-spaced samples with DD-LMS adaptation gated by the
+       decided 4-level symbol. Disabled by default. */
+    int c4fm_dd_eq_enable;      /* 0/1 */
+    int c4fm_dd_eq_taps;        /* odd: 3,5,7,9 */
+    int c4fm_dd_eq_mu_q15;      /* step size (Q15), 1..64 */
+    int c4fm_dd_eq_have_last;   /* have last xvec/y/target */
+    int c4fm_dd_eq_last_y;      /* last filtered symbol (int) */
+    int c4fm_dd_eq_last_target; /* last decided target level (int) */
+    int c4fm_dd_eq_hist_len;    /* == taps */
+    int c4fm_dd_eq_hist_pos;    /* head index in ring */
+    int c4fm_dd_eq_w_q15[9];    /* weights (Q15), w[0]=center */
+    int c4fm_dd_eq_x_hist[9];   /* recent raw symbols x[n-k] */
+
     int rf_mod;
     int numflips;
     int lastsynctype;

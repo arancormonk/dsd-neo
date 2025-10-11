@@ -360,6 +360,26 @@ digitize(dsd_opts* opts, dsd_state* state, int symbol) {
         state->dmr_payload_p++;
         //dmr buffer end
 
+        /* Provide DD equalizer target (nearest centroid) for C4FM */
+        if (state->rf_mod == 0 && state->c4fm_dd_eq_enable) {
+            int min = state->min, lmid = state->lmid, center = state->center, umid = state->umid, max = state->max;
+            int t;
+            if (symbol > center) {
+                if (symbol > umid) {
+                    t = (umid + max) / 2;
+                } else {
+                    t = (center + umid) / 2;
+                }
+            } else {
+                if (symbol < lmid) {
+                    t = (min + lmid) / 2;
+                } else {
+                    t = (lmid + center) / 2;
+                }
+            }
+            state->c4fm_dd_eq_last_target = t;
+        }
+
         return dibit;
     } else {
         //  0 +P25p1
@@ -426,6 +446,26 @@ digitize(dsd_opts* opts, dsd_state* state, int symbol) {
         }
         state->dmr_payload_p++;
         //dmr buffer end
+
+        /* Provide DD equalizer target (nearest centroid) for C4FM */
+        if (state->rf_mod == 0 && state->c4fm_dd_eq_enable) {
+            int min = state->min, lmid = state->lmid, center = state->center, umid = state->umid, max = state->max;
+            int t;
+            if (symbol > center) {
+                if (symbol > umid) {
+                    t = (umid + max) / 2;
+                } else {
+                    t = (center + umid) / 2;
+                }
+            } else {
+                if (symbol < lmid) {
+                    t = (min + lmid) / 2;
+                } else {
+                    t = (lmid + center) / 2;
+                }
+            }
+            state->c4fm_dd_eq_last_target = t;
+        }
 
         return dibit;
     }

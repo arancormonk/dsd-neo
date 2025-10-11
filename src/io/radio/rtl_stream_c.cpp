@@ -493,6 +493,32 @@ rtl_stream_estimate_snr_gfsk_eye(void) {
     return dsd_rtl_stream_estimate_snr_gfsk_eye();
 }
 
+/* C4FM DD equalizer runtime config wrappers (update global runtime config) */
+extern "C" void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
+extern "C" void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
+
+extern "C" void
+rtl_stream_set_c4fm_dd_eq(int onoff) {
+    dsd_neo_set_c4fm_dd_eq(onoff ? 1 : 0, -1, -1);
+}
+
+extern "C" int
+rtl_stream_get_c4fm_dd_eq(void) {
+    int en = 0;
+    dsd_neo_get_c4fm_dd_eq(&en, NULL, NULL);
+    return en ? 1 : 0;
+}
+
+extern "C" void
+rtl_stream_set_c4fm_dd_eq_params(int taps, int mu_q15) {
+    dsd_neo_set_c4fm_dd_eq(-1, taps, mu_q15);
+}
+
+extern "C" void
+rtl_stream_get_c4fm_dd_eq_params(int* taps, int* mu_q15) {
+    dsd_neo_get_c4fm_dd_eq(NULL, taps, mu_q15);
+}
+
 extern "C" void
 rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out) {
     dsd_rtl_stream_auto_dsp_get_config(out);

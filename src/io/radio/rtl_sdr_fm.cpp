@@ -3483,11 +3483,15 @@ dsd_rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup) {
 extern "C" void
 dsd_rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup) {
     if (taps >= 0) {
-        /* Allow 1, 3, or 5 taps:
+        /* Allow 1, 3, 5, 7, or 9 taps:
            - 1: complex gain (CMA-only)
            - 3: fixed symmetric smoother
-           - 5: adaptive symmetric linear-phase FIR (CMA-driven) */
-        if (taps >= 5) {
+           - 5/7/9: adaptive symmetric linear-phase FIR (CMA-driven) */
+        if (taps >= 9) {
+            demod.fm_cma_taps = 9;
+        } else if (taps >= 7) {
+            demod.fm_cma_taps = 7;
+        } else if (taps >= 5) {
             demod.fm_cma_taps = 5;
         } else if (taps >= 3) {
             demod.fm_cma_taps = 3;
