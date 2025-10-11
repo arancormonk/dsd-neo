@@ -1190,21 +1190,34 @@ fm_cma_equalize(struct demod_state* d) {
                 sum_e2_new += e2 * e2;
                 int yi2_q0 = (int)lrint(yI2);
                 int yq2_q0 = (int)lrint(yQ2);
-                if (yi2_q0 > 32767 || yi2_q0 < -32768 || yq2_q0 > 32767 || yq2_q0 < -32768) {
+                int16_t yi2_sat = sat16(yi2_q0);
+                int16_t yq2_sat = sat16(yq2_q0);
+                if (yi2_sat == 32767 || yi2_sat == -32768 || yq2_sat == 32767 || yq2_sat == -32768) {
                     clip_cnt_new++;
                 }
             }
 
             double J_new = (N > 0) ? (sum_e2_new / (double)N) : J_old;
-            double eps = 0.03;            /* require ~3% improvement */
-            double clip_thr_frac = 0.002; /* ~0.2% */
+            double eps = 0.01;           /* require ~1% improvement */
+            double clip_thr_frac = 0.01; /* ~1% */
             double delta0 = c0 - prev0, delta1 = c1 - prev1, delta2 = c2 - prev2;
             double delta_norm = sqrt(delta0 * delta0 + 2.0 * delta1 * delta1 + 2.0 * delta2 * delta2);
-            double delta_max = 0.15;
+            double delta_max = 0.40;
+            double clip_frac_old = (double)clip_cnt_old / (double)(N > 0 ? N : 1);
+            double clip_frac_new = (double)clip_cnt_new / (double)(N > 0 ? N : 1);
             int accept = 0;
-            if (J_new <= J_old * (1.0 - eps) && ((double)clip_cnt_new / (double)(N > 0 ? N : 1)) <= clip_thr_frac
-                && delta_norm <= delta_max) {
+            int basic_ok =
+                (J_new <= J_old * (1.0 - eps)) && (clip_frac_new <= clip_thr_frac) && (delta_norm <= delta_max);
+            if (basic_ok) {
                 accept = 1;
+            } else if (reject_streak >= 4) {
+                /* Fallback: allow any non-increasing cost, no worse clips than old + margin, relaxed step norm */
+                double rel_delta_max = delta_max * 1.5;
+                double clip_margin = 0.005; /* +0.5% */
+                if ((J_new <= J_old) && (clip_frac_new <= clip_frac_old + clip_margin)
+                    && (delta_norm <= rel_delta_max)) {
+                    accept = 1;
+                }
             }
 
             if (accept) {
@@ -1251,15 +1264,23 @@ fm_cma_equalize(struct demod_state* d) {
                 t0 = prev0;
                 t1 = prev1;
                 t2 = prev2;
-                /* Do not decrement warm_rem on reject */
-                mu_guard_scale *= 0.5;
-                if (mu_guard_scale < 0.1) {
-                    mu_guard_scale = 0.1;
+                /* Do not decrement warm_rem on reject; adjust step based on trend */
+                if (J_new < J_old) {
+                    /* Trending better; gently increase step to reach acceptance */
+                    mu_guard_scale *= 1.10;
+                    if (mu_guard_scale > 1.0) {
+                        mu_guard_scale = 1.0;
+                    }
+                } else {
+                    mu_guard_scale *= 0.70;
+                    if (mu_guard_scale < 0.05) {
+                        mu_guard_scale = 0.05;
+                    }
                 }
                 reject_streak++;
-                if (reject_streak >= 3) {
+                if (reject_streak >= 8) {
+                    /* Hold briefly after many consecutive rejects, but keep streak so fallback can trigger afterward */
                     freeze_blocks_rem = 6; /* hold for a few blocks */
-                    reject_streak = 0;
                 }
                 acc_rejects++;
             }
