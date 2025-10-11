@@ -83,6 +83,7 @@ static void act_trunk_toggle(void* v);
 static void act_scan_toggle(void* v);
 static void act_lcw_toggle(void* v);
 static void act_p25_auto_adapt(void* v);
+static void act_p25_sm_basic(void* v);
 static void act_setmod_bw(void* v);
 static void act_import_chan(void* v);
 static void act_import_group(void* v);
@@ -1642,6 +1643,13 @@ lbl_p25_auto_adapt(void* v, char* b, size_t n) {
 }
 
 static const char*
+lbl_p25_sm_basic(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "P25 Simple SM (basic) [%s]", (c && c->opts && c->opts->p25_sm_basic_mode) ? "On" : "Off");
+    return b;
+}
+
+static const char*
 lbl_allow(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Allow/White List [%s]", c->opts->trunk_use_allow_list ? "Active" : "Inactive");
@@ -1971,6 +1979,11 @@ ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_lcw,
          .help = "Enable LCW explicit retune.",
          .on_select = act_lcw_toggle},
+        {.id = "p25_sm_basic",
+         .label = "P25 Simple SM (basic)",
+         .label_fn = lbl_p25_sm_basic,
+         .help = "Enable simplified P25 SM (reduced safeties/post-hang gating).",
+         .on_select = act_p25_sm_basic},
         {.id = "p25_auto_adapt",
          .label = "P25 Auto-Adapt (beta)",
          .label_fn = lbl_p25_auto_adapt,
@@ -4103,6 +4116,25 @@ act_p25_auto_adapt(void* v) {
     UiCtx* c = (UiCtx*)v;
     svc_toggle_p25_auto_adapt(c->opts);
     ui_statusf("P25 Auto-Adapt: %s", c->opts->p25_auto_adapt ? "On" : "Off");
+}
+
+static void
+act_p25_sm_basic(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->p25_sm_basic_mode = c->opts->p25_sm_basic_mode ? 0 : 1;
+    if (c->opts->p25_sm_basic_mode) {
+        setenv("DSD_NEO_P25_SM_BASIC", "1", 1);
+        ui_statusf("P25 Simple SM: On");
+        fprintf(stderr, "\n P25 SM basic mode enabled (UI).\n");
+    } else {
+        setenv("DSD_NEO_P25_SM_BASIC", "0", 1);
+        setenv("DSD_NEO_P25_SM_NO_SAFETY", "0", 1);
+        ui_statusf("P25 Simple SM: Off");
+        fprintf(stderr, "\n P25 SM basic mode disabled (UI).\n");
+    }
 }
 
 static void
