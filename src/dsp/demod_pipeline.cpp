@@ -11,6 +11,7 @@
  * and audio filtering. Public APIs are declared in `dsp/demod_pipeline.h`.
  */
 
+#include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -915,6 +916,106 @@ fm_constant_envelope_limiter(struct demod_state* d) {
     }
 }
 
+/* Blind CMA equalizer for constant-envelope paths (FM/C4FM/GFSK).
+   Uses the CQPSK equalizer in CMA-only mode (no DD, no DFE/WL).
+   Off by default; enable via demod->fm_cma_enable. */
+static inline void
+fm_cma_equalize(struct demod_state* d) {
+    if (!d || !d->fm_cma_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    /* Optional symmetric 3-tap linear-phase smoother to mitigate short-delay multipath
+       without phase distortion. Coeffs ~ [1,6,1]/8. */
+    if (d->fm_cma_taps == 3) {
+        const int N = d->lp_len >> 1; /* complex samples */
+        int16_t* in = d->lowpassed;
+        int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+        int t0, t1;
+        if (d->fm_cma_strength >= 2) {
+            /* Strong: [1,6,1]/8 */
+            t0 = 24576; /* 6/8 */
+            t1 = 4096;  /* 1/8 */
+        } else if (d->fm_cma_strength == 1) {
+            /* Medium: [1,5,1]/7 */
+            t0 = 23405; /* 5/7 */
+            t1 = 4681;  /* 1/7 */
+        } else {
+            /* Light: [1,4,1]/6 */
+            t0 = 21845; /* 4/6 */
+            t1 = 5461;  /* 1/6 */
+        }
+        for (int n = 0; n < N; n++) {
+            int nm1 = (n - 1 >= 0) ? (n - 1) : 0;
+            int np1 = (n + 1 < N) ? (n + 1) : (N - 1);
+            int16_t im1 = in[(size_t)(nm1 << 1) + 0];
+            int16_t jm1 = in[(size_t)(nm1 << 1) + 1];
+            int16_t i0 = in[(size_t)(n << 1) + 0];
+            int16_t j0 = in[(size_t)(n << 1) + 1];
+            int16_t ip1 = in[(size_t)(np1 << 1) + 0];
+            int16_t jp1 = in[(size_t)(np1 << 1) + 1];
+            int64_t accI = (int64_t)im1 * t1 + (int64_t)i0 * t0 + (int64_t)ip1 * t1;
+            int64_t accQ = (int64_t)jm1 * t1 + (int64_t)j0 * t0 + (int64_t)jp1 * t1;
+            out[(size_t)(n << 1) + 0] = sat16((int32_t)((accI + (1 << 14)) >> 15));
+            out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
+        }
+        /* Consume in-place */
+        memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
+    }
+    /* Initialize a single EQ state lazily; reconfigure on parameter changes. */
+    static cqpsk_eq_state_t eq;
+    static int inited = 0;
+    static int prev_taps = 0;
+    static int prev_mu = 0;
+    static int prev_warm = 0;
+
+    /* For FM/FSK, use a safe 1-tap CMA (complex gain only). Multi-tap CMA can
+       distort FM phase; when stronger mitigation desired, enable the symmetric
+       3-tap pre-smoother above (fm_cma_taps==3). */
+    int taps = 1;
+    int mu = d->fm_cma_mu_q15;
+    if (mu < 1) {
+        mu = 1;
+    }
+    if (mu > 64) {
+        mu = 64;
+    }
+    int warm = d->fm_cma_warmup; /* samples; <=0 means continuous */
+    if (!inited) {
+        cqpsk_eq_init(&eq);
+        inited = 1;
+        prev_taps = 0;
+        prev_mu = 0;
+        prev_warm = 0;
+    }
+    if (taps != prev_taps || eq.num_taps != taps) {
+        eq.num_taps = taps;
+        cqpsk_eq_reset_all(&eq);
+        prev_taps = taps;
+    }
+    if (mu != prev_mu) {
+        eq.cma_mu_q15 = (int16_t)mu;
+        prev_mu = mu;
+    }
+    /* Disable DD LMS and all auxiliary branches for FM CMA */
+    eq.lms_enable = 0;
+    eq.dfe_enable = 0;
+    eq.wl_enable = 0;
+    eq.update_stride = 4;
+    eq.sym_stride = 4;
+    /* Continuous CMA when warm<=0: keep a very large warmup so it never runs out */
+    if (warm <= 0) {
+        if (eq.cma_warmup <= 0) {
+            eq.cma_warmup = 1000000000; /* ~"infinite" */
+        }
+    } else {
+        if (prev_warm != warm || eq.cma_warmup <= 0) {
+            eq.cma_warmup = warm;
+            prev_warm = warm;
+        }
+    }
+    cqpsk_eq_process_block(&eq, d->lowpassed, d->lp_len);
+}
+
 /* Small symmetric 5-tap matched-like FIR on interleaved I/Q (in-place via workbuf). */
 static void
 mf5_complex_interleaved(struct demod_state* d) {
@@ -1161,6 +1262,7 @@ full_demod(struct demod_state* d) {
     iq_dc_block(d);
     fm_envelope_agc(d);
     fm_constant_envelope_limiter(d);
+    fm_cma_equalize(d);
     /* Mode-aware generic IQ balance (image suppression): engage for non-QPSK paths */
     if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {
         /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */

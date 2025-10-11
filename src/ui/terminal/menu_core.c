@@ -2175,6 +2175,132 @@ lbl_fm_agc(void* v, char* b, size_t n) {
     return b;
 }
 
+/* ---- FM CMA Equalizer (pre-discriminator) ---- */
+static const char*
+lbl_fm_cma(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int on = rtl_stream_get_fm_cma();
+    snprintf(b, n, "FM CMA Equalizer [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_toggle_fm_cma(void* v) {
+    UNUSED(v);
+    int on = rtl_stream_get_fm_cma();
+    rtl_stream_set_fm_cma(on ? 0 : 1);
+}
+
+static const char*
+lbl_fm_cma_taps(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int taps = 0;
+    rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
+    snprintf(b, n, "CMA Taps (1 or 3): %d", taps);
+    return b;
+}
+
+static void
+act_fm_cma_taps_cycle(void* v) {
+    UNUSED(v);
+    int taps = 0;
+    rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
+    int nt = (taps >= 3) ? 1 : 3;
+    rtl_stream_set_fm_cma_params(nt, -1, -1);
+}
+
+static const char*
+lbl_fm_cma_mu(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int mu = 0;
+    rtl_stream_get_fm_cma_params(NULL, &mu, NULL);
+    snprintf(b, n, "CMA mu (Q15, 1..64): %d", mu);
+    return b;
+}
+
+static const char*
+lbl_fm_cma_strength(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int s = rtl_stream_get_fm_cma_strength();
+    const char* name = (s == 2) ? "Strong" : (s == 1) ? "Medium" : "Light";
+    snprintf(b, n, "CMA Strength: %s", name);
+    return b;
+}
+
+static void
+act_fm_cma_strength_cycle(void* v) {
+    UNUSED(v);
+    int s = rtl_stream_get_fm_cma_strength();
+    s = (s + 1) % 3;
+    rtl_stream_set_fm_cma_strength(s);
+}
+
+static void
+act_fm_cma_mu_up(void* v) {
+    UNUSED(v);
+    int taps = 0, mu = 0, warm = 0;
+    rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
+    if (mu < 64) {
+        mu++;
+    }
+    rtl_stream_set_fm_cma_params(-1, mu, -1);
+}
+
+static void
+act_fm_cma_mu_dn(void* v) {
+    UNUSED(v);
+    int taps = 0, mu = 0, warm = 0;
+    rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
+    if (mu > 1) {
+        mu--;
+    }
+    rtl_stream_set_fm_cma_params(-1, mu, -1);
+}
+
+static const char*
+lbl_fm_cma_warm(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int warm = 0;
+    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
+    if (warm <= 0) {
+        snprintf(b, n, "CMA Warmup (samples): 0 (continuous)");
+    } else {
+        snprintf(b, n, "CMA Warmup (samples): %d", warm);
+    }
+    return b;
+}
+
+static void
+act_fm_cma_warm_up(void* v) {
+    UNUSED(v);
+    int warm = 0;
+    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
+    if (warm < 0) {
+        warm = 0;
+    }
+    warm += 5000;
+    if (warm > 200000) {
+        warm = 200000;
+    }
+    rtl_stream_set_fm_cma_params(-1, -1, warm);
+}
+
+static void
+act_fm_cma_warm_dn(void* v) {
+    UNUSED(v);
+    int warm = 0;
+    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
+    if (warm <= 0) {
+        warm = 0;
+    } else {
+        warm -= 5000;
+        if (warm < 0) {
+            warm = 0;
+        }
+    }
+    rtl_stream_set_fm_cma_params(-1, -1, warm);
+}
+
 static void
 act_toggle_fm_agc(void* v) {
     UNUSED(v);
@@ -3297,6 +3423,30 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "k in dc += (x-dc)>>k (10..14 typical)."},
         {.id = "iq_dck+", .label = "Shift k +1", .on_select = act_iq_dc_k_up},
         {.id = "iq_dck-", .label = "Shift k -1", .on_select = act_iq_dc_k_dn},
+        {.id = "fm_cma",
+         .label = "FM CMA Equalizer",
+         .label_fn = lbl_fm_cma,
+         .help = "Toggle blind CMA equalizer for FM/FSK.",
+         .on_select = act_toggle_fm_cma},
+        {.id = "fm_cma_t",
+         .label = "CMA Taps (status)",
+         .label_fn = lbl_fm_cma_taps,
+         .help = "Select 1-tap (gain) or 3-tap linear-phase."},
+        {.id = "fm_cma_t*", .label = "Cycle CMA Taps 1/3", .on_select = act_fm_cma_taps_cycle},
+        {.id = "fm_cma_mu", .label = "CMA mu (status)", .label_fn = lbl_fm_cma_mu, .help = "Step size (Q15)."},
+        {.id = "fm_cma_mu+", .label = "CMA mu +1", .on_select = act_fm_cma_mu_up},
+        {.id = "fm_cma_mu-", .label = "CMA mu -1", .on_select = act_fm_cma_mu_dn},
+        {.id = "fm_cma_str",
+         .label = "CMA Strength (status)",
+         .label_fn = lbl_fm_cma_strength,
+         .help = "Light ([1,4,1]/6), Medium ([1,5,1]/7), Strong ([1,6,1]/8)."},
+        {.id = "fm_cma_str*", .label = "Cycle Strength Light/Medium/Strong", .on_select = act_fm_cma_strength_cycle},
+        {.id = "fm_cma_w",
+         .label = "CMA warmup (status)",
+         .label_fn = lbl_fm_cma_warm,
+         .help = "0=continuous; otherwise samples."},
+        {.id = "fm_cma_w+", .label = "Warmup +5000", .on_select = act_fm_cma_warm_up},
+        {.id = "fm_cma_w-", .label = "Warmup -5000", .on_select = act_fm_cma_warm_dn},
         {.id = "auto_status",
          .label = "Auto-DSP Status",
          .label_fn = lbl_auto_status,

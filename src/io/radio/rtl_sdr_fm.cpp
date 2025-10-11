@@ -2030,6 +2030,13 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod.iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
     demod.iq_dc_avg_r = demod.iq_dc_avg_i = 0;
+
+    /* FM/FSK CMA equalizer defaults (pre-discriminator) */
+    demod.fm_cma_enable = cfg->fm_cma_is_set ? (cfg->fm_cma_enable != 0) : 0;
+    demod.fm_cma_taps = cfg->fm_cma_taps_is_set ? cfg->fm_cma_taps : 1;
+    demod.fm_cma_mu_q15 = cfg->fm_cma_mu_is_set ? cfg->fm_cma_mu_q15 : 2;
+    demod.fm_cma_warmup = cfg->fm_cma_warmup_is_set ? cfg->fm_cma_warmup : 20000;
+    demod.fm_cma_strength = cfg->fm_cma_strength_is_set ? cfg->fm_cma_strength : 1;
 }
 
 /**
@@ -3444,6 +3451,78 @@ dsd_rtl_stream_get_fm_agc_auto(void) {
 extern "C" void
 dsd_rtl_stream_set_fm_agc_auto(int onoff) {
     demod.fm_agc_auto_enable = onoff ? 1 : 0;
+}
+
+/* -------- FM CMA equalizer runtime control -------- */
+extern "C" int
+dsd_rtl_stream_get_fm_cma(void) {
+    return demod.fm_cma_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_cma(int onoff) {
+    demod.fm_cma_enable = onoff ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup) {
+    if (taps) {
+        *taps = demod.fm_cma_taps;
+    }
+    if (mu_q15) {
+        *mu_q15 = demod.fm_cma_mu_q15;
+    }
+    if (warmup) {
+        *warmup = demod.fm_cma_warmup;
+    }
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup) {
+    if (taps >= 0) {
+        /* Allow only 1 or 3 taps for FM CMA path: 1-tap complex gain or
+           3-tap symmetric linear-phase smoother. */
+        if (taps >= 3) {
+            demod.fm_cma_taps = 3;
+        } else {
+            demod.fm_cma_taps = 1;
+        }
+    }
+    if (mu_q15 >= 0) {
+        if (mu_q15 < 1) {
+            mu_q15 = 1;
+        }
+        if (mu_q15 > 64) {
+            mu_q15 = 64;
+        }
+        demod.fm_cma_mu_q15 = mu_q15;
+    }
+    if (warmup >= 0) {
+        demod.fm_cma_warmup = warmup; /* 0 => continuous */
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_get_fm_cma_strength(void) {
+    int s = demod.fm_cma_strength;
+    if (s < 0) {
+        s = 0;
+    }
+    if (s > 2) {
+        s = 2;
+    }
+    return s;
+}
+
+extern "C" void
+dsd_rtl_stream_set_fm_cma_strength(int strength) {
+    if (strength < 0) {
+        strength = 0;
+    }
+    if (strength > 2) {
+        strength = 2;
+    }
+    demod.fm_cma_strength = strength;
 }
 
 /**

@@ -208,4 +208,14 @@ struct demod_state {
     int iq_dc_shift;        /* shift k for dc += (x-dc)>>k; typical 10..14 */
     int iq_dc_avg_r;        /* running DC estimate for I */
     int iq_dc_avg_i;        /* running DC estimate for Q */
+
+    /* Blind CMA equalizer for FM/FSK (pre-discriminator, constant-envelope)
+       Uses a short fractionally-spaced FIR with CMA-only adaptation to mitigate
+       fast AM ripple and short-delay multipath that drives SNR "breathing".
+       Off by default; enable via env DSD_NEO_FM_CMA=1. */
+    int fm_cma_enable;   /* 0/1 gate for CMA equalizer on non-QPSK paths */
+    int fm_cma_taps;     /* odd (3..11), default 5 */
+    int fm_cma_mu_q15;   /* CMA step (Q15), small (1..64), default 2 */
+    int fm_cma_warmup;   /* CMA warmup samples; <=0 means continuous (large). Default 20000 */
+    int fm_cma_strength; /* 0=Light ([1,4,1]/6), 1=Strong ([1,6,1]/8) */
 };

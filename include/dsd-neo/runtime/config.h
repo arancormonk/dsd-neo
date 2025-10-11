@@ -244,6 +244,18 @@ typedef struct dsdneoRuntimeConfig {
     int iq_dc_block_enable;
     int iq_dc_shift_is_set;
     int iq_dc_shift;
+
+    /* FM/FSK blind CMA equalizer (pre-discriminator) */
+    int fm_cma_is_set;
+    int fm_cma_enable;
+    int fm_cma_taps_is_set;
+    int fm_cma_taps;
+    int fm_cma_mu_is_set;
+    int fm_cma_mu_q15;
+    int fm_cma_warmup_is_set;
+    int fm_cma_warmup; /* samples; <=0 => continuous */
+    int fm_cma_strength_is_set;
+    int fm_cma_strength; /* 0=Light, 1=Medium, 2=Strong */
 }
 
 dsdneoRuntimeConfig;

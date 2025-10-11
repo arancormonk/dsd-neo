@@ -385,6 +385,19 @@ void rtl_stream_set_iq_dc(int enable, int shift_k);
 int rtl_stream_get_fm_agc_auto(void);
 void rtl_stream_set_fm_agc_auto(int onoff);
 
+/* FM/FSK blind CMA equalizer (pre-discriminator) */
+/** Get FM CMA enable state (1 on, 0 off). */
+int rtl_stream_get_fm_cma(void);
+/** Enable/disable FM CMA equalizer (0 off, nonzero on). */
+void rtl_stream_set_fm_cma(int onoff);
+/** Get FM CMA parameters (any pointer may be NULL). */
+void rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup_samples);
+/** Set FM CMA parameters; pass negative to leave a field unchanged. */
+void rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup_samples);
+/** Get/Set FM CMA strength (0=Light,1=Medium,2=Strong). */
+int rtl_stream_get_fm_cma_strength(void);
+void rtl_stream_set_fm_cma_strength(int strength);
+
 #ifdef __cplusplus
 }
 #endif
