@@ -524,6 +524,47 @@ target_include_directories(dsd-neo_test_dsp_rrc PRIVATE ${PROJECT_SOURCE_DIR}/in
 target_link_libraries(dsd-neo_test_dsp_rrc PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_RRC COMMAND dsd-neo_test_dsp_rrc)
 
+# Additional DSP coverage
+add_executable(dsd-neo_test_dsp_hb_complex dsp/test_dsp_hb_complex.cpp)
+target_include_directories(dsd-neo_test_dsp_hb_complex PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_hb_complex PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_HB_COMPLEX COMMAND dsd-neo_test_dsp_hb_complex)
+
+add_executable(dsd-neo_test_dsp_iq_dc_block dsp/test_dsp_iq_dc_block.cpp)
+target_include_directories(dsd-neo_test_dsp_iq_dc_block PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_iq_dc_block PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_IQ_DC_BLOCK COMMAND dsd-neo_test_dsp_iq_dc_block)
+
+add_executable(dsd-neo_test_dsp_fm_agc_limit dsp/test_dsp_fm_agc_limit.cpp)
+target_include_directories(dsd-neo_test_dsp_fm_agc_limit PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_fm_agc_limit PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_FM_AGC_LIMIT COMMAND dsd-neo_test_dsp_fm_agc_limit)
+
+add_executable(dsd-neo_test_dsp_mf5 dsp/test_dsp_mf5.cpp)
+target_include_directories(dsd-neo_test_dsp_mf5 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_mf5 PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_MF5 COMMAND dsd-neo_test_dsp_mf5)
+
+add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
+target_include_directories(dsd-neo_test_dsp_squelch PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_squelch PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_SQUELCH COMMAND dsd-neo_test_dsp_squelch)
+
+add_executable(dsd-neo_test_dsp_iq_balance dsp/test_dsp_iq_balance.cpp)
+target_include_directories(dsd-neo_test_dsp_iq_balance PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_iq_balance PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_IQ_BALANCE COMMAND dsd-neo_test_dsp_iq_balance)
+
+add_executable(dsd-neo_test_dsp_fm_demod_ref dsp/test_dsp_fm_demod_ref.cpp)
+target_include_directories(dsd-neo_test_dsp_fm_demod_ref PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_fm_demod_ref PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_FM_DEMOD_REF COMMAND dsd-neo_test_dsp_fm_demod_ref)
+
+add_executable(dsd-neo_test_dsp_fm_limiter dsp/test_dsp_fm_limiter.cpp)
+target_include_directories(dsd-neo_test_dsp_fm_limiter PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_fm_limiter PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_FM_LIMITER COMMAND dsd-neo_test_dsp_fm_limiter)
+
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(dsd-neo_test_dsp_demod_misc PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_demod_misc PRIVATE dsd-neo_dsp)
