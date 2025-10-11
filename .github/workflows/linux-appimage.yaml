@@ -10,14 +10,6 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
-  pull_request:
-    branches: [main, master]
-    paths-ignore:
-      - ".github/*.yml"
-      - ".github/*.yaml"
-      - ".github/**/*.yml"
-      - ".github/**/*.yaml"
-      - "**/*.md"
 
 jobs:
   build-appimage:
