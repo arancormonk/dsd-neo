@@ -2196,7 +2196,18 @@ lbl_fm_cma_taps(void* v, char* b, size_t n) {
     UNUSED(v);
     int taps = 0;
     rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
-    snprintf(b, n, "CMA Taps (1 or 3): %d", taps);
+    /* 1: complex gain (CMA), 3: fixed smoother, 5: adaptive symmetric FIR */
+    const char* desc;
+    if (taps <= 1) {
+        desc = "Complex gain (no multipath mitigation)";
+        taps = 1;
+    } else if (taps == 3) {
+        desc = "3-tap short-echo smoother";
+    } else {
+        desc = "5-tap adaptive symmetric FIR";
+        taps = 5;
+    }
+    snprintf(b, n, "CMA Taps (1/3/5): %d  —  %s", taps, desc);
     return b;
 }
 
@@ -2205,7 +2216,14 @@ act_fm_cma_taps_cycle(void* v) {
     UNUSED(v);
     int taps = 0;
     rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
-    int nt = (taps >= 3) ? 1 : 3;
+    int nt;
+    if (taps < 3) {
+        nt = 3; /* 1 -> 3 */
+    } else if (taps < 5) {
+        nt = 5; /* 3 -> 5 */
+    } else {
+        nt = 1; /* 5 -> 1 */
+    }
     rtl_stream_set_fm_cma_params(nt, -1, -1);
 }
 
@@ -2224,6 +2242,27 @@ lbl_fm_cma_strength(void* v, char* b, size_t n) {
     int s = rtl_stream_get_fm_cma_strength();
     const char* name = (s == 2) ? "Strong" : (s == 1) ? "Medium" : "Light";
     snprintf(b, n, "CMA Strength: %s", name);
+    return b;
+}
+
+/* Show adaptive 5-tap guard hint: adapting vs hold, and A/R counts */
+static const char*
+lbl_fm_cma_guard(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int enabled = rtl_stream_get_fm_cma();
+    int taps = 0, mu = 0, warm = 0;
+    rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
+    if (!enabled || taps != 5) {
+        snprintf(b, n, "CMA Adaptive: (n/a)");
+        return b;
+    }
+    int freeze = 0, acc = 0, rej = 0;
+    rtl_stream_get_fm_cma_guard(&freeze, &acc, &rej);
+    if (freeze > 0) {
+        snprintf(b, n, "CMA Adaptive: hold %d  |  A/R %d/%d", freeze, acc, rej);
+    } else {
+        snprintf(b, n, "CMA Adaptive: adapting  |  A/R %d/%d", acc, rej);
+    }
     return b;
 }
 
@@ -3431,8 +3470,12 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
         {.id = "fm_cma_t",
          .label = "CMA Taps (status)",
          .label_fn = lbl_fm_cma_taps,
-         .help = "Select 1-tap (gain) or 3-tap linear-phase."},
-        {.id = "fm_cma_t*", .label = "Cycle CMA Taps 1/3", .on_select = act_fm_cma_taps_cycle},
+         .help = "1: gain, 3: fixed smoother, 5: adaptive symmetric FIR."},
+        {.id = "fm_cma_t*", .label = "Cycle CMA Taps 1/3/5", .on_select = act_fm_cma_taps_cycle},
+        {.id = "fm_cma_guard",
+         .label = "CMA Adaptive (status)",
+         .label_fn = lbl_fm_cma_guard,
+         .help = "Shows adaptive guard: adapting vs hold; accepted/rejected updates."},
         {.id = "fm_cma_mu", .label = "CMA mu (status)", .label_fn = lbl_fm_cma_mu, .help = "Step size (Q15)."},
         {.id = "fm_cma_mu+", .label = "CMA mu +1", .on_select = act_fm_cma_mu_up},
         {.id = "fm_cma_mu-", .label = "CMA mu -1", .on_select = act_fm_cma_mu_dn},

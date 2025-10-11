@@ -2037,6 +2037,9 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.fm_cma_mu_q15 = cfg->fm_cma_mu_is_set ? cfg->fm_cma_mu_q15 : 2;
     demod.fm_cma_warmup = cfg->fm_cma_warmup_is_set ? cfg->fm_cma_warmup : 20000;
     demod.fm_cma_strength = cfg->fm_cma_strength_is_set ? cfg->fm_cma_strength : 1;
+    demod.fm_cma_guard_freeze = 0;
+    demod.fm_cma_guard_accepts = 0;
+    demod.fm_cma_guard_rejects = 0;
 }
 
 /**
@@ -3480,9 +3483,13 @@ dsd_rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup) {
 extern "C" void
 dsd_rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup) {
     if (taps >= 0) {
-        /* Allow only 1 or 3 taps for FM CMA path: 1-tap complex gain or
-           3-tap symmetric linear-phase smoother. */
-        if (taps >= 3) {
+        /* Allow 1, 3, or 5 taps:
+           - 1: complex gain (CMA-only)
+           - 3: fixed symmetric smoother
+           - 5: adaptive symmetric linear-phase FIR (CMA-driven) */
+        if (taps >= 5) {
+            demod.fm_cma_taps = 5;
+        } else if (taps >= 3) {
             demod.fm_cma_taps = 3;
         } else {
             demod.fm_cma_taps = 1;
@@ -3523,6 +3530,20 @@ dsd_rtl_stream_set_fm_cma_strength(int strength) {
         strength = 2;
     }
     demod.fm_cma_strength = strength;
+}
+
+/* FM CMA adaptive guard status */
+extern "C" void
+dsd_rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects) {
+    if (freeze_blocks) {
+        *freeze_blocks = demod.fm_cma_guard_freeze;
+    }
+    if (accepts) {
+        *accepts = demod.fm_cma_guard_accepts;
+    }
+    if (rejects) {
+        *rejects = demod.fm_cma_guard_rejects;
+    }
 }
 
 /**

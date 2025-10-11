@@ -218,4 +218,9 @@ struct demod_state {
     int fm_cma_mu_q15;   /* CMA step (Q15), small (1..64), default 2 */
     int fm_cma_warmup;   /* CMA warmup samples; <=0 means continuous (large). Default 20000 */
     int fm_cma_strength; /* 0=Light ([1,4,1]/6), 1=Strong ([1,6,1]/8) */
+
+    /* Adaptive 5-tap guard (status only; updated by DSP pipeline) */
+    int fm_cma_guard_freeze;  /* remaining blocks held by stability guard */
+    int fm_cma_guard_accepts; /* total accepted tap updates */
+    int fm_cma_guard_rejects; /* total rejected tap updates */
 };

@@ -960,6 +960,324 @@ fm_cma_equalize(struct demod_state* d) {
         }
         /* Consume in-place */
         memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
+        return;
+    }
+
+    /* Adaptive 5-tap symmetric, real FIR (linear-phase), CMA-like update.
+       Layout: [t2, t1, t0, t1, t2], applied identically to I and Q.
+       Preserves FM phase; adapts to reduce envelope ripple for short multipath.
+       Controlled by fm_cma_mu_q15 (step) and fm_cma_warmup (samples, 0=continuous). */
+    if (d->fm_cma_taps == 5) {
+        const int N = d->lp_len >> 1; /* complex samples */
+        int16_t* in = d->lowpassed;
+        int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+
+        /* Static state for taps and warmup countdown */
+        static int inited = 0;
+        static int t0_q15 = 32768; /* identity */
+        static int t1_q15 = 0;
+        static int t2_q15 = 0;
+        static int prev_mu = 0;
+        static int warm_rem = 0; /* remaining samples to adapt; 0=stop, big->continuous */
+        static int prev_warm_cfg = 0;
+        static int prev_strength = -1;
+
+        if (!inited) {
+            inited = 1;
+            t0_q15 = 32768;
+            t1_q15 = 0;
+            t2_q15 = 0;
+            prev_mu = 0;
+            warm_rem = 0;
+            prev_warm_cfg = 0;
+            prev_strength = -1;
+        }
+        /* Map strength to a simple mu scaling: Light=0.75, Medium=1.0, Strong=1.5 */
+        double mu_scale = 1.0;
+        int s = (d->fm_cma_strength < 0) ? 0 : (d->fm_cma_strength > 2 ? 2 : d->fm_cma_strength);
+        if (s == 0) {
+            mu_scale = 0.75;
+        } else if (s == 1) {
+            mu_scale = 1.0;
+        } else {
+            mu_scale = 1.5;
+        }
+        /* Reconfigure step/warmup when changed */
+        int mu_q15 = d->fm_cma_mu_q15;
+        if (mu_q15 < 1) {
+            mu_q15 = 1;
+        }
+        if (mu_q15 > 64) {
+            mu_q15 = 64;
+        }
+        if (mu_q15 != prev_mu || prev_strength != s) {
+            prev_mu = mu_q15;
+            prev_strength = s;
+        }
+        int warm_cfg = d->fm_cma_warmup; /* <=0: continuous */
+        if (warm_cfg != prev_warm_cfg) {
+            prev_warm_cfg = warm_cfg;
+            if (warm_cfg <= 0) {
+                warm_rem = 1000000000; /* effectively continuous */
+            } else {
+                warm_rem = warm_cfg;
+            }
+        }
+
+        /* Compute reference envelope target R^2 from input block */
+        double acc_r2 = 0.0;
+        for (int n = 0; n < N; n++) {
+            double I = (double)in[(size_t)(n << 1) + 0];
+            double Q = (double)in[(size_t)(n << 1) + 1];
+            acc_r2 += I * I + Q * Q;
+        }
+        double R2 = (N > 0) ? (acc_r2 / (double)N) : 0.0;
+        if (R2 < 1.0) {
+            R2 = 1.0;
+        }
+
+        /* Convert taps to double */
+        double t0 = (double)t0_q15 / 32768.0;
+        double t1 = (double)t1_q15 / 32768.0;
+        double t2 = (double)t2_q15 / 32768.0;
+
+        /* Adaptation guard state */
+        static int guard_inited = 0;
+        static int freeze_blocks_rem = 0;
+        static int reject_streak = 0;
+        static double mu_guard_scale = 1.0;
+        static int acc_accepts = 0;
+        static int acc_rejects = 0;
+        if (!guard_inited) {
+            guard_inited = 1;
+            freeze_blocks_rem = 0;
+            reject_streak = 0;
+            mu_guard_scale = 1.0;
+            acc_accepts = 0;
+            acc_rejects = 0;
+        }
+
+        int adapt_this = (warm_rem > 0 && freeze_blocks_rem <= 0) ? 1 : 0;
+
+        /* Accumulate normalized gradients and baseline cost over block */
+        double g0 = 0.0, g1 = 0.0, g2 = 0.0;
+        double sum_e2_old = 0.0;
+        int clip_cnt_old = 0;
+
+        for (int n = 0; n < N; n++) {
+            int nm2 = (n - 2 < 0) ? 0 : (n - 2);
+            int nm1 = (n - 1 < 0) ? 0 : (n - 1);
+            int np1 = (n + 1 < N) ? (n + 1) : (N - 1);
+            int np2 = (n + 2 < N) ? (n + 2) : (N - 1);
+            /* Gather neighborhood */
+            int16_t im2 = in[(size_t)(nm2 << 1) + 0];
+            int16_t jm2 = in[(size_t)(nm2 << 1) + 1];
+            int16_t im1 = in[(size_t)(nm1 << 1) + 0];
+            int16_t jm1 = in[(size_t)(nm1 << 1) + 1];
+            int16_t i0 = in[(size_t)(n << 1) + 0];
+            int16_t j0 = in[(size_t)(n << 1) + 1];
+            int16_t ip1 = in[(size_t)(np1 << 1) + 0];
+            int16_t jp1 = in[(size_t)(np1 << 1) + 1];
+            int16_t ip2 = in[(size_t)(np2 << 1) + 0];
+            int16_t jp2 = in[(size_t)(np2 << 1) + 1];
+
+            /* Filter output (double) */
+            double xr2 = (double)im2 + (double)ip2;
+            double xi2 = (double)jm2 + (double)jp2;
+            double xr1 = (double)im1 + (double)ip1;
+            double xi1 = (double)jm1 + (double)jp1;
+            double xr0 = (double)i0;
+            double xi0 = (double)j0;
+            double yI = t2 * xr2 + t1 * xr1 + t0 * xr0;
+            double yQ = t2 * xi2 + t1 * xi1 + t0 * xi0;
+
+            /* Write to output after computing y (track clipping) */
+            int yi_q0 = (int)lrint(yI);
+            int yq_q0 = (int)lrint(yQ);
+            int16_t yi_sat = sat16(yi_q0);
+            int16_t yq_sat = sat16(yq_q0);
+            if (yi_sat == 32767 || yi_sat == -32768 || yq_sat == 32767 || yq_sat == -32768) {
+                clip_cnt_old++;
+            }
+            out[(size_t)(n << 1) + 0] = yi_sat;
+            out[(size_t)(n << 1) + 1] = yq_sat;
+
+            /* CMA-like error and NLMS normalization; also accumulate baseline cost */
+            double yy = yI * yI + yQ * yQ;
+            double e = yy - R2;
+            sum_e2_old += e * e;
+            if (!adapt_this) {
+                continue;
+            }
+            double norm = yy + 1e-6;
+            /* Correlate with symmetric neighborhoods (Re{ y* conj(x) } = yI*xI + yQ*xQ) */
+            double r0 = yI * xr0 + yQ * xi0;
+            double r1 = yI * xr1 + yQ * xi1;
+            double r2 = yI * xr2 + yQ * xi2;
+            g0 += (e / norm) * r0;
+            g1 += (e / norm) * r1;
+            g2 += (e / norm) * r2;
+        }
+
+        /* Apply block update with small normalized step using stability guard */
+        if (adapt_this) {
+            double J_old = (N > 0) ? (sum_e2_old / (double)N) : 0.0;
+            double prev0 = t0, prev1 = t1, prev2 = t2;
+            double mu = ((double)mu_q15 / 32768.0) * mu_scale * mu_guard_scale;
+            double invN = (N > 0) ? (1.0 / (double)N) : 0.0;
+
+            /* Candidate taps */
+            double c0 = t0 - (mu * (2.0 * g0) * invN / (R2 + 1e-6));
+            double c1 = t1 - (mu * (2.0 * g1) * invN / (R2 + 1e-6));
+            double c2 = t2 - (mu * (2.0 * g2) * invN / (R2 + 1e-6));
+            /* Clamp */
+            if (c0 < 0.5) {
+                c0 = 0.5;
+            }
+            if (c0 > 1.5) {
+                c0 = 1.5;
+            }
+            if (c1 < -0.5) {
+                c1 = -0.5;
+            }
+            if (c1 > 0.75) {
+                c1 = 0.75;
+            }
+            if (c2 < -0.5) {
+                c2 = -0.5;
+            }
+            if (c2 > 0.5) {
+                c2 = 0.5;
+            }
+            /* Renormalize */
+            double sumc = c0 + 2.0 * c1 + 2.0 * c2;
+            if (fabs(sumc) < 1e-6) {
+                sumc = 1.0;
+            }
+            double sfnc = 1.0 / sumc;
+            c0 *= sfnc;
+            c1 *= sfnc;
+            c2 *= sfnc;
+
+            /* Evaluate candidate cost and clipping */
+            double sum_e2_new = 0.0;
+            int clip_cnt_new = 0;
+            for (int n = 0; n < N; n++) {
+                int nm2 = (n - 2 < 0) ? 0 : (n - 2);
+                int nm1 = (n - 1 < 0) ? 0 : (n - 1);
+                int np1 = (n + 1 < N) ? (n + 1) : (N - 1);
+                int np2 = (n + 2 < N) ? (n + 2) : (N - 1);
+                int16_t im2 = in[(size_t)(nm2 << 1) + 0];
+                int16_t jm2 = in[(size_t)(nm2 << 1) + 1];
+                int16_t im1 = in[(size_t)(nm1 << 1) + 0];
+                int16_t jm1 = in[(size_t)(nm1 << 1) + 1];
+                int16_t i0 = in[(size_t)(n << 1) + 0];
+                int16_t j0 = in[(size_t)(n << 1) + 1];
+                int16_t ip1 = in[(size_t)(np1 << 1) + 0];
+                int16_t jp1 = in[(size_t)(np1 << 1) + 1];
+                int16_t ip2 = in[(size_t)(np2 << 1) + 0];
+                int16_t jp2 = in[(size_t)(np2 << 1) + 1];
+                double xr2 = (double)im2 + (double)ip2;
+                double xi2 = (double)jm2 + (double)jp2;
+                double xr1 = (double)im1 + (double)ip1;
+                double xi1 = (double)jm1 + (double)jp1;
+                double xr0 = (double)i0;
+                double xi0 = (double)j0;
+                double yI2 = c2 * xr2 + c1 * xr1 + c0 * xr0;
+                double yQ2 = c2 * xi2 + c1 * xi1 + c0 * xi0;
+                double yy2 = yI2 * yI2 + yQ2 * yQ2;
+                double e2 = yy2 - R2;
+                sum_e2_new += e2 * e2;
+                int yi2_q0 = (int)lrint(yI2);
+                int yq2_q0 = (int)lrint(yQ2);
+                if (yi2_q0 > 32767 || yi2_q0 < -32768 || yq2_q0 > 32767 || yq2_q0 < -32768) {
+                    clip_cnt_new++;
+                }
+            }
+
+            double J_new = (N > 0) ? (sum_e2_new / (double)N) : J_old;
+            double eps = 0.03;            /* require ~3% improvement */
+            double clip_thr_frac = 0.002; /* ~0.2% */
+            double delta0 = c0 - prev0, delta1 = c1 - prev1, delta2 = c2 - prev2;
+            double delta_norm = sqrt(delta0 * delta0 + 2.0 * delta1 * delta1 + 2.0 * delta2 * delta2);
+            double delta_max = 0.15;
+            int accept = 0;
+            if (J_new <= J_old * (1.0 - eps) && ((double)clip_cnt_new / (double)(N > 0 ? N : 1)) <= clip_thr_frac
+                && delta_norm <= delta_max) {
+                accept = 1;
+            }
+
+            if (accept) {
+                /* Commit candidate taps */
+                t0 = c0;
+                t1 = c1;
+                t2 = c2;
+                t0_q15 = (int)lrint(t0 * 32768.0);
+                t1_q15 = (int)lrint(t1 * 32768.0);
+                t2_q15 = (int)lrint(t2 * 32768.0);
+                if (t0_q15 > 32767) {
+                    t0_q15 = 32767;
+                }
+                if (t0_q15 < -32768) {
+                    t0_q15 = -32768;
+                }
+                if (t1_q15 > 32767) {
+                    t1_q15 = 32767;
+                }
+                if (t1_q15 < -32768) {
+                    t1_q15 = -32768;
+                }
+                if (t2_q15 > 32767) {
+                    t2_q15 = 32767;
+                }
+                if (t2_q15 < -32768) {
+                    t2_q15 = -32768;
+                }
+                /* Consume warmup samples */
+                if (warm_rem < N) {
+                    warm_rem = 0;
+                } else {
+                    warm_rem -= N;
+                }
+                /* Slowly relax backoff */
+                mu_guard_scale *= 1.05;
+                if (mu_guard_scale > 1.0) {
+                    mu_guard_scale = 1.0;
+                }
+                reject_streak = 0;
+                acc_accepts++;
+            } else {
+                /* Revert, back off, and optionally freeze */
+                t0 = prev0;
+                t1 = prev1;
+                t2 = prev2;
+                /* Do not decrement warm_rem on reject */
+                mu_guard_scale *= 0.5;
+                if (mu_guard_scale < 0.1) {
+                    mu_guard_scale = 0.1;
+                }
+                reject_streak++;
+                if (reject_streak >= 3) {
+                    freeze_blocks_rem = 6; /* hold for a few blocks */
+                    reject_streak = 0;
+                }
+                acc_rejects++;
+            }
+        } else {
+            /* If in freeze, count down */
+            if (freeze_blocks_rem > 0) {
+                freeze_blocks_rem--;
+            }
+        }
+
+        /* Publish guard status to demod_state for UI */
+        d->fm_cma_guard_freeze = freeze_blocks_rem;
+        d->fm_cma_guard_accepts = acc_accepts;
+        d->fm_cma_guard_rejects = acc_rejects;
+
+        /* Consume output in-place */
+        memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
+        return;
     }
     /* Initialize a single EQ state lazily; reconfigure on parameter changes. */
     static cqpsk_eq_state_t eq;
@@ -1257,11 +1575,15 @@ full_demod(struct demod_state* d) {
     }
     /* Baseband conditioning order (FM/C4FM):
        1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
-       2) Block-based envelope AGC to normalize |z|
-       3) Optional per-sample limiter to clamp fast AM ripple */
+       2) Block-based envelope AGC to normalize |z| (skipped when 1-tap CMA is active)
+       3) Optional per-sample limiter to clamp fast AM ripple (skipped when 1-tap CMA is active)
+       4) FM/C4FM CMA/smoother/adaptive FIR */
     iq_dc_block(d);
-    fm_envelope_agc(d);
-    fm_constant_envelope_limiter(d);
+    int skip_agc_lim = (d->fm_cma_enable && d->fm_cma_taps == 1) ? 1 : 0;
+    if (!skip_agc_lim) {
+        fm_envelope_agc(d);
+        fm_constant_envelope_limiter(d);
+    }
     fm_cma_equalize(d);
     /* Mode-aware generic IQ balance (image suppression): engage for non-QPSK paths */
     if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {

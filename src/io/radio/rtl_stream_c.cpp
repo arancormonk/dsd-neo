@@ -390,6 +390,7 @@ extern "C" void dsd_rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* wa
 extern "C" void dsd_rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup);
 extern "C" int dsd_rtl_stream_get_fm_cma_strength(void);
 extern "C" void dsd_rtl_stream_set_fm_cma_strength(int strength);
+extern "C" void dsd_rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects);
 
 extern "C" int
 rtl_stream_get_fm_agc(void) {
@@ -470,6 +471,11 @@ rtl_stream_get_fm_cma_strength(void) {
 extern "C" void
 rtl_stream_set_fm_cma_strength(int strength) {
     dsd_rtl_stream_set_fm_cma_strength(strength);
+}
+
+extern "C" void
+rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects) {
+    dsd_rtl_stream_get_fm_cma_guard(freeze_blocks, accepts, rejects);
 }
 
 extern "C" double

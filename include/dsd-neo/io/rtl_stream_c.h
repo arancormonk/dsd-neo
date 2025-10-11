@@ -401,3 +401,5 @@ void rtl_stream_set_fm_cma_strength(int strength);
 #ifdef __cplusplus
 }
 #endif
+/* Retrieve adaptive guard status for 5-tap CMA (freeze remaining, accepts, rejects). */
+void rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects);
