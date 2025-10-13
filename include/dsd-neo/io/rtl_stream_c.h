@@ -233,6 +233,10 @@ void rtl_stream_cqpsk_set_dqpsk(int onoff);
 int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 /** Get DQPSK decision mode; returns 0 on success. */
 int rtl_stream_cqpsk_get_dqpsk(int* onoff);
+/* P25p2 CQPSK RRC auto-probe controls */
+void rtl_stream_set_p25p2_rrc_autoprobe(int onoff);
+int rtl_stream_get_p25p2_rrc_autoprobe(void);
+int rtl_stream_get_p25p2_rrc_auto_status(int* decided, int* state, int* choice);
 /** Toggle generic IQ balance prefilter (mode-aware image cancel). */
 void rtl_stream_toggle_iq_balance(int onoff);
 /** Get generic IQ balance prefilter state; returns 1 if enabled. */

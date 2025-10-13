@@ -13,7 +13,6 @@ extern "C" short dmr_filter(short sample);
 extern "C" short nxdn_filter(short sample);
 extern "C" short dpmr_filter(short sample);
 extern "C" short m17_filter(short sample);
-extern "C" short p25_c4fm_filter(short sample);
 
 static int
 approx_eq(int a, int b, int tol) {
@@ -53,10 +52,6 @@ main(void) {
     }
     if (!dc_pass_check(&m17_filter, dc, warm, 8)) {
         fprintf(stderr, "M17 DC fail\n");
-        return 1;
-    }
-    if (!dc_pass_check(&p25_c4fm_filter, dc, warm, 8)) {
-        fprintf(stderr, "P25 DC fail\n");
         return 1;
     }
     return 0;

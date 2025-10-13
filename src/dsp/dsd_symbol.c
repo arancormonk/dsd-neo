@@ -156,6 +156,100 @@ c4fm_rrc_filter_sample(short sample, int sps) {
     return (short)lrintf(acc);
 }
 
+/* ---------------- C4FM fixed RRC(alpha=0.5, 11*sps+1 taps) ---------------- */
+/*
+ * Designs and applies a root-raised-cosine matched filter for the real C4FM path
+ * with a fixed roll-off alpha=0.5 and taps length ntaps = 11*sps + 1.
+ * This matches common GNU Radio guidance (firdes.root_raised_cosine with ntaps=11*sps),
+ * using an odd number of taps for symmetry.
+ */
+static short
+c4fm_rrc_filter_alpha05_sample(short sample, int sps) {
+    const double alpha = 0.5;
+    if (sps <= 1) {
+        return sample;
+    }
+
+    /* Cache across calls; redesign on SPS change. */
+    static int last_sps = 0;
+    static int taps_len = 0;
+    static float taps[257];
+    static float hist[257];
+    static int head = -1;
+    static int ready = 0;
+
+    int desired_len = 11 * sps + 1; /* ensure odd length */
+    if (desired_len < 7) {
+        desired_len = 7;
+    }
+    if (desired_len > 257) {
+        desired_len = 257;
+    }
+
+    if (!ready || sps != last_sps || taps_len != desired_len) {
+        int mid = desired_len / 2;
+        double sum = 0.0;
+        const double pi = 3.14159265358979323846;
+        for (int n = 0; n < desired_len; n++) {
+            double tau = ((double)n - (double)mid) / (double)sps; /* t/T */
+            double h;
+            double four_a_tau = 4.0 * alpha * tau;
+            double denom = pi * tau * (1.0 - (four_a_tau * four_a_tau));
+            if (fabs(tau) < 1e-12) {
+                h = (1.0 + alpha * (4.0 / pi - 1.0));
+            } else if (alpha > 0.0 && fabs(fabs(tau) - (1.0 / (4.0 * alpha))) < 1e-9) {
+                double a = alpha;
+                double term1 = (1.0 + 2.0 / pi) * sin(pi / (4.0 * a));
+                double term2 = (1.0 - 2.0 / pi) * cos(pi / (4.0 * a));
+                h = (a / sqrt(2.0)) * (term1 + term2);
+            } else {
+                double num = sin(pi * tau * (1.0 - alpha)) + four_a_tau * cos(pi * tau * (1.0 + alpha));
+                h = num / denom;
+            }
+            taps[n] = (float)h;
+            sum += h;
+        }
+        if (fabs(sum) < 1e-18) {
+            sum = 1.0;
+        }
+        for (int n = 0; n < desired_len; n++) {
+            taps[n] = (float)(taps[n] / sum);
+        }
+        for (int i = 0; i < desired_len; i++) {
+            hist[i] = 0.0f;
+        }
+        head = -1;
+        taps_len = desired_len;
+        last_sps = sps;
+        ready = 1;
+    }
+
+    /* Push sample */
+    head++;
+    if (head >= taps_len) {
+        head = 0;
+    }
+    hist[head] = (float)sample;
+
+    /* Convolution */
+    float acc = 0.0f;
+    int zeros = taps_len - 1;
+    for (int i = 0; i <= zeros; i++) {
+        int idx = head - (zeros - i);
+        if (idx < 0) {
+            idx += taps_len;
+        }
+        acc += taps[i] * hist[idx];
+    }
+    if (acc > 32767.0f) {
+        acc = 32767.0f;
+    }
+    if (acc < -32768.0f) {
+        acc = -32768.0f;
+    }
+    return (short)lrintf(acc);
+}
+
 static inline void
 select_window_qpsk(int* l_edge, int* r_edge, int freeze_window) {
     (void)freeze_window; /* no dynamic tweaks for QPSK at present */
@@ -833,8 +927,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
 
                 if (opts->p25_c4fm_rrc_fixed) {
-                    // Dedicated fixed RRC(alpha=0.5, sps=10, span=8)
-                    sample = p25_c4fm_filter(sample);
+                    // Fixed RRC(alpha=0.5) with ntaps = 11*sps + 1 (e.g., 111 at sps=10)
+                    sample = c4fm_rrc_filter_alpha05_sample(sample, state->samplesPerSymbol);
                 } else {
                     // Dynamic RRC with alpha≈0.2 tuned by SPS
                     sample = c4fm_rrc_filter_sample(sample, state->samplesPerSymbol);

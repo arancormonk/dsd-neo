@@ -2218,6 +2218,37 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             }
         }
 
+        /* P2 CQPSK RRC status */
+#ifdef USE_RTLSDR
+        if (opts) {
+            int enable = 0, alpha_pct = 0, span = 0;
+            int ap_on = rtl_stream_get_p25p2_rrc_autoprobe();
+            int ap_decided = 0, ap_state = 0, ap_choice = 0;
+            rtl_stream_get_p25p2_rrc_auto_status(&ap_decided, &ap_state, &ap_choice);
+            if (rtl_stream_cqpsk_get_rrc(&enable, &alpha_pct, &span) == 0) {
+                if (enable) {
+                    if (ap_on) {
+                        if (ap_decided) {
+                            printw("| P2 CQPSK RRC (auto): %s\n",
+                                   (alpha_pct >= 50 ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)"));
+                        } else if (ap_state == 1) {
+                            printw("| P2 CQPSK RRC (auto): probing dynamic...\n");
+                        } else if (ap_state == 2) {
+                            printw("| P2 CQPSK RRC (auto): probing fixed...\n");
+                        } else {
+                            printw("| P2 CQPSK RRC (auto): waiting for P25p2\n");
+                        }
+                    } else {
+                        printw("| P2 CQPSK RRC: %s\n", (alpha_pct >= 50 ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)"));
+                    }
+                } else {
+                    printw("| P2 CQPSK RRC: Off\n");
+                }
+                lines++;
+            }
+        }
+#endif
+
         /* Condensed P25p2 RS summary line (only if any counters are non-zero) */
         if ((state->p25_p2_rs_facch_ok | state->p25_p2_rs_facch_err | state->p25_p2_rs_sacch_ok
              | state->p25_p2_rs_sacch_err | state->p25_p2_rs_ess_ok | state->p25_p2_rs_ess_err)

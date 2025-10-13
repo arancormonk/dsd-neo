@@ -2092,6 +2092,14 @@ select_defaults_for_mode(dsd_opts* opts) {
             demod.fll_beta_q15 = 15;
         }
         /* Keep FLL disabled by default; user/UI can enable as needed. */
+        /* P25p2 CQPSK RRC defaults: enable RRC MF, use ntaps=11*sps+1 (span_syms=0 sentinel),
+           alpha = 0.5 when fixed toggle active; else alpha = 0.2. */
+        if (opts->frame_p25p2 == 1) {
+            demod.cqpsk_mf_enable = 1;
+            demod.cqpsk_rrc_enable = 1;
+            demod.cqpsk_rrc_alpha_q15 = (int)(((opts->p25_p2_rrc_fixed ? 0.50 : 0.20) * 32768.0));
+            demod.cqpsk_rrc_span_syms = 0;
+        }
     } else {
         if (!env_ted_set) {
             demod.ted_enabled = 0;
@@ -3604,6 +3612,19 @@ static std::atomic<int> g_p25p2_mode{0};
 static std::atomic<int> g_p25p1_ema_pct{0};
 static std::chrono::steady_clock::time_point g_p25p1_last_change;
 static std::chrono::steady_clock::time_point g_p25p2_last_change;
+/* P25p2 CQPSK RRC auto-probe runtime */
+static std::atomic<int> g_p25p2_rrc_autoprobe{0};
+static std::atomic<int> g_p25p2_rrc_auto_state{0};   /* 0 idle, 1 dynamic, 2 fixed */
+static std::atomic<int> g_p25p2_rrc_auto_decided{0}; /* 1 when a choice has been made */
+static std::atomic<int> g_p25p2_rrc_auto_choice{0};  /* 0 dynamic, 1 fixed */
+static std::chrono::steady_clock::time_point g_p25p2_rrc_auto_start;
+static int g_p25p2_rrc_auto_dyn_err = 0;
+static int g_p25p2_rrc_auto_fix_err = 0;
+static int g_p25p2_rrc_auto_dyn_voice = 0;
+static int g_p25p2_rrc_auto_fix_voice = 0;
+
+/* Forward decl for CQPSK RRC reconfig */
+extern "C" void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
 
 /* Helper: clamp integer within [lo, hi] */
 static inline int
@@ -3677,6 +3698,36 @@ dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in) {
     g_auto_cfg = c;
 }
 
+/* P25p2 RRC auto-probe control */
+extern "C" void
+dsd_rtl_stream_set_p25p2_rrc_autoprobe(int onoff) {
+    g_p25p2_rrc_autoprobe.store(onoff ? 1 : 0);
+    g_p25p2_rrc_auto_state.store(0);
+    g_p25p2_rrc_auto_decided.store(0);
+    g_p25p2_rrc_auto_choice.store(0);
+    g_p25p2_rrc_auto_start = std::chrono::steady_clock::time_point{};
+    g_p25p2_rrc_auto_dyn_err = g_p25p2_rrc_auto_fix_err = 0;
+    g_p25p2_rrc_auto_dyn_voice = g_p25p2_rrc_auto_fix_voice = 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_p25p2_rrc_autoprobe(void) {
+    return g_p25p2_rrc_autoprobe.load() ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_get_p25p2_rrc_auto(int* decided, int* state, int* choice) {
+    if (decided) {
+        *decided = g_p25p2_rrc_auto_decided.load();
+    }
+    if (state) {
+        *state = g_p25p2_rrc_auto_state.load();
+    }
+    if (choice) {
+        *choice = g_p25p2_rrc_auto_choice.load();
+    }
+}
+
 extern "C" void
 dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
     if (!out) {
@@ -3717,6 +3768,77 @@ extern "C" void
 dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                 int sacch_err_delta, int voice_err_delta) {
     (void)slot; /* reserved for future per-slot tuning */
+
+    /* RRC alpha auto-probe (dynamic vs fixed) for P25p2 CQPSK */
+    if (g_p25p2_rrc_autoprobe.load()) {
+        auto now = std::chrono::steady_clock::now();
+        int st = g_p25p2_rrc_auto_state.load();
+        if (st == 0) {
+            /* Stage 1: dynamic alpha≈0.2 */
+            dsd_rtl_stream_cqpsk_set_rrc(1, 20, 0);
+            g_p25p2_rrc_auto_dyn_err = 0;
+            g_p25p2_rrc_auto_dyn_voice = 0;
+            g_p25p2_rrc_auto_start = now;
+            g_p25p2_rrc_auto_state.store(1);
+            g_p25p2_rrc_auto_decided.store(0);
+        } else if (st == 1) {
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_p25p2_rrc_auto_start).count();
+            /* accumulate dynamic window */
+            int err_add = 0;
+            if (facch_err_delta > 0) {
+                err_add += facch_err_delta;
+            }
+            if (sacch_err_delta > 0) {
+                err_add += sacch_err_delta;
+            }
+            if (voice_err_delta > 0) {
+                err_add += voice_err_delta / 2;
+            }
+            g_p25p2_rrc_auto_dyn_err += err_add;
+            if (voice_err_delta > 0) {
+                g_p25p2_rrc_auto_dyn_voice += voice_err_delta;
+            }
+            if (ms >= 1000) {
+                /* Switch to Stage 2: fixed alpha=0.5 */
+                dsd_rtl_stream_cqpsk_set_rrc(1, 50, 0);
+                g_p25p2_rrc_auto_fix_err = 0;
+                g_p25p2_rrc_auto_fix_voice = 0;
+                g_p25p2_rrc_auto_start = now;
+                g_p25p2_rrc_auto_state.store(2);
+            }
+        } else if (st == 2) {
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_p25p2_rrc_auto_start).count();
+            int err_add = 0;
+            if (facch_err_delta > 0) {
+                err_add += facch_err_delta;
+            }
+            if (sacch_err_delta > 0) {
+                err_add += sacch_err_delta;
+            }
+            if (voice_err_delta > 0) {
+                err_add += voice_err_delta / 2;
+            }
+            g_p25p2_rrc_auto_fix_err += err_add;
+            if (voice_err_delta > 0) {
+                g_p25p2_rrc_auto_fix_voice += voice_err_delta;
+            }
+            if (ms >= 1000) {
+                /* Decide */
+                int choose_fixed = 0;
+                if (g_p25p2_rrc_auto_fix_err < g_p25p2_rrc_auto_dyn_err) {
+                    choose_fixed = 1;
+                } else if (g_p25p2_rrc_auto_fix_err == g_p25p2_rrc_auto_dyn_err) {
+                    if (g_p25p2_rrc_auto_fix_voice <= g_p25p2_rrc_auto_dyn_voice) {
+                        choose_fixed = 1;
+                    }
+                }
+                dsd_rtl_stream_cqpsk_set_rrc(1, choose_fixed ? 50 : 20, 0);
+                g_p25p2_rrc_auto_choice.store(choose_fixed ? 1 : 0);
+                g_p25p2_rrc_auto_decided.store(1);
+                g_p25p2_rrc_auto_state.store(0);
+            }
+        }
+    }
     if (!g_auto_dsp_enable.load() || g_auto_dsp_simple.load()) {
         return;
     }

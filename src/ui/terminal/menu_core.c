@@ -23,6 +23,10 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+/* Forward declarations for new P25p2 RRC UI handlers */
+static const char* lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n);
+static void io_toggle_p25p2_rrc_autoprobe(void* vctx);
+
 #ifndef UNUSED
 #define UNUSED(x) (void)(x)
 #endif
@@ -1056,6 +1060,25 @@ io_toggle_p25_rrc(void* vctx) {
 }
 
 static void
+io_toggle_p25p2_rrc(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->p25_p2_rrc_fixed = c->opts->p25_p2_rrc_fixed ? 0 : 1;
+#ifdef USE_RTLSDR
+    int alpha = c->opts->p25_p2_rrc_fixed ? 50 : 20;
+    rtl_stream_cqpsk_set_rrc(1, alpha, 0);
+#endif
+}
+
+static void
+io_toggle_p25p2_rrc_autoprobe(void* vctx) {
+    UiCtx* c = (UiCtx*)vctx;
+    c->opts->p25_p2_rrc_autoprobe = c->opts->p25_p2_rrc_autoprobe ? 0 : 1;
+#ifdef USE_RTLSDR
+    rtl_stream_set_p25p2_rrc_autoprobe(c->opts->p25_p2_rrc_autoprobe);
+#endif
+}
+
+static void
 io_toggle_p25_rrc_autoprobe(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     c->opts->p25_c4fm_rrc_autoprobe = c->opts->p25_c4fm_rrc_autoprobe ? 0 : 1;
@@ -1586,6 +1609,25 @@ lbl_p25_rrc_autoprobe(void* v, char* b, size_t n) {
 }
 
 static const char*
+lbl_p25p2_rrc(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "P25p2 CQPSK RRC alpha=0.5 [%s]", c->opts->p25_p2_rrc_fixed ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
+lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+#ifdef USE_RTLSDR
+    int on = rtl_stream_get_p25p2_rrc_autoprobe();
+#else
+    int on = c->opts->p25_p2_rrc_autoprobe;
+#endif
+    snprintf(b, n, "P25p2 CQPSK RRC Auto-Probe [%s]", on ? "Active" : "Inactive");
+    return b;
+}
+
+static const char*
 lbl_toggle_payload(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Payload Logging [%s]", c->opts->payload ? "Active" : "Inactive");
@@ -1880,6 +1922,16 @@ ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_p25_rrc_autoprobe,
          .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
          .on_select = io_toggle_p25_rrc_autoprobe},
+        {.id = "p25p2_rrc",
+         .label = "P25p2 CQPSK RRC alpha=0.5",
+         .label_fn = lbl_p25p2_rrc,
+         .help = "Use fixed RRC(alpha=0.5) for P25p2 CQPSK (matched filter).",
+         .on_select = io_toggle_p25p2_rrc},
+        {.id = "p25p2_rrc_auto",
+         .label = "P25p2 CQPSK RRC Auto-Probe",
+         .label_fn = lbl_p25p2_rrc_autoprobe,
+         .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
+         .on_select = io_toggle_p25p2_rrc_autoprobe},
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }

@@ -1518,8 +1518,14 @@ mf_rrc_complex_interleaved(struct demod_state* d) {
     }
     int sps = d->ted_sps;
     double alpha = (d->cqpsk_rrc_alpha_q15 > 0) ? ((double)d->cqpsk_rrc_alpha_q15 / 32768.0) : 0.25;
-    int span = (d->cqpsk_rrc_span_syms > 0) ? d->cqpsk_rrc_span_syms : 6;
-    int taps_len = span * 2 * sps + 1;
+    int taps_len;
+    int span_used = (d->cqpsk_rrc_span_syms > 0) ? d->cqpsk_rrc_span_syms : 0;
+    if (span_used > 0) {
+        taps_len = span_used * 2 * sps + 1;
+    } else {
+        /* Default to ntaps = 11*sps + 1 (e.g., 89 for sps=8) */
+        taps_len = 11 * sps + 1;
+    }
     if (taps_len < 7) {
         taps_len = 7;
     }
@@ -1532,7 +1538,7 @@ mf_rrc_complex_interleaved(struct demod_state* d) {
     static int last_taps_len = 0;
     static int16_t taps_q15[257];
     static int taps_ready = 0;
-    if (!taps_ready || sps != last_sps || span != last_span || d->cqpsk_rrc_alpha_q15 != last_alpha_q15
+    if (!taps_ready || sps != last_sps || span_used != last_span || d->cqpsk_rrc_alpha_q15 != last_alpha_q15
         || taps_len != last_taps_len) {
         /* Design RRC taps */
         int mid = taps_len / 2;
@@ -1594,7 +1600,7 @@ mf_rrc_complex_interleaved(struct demod_state* d) {
             taps_q15[n] = (int16_t)v;
         }
         last_sps = sps;
-        last_span = span;
+        last_span = span_used;
         last_alpha_q15 = d->cqpsk_rrc_alpha_q15;
         last_taps_len = taps_len;
         taps_ready = 1;

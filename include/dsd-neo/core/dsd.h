@@ -386,6 +386,8 @@ typedef struct {
     int use_cosine_filter;
     int p25_c4fm_rrc_fixed;     // 0: dynamic RRC(alpha≈0.2); 1: fixed RRC(alpha=0.5) for P25p1 C4FM
     int p25_c4fm_rrc_autoprobe; // 1: auto-probe between dynamic and fixed RRC and choose best
+    int p25_p2_rrc_fixed;       // 0: dynamic RRC(alpha≈0.2); 1: fixed RRC(alpha=0.5) for P25p2 CQPSK
+    int p25_p2_rrc_autoprobe;   // 1: auto-probe between dynamic and fixed RRC on P25p2 and choose best
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;
@@ -1571,7 +1573,6 @@ short dmr_filter(short sample);
 short nxdn_filter(short sample);
 short dpmr_filter(short sample);
 short m17_filter(short sample);
-short p25_c4fm_filter(short sample);
 
 //utility functions
 uint64_t ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength);

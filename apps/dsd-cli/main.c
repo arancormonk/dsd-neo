@@ -1488,6 +1488,9 @@ initOpts(dsd_opts* opts) {
     // dynamic(alpha≈0.2) remains available via UI or auto-probe.
     opts->p25_c4fm_rrc_fixed = 1;
     opts->p25_c4fm_rrc_autoprobe = 0;
+    // Default P25p2 CQPSK to fixed RRC(alpha=0.5); can toggle to dynamic via UI
+    opts->p25_p2_rrc_fixed = 1;
+    opts->p25_p2_rrc_autoprobe = 0;
     opts->unmute_encrypted_p25 = 0;
     //all RTL user options -- enabled AGC by default due to weak signal related issues
     opts->rtl_dev_index = 0;  //choose which device we want by index number

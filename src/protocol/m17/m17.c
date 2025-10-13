@@ -1282,8 +1282,7 @@ simple_conv_encoder(uint8_t* input, uint8_t* output, int len) {
 //dibits-symbols map
 const int symbol_map[4] = {+1, +3, -1, -3};
 
-//sample RRC filter for 48kHz sample rate
-//alpha=0.5, span=8, sps=10, gain=sqrt(sps)
+//Sample RRC filter for 48 kHz (alpha=0.5, sps=10, gain=sqrt(sps))
 float m17_rrc[81] = {-0.003195702904062073f, -0.002930279157647190f, -0.001940667871554463f, -0.000356087678023658f,
                      0.001547011339077758f,  0.003389554791179751f,  0.004761898604225673f,  0.005310860846138910f,
                      0.004824746306020221f,  0.003297923526848786f,  0.000958710871218619f,  -0.001749908029791816f,
