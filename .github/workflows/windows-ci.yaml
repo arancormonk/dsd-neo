@@ -394,7 +394,7 @@ jobs:
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2.3.4
+        uses: softprops/action-gh-release@v2.4.1
         with:
           files: ${{ steps.zip.outputs.ZIP_PATH }}
           name: dsd-neo-cygwin-x86_64-portable-${{ github.ref_name }}
