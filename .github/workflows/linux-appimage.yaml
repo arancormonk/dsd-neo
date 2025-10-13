@@ -317,7 +317,7 @@ jobs:
           retention-days: 7
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2.3.4
+        uses: softprops/action-gh-release@v2.4.1
         with:
           files: ${{ steps.names.outputs.OUT }}
           name: ${{ steps.names.outputs.ART }}
