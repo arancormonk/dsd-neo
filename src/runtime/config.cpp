@@ -129,6 +129,26 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.ted_force_is_set = env_is_set(tf);
     c.ted_force = (c.ted_force_is_set && tf[0] == '1') ? 1 : 0;
 
+    /* C4FM clock assist */
+    const char* clk = getenv("DSD_NEO_C4FM_CLK");
+    const char* clk_sync = getenv("DSD_NEO_C4FM_CLK_SYNC");
+    c.c4fm_clk_is_set = env_is_set(clk);
+    c.c4fm_clk_mode = 0;
+    if (c.c4fm_clk_is_set && clk && clk[0] != '\0') {
+        if (strcasecmp(clk, "off") == 0 || strcmp(clk, "0") == 0) {
+            c.c4fm_clk_mode = 0;
+        } else if (strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
+            c.c4fm_clk_mode = 1;
+        } else if (strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
+            c.c4fm_clk_mode = 2;
+        } else {
+            /* Unrecognized → keep off */
+            c.c4fm_clk_mode = 0;
+        }
+    }
+    c.c4fm_clk_sync_is_set = env_is_set(clk_sync);
+    c.c4fm_clk_sync = c.c4fm_clk_sync_is_set ? ((clk_sync[0] == '1') ? 1 : 0) : 0;
+
     /* Deemphasis */
     const char* deemph = getenv("DSD_NEO_DEEMPH");
     c.deemph_is_set = env_is_set(deemph);
@@ -331,4 +351,46 @@ dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15) {
     if (mu_q15) {
         *mu_q15 = g_config.c4fm_dd_eq_mu_is_set ? g_config.c4fm_dd_eq_mu_q15 : 2;
     }
+}
+
+/* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM). */
+extern "C" void
+dsd_neo_set_c4fm_clk(int mode) {
+    if (!g_config_inited) {
+        memset(&g_config, 0, sizeof(g_config));
+        g_config_inited = 1;
+    }
+    if (mode >= 0) {
+        if (mode > 2) {
+            mode = 0;
+        }
+        g_config.c4fm_clk_is_set = 1;
+        g_config.c4fm_clk_mode = mode;
+    }
+}
+
+extern "C" int
+dsd_neo_get_c4fm_clk(void) {
+    if (!g_config_inited) {
+        return 0;
+    }
+    return g_config.c4fm_clk_is_set ? g_config.c4fm_clk_mode : 0;
+}
+
+extern "C" void
+dsd_neo_set_c4fm_clk_sync(int enable) {
+    if (!g_config_inited) {
+        memset(&g_config, 0, sizeof(g_config));
+        g_config_inited = 1;
+    }
+    g_config.c4fm_clk_sync_is_set = 1;
+    g_config.c4fm_clk_sync = enable ? 1 : 0;
+}
+
+extern "C" int
+dsd_neo_get_c4fm_clk_sync(void) {
+    if (!g_config_inited) {
+        return 0;
+    }
+    return g_config.c4fm_clk_sync_is_set ? (g_config.c4fm_clk_sync ? 1 : 0) : 0;
 }

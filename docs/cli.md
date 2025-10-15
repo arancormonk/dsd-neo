@@ -120,6 +120,7 @@ Notes
 - Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT)
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
 - DMR Tier III Location Area n‑bits: `-D <0–10>`
+ - Env (C4FM clock assist): `DSD_NEO_C4FM_CLK=el|mm` enables a lightweight Early–Late or M&M timing assist on P25p1 C4FM. Off by default.
 
 ## Trunking & Scanning
 

@@ -516,6 +516,10 @@ rtl_stream_estimate_snr_gfsk_eye(void) {
 /* C4FM DD equalizer runtime config wrappers (update global runtime config) */
 extern "C" void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
 extern "C" void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
+extern "C" void dsd_neo_set_c4fm_clk(int mode);
+extern "C" int dsd_neo_get_c4fm_clk(void);
+extern "C" void dsd_neo_set_c4fm_clk_sync(int enable);
+extern "C" int dsd_neo_get_c4fm_clk_sync(void);
 
 extern "C" void
 rtl_stream_set_c4fm_dd_eq(int onoff) {
@@ -537,6 +541,33 @@ rtl_stream_set_c4fm_dd_eq_params(int taps, int mu_q15) {
 extern "C" void
 rtl_stream_get_c4fm_dd_eq_params(int* taps, int* mu_q15) {
     dsd_neo_get_c4fm_dd_eq(NULL, taps, mu_q15);
+}
+
+/* C4FM clock assist mode (0=off, 1=EL, 2=MM) */
+extern "C" void
+rtl_stream_set_c4fm_clk(int mode) {
+    if (mode < 0) {
+        mode = 0;
+    }
+    if (mode > 2) {
+        mode = 0;
+    }
+    dsd_neo_set_c4fm_clk(mode);
+}
+
+extern "C" int
+rtl_stream_get_c4fm_clk(void) {
+    return dsd_neo_get_c4fm_clk();
+}
+
+extern "C" void
+rtl_stream_set_c4fm_clk_sync(int enable) {
+    dsd_neo_set_c4fm_clk_sync(enable ? 1 : 0);
+}
+
+extern "C" int
+rtl_stream_get_c4fm_clk_sync(void) {
+    return dsd_neo_get_c4fm_clk_sync();
 }
 
 extern "C" void

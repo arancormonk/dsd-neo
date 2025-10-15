@@ -2320,6 +2320,39 @@ act_c4fm_dd_mu_dn(void* v) {
     rtl_stream_set_c4fm_dd_eq_params(-1, mu);
 }
 
+/* ---- C4FM clock assist (EL/MM) ---- */
+static const char*
+lbl_c4fm_clk(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int mode = rtl_stream_get_c4fm_clk();
+    const char* s = (mode == 1) ? "EL" : (mode == 2) ? "MM" : "Off";
+    snprintf(b, n, "C4FM Clock: %s (cycle)", s);
+    return b;
+}
+
+static void
+act_c4fm_clk_cycle(void* v) {
+    UNUSED(v);
+    int mode = rtl_stream_get_c4fm_clk();
+    mode = (mode + 1) % 3; /* 0->1->2->0 */
+    rtl_stream_set_c4fm_clk(mode);
+}
+
+static const char*
+lbl_c4fm_clk_sync(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int en = rtl_stream_get_c4fm_clk_sync();
+    snprintf(b, n, "C4FM Clock While Synced [%s]", en ? "Active" : "Inactive");
+    return b;
+}
+
+static void
+act_c4fm_clk_sync_toggle(void* v) {
+    UNUSED(v);
+    int en = rtl_stream_get_c4fm_clk_sync();
+    rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
+}
+
 /* ---- One-click C4FM robustness preset ---- */
 static const char*
 lbl_c4fm_robust(void* v, char* b, size_t n) {
@@ -3597,6 +3630,16 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .label = "TED Bias (status)",
          .label_fn = lbl_ted_bias,
          .help = "Smoothed Gardner residual (read-only status)."},
+        {.id = "c4fm_clk",
+         .label = "C4FM Clock Assist",
+         .label_fn = lbl_c4fm_clk,
+         .help = "Cycle C4FM timing assist: Off → EL → MM.",
+         .on_select = act_c4fm_clk_cycle},
+        {.id = "c4fm_clk_sync",
+         .label = "C4FM Clock While Synced",
+         .label_fn = lbl_c4fm_clk_sync,
+         .help = "Allow clock assist to remain active while synchronized.",
+         .on_select = act_c4fm_clk_sync_toggle},
         {.id = "fm_agc",
          .label = "FM AGC",
          .label_fn = lbl_fm_agc,

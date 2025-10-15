@@ -44,9 +44,9 @@ void ted_init_state(ted_state_t* state);
 /**
  * @brief Lightweight Gardner timing correction.
  *
- * Uses linear interpolation between adjacent complex samples around the
- * nominal samples-per-symbol to reduce timing error; intended for digital
- * modes when enabled.
+ * Uses a cubic Farrow (cubic convolution) fractional-delay interpolator
+ * around the nominal samples-per-symbol to reduce timing error; intended
+ * for digital modes when enabled.
  *
  * @param config TED configuration.
  * @param state  TED state (updates mu_q20).

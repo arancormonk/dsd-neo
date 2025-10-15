@@ -265,6 +265,111 @@ select_window_gfsk(int* l_edge, int* r_edge, int freeze_window) {
 }
 
 #ifdef USE_RTLSDR
+/* --- C4FM clock assist (EL / M&M) --- */
+static inline int
+slice_c4fm_level(int x, const dsd_state* s) {
+    /* Map sample to nearest of {-3,-1,1,3} using center/min/max refs. */
+    int c = s->center;
+    int lo = (s->minref + c) / 2;
+    int hi = (s->maxref + c) / 2;
+    if (x >= hi) {
+        return 3;
+    } else if (x >= c) {
+        return 1;
+    } else if (x >= lo) {
+        return -1;
+    } else {
+        return -3;
+    }
+}
+
+static inline void
+maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int early, int mid, int late) {
+    (void)opts;
+    if (mode <= 0) {
+        return;
+    }
+    /* Only on RTL pipeline and when not yet synchronized to avoid perturbing
+       decoders during steady state. */
+    if (opts->audio_in_type != 3) {
+        return;
+    }
+    if (have_sync != 0) {
+        return;
+    }
+    if (state->rf_mod != 0) {
+        return; /* C4FM only */
+    }
+
+    /* Require valid neighborhood around center */
+    if (state->symbolCenter < 1 || state->symbolCenter + 1 >= state->samplesPerSymbol) {
+        return;
+    }
+
+    long long e = 0;
+    if (mode == 1) { /* Early-Late using energy difference */
+        long long er = (long long)early;
+        long long lr = (long long)late;
+        e = (lr * lr) - (er * er);
+    } else if (mode == 2) { /* M&M using sliced decisions */
+        int a_prev = state->c4fm_clk_prev_dec;
+        int a_k;
+        /* Prefer slicing on mid sample for stability */
+        a_k = slice_c4fm_level(mid, state);
+        if (a_prev == 0) {
+            state->c4fm_clk_prev_dec = a_k;
+            return; /* need one step of history */
+        }
+        /* e ≈ y_mid * (a_k - a_{k-1}) */
+        e = (long long)mid * (long long)(a_k - a_prev);
+        state->c4fm_clk_prev_dec = a_k;
+    } else {
+        return;
+    }
+
+    /* Convert to sign and apply simple persistence before nudging center */
+    int dir = 0;
+    if (e > 0) {
+        dir = +1; /* sample early → center → right */
+    } else if (e < 0) {
+        dir = -1; /* sample late → center → left */
+    } else {
+        state->c4fm_clk_run_dir = 0;
+        state->c4fm_clk_run_len = 0;
+        return;
+    }
+
+    if (state->c4fm_clk_cooldown > 0) {
+        state->c4fm_clk_cooldown--;
+        return;
+    }
+
+    if (dir == state->c4fm_clk_run_dir) {
+        state->c4fm_clk_run_len++;
+    } else {
+        state->c4fm_clk_run_dir = dir;
+        state->c4fm_clk_run_len = 1;
+    }
+
+    /* Nudge after brief persistence */
+    if (state->c4fm_clk_run_len >= 4) {
+        int c = state->symbolCenter + dir;
+        int min_c = 1;
+        int max_c = state->samplesPerSymbol - 2;
+        if (c < min_c) {
+            c = min_c;
+        }
+        if (c > max_c) {
+            c = max_c;
+        }
+        state->symbolCenter = c;
+        state->c4fm_clk_cooldown = 12; /* short cooldown */
+        state->c4fm_clk_run_len = 0;
+    }
+}
+#endif
+
+#ifdef USE_RTLSDR
 /*
  * Nudge symbolCenter by ±1 based on a smoothed TED residual when available.
  * Guards against oscillation using a small deadband and a cooldown period.
@@ -284,8 +389,13 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
     if (opts->audio_in_type != 3) {
         return; // only when using RTL stream/demod pipeline
     }
+    /* If synced, only run when explicitly allowed by runtime config. */
     if (have_sync != 0) {
-        return; // do not adjust while synchronized
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        int allow_when_synced = (cfg && cfg->c4fm_clk_sync_is_set) ? (cfg->c4fm_clk_sync != 0) : 0;
+        if (!allow_when_synced) {
+            return;
+        }
     }
     if (state->rf_mod != 0) {
         return; // limit to C4FM for now; avoid QPSK/LSM
@@ -410,6 +520,36 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     sum = 0;
     count = 0;
     sample = 0; //init sample with a value of 0...see if this was causing issues with raw audio monitoring
+
+#ifdef USE_RTLSDR
+    /* C4FM clock assist capture around symbol center */
+    int clk_mode = 0;
+    int clk_early = 0, clk_mid = 0, clk_late = 0;
+    if (state->rf_mod == 0) {
+        const dsdneoRuntimeConfig* cfg_clk = dsd_neo_get_config();
+        if (cfg_clk && cfg_clk->c4fm_clk_is_set) {
+            clk_mode = cfg_clk->c4fm_clk_mode;
+        } else {
+            /* One-time env fallback */
+            static int init_clk_env = 0;
+            static int env_mode = 0;
+            if (!init_clk_env) {
+                init_clk_env = 1;
+                const char* clk = getenv("DSD_NEO_C4FM_CLK");
+                if (clk) {
+                    if (strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
+                        env_mode = 1;
+                    } else if (strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
+                        env_mode = 2;
+                    } else {
+                        env_mode = 0;
+                    }
+                }
+            }
+            clk_mode = env_mode;
+        }
+    }
+#endif
 
     /* Optional auto-centering based on TED residual (RTL path only, C4FM, when not synced) */
 #ifdef USE_RTLSDR
@@ -1052,6 +1192,19 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         state->lastsample = sample;
+
+#ifdef USE_RTLSDR
+        if (clk_mode && state->rf_mod == 0) {
+            int c = state->symbolCenter;
+            if (i == c - 1) {
+                clk_early = sample;
+            } else if (i == c) {
+                clk_mid = sample;
+            } else if (i == c + 1) {
+                clk_late = sample;
+            }
+        }
+#endif
     }
 
     if (count > 0) {
@@ -1266,6 +1419,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         state->c4fm_dd_eq_have_last = 1;
         symbol = y;
     } while (0);
+
+    /* Apply C4FM clock assist after symbol decision (unsynced only) */
+#ifdef USE_RTLSDR
+    if (clk_mode && state->rf_mod == 0) {
+        maybe_c4fm_clock(opts, state, have_sync, clk_mode, clk_early, clk_mid, clk_late);
+    }
+#endif
 
     state->symbolcnt++;
     return (symbol);

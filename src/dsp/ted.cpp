@@ -36,6 +36,29 @@ ted_init_state(ted_state_t* state) {
  * @param y      Work buffer for timing-adjusted I/Q (must be at least size N).
  * @note Skips processing when samples-per-symbol is large unless forced.
  */
+/* Cubic Farrow (Catmull-Rom) fractional-delay interpolator for one component. */
+static inline int32_t
+farrow_cubic_eval(int32_t s_m1, int32_t s0, int32_t s1, int32_t s2, int u_q15) {
+    /* Coefficients for cubic convolution (a = -0.5, Catmull-Rom):
+       p(u) = c0 + c1*u + c2*u^2 + c3*u^3, u in [0,1]. */
+    int32_t c0 = s0;
+    int32_t c1 = (s1 - s_m1) >> 1; /* 0.5*(s1 - s-1) */
+    /* c2 = s-1 - 2.5*s0 + 2*s1 - 0.5*s2 */
+    int32_t c2 = s_m1 - ((5 * s0) >> 1) + (s1 << 1) - (s2 >> 1);
+    /* c3 = 0.5*(s2 - s-1) + 1.5*(s0 - s1) */
+    int32_t c3 = ((s2 - s_m1) >> 1) + ((3 * (s0 - s1)) >> 1);
+
+    /* Horner evaluation with fixed-point u (Q15). */
+    int32_t u = u_q15;
+    int32_t u2 = (int32_t)(((int64_t)u * u) >> 15);
+    int32_t u3 = (int32_t)(((int64_t)u2 * u) >> 15);
+
+    int64_t acc_q15 = ((int64_t)c3 * u3) + ((int64_t)c2 * u2) + ((int64_t)c1 * u) + (((int64_t)c0) << 15);
+    /* Round and shift back to Q0 */
+    int32_t y = (int32_t)((acc_q15 + (1 << 14)) >> 15);
+    return y;
+}
+
 void
 gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x, int* N, int16_t* y) {
     if (!config || !state || !x || !N || !y) {
@@ -68,28 +91,38 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
     int out_n = 0; /* interleaved I/Q index for output */
 
     for (int n_c = 0; n_c + 1 < nc; n_c++) {
-        /* Base and next complex sample indices */
+        /* Base complex sample index */
         int a_c = n_c;
-        int b_c = n_c + 1;
-
         int a = a_c << 1;
-        int b = b_c << 1;
 
-        /* Interpolation fraction from mu (Q20) */
-        int frac = mu & (one - 1); /* 0..one-1 */
-        int inv = one - frac;
+        /* Interpolation fraction from mu: convert Q20 -> Q15 for Farrow */
+        int frac_q20 = mu & (one - 1); /* 0..one-1 */
+        int u_q15 = frac_q20 >> 5;     /* Q15 in [0,1) */
 
-        /* Linear interpolation y_mid between x[a_c] and x[b_c] (complex) */
-        int32_t ar = x[a];
-        int32_t aj = x[a + 1];
-        int32_t br = x[b];
-        int32_t bj = x[b + 1];
-        int32_t yr = (int32_t)(((int64_t)inv * ar + (int64_t)frac * br) >> 20);
-        int32_t yj = (int32_t)(((int64_t)inv * aj + (int64_t)frac * bj) >> 20);
+        /* Cubic Farrow interpolation at mid position using support [a_c-1..a_c+2] */
+        int am1_c = a_c - 1;
+        int ap1_c = a_c + 1;
+        int ap2_c = a_c + 2;
+        if (am1_c < 0) {
+            am1_c = 0;
+        }
+        if (ap1_c >= nc) {
+            ap1_c = nc - 1;
+        }
+        if (ap2_c >= nc) {
+            ap2_c = nc - 1;
+        }
+        int am1 = am1_c << 1;
+        int ap1 = ap1_c << 1;
+        int ap2 = ap2_c << 1;
+
+        int32_t yr = farrow_cubic_eval((int32_t)x[am1], (int32_t)x[a], (int32_t)x[ap1], (int32_t)x[ap2], u_q15);
+        int32_t yj =
+            farrow_cubic_eval((int32_t)x[am1 + 1], (int32_t)x[a + 1], (int32_t)x[ap1 + 1], (int32_t)x[ap2 + 1], u_q15);
         y[out_n++] = (int16_t)yr;
         y[out_n++] = (int16_t)yj;
 
-        /* Sample at ±T/2 around current mid-sample using same frac.
+        /* Sample at ±T/2 around current mid-sample using same frac (Farrow).
            Use clamped indices to avoid boundary overruns. */
         int l_c = a_c - half;
         int r_c = a_c + half;
@@ -106,15 +139,46 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
             r_c = nc - 2;
         }
 
-        int l0 = l_c << 1;
-        int l1 = l0 + 2;
-        int r0 = r_c << 1;
-        int r1 = r0 + 2;
+        int lm1_c = l_c - 1;
+        int lp1_c = l_c + 1;
+        int lp2_c = l_c + 2;
+        if (lm1_c < 0) {
+            lm1_c = 0;
+        }
+        if (lp1_c >= nc) {
+            lp1_c = nc - 1;
+        }
+        if (lp2_c >= nc) {
+            lp2_c = nc - 1;
+        }
+        int rm1_c = r_c - 1;
+        int rp1_c = r_c + 1;
+        int rp2_c = r_c + 2;
+        if (rm1_c < 0) {
+            rm1_c = 0;
+        }
+        if (rp1_c >= nc) {
+            rp1_c = nc - 1;
+        }
+        if (rp2_c >= nc) {
+            rp2_c = nc - 1;
+        }
 
-        int32_t lr = (int32_t)(((int64_t)inv * x[l0] + (int64_t)frac * x[l1]) >> 20);
-        int32_t lj = (int32_t)(((int64_t)inv * x[l0 + 1] + (int64_t)frac * x[l1 + 1]) >> 20);
-        int32_t rr = (int32_t)(((int64_t)inv * x[r0] + (int64_t)frac * x[r1]) >> 20);
-        int32_t rj = (int32_t)(((int64_t)inv * x[r0 + 1] + (int64_t)frac * x[r1 + 1]) >> 20);
+        int l0 = l_c << 1;
+        int lm1 = lm1_c << 1;
+        int lp1 = lp1_c << 1;
+        int lp2 = lp2_c << 1;
+        int r0 = r_c << 1;
+        int rm1 = rm1_c << 1;
+        int rp1 = rp1_c << 1;
+        int rp2 = rp2_c << 1;
+
+        int32_t lr = farrow_cubic_eval((int32_t)x[lm1], (int32_t)x[l0], (int32_t)x[lp1], (int32_t)x[lp2], u_q15);
+        int32_t lj =
+            farrow_cubic_eval((int32_t)x[lm1 + 1], (int32_t)x[l0 + 1], (int32_t)x[lp1 + 1], (int32_t)x[lp2 + 1], u_q15);
+        int32_t rr = farrow_cubic_eval((int32_t)x[rm1], (int32_t)x[r0], (int32_t)x[rp1], (int32_t)x[rp2], u_q15);
+        int32_t rj =
+            farrow_cubic_eval((int32_t)x[rm1 + 1], (int32_t)x[r0 + 1], (int32_t)x[rp1 + 1], (int32_t)x[rp2 + 1], u_q15);
 
         /* Gardner error: Re{ (x(+T/2) - x(-T/2)) * conj(y_mid) } */
         int32_t dr = (int32_t)(rr - lr);

@@ -83,6 +83,16 @@ extern "C" {
  * - DSD_NEO_TED_FORCE
  *     Force TED to run for FM/C4FM paths where it is normally skipped. Values: 1 enable, else disabled. Default: 0.
  *
+ * C4FM clock assist (symbol-domain)
+ * - DSD_NEO_C4FM_CLK
+ *     Enable a lightweight clock loop on the C4FM (P25p1) symbol path.
+ *     Values: "el" for Early-Late, "mm" for Mueller&Mueller, "0"/"off" to disable.
+ *     Default: off. When enabled, the loop nudges the integer symbolCenter by ±1
+ *     occasionally based on the error sign; it does not perform fractional delay.
+ * - DSD_NEO_C4FM_CLK_SYNC
+ *     Allow C4FM clock assist to remain active while synchronized (fine-trim).
+ *     Values: 1 enable, else disabled. Default: 0 (disabled; assist runs only pre-sync).
+ *
  * Audio processing
  * - DSD_NEO_DEEMPH
  *     Post-demod deemphasis time constant. Applies only when the active demod preset enables deemphasis.
@@ -188,6 +198,12 @@ typedef struct dsdneoRuntimeConfig {
     int ted_force_is_set;
     int ted_force;
 
+    /* C4FM clock assist */
+    int c4fm_clk_is_set;      /* env seen */
+    int c4fm_clk_mode;        /* 0=off, 1=EL, 2=MM */
+    int c4fm_clk_sync_is_set; /* env seen */
+    int c4fm_clk_sync;        /* 0=pre-sync only, 1=also while synced */
+
     /* Deemphasis */
     int deemph_is_set;
     dsdneoDeemphMode deemph_mode;
@@ -290,6 +306,13 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 /* Runtime updaters for DD equalizer (UI control) */
 void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
 void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
+
+/* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM) */
+void dsd_neo_set_c4fm_clk(int mode);
+int dsd_neo_get_c4fm_clk(void);
+/* Toggle C4FM clock assist while synced (0/1) */
+void dsd_neo_set_c4fm_clk_sync(int enable);
+int dsd_neo_get_c4fm_clk_sync(void);
 
 #ifdef __cplusplus
 }

@@ -190,6 +190,13 @@ int rtl_stream_get_c4fm_dd_eq(void);
 void rtl_stream_set_c4fm_dd_eq_params(int taps, int mu_q15);
 void rtl_stream_get_c4fm_dd_eq_params(int* taps, int* mu_q15);
 
+/* C4FM clock assist (0=off, 1=EL, 2=MM) */
+void rtl_stream_set_c4fm_clk(int mode);
+int rtl_stream_get_c4fm_clk(void);
+/* C4FM clock assist while synced (0/1) */
+void rtl_stream_set_c4fm_clk_sync(int enable);
+int rtl_stream_get_c4fm_clk_sync(void);
+
 /**
  * @brief Get spectrum-based auto PPM status and last measurements.
  *
