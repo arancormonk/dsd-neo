@@ -145,7 +145,7 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 #define DSD_NEO_RESTRICT
 #endif
 
-int fll_lut_enabled = 0; /* DSD_NEO_FLL_LUT (0 default: use fast approx) */
+int fll_lut_enabled = 1; /* DSD_NEO_FLL_LUT default enabled: use higher-quality LUT rotator */
 /* Debug/compat toggles via env */
 static int combine_rotate_enabled = 1;      /* DSD_NEO_COMBINE_ROT (1 default) */
 static int upsample_fixedpoint_enabled = 1; /* DSD_NEO_UPSAMPLE_FP (1 default) */
@@ -1917,6 +1917,11 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     s->squelch_decim_stride = 16;
     s->squelch_decim_phase = 0;
     s->squelch_window = 2048;
+    /* Squelch soft gate defaults */
+    s->squelch_gate_open = 1;
+    s->squelch_env_q15 = 32768;
+    s->squelch_env_attack_q15 = 4096;  /* ~0.125 */
+    s->squelch_env_release_q15 = 1024; /* ~0.031 */
     /* HB decimator histories */
     for (int st = 0; st < 10; st++) {
         memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
@@ -1936,6 +1941,26 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     pthread_cond_init(&s->ready, NULL);
     pthread_mutex_init(&s->ready_m, NULL);
     s->output_target = &output;
+
+    /* FM AGC auto-tune per-instance state */
+    s->fm_agc_auto_init = 0;
+    s->fm_agc_ema_rms = 0.0;
+    s->fm_agc_clip_run = 0;
+    s->fm_agc_under_run = 0;
+
+    /* FM CMA (>=5 taps) persistent state */
+    s->fm_cma5_inited = 0;
+    s->fm_cma5_prev_mu = 0;
+    s->fm_cma5_prev_strength = 0;
+    s->fm_cma5_prev_taps = 0;
+    s->fm_cma5_prev_warm_cfg = 0;
+    s->fm_cma5_warm_rem = 0;
+    for (int _k = 0; _k < 5; _k++) {
+        s->fm_cma5_taps_q15[_k] = (_k == 0) ? 32767 : 0;
+    }
+    s->fm_cma_guard_inited = 0;
+    s->fm_cma_guard_reject_streak = 0;
+    s->fm_cma_guard_mu_scale = 1.0;
 
     /* Experimental CQPSK/LSM path (off by default). Enable via env DSD_NEO_CQPSK=1 */
     s->cqpsk_enable = 0;
@@ -2191,7 +2216,8 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.resamp_enabled = 0;
 
     demod.fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : 0;
-    fll_lut_enabled = cfg->fll_lut_is_set ? (cfg->fll_lut_enable != 0) : fll_lut_enabled;
+    /* If env provided, honor it; otherwise keep default (enabled) */
+    fll_lut_enabled = cfg->fll_lut_is_set ? (cfg->fll_lut_enable != 0) : 1;
     demod.fll_alpha_q15 = cfg->fll_alpha_is_set ? cfg->fll_alpha_q15 : 50;
     demod.fll_beta_q15 = cfg->fll_beta_is_set ? cfg->fll_beta_q15 : 5;
     demod.fll_deadband_q14 = cfg->fll_deadband_is_set ? cfg->fll_deadband_q14 : 45;

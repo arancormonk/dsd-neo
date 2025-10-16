@@ -100,7 +100,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
 
     const char* flut = getenv("DSD_NEO_FLL_LUT");
     c.fll_lut_is_set = env_is_set(flut);
-    c.fll_lut_enable = (c.fll_lut_is_set && flut[0] == '1') ? 1 : 0;
+    c.fll_lut_enable = c.fll_lut_is_set ? ((flut[0] == '1') ? 1 : 0) : 1; /* default enabled */
 
     const char* fa = getenv("DSD_NEO_FLL_ALPHA");
     const char* fb = getenv("DSD_NEO_FLL_BETA");

@@ -116,6 +116,11 @@ struct demod_state {
     int squelch_decim_stride;
     int squelch_decim_phase;
     int squelch_window;
+    /* Squelch soft gate (audio envelope) */
+    int squelch_gate_open;       /* 1=open, 0=closed (latched per block) */
+    int squelch_env_q15;         /* envelope gain in Q15 */
+    int squelch_env_attack_q15;  /* attack alpha (Q15) for opening */
+    int squelch_env_release_q15; /* release alpha (Q15) for closing */
     int downsample_passes;
     int comp_fir_size;
     int custom_atan;
@@ -199,6 +204,11 @@ struct demod_state {
     int fm_agc_alpha_up_q15;   /* smoothing when increasing gain (signal got weaker) */
     int fm_agc_alpha_down_q15; /* smoothing when decreasing gain (signal got stronger) */
     int fm_agc_auto_enable;    /* auto-tune AGC target/alphas based on runtime stats */
+    /* FM AGC auto-tune per-instance state */
+    int fm_agc_auto_init;  /* 0 until EMA initialized */
+    double fm_agc_ema_rms; /* EMA of RMS (double for stability) */
+    int fm_agc_clip_run;   /* run-length of clipping blocks */
+    int fm_agc_under_run;  /* run-length of under-utilized full-scale */
 
     /* Optional constant-envelope limiter for FM/C4FM */
     int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
@@ -223,6 +233,19 @@ struct demod_state {
     int fm_cma_guard_freeze;  /* remaining blocks held by stability guard */
     int fm_cma_guard_accepts; /* total accepted tap updates */
     int fm_cma_guard_rejects; /* total rejected tap updates */
+
+    /* FM CMA (>=5 taps) per-instance persistent state */
+    int fm_cma5_inited;
+    int fm_cma5_prev_mu;
+    int fm_cma5_prev_strength;
+    int fm_cma5_prev_taps;
+    int fm_cma5_prev_warm_cfg;
+    int fm_cma5_warm_rem;        /* remaining warmup samples; <=0 => continuous */
+    int16_t fm_cma5_taps_q15[5]; /* symmetric tap set: t0..t4 (Q15), use prefix subset by taps */
+    /* Guard state for CMA >=5 taps */
+    int fm_cma_guard_inited;
+    int fm_cma_guard_reject_streak;
+    double fm_cma_guard_mu_scale; /* multiplicative scale (double) */
 
     /* Optional impulse blanker (pre-decimation) */
     int blanker_enable; /* 0/1 gate; default off */

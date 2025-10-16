@@ -29,12 +29,14 @@ __attribute__((weak)) void rtl_stream_auto_dsp_get_status(struct rtl_auto_dsp_st
 __attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*, int*);
 #endif
 }
+#include <algorithm>
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 
 /* demod_state now provided by include/dsp/demod_state.h */
 
@@ -90,18 +92,54 @@ impulse_blanker(struct demod_state* d) {
     if (Npairs <= 0) {
         return;
     }
-    /* Compute mean |I|+|Q| as a simple baseline */
-    uint64_t acc = 0;
-    for (int n = 0; n < Npairs; n++) {
+    /* Robust thresholding via median and MAD on |I|+|Q| (sampled) */
+    int stride = (Npairs > 2048) ? (Npairs / 2048) : 1;
+    int cap = (stride > 0) ? ((Npairs + stride - 1) / stride) : Npairs;
+    if (cap < 1) {
+        cap = 1;
+    }
+    if (cap > 4096) {
+        cap = 4096; /* safety bound */
+    }
+    std::vector<int> mags;
+    mags.reserve((size_t)cap);
+    for (int n = 0; n < Npairs; n += stride) {
         int16_t I = in[(size_t)(n << 1) + 0];
         int16_t Q = in[(size_t)(n << 1) + 1];
         int aI = (I >= 0) ? I : -I;
         int aQ = (Q >= 0) ? Q : -Q;
-        acc += (uint32_t)(aI + aQ);
+        mags.push_back(aI + aQ);
+        if ((int)mags.size() >= cap) {
+            break;
+        }
     }
-    int mean = (int)(acc / (uint64_t)Npairs);
-    int thr = (d->blanker_thr > 0) ? d->blanker_thr : 20000; /* amplitude in Q0 */
-    int win = (d->blanker_win > 0) ? d->blanker_win : 2;     /* half-window in pairs */
+    int median = 0;
+    int mad = 0;
+    if (!mags.empty()) {
+        size_t mid = mags.size() / 2;
+        std::nth_element(mags.begin(), mags.begin() + mid, mags.end());
+        median = mags[mid];
+        for (size_t i = 0; i < mags.size(); i++) {
+            mags[i] = std::abs(mags[i] - median);
+        }
+        std::nth_element(mags.begin(), mags.begin() + mid, mags.end());
+        mad = mags[mid];
+    }
+    /* Convert MAD to sigma; default k=6 sigma unless explicit amplitude threshold provided */
+    int thr_abs;
+    if (d->blanker_thr > 0) {
+        thr_abs = d->blanker_thr;
+    } else {
+        double sigma = 1.4826 * (double)mad;
+        double k = 6.0;
+        thr_abs = (int)lrint(k * sigma);
+        if (thr_abs < 2000) {
+            /* guard: when MAD is tiny, avoid blanking everything */
+            thr_abs = 2000;
+        }
+    }
+    int baseline = median;
+    int win = (d->blanker_win > 0) ? d->blanker_win : 2; /* half-window in pairs */
     /* Detect spikes and zero windows around them in-place */
     int16_t* out = d->lowpassed;
     for (int n = 0; n < Npairs; n++) {
@@ -110,7 +148,7 @@ impulse_blanker(struct demod_state* d) {
         int aI = (I >= 0) ? I : -I;
         int aQ = (Q >= 0) ? Q : -Q;
         int mag = aI + aQ;
-        if (mag > mean + thr) {
+        if (mag > baseline + thr_abs) {
             int a = n - win;
             if (a < 0) {
                 a = 0;
@@ -806,15 +844,13 @@ fm_envelope_agc(struct demod_state* d) {
         /* Track envelope ripple and clipping over time */
         enum { MAXC = 8 };
 
-        static int clip_run = 0;
-        static int under_run = 0;
-        static double ema_rms = 0.0;
-        static int init = 0;
-        if (!init) {
-            ema_rms = rms;
-            init = 1;
+        int& clip_run = d->fm_agc_clip_run;
+        int& under_run = d->fm_agc_under_run;
+        if (!d->fm_agc_auto_init) {
+            d->fm_agc_ema_rms = rms;
+            d->fm_agc_auto_init = 1;
         } else {
-            ema_rms = 0.9 * ema_rms + 0.1 * rms;
+            d->fm_agc_ema_rms = 0.9 * d->fm_agc_ema_rms + 0.1 * rms;
         }
         int clip_thresh = pairs / 512; /* ~0.2% of complex samples */
         if (clip_thresh < 1) {
@@ -853,8 +889,8 @@ fm_envelope_agc(struct demod_state* d) {
             under_run = 0;
         }
         /* Adapt response speed based on ripple (how much rms deviates) */
-        double dev = fabs(rms - ema_rms);
-        double ripple = (ema_rms > 1e-6) ? (dev / ema_rms) : 0.0;
+        double dev = fabs(rms - d->fm_agc_ema_rms);
+        double ripple = (d->fm_agc_ema_rms > 1e-6) ? (dev / d->fm_agc_ema_rms) : 0.0;
         int au = d->fm_agc_alpha_up_q15;
         int ad = d->fm_agc_alpha_down_q15;
         if (ripple > 0.10) { /* >10% short-term change */
@@ -1036,24 +1072,16 @@ fm_cma_equalize(struct demod_state* d) {
         }
         const int H = (taps - 1) >> 1;
 
-        /* Static state for taps and warmup countdown */
-        static int inited = 0;
-        static int t_q15[5] = {32768, 0, 0, 0, 0}; /* supports up to taps=9 (H<=4) */
-        static int prev_taps = 0;
-        static int prev_mu = 0;
-        static int warm_rem = 0; /* remaining samples to adapt; 0=stop, big->continuous */
-        static int prev_warm_cfg = 0;
-        static int prev_strength = -1;
-
-        if (!inited) {
-            inited = 1;
-            t_q15[0] = 32768;
-            t_q15[1] = t_q15[2] = t_q15[3] = t_q15[4] = 0;
-            prev_mu = 0;
-            warm_rem = 0;
-            prev_warm_cfg = 0;
-            prev_strength = -1;
-            prev_taps = taps;
+        /* Per-instance state for taps and warmup countdown */
+        if (!d->fm_cma5_inited) {
+            d->fm_cma5_inited = 1;
+            d->fm_cma5_taps_q15[0] = 32767;
+            d->fm_cma5_taps_q15[1] = d->fm_cma5_taps_q15[2] = d->fm_cma5_taps_q15[3] = d->fm_cma5_taps_q15[4] = 0;
+            d->fm_cma5_prev_mu = 0;
+            d->fm_cma5_warm_rem = 0;
+            d->fm_cma5_prev_warm_cfg = 0;
+            d->fm_cma5_prev_strength = -1;
+            d->fm_cma5_prev_taps = taps;
         }
         /* Map strength to a simple mu scaling: Light=0.75, Medium=1.0, Strong=1.5 */
         double mu_scale = 1.0;
@@ -1073,24 +1101,24 @@ fm_cma_equalize(struct demod_state* d) {
         if (mu_q15 > 64) {
             mu_q15 = 64;
         }
-        if (mu_q15 != prev_mu || prev_strength != s || prev_taps != taps) {
-            prev_mu = mu_q15;
-            prev_strength = s;
-            prev_taps = taps;
+        if (mu_q15 != d->fm_cma5_prev_mu || d->fm_cma5_prev_strength != s || d->fm_cma5_prev_taps != taps) {
+            d->fm_cma5_prev_mu = mu_q15;
+            d->fm_cma5_prev_strength = s;
+            d->fm_cma5_prev_taps = taps;
         }
         int reset_guard = 0;
         int warm_cfg = d->fm_cma_warmup; /* <=0: continuous */
-        if (warm_cfg != prev_warm_cfg) {
+        if (warm_cfg != d->fm_cma5_prev_warm_cfg) {
             /* On warmup reconfiguration, reset taps to identity and restart guard.
                This avoids stale equalizer states carrying across mode/site changes. */
-            prev_warm_cfg = warm_cfg;
+            d->fm_cma5_prev_warm_cfg = warm_cfg;
             if (warm_cfg <= 0) {
-                warm_rem = 1000000000; /* effectively continuous */
+                d->fm_cma5_warm_rem = 1000000000; /* effectively continuous */
             } else {
-                warm_rem = warm_cfg;
+                d->fm_cma5_warm_rem = warm_cfg;
             }
-            t_q15[0] = 32768; /* identity */
-            t_q15[1] = t_q15[2] = t_q15[3] = t_q15[4] = 0;
+            d->fm_cma5_taps_q15[0] = 32767; /* identity */
+            d->fm_cma5_taps_q15[1] = d->fm_cma5_taps_q15[2] = d->fm_cma5_taps_q15[3] = d->fm_cma5_taps_q15[4] = 0;
             reset_guard = 1;
         }
 
@@ -1107,29 +1135,23 @@ fm_cma_equalize(struct demod_state* d) {
         }
 
         /* Convert taps to double */
-        double t0 = (double)t_q15[0] / 32768.0;
-        double t1 = (double)((H >= 1) ? t_q15[1] : 0) / 32768.0;
-        double t2 = (double)((H >= 2) ? t_q15[2] : 0) / 32768.0;
-        double t3 = (double)((H >= 3) ? t_q15[3] : 0) / 32768.0;
-        double t4 = (double)((H >= 4) ? t_q15[4] : 0) / 32768.0;
+        double t0 = (double)d->fm_cma5_taps_q15[0] / 32768.0;
+        double t1 = (double)((H >= 1) ? d->fm_cma5_taps_q15[1] : 0) / 32768.0;
+        double t2 = (double)((H >= 2) ? d->fm_cma5_taps_q15[2] : 0) / 32768.0;
+        double t3 = (double)((H >= 3) ? d->fm_cma5_taps_q15[3] : 0) / 32768.0;
+        double t4 = (double)((H >= 4) ? d->fm_cma5_taps_q15[4] : 0) / 32768.0;
 
         /* Adaptation guard state */
-        static int guard_inited = 0;
-        static int freeze_blocks_rem = 0;
-        static int reject_streak = 0;
-        static double mu_guard_scale = 1.0;
-        static int acc_accepts = 0;
-        static int acc_rejects = 0;
-        if (!guard_inited || reset_guard) {
-            guard_inited = 1;
-            freeze_blocks_rem = 0;
-            reject_streak = 0;
-            mu_guard_scale = 1.0;
-            acc_accepts = 0;
-            acc_rejects = 0;
+        if (!d->fm_cma_guard_inited || reset_guard) {
+            d->fm_cma_guard_inited = 1;
+            d->fm_cma_guard_freeze = 0;
+            d->fm_cma_guard_reject_streak = 0;
+            d->fm_cma_guard_mu_scale = 1.0;
+            d->fm_cma_guard_accepts = 0;
+            d->fm_cma_guard_rejects = 0;
         }
 
-        int adapt_this = (warm_rem > 0 && freeze_blocks_rem <= 0) ? 1 : 0;
+        int adapt_this = (d->fm_cma5_warm_rem > 0 && d->fm_cma_guard_freeze <= 0) ? 1 : 0;
         /* Gate adaptation using P25p1 RS errors (requires RTL stream path) */
         if (adapt_this) {
 #ifdef USE_RTLSDR
@@ -1227,7 +1249,7 @@ fm_cma_equalize(struct demod_state* d) {
         if (adapt_this) {
             double J_old = (N > 0) ? (sum_e2_old / (double)N) : 0.0;
             double prev0 = t0, prev1 = t1, prev2 = t2, prev3 = t3, prev4 = t4;
-            double mu = ((double)mu_q15 / 32768.0) * mu_scale * mu_guard_scale;
+            double mu = ((double)mu_q15 / 32768.0) * mu_scale * d->fm_cma_guard_mu_scale;
             double invN = (N > 0) ? (1.0 / (double)N) : 0.0;
 
             /* Candidate taps */
@@ -1331,7 +1353,7 @@ fm_cma_equalize(struct demod_state* d) {
                 (J_new <= J_old * (1.0 - eps)) && (clip_frac_new <= clip_thr_frac) && (delta_norm <= delta_max);
             if (basic_ok) {
                 accept = 1;
-            } else if (reject_streak >= 4) {
+            } else if (d->fm_cma_guard_reject_streak >= 4) {
                 /* Fallback: allow any non-increasing cost, no worse clips than old + margin, relaxed step norm */
                 double rel_delta_max = delta_max * 1.5;
                 double clip_margin = 0.005; /* +0.5% */
@@ -1383,32 +1405,32 @@ fm_cma_equalize(struct demod_state* d) {
                 if (tq4 < -32768) {
                     tq4 = -32768;
                 }
-                t_q15[0] = tq0;
+                d->fm_cma5_taps_q15[0] = tq0;
                 if (H >= 1) {
-                    t_q15[1] = tq1;
+                    d->fm_cma5_taps_q15[1] = tq1;
                 }
                 if (H >= 2) {
-                    t_q15[2] = tq2;
+                    d->fm_cma5_taps_q15[2] = tq2;
                 }
                 if (H >= 3) {
-                    t_q15[3] = tq3;
+                    d->fm_cma5_taps_q15[3] = tq3;
                 }
                 if (H >= 4) {
-                    t_q15[4] = tq4;
+                    d->fm_cma5_taps_q15[4] = tq4;
                 }
                 /* Consume warmup samples */
-                if (warm_rem < N) {
-                    warm_rem = 0;
+                if (d->fm_cma5_warm_rem < N) {
+                    d->fm_cma5_warm_rem = 0;
                 } else {
-                    warm_rem -= N;
+                    d->fm_cma5_warm_rem -= N;
                 }
                 /* Slowly relax backoff */
-                mu_guard_scale *= 1.05;
-                if (mu_guard_scale > 1.0) {
-                    mu_guard_scale = 1.0;
+                d->fm_cma_guard_mu_scale *= 1.05;
+                if (d->fm_cma_guard_mu_scale > 1.0) {
+                    d->fm_cma_guard_mu_scale = 1.0;
                 }
-                reject_streak = 0;
-                acc_accepts++;
+                d->fm_cma_guard_reject_streak = 0;
+                d->fm_cma_guard_accepts++;
             } else {
                 /* Revert, back off, and optionally freeze */
                 t0 = prev0;
@@ -1419,34 +1441,31 @@ fm_cma_equalize(struct demod_state* d) {
                 /* Do not decrement warm_rem on reject; adjust step based on trend */
                 if (J_new < J_old) {
                     /* Trending better; gently increase step to reach acceptance */
-                    mu_guard_scale *= 1.10;
-                    if (mu_guard_scale > 1.0) {
-                        mu_guard_scale = 1.0;
+                    d->fm_cma_guard_mu_scale *= 1.10;
+                    if (d->fm_cma_guard_mu_scale > 1.0) {
+                        d->fm_cma_guard_mu_scale = 1.0;
                     }
                 } else {
-                    mu_guard_scale *= 0.70;
-                    if (mu_guard_scale < 0.05) {
-                        mu_guard_scale = 0.05;
+                    d->fm_cma_guard_mu_scale *= 0.70;
+                    if (d->fm_cma_guard_mu_scale < 0.05) {
+                        d->fm_cma_guard_mu_scale = 0.05;
                     }
                 }
-                reject_streak++;
-                if (reject_streak >= 8) {
+                d->fm_cma_guard_reject_streak++;
+                if (d->fm_cma_guard_reject_streak >= 8) {
                     /* Hold briefly after many consecutive rejects, but keep streak so fallback can trigger afterward */
-                    freeze_blocks_rem = 6; /* hold for a few blocks */
+                    d->fm_cma_guard_freeze = 6; /* hold for a few blocks */
                 }
-                acc_rejects++;
+                d->fm_cma_guard_rejects++;
             }
         } else {
             /* If in freeze, count down */
-            if (freeze_blocks_rem > 0) {
-                freeze_blocks_rem--;
+            if (d->fm_cma_guard_freeze > 0) {
+                d->fm_cma_guard_freeze--;
             }
         }
 
-        /* Publish guard status to demod_state for UI */
-        d->fm_cma_guard_freeze = freeze_blocks_rem;
-        d->fm_cma_guard_accepts = acc_accepts;
-        d->fm_cma_guard_rejects = acc_rejects;
+        /* Publish guard status already reflects per-instance counters */
 
         /* Consume output in-place */
         memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
@@ -1772,7 +1791,10 @@ full_demod(struct demod_state* d) {
         fm_constant_envelope_limiter(d);
     }
     fm_cma_equalize(d);
-    /* Mode-aware generic IQ balance (image suppression): engage for non-QPSK paths */
+    /* Residual CFO loop: estimate error then rotate */
+    fll_update_error(d);
+    fll_mix_and_update(d);
+    /* Mode-aware generic IQ balance (image suppression) after CFO rotation */
     if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {
         /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */
         double s2r = 0.0, s2i = 0.0, p2 = 0.0;
@@ -1781,7 +1803,6 @@ full_demod(struct demod_state* d) {
         for (int n = 0; n < N; n++) {
             double I = (double)iq[(size_t)(n << 1) + 0];
             double Q = (double)iq[(size_t)(n << 1) + 1];
-            /* z^2 = (I^2 - Q^2) + j*2IQ; |z|^2 = I^2 + Q^2 */
             s2r += I * I - Q * Q;
             s2i += 2.0 * I * Q;
             p2 += I * I + Q * Q;
@@ -1791,7 +1812,6 @@ full_demod(struct demod_state* d) {
         }
         double ar = s2r / p2;
         double ai = s2i / p2;
-        /* Smooth alpha via EMA in Q15 */
         int a_q15 = d->iqbal_alpha_ema_a_q15 > 0 ? d->iqbal_alpha_ema_a_q15 : 6553; /* ~0.2 */
         int r_q15 = (int)(ar * 32768.0 + 0.5);
         int i_q15 = (int)(ai * 32768.0 + 0.5);
@@ -1813,19 +1833,16 @@ full_demod(struct demod_state* d) {
         ei += (int)(((int64_t)a_q15 * (int64_t)(i_q15 - ei)) >> 15);
         d->iqbal_alpha_ema_r_q15 = er;
         d->iqbal_alpha_ema_i_q15 = ei;
-        /* Gate by magnitude threshold */
         int thr = d->iqbal_thr_q15 > 0 ? d->iqbal_thr_q15 : 655; /* ~0.02 */
-        int mag2 = (er * er + ei * ei) >> 15;                    /* approximate with Q15 scaling */
+        int mag2 = (er * er + ei * ei) >> 15;
         int thr2 = (thr * thr) >> 15;
         if (mag2 >= thr2) {
-            /* Apply y = z - alpha * conj(z) with alpha = er/ei (Q15) */
             int ar_q15 = er;
             int ai_q15 = ei;
             int16_t* out = d->lowpassed;
             for (int n = 0; n < N; n++) {
                 int32_t I = out[(size_t)(n << 1) + 0];
                 int32_t Q = out[(size_t)(n << 1) + 1];
-                /* tI = ar*I + ai*Q; tQ = -ar*Q + ai*I (Q15) */
                 int32_t tI = (int32_t)(((int64_t)ar_q15 * I + (int64_t)ai_q15 * Q) >> 15);
                 int32_t tQ = (int32_t)((-(int64_t)ar_q15 * Q + (int64_t)ai_q15 * I) >> 15);
                 int32_t yI = I - tI;
@@ -1847,9 +1864,6 @@ full_demod(struct demod_state* d) {
             }
         }
     }
-    /* Residual CFO loop: estimate error then rotate */
-    fll_update_error(d);
-    fll_mix_and_update(d);
     /* Optional CQPSK/LSM pre-processing on complex baseband for QPSK paths */
     if (d->cqpsk_enable) {
         if (d->cqpsk_mf_enable) {
@@ -1921,8 +1935,10 @@ full_demod(struct demod_state* d) {
             for (i = 0; i < d->lp_len; i++) {
                 d->lowpassed[i] = 0;
             }
+            d->squelch_gate_open = 0;
         } else {
             d->squelch_hits = 0;
+            d->squelch_gate_open = 1;
         }
     }
     d->mode_demod(d); /* lowpassed -> result */
@@ -1932,7 +1948,42 @@ full_demod(struct demod_state* d) {
     /* todo, fm noise squelch */
     // use nicer filter here too?
     if (d->post_downsample > 1) {
-        d->result_len = low_pass_simple(d->result, d->result_len, d->post_downsample);
+        /* Pre-filter audio with a one-pole LPF to reduce aliasing before decimation */
+        int decim = d->post_downsample;
+        int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
+        /* Aim for fc ~ 0.2*Fs/decim */
+        double fc = 0.2 * ((double)Fs / (double)decim);
+        if (fc < 50.0) {
+            fc = 50.0;
+        }
+        double a = 1.0 - exp(-2.0 * 3.14159265358979323846 * fc / (double)Fs);
+        if (a < 0.0) {
+            a = 0.0;
+        }
+        if (a > 1.0) {
+            a = 1.0;
+        }
+        int alpha_q15 = (int)lrint(a * 32768.0);
+        if (alpha_q15 < 1) {
+            alpha_q15 = 1;
+        }
+        if (alpha_q15 > 32767) {
+            alpha_q15 = 32767;
+        }
+        int y = (d->result_len > 0) ? d->result[0] : 0;
+        for (int k = 0; k < d->result_len; k++) {
+            int x = (int)d->result[k];
+            int dlt = x - y;
+            int64_t delta = (int64_t)dlt * alpha_q15;
+            if (dlt >= 0) {
+                delta += (1 << 14);
+            } else {
+                delta -= (1 << 14);
+            }
+            y += (int)(delta >> 15);
+            d->result[k] = sat16(y);
+        }
+        d->result_len = low_pass_simple(d->result, d->result_len, decim);
     }
     if (d->deemph) {
         deemph_filter(d);
@@ -1945,5 +1996,35 @@ full_demod(struct demod_state* d) {
     if (d->rate_out2 > 0) {
         low_pass_real(d);
         //arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
+    }
+
+    /* Apply soft squelch envelope on audio */
+    {
+        int env = d->squelch_env_q15;
+        int target = d->squelch_gate_open ? 32768 : 0;
+        int alpha = d->squelch_gate_open ? (d->squelch_env_attack_q15 > 0 ? d->squelch_env_attack_q15 : 4096)
+                                         : (d->squelch_env_release_q15 > 0 ? d->squelch_env_release_q15 : 1024);
+        int err = target - env;
+        int64_t delta = (int64_t)alpha * (int64_t)err;
+        env += (int)(delta >> 15);
+        if (env < 0) {
+            env = 0;
+        }
+        if (env > 32768) {
+            env = 32768;
+        }
+        d->squelch_env_q15 = env;
+        /* Multiply audio by envelope */
+        int16_t* res = d->result;
+        for (int k = 0; k < d->result_len; k++) {
+            int32_t v = (int32_t)((int64_t)res[k] * env >> 15);
+            if (v > 32767) {
+                v = 32767;
+            }
+            if (v < -32768) {
+                v = -32768;
+            }
+            res[k] = (int16_t)v;
+        }
     }
 }
