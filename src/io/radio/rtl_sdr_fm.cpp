@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <rtl-sdr.h>
@@ -248,14 +249,43 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
         }
     }
 
-    /* If we have a valid capture rate, use that directly. Many
-       applications (e.g., rtl_433) set tuner BW ~= sample rate. */
-    if (capture_rate_hz >= 225000 && capture_rate_hz <= 5000000) {
-        return capture_rate_hz;
+    /* Mode-aware policy:
+       - Scanning (multiple freqs): prefer BW ~= capture rate for consistent IF while hopping.
+       - Single freq:
+           - Digital-like (no deemphasis): target ~2x channel BW with clamps.
+           - Analog-like (deemphasis enabled): keep wide but sane; use min(capture, 1.8 MHz).
+       If uncertain, fall back to prior heuristics. */
+
+    int scanning = (controller.freq_len > 1) ? 1 : 0;
+    int analog_like = (demod.deemph != 0) ? 1 : 0;
+
+    if (scanning) {
+        if (capture_rate_hz >= 225000 && capture_rate_hz <= 5000000) {
+            return capture_rate_hz;
+        }
+    } else {
+        if (!analog_like && dsp_bw_hz > 0) {
+            /* Digital single-channel: ~2x channel bandwidth (guard), clamps 100 kHz..1.5 MHz */
+            uint64_t tgt = (uint64_t)dsp_bw_hz * 2ULL;
+            if (tgt < 100000ULL) {
+                tgt = 100000ULL;
+            }
+            if (tgt > 1500000ULL) {
+                tgt = 1500000ULL;
+            }
+            /* Optional: don't exceed capture rate much */
+            if (capture_rate_hz > 0 && tgt > capture_rate_hz) {
+                tgt = capture_rate_hz;
+            }
+            return (uint32_t)tgt;
+        }
+        if (analog_like && capture_rate_hz > 0) {
+            uint32_t maxa = 1800000U; /* ~1.8 MHz ceiling for analog */
+            return (capture_rate_hz < maxa) ? capture_rate_hz : maxa;
+        }
     }
 
-    /* Fallback: derive from DSP bandwidth with margin (x8),
-       clamped to a practical range. */
+    /* Fallback: derive from DSP bandwidth with margin (x8), clamped. */
     uint32_t bw = 0;
     if (dsp_bw_hz > 0) {
         uint64_t hinted = (uint64_t)dsp_bw_hz * 8ULL; /* generous guard */
@@ -429,6 +459,8 @@ demod_reset_on_retune(struct demod_state* s) {
 static std::atomic<double> g_snr_c4fm_db{-100.0};
 static std::atomic<double> g_snr_qpsk_db{-100.0};
 static std::atomic<double> g_snr_gfsk_db{-100.0};
+/* Supervisory tuner autogain gate (0/1), controlled via env/UI */
+static std::atomic<int> g_tuner_autogain_on{0};
 /* Track recency and source of SNR updates: src 1=direct (symbols), 2=fallback (eye/constellation) */
 static std::atomic<long long> g_snr_c4fm_last_ms{0};
 static std::atomic<int> g_snr_c4fm_src{0};
@@ -442,6 +474,11 @@ extern "C" double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 /* Fwd decl: QPSK and GFSK fallbacks */
 extern "C" double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 extern "C" double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
+/* Blanker and tuner autogain runtime get/set */
+extern "C" int dsd_rtl_stream_get_blanker(int* out_thr, int* out_win);
+extern "C" void dsd_rtl_stream_set_blanker(int enable, int thr, int win);
+extern "C" int dsd_rtl_stream_get_tuner_autogain(void);
+extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
 
 /* Forward decl: spectrum updater used in demod thread */
 static void update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz);
@@ -451,12 +488,77 @@ demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
     struct output_state* o = d->output_target;
     maybe_set_thread_realtime_and_affinity("DEMOD");
+    /* Optional supervisory tuner autogain (env-gated) */
+    static int ag_initialized = 0;
+    static int ag_blocks = 0, ag_high = 0, ag_low = 0;
+    static int ag_manual_target = 180; /* 18.0 dB initial manual target if needed */
     int logged_once = 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Read a block from input ring */
         int got = input_ring_read_block(&input_ring, d->input_cb_buf, MAXIMUM_BUF_LENGTH);
         if (got <= 0) {
             continue;
+        }
+        if (!ag_initialized) {
+            const char* ag = getenv("DSD_NEO_TUNER_AUTOGAIN");
+            if (ag && (*ag != '\0') && (*ag != '0') && (*ag != 'f') && (*ag != 'F') && (*ag != 'n') && (*ag != 'N')) {
+                g_tuner_autogain_on.store(1, std::memory_order_relaxed);
+            }
+            ag_initialized = 1;
+        }
+        /* Update simple occupancy metrics on pre-DSP input for autogain */
+        if (g_tuner_autogain_on.load(std::memory_order_relaxed)) {
+            int max_abs = 0;
+            int64_t sum_abs = 0;
+            int pairs = got >> 1;
+            const int16_t* p = d->input_cb_buf;
+            for (int n = 0; n < pairs; n++) {
+                int I = p[(size_t)(n << 1) + 0];
+                int Q = p[(size_t)(n << 1) + 1];
+                int aI = (I >= 0) ? I : -I;
+                int aQ = (Q >= 0) ? Q : -Q;
+                int m = (aI > aQ) ? aI : aQ;
+                if (m > max_abs) {
+                    max_abs = m;
+                }
+                sum_abs += (aI + aQ);
+            }
+            int mean_abs = (pairs > 0) ? (int)(sum_abs / pairs) : 0;
+            ag_blocks++;
+            if (max_abs > 30000) {
+                ag_high++;
+            }
+            if (mean_abs < 2000) {
+                ag_low++;
+            }
+            /* Every ~40 blocks, consider a nudge */
+            if (ag_blocks >= 40) {
+                int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
+                if (is_auto > 0) {
+                    if (ag_high >= 3) {
+                        /* Too hot while in auto: switch to manual slightly lower gain */
+                        ag_manual_target -= 50;
+                        if (ag_manual_target < 0) {
+                            ag_manual_target = 0;
+                        }
+                        rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
+                        dongle.gain = ag_manual_target;
+                        LOG_INFO("AUTOGAIN: clipping detected; switching to manual ~%d.%d dB.\n", ag_manual_target / 10,
+                                 ag_manual_target % 10);
+                    } else if (ag_low >= (ag_blocks * 3) / 4) {
+                        /* Very low occupancy: switch to manual slightly higher gain */
+                        ag_manual_target += 50;
+                        if (ag_manual_target > 490) {
+                            ag_manual_target = 490;
+                        }
+                        rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
+                        dongle.gain = ag_manual_target;
+                        LOG_INFO("AUTOGAIN: low occupancy; switching to manual ~%d.%d dB.\n", ag_manual_target / 10,
+                                 ag_manual_target % 10);
+                    }
+                }
+                ag_blocks = ag_high = ag_low = 0;
+            }
         }
         d->lowpassed = d->input_cb_buf;
         d->lp_len = got;
@@ -802,8 +904,42 @@ optimal_settings(int freq, int rate) {
             if (passes > 10) {
                 passes = 10; /* practical guard */
             }
-            dm->downsample_passes = passes;
-            dm->downsample = 1 << passes;
+            /* Small adjustment: prefer capture rates that fall near known-stable
+               RTL2832U clocks (e.g., 960k, 1024k, 1200k, 1536k, 1920k, 2048k, 2400k).
+               We keep the power-of-two structure by choosing among nearby pass counts. */
+            auto choose_passes_near_good_rate = [&](int rate_in_hz, int suggested_passes) {
+                const int good_rates[] = {960000, 1024000, 1200000, 1536000, 1920000, 2048000, 2400000};
+                int best_p = suggested_passes;
+                long long best_err = LLONG_MAX;
+                for (int delta = -1; delta <= 1; delta++) {
+                    int p = suggested_passes + delta;
+                    if (p < 0) {
+                        p = 0;
+                    }
+                    if (p > 10) {
+                        p = 10;
+                    }
+                    long long cap = (long long)rate_in_hz * (long long)(1 << p);
+                    /* stay in a reasonable RTL range */
+                    if (cap < 225000LL || cap > 3200000LL) {
+                        continue;
+                    }
+                    for (size_t i = 0; i < sizeof(good_rates) / sizeof(good_rates[0]); i++) {
+                        long long err = cap - (long long)good_rates[i];
+                        if (err < 0) {
+                            err = -err;
+                        }
+                        if (err < best_err) {
+                            best_err = err;
+                            best_p = p;
+                        }
+                    }
+                }
+                return best_p;
+            };
+            int adj_passes = choose_passes_near_good_rate(dm->rate_in, passes);
+            dm->downsample_passes = adj_passes;
+            dm->downsample = 1 << adj_passes;
         }
     }
     capture_freq = freq;
@@ -860,6 +996,27 @@ apply_capture_settings(uint32_t center_freq_hz) {
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
     /* Use driver auto hardware bandwidth by default, or override via env */
     rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
+    /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
+    int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    if (actual > 0 && (uint32_t)actual != dongle.rate) {
+        uint32_t prev = dongle.rate;
+        dongle.rate = (uint32_t)actual;
+        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes)
+                                                       : ((demod.downsample > 0) ? demod.downsample : 1);
+        if (base_decim < 1) {
+            base_decim = 1;
+        }
+        int out_rate = (int)(dongle.rate / (uint32_t)base_decim);
+        if (demod.post_downsample > 1) {
+            out_rate /= demod.post_downsample;
+            if (out_rate < 1) {
+                out_rate = 1;
+            }
+        }
+        demod.rate_out = out_rate;
+        LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
+                 demod.rate_out);
+    }
 }
 
 /**
@@ -971,6 +1128,31 @@ controller_thread_fn(void* arg) {
 
     /* Set the sample rate after frequency */
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
+    /* USB may quantize the applied sample rate; sync and update out rate if changed. */
+    {
+        int actual = rtl_device_get_sample_rate(rtl_device_handle);
+        if (actual > 0 && (uint32_t)actual != dongle.rate) {
+            uint32_t prev = dongle.rate;
+            dongle.rate = (uint32_t)actual;
+            int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes)
+                                                           : ((demod.downsample > 0) ? demod.downsample : 1);
+            if (base_decim < 1) {
+                base_decim = 1;
+            }
+            int out_rate = (int)(dongle.rate / (uint32_t)base_decim);
+            if (demod.post_downsample > 1) {
+                out_rate /= demod.post_downsample;
+                if (out_rate < 1) {
+                    out_rate = 1;
+                }
+            }
+            demod.rate_out = out_rate;
+            LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
+                     demod.rate_out);
+        }
+    }
+    /* Apply tuner IF bandwidth with mode-aware heuristic */
+    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
@@ -992,7 +1174,18 @@ controller_thread_fn(void* arg) {
             /* Reset demod/FLL/TED and clear any stale buffers on retune */
             demod_reset_on_retune(&demod);
             input_ring_clear(&input_ring);
-            rtl_device_mute(rtl_device_handle, BUFFER_DUMP);
+            /* Dynamically mute a short slice of incoming bytes to flush tuner/transient tail. */
+            {
+                int mute_ms = 10; /* ~10ms default */
+                int64_t bytes = ((int64_t)dongle.rate * 2LL * (int64_t)mute_ms) / 1000LL;
+                if (bytes < BUFFER_DUMP) {
+                    bytes = BUFFER_DUMP; /* keep previous minimum */
+                }
+                if (bytes > INT32_MAX) {
+                    bytes = INT32_MAX;
+                }
+                rtl_device_mute(rtl_device_handle, (int)bytes);
+            }
             drain_output_on_retune();
             LOG_INFO("Retune applied: %u Hz.\n", tgt);
             continue;
@@ -1006,7 +1199,18 @@ controller_thread_fn(void* arg) {
         /* Reset demod/FLL/TED and clear any stale buffers on hop */
         demod_reset_on_retune(&demod);
         input_ring_clear(&input_ring);
-        rtl_device_mute(rtl_device_handle, BUFFER_DUMP);
+        /* Dynamically mute a short slice of incoming bytes to flush tuner/transient tail. */
+        {
+            int mute_ms = 10; /* ~10ms default */
+            int64_t bytes = ((int64_t)dongle.rate * 2LL * (int64_t)mute_ms) / 1000LL;
+            if (bytes < BUFFER_DUMP) {
+                bytes = BUFFER_DUMP; /* keep previous minimum */
+            }
+            if (bytes > INT32_MAX) {
+                bytes = INT32_MAX;
+            }
+            rtl_device_mute(rtl_device_handle, (int)bytes);
+        }
         drain_output_on_retune();
     }
     return 0;
@@ -1455,6 +1659,53 @@ update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int 
     }
     g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_spec_ready.store(1, std::memory_order_release);
+}
+
+/* ---------------- Runtime getters/setters: Blanker and Tuner Autogain ---------------- */
+extern "C" int
+dsd_rtl_stream_get_blanker(int* out_thr, int* out_win) {
+    if (out_thr) {
+        *out_thr = demod.blanker_thr;
+    }
+    if (out_win) {
+        *out_win = demod.blanker_win;
+    }
+    return demod.blanker_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_blanker(int enable, int thr, int win) {
+    if (enable >= 0) {
+        demod.blanker_enable = enable ? 1 : 0;
+    }
+    if (thr >= 0) {
+        if (thr < 0) {
+            thr = 0;
+        }
+        if (thr > 60000) {
+            thr = 60000;
+        }
+        demod.blanker_thr = thr;
+    }
+    if (win >= 0) {
+        if (win < 0) {
+            win = 0;
+        }
+        if (win > 16) {
+            win = 16;
+        }
+        demod.blanker_win = win;
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_get_tuner_autogain(void) {
+    return g_tuner_autogain_on.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_tuner_autogain(int onoff) {
+    g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 
 extern "C" int
@@ -2031,6 +2282,11 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
     demod.iq_dc_avg_r = demod.iq_dc_avg_i = 0;
 
+    /* Impulse blanker (pre-decimation) */
+    demod.blanker_enable = cfg->blanker_is_set ? (cfg->blanker_enable != 0) : 0;
+    demod.blanker_thr = cfg->blanker_thr_is_set ? cfg->blanker_thr : 20000;
+    demod.blanker_win = cfg->blanker_win_is_set ? cfg->blanker_win : 2;
+
     /* FM/FSK CMA equalizer defaults (pre-discriminator) */
     demod.fm_cma_enable = cfg->fm_cma_is_set ? (cfg->fm_cma_enable != 0) : 0;
     demod.fm_cma_taps = cfg->fm_cma_taps_is_set ? cfg->fm_cma_taps : 1;
@@ -2054,11 +2310,14 @@ select_defaults_for_mode(dsd_opts* opts) {
     int env_fll_beta_set = dsd_neo_get_config()->fll_beta_is_set;
     int env_ted_sps_set = dsd_neo_get_config()->ted_sps_is_set;
     int env_ted_gain_set = dsd_neo_get_config()->ted_gain_is_set;
+    int env_iq_dc_set = dsd_neo_get_config()->iq_dc_block_is_set;
     /* Treat all digital voice modes as digital for FLL/TED defaults */
     int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
+        /* Keep complex DC blocker default as-is (off unless user/env enabled).
+           Enabling by default can bias constellation for some front-ends. */
         /* Keep TED disabled by default; user/UI can enable as needed. */
         if (!env_ted_sps_set) {
             /* Use configured target or current output rate to derive default SPS per mode */

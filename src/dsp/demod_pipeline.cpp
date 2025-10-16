@@ -79,6 +79,55 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 
 /* HB_TAPS and hb_q15_taps provided by dsp/halfband.h */
 
+/* ---------------- Impulse blanker (optional, pre-decimation) ---------------- */
+static void
+impulse_blanker(struct demod_state* d) {
+    if (!d || !d->blanker_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    const int16_t* in = d->lowpassed;
+    const int Npairs = d->lp_len >> 1; /* complex pairs */
+    if (Npairs <= 0) {
+        return;
+    }
+    /* Compute mean |I|+|Q| as a simple baseline */
+    uint64_t acc = 0;
+    for (int n = 0; n < Npairs; n++) {
+        int16_t I = in[(size_t)(n << 1) + 0];
+        int16_t Q = in[(size_t)(n << 1) + 1];
+        int aI = (I >= 0) ? I : -I;
+        int aQ = (Q >= 0) ? Q : -Q;
+        acc += (uint32_t)(aI + aQ);
+    }
+    int mean = (int)(acc / (uint64_t)Npairs);
+    int thr = (d->blanker_thr > 0) ? d->blanker_thr : 20000; /* amplitude in Q0 */
+    int win = (d->blanker_win > 0) ? d->blanker_win : 2;     /* half-window in pairs */
+    /* Detect spikes and zero windows around them in-place */
+    int16_t* out = d->lowpassed;
+    for (int n = 0; n < Npairs; n++) {
+        int16_t I = out[(size_t)(n << 1) + 0];
+        int16_t Q = out[(size_t)(n << 1) + 1];
+        int aI = (I >= 0) ? I : -I;
+        int aQ = (Q >= 0) ? Q : -Q;
+        int mag = aI + aQ;
+        if (mag > mean + thr) {
+            int a = n - win;
+            if (a < 0) {
+                a = 0;
+            }
+            int b = n + win;
+            if (b >= Npairs) {
+                b = Npairs - 1;
+            }
+            for (int k = a; k <= b; k++) {
+                out[(size_t)(k << 1) + 0] = 0;
+                out[(size_t)(k << 1) + 1] = 0;
+            }
+            n = b; /* skip ahead */
+        }
+    }
+}
+
 /* CIC compensation filter tables */
 #define CIC_TABLE_MAX 10
 static const int cic_9_tables[][10] = {
@@ -842,7 +891,7 @@ fm_envelope_agc(struct demod_state* d) {
     }
 }
 
-/* Optional complex DC blocker prior to FM discrimination */
+/* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator) */
 static inline void
 iq_dc_block(struct demod_state* d) {
     if (!d || !d->iq_dc_block_enable || !d->lowpassed || d->lp_len < 2) {
@@ -857,20 +906,16 @@ iq_dc_block(struct demod_state* d) {
     }
     int16_t* iq = d->lowpassed;
     const int pairs = d->lp_len >> 1;
-    /* Estimate DC using block mean, then smooth the applied offset */
-    int64_t sumI = 0, sumQ = 0;
+    int dcI = d->iq_dc_avg_r;
+    int dcQ = d->iq_dc_avg_i;
     for (int n = 0; n < pairs; n++) {
-        sumI += (int)iq[(size_t)(n << 1) + 0];
-        sumQ += (int)iq[(size_t)(n << 1) + 1];
-    }
-    int meanI = (pairs > 0) ? (int)(sumI / pairs) : 0;
-    int meanQ = (pairs > 0) ? (int)(sumQ / pairs) : 0;
-    int dcI = d->iq_dc_avg_r + ((meanI - d->iq_dc_avg_r) >> k);
-    int dcQ = d->iq_dc_avg_i + ((meanQ - d->iq_dc_avg_i) >> k);
-    /* Apply constant subtraction across this block */
-    for (int n = 0; n < pairs; n++) {
-        int yI = (int)iq[(size_t)(n << 1) + 0] - dcI;
-        int yQ = (int)iq[(size_t)(n << 1) + 1] - dcQ;
+        int I = (int)iq[(size_t)(n << 1) + 0];
+        int Q = (int)iq[(size_t)(n << 1) + 1];
+        /* Update leaky integrator toward current sample */
+        dcI += (I - dcI) >> k;
+        dcQ += (Q - dcQ) >> k;
+        int yI = I - dcI;
+        int yQ = Q - dcQ;
         iq[(size_t)(n << 1) + 0] = sat16(yI);
         iq[(size_t)(n << 1) + 1] = sat16(yQ);
     }
@@ -1671,6 +1716,8 @@ gardner_timing_adjust(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     int i, ds_p;
+    /* Optional pre-decimation blanking of impulsive spikes */
+    impulse_blanker(d);
     ds_p = d->downsample_passes;
     if (ds_p) {
         /* Choose decimator: half-band cascade (default) or legacy path */

@@ -111,6 +111,15 @@ static void act_anytone_bp(void* v);
 static void act_xor_ks(void* v);
 #ifdef USE_RTLSDR
 static void act_rtl_opts(void* v);
+/* Blanker UI helpers */
+static const char* lbl_blanker(void* v, char* b, size_t n);
+static const char* lbl_blanker_thr(void* v, char* b, size_t n);
+static const char* lbl_blanker_win(void* v, char* b, size_t n);
+static void act_toggle_blanker(void* v);
+static void act_blanker_thr_up(void* v);
+static void act_blanker_thr_dn(void* v);
+static void act_blanker_win_up(void* v);
+static void act_blanker_win_dn(void* v);
 #endif
 
 static void
@@ -1247,6 +1256,36 @@ lbl_rtl_auto_ppm(void* v, char* b, size_t n) {
 }
 
 static void
+rtl_toggle_tuner_autogain(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int on = 0;
+    if (g_rtl_ctx) {
+        on = rtl_stream_get_tuner_autogain();
+        rtl_stream_set_tuner_autogain(on ? 0 : 1);
+    } else {
+        /* Persist choice into env for the next start */
+        const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");
+        on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+        setenv("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1", 1);
+    }
+    (void)c;
+}
+
+static const char*
+lbl_rtl_tuner_autogain(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int on = 0;
+    if (g_rtl_ctx) {
+        on = rtl_stream_get_tuner_autogain();
+    } else {
+        const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");
+        on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+    }
+    snprintf(b, n, "Tuner Autogain: %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
 ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
     static const NcMenuItem items[] = {
@@ -1274,6 +1313,11 @@ ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_rtl_auto_ppm,
          .help = "Enable/disable spectrum-based auto PPM tracking",
          .on_select = rtl_toggle_auto_ppm},
+        {.id = "tuner_autogain",
+         .label = "Tuner Autogain",
+         .label_fn = lbl_rtl_tuner_autogain,
+         .help = "Enable/disable supervisory tuner autogain.",
+         .on_select = rtl_toggle_tuner_autogain},
         {.id = "bias",
          .label = "Toggle Bias Tee",
          .label_fn = lbl_rtl_bias,
@@ -3687,6 +3731,23 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "k in dc += (x-dc)>>k (10..14 typical)."},
         {.id = "iq_dck+", .label = "Shift k +1", .on_select = act_iq_dc_k_up},
         {.id = "iq_dck-", .label = "Shift k -1", .on_select = act_iq_dc_k_dn},
+        {.id = "blanker",
+         .label = "Impulse Blanker",
+         .label_fn = lbl_blanker,
+         .help = "Toggle pre-decimation impulse blanker.",
+         .on_select = act_toggle_blanker},
+        {.id = "blanker_thr",
+         .label = "Blanker Thr (status)",
+         .label_fn = lbl_blanker_thr,
+         .help = "Magnitude threshold above mean (|I|+|Q|)."},
+        {.id = "blanker_thr+", .label = "Thr +2000", .on_select = act_blanker_thr_up},
+        {.id = "blanker_thr-", .label = "Thr -2000", .on_select = act_blanker_thr_dn},
+        {.id = "blanker_win",
+         .label = "Blanker Win (status)",
+         .label_fn = lbl_blanker_win,
+         .help = "Half-window in complex pairs to blank around spikes."},
+        {.id = "blanker_win+", .label = "Win +1", .on_select = act_blanker_win_up},
+        {.id = "blanker_win-", .label = "Win -1", .on_select = act_blanker_win_dn},
         {.id = "fm_cma",
          .label = "FM CMA Equalizer",
          .label_fn = lbl_fm_cma,
@@ -4679,3 +4740,89 @@ ui_menu_main(dsd_opts* opts, dsd_state* state) {
     };
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }
+
+/* Blanker UI handlers implementation */
+#ifdef USE_RTLSDR
+static const char*
+lbl_blanker(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int thr = 0, win = 0;
+    int on = rtl_stream_get_blanker(&thr, &win);
+    snprintf(b, n, "Impulse Blanker: %s", on ? "On" : "Off");
+    return b;
+}
+
+static const char*
+lbl_blanker_thr(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int thr = 0;
+    rtl_stream_get_blanker(&thr, NULL);
+    snprintf(b, n, "Blanker Thr: %d", thr);
+    return b;
+}
+
+static const char*
+lbl_blanker_win(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int win = 0;
+    rtl_stream_get_blanker(NULL, &win);
+    snprintf(b, n, "Blanker Win: %d", win);
+    return b;
+}
+
+static void
+act_toggle_blanker(void* v) {
+    UNUSED(v);
+    int thr = 0, win = 0;
+    int on = rtl_stream_get_blanker(&thr, &win);
+    rtl_stream_set_blanker(on ? 0 : 1, -1, -1);
+}
+
+static void
+act_blanker_thr_up(void* v) {
+    UNUSED(v);
+    int thr = 0;
+    rtl_stream_get_blanker(&thr, NULL);
+    thr += 2000;
+    if (thr > 60000) {
+        thr = 60000;
+    }
+    rtl_stream_set_blanker(-1, thr, -1);
+}
+
+static void
+act_blanker_thr_dn(void* v) {
+    UNUSED(v);
+    int thr = 0;
+    rtl_stream_get_blanker(&thr, NULL);
+    thr -= 2000;
+    if (thr < 0) {
+        thr = 0;
+    }
+    rtl_stream_set_blanker(-1, thr, -1);
+}
+
+static void
+act_blanker_win_up(void* v) {
+    UNUSED(v);
+    int win = 0;
+    rtl_stream_get_blanker(NULL, &win);
+    win += 1;
+    if (win > 16) {
+        win = 16;
+    }
+    rtl_stream_set_blanker(-1, -1, win);
+}
+
+static void
+act_blanker_win_dn(void* v) {
+    UNUSED(v);
+    int win = 0;
+    rtl_stream_get_blanker(NULL, &win);
+    win -= 1;
+    if (win < 0) {
+        win = 0;
+    }
+    rtl_stream_set_blanker(-1, -1, win);
+}
+#endif

@@ -276,6 +276,17 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.c4fm_dd_eq_mu_is_set = env_is_set(dd_m);
     c.c4fm_dd_eq_mu_q15 = c.c4fm_dd_eq_mu_is_set ? atoi(dd_m) : 2;
 
+    /* Impulse blanker */
+    const char* bl_on = getenv("DSD_NEO_BLANKER_ON");
+    const char* bl_thr = getenv("DSD_NEO_BLANKER_THR");
+    const char* bl_win = getenv("DSD_NEO_BLANKER_WIN");
+    c.blanker_is_set = env_is_set(bl_on);
+    c.blanker_enable = c.blanker_is_set ? (atoi(bl_on) != 0) : 0; /* default off */
+    c.blanker_thr_is_set = env_is_set(bl_thr);
+    c.blanker_thr = c.blanker_thr_is_set ? atoi(bl_thr) : 20000;
+    c.blanker_win_is_set = env_is_set(bl_win);
+    c.blanker_win = c.blanker_win_is_set ? atoi(bl_win) : 2;
+
     g_config = c;
     g_config_inited = 1;
 }

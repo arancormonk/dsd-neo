@@ -78,6 +78,18 @@ int rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency);
 int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
 
 /**
+ * @brief Query the current device sample rate.
+ *
+ * USB backend returns the actual rate reported by librtlsdr
+ * (which may differ slightly from the requested value). The rtl_tcp
+ * backend returns the last programmed value.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return Sample rate in Hz (non-negative) or negative on error.
+ */
+int rtl_device_get_sample_rate(struct rtl_device* dev);
+
+/**
  * @brief Set tuner gain mode and value.
  *
  * @param dev RTL-SDR device handle.
@@ -85,6 +97,19 @@ int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_gain(struct rtl_device* dev, int gain);
+
+/**
+ * @brief Set tuner gain to the nearest supported value (manual mode).
+ *
+ * For USB (librtlsdr) backend, queries the list of supported gains and
+ * applies the nearest value to the requested target. For rtl_tcp, sends
+ * the target value directly and lets the server handle quantization.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param target_tenth_db Target gain in tenths of dB (e.g., 180 for 18.0 dB).
+ * @return 0 on success, negative on failure.
+ */
+int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db);
 
 /**
  * @brief Get current tuner gain in tenths of dB as reported by the driver.
@@ -160,10 +185,14 @@ int rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len);
 int rtl_device_stop_async(struct rtl_device* dev);
 
 /**
- * @brief Mute the device for a specified number of samples.
+ * @brief Mute the incoming raw USB/TCP byte stream for a short duration.
+ *
+ * Note: The argument is in raw input BYTES (u8 I/Q interleaved), not int16
+ * samples. This matches how the underlying callback consumes the value
+ * (clamping and subtracting from the remaining byte count per callback).
  *
  * @param dev RTL-SDR device handle.
- * @param samples Number of samples to mute.
+ * @param bytes Number of input bytes to overwrite with 0x7F (mute).
  */
 void rtl_device_mute(struct rtl_device* dev, int samples);
 

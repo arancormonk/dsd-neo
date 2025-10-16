@@ -280,6 +280,14 @@ typedef struct dsdneoRuntimeConfig {
     int c4fm_dd_eq_taps; /* odd: 3,5,7,9 */
     int c4fm_dd_eq_mu_is_set;
     int c4fm_dd_eq_mu_q15; /* 1..64 */
+
+    /* Impulse blanker (pre-decimation) */
+    int blanker_is_set; /* env seen */
+    int blanker_enable;
+    int blanker_thr_is_set;
+    int blanker_thr;
+    int blanker_win_is_set;
+    int blanker_win;
 }
 
 dsdneoRuntimeConfig;

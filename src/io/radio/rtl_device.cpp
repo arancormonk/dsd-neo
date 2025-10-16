@@ -1302,6 +1302,26 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
 }
 
 /**
+ * @brief Get current device sample rate.
+ *
+ * For USB, queries librtlsdr for the actual rate applied (which may be
+ * quantized). For rtl_tcp, returns the last programmed value.
+ */
+int
+rtl_device_get_sample_rate(struct rtl_device* dev) {
+    if (!dev) {
+        return -1;
+    }
+    if (dev->backend == 0) {
+        if (!dev->dev) {
+            return -1;
+        }
+        return (int)rtlsdr_get_sample_rate(dev->dev);
+    }
+    return (int)dev->rate;
+}
+
+/**
  * @brief Set tuner gain mode and value.
  *
  * @param dev RTL-SDR device handle.
@@ -1345,6 +1365,42 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
             return rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)gain);
         }
     }
+}
+
+int
+rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
+    if (!dev) {
+        return -1;
+    }
+    if (dev->backend == 0) {
+        /* USB: find nearest supported and set manual gain */
+        if (!dev->dev) {
+            return -1;
+        }
+        int g = nearest_gain(dev->dev, target_tenth_db);
+        if (g < 0) {
+            return g;
+        }
+        int r = rtlsdr_set_tuner_gain_mode(dev->dev, 1);
+        if (r < 0) {
+            fprintf(stderr, "WARNING: Failed to enable manual gain.\n");
+            return r;
+        }
+        r = rtlsdr_set_tuner_gain(dev->dev, g);
+        if (r < 0) {
+            fprintf(stderr, "WARNING: Failed to set tuner gain (nearest).\n");
+            return r;
+        }
+        dev->gain = g;
+        fprintf(stderr, "Tuner manual gain (nearest): %0.1f dB.\n", (double)g / 10.0);
+        return 0;
+    }
+    /* rtl_tcp: request manual mode and set target directly */
+    int mode = 1;
+    (void)rtl_tcp_send_cmd(dev->sockfd, 0x03, (uint32_t)mode);
+    (void)rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)target_tenth_db);
+    dev->gain = target_tenth_db;
+    return 0;
 }
 
 int

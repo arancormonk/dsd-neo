@@ -223,4 +223,9 @@ struct demod_state {
     int fm_cma_guard_freeze;  /* remaining blocks held by stability guard */
     int fm_cma_guard_accepts; /* total accepted tap updates */
     int fm_cma_guard_rejects; /* total rejected tap updates */
+
+    /* Optional impulse blanker (pre-decimation) */
+    int blanker_enable; /* 0/1 gate; default off */
+    int blanker_thr;    /* threshold in Q0 amplitude units (~|I|+|Q| above mean) */
+    int blanker_win;    /* half-window in complex samples to zero around spike */
 };

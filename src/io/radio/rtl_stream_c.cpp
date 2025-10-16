@@ -63,6 +63,11 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
+/* Blanker + tuner autogain */
+int dsd_rtl_stream_get_blanker(int* out_thr, int* out_win);
+void dsd_rtl_stream_set_blanker(int enable, int thr, int win);
+int dsd_rtl_stream_get_tuner_autogain(void);
+void dsd_rtl_stream_set_tuner_autogain(int onoff);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -511,6 +516,26 @@ rtl_stream_estimate_snr_qpsk_const(void) {
 extern "C" double
 rtl_stream_estimate_snr_gfsk_eye(void) {
     return dsd_rtl_stream_estimate_snr_gfsk_eye();
+}
+
+extern "C" int
+rtl_stream_get_blanker(int* out_thr, int* out_win) {
+    return dsd_rtl_stream_get_blanker(out_thr, out_win);
+}
+
+extern "C" void
+rtl_stream_set_blanker(int enable, int thr, int win) {
+    dsd_rtl_stream_set_blanker(enable, thr, win);
+}
+
+extern "C" int
+rtl_stream_get_tuner_autogain(void) {
+    return dsd_rtl_stream_get_tuner_autogain();
+}
+
+extern "C" void
+rtl_stream_set_tuner_autogain(int onoff) {
+    dsd_rtl_stream_set_tuner_autogain(onoff);
 }
 
 /* C4FM DD equalizer runtime config wrappers (update global runtime config) */
