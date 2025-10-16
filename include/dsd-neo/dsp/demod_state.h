@@ -251,4 +251,13 @@ struct demod_state {
     int blanker_enable; /* 0/1 gate; default off */
     int blanker_thr;    /* threshold in Q0 amplitude units (~|I|+|Q| above mean) */
     int blanker_win;    /* half-window in complex samples to zero around spike */
+
+    /* Post-demod audio polyphase decimator (M>2) */
+    int post_polydecim_enabled;   /* 0/1 gate for audio polyphase decimator */
+    int post_polydecim_M;         /* integer decimation factor */
+    int post_polydecim_K;         /* taps per phase (phase==1), e.g., 16 */
+    int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
+    int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
+    int16_t* post_polydecim_taps; /* Q15 taps length K */
+    int16_t* post_polydecim_hist; /* circular history length K */
 };

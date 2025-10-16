@@ -38,6 +38,9 @@
 #include <stdlib.h>
 
 #include <dsd-neo/io/udp_input.h>
+#if defined(__SSE__) || defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -161,6 +164,26 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
         return;
     }
     snprintf(out, out_sz, "%s", buf);
+}
+
+/* Optional: enable Flush-To-Zero and Denormals-Are-Zero on x86 SSE to avoid
+   potential denormal slowdowns in float-heavy DSP (guarded by env flag). */
+static void
+maybe_enable_ftz_daz_from_env(void) {
+#if defined(__SSE__) || defined(__SSE2__)
+    const char* e = getenv("DSD_NEO_FTZ_DAZ");
+    if (!e || !is_truthy_env(e)) {
+        return;
+    }
+    unsigned int mxcsr;
+    mxcsr = _mm_getcsr();
+    /* Set FTZ (bit 15) and DAZ (bit 6) */
+    mxcsr |= (1u << 15) | (1u << 6);
+    _mm_setcsr(mxcsr);
+    LOG_NOTICE("Enabled SSE FTZ/DAZ (env DSD_NEO_FTZ_DAZ)\n");
+#else
+    (void)0;
+#endif
 }
 
 static void
@@ -2936,6 +2959,7 @@ main(int argc, char** argv) {
 
     initOpts(&opts);
     initState(&state);
+    maybe_enable_ftz_daz_from_env();
     init_audio_filters(&state); //audio filters
     init_rrc_filter_memory();   //initialize input filtering
     InitAllFecFunction();

@@ -81,6 +81,141 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 
 /* HB_TAPS and hb_q15_taps provided by dsp/halfband.h */
 
+/* ---------------- Post-demod audio polyphase decimator (M > 2) -------------- */
+/*
+ * Lightweight 1/M polyphase decimator for audio. Designs a windowed-sinc
+ * prototype (Q15) for the given M and streams with a circular history.
+ * Keeps state in demod_state to persist across blocks.
+ */
+static void
+audio_polydecim_ensure(struct demod_state* d, int M) {
+    if (!d || M <= 2) {
+        d->post_polydecim_enabled = 0;
+        return;
+    }
+    const int K = 16; /* taps */
+    int redesign = 0;
+    if (!d->post_polydecim_taps || !d->post_polydecim_hist || d->post_polydecim_M != M || d->post_polydecim_K != K) {
+        redesign = 1;
+    }
+    if (!redesign) {
+        d->post_polydecim_enabled = 1;
+        return;
+    }
+    if (d->post_polydecim_taps) {
+        dsd_neo_aligned_free(d->post_polydecim_taps);
+        d->post_polydecim_taps = NULL;
+    }
+    if (d->post_polydecim_hist) {
+        dsd_neo_aligned_free(d->post_polydecim_hist);
+        d->post_polydecim_hist = NULL;
+    }
+    {
+        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(int16_t));
+        d->post_polydecim_taps = (int16_t*)mem_ptr;
+    }
+    {
+        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(int16_t));
+        d->post_polydecim_hist = (int16_t*)mem_ptr;
+    }
+    if (!d->post_polydecim_taps || !d->post_polydecim_hist) {
+        if (d->post_polydecim_taps) {
+            free(d->post_polydecim_taps);
+            d->post_polydecim_taps = NULL;
+        }
+        if (d->post_polydecim_hist) {
+            free(d->post_polydecim_hist);
+            d->post_polydecim_hist = NULL;
+        }
+        d->post_polydecim_enabled = 0;
+        return;
+    }
+    memset(d->post_polydecim_hist, 0, (size_t)K * sizeof(int16_t));
+    d->post_polydecim_hist_head = 0;
+    d->post_polydecim_phase = 0;
+
+    /* Design windowed-sinc low-pass: fc ≈ 0.45 / M (normalized), Hamming window */
+    double fc = 0.45 / (double)M;
+    int N = K;
+    int mid = (N - 1) / 2;
+    double gain = 0.0;
+    for (int n = 0; n < N; n++) {
+        int m = n - mid;
+        double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(N - 1));
+        double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+        double t = h * w;
+        gain += t;
+    }
+    if (gain == 0.0) {
+        gain = 1.0;
+    }
+    for (int n = 0; n < N; n++) {
+        int m = n - mid;
+        double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(N - 1));
+        double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
+        double t = (h * w) / gain;
+        int v = (int)lrint(t * 32768.0);
+        if (v > 32767) {
+            v = 32767;
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        d->post_polydecim_taps[n] = (int16_t)v;
+    }
+    d->post_polydecim_M = M;
+    d->post_polydecim_K = K;
+    d->post_polydecim_enabled = 1;
+}
+
+static int
+audio_polydecim_process(struct demod_state* d, const int16_t* in, int in_len, int16_t* out) {
+    if (!d || !d->post_polydecim_enabled || !d->post_polydecim_taps || !d->post_polydecim_hist || in_len <= 0) {
+        if (in && out && in_len > 0) {
+            memcpy(out, in, (size_t)in_len * sizeof(int16_t));
+        }
+        return in_len;
+    }
+    const int K = d->post_polydecim_K;
+    const int M = d->post_polydecim_M;
+    int head = d->post_polydecim_hist_head;
+    int phase = d->post_polydecim_phase;
+    const int16_t* taps = d->post_polydecim_taps;
+    int out_len = 0;
+    for (int n = 0; n < in_len; n++) {
+        /* push */
+        d->post_polydecim_hist[head] = in[n];
+        head++;
+        if (head == K) {
+            head = 0;
+        }
+        /* phase accum */
+        phase++;
+        if (phase >= M) {
+            phase -= M;
+            /* dot product over K most recent samples */
+            int idx = head - 1;
+            if (idx < 0) {
+                idx += K;
+            }
+            int64_t acc = 0;
+            for (int k = 0; k < K; k++) {
+                acc += (int32_t)d->post_polydecim_hist[idx] * (int32_t)taps[k];
+                idx--;
+                if (idx < 0) {
+                    idx += K;
+                }
+            }
+            acc += (1 << 14);
+            int32_t y = (int32_t)(acc >> 15);
+            out[out_len++] = sat16(y);
+        }
+    }
+    d->post_polydecim_hist_head = head;
+    d->post_polydecim_phase = phase;
+    return out_len;
+}
+
 /* ---------------- Impulse blanker (optional, pre-decimation) ---------------- */
 static void
 impulse_blanker(struct demod_state* d) {
@@ -475,7 +610,8 @@ generic_fir(int16_t* data, int length, int* fir, int16_t* hist) {
         sum += (hist[3] + hist[5]) * fir[4];
         sum += hist[4] * fir[5];
         sum += (1 << 14); /* Round */
-        data[d] = sum >> 15;
+        /* Saturate on writeback to guard future coefficient changes */
+        data[d] = sat16((int32_t)(sum >> 15));
         hist[0] = hist[1];
         hist[1] = hist[2];
         hist[2] = hist[3];
@@ -1948,42 +2084,51 @@ full_demod(struct demod_state* d) {
     /* todo, fm noise squelch */
     // use nicer filter here too?
     if (d->post_downsample > 1) {
-        /* Pre-filter audio with a one-pole LPF to reduce aliasing before decimation */
         int decim = d->post_downsample;
-        int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
-        /* Aim for fc ~ 0.2*Fs/decim */
-        double fc = 0.2 * ((double)Fs / (double)decim);
-        if (fc < 50.0) {
-            fc = 50.0;
-        }
-        double a = 1.0 - exp(-2.0 * 3.14159265358979323846 * fc / (double)Fs);
-        if (a < 0.0) {
-            a = 0.0;
-        }
-        if (a > 1.0) {
-            a = 1.0;
-        }
-        int alpha_q15 = (int)lrint(a * 32768.0);
-        if (alpha_q15 < 1) {
-            alpha_q15 = 1;
-        }
-        if (alpha_q15 > 32767) {
-            alpha_q15 = 32767;
-        }
-        int y = (d->result_len > 0) ? d->result[0] : 0;
-        for (int k = 0; k < d->result_len; k++) {
-            int x = (int)d->result[k];
-            int dlt = x - y;
-            int64_t delta = (int64_t)dlt * alpha_q15;
-            if (dlt >= 0) {
-                delta += (1 << 14);
-            } else {
-                delta -= (1 << 14);
+        if (decim > 2) {
+            /* Higher-quality polyphase decimator for larger factors */
+            audio_polydecim_ensure(d, decim);
+            int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
+            if (out_n > 0) {
+                memcpy(d->result, d->timing_buf, (size_t)out_n * sizeof(int16_t));
+                d->result_len = out_n;
             }
-            y += (int)(delta >> 15);
-            d->result[k] = sat16(y);
+        } else {
+            /* Pre-filter with one-pole and simple decimation for small factor */
+            int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
+            double fc = 0.2 * ((double)Fs / (double)decim);
+            if (fc < 50.0) {
+                fc = 50.0;
+            }
+            double a = 1.0 - exp(-2.0 * 3.14159265358979323846 * fc / (double)Fs);
+            if (a < 0.0) {
+                a = 0.0;
+            }
+            if (a > 1.0) {
+                a = 1.0;
+            }
+            int alpha_q15 = (int)lrint(a * 32768.0);
+            if (alpha_q15 < 1) {
+                alpha_q15 = 1;
+            }
+            if (alpha_q15 > 32767) {
+                alpha_q15 = 32767;
+            }
+            int y = (d->result_len > 0) ? d->result[0] : 0;
+            for (int k = 0; k < d->result_len; k++) {
+                int x = (int)d->result[k];
+                int dlt = x - y;
+                int64_t delta = (int64_t)dlt * alpha_q15;
+                if (dlt >= 0) {
+                    delta += (1 << 14);
+                } else {
+                    delta -= (1 << 14);
+                }
+                y += (int)(delta >> 15);
+                d->result[k] = sat16(y);
+            }
+            d->result_len = low_pass_simple(d->result, d->result_len, decim);
         }
-        d->result_len = low_pass_simple(d->result, d->result_len, decim);
     }
     if (d->deemph) {
         deemph_filter(d);

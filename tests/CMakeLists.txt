@@ -536,6 +536,12 @@ target_include_directories(dsd-neo_test_dsp_hb_complex PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(dsd-neo_test_dsp_hb_complex PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_HB_COMPLEX COMMAND dsd-neo_test_dsp_hb_complex)
 
+# HB cascade alias rejection quantification
+add_executable(dsd-neo_test_dsp_hb_alias dsp/test_dsp_hb_alias.cpp)
+target_include_directories(dsd-neo_test_dsp_hb_alias PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_hb_alias PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_HB_ALIAS COMMAND dsd-neo_test_dsp_hb_alias)
+
 add_executable(dsd-neo_test_dsp_iq_dc_block dsp/test_dsp_iq_dc_block.cpp)
 target_include_directories(dsd-neo_test_dsp_iq_dc_block PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_iq_dc_block PRIVATE dsd-neo_dsp)
@@ -575,6 +581,12 @@ add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(dsd-neo_test_dsp_demod_misc PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_demod_misc PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_DEMOD_MISC COMMAND dsd-neo_test_dsp_demod_misc)
+
+# Post-demod audio polyphase decimator (M>2) smoke test
+add_executable(dsd-neo_test_dsp_audio_polydecim dsp/test_dsp_audio_polydecim.cpp)
+target_include_directories(dsd-neo_test_dsp_audio_polydecim PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_audio_polydecim PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_AUDIO_POLYDECIM COMMAND dsd-neo_test_dsp_audio_polydecim)
 
 add_executable(dsd-neo_test_dsp_channel_filters dsp/test_dsp_channel_filters.cpp)
 target_include_directories(dsd-neo_test_dsp_channel_filters PRIVATE ${PROJECT_SOURCE_DIR}/include)

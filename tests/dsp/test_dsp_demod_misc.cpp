@@ -154,6 +154,21 @@ main(void) {
             return 1;
         }
     }
+    // generic_fir: saturation when sum exceeds 16-bit range
+    {
+        int16_t hist[9];
+        for (int i = 0; i < 9; i++) {
+            hist[i] = 30000;
+        }
+        int fir[6] = {0, 4096, 4096, 4096, 4096, 4096};
+        int16_t buf[2] = {0, 0};
+        generic_fir(buf, 2, fir, hist);
+        if (buf[0] != 32767) {
+            fprintf(stderr, "generic_fir: expected saturation to 32767, got %d\n", buf[0]);
+            free(s);
+            return 1;
+        }
+    }
 
     // dsd_fm_demod: fake discriminator + FLL offset
     {

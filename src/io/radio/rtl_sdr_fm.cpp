@@ -439,6 +439,12 @@ demod_reset_on_retune(struct demod_state* s) {
     if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
         memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(int16_t));
     }
+    /* Post-demod polyphase decimator history */
+    s->post_polydecim_hist_head = 0;
+    s->post_polydecim_phase = 0;
+    if (s->post_polydecim_hist && s->post_polydecim_K > 0) {
+        memset(s->post_polydecim_hist, 0, (size_t)s->post_polydecim_K * sizeof(int16_t));
+    }
 }
 
 /**
@@ -1897,6 +1903,13 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     s->resamp_taps_per_phase = 0;
     s->resamp_taps = NULL;
     s->resamp_hist = NULL;
+    /* Post-demod audio polyphase decimator defaults */
+    s->post_polydecim_enabled = 0;
+    s->post_polydecim_M = 1;
+    s->post_polydecim_K = 0;
+    s->post_polydecim_hist_head = 0;
+    s->post_polydecim_taps = NULL;
+    s->post_polydecim_hist = NULL;
     /* FLL/TED defaults */
     s->fll_enabled = 0;
     s->fll_alpha_q15 = 0;
@@ -2067,6 +2080,15 @@ demod_cleanup(struct demod_state* s) {
     if (s->resamp_hist) {
         dsd_neo_aligned_free(s->resamp_hist);
         s->resamp_hist = NULL;
+    }
+    /* Free post-demod polyphase decimator resources */
+    if (s->post_polydecim_taps) {
+        dsd_neo_aligned_free(s->post_polydecim_taps);
+        s->post_polydecim_taps = NULL;
+    }
+    if (s->post_polydecim_hist) {
+        dsd_neo_aligned_free(s->post_polydecim_hist);
+        s->post_polydecim_hist = NULL;
     }
 }
 
