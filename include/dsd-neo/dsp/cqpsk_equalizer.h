@@ -20,6 +20,11 @@
 extern "C" {
 #endif
 
+/* Symbol ring buffer size for recent equalized outputs */
+#ifndef CQPSK_EQ_SYM_MAX
+#define CQPSK_EQ_SYM_MAX 2048
+#endif
+
 /* Max taps for the short equalizer. Must be odd, up to 11. */
 #ifndef CQPSK_EQ_MAX_TAPS
 #define CQPSK_EQ_MAX_TAPS 11
@@ -77,6 +82,10 @@ typedef struct cqpsk_eq_state_s {
     int adapt_hold;     /* countdown ticks before a mode switch is allowed */
     int adapt_min_hold; /* min ticks to hold a mode once switched */
     int wl_thr_off_q15; /* WL off threshold (hysteresis), Q15 */
+
+    /* Recent equalized symbols (Q0), captured at symbol ticks */
+    int16_t sym_xy[CQPSK_EQ_SYM_MAX * 2];
+    int sym_head; /* ring head in pairs [0..CQPSK_EQ_SYM_MAX-1] */
 } cqpsk_eq_state_t;
 
 /* Initialize equalizer state with identity response. */
@@ -106,7 +115,7 @@ void cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len);
  * Copies up to max_pairs complex samples (interleaved I,Q in Q0 int16) into out_xy.
  * Returns the number of pairs copied (0 if unavailable).
  */
-int cqpsk_eq_get_symbols(int16_t* out_xy, int max_pairs);
+int cqpsk_eq_get_symbols(const cqpsk_eq_state_t* st, int16_t* out_xy, int max_pairs);
 
 #ifdef __cplusplus
 }

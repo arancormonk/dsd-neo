@@ -1607,12 +1607,12 @@ fm_cma_equalize(struct demod_state* d) {
         memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
         return;
     }
-    /* Initialize a single EQ state lazily; reconfigure on parameter changes. */
-    static cqpsk_eq_state_t eq;
-    static int inited = 0;
-    static int prev_taps = 0;
-    static int prev_mu = 0;
-    static int prev_warm = 0;
+    /* Initialize per-instance EQ state lazily; reconfigure on parameter changes. */
+    cqpsk_eq_state_t* eq = &d->fm_cma_eq;
+    int* inited = &d->fm_cma_eq_inited;
+    int* prev_taps = &d->fm_cma_prev_taps;
+    int* prev_mu = &d->fm_cma_prev_mu;
+    int* prev_warm = &d->fm_cma_prev_warm;
 
     /* For FM/FSK, use a safe 1-tap CMA (complex gain only). Multi-tap CMA can
        distort FM phase; when stronger mitigation desired, enable the symmetric
@@ -1626,40 +1626,40 @@ fm_cma_equalize(struct demod_state* d) {
         mu = 64;
     }
     int warm = d->fm_cma_warmup; /* samples; <=0 means continuous */
-    if (!inited) {
-        cqpsk_eq_init(&eq);
-        inited = 1;
-        prev_taps = 0;
-        prev_mu = 0;
-        prev_warm = 0;
+    if (!*inited) {
+        cqpsk_eq_init(eq);
+        *inited = 1;
+        *prev_taps = 0;
+        *prev_mu = 0;
+        *prev_warm = 0;
     }
-    if (taps != prev_taps || eq.num_taps != taps) {
-        eq.num_taps = taps;
-        cqpsk_eq_reset_all(&eq);
-        prev_taps = taps;
+    if (taps != *prev_taps || eq->num_taps != taps) {
+        eq->num_taps = taps;
+        cqpsk_eq_reset_all(eq);
+        *prev_taps = taps;
     }
-    if (mu != prev_mu) {
-        eq.cma_mu_q15 = (int16_t)mu;
-        prev_mu = mu;
+    if (mu != *prev_mu) {
+        eq->cma_mu_q15 = (int16_t)mu;
+        *prev_mu = mu;
     }
     /* Disable DD LMS and all auxiliary branches for FM CMA */
-    eq.lms_enable = 0;
-    eq.dfe_enable = 0;
-    eq.wl_enable = 0;
-    eq.update_stride = 4;
-    eq.sym_stride = 4;
+    eq->lms_enable = 0;
+    eq->dfe_enable = 0;
+    eq->wl_enable = 0;
+    eq->update_stride = 4;
+    eq->sym_stride = 4;
     /* Continuous CMA when warm<=0: keep a very large warmup so it never runs out */
     if (warm <= 0) {
-        if (eq.cma_warmup <= 0) {
-            eq.cma_warmup = 1000000000; /* ~"infinite" */
+        if (eq->cma_warmup <= 0) {
+            eq->cma_warmup = 1000000000; /* ~"infinite" */
         }
     } else {
-        if (prev_warm != warm || eq.cma_warmup <= 0) {
-            eq.cma_warmup = warm;
-            prev_warm = warm;
+        if (*prev_warm != warm || eq->cma_warmup <= 0) {
+            eq->cma_warmup = warm;
+            *prev_warm = warm;
         }
     }
-    cqpsk_eq_process_block(&eq, d->lowpassed, d->lp_len);
+    cqpsk_eq_process_block(eq, d->lowpassed, d->lp_len);
 }
 
 /* Small symmetric 5-tap matched-like FIR on interleaved I/Q (in-place via workbuf). */

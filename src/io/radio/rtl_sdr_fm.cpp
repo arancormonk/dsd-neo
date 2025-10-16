@@ -600,7 +600,7 @@ demod_thread_fn(void* arg) {
                 enum { MAXP = 2048 };
 
                 static int16_t syms[(size_t)MAXP * 2];
-                int n = cqpsk_eq_get_symbols(syms, MAXP);
+                int n = cqpsk_eq_get_symbols(&demod.cqpsk_eq, syms, MAXP);
                 if (n > 32) {
                     double sum_mag = 0.0;
                     for (int i = 0; i < n; i++) {

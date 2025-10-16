@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/ted.h>
 
@@ -247,6 +248,13 @@ struct demod_state {
     int fm_cma_guard_reject_streak;
     double fm_cma_guard_mu_scale; /* multiplicative scale (double) */
 
+    /* FM CMA (1-tap) per-instance equalizer state (CMA-only via CQPSK EQ core) */
+    int fm_cma_eq_inited;
+    int fm_cma_prev_mu;
+    int fm_cma_prev_taps;
+    int fm_cma_prev_warm;
+    cqpsk_eq_state_t fm_cma_eq;
+
     /* Optional impulse blanker (pre-decimation) */
     int blanker_enable; /* 0/1 gate; default off */
     int blanker_thr;    /* threshold in Q0 amplitude units (~|I|+|Q| above mean) */
@@ -260,4 +268,8 @@ struct demod_state {
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
     int16_t* post_polydecim_taps; /* Q15 taps length K */
     int16_t* post_polydecim_hist; /* circular history length K */
+
+    /* CQPSK equalizer state (per-instance; replaces previous static singleton) */
+    int cqpsk_eq_initialized;
+    cqpsk_eq_state_t cqpsk_eq;
 };

@@ -25,21 +25,19 @@ sat16_i32(int32_t x) {
     return (int16_t)x;
 }
 
-/* Ring buffer of recent equalized symbol outputs at sym ticks (Q0 int16) */
-static const int kSymMax = 2048;
-static int16_t g_sym_xy[kSymMax * 2];
-static volatile int g_sym_head = 0; /* pairs written [0..kSymMax-1], wraps */
+/* Ring buffer of recent equalized symbol outputs is per-instance (st->sym_xy). */
+static const int kSymMax = CQPSK_EQ_SYM_MAX;
 
 static inline void
-sym_ring_append_q0(int32_t yI_q0, int32_t yQ_q0) {
-    int h = g_sym_head;
-    g_sym_xy[(size_t)(h << 1) + 0] = sat16_i32(yI_q0);
-    g_sym_xy[(size_t)(h << 1) + 1] = sat16_i32(yQ_q0);
+sym_ring_append_q0(cqpsk_eq_state_t* st, int32_t yI_q0, int32_t yQ_q0) {
+    int h = st->sym_head;
+    st->sym_xy[(size_t)(h << 1) + 0] = sat16_i32(yI_q0);
+    st->sym_xy[(size_t)(h << 1) + 1] = sat16_i32(yQ_q0);
     h++;
     if (h >= kSymMax) {
         h = 0;
     }
-    g_sym_head = h;
+    st->sym_head = h;
 }
 
 void
@@ -105,6 +103,11 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->adapt_hold = 0;
     st->adapt_min_hold = 64;                            /* hold ~64 update ticks by default */
     st->wl_thr_off_q15 = (st->wl_gate_thr_q15 * 3) / 4; /* 25% hysteresis */
+    /* symbol ring */
+    st->sym_head = 0;
+    for (int i = 0; i < kSymMax * 2; i++) {
+        st->sym_xy[i] = 0;
+    }
 }
 
 void
@@ -665,23 +668,26 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
             st->last_y_q_q14 = (int16_t)accQ_q14;
             st->have_last_sym = 1;
             /* Append equalized symbol (Q0) to ring for EVM/SNR */
-            sym_ring_append_q0(yI, yQ);
+            sym_ring_append_q0(st, yI, yQ);
         }
     }
 }
 
 extern "C" int
-cqpsk_eq_get_symbols(int16_t* out_xy, int max_pairs) {
+cqpsk_eq_get_symbols(const cqpsk_eq_state_t* st, int16_t* out_xy, int max_pairs) {
     if (!out_xy || max_pairs <= 0) {
         return 0;
     }
-    int head = g_sym_head; /* snapshot */
+    if (!st) {
+        return 0;
+    }
+    int head = st->sym_head; /* snapshot */
     int n = (max_pairs < kSymMax) ? max_pairs : kSymMax;
     int start = head;
     for (int k = 0; k < n; k++) {
         int idx = (start + k) % kSymMax;
-        out_xy[(size_t)(k << 1) + 0] = g_sym_xy[(size_t)(idx << 1) + 0];
-        out_xy[(size_t)(k << 1) + 1] = g_sym_xy[(size_t)(idx << 1) + 1];
+        out_xy[(size_t)(k << 1) + 0] = st->sym_xy[(size_t)(idx << 1) + 0];
+        out_xy[(size_t)(k << 1) + 1] = st->sym_xy[(size_t)(idx << 1) + 1];
     }
     return n;
 }

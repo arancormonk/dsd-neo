@@ -13,27 +13,23 @@
 /*
  * Minimal CQPSK path wrapper.
  *
- * For now, applies a pass-through complex equalizer. Future updates:
- *  - Decision-directed LMS coefficient update
- *  - Optional soft limiter pre/post EQ
+ * Per-instance equalizer state now lives inside demod_state to allow
+ * re-entrant helpers. We keep a single bound demod pointer for runtime
+ * control APIs that do not take an explicit context.
  */
-
-typedef struct cqpsk_ctx_s {
-    cqpsk_eq_state_t eq;
-    int initialized;
-} cqpsk_ctx_t;
-
-/* Single-instance context; revisit if multiple demods are used concurrently. */
-static cqpsk_ctx_t g_cqpsk_ctx;
+static struct demod_state* g_cqpsk_demod = NULL;
 
 void
 cqpsk_init(struct demod_state* s) {
-    (void)s;
-    memset(&g_cqpsk_ctx, 0, sizeof(g_cqpsk_ctx));
-    cqpsk_eq_init(&g_cqpsk_ctx.eq);
+    g_cqpsk_demod = s;
+    if (!s) {
+        return;
+    }
+    s->cqpsk_eq_initialized = 1;
+    cqpsk_eq_init(&s->cqpsk_eq);
     /* Configure from demod_state first (CLI/runtime), then allow env to override if set */
     if (s) {
-        g_cqpsk_ctx.eq.lms_enable = (s->cqpsk_lms_enable != 0);
+        s->cqpsk_eq.lms_enable = (s->cqpsk_lms_enable != 0);
         /* If samples-per-symbol is known, pick a small odd tap count relative to it (cap at MAX). */
         if (s->ted_sps >= 4 && s->ted_sps <= 12) {
             int taps = 5;
@@ -46,21 +42,21 @@ cqpsk_init(struct demod_state* s) {
             if ((taps & 1) == 0) {
                 taps++; /* enforce odd */
             }
-            g_cqpsk_ctx.eq.num_taps = taps;
+            s->cqpsk_eq.num_taps = taps;
             /* Use SPS as DFE symbol gating stride */
-            g_cqpsk_ctx.eq.sym_stride = s->ted_sps;
+            s->cqpsk_eq.sym_stride = s->ted_sps;
         }
         if (s->cqpsk_mu_q15 > 0) {
-            g_cqpsk_ctx.eq.mu_q15 = (int16_t)s->cqpsk_mu_q15;
+            s->cqpsk_eq.mu_q15 = (int16_t)s->cqpsk_mu_q15;
         }
         if (s->cqpsk_update_stride > 0) {
-            g_cqpsk_ctx.eq.update_stride = s->cqpsk_update_stride;
+            s->cqpsk_eq.update_stride = s->cqpsk_update_stride;
         }
     }
     /* Optional env overrides for quick experiments */
     const char* lms = getenv("DSD_NEO_CQPSK_LMS");
     if (lms && (*lms == '1' || *lms == 'y' || *lms == 'Y' || *lms == 't' || *lms == 'T')) {
-        g_cqpsk_ctx.eq.lms_enable = 1;
+        s->cqpsk_eq.lms_enable = 1;
     }
     const char* taps = getenv("DSD_NEO_CQPSK_TAPS");
     if (taps) {
@@ -74,29 +70,29 @@ cqpsk_init(struct demod_state* s) {
         if ((v & 1) == 0) {
             v++; /* odd only */
         }
-        g_cqpsk_ctx.eq.num_taps = v;
+        s->cqpsk_eq.num_taps = v;
     }
     const char* mu = getenv("DSD_NEO_CQPSK_MU");
     if (mu) {
         int v = atoi(mu);
         if (v >= 1 && v <= 64) {
-            g_cqpsk_ctx.eq.mu_q15 = (int16_t)v; /* very small steps */
+            s->cqpsk_eq.mu_q15 = (int16_t)v; /* very small steps */
         }
     }
     const char* stride = getenv("DSD_NEO_CQPSK_STRIDE");
     if (stride) {
         int v = atoi(stride);
         if (v >= 1 && v <= 32) {
-            g_cqpsk_ctx.eq.update_stride = v;
+            s->cqpsk_eq.update_stride = v;
         }
     }
     /* Default symbol gating to update stride if SPS is unknown */
-    if (g_cqpsk_ctx.eq.sym_stride <= 0) {
-        g_cqpsk_ctx.eq.sym_stride = g_cqpsk_ctx.eq.update_stride;
+    if (s->cqpsk_eq.sym_stride <= 0) {
+        s->cqpsk_eq.sym_stride = s->cqpsk_eq.update_stride;
     }
     const char* wl = getenv("DSD_NEO_CQPSK_WL");
     if (wl && (*wl == '1' || *wl == 'y' || *wl == 'Y' || *wl == 't' || *wl == 'T')) {
-        g_cqpsk_ctx.eq.wl_enable = 1;
+        s->cqpsk_eq.wl_enable = 1;
     }
     /* WL stability knobs: leakage and impropriety gate threshold */
     const char* wl_leak = getenv("DSD_NEO_CQPSK_WL_LEAK");
@@ -108,7 +104,7 @@ cqpsk_init(struct demod_state* s) {
         if (v > 16) {
             v = 16; /* max */
         }
-        g_cqpsk_ctx.eq.wl_leak_shift = v;
+        s->cqpsk_eq.wl_leak_shift = v;
     }
     const char* wl_thr = getenv("DSD_NEO_CQPSK_WL_THR");
     if (wl_thr) {
@@ -131,14 +127,14 @@ cqpsk_init(struct demod_state* s) {
             if (thr_q15 > 32767) {
                 thr_q15 = 32767;
             }
-            g_cqpsk_ctx.eq.wl_gate_thr_q15 = thr_q15;
+            s->cqpsk_eq.wl_gate_thr_q15 = thr_q15;
         }
     }
     const char* wl_mu = getenv("DSD_NEO_CQPSK_WL_MU");
     if (wl_mu) {
         int v = atoi(wl_mu);
         if (v >= 1 && v <= 64) {
-            g_cqpsk_ctx.eq.wl_mu_q15 = v;
+            s->cqpsk_eq.wl_mu_q15 = v;
         }
     }
     const char* hold = getenv("DSD_NEO_CQPSK_ADAPT_HOLD");
@@ -150,7 +146,7 @@ cqpsk_init(struct demod_state* s) {
         if (v > 1024) {
             v = 1024;
         }
-        g_cqpsk_ctx.eq.adapt_min_hold = v;
+        s->cqpsk_eq.adapt_min_hold = v;
     }
     const char* thr_off = getenv("DSD_NEO_CQPSK_WL_THR_OFF");
     if (thr_off) {
@@ -172,7 +168,7 @@ cqpsk_init(struct demod_state* s) {
             if (toff > 32767) {
                 toff = 32767;
             }
-            g_cqpsk_ctx.eq.wl_thr_off_q15 = toff;
+            s->cqpsk_eq.wl_thr_off_q15 = toff;
         }
     }
     const char* wl_ema = getenv("DSD_NEO_CQPSK_WL_EMA");
@@ -196,12 +192,12 @@ cqpsk_init(struct demod_state* s) {
             if (a > 32767) {
                 a = 32767;
             }
-            g_cqpsk_ctx.eq.wl_improp_alpha_q15 = a;
+            s->cqpsk_eq.wl_improp_alpha_q15 = a;
         }
     }
     const char* dfe = getenv("DSD_NEO_CQPSK_DFE");
     if (dfe && (*dfe == '1' || *dfe == 'y' || *dfe == 'Y' || *dfe == 't' || *dfe == 'T')) {
-        g_cqpsk_ctx.eq.dfe_enable = 1;
+        s->cqpsk_eq.dfe_enable = 1;
     }
     const char* dfe_t = getenv("DSD_NEO_CQPSK_DFE_TAPS");
     if (dfe_t) {
@@ -212,9 +208,9 @@ cqpsk_init(struct demod_state* s) {
         if (v > 4) {
             v = 4;
         }
-        g_cqpsk_ctx.eq.dfe_taps = v;
-    } else if (g_cqpsk_ctx.eq.dfe_enable && g_cqpsk_ctx.eq.dfe_taps == 0) {
-        g_cqpsk_ctx.eq.dfe_taps = 2; /* small default */
+        s->cqpsk_eq.dfe_taps = v;
+    } else if (s->cqpsk_eq.dfe_enable && s->cqpsk_eq.dfe_taps == 0) {
+        s->cqpsk_eq.dfe_taps = 2; /* small default */
     }
     const char* cma = getenv("DSD_NEO_CQPSK_CMA");
     if (cma) {
@@ -225,70 +221,74 @@ cqpsk_init(struct demod_state* s) {
         if (v > 20000) {
             v = 20000;
         }
-        g_cqpsk_ctx.eq.cma_warmup = v; /* samples */
+        s->cqpsk_eq.cma_warmup = v; /* samples */
     }
     const char* cma_mu = getenv("DSD_NEO_CQPSK_CMA_MU");
     if (cma_mu) {
         int v = atoi(cma_mu);
         if (v >= 1 && v <= 64) {
-            g_cqpsk_ctx.eq.cma_mu_q15 = (int16_t)v;
+            s->cqpsk_eq.cma_mu_q15 = (int16_t)v;
         }
     }
-    g_cqpsk_ctx.initialized = 1;
+    s->cqpsk_eq_initialized = 1;
 
     /* DQPSK decision mode (env: DSD_NEO_CQPSK_DQPSK=1) */
     const char* dq = getenv("DSD_NEO_CQPSK_DQPSK");
     if (dq && (*dq == '1' || *dq == 'y' || *dq == 'Y' || *dq == 't' || *dq == 'T')) {
-        g_cqpsk_ctx.eq.dqpsk_decision = 1;
+        s->cqpsk_eq.dqpsk_decision = 1;
     }
 }
 
 void
 cqpsk_process_block(struct demod_state* s) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!s) {
+        return;
+    }
+    if (!s->cqpsk_eq_initialized) {
         cqpsk_init(s);
     }
-    if (!s || !s->lowpassed || s->lp_len < 2) {
+    if (!s->lowpassed || s->lp_len < 2) {
         return;
     }
     /* In-place EQ on interleaved I/Q */
-    cqpsk_eq_process_block(&g_cqpsk_ctx.eq, s->lowpassed, s->lp_len);
+    cqpsk_eq_process_block(&s->cqpsk_eq, s->lowpassed, s->lp_len);
 }
 
 extern "C" void
 cqpsk_reset_all(void) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return;
     }
-    cqpsk_eq_reset_all(&g_cqpsk_ctx.eq);
+    cqpsk_eq_reset_all(&g_cqpsk_demod->cqpsk_eq);
 }
 
 extern "C" void
 cqpsk_reset_runtime(void) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return;
     }
-    cqpsk_eq_reset_runtime(&g_cqpsk_ctx.eq);
+    cqpsk_eq_reset_runtime(&g_cqpsk_demod->cqpsk_eq);
 }
 
 extern "C" void
 cqpsk_reset_wl(void) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return;
     }
-    cqpsk_eq_reset_wl(&g_cqpsk_ctx.eq);
+    cqpsk_eq_reset_wl(&g_cqpsk_demod->cqpsk_eq);
 }
 
 extern "C" void
 cqpsk_runtime_set_params(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
                          int dfe_taps, int cma_warmup_samples) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return;
     }
-    int prev_lms = g_cqpsk_ctx.eq.lms_enable;
-    int prev_dfe = g_cqpsk_ctx.eq.dfe_enable;
+    cqpsk_eq_state_t* eq = &g_cqpsk_demod->cqpsk_eq;
+    int prev_lms = eq->lms_enable;
+    int prev_dfe = eq->dfe_enable;
     if (lms_enable >= 0) {
-        g_cqpsk_ctx.eq.lms_enable = lms_enable ? 1 : 0;
+        eq->lms_enable = lms_enable ? 1 : 0;
     }
     if (taps >= 1) {
         if (taps > CQPSK_EQ_MAX_TAPS) {
@@ -297,104 +297,105 @@ cqpsk_runtime_set_params(int lms_enable, int taps, int mu_q15, int update_stride
         if ((taps & 1) == 0) {
             taps++;
         }
-        g_cqpsk_ctx.eq.num_taps = taps;
+        eq->num_taps = taps;
     }
     if (mu_q15 >= 1) {
         if (mu_q15 > 128) {
             mu_q15 = 128;
         }
-        g_cqpsk_ctx.eq.mu_q15 = (int16_t)mu_q15;
+        eq->mu_q15 = (int16_t)mu_q15;
     }
     if (update_stride >= 1) {
-        g_cqpsk_ctx.eq.update_stride = update_stride;
+        eq->update_stride = update_stride;
     }
     if (wl_enable >= 0) {
-        int prev = g_cqpsk_ctx.eq.wl_enable;
-        g_cqpsk_ctx.eq.wl_enable = wl_enable ? 1 : 0;
-        if (prev && !g_cqpsk_ctx.eq.wl_enable) {
+        int prev = eq->wl_enable;
+        eq->wl_enable = wl_enable ? 1 : 0;
+        if (prev && !eq->wl_enable) {
             /* Reset WL taps on disable */
-            cqpsk_eq_reset_wl(&g_cqpsk_ctx.eq);
+            cqpsk_eq_reset_wl(eq);
         }
     }
     if (dfe_enable >= 0) {
         int newd = dfe_enable ? 1 : 0;
-        g_cqpsk_ctx.eq.dfe_enable = newd;
+        eq->dfe_enable = newd;
         if (newd && !prev_dfe) {
             /* Safe-enable: clear DFE taps and decision history */
-            cqpsk_eq_reset_dfe(&g_cqpsk_ctx.eq);
+            cqpsk_eq_reset_dfe(eq);
         } else if (!newd && prev_dfe) {
             /* Reset on disable to avoid stale feedback */
-            cqpsk_eq_reset_dfe(&g_cqpsk_ctx.eq);
+            cqpsk_eq_reset_dfe(eq);
         }
     }
     if (dfe_taps >= 0) {
         if (dfe_taps > 4) {
             dfe_taps = 4;
         }
-        g_cqpsk_ctx.eq.dfe_taps = dfe_taps;
+        eq->dfe_taps = dfe_taps;
     }
     if (cma_warmup_samples >= 0) {
-        g_cqpsk_ctx.eq.cma_warmup = cma_warmup_samples;
+        eq->cma_warmup = cma_warmup_samples;
     }
     /* If LMS just turned on and no explicit CMA requested, kick a small warmup for stability */
-    if (!prev_lms && g_cqpsk_ctx.eq.lms_enable) {
-        if (g_cqpsk_ctx.eq.cma_warmup <= 0) {
-            g_cqpsk_ctx.eq.cma_warmup = 1200; /* ~1/4 second at 4800 sym/s */
+    if (!prev_lms && eq->lms_enable) {
+        if (eq->cma_warmup <= 0) {
+            eq->cma_warmup = 1200; /* ~1/4 second at 4800 sym/s */
         }
-    } else if (prev_lms && !g_cqpsk_ctx.eq.lms_enable) {
+    } else if (prev_lms && !eq->lms_enable) {
         /* On LMS disable, reset EQ to identity to stabilize pipeline */
-        cqpsk_eq_reset_all(&g_cqpsk_ctx.eq);
+        cqpsk_eq_reset_all(eq);
     }
 }
 
 extern "C" int
 cqpsk_runtime_get_params(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
                          int* dfe_taps, int* cma_warmup_remaining) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return -1;
     }
+    cqpsk_eq_state_t* eq = &g_cqpsk_demod->cqpsk_eq;
     if (lms_enable) {
-        *lms_enable = g_cqpsk_ctx.eq.lms_enable ? 1 : 0;
+        *lms_enable = eq->lms_enable ? 1 : 0;
     }
     if (taps) {
-        *taps = g_cqpsk_ctx.eq.num_taps;
+        *taps = eq->num_taps;
     }
     if (mu_q15) {
-        *mu_q15 = g_cqpsk_ctx.eq.mu_q15;
+        *mu_q15 = eq->mu_q15;
     }
     if (update_stride) {
-        *update_stride = g_cqpsk_ctx.eq.update_stride;
+        *update_stride = eq->update_stride;
     }
     if (wl_enable) {
-        *wl_enable = g_cqpsk_ctx.eq.wl_enable ? 1 : 0;
+        *wl_enable = eq->wl_enable ? 1 : 0;
     }
     if (dfe_enable) {
-        *dfe_enable = g_cqpsk_ctx.eq.dfe_enable ? 1 : 0;
+        *dfe_enable = eq->dfe_enable ? 1 : 0;
     }
     if (dfe_taps) {
-        *dfe_taps = g_cqpsk_ctx.eq.dfe_taps;
+        *dfe_taps = eq->dfe_taps;
     }
     if (cma_warmup_remaining) {
-        *cma_warmup_remaining = g_cqpsk_ctx.eq.cma_warmup;
+        *cma_warmup_remaining = eq->cma_warmup;
     }
     return 0;
 }
 
 extern "C" void
 cqpsk_runtime_set_dqpsk(int enable) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return;
     }
-    g_cqpsk_ctx.eq.dqpsk_decision = enable ? 1 : 0;
+    g_cqpsk_demod->cqpsk_eq.dqpsk_decision = enable ? 1 : 0;
 }
 
 extern "C" int
 cqpsk_runtime_get_dqpsk(int* enable) {
-    if (!g_cqpsk_ctx.initialized) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
         return -1;
     }
     if (enable) {
-        *enable = g_cqpsk_ctx.eq.dqpsk_decision ? 1 : 0;
+        *enable = g_cqpsk_demod->cqpsk_eq.dqpsk_decision ? 1 : 0;
     }
     return 0;
 }
