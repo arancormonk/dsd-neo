@@ -2573,6 +2573,17 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
     }
 
+    /* Default: if user did not specify a manual tuner gain (0=AGC), enable
+       supervisory tuner autogain unless explicitly disabled via env. This starts
+        in device auto-gain and promotes to nearby manual values when needed. */
+    if (opts && opts->rtl_gain_value <= 0) {
+        const char* ag = getenv("DSD_NEO_TUNER_AUTOGAIN");
+        int env_off = (ag && (*ag == '0' || *ag == 'f' || *ag == 'F' || *ag == 'n' || *ag == 'N')) ? 1 : 0;
+        if (!env_off) {
+            g_tuner_autogain_on.store(1, std::memory_order_relaxed);
+        }
+    }
+
     setup_initial_freq_and_rate(opts);
 
     if (!output.rate) {
