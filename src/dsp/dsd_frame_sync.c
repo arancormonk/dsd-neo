@@ -313,8 +313,22 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
 
             int do_switch = -1; /* -1=no-op, else new rf_mod */
-            /* Guard: if LSM Simple is active, suppress switching logic entirely. */
+            /* Guard: if LSM Simple is active, suppress switching logic entirely.
+               However, ensure CQPSK DSP path is actually enabled once. */
             if (dsd_neo_get_lsm_simple()) {
+#ifdef USE_RTLSDR
+                int cq = 0, f = 0, t = 0, a = 0;
+                rtl_stream_dsp_get(&cq, &f, &t, &a);
+                if (a && !rtl_stream_get_manual_dsp() && !cq) {
+                    /* Bring up the CQPSK path with conservative defaults */
+                    rtl_stream_toggle_iq_balance(0);
+                    rtl_stream_toggle_cqpsk(1);
+                    rtl_stream_toggle_fll(1);
+                    rtl_stream_toggle_ted(1);
+                    /* LMS on; 5 taps; µ=2; stride=6; WL off; DFE off; MF on; short CMA warmup */
+                    rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
+                }
+#endif
                 do_switch = -1;
             } else {
                 /*

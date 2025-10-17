@@ -605,29 +605,64 @@ demod_thread_fn(void* arg) {
                 static int16_t syms[(size_t)MAXP * 2];
                 int n = cqpsk_eq_get_symbols(&demod.cqpsk_eq, syms, MAXP);
                 if (n > 32) {
-                    double sum_mag = 0.0;
+                    /* Use per-axis normalization to avoid bias from I/Q gain imbalance.
+                       Estimate target amplitudes from mean absolute I and Q. */
+                    double sum_abs_i = 0.0, sum_abs_q = 0.0;
                     for (int i = 0; i < n; i++) {
                         double I = (double)syms[(size_t)(i << 1) + 0];
                         double Q = (double)syms[(size_t)(i << 1) + 1];
-                        sum_mag += sqrt(I * I + Q * Q);
+                        sum_abs_i += fabs(I);
+                        sum_abs_q += fabs(Q);
                     }
-                    double r_mean = sum_mag / (double)n;
-                    double a = r_mean / 1.41421356237; /* per-axis target amplitude */
-                    double e2_sum = 0.0, t2_sum = 0.0;
+                    double aI = sum_abs_i / (double)n;
+                    double aQ = sum_abs_q / (double)n;
+                    /* Guard small values */
+                    if (aI < 1e-9) {
+                        aI = 1e-9;
+                    }
+                    if (aQ < 1e-9) {
+                        aQ = 1e-9;
+                    }
+                    /* Evaluate both axis-aligned and 45°-diagonal target sets; choose best. */
+                    double e2_axis = 0.0;
                     for (int i = 0; i < n; i++) {
                         double I = (double)syms[(size_t)(i << 1) + 0];
                         double Q = (double)syms[(size_t)(i << 1) + 1];
-                        double ti = (I >= 0.0) ? a : -a;
-                        double tq = (Q >= 0.0) ? a : -a;
+                        double ti = (I >= 0.0) ? aI : -aI;
+                        double tq = (Q >= 0.0) ? aQ : -aQ;
                         double ei = I - ti;
                         double eq = Q - tq;
-                        e2_sum += ei * ei + eq * eq;
-                        t2_sum += ti * ti + tq * tq;
+                        e2_axis += ei * ei + eq * eq;
                     }
-                    if (t2_sum > 1e-9) {
-                        /* 20*log10(1/evm) == 10*log10(t2_sum/e2_sum); avoid sqrt */
-                        double ratio = (e2_sum <= 1e-12) ? 1e12 : (t2_sum / e2_sum);
-                        double snr = 10.0 * log10(ratio);
+                    double t2_axis = (double)n * (aI * aI + aQ * aQ);
+                    double aD = 0.5 * (aI + aQ); /* diagonal amplitude */
+                    if (aD < 1e-9) {
+                        aD = 1e-9;
+                    }
+                    double e2_diag = 0.0;
+                    for (int i = 0; i < n; i++) {
+                        double I = (double)syms[(size_t)(i << 1) + 0];
+                        double Q = (double)syms[(size_t)(i << 1) + 1];
+                        double ti = (I >= 0.0) ? aD : -aD;
+                        double tq = (Q >= 0.0) ? aD : -aD;
+                        double ei = I - ti;
+                        double eq = Q - tq;
+                        e2_diag += ei * ei + eq * eq;
+                    }
+                    double t2_diag = (double)n * (2.0 * aD * aD);
+                    double snr = -100.0;
+                    if (t2_axis > 1e-9 && e2_axis > 0.0) {
+                        double ratio = (e2_axis <= 1e-12) ? 1e12 : (t2_axis / e2_axis);
+                        snr = 10.0 * log10(ratio);
+                    }
+                    if (t2_diag > 1e-9 && e2_diag > 0.0) {
+                        double ratio_d = (e2_diag <= 1e-12) ? 1e12 : (t2_diag / e2_diag);
+                        double snr_d = 10.0 * log10(ratio_d);
+                        if (snr_d > snr) {
+                            snr = snr_d;
+                        }
+                    }
+                    if (snr > -99.0) {
                         static double ema = -100.0;
                         if (ema < -50.0) {
                             ema = snr;
@@ -1166,6 +1201,32 @@ controller_thread_fn(void* arg) {
     rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
+    /* Ensure TED engages in LSM Simple by setting a sensible SPS after
+       actual output rate is known. Without this, SPS may remain default or
+       mismatched when LSM Simple is enabled via CLI/env, leading users to
+       believe TED is inactive. */
+    {
+        const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
+        if (cfg2 && cfg2->lsm_simple_is_set && cfg2->lsm_simple_enable) {
+            int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
+                                                     : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
+            if (Fs_cx <= 0) {
+                Fs_cx = 48000; /* conservative default */
+            }
+            /* For P25 Phase 1 (4800 sym/s) round(Fs/4800) */
+            int sps = (Fs_cx + 2400) / 4800;
+            if (sps < 2) {
+                sps = 2;
+            }
+            if (sps > 32) {
+                sps = 32;
+            }
+            demod.ted_sps = sps;
+            demod.ted_enabled = 1;
+            demod.ted_force = 1; /* engage even when not on FM demod path */
+        }
+    }
+
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Wait for a hop signal or a pending retune, with proper predicate guard */
         pthread_mutex_lock(&s->hop_m);
@@ -1423,34 +1484,59 @@ dsd_rtl_stream_estimate_snr_qpsk_const(void) {
     if (n <= 64) {
         return -100.0;
     }
-    double sum_r = 0.0;
+    /* Per-axis normalization to mitigate I/Q gain imbalance in raw snapshot */
+    double sum_abs_i = 0.0, sum_abs_q = 0.0;
     for (int i = 0; i < n; i++) {
         double I = (double)xy[(size_t)(i << 1) + 0];
         double Q = (double)xy[(size_t)(i << 1) + 1];
-        sum_r += sqrt(I * I + Q * Q);
+        sum_abs_i += fabs(I);
+        sum_abs_q += fabs(Q);
     }
-    double r_mean = sum_r / (double)n;
-    if (!(r_mean > 1e-6)) {
+    double aI = sum_abs_i / (double)n;
+    double aQ = sum_abs_q / (double)n;
+    if (!(aI > 1e-9 && aQ > 1e-9)) {
         return -100.0;
     }
-    double a = r_mean / 1.41421356237; /* per-axis target amplitude */
-    double e2_sum = 0.0, t2_sum = 0.0;
+    /* Evaluate both axis-aligned and 45°-diagonal targets; choose best. */
+    double e2_axis = 0.0;
     for (int i = 0; i < n; i++) {
         double I = (double)xy[(size_t)(i << 1) + 0];
         double Q = (double)xy[(size_t)(i << 1) + 1];
-        double ti = (I >= 0.0) ? a : -a;
-        double tq = (Q >= 0.0) ? a : -a;
+        double ti = (I >= 0.0) ? aI : -aI;
+        double tq = (Q >= 0.0) ? aQ : -aQ;
         double ei = I - ti;
         double eq = Q - tq;
-        e2_sum += ei * ei + eq * eq;
-        t2_sum += ti * ti + tq * tq;
+        e2_axis += ei * ei + eq * eq;
     }
-    if (t2_sum <= 1e-9) {
-        return -100.0;
+    double t2_axis = (double)n * (aI * aI + aQ * aQ);
+    double aD = 0.5 * (aI + aQ);
+    if (aD < 1e-9) {
+        aD = 1e-9;
     }
-    /* 20*log10(1/evm) == 10*log10(t2_sum/e2_sum); avoid sqrt */
-    double ratio = (e2_sum <= 1e-12) ? 1e12 : (t2_sum / e2_sum);
-    return 10.0 * log10(ratio);
+    double e2_diag = 0.0;
+    for (int i = 0; i < n; i++) {
+        double I = (double)xy[(size_t)(i << 1) + 0];
+        double Q = (double)xy[(size_t)(i << 1) + 1];
+        double ti = (I >= 0.0) ? aD : -aD;
+        double tq = (Q >= 0.0) ? aD : -aD;
+        double ei = I - ti;
+        double eq = Q - tq;
+        e2_diag += ei * ei + eq * eq;
+    }
+    double t2_diag = (double)n * (2.0 * aD * aD);
+    double best_snr = -100.0;
+    if (t2_axis > 1e-9 && e2_axis > 0.0) {
+        double ratio = (e2_axis <= 1e-12) ? 1e12 : (t2_axis / e2_axis);
+        best_snr = 10.0 * log10(ratio);
+    }
+    if (t2_diag > 1e-9 && e2_diag > 0.0) {
+        double ratio_d = (e2_diag <= 1e-12) ? 1e12 : (t2_diag / e2_diag);
+        double snr_d = 10.0 * log10(ratio_d);
+        if (snr_d > best_snr) {
+            best_snr = snr_d;
+        }
+    }
+    return best_snr;
 }
 
 /* ---------------- Eye-based SNR estimation (GFSK fallback, 2-level) ---------------- */

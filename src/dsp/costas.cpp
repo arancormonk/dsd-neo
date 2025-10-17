@@ -12,6 +12,8 @@
 
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 
 /* Fast atan2 approximation (64-bit inputs), returns Q14 where pi == 1<<14 */
@@ -41,7 +43,84 @@ fast_atan2_64(int64_t y, int64_t x) {
     return (y < 0) ? -angle : angle;
 }
 
-/* Simple quadrant-based sin/cos generator (Q15) from Q15 phase */
+/* Quarter-wave sine LUT for high-quality Q15 sin/cos (mirrors FLL implementation). */
+static int16_t s_qsine_q15_lut[1025]; /* 0..pi/2 in 1024 steps (+guard) */
+static pthread_once_t s_costas_lut_once = PTHREAD_ONCE_INIT;
+
+static void
+costas_lut_once_init(void) {
+    for (int i = 0; i <= 1024; i++) {
+        double theta = (double)i * M_PI / 2.0 / 1024.0;
+        double v = sin(theta) * 32767.0;
+        if (v > 32767.0) {
+            v = 32767.0;
+        }
+        if (v < -32767.0) {
+            v = -32767.0;
+        }
+        s_qsine_q15_lut[i] = (int16_t)v;
+    }
+}
+
+/* LUT-based sin/cos in Q15 from Q15 phase (2*pi == 1<<15). */
+static inline void
+sin_cos_q15_from_phase_lut(int phase_q15, int16_t* c_out, int16_t* s_out) {
+    int p = phase_q15 & 0x7FFF; /* 0..32767 */
+    int quad = p >> 13;         /* 0..3 */
+    int r = p & 0x1FFF;         /* 0..8191 */
+
+    auto sample_quarter = [](int r8192) -> int16_t {
+        if (r8192 < 0) {
+            r8192 = 0;
+        }
+        if (r8192 > 8192) {
+            r8192 = 8192;
+        }
+        int idx = r8192 >> 3; /* 0..1024 */
+        int frac = r8192 & 7; /* 0..7 */
+        int16_t s0 = s_qsine_q15_lut[idx];
+        int16_t s1 = s_qsine_q15_lut[(idx < 1024) ? (idx + 1) : 1024];
+        int diff = (int)s1 - (int)s0;
+        int interp = (int)s0 + ((diff * frac + 4) >> 3);
+        if (interp > 32767) {
+            interp = 32767;
+        }
+        if (interp < -32767) {
+            interp = -32767;
+        }
+        return (int16_t)interp;
+    };
+
+    int16_t s_pos, c_pos;
+    switch (quad) {
+        case 0: /* [0, pi/2) */
+            s_pos = sample_quarter(r);
+            c_pos = sample_quarter(8192 - r);
+            *s_out = s_pos;
+            *c_out = c_pos;
+            break;
+        case 1: /* [pi/2, pi) */
+            s_pos = sample_quarter(8192 - r);
+            c_pos = sample_quarter(r);
+            *s_out = s_pos;
+            *c_out = (int16_t)(-c_pos);
+            break;
+        case 2: /* [pi, 3pi/2) */
+            s_pos = sample_quarter(r);
+            c_pos = sample_quarter(8192 - r);
+            *s_out = (int16_t)(-s_pos);
+            *c_out = (int16_t)(-c_pos);
+            break;
+        default: /* 3: [3pi/2, 2pi) */
+            s_pos = sample_quarter(8192 - r);
+            c_pos = sample_quarter(r);
+            *s_out = (int16_t)(-s_pos);
+            *c_out = c_pos;
+            break;
+    }
+}
+
+/* Keep fast piecewise-linear fallback available (used if LUT disabled). */
 static inline void
 sin_cos_q15_from_phase_fast(int phase_q15, int16_t* c_out, int16_t* s_out) {
     int p = phase_q15 & 0x7FFF;               /* 0..32767 corresponds to [0, 2pi) */
@@ -96,9 +175,20 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
     int16_t* x = d->lowpassed;
     int N = d->lp_len;
 
+    /* Use high-quality LUT rotator when FLL LUT is enabled for consistency; else fallback. */
+    extern int fll_lut_enabled;
+    const int use_lut = fll_lut_enabled;
+    if (use_lut) {
+        pthread_once(&s_costas_lut_once, costas_lut_once_init);
+    }
+
     for (int i = 0; i + 1 < N; i += 2) {
         int16_t c, s;
-        sin_cos_q15_from_phase_fast(phase, &c, &s);
+        if (use_lut) {
+            sin_cos_q15_from_phase_lut(phase, &c, &s);
+        } else {
+            sin_cos_q15_from_phase_fast(phase, &c, &s);
+        }
 
         int xr = x[i];
         int xj = x[i + 1];

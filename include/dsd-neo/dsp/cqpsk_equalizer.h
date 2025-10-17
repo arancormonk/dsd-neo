@@ -85,7 +85,8 @@ typedef struct cqpsk_eq_state_s {
 
     /* Recent equalized symbols (Q0), captured at symbol ticks */
     int16_t sym_xy[CQPSK_EQ_SYM_MAX * 2];
-    int sym_head; /* ring head in pairs [0..CQPSK_EQ_SYM_MAX-1] */
+    int sym_head; /* ring head in pairs [0..CQPSK_EQ_SYM_MAX-1]; next write index */
+    int sym_len;  /* number of valid pairs currently stored (0..CQPSK_EQ_SYM_MAX) */
 } cqpsk_eq_state_t;
 
 /* Initialize equalizer state with identity response. */

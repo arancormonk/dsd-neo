@@ -38,6 +38,10 @@ sym_ring_append_q0(cqpsk_eq_state_t* st, int32_t yI_q0, int32_t yQ_q0) {
         h = 0;
     }
     st->sym_head = h;
+    /* Increase valid length up to capacity */
+    if (st->sym_len < kSymMax) {
+        st->sym_len++;
+    }
 }
 
 void
@@ -105,6 +109,7 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->wl_thr_off_q15 = (st->wl_gate_thr_q15 * 3) / 4; /* 25% hysteresis */
     /* symbol ring */
     st->sym_head = 0;
+    st->sym_len = 0;
     for (int i = 0; i < kSymMax * 2; i++) {
         st->sym_xy[i] = 0;
     }
@@ -141,6 +146,8 @@ cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st) {
     st->update_count = 0;
     st->sym_count = 0;
     st->cma_warmup = 0;
+    /* Clear symbol ring validity; next appends will repopulate */
+    st->sym_len = 0;
 }
 
 void
@@ -681,11 +688,26 @@ cqpsk_eq_get_symbols(const cqpsk_eq_state_t* st, int16_t* out_xy, int max_pairs)
     if (!st) {
         return 0;
     }
-    int head = st->sym_head; /* snapshot */
-    int n = (max_pairs < kSymMax) ? max_pairs : kSymMax;
-    int start = head;
+    /* Snapshot current head/len to avoid torn reads */
+    int head = st->sym_head;
+    int len = st->sym_len;
+    if (len <= 0) {
+        return 0;
+    }
+    if (len > kSymMax) {
+        len = kSymMax;
+    }
+    int n = (max_pairs < len) ? max_pairs : len;
+    /* Oldest element is (head - len) modulo kSymMax */
+    int start = head - len;
+    while (start < 0) {
+        start += kSymMax;
+    }
     for (int k = 0; k < n; k++) {
-        int idx = (start + k) % kSymMax;
+        int idx = start + k;
+        if (idx >= kSymMax) {
+            idx -= kSymMax;
+        }
         out_xy[(size_t)(k << 1) + 0] = st->sym_xy[(size_t)(idx << 1) + 0];
         out_xy[(size_t)(k << 1) + 1] = st->sym_xy[(size_t)(idx << 1) + 1];
     }
