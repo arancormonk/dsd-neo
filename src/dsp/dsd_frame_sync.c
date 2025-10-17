@@ -27,6 +27,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -58,6 +59,8 @@ printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, ch
 
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
+    /* Dwell timer for CQPSK entry to prevent immediate fallback to C4FM. */
+    static double qpsk_dwell_enter_m = 0.0;
     const time_t now = time(NULL);
     // Periodic P25 trunk SM heartbeat (once per second) to enforce hangtime
     // fallbacks even if frame processing stalls due to signal loss.
@@ -105,10 +108,20 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
    * 35 = +P25 P2
    * 36 = -P25 P2
    * 37 = +EDACS
-   * 38 = -EDACS
-   */
+     * 38 = -EDACS
+     */
 
     // P25 CC hunting and all tuner control are owned by the P25 SM now.
+
+    /* When LSM Simple is enabled, ensure the symbol sampler uses QPSK windowing
+       immediately by pinning rf_mod to QPSK. This keeps the demod path (CQPSK)
+       and the symbol domain in sync even before the SNR-based auto switch. */
+    {
+        int lsm_simple = dsd_neo_get_lsm_simple();
+        if (lsm_simple) {
+            state->rf_mod = 1; /* QPSK */
+        }
+    }
 
     int i, t, dibit, sync, symbol, synctest_pos, lastt;
     char synctest[25];
@@ -233,6 +246,57 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 want_mod = 0; /* C4FM */
             }
 
+            /* Bias decision with demod SNR when available to avoid C4FM<->QPSK flapping
+               on P25 LSM/CQPSK. Prefer QPSK when its SNR clearly exceeds C4FM; conversely
+               prefer C4FM only when it exceeds QPSK by a larger margin. Also apply a small
+               stickiness when already in QPSK and SNRs are similar. */
+#ifdef USE_RTLSDR
+            do {
+                /* Pull smoothed SNR; fall back to lightweight estimators if needed */
+                extern double rtl_stream_get_snr_c4fm(void);
+                extern double rtl_stream_get_snr_cqpsk(void);
+                extern double rtl_stream_estimate_snr_c4fm_eye(void);
+                extern double rtl_stream_estimate_snr_qpsk_const(void);
+                double snr_c = rtl_stream_get_snr_c4fm();
+                double snr_q = rtl_stream_get_snr_cqpsk();
+                if (snr_c <= -50.0) {
+                    snr_c = rtl_stream_estimate_snr_c4fm_eye();
+                }
+                if (snr_q <= -50.0) {
+                    snr_q = rtl_stream_estimate_snr_qpsk_const();
+                }
+                if (snr_c > -50.0 || snr_q > -50.0) {
+                    /* Only apply bias when at least one metric is sane */
+                    if (snr_q > -50.0 && snr_c > -50.0) {
+                        double delta = snr_q - snr_c;
+                        double nowm_bias = dsd_time_now_monotonic_s();
+                        int in_qpsk_dwell =
+                            (state->rf_mod == 1 && qpsk_dwell_enter_m > 0.0 && (nowm_bias - qpsk_dwell_enter_m) < 2.0);
+                        if (delta >= 2.0) {
+                            want_mod = 1; /* clear QPSK advantage */
+                        } else if (delta <= -3.0 && !in_qpsk_dwell) {
+                            want_mod = 0; /* clear C4FM advantage (but not during dwell) */
+                        } else {
+                            /* Within small margin: if currently QPSK, keep favoring it */
+                            if (state->rf_mod == 1) {
+                                want_mod = 1;
+                            }
+                        }
+                    } else if (snr_q > -50.0 && state->rf_mod == 1) {
+                        /* Only QPSK SNR available and already on QPSK: prefer QPSK */
+                        want_mod = 1;
+                    }
+                }
+            } while (0);
+#endif
+
+            /* If LSM Simple is active, lock to QPSK and do not allow modulation flaps. */
+            {
+                int lsm_simple_active = dsd_neo_get_lsm_simple();
+                if (lsm_simple_active) {
+                    want_mod = 1; /* prefer QPSK */
+                }
+            }
             /* Update votes (use hysteresis; be more eager for GFSK to avoid misclassification dwell) */
             if (want_mod == 1) {
                 vote_qpsk++;
@@ -249,19 +313,28 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
 
             int do_switch = -1; /* -1=no-op, else new rf_mod */
-            /*
+            /* Guard: if LSM Simple is active, suppress switching logic entirely. */
+            if (dsd_neo_get_lsm_simple()) {
+                do_switch = -1;
+            } else {
+                /*
              * Require 2 consecutive windows for C4FM<->QPSK to prevent flapping on marginal signals.
              * For GFSK (DMR/dPMR/NXDN), permit immediate switch on first qualifying window to minimize
              * misclassification time that can corrupt early bursts and elevate audio errors.
              */
-            if (want_mod == 1 && vote_qpsk >= 2 && state->rf_mod != 1) {
-                do_switch = 1;
-            } else if (want_mod == 2 && vote_gfsk >= 1 && state->rf_mod != 2) {
-                do_switch = 2; /* eager switch to GFSK on first vote */
-            } else if (want_mod == 0 && vote_c4fm >= 2 && state->rf_mod != 0) {
-                do_switch = 0;
+                /* Slightly increase hysteresis when leaving QPSK to avoid flip-flop on LSM */
+                double nowm_dwell = dsd_time_now_monotonic_s();
+                int in_qpsk_dwell2 =
+                    (state->rf_mod == 1 && qpsk_dwell_enter_m > 0.0 && (nowm_dwell - qpsk_dwell_enter_m) < 2.0);
+                int req_c4_votes = (state->rf_mod == 1) ? (in_qpsk_dwell2 ? 5 : 3) : 2;
+                if (want_mod == 1 && vote_qpsk >= 2 && state->rf_mod != 1) {
+                    do_switch = 1;
+                } else if (want_mod == 2 && vote_gfsk >= 1 && state->rf_mod != 2) {
+                    do_switch = 2; /* eager switch to GFSK on first vote */
+                } else if (want_mod == 0 && vote_c4fm >= req_c4_votes && state->rf_mod != 0) {
+                    do_switch = 0;
+                }
             }
-
             if (do_switch >= 0) {
                 state->rf_mod = do_switch;
 #ifdef USE_RTLSDR
@@ -274,13 +347,17 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         rtl_stream_toggle_cqpsk(1);
                         rtl_stream_toggle_fll(1);
                         rtl_stream_toggle_ted(1);
-                        rtl_stream_cqpsk_set(1, 5, 2, 6, 1, 0, 0, 1, 1200);
+                        /* Conservative initial preset: LMS on; 5 taps; µ=2; stride=6; WL off; DFE off; MF on; CMA warmup */
+                        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
+                        /* Start CQPSK dwell timer */
+                        qpsk_dwell_enter_m = dsd_time_now_monotonic_s();
                     } else {
                         /* Switch away from CQPSK path */
                         rtl_stream_toggle_iq_balance(1);
                         rtl_stream_toggle_cqpsk(0);
                         rtl_stream_toggle_fll(0);
                         rtl_stream_toggle_ted(0);
+                        qpsk_dwell_enter_m = 0.0;
                     }
                 }
 #endif

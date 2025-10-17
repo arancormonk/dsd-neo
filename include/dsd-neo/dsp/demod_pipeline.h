@@ -87,6 +87,15 @@ void dsd_fm_demod(struct demod_state* fm);
 void raw_demod(struct demod_state* fm);
 
 /**
+ * QPSK-to-real demodulator: extracts I-channel from complex baseband after
+ * CQPSK processing (Costas/EQ) and writes a single real stream for symbol
+ * timing/decoding. Intended for P25 LSM/CQPSK paths.
+ *
+ * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes I to result).
+ */
+void qpsk_i_demod(struct demod_state* fm);
+
+/**
  * Apply post-demod deemphasis IIR filter with Q15 coefficient.
  *
  * @param fm Demodulator state (reads/writes result, updates deemph_avg).

@@ -674,6 +674,28 @@ raw_demod(struct demod_state* fm) {
 }
 
 /**
+ * @brief QPSK helper demodulator: copy I channel from interleaved complex baseband.
+ *
+ * Assumes fm->lowpassed holds interleaved I/Q samples that have already passed
+ * through CQPSK processing (matched filter, Costas, equalizer). Produces a
+ * single real stream (I only) to feed the legacy symbol sampler path.
+ */
+void
+qpsk_i_demod(struct demod_state* fm) {
+    if (!fm || !fm->lowpassed || fm->lp_len < 2) {
+        fm->result_len = 0;
+        return;
+    }
+    const int pairs = fm->lp_len >> 1; /* complex samples */
+    int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    for (int n = 0; n < pairs; n++) {
+        out[n] = iq[(size_t)(n << 1) + 0]; /* I component */
+    }
+    fm->result_len = pairs;
+}
+
+/**
  * @brief Apply post-demod deemphasis IIR filter with Q15 coefficient.
  *
  * @param fm Demodulator state (reads/writes result, updates deemph_avg).
@@ -2107,13 +2129,22 @@ full_demod(struct demod_state* d) {
             d->squelch_gate_open = 1;
         }
     }
-    d->mode_demod(d); /* lowpassed -> result */
+    /*
+     * For CQPSK/LSM, produce a single real stream from I-channel to feed the
+     * symbol sampler, instead of FM discriminating. For other paths, use the
+     * configured demodulator.
+     */
+    if (d->cqpsk_enable) {
+        qpsk_i_demod(d);
+    } else {
+        d->mode_demod(d); /* lowpassed -> result */
+    }
     if (d->mode_demod == &raw_demod) {
         return;
     }
     /* todo, fm noise squelch */
     // use nicer filter here too?
-    if (d->post_downsample > 1) {
+    if (!d->cqpsk_enable && d->post_downsample > 1) {
         int decim = d->post_downsample;
         if (decim > 2) {
             /* Higher-quality polyphase decimator for larger factors */
@@ -2160,21 +2191,23 @@ full_demod(struct demod_state* d) {
             d->result_len = low_pass_simple(d->result, d->result_len, decim);
         }
     }
-    if (d->deemph) {
-        deemph_filter(d);
-    }
-    /* Optional post-demod audio LPF */
-    audio_lpf_filter(d);
-    if (d->dc_block) {
-        dc_block_filter(d);
+    if (!d->cqpsk_enable) {
+        if (d->deemph) {
+            deemph_filter(d);
+        }
+        /* Optional post-demod audio LPF */
+        audio_lpf_filter(d);
+        if (d->dc_block) {
+            dc_block_filter(d);
+        }
     }
     if (d->rate_out2 > 0) {
         low_pass_real(d);
         //arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
     }
 
-    /* Apply soft squelch envelope on audio */
-    {
+    /* Apply soft squelch envelope on audio (skip for CQPSK symbol stream) */
+    if (!d->cqpsk_enable) {
         int env = d->squelch_env_q15;
         int target = d->squelch_gate_open ? 32768 : 0;
         int alpha = d->squelch_gate_open ? (d->squelch_env_attack_q15 > 0 ? d->squelch_env_attack_q15 : 4096)

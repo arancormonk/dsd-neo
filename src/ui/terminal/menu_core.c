@@ -3075,35 +3075,102 @@ lbl_lsm_simple(void* v, char* b, size_t n) {
 
 static void
 act_lsm_simple_toggle(void* v) {
-    UNUSED(v);
+    UiCtx* c = (UiCtx*)v;
+    /* Persist prior DQPSK decision state across toggles */
+    static int prev_dqpsk = -1;
+    /* Persist prior FLL/TED states across toggles */
+    static int prev_fll = -1;
+    static int prev_ted_enable = -1;
+    static int prev_ted_force = -1;
+    /* Persist prior Manual-DSP override state across toggles */
+    static int prev_manual = -1;
     int now = dsd_neo_get_lsm_simple();
     int next = now ? 0 : 1;
     dsd_neo_set_lsm_simple(next);
     if (next) {
-        /* Force CQPSK ON + RRC(alpha≈0.2, span≈6). Skip EQ via runtime config. */
+        /* Save current DQPSK decision state so we can restore on disable */
+        int dq = 0;
+        rtl_stream_cqpsk_get_dqpsk(&dq);
+        prev_dqpsk = dq;
+        /* Save current FLL/TED states */
         int cq = 0, f = 0, t = 0, a = 0;
         rtl_stream_dsp_get(&cq, &f, &t, &a);
+        prev_fll = f;
+        prev_ted_enable = t;
+        prev_ted_force = rtl_stream_get_ted_force();
+        /* Save and force Manual-DSP override so Auto-DSP cannot fight LSM Simple */
+        prev_manual = rtl_stream_get_manual_dsp();
+        if (!prev_manual) {
+            rtl_stream_set_manual_dsp(1);
+        }
+        /* Force CQPSK ON + RRC(alpha≈0.2, span≈6). Skip EQ via runtime config. */
         if (!cq) {
             rtl_stream_toggle_cqpsk(1);
         }
+        /* Ensure FLL is on for one-switch lock-in */
+        rtl_stream_toggle_fll(1);
         rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, 0, -1, 1, -1); /* DFE off, MF on */
         rtl_stream_cqpsk_set_rrc(1, 20, 6);                     /* alpha=20%, span=6 */
+        /* Enable DQPSK-aware decision */
+        rtl_stream_cqpsk_set_dqpsk(1);
         /* Auto-enable TED and force it for CQPSK/FM demod path */
         rtl_stream_toggle_ted(1);
         rtl_stream_set_ted_force(1);
+        /* Set a reasonable default SPS for P25p1 (4800 sym/s at 48k -> ~10) */
+        rtl_stream_set_ted_sps(10);
+        /* Ensure symbol sampler uses QPSK windows immediately. */
+        if (c && c->state) {
+            c->state->rf_mod = 1; /* QPSK */
+        }
+        if (c && c->opts) {
+            c->opts->mod_qpsk = 1; /* reflect in UI */
+        }
         /* Leave LMS state as-is; runtime will skip EQ when simple is on. */
-        ui_statusf("LSM Simple: On (CQPSK+RRC; EQ off)");
+        ui_statusf("LSM Simple: On (CQPSK+RRC; DQPSK; FLL+TED; EQ off)");
     } else {
+        /* Restore prior DQPSK decision state if we saved one */
+        if (prev_dqpsk != -1) {
+            rtl_stream_cqpsk_set_dqpsk(prev_dqpsk);
+            prev_dqpsk = -1;
+        }
+        /* Restore FLL/TED states if captured */
+        if (prev_fll != -1) {
+            rtl_stream_toggle_fll(prev_fll);
+            prev_fll = -1;
+        }
+        if (prev_ted_enable != -1) {
+            rtl_stream_toggle_ted(prev_ted_enable);
+            prev_ted_enable = -1;
+        }
+        if (prev_ted_force != -1) {
+            rtl_stream_set_ted_force(prev_ted_force);
+            prev_ted_force = -1;
+        }
+        /* Restore prior Manual-DSP override */
+        if (prev_manual != -1) {
+            rtl_stream_set_manual_dsp(prev_manual);
+            prev_manual = -1;
+        }
         ui_statusf("LSM Simple: Off");
     }
 }
 
 static void
 act_toggle_cq(void* v) {
-    UNUSED(v);
+    UiCtx* c = (UiCtx*)v;
     int cq = 0, f = 0, t = 0, a = 0;
     rtl_stream_dsp_get(&cq, &f, &t, &a);
-    rtl_stream_toggle_cqpsk(cq ? 0 : 1);
+    int next = cq ? 0 : 1;
+    rtl_stream_toggle_cqpsk(next);
+    /* Keep symbol sampler windowing in sync with runtime DSP path. */
+    if (c && c->state) {
+        c->state->rf_mod = next ? 1 : 0;
+    }
+    if (c && c->opts) {
+        if (next) {
+            c->opts->mod_qpsk = 1;
+        }
+    }
 }
 
 static void
@@ -3856,7 +3923,7 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
         {.id = "lsm_simple",
          .label = "LSM Simple",
          .label_fn = lbl_lsm_simple,
-         .help = "Simplified LSM (CQPSK+RRC; Costas; EQ off).",
+         .help = "Simplified LSM (CQPSK+RRC; Costas; FLL+TED; EQ off).",
          .on_select = act_lsm_simple_toggle},
         {.id = "rrc",
          .label = "Toggle RRC",
