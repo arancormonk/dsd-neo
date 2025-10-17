@@ -198,7 +198,10 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         size_t n1 = 0, n2 = 0;
         input_ring_reserve(s->input_ring, need, &p1, &n1, &p2, &n2);
         if (n1 == 0 && n2 == 0) {
-            /* Ring still full after drop attempt; give up this callback to avoid stall */
+            /* Ring full: record drop and give up remaining bytes from this callback */
+            if (s->input_ring) {
+                s->input_ring->producer_drops.fetch_add((uint64_t)need);
+            }
             break;
         }
         /* Ensure even counts to keep I/Q pairs aligned */

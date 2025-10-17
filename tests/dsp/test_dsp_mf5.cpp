@@ -36,7 +36,8 @@ main(void) {
     s->cqpsk_enable = 1;
     s->cqpsk_mf_enable = 1;
     s->cqpsk_rrc_enable = 0;
-    s->ted_sps = 10; // any >1
+    s->ted_sps = 10;    // any >1
+    s->fll_enabled = 0; // disable carrier loop for this filter-only test
     s->mode_demod = &raw_demod;
 
     const int pairs = 64;

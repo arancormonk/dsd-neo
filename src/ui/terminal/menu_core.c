@@ -17,6 +17,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_services.h>
 
 #ifdef USE_RTLSDR
@@ -3063,6 +3064,40 @@ lbl_onoff_dqpsk(void* v, char* b, size_t n) {
     return b;
 }
 
+/* ---- LSM Simple (CQPSK+RRC; Costas; EQ off) ---- */
+static const char*
+lbl_lsm_simple(void* v, char* b, size_t n) {
+    (void)v;
+    int on = dsd_neo_get_lsm_simple();
+    snprintf(b, n, "LSM Simple [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_lsm_simple_toggle(void* v) {
+    UNUSED(v);
+    int now = dsd_neo_get_lsm_simple();
+    int next = now ? 0 : 1;
+    dsd_neo_set_lsm_simple(next);
+    if (next) {
+        /* Force CQPSK ON + RRC(alpha≈0.2, span≈6). Skip EQ via runtime config. */
+        int cq = 0, f = 0, t = 0, a = 0;
+        rtl_stream_dsp_get(&cq, &f, &t, &a);
+        if (!cq) {
+            rtl_stream_toggle_cqpsk(1);
+        }
+        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, 0, -1, 1, -1); /* DFE off, MF on */
+        rtl_stream_cqpsk_set_rrc(1, 20, 6);                     /* alpha=20%, span=6 */
+        /* Auto-enable TED and force it for CQPSK/FM demod path */
+        rtl_stream_toggle_ted(1);
+        rtl_stream_set_ted_force(1);
+        /* Leave LMS state as-is; runtime will skip EQ when simple is on. */
+        ui_statusf("LSM Simple: On (CQPSK+RRC; EQ off)");
+    } else {
+        ui_statusf("LSM Simple: Off");
+    }
+}
+
 static void
 act_toggle_cq(void* v) {
     UNUSED(v);
@@ -3818,6 +3853,11 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "Enable/disable matched filter.",
          .is_enabled = dsp_cq_on,
          .on_select = act_toggle_mf},
+        {.id = "lsm_simple",
+         .label = "LSM Simple",
+         .label_fn = lbl_lsm_simple,
+         .help = "Simplified LSM (CQPSK+RRC; Costas; EQ off).",
+         .on_select = act_lsm_simple_toggle},
         {.id = "rrc",
          .label = "Toggle RRC",
          .label_fn = lbl_toggle_rrc,

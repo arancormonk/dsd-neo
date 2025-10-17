@@ -126,6 +126,13 @@ extern "C" {
  * - DSD_NEO_IQ_DC_SHIFT
  *     k in the above relation (10..14 typical, larger=k -> slower). Default: 11.
  *
+ * LSM/CQPSK simple mode
+ * - DSD_NEO_LSM_SIMPLE
+ *     Force a simplified CQPSK (LSM) pipeline for easier initial lock: enable CQPSK path,
+ *     run matched filter (RRC) with ntaps=11*sps+1 and alpha≈0.2, always run Costas (handled
+ *     by pipeline), and keep the adaptive CQPSK equalizer off (decision‑directed LMS/DFE/WL disabled).
+ *     Values: 1 enable, else disabled. Default: 0 (disabled).
+ *
  * Frontend tuning behavior
  * - DSD_NEO_DISABLE_FS4_SHIFT
  *     Disable +fs/4 capture frequency shift when offset_tuning is off. Useful for trunking where exact
@@ -261,6 +268,10 @@ typedef struct dsdneoRuntimeConfig {
     int iq_dc_shift_is_set;
     int iq_dc_shift;
 
+    /* LSM/CQPSK simple mode */
+    int lsm_simple_is_set;
+    int lsm_simple_enable;
+
     /* FM/FSK blind CMA equalizer (pre-discriminator) */
     int fm_cma_is_set;
     int fm_cma_enable;
@@ -314,6 +325,10 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 /* Runtime updaters for DD equalizer (UI control) */
 void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
 void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
+
+/* Runtime control for LSM simple mode (0/1) */
+void dsd_neo_set_lsm_simple(int enable);
+int dsd_neo_get_lsm_simple(void);
 
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM) */
 void dsd_neo_set_c4fm_clk(int mode);

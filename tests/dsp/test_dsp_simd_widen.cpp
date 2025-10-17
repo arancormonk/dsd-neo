@@ -25,10 +25,21 @@ main(void) {
     int16_t dst[8] = {0};
     int16_t ref[8] = {0};
 
-    // widen center 127 → s16
+    // widen center 127 → s16 scaled by 256 with saturation
     widen_u8_to_s16_bias127(src, dst, 8);
     for (int i = 0; i < 8; i++) {
-        ref[i] = (int16_t)src[i] - 127;
+        int v = (int)src[i] - 127; // [-127,128]
+        if (v > 127) {
+            v = 127; // avoid 128*256 overflow
+        }
+        v <<= 8; // scale
+        if (v > 32767) {
+            v = 32767; // saturate (paranoia)
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        ref[i] = (int16_t)v;
     }
     if (!arrays_equal(dst, ref, 8)) {
         fprintf(stderr, "SIMD widen: mismatch\n");
@@ -40,11 +51,29 @@ main(void) {
         dst[i] = 0;
     }
     widen_rotate90_u8_to_s16_bias127(src, dst, 8);
-    int16_t i0 = (int16_t)src[0] - 127, q0 = (int16_t)src[1] - 127;
-    int16_t i1 = (int16_t)src[2] - 127, q1 = (int16_t)src[3] - 127;
-    int16_t i2 = (int16_t)src[4] - 127, q2 = (int16_t)src[5] - 127;
-    int16_t i3 = (int16_t)src[6] - 127, q3 = (int16_t)src[7] - 127;
-    int16_t ref_rot[8] = {i0, q0, (int16_t)(-q1), i1, (int16_t)(-i2), (int16_t)(-q2), q3, (int16_t)(-i3)};
+    int i0 = (int)src[0] - 127, q0 = (int)src[1] - 127;
+    int i1 = (int)src[2] - 127, q1 = (int)src[3] - 127;
+    int i2 = (int)src[4] - 127, q2 = (int)src[5] - 127;
+    int i3 = (int)src[6] - 127, q3 = (int)src[7] - 127;
+    int rr[8] = {i0, q0, -q1, i1, -i2, -q2, q3, -i3};
+    int16_t ref_rot[8];
+    for (int k = 0; k < 8; k++) {
+        int v = rr[k];
+        if (v > 127) {
+            v = 127;
+        }
+        if (v < -128) {
+            v = -128;
+        }
+        v <<= 8;
+        if (v > 32767) {
+            v = 32767;
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        ref_rot[k] = (int16_t)v;
+    }
     if (!arrays_equal(dst, ref_rot, 8)) {
         fprintf(stderr, "SIMD rotate+widen: mismatch\n");
         return 1;

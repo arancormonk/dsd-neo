@@ -2399,13 +2399,21 @@ select_defaults_for_mode(dsd_opts* opts) {
             demod.fll_beta_q15 = 15;
         }
         /* Keep FLL disabled by default; user/UI can enable as needed. */
-        /* P25p2 CQPSK RRC defaults: enable RRC MF, use ntaps=11*sps+1 (span_syms=0 sentinel),
-           alpha = 0.5 when fixed toggle active; else alpha = 0.2. */
+        /* P25 CQPSK RRC defaults: enable RRC MF, use ntaps=11*sps+1 (span_syms=0 sentinel),
+           alpha ~ 0.2 for Phase 1 LSM (CQPSK) and 0.5 when fixed toggle active for Phase 2. */
+        if (opts->frame_p25p1 == 1) {
+            demod.cqpsk_enable = 1;
+            demod.cqpsk_mf_enable = 1;
+            demod.cqpsk_rrc_enable = 1;
+            demod.cqpsk_rrc_alpha_q15 = (int)(0.20 * 32768.0);
+            demod.cqpsk_rrc_span_syms = 0; /* ntaps = 11*sps+1 */
+        }
         if (opts->frame_p25p2 == 1) {
+            demod.cqpsk_enable = 1;
             demod.cqpsk_mf_enable = 1;
             demod.cqpsk_rrc_enable = 1;
             demod.cqpsk_rrc_alpha_q15 = (int)(((opts->p25_p2_rrc_fixed ? 0.50 : 0.20) * 32768.0));
-            demod.cqpsk_rrc_span_syms = 0;
+            demod.cqpsk_rrc_span_syms = 0; /* ntaps = 11*sps+1 */
         }
     } else {
         if (!env_ted_set) {
@@ -2618,6 +2626,27 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
         if (persist.rrc_span_syms > 0) {
             demod.cqpsk_rrc_span_syms = persist.rrc_span_syms;
+        }
+    }
+
+    /* LSM simple mode (env override): force CQPSK+RRC on and CQPSK EQ off */
+    {
+        const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
+        if (cfg2 && cfg2->lsm_simple_is_set && cfg2->lsm_simple_enable) {
+            demod.cqpsk_enable = 1;
+            demod.cqpsk_mf_enable = 1;
+            demod.cqpsk_rrc_enable = 1;
+            /* Use ntaps = 11*sps+1 sentinel by setting span_syms=0; alpha ≈ 0.2 */
+            demod.cqpsk_rrc_span_syms = 0;
+            demod.cqpsk_rrc_alpha_q15 = (int)(0.20 * 32768.0);
+            /* Keep adaptive CQPSK EQ off for stability */
+            demod.cqpsk_lms_enable = 0;
+            /* Tie in TED for easier first lock (force for FM demod path) */
+            demod.ted_enabled = 1;
+            demod.ted_force = 1;
+            if (demod.ted_gain_q20 <= 0) {
+                demod.ted_gain_q20 = 96;
+            }
         }
     }
 

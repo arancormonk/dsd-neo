@@ -131,7 +131,15 @@ void
 widen_u8_to_s16_bias128_scalar(const unsigned char* DSD_NEO_RESTRICT src, int16_t* DSD_NEO_RESTRICT dst, uint32_t len) {
     uint32_t i = 0;
     for (; i < len; i++) {
-        dst[i] = (int16_t)src[i] - 128;
+        int v = (int)src[i] - 128; /* range: [-128,127] */
+        v <<= 8;                   /* scale to int16 domain */
+        if (v > 32767) {
+            v = 32767; /* saturate (theoretical no-hit here) */
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        dst[i] = (int16_t)v;
     }
 }
 
@@ -145,9 +153,21 @@ widen_u8_to_s16_bias128_scalar(const unsigned char* DSD_NEO_RESTRICT src, int16_
 static inline void
 widen_u8_to_s16_bias127_scalar(const unsigned char* DSD_NEO_RESTRICT src, int16_t* DSD_NEO_RESTRICT dst, uint32_t len) {
     uint32_t i = 0;
-    /* Scalar conversion: (u8 - 127) -> s16 */
+    /* Scalar conversion with scaling: (u8 - 127) * 256 -> s16 (saturated) */
     for (; i < len; i++) {
-        dst[i] = (int16_t)src[i] - 127;
+        int v = (int)src[i] - 127; /* range: [-127,128] */
+        /* Avoid 128*256 == 32768 overflow by pre-clamping */
+        if (v > 127) {
+            v = 127;
+        }
+        v <<= 8;
+        if (v > 32767) {
+            v = 32767;
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        dst[i] = (int16_t)v;
     }
 }
 
@@ -165,47 +185,222 @@ widen_rotate90_u8_to_s16_bias127_scalar(const unsigned char* DSD_NEO_RESTRICT sr
                                         uint32_t len) {
     uint32_t i = 0;
     for (; i + 8 <= len; i += 8) {
-        int16_t i0 = (int16_t)src[i + 0] - 127;
-        int16_t q0 = (int16_t)src[i + 1] - 127;
-        dst[i + 0] = i0;
-        dst[i + 1] = q0;
+        int i0 = (int)src[i + 0] - 127;
+        int q0 = (int)src[i + 1] - 127;
+        if (i0 > 127) {
+            i0 = 127;
+        }
+        if (q0 > 127) {
+            q0 = 127;
+        }
+        i0 <<= 8;
+        q0 <<= 8;
+        if (i0 > 32767) {
+            i0 = 32767;
+        }
+        if (i0 < -32768) {
+            i0 = -32768;
+        }
+        if (q0 > 32767) {
+            q0 = 32767;
+        }
+        if (q0 < -32768) {
+            q0 = -32768;
+        }
+        dst[i + 0] = (int16_t)i0;
+        dst[i + 1] = (int16_t)q0;
 
-        int16_t i1 = (int16_t)src[i + 2] - 127;
-        int16_t q1 = (int16_t)src[i + 3] - 127;
-        dst[i + 2] = (int16_t)(-q1);
-        dst[i + 3] = i1;
+        int i1 = (int)src[i + 2] - 127;
+        int q1 = (int)src[i + 3] - 127;
+        int r20 = -q1, r21 = i1;
+        if (r20 > 127) {
+            r20 = 127;
+        }
+        if (r21 > 127) {
+            r21 = 127;
+        }
+        if (r20 < -128) {
+            r20 = -128;
+        }
+        if (r21 < -128) {
+            r21 = -128;
+        }
+        r20 <<= 8;
+        r21 <<= 8;
+        if (r20 > 32767) {
+            r20 = 32767;
+        }
+        if (r20 < -32768) {
+            r20 = -32768;
+        }
+        if (r21 > 32767) {
+            r21 = 32767;
+        }
+        if (r21 < -32768) {
+            r21 = -32768;
+        }
+        dst[i + 2] = (int16_t)r20;
+        dst[i + 3] = (int16_t)r21;
 
-        int16_t i2 = (int16_t)src[i + 4] - 127;
-        int16_t q2 = (int16_t)src[i + 5] - 127;
-        dst[i + 4] = (int16_t)(-i2);
-        dst[i + 5] = (int16_t)(-q2);
+        int i2 = (int)src[i + 4] - 127;
+        int q2 = (int)src[i + 5] - 127;
+        int r40 = -i2, r41 = -q2;
+        if (r40 > 127) {
+            r40 = 127;
+        }
+        if (r41 > 127) {
+            r41 = 127;
+        }
+        if (r40 < -128) {
+            r40 = -128;
+        }
+        if (r41 < -128) {
+            r41 = -128;
+        }
+        r40 <<= 8;
+        r41 <<= 8;
+        if (r40 > 32767) {
+            r40 = 32767;
+        }
+        if (r40 < -32768) {
+            r40 = -32768;
+        }
+        if (r41 > 32767) {
+            r41 = 32767;
+        }
+        if (r41 < -32768) {
+            r41 = -32768;
+        }
+        dst[i + 4] = (int16_t)r40;
+        dst[i + 5] = (int16_t)r41;
 
-        int16_t i3 = (int16_t)src[i + 6] - 127;
-        int16_t q3 = (int16_t)src[i + 7] - 127;
-        dst[i + 6] = q3;
-        dst[i + 7] = (int16_t)(-i3);
+        int i3 = (int)src[i + 6] - 127;
+        int q3 = (int)src[i + 7] - 127;
+        int r60 = q3, r61 = -i3;
+        if (r60 > 127) {
+            r60 = 127;
+        }
+        if (r61 > 127) {
+            r61 = 127;
+        }
+        if (r60 < -128) {
+            r60 = -128;
+        }
+        if (r61 < -128) {
+            r61 = -128;
+        }
+        r60 <<= 8;
+        r61 <<= 8;
+        if (r60 > 32767) {
+            r60 = 32767;
+        }
+        if (r60 < -32768) {
+            r60 = -32768;
+        }
+        if (r61 > 32767) {
+            r61 = 32767;
+        }
+        if (r61 < -32768) {
+            r61 = -32768;
+        }
+        dst[i + 6] = (int16_t)r60;
+        dst[i + 7] = (int16_t)r61;
     }
     /* Tail: apply rotation pattern for remaining up to 6 samples */
     if (i < len) {
         uint32_t base = i;
         uint32_t rem = len - base;
         if (rem >= 2) {
-            int16_t i0 = (int16_t)src[base + 0] - 127;
-            int16_t q0 = (int16_t)src[base + 1] - 127;
-            dst[base + 0] = i0;
-            dst[base + 1] = q0;
+            int v0 = (int)src[base + 0] - 127;
+            int v1 = (int)src[base + 1] - 127;
+            if (v0 > 127) {
+                v0 = 127;
+            }
+            if (v1 > 127) {
+                v1 = 127;
+            }
+            v0 <<= 8;
+            v1 <<= 8;
+            if (v0 > 32767) {
+                v0 = 32767;
+            }
+            if (v0 < -32768) {
+                v0 = -32768;
+            }
+            if (v1 > 32767) {
+                v1 = 32767;
+            }
+            if (v1 < -32768) {
+                v1 = -32768;
+            }
+            dst[base + 0] = (int16_t)v0;
+            dst[base + 1] = (int16_t)v1;
         }
         if (rem >= 4) {
-            int16_t i1 = (int16_t)src[base + 2] - 127;
-            int16_t q1 = (int16_t)src[base + 3] - 127;
-            dst[base + 2] = (int16_t)(-q1);
-            dst[base + 3] = i1;
+            int i1 = (int)src[base + 2] - 127;
+            int q1 = (int)src[base + 3] - 127;
+            int r20 = -q1, r21 = i1;
+            if (r20 > 127) {
+                r20 = 127;
+            }
+            if (r21 > 127) {
+                r21 = 127;
+            }
+            if (r20 < -128) {
+                r20 = -128;
+            }
+            if (r21 < -128) {
+                r21 = -128;
+            }
+            r20 <<= 8;
+            r21 <<= 8;
+            if (r20 > 32767) {
+                r20 = 32767;
+            }
+            if (r20 < -32768) {
+                r20 = -32768;
+            }
+            if (r21 > 32767) {
+                r21 = 32767;
+            }
+            if (r21 < -32768) {
+                r21 = -32768;
+            }
+            dst[base + 2] = (int16_t)r20;
+            dst[base + 3] = (int16_t)r21;
         }
         if (rem >= 6) {
-            int16_t i2 = (int16_t)src[base + 4] - 127;
-            int16_t q2 = (int16_t)src[base + 5] - 127;
-            dst[base + 4] = (int16_t)(-i2);
-            dst[base + 5] = (int16_t)(-q2);
+            int i2 = (int)src[base + 4] - 127;
+            int q2 = (int)src[base + 5] - 127;
+            int r40 = -i2, r41 = -q2;
+            if (r40 > 127) {
+                r40 = 127;
+            }
+            if (r41 > 127) {
+                r41 = 127;
+            }
+            if (r40 < -128) {
+                r40 = -128;
+            }
+            if (r41 < -128) {
+                r41 = -128;
+            }
+            r40 <<= 8;
+            r41 <<= 8;
+            if (r40 > 32767) {
+                r40 = 32767;
+            }
+            if (r40 < -32768) {
+                r40 = -32768;
+            }
+            if (r41 > 32767) {
+                r41 = 32767;
+            }
+            if (r41 < -32768) {
+                r41 = -32768;
+            }
+            dst[base + 4] = (int16_t)r40;
+            dst[base + 5] = (int16_t)r41;
         }
     }
 }
@@ -223,6 +418,7 @@ static void
 DSD_NEO_TARGET_ATTR("avx2") widen_u8_to_s16_bias127_avx2(const unsigned char* src, int16_t* dst, uint32_t len) {
     uint32_t i = 0;
     const __m256i bias256 = _mm256_set1_epi16(127);
+    const __m256i max127 = _mm256_set1_epi16(127);
     for (; i + 32 <= len; i += 32) {
         __m128i b0 = _mm_loadu_si128((const __m128i*)(src + i));
         __m128i b1 = _mm_loadu_si128((const __m128i*)(src + i + 16));
@@ -230,11 +426,27 @@ DSD_NEO_TARGET_ATTR("avx2") widen_u8_to_s16_bias127_avx2(const unsigned char* sr
         __m256i hi = _mm256_cvtepu8_epi16(b1);
         lo = _mm256_sub_epi16(lo, bias256);
         hi = _mm256_sub_epi16(hi, bias256);
+        /* Pre-clamp 128 -> 127 to avoid 0x8000 after shift */
+        lo = _mm256_min_epi16(lo, max127);
+        hi = _mm256_min_epi16(hi, max127);
+        lo = _mm256_slli_epi16(lo, 8);
+        hi = _mm256_slli_epi16(hi, 8);
         _mm256_storeu_si256((__m256i*)(dst + i), lo);
         _mm256_storeu_si256((__m256i*)(dst + i + 16), hi);
     }
     for (; i < len; i++) {
-        dst[i] = (int16_t)src[i] - 127;
+        int v = (int)src[i] - 127;
+        if (v > 127) {
+            v = 127;
+        }
+        v <<= 8;
+        if (v > 32767) {
+            v = 32767;
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        dst[i] = (int16_t)v;
     }
 }
 
@@ -255,6 +467,7 @@ DSD_NEO_TARGET_ATTR("avx2")
         _mm256_setr_epi16(0x0000, 0x0000, (short)0xFFFF, 0x0000, (short)0xFFFF, (short)0xFFFF, 0x0000, (short)0xFFFF,
                           0x0000, 0x0000, (short)0xFFFF, 0x0000, (short)0xFFFF, (short)0xFFFF, 0x0000, (short)0xFFFF);
     const __m256i c127 = _mm256_set1_epi16(127);
+    const __m256i max127 = _mm256_set1_epi16(127);
     uint32_t i = 0;
     for (; i + 32 <= len; i += 32) {
         __m256i v8 = _mm256_loadu_si256((const __m256i*)(src + i));
@@ -269,6 +482,11 @@ DSD_NEO_TARGET_ATTR("avx2")
         __m256i bm_hi = _mm256_sub_epi16(c127, v16_hi);
         __m256i out_lo = _mm256_blendv_epi8(bs_lo, bm_lo, mask_sel);
         __m256i out_hi = _mm256_blendv_epi8(bs_hi, bm_hi, mask_sel);
+        /* Pre-clamp 128 -> 127 to avoid 0x8000 */
+        out_lo = _mm256_min_epi16(out_lo, max127);
+        out_hi = _mm256_min_epi16(out_hi, max127);
+        out_lo = _mm256_slli_epi16(out_lo, 8);
+        out_hi = _mm256_slli_epi16(out_hi, 8);
         _mm256_storeu_si256((__m256i*)(dst + i), out_lo);
         _mm256_storeu_si256((__m256i*)(dst + i + 16), out_hi);
     }
@@ -286,17 +504,40 @@ DSD_NEO_TARGET_ATTR("sse2") widen_u8_to_s16_bias127_sse2(const unsigned char* sr
     uint32_t i = 0;
     const __m128i bias = _mm_set1_epi16(127);
     const __m128i zero = _mm_setzero_si128();
+    const __m128i max127 = _mm_set1_epi16(127);
+    const __m128i one = _mm_set1_epi16(1);
     for (; i + 16 <= len; i += 16) {
         __m128i b = _mm_loadu_si128((const __m128i*)(src + i));
         __m128i lo = _mm_unpacklo_epi8(b, zero);
         __m128i hi = _mm_unpackhi_epi8(b, zero);
         lo = _mm_sub_epi16(lo, bias);
         hi = _mm_sub_epi16(hi, bias);
+        /* Shift left by 8 with saturating fix for 128 -> 127 */
+        __m128i mask_lo = _mm_cmpeq_epi16(lo, _mm_set1_epi16(128));
+        __m128i mask_hi = _mm_cmpeq_epi16(hi, _mm_set1_epi16(128));
+        lo = _mm_min_epi16(lo, max127);
+        hi = _mm_min_epi16(hi, max127);
+        lo = _mm_slli_epi16(lo, 8);
+        hi = _mm_slli_epi16(hi, 8);
+        /* Correct lanes that were exactly 128 pre-clamp: subtract 1 to map 0x8000 -> 0x7FFF */
+        lo = _mm_sub_epi16(lo, _mm_and_si128(mask_lo, one));
+        hi = _mm_sub_epi16(hi, _mm_and_si128(mask_hi, one));
         _mm_storeu_si128((__m128i*)(dst + i), lo);
         _mm_storeu_si128((__m128i*)(dst + i + 8), hi);
     }
     for (; i < len; i++) {
-        dst[i] = (int16_t)src[i] - 127;
+        int v = (int)src[i] - 127;
+        if (v > 127) {
+            v = 127;
+        }
+        v <<= 8;
+        if (v > 32767) {
+            v = 32767;
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        dst[i] = (int16_t)v;
     }
 }
 
@@ -326,6 +567,8 @@ DSD_NEO_TARGET_ATTR("ssse3")
         _mm_setr_epi16(0x0000, 0x0000, (short)0xFFFF, 0x0000, (short)0xFFFF, (short)0xFFFF, 0x0000, (short)0xFFFF);
     const __m128i c127 = _mm_set1_epi16(127);
     const __m128i zero = _mm_setzero_si128();
+    const __m128i max127 = _mm_set1_epi16(127);
+    const __m128i one = _mm_set1_epi16(1);
     for (; i + 16 <= len; i += 16) {
         __m128i v8 = _mm_loadu_si128((const __m128i*)(src + i));
         __m128i sh = _mm_shuffle_epi8(v8, shuffle);
@@ -337,6 +580,15 @@ DSD_NEO_TARGET_ATTR("ssse3")
         __m128i bm_hi = _mm_sub_epi16(c127, v16_hi);
         __m128i out_lo = _mm_or_si128(_mm_and_si128(bm_lo, mask_sel), _mm_andnot_si128(mask_sel, bs_lo));
         __m128i out_hi = _mm_or_si128(_mm_and_si128(bm_hi, mask_sel), _mm_andnot_si128(mask_sel, bs_hi));
+        /* Identify exactly-128 lanes to correct after shift */
+        __m128i mask128_lo = _mm_cmpeq_epi16(out_lo, _mm_set1_epi16(128));
+        __m128i mask128_hi = _mm_cmpeq_epi16(out_hi, _mm_set1_epi16(128));
+        out_lo = _mm_min_epi16(out_lo, max127);
+        out_hi = _mm_min_epi16(out_hi, max127);
+        out_lo = _mm_slli_epi16(out_lo, 8);
+        out_hi = _mm_slli_epi16(out_hi, 8);
+        out_lo = _mm_sub_epi16(out_lo, _mm_and_si128(mask128_lo, one));
+        out_hi = _mm_sub_epi16(out_hi, _mm_and_si128(mask128_hi, one));
         _mm_storeu_si128((__m128i*)(dst + i), out_lo);
         _mm_storeu_si128((__m128i*)(dst + i + 8), out_hi);
     }
@@ -361,11 +613,25 @@ widen_u8_to_s16_bias127_neon(const unsigned char* src, int16_t* dst, uint32_t le
         int16x8_t v16_hi = vreinterpretq_s16_u16(vmovl_u8(v_hi));
         int16x8_t lo = vsubq_s16(v16_lo, vdupq_n_s16(127));
         int16x8_t hi = vsubq_s16(v16_hi, vdupq_n_s16(127));
+        /* Saturating left shift by 8 */
+        lo = vqshlq_n_s16(lo, 8);
+        hi = vqshlq_n_s16(hi, 8);
         vst1q_s16(dst + i, lo);
         vst1q_s16(dst + i + 8, hi);
     }
     for (; i < len; i++) {
-        dst[i] = (int16_t)src[i] - 127;
+        int v = (int)src[i] - 127;
+        if (v > 127) {
+            v = 127;
+        }
+        v <<= 8;
+        if (v > 32767) {
+            v = 32767;
+        }
+        if (v < -32768) {
+            v = -32768;
+        }
+        dst[i] = (int16_t)v;
     }
 }
 
@@ -395,6 +661,9 @@ widen_rotate90_u8_to_s16_bias127_neon(const unsigned char* src, int16_t* dst, ui
         int16x8_t bm_hi = vsubq_s16(c127, v16_hi);
         int16x8_t out_lo = vbslq_s16(msel, bm_lo, bs_lo);
         int16x8_t out_hi = vbslq_s16(msel, bm_hi, bs_hi);
+        /* Saturating left shift by 8 */
+        out_lo = vqshlq_n_s16(out_lo, 8);
+        out_hi = vqshlq_n_s16(out_hi, 8);
         vst1q_s16(dst + i, out_lo);
         vst1q_s16(dst + i + 8, out_hi);
     }

@@ -11,6 +11,7 @@
  * and audio filtering. Public APIs are declared in `dsp/demod_pipeline.h`.
  */
 
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
 
 /* Provide weak references so unit tests that do not link RTL stream still link. */
@@ -1909,27 +1911,65 @@ full_demod(struct demod_state* d) {
     } else {
         low_pass(d);
     }
-    /* Baseband conditioning order (FM/C4FM):
-       1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
-       2) Block-based envelope AGC to normalize |z| (skipped when 1-tap CMA is active)
-       3) Optional per-sample limiter to clamp fast AM ripple (skipped when 1-tap CMA is active)
-       4) FM/C4FM CMA/smoother/adaptive FIR */
-    iq_dc_block(d);
     /*
-     * Skip block AGC/limiter when FM CMA is actively adapting. For 1-tap CMA this was
-     * already the case; extend to 5-tap adaptive smoother so the CMA sees true envelope
-     * ripple rather than a pre-limited signal. Keep AGC/limiter for the fixed 3-tap
-     * pre-smoother (it does not adapt and benefits from stabilized levels).
+     * Branch early by mode to simplify ordering.
+     *
+     * CQPSK/LSM (QPSK-like):
+     *   DC block (optional) -> Matched Filter (RRC/MF) -> Costas -> CQPSK EQ
+     *
+     * FM/C4FM and others:
+     *   DC block -> AGC/limiter (when allowed) -> FM CMA/smoother -> FLL (if enabled)
      */
-    int skip_agc_lim = (d->fm_cma_enable && (d->fm_cma_taps == 1 || d->fm_cma_taps >= 5)) ? 1 : 0;
-    if (!skip_agc_lim) {
-        fm_envelope_agc(d);
-        fm_constant_envelope_limiter(d);
+    if (d->cqpsk_enable) {
+        /* Optional complex DC removal */
+        iq_dc_block(d);
+        /* CQPSK matched filter before carrier recovery */
+        if (d->cqpsk_mf_enable) {
+            if (d->cqpsk_rrc_enable) {
+                mf_rrc_complex_interleaved(d);
+            } else {
+                mf5_complex_interleaved(d);
+            }
+        }
+        /* Carrier recovery (always run Costas for CQPSK),
+           but skip during unit tests that use raw_demod. */
+        if (d->mode_demod != &raw_demod) {
+            cqpsk_costas_mix_and_update(d);
+        }
+        /* Lightweight decision-directed equalizer after rotation.
+           Skip when LSM simple mode is enabled. */
+        {
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            int lsm_simple = (cfg && cfg->lsm_simple_is_set && cfg->lsm_simple_enable) ? 1 : 0;
+            if (!lsm_simple) {
+                cqpsk_process_block(d);
+            }
+        }
+    } else {
+        /* Baseband conditioning order (FM/C4FM):
+           1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
+           2) Block-based envelope AGC to normalize |z| (skipped when CMA is adapting)
+           3) Optional per-sample limiter to clamp fast AM ripple (skipped when CMA is adapting)
+           4) FM/C4FM CMA/smoother/adaptive FIR */
+        iq_dc_block(d);
+        /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping".
+           When CMA (>=5 taps or pure complex gain) is active, skip both.
+           Otherwise prefer AGC if enabled; fall back to limiter if AGC is off. */
+        int skip_agc_lim = (d->fm_cma_enable && (d->fm_cma_taps == 1 || d->fm_cma_taps >= 5)) ? 1 : 0;
+        if (!skip_agc_lim) {
+            if (d->fm_agc_enable) {
+                fm_envelope_agc(d);
+            } else if (d->fm_limiter_enable) {
+                fm_constant_envelope_limiter(d);
+            }
+        }
+        fm_cma_equalize(d);
+        /* Residual-CFO FLL when enabled */
+        if (d->fll_enabled) {
+            fll_update_error(d);
+            fll_mix_and_update(d);
+        }
     }
-    fm_cma_equalize(d);
-    /* Residual CFO loop: estimate error then rotate */
-    fll_update_error(d);
-    fll_mix_and_update(d);
     /* Mode-aware generic IQ balance (image suppression) after CFO rotation */
     if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {
         /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */
@@ -2000,17 +2040,7 @@ full_demod(struct demod_state* d) {
             }
         }
     }
-    /* Optional CQPSK/LSM pre-processing on complex baseband for QPSK paths */
-    if (d->cqpsk_enable) {
-        if (d->cqpsk_mf_enable) {
-            if (d->cqpsk_rrc_enable) {
-                mf_rrc_complex_interleaved(d);
-            } else {
-                mf5_complex_interleaved(d);
-            }
-        }
-        cqpsk_process_block(d);
-    }
+    /* CQPSK MF and EQ handled earlier in the CQPSK branch */
     /* Lightweight timing error correction (optional, avoid for analog FM demod) */
     if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);

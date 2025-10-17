@@ -656,6 +656,10 @@ print_dsp_status(void) {
     printw(" FLL: %s ", fll ? "On" : "Off");
     printw(" TED: %s ", ted ? "On" : "Off");
     printw(" CQPSK: %s", cq ? "On" : "Off");
+    /* Show LSM Simple hint when active */
+    if (dsd_neo_get_lsm_simple()) {
+        printw(" LSM:Simple");
+    }
     if (cq) {
         printw(" [LMS: %s WL: %s DFE: %s MF: %s", lms ? "On" : "Off", wl ? "On" : "Off", dfe ? "On" : "Off",
                mf ? (rrc_en ? "RRC" : "On") : "Off");
