@@ -352,7 +352,7 @@ jobs:
           trap - EXIT
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v5.0.0
         with:
           name: ${{ steps.dmg.outputs.ART_NAME }}
           path: ${{ steps.dmg.outputs.DMG_PATH }}
