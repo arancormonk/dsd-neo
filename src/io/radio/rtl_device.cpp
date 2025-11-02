@@ -85,6 +85,12 @@ struct rtl_device {
     unsigned char* tcp_pending;
     size_t tcp_pending_len;
     size_t tcp_pending_cap;
+    /* Extra driver state for reconnect replay */
+    int testmode_on;
+    uint32_t rtl_xtal_hz;
+    uint32_t tuner_xtal_hz;
+    struct { int stage; int gain; } if_gains[16];
+    int if_gain_count;
 };
 
 /**
@@ -472,6 +478,9 @@ tcp_thread_fn(void* arg) {
             const int prev_direct = s->direct_sampling;
             const int prev_bias = s->bias_tee_on;
             const int prev_offset = s->offset_tuning;
+            const int prev_testmode = s->testmode_on;
+            const uint32_t prev_rtl_xtal = s->rtl_xtal_hz;
+            const uint32_t prev_tuner_xtal = s->tuner_xtal_hz;
 
             if (s->sockfd >= 0) {
                 shutdown(s->sockfd, SHUT_RDWR);
@@ -538,6 +547,22 @@ tcp_thread_fn(void* arg) {
                     }
                     if (prev_bias) {
                         (void)rtl_tcp_send_cmd(s->sockfd, 0x0E, 1);
+                    }
+                    if (prev_testmode) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x07, (uint32_t)prev_testmode);
+                    }
+                    if (prev_rtl_xtal > 0) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x0B, prev_rtl_xtal);
+                    }
+                    if (prev_tuner_xtal > 0) {
+                        (void)rtl_tcp_send_cmd(s->sockfd, 0x0C, prev_tuner_xtal);
+                    }
+                    if (s->if_gain_count > 0) {
+                        for (int i = 0; i < s->if_gain_count && i < 16; i++) {
+                            uint32_t packed = ((uint32_t)(s->if_gains[i].stage & 0xFFFF) << 16)
+                                              | ((uint16_t)(s->if_gains[i].gain & 0xFFFF));
+                            (void)rtl_tcp_send_cmd(s->sockfd, 0x06, packed);
+                        }
                     }
                     /* Resume recv loop */
                     r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
@@ -1115,6 +1140,10 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->port = 0;
     dev->run.store(0);
     dev->agc_mode = 1;
+    dev->testmode_on = 0;
+    dev->rtl_xtal_hz = 0;
+    dev->tuner_xtal_hz = 0;
+    dev->if_gain_count = 0;
 
     int r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
     if (r < 0) {
@@ -1153,6 +1182,10 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->tcp_pending = NULL;
     dev->tcp_pending_len = 0;
     dev->tcp_pending_cap = 0;
+    dev->testmode_on = 0;
+    dev->rtl_xtal_hz = 0;
+    dev->tuner_xtal_hz = 0;
+    dev->if_gain_count = 0;
 
     int sfd = tcp_connect_host(host, port);
     if (sfd < 0) {
@@ -1483,13 +1516,10 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
 }
 
 /**
- * @brief Enable offset tuning mode.
- *
- * @param dev RTL-SDR device handle.
- * @return 0 on success, negative on failure.
+ * @brief Enable or disable offset tuning mode.
  */
 int
-rtl_device_set_offset_tuning(struct rtl_device* dev) {
+rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
@@ -1498,13 +1528,35 @@ rtl_device_set_offset_tuning(struct rtl_device* dev) {
         if (!dev->dev) {
             return -1;
         }
-        r = verbose_offset_tuning(dev->dev);
+        r = rtlsdr_set_offset_tuning(dev->dev, on ? 1 : 0);
+        if (r == 0) {
+            fprintf(stderr, on ? "Offset tuning mode enabled.\n" : "Offset tuning mode disabled.\n");
+        } else {
+            int t = rtlsdr_get_tuner_type(dev->dev);
+            const char* tt = "unknown";
+            switch (t) {
+                case RTLSDR_TUNER_E4000: tt = "E4000"; break;
+                case RTLSDR_TUNER_FC0012: tt = "FC0012"; break;
+                case RTLSDR_TUNER_FC0013: tt = "FC0013"; break;
+                case RTLSDR_TUNER_FC2580: tt = "FC2580"; break;
+                case RTLSDR_TUNER_R820T: tt = "R820T"; break;
+                case RTLSDR_TUNER_R828D: tt = "R828D"; break;
+                default: break;
+            }
+            fprintf(stderr, "WARNING: Failed to set offset tuning (%d) for tuner %s.\n", r, tt);
+        }
     } else {
-        r = rtl_tcp_send_cmd(dev->sockfd, 0x0A, 1);
+        r = rtl_tcp_send_cmd(dev->sockfd, 0x0A, (uint32_t)(on ? 1 : 0));
     }
-    /* Only mark enabled on success; otherwise ensure fallback paths remain active. */
-    dev->offset_tuning = (r == 0) ? 1 : 0;
+    if (r == 0) {
+        dev->offset_tuning = on ? 1 : 0;
+    }
     return r;
+}
+
+int
+rtl_device_set_offset_tuning(struct rtl_device* dev) {
+    return rtl_device_set_offset_tuning_enabled(dev, 1);
 }
 
 int
@@ -1667,4 +1719,100 @@ rtl_device_get_tcp_autotune(struct rtl_device* dev) {
         return 0;
     }
     return dev->tcp_autotune ? 1 : 0;
+}
+
+int
+rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tuner_xtal_hz) {
+    if (!dev) {
+        return -1;
+    }
+    dev->rtl_xtal_hz = rtl_xtal_hz;
+    dev->tuner_xtal_hz = tuner_xtal_hz;
+    if (dev->backend == 1) {
+        if (dev->sockfd < 0) {
+            return -1;
+        }
+        if (rtl_xtal_hz > 0) {
+            (void)rtl_tcp_send_cmd(dev->sockfd, 0x0B, rtl_xtal_hz);
+        }
+        if (tuner_xtal_hz > 0) {
+            (void)rtl_tcp_send_cmd(dev->sockfd, 0x0C, tuner_xtal_hz);
+        }
+        return 0;
+    }
+    if (!dev->dev) {
+        return -1;
+    }
+    int r = rtlsdr_set_xtal_freq(dev->dev, rtl_xtal_hz, tuner_xtal_hz);
+    if (r != 0) {
+        fprintf(stderr, "WARNING: Failed to set xtal freq (rtl=%u, tuner=%u).\n", rtl_xtal_hz, tuner_xtal_hz);
+        return -1;
+    }
+    fprintf(stderr, "Set xtal freq: rtl=%u Hz%s, tuner=%u Hz%s.\n", rtl_xtal_hz, rtl_xtal_hz ? "" : " (unchanged)",
+            tuner_xtal_hz, tuner_xtal_hz ? "" : " (unchanged)");
+    return 0;
+}
+
+int
+rtl_device_set_testmode(struct rtl_device* dev, int on) {
+    if (!dev) {
+        return -1;
+    }
+    dev->testmode_on = on ? 1 : 0;
+    if (dev->backend == 1) {
+        if (dev->sockfd < 0) {
+            return -1;
+        }
+        return rtl_tcp_send_cmd(dev->sockfd, 0x07, (uint32_t)(on ? 1 : 0));
+    }
+    if (!dev->dev) {
+        return -1;
+    }
+    int r = rtlsdr_set_testmode(dev->dev, on ? 1 : 0);
+    if (r != 0) {
+        fprintf(stderr, "WARNING: Failed to %s RTL-SDR test mode.\n", on ? "enable" : "disable");
+        return -1;
+    }
+    fprintf(stderr, "RTL-SDR test mode %s.\n", on ? "enabled" : "disabled");
+    return 0;
+}
+
+int
+rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
+    if (!dev) {
+        return -1;
+    }
+    if (stage < 0) {
+        return -1;
+    }
+    int replaced = 0;
+    for (int i = 0; i < dev->if_gain_count && i < 16; i++) {
+        if (dev->if_gains[i].stage == stage) {
+            dev->if_gains[i].gain = gain_tenth_db;
+            replaced = 1;
+            break;
+        }
+    }
+    if (!replaced && dev->if_gain_count < 16) {
+        dev->if_gains[dev->if_gain_count].stage = stage;
+        dev->if_gains[dev->if_gain_count].gain = gain_tenth_db;
+        dev->if_gain_count++;
+    }
+    if (dev->backend == 1) {
+        if (dev->sockfd < 0) {
+            return -1;
+        }
+        uint32_t packed = ((uint32_t)(stage & 0xFFFF) << 16) | ((uint16_t)(gain_tenth_db & 0xFFFF));
+        return rtl_tcp_send_cmd(dev->sockfd, 0x06, packed);
+    }
+    if (!dev->dev) {
+        return -1;
+    }
+    int r = rtlsdr_set_tuner_if_gain(dev->dev, stage, (int16_t)gain_tenth_db);
+    if (r != 0) {
+        fprintf(stderr, "WARNING: Failed to set IF gain: stage=%d, gain=%d (0.1 dB).\n", stage, gain_tenth_db);
+        return -1;
+    }
+    fprintf(stderr, "IF gain set: stage=%d, gain=%0.1f dB.\n", stage, gain_tenth_db / 10.0);
+    return 0;
 }

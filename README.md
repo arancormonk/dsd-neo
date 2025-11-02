@@ -67,6 +67,14 @@ This project is an active work in progress as we decouple from the upstream fork
     - Optional auto‑PPM correction from the timing error detector for long unattended runs.
   - Device control from the UI: toggle bias‑tee, switch AGC/manual gain, adjust bandwidth and squelch, and retune quickly.
 
+- RTL‑SDR advanced driver options (env)
+
+  - Direct sampling selection: `DSD_NEO_RTL_DIRECT=0|1|2|I|Q` (0 off, 1 I‑ADC, 2 Q‑ADC)
+  - Offset tuning control: `DSD_NEO_RTL_OFFSET_TUNING=0|1` (default: try enable)
+  - Crystal reference overrides: `DSD_NEO_RTL_XTAL_HZ=<Hz>`, `DSD_NEO_TUNER_XTAL_HZ=<Hz>`
+  - IF stage gains: `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` where `gain` is dB or 0.1 dB
+  - Test mode (ramp source): `DSD_NEO_RTL_TESTMODE=0|1`
+
 - Expanded DSP controls (power users welcome)
 
   - Adaptive equalizer and decision‑feedback equalizer toggles with quick presets.
@@ -205,6 +213,7 @@ cmake --build build/dev-release --target uninstall
   - Env: `DSD_NEO_TCP_STATS=1` — print periodic throughput/queue stats.
   - CLI: `--rtltcp-autotune` — enable adaptive tuning of buffering/recv size for imperfect networks.
   - Behavior: TCP keepalive is enabled; if the link drops, the client auto‑reconnects and reapplies tuner settings.
+  - On reconnect, advanced driver options (direct sampling, offset tuning, testmode, xtal, IF gains) are replayed.
 
 ## Using The CLI
 

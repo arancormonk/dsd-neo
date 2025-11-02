@@ -1150,14 +1150,19 @@ controller_thread_fn(void* arg) {
     /* set up primary channel */
     optimal_settings(s->freqs[0], demod.rate_in);
     if (dongle.direct_sampling) {
-        rtl_device_set_direct_sampling(rtl_device_handle, 1);
+        rtl_device_set_direct_sampling(rtl_device_handle, dongle.direct_sampling);
     }
 
-    /* Try enabling offset tuning before any other tuning calls (rtl_fm order). */
+    /* Try enabling offset tuning before any other tuning calls (rtl_fm order).
+       Respect explicit env override when provided. */
     {
-        int r = rtl_device_set_offset_tuning(rtl_device_handle);
+        int want = 1;
+        if (const char* ot = getenv("DSD_NEO_RTL_OFFSET_TUNING")) {
+            want = (ot[0] != '0' && ot[0] != 'n' && ot[0] != 'N' && ot[0] != 'f' && ot[0] != 'F') ? 1 : 0;
+        }
+        int r = rtl_device_set_offset_tuning_enabled(rtl_device_handle, want);
         if (r == 0) {
-            dongle.offset_tuning = 1;
+            dongle.offset_tuning = want ? 1 : 0;
         } else {
             dongle.offset_tuning = 0;
         }
@@ -2822,6 +2827,102 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* Apply bias tee setting before other tuner config (USB via librtlsdr; rtl_tcp via protocol cmd 0x0E) */
     if (opts && opts->rtl_bias_tee) {
         rtl_device_set_bias_tee(rtl_device_handle, 1);
+    }
+
+    /* Advanced RTL-SDR driver options via environment */
+    {
+        /* Direct sampling selection: DSD_NEO_RTL_DIRECT=0|1|2|I|Q */
+        if (const char* ds = getenv("DSD_NEO_RTL_DIRECT")) {
+            int mode = 0;
+            if (ds[0] == '1' || ds[0] == 'I' || ds[0] == 'i') {
+                mode = 1;
+            } else if (ds[0] == '2' || ds[0] == 'Q' || ds[0] == 'q') {
+                mode = 2;
+            } else if (ds[0] == '0') {
+                mode = 0;
+            } else {
+                int v = atoi(ds);
+                if (v >= 0 && v <= 2) {
+                    mode = v;
+                }
+            }
+            if (mode >= 0 && mode <= 2) {
+                rtl_device_set_direct_sampling(rtl_device_handle, mode);
+                dongle.direct_sampling = mode;
+            }
+        }
+
+        /* Offset tuning: DSD_NEO_RTL_OFFSET_TUNING=0|1 (default try enable) */
+        if (const char* ot = getenv("DSD_NEO_RTL_OFFSET_TUNING")) {
+            int on = (ot[0] != '0' && ot[0] != 'n' && ot[0] != 'N' && ot[0] != 'f' && ot[0] != 'F') ? 1 : 0;
+            rtl_device_set_offset_tuning_enabled(rtl_device_handle, on);
+            dongle.offset_tuning = on ? 1 : 0;
+        }
+
+        /* Xtal frequencies (Hz): DSD_NEO_RTL_XTAL_HZ / DSD_NEO_TUNER_XTAL_HZ */
+        uint32_t rtl_xtal_hz = 0, tuner_xtal_hz = 0;
+        if (const char* ex = getenv("DSD_NEO_RTL_XTAL_HZ")) {
+            long v = strtol(ex, NULL, 10);
+            if (v > 0 && v <= 1000000000L) {
+                rtl_xtal_hz = (uint32_t)v;
+            }
+        }
+        if (const char* et = getenv("DSD_NEO_TUNER_XTAL_HZ")) {
+            long v = strtol(et, NULL, 10);
+            if (v > 0 && v <= 1000000000L) {
+                tuner_xtal_hz = (uint32_t)v;
+            }
+        }
+        if (rtl_xtal_hz > 0 || tuner_xtal_hz > 0) {
+            rtl_device_set_xtal_freq(rtl_device_handle, rtl_xtal_hz, tuner_xtal_hz);
+        }
+
+        /* Test mode: DSD_NEO_RTL_TESTMODE=0|1 */
+        if (const char* tm = getenv("DSD_NEO_RTL_TESTMODE")) {
+            int on = (tm[0] != '0' && tm[0] != 'n' && tm[0] != 'N' && tm[0] != 'f' && tm[0] != 'F') ? 1 : 0;
+            rtl_device_set_testmode(rtl_device_handle, on);
+        }
+
+        /* IF gains: DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..." gain in dB or 0.1dB */
+        if (const char* ig = getenv("DSD_NEO_RTL_IF_GAINS")) {
+            char buf[1024];
+            snprintf(buf, sizeof buf, "%s", ig);
+            char* save = NULL;
+            for (char* tok = strtok_r(buf, ",; ", &save); tok; tok = strtok_r(NULL, ",; ", &save)) {
+                int stage = -1;
+                double gain_db = 0.0;
+                char* colon = strchr(tok, ':');
+                if (!colon) {
+                    continue;
+                }
+                *colon = '\0';
+                const char* s_stage = tok;
+                const char* s_gain = colon + 1;
+                stage = atoi(s_stage);
+                /* Strip 'dB' suffix if present */
+                char gbuf[64];
+                snprintf(gbuf, sizeof gbuf, "%s", s_gain);
+                size_t gl = strlen(gbuf);
+                if (gl >= 2 && (gbuf[gl - 1] == 'B' || gbuf[gl - 1] == 'b')) {
+                    gbuf[gl - 1] = '\0';
+                    if (gl >= 3 && (gbuf[gl - 2] == 'D' || gbuf[gl - 2] == 'd')) {
+                        gbuf[gl - 2] = '\0';
+                    }
+                }
+                gain_db = atof(gbuf);
+                int gain_tenth = 0;
+                if (strchr(gbuf, '.')) {
+                    gain_tenth = (int)lrint(gain_db * 10.0);
+                } else {
+                    /* Assume already in 0.1 dB if large; else interpret as dB */
+                    int gi = atoi(gbuf);
+                    gain_tenth = (abs(gi) > 90) ? gi : (gi * 10);
+                }
+                if (stage >= 0) {
+                    rtl_device_set_if_gain(rtl_device_handle, stage, gain_tenth);
+                }
+            }
+        }
     }
 
     if (demod.deemph) {

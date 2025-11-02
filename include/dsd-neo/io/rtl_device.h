@@ -138,16 +138,23 @@ int rtl_device_set_ppm(struct rtl_device* dev, int ppm_error);
  * @brief Set direct sampling mode.
  *
  * @param dev RTL-SDR device handle.
- * @param on 1 to enable, 0 to disable.
+ * @param on Direct sampling selection: 0=off, 1=I input, 2=Q input.
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_direct_sampling(struct rtl_device* dev, int on);
 
 /**
- * @brief Set offset tuning mode.
+ * @brief Enable/disable offset tuning mode.
  *
  * @param dev RTL-SDR device handle.
+ * @param on  1 to enable, 0 to disable.
  * @return 0 on success, negative on failure.
+ */
+int rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on);
+
+/**
+ * @brief Backward-compatible helper to enable offset tuning (equivalent to calling
+ * rtl_device_set_offset_tuning_enabled(dev, 1)).
  */
 int rtl_device_set_offset_tuning(struct rtl_device* dev);
 
@@ -224,6 +231,29 @@ void rtl_device_print_offset_capability(struct rtl_device* dev);
  * No-ops for USB backend. Returns 0 on success. */
 int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
 int rtl_device_get_tcp_autotune(struct rtl_device* dev);
+
+/**
+ * @brief Set (or clear) RTL and tuner crystal reference frequencies.
+ *
+ * Pass 0 to leave either value unchanged at the driver default.
+ * Applies to USB via librtlsdr and to rtl_tcp via protocol commands 0x0B/0x0C.
+ */
+int rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tuner_xtal_hz);
+
+/**
+ * @brief Enable or disable librtlsdr test mode (ramp signal instead of I/Q samples).
+ *
+ * Applies to USB (rtlsdr_set_testmode) and rtl_tcp (protocol cmd 0x07).
+ */
+int rtl_device_set_testmode(struct rtl_device* dev, int on);
+
+/**
+ * @brief Set intermediate frequency (IF) gain for a specific stage.
+ *
+ * Stage index and gain units follow librtlsdr: gain in tenths of a dB.
+ * Applies to USB (rtlsdr_set_tuner_if_gain) and rtl_tcp (protocol cmd 0x06).
+ */
+int rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db);
 
 #ifdef __cplusplus
 }
