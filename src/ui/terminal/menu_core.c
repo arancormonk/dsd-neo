@@ -27,6 +27,8 @@
 /* Forward declarations for new P25p2 RRC UI handlers */
 static const char* lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n);
 static void io_toggle_p25p2_rrc_autoprobe(void* vctx);
+// Forward decl for hex parser used by async callbacks
+static int parse_hex_u64(const char* s, unsigned long long* out);
 
 #ifndef UNUSED
 #define UNUSED(x) (void)(x)
@@ -71,12 +73,21 @@ ui_is_enabled(const NcMenuItem* it, void* ctx) {
     return (it->is_enabled == NULL) ? 1 : (it->is_enabled(ctx) ? 1 : 0);
 }
 
+// Shared UI context for menu callbacks
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} UiCtx;
+
+// Forward decl for help overlay used by async handler
+static void ui_show_help(const NcMenuItem* it);
+
 // forward declarations for actions referenced from multiple menus
 static void act_toggle_invert(void* v);
 static void act_toggle_payload(void* v);
 static void act_reset_eh(void* v);
 static void act_p2_params(void* v);
-static void act_key_entry(void* v);
+/* removed unused: act_key_entry */
 // New action prototypes used before definitions
 static void act_event_log_set(void* v);
 static void act_event_log_disable(void* v);
@@ -167,6 +178,1539 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
     wrefresh(menu_win);
 }
 
+// -------------------- Nonblocking overlay driver --------------------
+
+typedef struct {
+    const NcMenuItem* items;
+    size_t n;
+    int hi;
+    WINDOW* win;
+    int w, h;
+    int y, x;
+} UiMenuFrame;
+
+static int g_overlay_open = 0;
+static UiMenuFrame g_stack[8];
+static int g_depth = 0;
+static UiCtx g_ctx_overlay = {0};
+
+// Transient generic chooser (string list) overlay
+typedef struct {
+    int active;
+    const char* title;
+    const char* const* items;
+    int count;
+    int sel;
+    WINDOW* win;
+    void (*on_done)(void* user, int sel);
+    void* user;
+} UiChooser;
+
+static UiChooser g_chooser = {0};
+
+// Forward decls for chooser completion handlers
+static void chooser_done_pulse_out(void* u, int sel);
+static void chooser_done_pulse_in(void* u, int sel);
+
+// ---- Prompt overlays (highest priority) ----
+typedef struct {
+    int active;
+    const char* title;
+    WINDOW* win;
+    // string mode fields
+    char* buf;
+    size_t cap;
+    size_t len;
+    void (*on_done_str)(void* user, const char* text); // NULL text indicates cancel/empty
+    void* user;
+} UiPrompt;
+
+static UiPrompt g_prompt = {0};
+
+static void
+ui_prompt_close_all(void) {
+    if (g_prompt.win) {
+        delwin(g_prompt.win);
+        g_prompt.win = NULL;
+    }
+    if (g_prompt.buf) {
+        free(g_prompt.buf);
+        g_prompt.buf = NULL;
+    }
+    memset(&g_prompt, 0, sizeof(g_prompt));
+}
+
+static void
+ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
+                            void (*on_done)(void* user, const char* text), void* user) {
+    ui_prompt_close_all();
+    g_prompt.active = 1;
+    g_prompt.title = title;
+    g_prompt.on_done_str = on_done;
+    g_prompt.user = user;
+    if (cap < 2) {
+        cap = 2;
+    }
+    g_prompt.buf = (char*)calloc(cap, 1);
+    g_prompt.cap = cap;
+    g_prompt.len = 0;
+    if (prefill && *prefill) {
+        strncpy(g_prompt.buf, prefill, cap - 1);
+        g_prompt.buf[cap - 1] = '\0';
+        g_prompt.len = strlen(g_prompt.buf);
+    }
+}
+
+/* confirm overlay support removed (unused) */
+
+// Convenience typed wrappers
+typedef struct {
+    void (*cb)(void*, int, int);
+    void* user;
+} PromptIntCtx;
+
+typedef struct {
+    void (*cb)(void*, int, double);
+    void* user;
+} PromptDblCtx;
+
+static void
+ui_prompt_int_finish(void* u, const char* text) {
+    PromptIntCtx* pic = (PromptIntCtx*)u;
+    if (!pic) {
+        return;
+    }
+    if (!text || !*text) {
+        if (pic->cb) {
+            pic->cb(pic->user, 0, 0);
+        }
+        free(pic);
+        return;
+    }
+    char* end = NULL;
+    long v = strtol(text, &end, 10);
+    if (!end || *end != '\0') {
+        if (pic->cb) {
+            pic->cb(pic->user, 0, 0);
+        }
+    } else {
+        if (pic->cb) {
+            pic->cb(pic->user, 1, (int)v);
+        }
+    }
+    free(pic);
+}
+
+static void
+ui_prompt_double_finish(void* u, const char* text) {
+    PromptDblCtx* pdc = (PromptDblCtx*)u;
+    if (!pdc) {
+        return;
+    }
+    if (!text || !*text) {
+        if (pdc->cb) {
+            pdc->cb(pdc->user, 0, 0.0);
+        }
+        free(pdc);
+        return;
+    }
+    char* end = NULL;
+    double v = strtod(text, &end);
+    if (!end || *end != '\0') {
+        if (pdc->cb) {
+            pdc->cb(pdc->user, 0, 0.0);
+        }
+    } else {
+        if (pdc->cb) {
+            pdc->cb(pdc->user, 1, v);
+        }
+    }
+    free(pdc);
+}
+
+static void
+ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* user, int ok, int value), void* user) {
+    char pre[64];
+    snprintf(pre, sizeof pre, "%d", initial);
+    PromptIntCtx* pic = (PromptIntCtx*)calloc(1, sizeof(PromptIntCtx));
+    if (!pic) {
+        return;
+    }
+    pic->cb = cb;
+    pic->user = user;
+    ui_prompt_open_string_async(title, pre, 64, ui_prompt_int_finish, pic);
+}
+
+static void
+ui_prompt_open_double_async(const char* title, double initial, void (*cb)(void* user, int ok, double value),
+                            void* user) {
+    char pre[64];
+    snprintf(pre, sizeof pre, "%.6f", initial);
+    PromptDblCtx* pdc = (PromptDblCtx*)calloc(1, sizeof(PromptDblCtx));
+    if (!pdc) {
+        return;
+    }
+    pdc->cb = cb;
+    pdc->user = user;
+    ui_prompt_open_string_async(title, pre, 64, ui_prompt_double_finish, pdc);
+}
+
+// ---- Async prompt action callbacks and contexts ----
+typedef struct {
+    UiCtx* c;
+} GainDigCtx;
+
+typedef struct {
+    UiCtx* c;
+} GainAnaCtx;
+
+typedef struct {
+    UiCtx* c;
+} InputVolCtx;
+
+typedef struct {
+    UiCtx* c;
+    char host[256];
+    int port;
+} UdpOutCtx;
+
+typedef struct {
+    UiCtx* c;
+} RtlCtx;
+
+typedef struct {
+    UiCtx* c;
+} TcpWavSymCtx; // reuse for simple one-shot string
+
+typedef struct {
+    UiCtx* c;
+    char host[256];
+    int port;
+} TcpLinkCtx;
+
+typedef struct {
+    UiCtx* c;
+    char addr[128];
+    int port;
+} UdpInCtx;
+
+typedef struct {
+    UiCtx* c;
+    char host[256];
+    int port;
+} RigCtx;
+
+typedef struct {
+    UiCtx* c;
+    int step;
+    unsigned long long w, s, n;
+} P2Ctx;
+
+// Simple string path setters
+static void
+cb_event_log_set(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        if (svc_set_event_log(c->opts, path) == 0) {
+            ui_statusf("Event log: %s", path);
+        }
+    }
+}
+
+static void
+cb_static_wav(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        if (svc_open_static_wav(c->opts, c->state, path) == 0) {
+            ui_statusf("Static WAV: %s", path);
+        }
+    }
+}
+
+static void
+cb_raw_wav(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        if (svc_open_raw_wav(c->opts, c->state, path) == 0) {
+            ui_statusf("Raw WAV: %s", path);
+        }
+    }
+}
+
+static void
+cb_dsp_out(void* v, const char* name) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (name && *name) {
+        if (svc_set_dsp_output_file(c->opts, name) == 0) {
+            ui_statusf("DSP out: %s", c->opts->dsp_out_file);
+        }
+    }
+}
+
+// Generic file imports
+static void
+cb_import_chan(void* v, const char* p) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        svc_import_channel_map(c->opts, c->state, p);
+    }
+}
+
+static void
+cb_import_group(void* v, const char* p) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        svc_import_group_list(c->opts, c->state, p);
+    }
+}
+
+static void
+cb_keys_dec(void* v, const char* p) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        svc_import_keys_dec(c->opts, c->state, p);
+    }
+}
+
+static void
+cb_keys_hex(void* v, const char* p) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        svc_import_keys_hex(c->opts, c->state, p);
+    }
+}
+
+// Small typed setters
+static void
+cb_setmod_bw(void* v, int ok, int bw) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        svc_set_rigctl_setmod_bw(c->opts, bw);
+    }
+}
+
+static void
+cb_tg_hold(void* v, int ok, int tg) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        svc_set_tg_hold(c->state, (unsigned)tg);
+    }
+}
+
+static void
+cb_hangtime(void* v, int ok, double s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        svc_set_hangtime(c->opts, s);
+    }
+}
+
+static void
+cb_slot_pref(void* v, int ok, int p) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        if (p < 1) {
+            p = 1;
+        }
+        if (p > 2) {
+            p = 2;
+        }
+        svc_set_slot_pref(c->opts, p - 1);
+    }
+}
+
+static void
+cb_slots_on(void* v, int ok, int m) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        svc_set_slots_onoff(c->opts, m);
+    }
+}
+
+// Keystream helpers
+static void
+cb_tyt_ap(void* v, const char* s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (s && *s) {
+        char tmp[256];
+        snprintf(tmp, sizeof tmp, "%s", s);
+        tyt_ap_pc4_keystream_creation(c->state, tmp);
+    }
+}
+
+static void
+cb_retevis_rc2(void* v, const char* s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (s && *s) {
+        char tmp[256];
+        snprintf(tmp, sizeof tmp, "%s", s);
+        retevis_rc2_keystream_creation(c->state, tmp);
+    }
+}
+
+static void
+cb_tyt_ep(void* v, const char* s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (s && *s) {
+        char tmp[256];
+        snprintf(tmp, sizeof tmp, "%s", s);
+        tyt_ep_aes_keystream_creation(c->state, tmp);
+    }
+}
+
+static void
+cb_ken_scr(void* v, const char* s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (s && *s) {
+        char tmp[256];
+        snprintf(tmp, sizeof tmp, "%s", s);
+        ken_dmr_scrambler_keystream_creation(c->state, tmp);
+    }
+}
+
+static void
+cb_anytone_bp(void* v, const char* s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (s && *s) {
+        char tmp[256];
+        snprintf(tmp, sizeof tmp, "%s", s);
+        anytone_bp_keystream_creation(c->state, tmp);
+    }
+}
+
+static void
+cb_xor_ks(void* v, const char* s) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (s && *s) {
+        char tmp[256];
+        snprintf(tmp, sizeof tmp, "%s", s);
+        straight_mod_xor_keystream_creation(c->state, tmp);
+    }
+}
+
+// Key entry typed
+static void
+cb_key_basic(void* v, int ok, int val) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        unsigned long long vdec = val;
+        if (vdec > 255ULL) {
+            vdec = 255ULL;
+        }
+        c->state->K = vdec;
+        c->state->keyloader = 0;
+        c->state->payload_keyid = c->state->payload_keyidR = 0;
+        c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
+    }
+}
+
+static void
+cb_key_scrambler(void* v, int ok, int val) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        unsigned long long vdec = val;
+        if (vdec > 0x7FFFULL) {
+            vdec = 0x7FFFULL;
+        }
+        c->state->R = vdec;
+        c->state->keyloader = 0;
+        c->state->payload_keyid = c->state->payload_keyidR = 0;
+        c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
+    }
+}
+
+static void
+cb_key_rc4des(void* v, const char* text) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (text && *text) {
+        unsigned long long th = 0ULL;
+        if (parse_hex_u64(text, &th)) {
+            c->state->R = th;
+            c->state->RR = th;
+            c->state->keyloader = 0;
+            c->state->payload_keyid = c->state->payload_keyidR = 0;
+            c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
+        }
+    }
+}
+
+// Hytera/AES multi-step
+typedef struct {
+    UiCtx* c;
+    int step;
+} HyCtx;
+
+static void
+cb_hytera_step(void* u, const char* text) {
+    HyCtx* hc = (HyCtx*)u;
+    if (!hc) {
+        return;
+    }
+    unsigned long long t = 0ULL;
+    if (text && *text) {
+        if (parse_hex_u64(text, &t)) {
+            if (hc->step == 0) {
+                hc->c->state->H = t;
+                hc->c->state->K1 = t;
+            } else if (hc->step == 1) {
+                hc->c->state->K2 = t;
+            } else if (hc->step == 2) {
+                hc->c->state->K3 = t;
+            } else if (hc->step == 3) {
+                hc->c->state->K4 = t;
+            }
+        }
+    }
+    hc->step++;
+    if (hc->step == 1) {
+        ui_prompt_open_string_async("Hytera Privacy Key 2 (HEX) or 0", NULL, 128, cb_hytera_step, hc);
+        return;
+    }
+    if (hc->step == 2) {
+        ui_prompt_open_string_async("Hytera Privacy Key 3 (HEX) or 0", NULL, 128, cb_hytera_step, hc);
+        return;
+    }
+    if (hc->step == 3) {
+        ui_prompt_open_string_async("Hytera Privacy Key 4 (HEX) or 0", NULL, 128, cb_hytera_step, hc);
+        return;
+    }
+    hc->c->state->keyloader = 0;
+    free(hc);
+}
+
+typedef struct {
+    UiCtx* c;
+    int step;
+} AesCtx;
+
+static void
+cb_aes_step(void* u, const char* text) {
+    AesCtx* ac = (AesCtx*)u;
+    if (!ac) {
+        return;
+    }
+    unsigned long long t = 0ULL;
+    if (text && *text && parse_hex_u64(text, &t)) {
+        if (ac->step == 0) {
+            ac->c->state->K1 = t;
+        } else if (ac->step == 1) {
+            ac->c->state->K2 = t;
+        } else if (ac->step == 2) {
+            ac->c->state->K3 = t;
+        } else if (ac->step == 3) {
+            ac->c->state->K4 = t;
+        }
+    }
+    ac->step++;
+    if (ac->step == 1) {
+        ui_prompt_open_string_async("AES Segment 2 (HEX) or 0", NULL, 128, cb_aes_step, ac);
+        return;
+    }
+    if (ac->step == 2) {
+        ui_prompt_open_string_async("AES Segment 3 (HEX) or 0", NULL, 128, cb_aes_step, ac);
+        return;
+    }
+    if (ac->step == 3) {
+        ui_prompt_open_string_async("AES Segment 4 (HEX) or 0", NULL, 128, cb_aes_step, ac);
+        return;
+    }
+    ac->c->state->keyloader = 0;
+    free(ac);
+}
+
+// LRRP custom
+static void
+cb_lr_custom(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        if (svc_lrrp_set_custom(c->opts, path) == 0) {
+            ui_statusf("LRRP output: %s", c->opts->lrrp_out_file);
+        } else {
+            ui_statusf("Failed to set LRRP custom output");
+        }
+    }
+}
+
+// P25 Phase 2 params chain
+static void
+cb_p2_step(void* u, const char* text) {
+    P2Ctx* pc = (P2Ctx*)u;
+    if (!pc) {
+        return;
+    }
+    unsigned long long t = 0ULL;
+    if (text && *text) {
+        parse_hex_u64(text, &t);
+    }
+    if (pc->step == 0) {
+        pc->w = t;
+    } else if (pc->step == 1) {
+        pc->s = t;
+    } else if (pc->step == 2) {
+        pc->n = t;
+    }
+    pc->step++;
+    char pre[64];
+    if (pc->step == 1) {
+        snprintf(pre, sizeof pre, "%llX", (unsigned long long)pc->c->state->p2_sysid);
+        ui_prompt_open_string_async("Enter Phase 2 SYSID (HEX)", pre, sizeof pre, cb_p2_step, pc);
+        return;
+    }
+    if (pc->step == 2) {
+        snprintf(pre, sizeof pre, "%llX", (unsigned long long)pc->c->state->p2_cc);
+        ui_prompt_open_string_async("Enter Phase 2 NAC/CC (HEX)", pre, sizeof pre, cb_p2_step, pc);
+        return;
+    }
+    svc_set_p2_params(pc->c->state, pc->w, pc->s, pc->n);
+    free(pc);
+}
+
+// Save symbol capture
+static void
+cb_io_save_symbol_capture(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        if (svc_open_symbol_out(c->opts, c->state, path) == 0) {
+            ui_statusf("Symbol capture: %s", c->opts->symbol_out_file);
+        } else {
+            ui_statusf("Failed to open symbol capture");
+        }
+    }
+}
+
+// Read symbol bin
+static void
+cb_io_read_symbol_bin(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        if (svc_open_symbol_in(c->opts, c->state, path) == 0) {
+            ui_statusf("Symbol input: %s", path);
+        } else {
+            ui_statusf("Failed to open: %s", path);
+        }
+    }
+}
+
+// UDP out host->port chain
+static void
+cb_udp_out_port(void* u, int ok, int port) {
+    UdpOutCtx* ctx = (UdpOutCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!ok) {
+        free(ctx);
+        return;
+    }
+    ctx->port = port;
+    if (svc_udp_output_config(ctx->c->opts, ctx->c->state, ctx->host, ctx->port) == 0) {
+        ui_statusf("UDP out: %s:%d", ctx->host, ctx->port);
+    } else {
+        ui_statusf("UDP out failed");
+    }
+    free(ctx);
+}
+
+static void
+cb_udp_out_host(void* u, const char* host) {
+    UdpOutCtx* ctx = (UdpOutCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!host || !*host) {
+        free(ctx);
+        return;
+    }
+    snprintf(ctx->host, sizeof ctx->host, "%s", host);
+    int port_default = ctx->c->opts->udp_portno > 0 ? ctx->c->opts->udp_portno : 23456;
+    ui_prompt_open_int_async("UDP blaster port", port_default, cb_udp_out_port, ctx);
+}
+
+// Gain setters
+static void
+cb_gain_dig(void* u, int ok, double g) {
+    GainDigCtx* ctx = (GainDigCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        if (g < 0.0) {
+            g = 0.0;
+        }
+        if (g > 50.0) {
+            g = 50.0;
+        }
+        ctx->c->opts->audio_gain = (float)g;
+        ctx->c->opts->audio_gainR = (float)g;
+        ui_statusf("Digital gain set to %.1f", g);
+    }
+    free(ctx);
+}
+
+static void
+cb_gain_ana(void* u, int ok, double g) {
+    GainAnaCtx* ctx = (GainAnaCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        if (g < 0.0) {
+            g = 0.0;
+        }
+        if (g > 100.0) {
+            g = 100.0;
+        }
+        ctx->c->opts->audio_gainA = (float)g;
+        ui_statusf("Analog gain set to %.1f", g);
+    }
+    free(ctx);
+}
+
+static void
+cb_input_vol(void* u, int ok, int m) {
+    InputVolCtx* ctx = (InputVolCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        if (m < 1) {
+            m = 1;
+        }
+        if (m > 16) {
+            m = 16;
+        }
+        ctx->c->opts->input_volume_multiplier = m;
+        ui_statusf("Input Volume set to %dX", m);
+    }
+    free(ctx);
+}
+
+// RTL typed callbacks reuse RtlCtx with specific one-offs
+static void
+cb_rtl_dev(void* u, int ok, int i) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_dev_index(ctx->c->opts, i);
+    }
+    free(ctx);
+}
+
+static void
+cb_rtl_freq(void* u, int ok, int f) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_freq(ctx->c->opts, (uint32_t)f);
+    }
+    free(ctx);
+}
+
+static void
+cb_rtl_gain(void* u, int ok, int g) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_gain(ctx->c->opts, g);
+    }
+    free(ctx);
+}
+
+static void
+cb_rtl_ppm(void* u, int ok, int p) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_ppm(ctx->c->opts, p);
+    }
+    free(ctx);
+}
+
+static void
+cb_rtl_bw(void* u, int ok, int bw) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_bandwidth(ctx->c->opts, bw);
+    }
+    free(ctx);
+}
+
+static void
+cb_rtl_sql(void* u, int ok, double dB) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_sql_db(ctx->c->opts, dB);
+    }
+    free(ctx);
+}
+
+static void
+cb_rtl_vol(void* u, int ok, int m) {
+    RtlCtx* ctx = (RtlCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (ok) {
+        svc_rtl_set_volume_mult(ctx->c->opts, m);
+    }
+    free(ctx);
+}
+
+// WAV/SYM
+static void
+cb_switch_to_wav(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
+        c->opts->audio_in_type = 2;
+    }
+}
+
+static void
+cb_switch_to_symbol(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (path && *path) {
+        size_t len = strlen(path);
+        if (len >= 4 && strcasecmp(path + len - 4, ".bin") == 0) {
+            if (svc_open_symbol_in(c->opts, c->state, path) != 0) {
+                ui_statusf("Failed to open %s", path);
+            }
+        } else {
+            snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
+            c->opts->audio_in_type = 44;
+        }
+    }
+}
+
+// TCP Direct Link chain
+static void
+cb_tcp_port(void* u, int ok, int port) {
+    TcpLinkCtx* ctx = (TcpLinkCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!ok) {
+        free(ctx);
+        return;
+    }
+    ctx->port = port;
+    snprintf(ctx->c->opts->tcp_hostname, sizeof ctx->c->opts->tcp_hostname, "%s", ctx->host);
+    ctx->c->opts->tcp_portno = ctx->port;
+    if (svc_tcp_connect_audio(ctx->c->opts, ctx->c->opts->tcp_hostname, ctx->c->opts->tcp_portno) == 0) {
+        ui_statusf("TCP connected: %s:%d", ctx->c->opts->tcp_hostname, ctx->c->opts->tcp_portno);
+    } else {
+        ui_statusf("TCP connect failed: %s:%d", ctx->c->opts->tcp_hostname, ctx->c->opts->tcp_portno);
+    }
+    free(ctx);
+}
+
+static void
+cb_tcp_host(void* u, const char* host) {
+    TcpLinkCtx* ctx = (TcpLinkCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!host || !*host) {
+        free(ctx);
+        return;
+    }
+    snprintf(ctx->host, sizeof ctx->host, "%s", host);
+    int defp = ctx->c->opts->tcp_portno > 0 ? ctx->c->opts->tcp_portno : 7355;
+    ui_prompt_open_int_async("Enter TCP Direct Link Port Number", defp, cb_tcp_port, ctx);
+}
+
+// UDP input chain
+static void
+cb_udp_in_port(void* u, int ok, int port) {
+    UdpInCtx* ctx = (UdpInCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!ok) {
+        free(ctx);
+        return;
+    }
+    ctx->port = port;
+    snprintf(ctx->c->opts->udp_in_bindaddr, sizeof ctx->c->opts->udp_in_bindaddr, "%s", ctx->addr);
+    ctx->c->opts->udp_in_portno = ctx->port;
+    snprintf(ctx->c->opts->audio_in_dev, sizeof ctx->c->opts->audio_in_dev, "%s", "udp");
+    ctx->c->opts->audio_in_type = 6;
+    free(ctx);
+}
+
+static void
+cb_udp_in_addr(void* u, const char* addr) {
+    UdpInCtx* ctx = (UdpInCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!addr || !*addr) {
+        free(ctx);
+        return;
+    }
+    snprintf(ctx->addr, sizeof ctx->addr, "%s", addr);
+    int defp = ctx->c->opts->udp_in_portno > 0 ? ctx->c->opts->udp_in_portno : 7355;
+    ui_prompt_open_int_async("Enter UDP bind port", defp, cb_udp_in_port, ctx);
+}
+
+// RIGCTL chain
+static void
+cb_rig_port(void* u, int ok, int port) {
+    RigCtx* ctx = (RigCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!ok) {
+        ctx->c->opts->use_rigctl = 0;
+        free(ctx);
+        return;
+    }
+    ctx->port = port;
+    snprintf(ctx->c->opts->rigctlhostname, sizeof ctx->c->opts->rigctlhostname, "%s", ctx->host);
+    ctx->c->opts->rigctlportno = ctx->port;
+    if (svc_rigctl_connect(ctx->c->opts, ctx->c->opts->rigctlhostname, ctx->c->opts->rigctlportno) == 0) {
+        ui_statusf("Rigctl connected: %s:%d", ctx->c->opts->rigctlhostname, ctx->c->opts->rigctlportno);
+    } else {
+        ui_statusf("Rigctl connect failed: %s:%d", ctx->c->opts->rigctlhostname, ctx->c->opts->rigctlportno);
+    }
+    free(ctx);
+}
+
+static void
+cb_rig_host(void* u, const char* host) {
+    RigCtx* ctx = (RigCtx*)u;
+    if (!ctx) {
+        return;
+    }
+    if (!host || !*host) {
+        ctx->c->opts->use_rigctl = 0;
+        free(ctx);
+        return;
+    }
+    snprintf(ctx->host, sizeof ctx->host, "%s", host);
+    int defp = ctx->c->opts->rigctlportno > 0 ? ctx->c->opts->rigctlportno : 4532;
+    ui_prompt_open_int_async("Enter RIGCTL Port Number", defp, cb_rig_port, ctx);
+}
+
+// Transient Help overlay (press any key)
+typedef struct {
+    int active;
+    const char* text;
+    WINDOW* win;
+} UiHelp;
+
+static UiHelp g_help = {0};
+
+static void
+ui_help_open(const char* help) {
+    if (!help || !*help) {
+        return;
+    }
+    g_help.active = 1;
+    g_help.text = help;
+    if (g_help.win) {
+        delwin(g_help.win);
+        g_help.win = NULL;
+    }
+}
+
+static void
+ui_help_close(void) {
+    if (g_help.win) {
+        delwin(g_help.win);
+        g_help.win = NULL;
+    }
+    memset(&g_help, 0, sizeof(g_help));
+}
+
+static void
+ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user) {
+    g_chooser.active = 1;
+    g_chooser.title = title;
+    g_chooser.items = items;
+    g_chooser.count = count;
+    g_chooser.sel = 0;
+    g_chooser.on_done = on_done;
+    g_chooser.user = user;
+    if (g_chooser.win) {
+        delwin(g_chooser.win);
+        g_chooser.win = NULL;
+    }
+}
+
+static void
+ui_chooser_close(void) {
+    if (g_chooser.win) {
+        delwin(g_chooser.win);
+        g_chooser.win = NULL;
+    }
+    memset(&g_chooser, 0, sizeof(g_chooser));
+}
+
+static void
+ui_overlay_close_all(void) {
+    for (int i = 0; i < g_depth; i++) {
+        if (g_stack[i].win) {
+            delwin(g_stack[i].win);
+            g_stack[i].win = NULL;
+        }
+    }
+    g_depth = 0;
+    g_overlay_open = 0;
+}
+
+static int
+ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, void* ctx, int* out_maxlab) {
+    int vis = 0;
+    int maxlab = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!ui_is_enabled(&items[i], ctx)) {
+            continue;
+        }
+        const char* lab = items[i].label ? items[i].label : items[i].id;
+        char dyn[128];
+        if (items[i].label_fn) {
+            const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
+            if (got && *got) {
+                lab = got;
+            }
+        }
+        int L = (int)strlen(lab);
+        if (L > maxlab) {
+            maxlab = L;
+        }
+        vis++;
+    }
+    if (out_maxlab) {
+        *out_maxlab = maxlab;
+    }
+    return vis;
+}
+
+static void
+ui_overlay_layout(UiMenuFrame* f, void* ctx) {
+    if (!f || !f->items || f->n == 0) {
+        return;
+    }
+    const char* f1 = "Arrows: move  Enter: select";
+    const char* f2 = "h: help  Esc/q: back";
+    int pad_x = 2;
+    int maxlab = 0;
+    int vis = ui_visible_count_and_maxlab(f->items, f->n, ctx, &maxlab);
+    int width = pad_x + ((maxlab > 0) ? maxlab : 1);
+    int f1w = pad_x + (int)strlen(f1);
+    int f2w = pad_x + (int)strlen(f2);
+    if (f1w > width) {
+        width = f1w;
+    }
+    if (f2w > width) {
+        width = f2w;
+    }
+    width += 2; // borders
+    int height = vis + 6;
+    if (height < 8) {
+        height = 8;
+    }
+    int term_h = 24, term_w = 80;
+    getmaxyx(stdscr, term_h, term_w);
+    if (width > term_w - 2) {
+        width = term_w - 2;
+        if (width < 10) {
+            width = 10;
+        }
+    }
+    if (height > term_h - 2) {
+        height = term_h - 2;
+        if (height < 7) {
+            height = 7;
+        }
+    }
+    int my = (term_h - height) / 2;
+    int mx = (term_w - width) / 2;
+    if (my < 0) {
+        my = 0;
+    }
+    if (mx < 0) {
+        mx = 0;
+    }
+    f->h = height;
+    f->w = width;
+    f->y = my;
+    f->x = mx;
+}
+
+static void
+ui_overlay_ensure_window(UiMenuFrame* f) {
+    if (!f) {
+        return;
+    }
+    if (!f->win) {
+        f->win = ui_make_window(f->h, f->w, f->y, f->x);
+        keypad(f->win, TRUE);
+        wtimeout(f->win, 0);
+    }
+}
+
+// Forward declare a helper that exposes main menu items for async open
+void ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx);
+
+void
+ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
+    // Initialize overlay context and push root menu
+    g_ctx_overlay.opts = opts;
+    g_ctx_overlay.state = state;
+    const NcMenuItem* items = NULL;
+    size_t n = 0;
+    ui_menu_get_main_items(&items, &n, &g_ctx_overlay);
+    if (!items || n == 0) {
+        return;
+    }
+    g_overlay_open = 1;
+    g_depth = 1;
+    memset(g_stack, 0, sizeof(g_stack));
+    g_stack[0].items = items;
+    g_stack[0].n = n;
+    g_stack[0].hi = 0;
+    ui_overlay_layout(&g_stack[0], &g_ctx_overlay);
+}
+
+int
+ui_menu_is_open(void) {
+    return g_overlay_open;
+}
+
+static int
+ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir) {
+    if (!items || n == 0) {
+        return 0;
+    }
+    int idx = from;
+    for (size_t k = 0; k < n; k++) {
+        idx = (idx + ((dir > 0) ? 1 : -1) + (int)n) % (int)n;
+        if (ui_is_enabled(&items[idx], ctx)) {
+            return idx;
+        }
+    }
+    return from;
+}
+
+int
+ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!g_overlay_open || g_depth <= 0) {
+        return 0;
+    }
+    // Prompt has highest priority
+    if (g_prompt.active) {
+        if (ch == KEY_RESIZE) {
+            if (g_prompt.win) {
+                delwin(g_prompt.win);
+                g_prompt.win = NULL;
+            }
+            return 1;
+        }
+        if (ch == ERR) {
+            return 1;
+        }
+        if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q') {
+            if (g_prompt.on_done_str) {
+                g_prompt.on_done_str(g_prompt.user, NULL);
+            }
+            ui_prompt_close_all();
+            return 1;
+        }
+        if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+            if (g_prompt.len > 0) {
+                g_prompt.buf[--g_prompt.len] = '\0';
+            }
+            return 1;
+        }
+        if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+            if (g_prompt.on_done_str) {
+                if (g_prompt.len == 0) {
+                    g_prompt.on_done_str(g_prompt.user, NULL);
+                } else {
+                    g_prompt.on_done_str(g_prompt.user, g_prompt.buf);
+                }
+            }
+            ui_prompt_close_all();
+            return 1;
+        }
+        if (isprint(ch)) {
+            if (g_prompt.len + 1 < g_prompt.cap) {
+                g_prompt.buf[g_prompt.len++] = (char)ch;
+                g_prompt.buf[g_prompt.len] = '\0';
+            }
+            return 1;
+        }
+        return 1;
+    }
+    // Help has next priority
+    if (g_help.active) {
+        if (ch != ERR) {
+            ui_help_close();
+        }
+        return 1;
+    }
+    // Help has highest priority
+    if (g_help.active) {
+        if (ch != ERR) {
+            ui_help_close();
+        }
+        return 1;
+    }
+    // Chooser has priority when active
+    if (g_chooser.active) {
+        if (ch == ERR) {
+            return 1;
+        }
+        if (ch == KEY_RESIZE) {
+            if (g_chooser.win) {
+                delwin(g_chooser.win);
+                g_chooser.win = NULL;
+            }
+            return 1;
+        }
+        if (ch == KEY_UP) {
+            g_chooser.sel = (g_chooser.sel - 1 + g_chooser.count) % g_chooser.count;
+            return 1;
+        }
+        if (ch == KEY_DOWN) {
+            g_chooser.sel = (g_chooser.sel + 1) % g_chooser.count;
+            return 1;
+        }
+        if (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC) {
+            ui_chooser_close();
+            return 1;
+        }
+        if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+            void (*cb)(void*, int) = g_chooser.on_done;
+            void* userp = g_chooser.user;
+            int sel = g_chooser.sel;
+            ui_chooser_close();
+            if (cb) {
+                cb(userp, sel);
+            }
+            return 1;
+        }
+        return 1;
+    }
+    UiMenuFrame* f = &g_stack[g_depth - 1];
+    if (!f->items || f->n == 0) {
+        ui_overlay_close_all();
+        return 1;
+    }
+    if (ch == KEY_RESIZE) {
+        // Recompute layout and recreate window on next tick
+        if (f->win) {
+            delwin(f->win);
+            f->win = NULL;
+        }
+        ui_overlay_layout(f, &g_ctx_overlay);
+        return 1;
+    }
+    if (ch == ERR) {
+        return 0;
+    }
+    if (ch == KEY_UP) {
+        f->hi = ui_next_enabled(f->items, f->n, &g_ctx_overlay, f->hi, -1);
+        return 1;
+    }
+    if (ch == KEY_DOWN) {
+        f->hi = ui_next_enabled(f->items, f->n, &g_ctx_overlay, f->hi, +1);
+        return 1;
+    }
+    if (ch == 'h' || ch == 'H') {
+        const NcMenuItem* it = &f->items[f->hi];
+        if (ui_is_enabled(it, &g_ctx_overlay) && it->help && *it->help) {
+            ui_help_open(it->help);
+        }
+        return 1;
+    }
+    if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q') {
+        // Pop submenu or close root
+        if (g_depth > 1) {
+            UiMenuFrame* cur = &g_stack[g_depth - 1];
+            if (cur->win) {
+                delwin(cur->win);
+                cur->win = NULL;
+            }
+            g_depth--;
+        } else {
+            ui_overlay_close_all();
+        }
+        return 1;
+    }
+    if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+        const NcMenuItem* it = &f->items[f->hi];
+        if (!ui_is_enabled(it, &g_ctx_overlay)) {
+            return 1;
+        }
+        if (it->submenu && it->submenu_len > 0) {
+            if (g_depth < (int)(sizeof g_stack / sizeof g_stack[0])) {
+                UiMenuFrame* nf = &g_stack[g_depth++];
+                memset(nf, 0, sizeof(*nf));
+                nf->items = it->submenu;
+                nf->n = it->submenu_len;
+                nf->hi = 0;
+                ui_overlay_layout(nf, &g_ctx_overlay);
+            }
+        }
+        if (it->on_select) {
+            it->on_select(&g_ctx_overlay);
+            if (exitflag) {
+                // Let caller exit soon
+                ui_overlay_close_all();
+                return 1;
+            }
+        }
+        if (!it->on_select && (!it->submenu || it->submenu_len == 0) && it->help && *it->help) {
+            ui_help_open(it->help);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+void
+ui_menu_tick(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!g_overlay_open || g_depth <= 0) {
+        return;
+    }
+    // Render Prompt overlay (highest priority)
+    if (g_prompt.active) {
+        const char* title = g_prompt.title ? g_prompt.title : "Input";
+        int h = 8;
+        int w = (int)strlen(title) + 16;
+        if (w < 54) {
+            w = 54;
+        }
+        int scr_h = 0, scr_w = 0;
+        getmaxyx(stdscr, scr_h, scr_w);
+        int py = (scr_h - h) / 2;
+        int px = (scr_w - w) / 2;
+        if (py < 0) {
+            py = 0;
+        }
+        if (px < 0) {
+            px = 0;
+        }
+        if (!g_prompt.win) {
+            g_prompt.win = ui_make_window(h, w, py, px);
+            wtimeout(g_prompt.win, 0);
+        }
+        WINDOW* win = g_prompt.win;
+        werase(win);
+        box(win, 0, 0);
+        mvwprintw(win, 1, 2, "%s", title);
+        mvwprintw(win, 3, 2, "> %s", g_prompt.buf ? g_prompt.buf : "");
+        mvwprintw(win, h - 2, 2, "Enter=OK  Esc/q=Cancel");
+        wrefresh(win);
+        return;
+    }
+    // Render Help overlay if active
+    if (g_help.active) {
+        const char* t = g_help.text ? g_help.text : "";
+        int h = 8;
+        int w = (int)strlen(t) + 6;
+        if (w < 40) {
+            w = 40;
+        }
+        int scr_h = 0, scr_w = 0;
+        getmaxyx(stdscr, scr_h, scr_w);
+        if (w > scr_w - 2) {
+            w = scr_w - 2;
+        }
+        int hy = (scr_h - h) / 2;
+        int hx = (scr_w - w) / 2;
+        if (hy < 0) {
+            hy = 0;
+        }
+        if (hx < 0) {
+            hx = 0;
+        }
+        if (!g_help.win) {
+            g_help.win = ui_make_window(h, w, hy, hx);
+            wtimeout(g_help.win, 0);
+        }
+        WINDOW* hw = g_help.win;
+        werase(hw);
+        box(hw, 0, 0);
+        mvwprintw(hw, 1, 2, "Help:");
+        mvwprintw(hw, 3, 2, "%s", t);
+        mvwprintw(hw, h - 2, 2, "Press any key to continue...");
+        wrefresh(hw);
+        return;
+    }
+    // Render chooser if active
+    if (g_chooser.active) {
+        const char* title = g_chooser.title ? g_chooser.title : "Select";
+        int max_item = 0;
+        for (int i = 0; i < g_chooser.count; i++) {
+            int L = (int)strlen(g_chooser.items[i]);
+            if (L > max_item) {
+                max_item = L;
+            }
+        }
+        const char* footer = "Arrows = Move   Enter = Select   Esc/q = Cancel";
+        int w = 4 + (int)strlen(title);
+        int need = 4 + max_item;
+        if (need > w) {
+            w = need;
+        }
+        need = 4 + (int)strlen(footer);
+        if (need > w) {
+            w = need;
+        }
+        w += 2;
+        int h = g_chooser.count + 5;
+        if (h < 7) {
+            h = 7;
+        }
+        int scr_h = 0, scr_w = 0;
+        getmaxyx(stdscr, scr_h, scr_w);
+        if (w > scr_w - 2) {
+            w = scr_w - 2;
+        }
+        if (h > scr_h - 2) {
+            h = scr_h - 2;
+        }
+        int wy = (scr_h - h) / 2;
+        int wx = (scr_w - w) / 2;
+        if (wy < 0) {
+            wy = 0;
+        }
+        if (wx < 0) {
+            wx = 0;
+        }
+        if (!g_chooser.win) {
+            g_chooser.win = ui_make_window(h, w, wy, wx);
+            keypad(g_chooser.win, TRUE);
+            wtimeout(g_chooser.win, 0);
+        }
+        WINDOW* win = g_chooser.win;
+        werase(win);
+        box(win, 0, 0);
+        mvwprintw(win, 1, 2, "%s", title);
+        int y = 3;
+        for (int i = 0; i < g_chooser.count; i++) {
+            if (i == g_chooser.sel) {
+                wattron(win, A_REVERSE);
+            }
+            mvwprintw(win, y++, 2, "%s", g_chooser.items[i]);
+            if (i == g_chooser.sel) {
+                wattroff(win, A_REVERSE);
+            }
+        }
+        mvwprintw(win, h - 2, 2, "%s", footer);
+        wrefresh(win);
+        return;
+    }
+    UiMenuFrame* f = &g_stack[g_depth - 1];
+    // Ensure window exists with up-to-date geometry
+    ui_overlay_layout(f, &g_ctx_overlay);
+    ui_overlay_ensure_window(f);
+    ui_draw_menu(f->win, f->items, f->n, f->hi, &g_ctx_overlay);
+}
+
 static void
 ui_show_help(const NcMenuItem* it) {
     const char* help = it->help;
@@ -192,8 +1736,17 @@ ui_show_help(const NcMenuItem* it) {
     mvwprintw(hw, 1, 2, "Help:");
     mvwprintw(hw, 3, 2, "%s", help);
     mvwprintw(hw, h - 2, 2, "Press any key to continue...");
+    // Nonblocking: poll until a key is pressed
     wrefresh(hw);
-    wgetch(hw);
+    wtimeout(hw, 0);
+    while (1) {
+        int ch = wgetch(hw);
+        if (ch != ERR) {
+            break;
+        }
+        // keep UI responsive without busy-waiting
+        napms(10);
+    }
     ui_destroy_window(&hw);
     // Restore base and let caller redraw menu
     redrawwin(stdscr);
@@ -279,8 +1832,8 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
     }
     WINDOW* menu_win = ui_make_window(height, width, my, mx);
     keypad(menu_win, TRUE);
-    // Ensure blocking input for menu navigation regardless of stdscr timeout
-    wtimeout(menu_win, -1);
+    // Nonblocking input for menu navigation
+    wtimeout(menu_win, 0);
 
     int hi = 0;
     while (1) {
@@ -290,6 +1843,11 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
         }
         ui_draw_menu(menu_win, items, n, hi, ctx);
         int c = wgetch(menu_win);
+        if (c == ERR) {
+            // No input available yet; yield briefly to avoid busy loop
+            napms(10);
+            continue;
+        }
         if (c == KEY_RESIZE) {
             // Terminal resized: recompute geometry and re-center the window
             // Recompute visible items and longest label (content-driven width)
@@ -358,6 +1916,7 @@ ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
             ui_destroy_window(&menu_win);
             menu_win = ui_make_window(height, width, my, mx);
             keypad(menu_win, TRUE);
+            wtimeout(menu_win, 0);
             // Skip other key handling this iteration
             continue;
         } else if (c == KEY_UP) {
@@ -411,206 +1970,9 @@ ui_menu_run(const NcMenuItem* items, size_t n_items, void* ctx) {
     ui_menu_loop(items, n_items, ctx);
 }
 
-static int
-ui_prompt_common_prefill(const char* title, char* buf, size_t cap, const char* prefill) {
-    if (!buf || cap == 0) {
-        return 0;
-    }
-    buf[0] = '\0';
-    size_t len = 0;
-    int h = 8, w = (int)(strlen(title) + 16);
-    if (w < 54) {
-        w = 54;
-    }
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    int py = (scr_h - h) / 2;
-    int px = (scr_w - w) / 2;
-    if (py < 0) {
-        py = 0;
-    }
-    if (px < 0) {
-        px = 0;
-    }
-    WINDOW* win = ui_make_window(h, w, py, px);
-    keypad(win, TRUE);
-    noecho();
-    curs_set(1);
-    mvwprintw(win, 1, 2, "%s", title);
-    mvwprintw(win, 3, 2, "> ");
-    mvwprintw(win, h - 2, 2, "Enter=OK  Esc/q=Cancel");
-    if (prefill && *prefill) {
-        // copy prefill and render it
-        strncpy(buf, prefill, cap - 1);
-        buf[cap - 1] = '\0';
-        len = strlen(buf);
-        mvwprintw(win, 3, 4, "%s", buf);
-        wmove(win, 3, 4 + (int)len);
-    } else {
-        wmove(win, 3, 4);
-    }
-    wrefresh(win);
-
-    while (1) {
-        int ch = wgetch(win);
-        if (ch == 27 || ch == 'q' || ch == 'Q') { // ESC/q
-            buf[0] = '\0';
-            ui_destroy_window(&win);
-            curs_set(0);
-            return 0;
-        } else if (ch == KEY_ENTER || ch == '\n' || ch == '\r') {
-            break;
-        } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-            if (len > 0) {
-                len--;
-                buf[len] = '\0';
-                int cy, cx;
-                getyx(win, cy, cx);
-                UNUSED(cy);
-                if (cx > 4) {
-                    mvwaddch(win, 3, 4 + (int)len, ' ');
-                    wmove(win, 3, 4 + (int)len);
-                }
-                wrefresh(win);
-            }
-        } else if (isprint(ch)) {
-            if (len < cap - 1) {
-                buf[len++] = (char)ch;
-                buf[len] = '\0';
-                waddch(win, ch);
-                wrefresh(win);
-            }
-        }
-    }
-    ui_destroy_window(&win);
-    curs_set(0);
-    if (buf[0] == '\0') {
-        return 0;
-    }
-    return 1;
-}
-
-int
-ui_prompt_common(const char* title, char* buf, size_t cap) {
-    return ui_prompt_common_prefill(title, buf, cap, NULL);
-}
-
-int
-ui_prompt_string(const char* title, char* out, size_t out_cap) {
-    return ui_prompt_common_prefill(title, out, out_cap, NULL);
-}
-
-int
-ui_prompt_int(const char* title, int* out) {
-    char tmp[64] = {0};
-    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, NULL)) {
-        return 0;
-    }
-    char* end = NULL;
-    long v = strtol(tmp, &end, 10);
-    if (!end || *end != '\0') {
-        return 0;
-    }
-    *out = (int)v;
-    return 1;
-}
-
-int
-ui_prompt_double(const char* title, double* out) {
-    char tmp[64] = {0};
-    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, NULL)) {
-        return 0;
-    }
-    char* end = NULL;
-    double v = strtod(tmp, &end);
-    if (!end || *end != '\0') {
-        return 0;
-    }
-    *out = v;
-    return 1;
-}
-
-int
-ui_prompt_string_prefill(const char* title, const char* current, char* out, size_t out_cap) {
-    return ui_prompt_common_prefill(title, out, out_cap, (current && *current) ? current : NULL);
-}
-
-int
-ui_prompt_int_prefill(const char* title, int current, int* out) {
-    char pre[64];
-    snprintf(pre, sizeof pre, "%d", current);
-    char tmp[64] = {0};
-    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, pre)) {
-        return 0;
-    }
-    char* end = NULL;
-    long v = strtol(tmp, &end, 10);
-    if (!end || *end != '\0') {
-        return 0;
-    }
-    *out = (int)v;
-    return 1;
-}
-
-int
-ui_prompt_double_prefill(const char* title, double current, double* out) {
-    char pre[64];
-    snprintf(pre, sizeof pre, "%.6f", current);
-    char tmp[64] = {0};
-    if (!ui_prompt_common_prefill(title, tmp, sizeof tmp, pre)) {
-        return 0;
-    }
-    char* end = NULL;
-    double v = strtod(tmp, &end);
-    if (!end || *end != '\0') {
-        return 0;
-    }
-    *out = v;
-    return 1;
-}
-
-int
-ui_prompt_confirm(const char* title) {
-    int h = 7, w = (int)(strlen(title) + 14);
-    if (w < 48) {
-        w = 48;
-    }
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    int cy = (scr_h - h) / 2;
-    int cx = (scr_w - w) / 2;
-    if (cy < 0) {
-        cy = 0;
-    }
-    if (cx < 0) {
-        cx = 0;
-    }
-    WINDOW* win = ui_make_window(h, w, cy, cx);
-    mvwprintw(win, 1, 2, "%s", title);
-    mvwprintw(win, 3, 2, "y = Yes, n = No, Esc/q = Cancel");
-    wrefresh(win);
-    int res = 0;
-    while (1) {
-        int c = wgetch(win);
-        if (c == 'y' || c == 'Y') {
-            res = 1;
-            break;
-        }
-        if (c == 'n' || c == 'N' || c == 27 || c == 'q' || c == 'Q') {
-            res = 0;
-            break;
-        }
-    }
-    ui_destroy_window(&win);
-    return res;
-}
+/* Legacy blocking prompt helpers removed (string/int/double/confirm). */
 
 // ---- IO submenu ----
-
-typedef struct {
-    dsd_opts* opts;
-    dsd_state* state;
-} UiCtx;
 
 static bool
 io_always_on(void* ctx) {
@@ -651,12 +2013,7 @@ io_toggle_cc_candidates(void* vctx) {
     }
 }
 
-static __attribute__((unused)) void
-io_list_pulse(void* vctx) {
-    (void)vctx;
-    pulse_list();
-    ui_statusf("Pulse devices printed to console");
-}
+/* removed unused: io_list_pulse */
 
 static void
 io_enable_per_call_wav(void* vctx) {
@@ -671,28 +2028,13 @@ io_enable_per_call_wav(void* vctx) {
 static void
 io_save_symbol_capture(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    char path[1024] = {0};
-    if (ui_prompt_string("Enter Symbol Capture Filename", path, sizeof path)) {
-        if (svc_open_symbol_out(c->opts, c->state, path) == 0) {
-            ui_statusf("Symbol capture: %s", c->opts->symbol_out_file);
-        } else {
-            ui_statusf("Failed to open symbol capture");
-        }
-    }
+    ui_prompt_open_string_async("Enter Symbol Capture Filename", NULL, 1024, cb_io_save_symbol_capture, c);
 }
 
 static void
 io_read_symbol_bin(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    char path[1024] = {0};
-    if (!ui_prompt_string("Enter Symbol Capture Filename", path, sizeof path)) {
-        return;
-    }
-    if (svc_open_symbol_in(c->opts, c->state, path) == 0) {
-        ui_statusf("Symbol input: %s", path);
-    } else {
-        ui_statusf("Failed to open: %s", path);
-    }
+    ui_prompt_open_string_async("Enter Symbol Capture Filename", NULL, 1024, cb_io_read_symbol_bin, c);
 }
 
 static void
@@ -720,85 +2062,7 @@ io_stop_symbol_saving(void* vctx) {
 }
 
 // Simple list chooser for short lists
-static int
-ui_choose_from_strings(const char* title, const char* const* items, int count) {
-    if (!items || count <= 0) {
-        return -1;
-    }
-    // Compute width from title and item strings
-    int max_item = 0;
-    for (int i = 0; i < count; i++) {
-        int L = (int)strlen(items[i]);
-        if (L > max_item) {
-            max_item = L;
-        }
-    }
-    const char* footer = "Arrows = Move   Enter = Select   Esc/q = Cancel";
-    int w = 4 /*padding*/ + (int)strlen(title);
-    int need = 4 + max_item;
-    if (need > w) {
-        w = need;
-    }
-    need = 4 + (int)strlen(footer);
-    if (need > w) {
-        w = need;
-    }
-    w += 2;            // borders
-    int h = count + 5; // title + gap + items + footer + borders
-    if (h < 7) {
-        h = 7;
-    }
-    // clamp and center
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    if (w > scr_w - 2) {
-        w = scr_w - 2;
-    }
-    if (h > scr_h - 2) {
-        h = scr_h - 2;
-    }
-    int wy = (scr_h - h) / 2;
-    int wx = (scr_w - w) / 2;
-    if (wy < 0) {
-        wy = 0;
-    }
-    if (wx < 0) {
-        wx = 0;
-    }
-    WINDOW* win = ui_make_window(h, w, wy, wx);
-    keypad(win, TRUE);
-    int sel = 0;
-    while (1) {
-        werase(win);
-        box(win, 0, 0);
-        mvwprintw(win, 1, 2, "%s", title);
-        int y = 3;
-        for (int i = 0; i < count; i++) {
-            if (i == sel) {
-                wattron(win, A_REVERSE);
-            }
-            mvwprintw(win, y++, 2, "%s", items[i]);
-            if (i == sel) {
-                wattroff(win, A_REVERSE);
-            }
-        }
-        mvwprintw(win, h - 2, 2, "%s", footer);
-        wrefresh(win);
-        int c = wgetch(win);
-        if (c == KEY_UP) {
-            sel = (sel - 1 + count) % count;
-        } else if (c == KEY_DOWN) {
-            sel = (sel + 1) % count;
-        } else if (c == 'q' || c == 'Q' || c == 27) {
-            sel = -1;
-            break;
-        } else if (c == 10 || c == KEY_ENTER || c == '\r') {
-            break;
-        }
-    }
-    ui_destroy_window(&win);
-    return sel;
-}
+/* removed unused: ui_choose_from_strings */
 
 static void
 io_set_pulse_out(void* vctx) {
@@ -809,31 +2073,68 @@ io_set_pulse_out(void* vctx) {
         ui_statusf("Failed to get Pulse device list");
         return;
     }
-    const char* labels[16];
-    const char* names[16];
-    char buf[16][768];
     int n = 0;
+    // Allocate dynamic arrays to persist until chooser completes
+    const char** labels = (const char**)calloc(16, sizeof(char*));
+    const char** names = (const char**)calloc(16, sizeof(char*));
+    char** bufs = (char**)calloc(16, sizeof(char*));
+    if (!labels || !names || !bufs) {
+        free(labels);
+        free(names);
+        free(bufs);
+        ui_statusf("Out of memory");
+        return;
+    }
     for (int i = 0; i < 16; i++) {
         if (!outs[i].initialized) {
             break;
         }
+        bufs[n] = (char*)calloc(768, sizeof(char));
+        if (!bufs[n]) {
+            continue;
+        }
         int name_len = (int)strnlen(outs[i].name, 511);
         int desc_len = (int)strnlen(outs[i].description, 255);
-        snprintf(buf[n], sizeof buf[n], "[%d] %.*s %s %.*s", outs[i].index, name_len, outs[i].name,
+        snprintf(bufs[n], 768, "[%d] %.*s %s %.*s", outs[i].index, name_len, outs[i].name,
                  dsd_unicode_or_ascii("—", "-"), desc_len, outs[i].description);
-        labels[n] = buf[n];
-        names[n] = outs[i].name;
+        labels[n] = bufs[n];
+        names[n] = strdup(outs[i].name);
         n++;
     }
     if (n == 0) {
+        free(labels);
+        free(names);
+        free(bufs);
         ui_statusf("No Pulse outputs found");
         return;
     }
-    int sel = ui_choose_from_strings("Select Pulse Output", labels, n);
-    if (sel >= 0) {
-        svc_set_pulse_output(c->opts, names[sel]);
-        ui_statusf("Pulse out: %s", names[sel]);
+
+    typedef struct {
+        UiCtx* c;
+        const char** labels;
+        const char** names;
+        char** bufs;
+        int n;
+    } PulseSelCtx;
+
+    PulseSelCtx* pctx = (PulseSelCtx*)calloc(1, sizeof(PulseSelCtx));
+    if (!pctx) {
+        for (int i = 0; i < n; i++) {
+            free((void*)names[i]);
+            free(bufs[i]);
+        }
+        free(labels);
+        free(names);
+        free(bufs);
+        ui_statusf("Out of memory");
+        return;
     }
+    pctx->c = c;
+    pctx->labels = labels;
+    pctx->names = names;
+    pctx->bufs = bufs;
+    pctx->n = n;
+    ui_chooser_start("Select Pulse Output", labels, n, chooser_done_pulse_out, pctx);
 }
 
 static void
@@ -845,53 +2146,143 @@ io_set_pulse_in(void* vctx) {
         ui_statusf("Failed to get Pulse device list");
         return;
     }
-    const char* labels[16];
-    const char* names[16];
-    char buf[16][768];
     int n = 0;
+    const char** labels = (const char**)calloc(16, sizeof(char*));
+    const char** names = (const char**)calloc(16, sizeof(char*));
+    char** bufs = (char**)calloc(16, sizeof(char*));
+    if (!labels || !names || !bufs) {
+        free(labels);
+        free(names);
+        free(bufs);
+        ui_statusf("Out of memory");
+        return;
+    }
     for (int i = 0; i < 16; i++) {
         if (!ins[i].initialized) {
             break;
         }
+        bufs[n] = (char*)calloc(768, sizeof(char));
+        if (!bufs[n]) {
+            continue;
+        }
         int name_len2 = (int)strnlen(ins[i].name, 511);
         int desc_len2 = (int)strnlen(ins[i].description, 255);
-        snprintf(buf[n], sizeof buf[n], "[%d] %.*s %s %.*s", ins[i].index, name_len2, ins[i].name,
+        snprintf(bufs[n], 768, "[%d] %.*s %s %.*s", ins[i].index, name_len2, ins[i].name,
                  dsd_unicode_or_ascii("—", "-"), desc_len2, ins[i].description);
-        labels[n] = buf[n];
-        names[n] = ins[i].name;
+        labels[n] = bufs[n];
+        names[n] = strdup(ins[i].name);
         n++;
     }
     if (n == 0) {
+        free(labels);
+        free(names);
+        free(bufs);
         ui_statusf("No Pulse inputs found");
         return;
     }
-    int sel = ui_choose_from_strings("Select Pulse Input", labels, n);
-    if (sel >= 0) {
-        svc_set_pulse_input(c->opts, names[sel]);
-        ui_statusf("Pulse in: %s", names[sel]);
+
+    typedef struct {
+        UiCtx* c;
+        const char** labels;
+        const char** names;
+        char** bufs;
+        int n;
+    } PulseInSelCtx;
+
+    PulseInSelCtx* pctx = (PulseInSelCtx*)calloc(1, sizeof(PulseInSelCtx));
+    if (!pctx) {
+        for (int i = 0; i < n; i++) {
+            free((void*)names[i]);
+            free(bufs[i]);
+        }
+        free(labels);
+        free(names);
+        free(bufs);
+        ui_statusf("Out of memory");
+        return;
+    }
+    pctx->c = c;
+    pctx->labels = labels;
+    pctx->names = names;
+    pctx->bufs = bufs;
+    pctx->n = n;
+    ui_chooser_start("Select Pulse Input", labels, n, chooser_done_pulse_in, pctx);
+}
+
+static void
+chooser_free_lists(const char** names, char** bufs, int n, const char** labels) {
+    for (int i = 0; i < n; i++) {
+        if (names) {
+            free((void*)names[i]);
+        }
+        if (bufs) {
+            free(bufs[i]);
+        }
+    }
+    if (labels) {
+        free((void*)labels);
+    }
+    if (names) {
+        free((void*)names);
+    }
+    if (bufs) {
+        free((void*)bufs);
+    }
+}
+
+static void
+chooser_done_pulse_out(void* u, int sel) {
+    typedef struct {
+        UiCtx* c;
+        const char** labels;
+        const char** names;
+        char** bufs;
+        int n;
+    } PulseSelCtx;
+
+    PulseSelCtx* pc = (PulseSelCtx*)u;
+    if (pc) {
+        if (sel >= 0 && sel < pc->n) {
+            svc_set_pulse_output(pc->c->opts, pc->names[sel]);
+            ui_statusf("Pulse out: %s", pc->names[sel]);
+        }
+        chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
+        free(pc);
+    }
+}
+
+static void
+chooser_done_pulse_in(void* u, int sel) {
+    typedef struct {
+        UiCtx* c;
+        const char** labels;
+        const char** names;
+        char** bufs;
+        int n;
+    } PulseInSelCtx;
+
+    PulseInSelCtx* pc = (PulseInSelCtx*)u;
+    if (pc) {
+        if (sel >= 0 && sel < pc->n) {
+            svc_set_pulse_input(pc->c->opts, pc->names[sel]);
+            ui_statusf("Pulse in: %s", pc->names[sel]);
+        }
+        chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
+        free(pc);
     }
 }
 
 static void
 io_set_udp_out(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    char host[256] = {0};
-    int port = c->opts->udp_portno > 0 ? c->opts->udp_portno : 23456;
-    {
-        const char* src = c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1";
-        snprintf(host, sizeof host, "%.*s", (int)sizeof(host) - 1, src);
-    }
-    if (!ui_prompt_string_prefill("UDP blaster host", c->opts->udp_hostname, host, sizeof host)) {
+    UdpOutCtx* u = (UdpOutCtx*)calloc(1, sizeof(UdpOutCtx));
+    if (!u) {
         return;
     }
-    if (!ui_prompt_int_prefill("UDP blaster port", port, &port)) {
-        return;
-    }
-    if (svc_udp_output_config(c->opts, c->state, host, port) == 0) {
-        ui_statusf("UDP out: %s:%d", host, port);
-    } else {
-        ui_statusf("UDP out failed");
-    }
+    u->c = c;
+    const char* src = c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1";
+    snprintf(u->host, sizeof u->host, "%s", src);
+    ui_prompt_open_string_async("UDP blaster host", u->host, sizeof u->host, cb_udp_out_host, u);
 }
 
 // ---- Switch Output helpers ----
@@ -966,34 +2357,23 @@ switch_out_toggle_mute(void* vctx) {
 static void
 io_set_gain_dig(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    double g = c->opts->audio_gain;
-    if (ui_prompt_double("Digital output gain (0=auto; 1..50)", &g)) {
-        if (g < 0.0) {
-            g = 0.0;
-        }
-        if (g > 50.0) {
-            g = 50.0;
-        }
-        c->opts->audio_gain = (float)g;
-        c->opts->audio_gainR = (float)g;
-        ui_statusf("Digital gain set to %.1f", g);
+    GainDigCtx* u = (GainDigCtx*)calloc(1, sizeof(GainDigCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_double_async("Digital output gain (0=auto; 1..50)", c->opts->audio_gain, cb_gain_dig, u);
 }
 
 static void
 io_set_gain_ana(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    double g = c->opts->audio_gainA;
-    if (ui_prompt_double("Analog output gain (0..100)", &g)) {
-        if (g < 0.0) {
-            g = 0.0;
-        }
-        if (g > 100.0) {
-            g = 100.0;
-        }
-        c->opts->audio_gainA = (float)g;
-        ui_statusf("Analog gain set to %.1f", g);
+    GainAnaCtx* u = (GainAnaCtx*)calloc(1, sizeof(GainAnaCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_double_async("Analog output gain (0..100)", c->opts->audio_gainA, cb_gain_ana, u);
 }
 
 static void
@@ -1018,16 +2398,12 @@ io_set_input_volume(void* vctx) {
     if (m > 16) {
         m = 16;
     }
-    if (ui_prompt_int_prefill("Input Volume Multiplier (1..16)", m, &m)) {
-        if (m < 1) {
-            m = 1;
-        }
-        if (m > 16) {
-            m = 16;
-        }
-        c->opts->input_volume_multiplier = m;
-        ui_statusf("Input Volume set to %dX", m);
+    InputVolCtx* u = (InputVolCtx*)calloc(1, sizeof(InputVolCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("Input Volume Multiplier (1..16)", m, cb_input_vol, u);
 }
 
 static void
@@ -1129,15 +2505,6 @@ inv_m17(void* v) {
 
 #ifdef USE_RTLSDR
 // ---- RTL-SDR submenu ----
-static __attribute__((unused)) const char*
-lbl_rtl_summary(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    snprintf(b, n, "Dev %d  Freq %u Hz  Gain %d  PPM %d  BW %d kHz  SQL %.1f dB  VOL %d", c->opts->rtl_dev_index,
-             c->opts->rtlsdr_center_freq, c->opts->rtl_gain_value, c->opts->rtlsdr_ppm_error, c->opts->rtl_bandwidth,
-             pwr_to_dB(c->opts->rtl_squelch_level), c->opts->rtl_volume_multiplier);
-    return b;
-}
-
 static void
 rtl_enable(void* v) {
     svc_rtl_enable_input(((UiCtx*)v)->opts);
@@ -1151,64 +2518,78 @@ rtl_restart(void* v) {
 static void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int i = c->opts->rtl_dev_index;
-    if (ui_prompt_int_prefill("Device index", i, &i)) {
-        svc_rtl_set_dev_index(c->opts, i);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("Device index", c->opts->rtl_dev_index, cb_rtl_dev, u);
 }
 
 static void
 rtl_set_freq(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int f = (int)c->opts->rtlsdr_center_freq;
-    if (ui_prompt_int_prefill("Frequency (Hz)", f, &f)) {
-        svc_rtl_set_freq(c->opts, (uint32_t)f);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("Frequency (Hz)", (int)c->opts->rtlsdr_center_freq, cb_rtl_freq, u);
 }
 
 static void
 rtl_set_gain(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int g = c->opts->rtl_gain_value;
-    if (ui_prompt_int_prefill("Gain (0=AGC, 0..49)", g, &g)) {
-        svc_rtl_set_gain(c->opts, g);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("Gain (0=AGC, 0..49)", c->opts->rtl_gain_value, cb_rtl_gain, u);
 }
 
 static void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int p = c->opts->rtlsdr_ppm_error;
-    if (ui_prompt_int_prefill("PPM error (-200..200)", p, &p)) {
-        svc_rtl_set_ppm(c->opts, p);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("PPM error (-200..200)", c->opts->rtlsdr_ppm_error, cb_rtl_ppm, u);
 }
 
 static void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int bw = c->opts->rtl_bandwidth;
-    if (ui_prompt_int_prefill("Bandwidth kHz (4,6,8,12,16,24)", bw, &bw)) {
-        svc_rtl_set_bandwidth(c->opts, bw);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("Bandwidth kHz (4,6,8,12,16,24)", c->opts->rtl_bandwidth, cb_rtl_bw, u);
 }
 
 static void
 rtl_set_sql(void* v) {
     UiCtx* c = (UiCtx*)v;
-    double dB = pwr_to_dB(c->opts->rtl_squelch_level);
-    if (ui_prompt_double_prefill("Squelch (dB, negative)", dB, &dB)) {
-        svc_rtl_set_sql_db(c->opts, dB);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_double_async("Squelch (dB, negative)", pwr_to_dB(c->opts->rtl_squelch_level), cb_rtl_sql, u);
 }
 
 static void
 rtl_set_vol(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int m = c->opts->rtl_volume_multiplier;
-    if (ui_prompt_int_prefill("Volume multiplier (0..3)", m, &m)) {
-        svc_rtl_set_volume_mult(c->opts, m);
+    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
+    if (!u) {
+        return;
     }
+    u->c = c;
+    ui_prompt_open_int_async("Volume multiplier (0..3)", c->opts->rtl_volume_multiplier, cb_rtl_vol, u);
 }
 
 static void
@@ -1337,25 +2718,14 @@ ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
 static void
 io_tcp_direct_link(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    // Defaults
-    snprintf(c->opts->tcp_hostname, sizeof c->opts->tcp_hostname, "%s", "localhost");
-    c->opts->tcp_portno = 7355;
-
-    if (!ui_prompt_string_prefill("Enter TCP Direct Link Hostname", c->opts->tcp_hostname, c->opts->tcp_hostname,
-                                  sizeof c->opts->tcp_hostname)) {
+    TcpLinkCtx* u = (TcpLinkCtx*)calloc(1, sizeof(TcpLinkCtx));
+    if (!u) {
         return;
     }
-    int port = c->opts->tcp_portno;
-    if (!ui_prompt_int_prefill("Enter TCP Direct Link Port Number", port, &port)) {
-        return;
-    }
-    c->opts->tcp_portno = port;
-
-    if (svc_tcp_connect_audio(c->opts, c->opts->tcp_hostname, c->opts->tcp_portno) == 0) {
-        ui_statusf("TCP connected: %s:%d", c->opts->tcp_hostname, c->opts->tcp_portno);
-    } else {
-        ui_statusf("TCP connect failed: %s:%d", c->opts->tcp_hostname, c->opts->tcp_portno);
-    }
+    u->c = c;
+    const char* defh = c->opts->tcp_hostname[0] ? c->opts->tcp_hostname : "localhost";
+    snprintf(u->host, sizeof u->host, "%s", defh);
+    ui_prompt_open_string_async("Enter TCP Direct Link Hostname", u->host, sizeof u->host, cb_tcp_host, u);
 }
 
 // ---- Switch Input helpers ----
@@ -1408,30 +2778,13 @@ switch_to_rtl(void* vctx) {
 static void
 switch_to_wav(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    char path[1024] = {0};
-    if (ui_prompt_string("Enter WAV/RAW filename (or named pipe)", path, sizeof path)) {
-        snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
-        c->opts->audio_in_type = 2; // openAudioInDevice will refine based on extension
-    }
+    ui_prompt_open_string_async("Enter WAV/RAW filename (or named pipe)", NULL, 1024, cb_switch_to_wav, c);
 }
 
 static void
 switch_to_symbol(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    char path[1024] = {0};
-    if (ui_prompt_string("Enter symbol .bin/.raw/.sym filename", path, sizeof path)) {
-        // Prefer .bin via service; else let openAudioInDevice detect .raw/.sym
-        size_t len = strlen(path);
-        if (len >= 4 && (strcasecmp(path + len - 4, ".bin") == 0)) {
-            if (svc_open_symbol_in(c->opts, c->state, path) != 0) {
-                ui_statusf("Failed to open %s", path);
-            }
-        } else {
-            snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
-            // Type refined on reopen; set a sensible default
-            c->opts->audio_in_type = 44; // float symbols for .raw/.sym
-        }
-    }
+    ui_prompt_open_string_async("Enter symbol .bin/.raw/.sym filename", NULL, 1024, cb_switch_to_symbol, c);
 }
 
 static void
@@ -1442,52 +2795,27 @@ switch_to_tcp(void* vctx) {
 static void
 switch_to_udp(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    // Defaults
-    if (c->opts->udp_in_portno <= 0) {
-        c->opts->udp_in_portno = 7355;
-    }
-    if (c->opts->udp_in_bindaddr[0] == '\0') {
-        snprintf(c->opts->udp_in_bindaddr, sizeof c->opts->udp_in_bindaddr, "%s", "127.0.0.1");
-    }
-    char addr[128];
-    snprintf(addr, sizeof addr, "%.*s", (int)sizeof(addr) - 1, c->opts->udp_in_bindaddr);
-    if (!ui_prompt_string_prefill("Enter UDP bind address", c->opts->udp_in_bindaddr, addr, sizeof addr)) {
+    UdpInCtx* u = (UdpInCtx*)calloc(1, sizeof(UdpInCtx));
+    if (!u) {
         return;
     }
-    int port = c->opts->udp_in_portno;
-    if (!ui_prompt_int_prefill("Enter UDP bind port", port, &port)) {
-        return;
-    }
-    snprintf(c->opts->udp_in_bindaddr, sizeof c->opts->udp_in_bindaddr, "%s", addr);
-    c->opts->udp_in_portno = port;
-    snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", "udp");
-    c->opts->audio_in_type = 6;
+    u->c = c;
+    const char* defa = c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1";
+    snprintf(u->addr, sizeof u->addr, "%s", defa);
+    ui_prompt_open_string_async("Enter UDP bind address", u->addr, sizeof u->addr, cb_udp_in_addr, u);
 }
 
 static void
 io_rigctl_config(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    // Defaults
-    snprintf(c->opts->rigctlhostname, sizeof c->opts->rigctlhostname, "%s", "localhost");
-    c->opts->rigctlportno = 4532;
-
-    if (!ui_prompt_string_prefill("Enter RIGCTL Hostname", c->opts->rigctlhostname, c->opts->rigctlhostname,
-                                  sizeof c->opts->rigctlhostname)) {
-        c->opts->use_rigctl = 0;
+    RigCtx* u = (RigCtx*)calloc(1, sizeof(RigCtx));
+    if (!u) {
         return;
     }
-    int port = c->opts->rigctlportno;
-    if (!ui_prompt_int_prefill("Enter RIGCTL Port Number", port, &port)) {
-        c->opts->use_rigctl = 0;
-        return;
-    }
-    c->opts->rigctlportno = port;
-
-    if (svc_rigctl_connect(c->opts, c->opts->rigctlhostname, c->opts->rigctlportno) == 0) {
-        ui_statusf("Rigctl connected: %s:%d", c->opts->rigctlhostname, c->opts->rigctlportno);
-    } else {
-        ui_statusf("Rigctl connect failed: %s:%d", c->opts->rigctlhostname, c->opts->rigctlportno);
-    }
+    u->c = c;
+    const char* defh = c->opts->rigctlhostname[0] ? c->opts->rigctlhostname : "localhost";
+    snprintf(u->host, sizeof u->host, "%s", defh);
+    ui_prompt_open_string_async("Enter RIGCTL Hostname", u->host, sizeof u->host, cb_rig_host, u);
 }
 
 // ---- Dynamic labels for IO ----
@@ -4017,68 +5345,39 @@ parse_hex_u64(const char* s, unsigned long long* out) {
     return 1;
 }
 
-static int
-prompt_hex_u64(const char* title, unsigned long long* out) {
-    char buf[128] = {0};
-    if (!ui_prompt_string(title, buf, sizeof buf)) {
-        return 0;
-    }
-    return parse_hex_u64(buf, out);
-}
+/* Legacy prompt_hex_u64 removed; hex parsing uses async string prompt chain. */
 
 // Key Entry actions (declarative)
 static void
 key_basic(void* v) {
     UiCtx* c = (UiCtx*)v;
-    unsigned long long vdec = 0ULL;
     c->state->payload_keyid = c->state->payload_keyidR = 0;
     c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
-    if (ui_prompt_int("Basic Privacy Key Number (DEC)", (int*)&vdec)) {
-        if (vdec > 255ULL) {
-            vdec = 255ULL;
-        }
-        c->state->K = vdec;
-        c->state->keyloader = 0;
-    }
+    ui_prompt_open_int_async("Basic Privacy Key Number (DEC)", 0, cb_key_basic, c);
 }
 
 static void
 key_hytera(void* v) {
     UiCtx* c = (UiCtx*)v;
-    unsigned long long t = 0ULL;
     c->state->payload_keyid = c->state->payload_keyidR = 0;
     c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
     c->state->K1 = c->state->K2 = c->state->K3 = c->state->K4 = 0ULL;
     c->state->H = 0ULL;
-    if (prompt_hex_u64("Hytera Privacy Key 1 (HEX)", &t)) {
-        c->state->H = t;
-        c->state->K1 = c->state->H;
+    HyCtx* hc = (HyCtx*)calloc(1, sizeof(HyCtx));
+    if (!hc) {
+        return;
     }
-    if (prompt_hex_u64("Hytera Privacy Key 2 (HEX) or 0", &t)) {
-        c->state->K2 = t;
-    }
-    if (prompt_hex_u64("Hytera Privacy Key 3 (HEX) or 0", &t)) {
-        c->state->K3 = t;
-    }
-    if (prompt_hex_u64("Hytera Privacy Key 4 (HEX) or 0", &t)) {
-        c->state->K4 = t;
-    }
-    c->state->keyloader = 0;
+    hc->c = c;
+    hc->step = 0;
+    ui_prompt_open_string_async("Hytera Privacy Key 1 (HEX)", NULL, 128, cb_hytera_step, hc);
 }
 
 static void
 key_scrambler(void* v) {
     UiCtx* c = (UiCtx*)v;
-    unsigned long long vdec = 0ULL;
     c->state->payload_keyid = c->state->payload_keyidR = 0;
     c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
-    if (ui_prompt_int("NXDN/dPMR Scrambler Key (DEC)", (int*)&vdec)) {
-        if (vdec > 0x7FFFULL) {
-            vdec = 0x7FFFULL;
-        }
-        c->state->R = vdec;
-        c->state->keyloader = 0;
-    }
+    ui_prompt_open_int_async("NXDN/dPMR Scrambler Key (DEC)", 0, cb_key_scrambler, c);
 }
 
 static void
@@ -4090,14 +5389,9 @@ key_force_bp(void* v) {
 static void
 key_rc4des(void* v) {
     UiCtx* c = (UiCtx*)v;
-    unsigned long long th = 0ULL;
     c->state->payload_keyid = c->state->payload_keyidR = 0;
     c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
-    if (prompt_hex_u64("RC4/DES Key (HEX)", &th)) {
-        c->state->R = th;
-        c->state->RR = th;
-        c->state->keyloader = 0;
-    }
+    ui_prompt_open_string_async("RC4/DES Key (HEX)", NULL, 128, cb_key_rc4des, c);
 }
 
 static void
@@ -4109,11 +5403,13 @@ key_aes(void* v) {
     memset(c->state->A2, 0, sizeof(c->state->A2));
     memset(c->state->A3, 0, sizeof(c->state->A3));
     memset(c->state->A4, 0, sizeof(c->state->A4));
-    prompt_hex_u64("AES Segment 1 (HEX) or 0", &c->state->K1);
-    prompt_hex_u64("AES Segment 2 (HEX) or 0", &c->state->K2);
-    prompt_hex_u64("AES Segment 3 (HEX) or 0", &c->state->K3);
-    prompt_hex_u64("AES Segment 4 (HEX) or 0", &c->state->K4);
-    c->state->keyloader = 0;
+    AesCtx* ac = (AesCtx*)calloc(1, sizeof(AesCtx));
+    if (!ac) {
+        return;
+    }
+    ac->c = c;
+    ac->step = 0;
+    ui_prompt_open_string_async("AES Segment 1 (HEX) or 0", NULL, 128, cb_aes_step, ac);
 }
 
 void
@@ -4166,14 +5462,7 @@ lr_dsdp(void* v) {
 static void
 lr_custom(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char path[1024] = {0};
-    if (ui_prompt_string("Enter LRRP output filename", path, sizeof path)) {
-        if (svc_lrrp_set_custom(c->opts, path) == 0) {
-            ui_statusf("LRRP output: %s", c->opts->lrrp_out_file);
-        } else {
-            ui_statusf("Failed to set LRRP custom output");
-        }
-    }
+    ui_prompt_open_string_async("Enter LRRP output filename", NULL, 1024, cb_lr_custom, c);
 }
 
 static void
@@ -4308,12 +5597,7 @@ act_toggle_payload(void* v) {
 static void
 act_event_log_set(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char path[1024] = {0};
-    if (ui_prompt_string_prefill("Event log filename", c->opts->event_out_file, path, sizeof path)) {
-        if (svc_set_event_log(c->opts, path) == 0) {
-            ui_statusf("Event log: %s", path);
-        }
-    }
+    ui_prompt_open_string_async("Event log filename", c->opts->event_out_file, 1024, cb_event_log_set, c);
 }
 
 static void
@@ -4324,34 +5608,19 @@ act_event_log_disable(void* v) {
 static void
 act_static_wav(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char path[1024] = {0};
-    if (ui_prompt_string_prefill("Static WAV filename", c->opts->wav_out_file, path, sizeof path)) {
-        if (svc_open_static_wav(c->opts, c->state, path) == 0) {
-            ui_statusf("Static WAV: %s", path);
-        }
-    }
+    ui_prompt_open_string_async("Static WAV filename", c->opts->wav_out_file, 1024, cb_static_wav, c);
 }
 
 static void
 act_raw_wav(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char path[1024] = {0};
-    if (ui_prompt_string_prefill("Raw WAV filename", c->opts->wav_out_file_raw, path, sizeof path)) {
-        if (svc_open_raw_wav(c->opts, c->state, path) == 0) {
-            ui_statusf("Raw WAV: %s", path);
-        }
-    }
+    ui_prompt_open_string_async("Raw WAV filename", c->opts->wav_out_file_raw, 1024, cb_raw_wav, c);
 }
 
 static void
 act_dsp_out(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char name[256] = {0};
-    if (ui_prompt_string_prefill("DSP output base filename", c->opts->dsp_out_file, name, sizeof name)) {
-        if (svc_set_dsp_output_file(c->opts, name) == 0) {
-            ui_statusf("DSP out: %s", c->opts->dsp_out_file);
-        }
-    }
+    ui_prompt_open_string_async("DSP output base filename", c->opts->dsp_out_file, 256, cb_dsp_out, c);
 }
 
 static void
@@ -4403,28 +5672,19 @@ act_p25_sm_basic(void* v) {
 static void
 act_setmod_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int bw = c->opts->setmod_bw;
-    if (ui_prompt_int_prefill("Setmod BW (Hz)", bw, &bw)) {
-        svc_set_rigctl_setmod_bw(c->opts, bw);
-    }
+    ui_prompt_open_int_async("Setmod BW (Hz)", c->opts->setmod_bw, cb_setmod_bw, c);
 }
 
 static void
 act_import_chan(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char p[1024] = {0};
-    if (ui_prompt_string("Channel map CSV", p, sizeof p)) {
-        svc_import_channel_map(c->opts, c->state, p);
-    }
+    ui_prompt_open_string_async("Channel map CSV", NULL, 1024, cb_import_chan, c);
 }
 
 static void
 act_import_group(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char p[1024] = {0};
-    if (ui_prompt_string("Group list CSV", p, sizeof p)) {
-        svc_import_group_list(c->opts, c->state, p);
-    }
+    ui_prompt_open_string_async("Group list CSV", NULL, 1024, cb_import_group, c);
 }
 
 static void
@@ -4451,19 +5711,13 @@ act_tune_data(void* v) {
 static void
 act_tg_hold(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int tg = (int)c->state->tg_hold;
-    if (ui_prompt_int_prefill("TG Hold", tg, &tg)) {
-        svc_set_tg_hold(c->state, (unsigned)tg);
-    }
+    ui_prompt_open_int_async("TG Hold", (int)c->state->tg_hold, cb_tg_hold, c);
 }
 
 static void
 act_hangtime(void* v) {
     UiCtx* c = (UiCtx*)v;
-    double s = c->opts->trunk_hangtime;
-    if (ui_prompt_double_prefill("Hangtime seconds", s, &s)) {
-        svc_set_hangtime(c->opts, s);
-    }
+    ui_prompt_open_double_async("Hangtime seconds", c->opts->trunk_hangtime, cb_hangtime, c);
 }
 
 static void
@@ -4479,97 +5733,62 @@ act_dmr_le(void* v) {
 static void
 act_slot_pref(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int p = c->opts->slot_preference + 1;
-    if (ui_prompt_int_prefill("Slot 1 or 2", p, &p)) {
-        if (p < 1) {
-            p = 1;
-        }
-        if (p > 2) {
-            p = 2;
-        }
-        svc_set_slot_pref(c->opts, p - 1);
-    }
+    ui_prompt_open_int_async("Slot 1 or 2", c->opts->slot_preference + 1, cb_slot_pref, c);
 }
 
 static void
 act_slots_on(void* v) {
     UiCtx* c = (UiCtx*)v;
     int m = (c->opts->slot1_on ? 1 : 0) | (c->opts->slot2_on ? 2 : 0);
-    if (ui_prompt_int_prefill("Slots mask (0..3)", m, &m)) {
-        svc_set_slots_onoff(c->opts, m);
-    }
+    ui_prompt_open_int_async("Slots mask (0..3)", m, cb_slots_on, c);
 }
 
 static void
 act_keys_dec(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char p[1024] = {0};
-    if (ui_prompt_string("Keys CSV (DEC)", p, sizeof p)) {
-        svc_import_keys_dec(c->opts, c->state, p);
-    }
+    ui_prompt_open_string_async("Keys CSV (DEC)", NULL, 1024, cb_keys_dec, c);
 }
 
 static void
 act_keys_hex(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char p[1024] = {0};
-    if (ui_prompt_string("Keys CSV (HEX)", p, sizeof p)) {
-        svc_import_keys_hex(c->opts, c->state, p);
-    }
+    ui_prompt_open_string_async("Keys CSV (HEX)", NULL, 1024, cb_keys_hex, c);
 }
 
 static void
 act_tyt_ap(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char s[256] = {0};
-    if (ui_prompt_string("TYT AP string", s, sizeof s)) {
-        tyt_ap_pc4_keystream_creation(c->state, s);
-    }
+    ui_prompt_open_string_async("TYT AP string", NULL, 256, cb_tyt_ap, c);
 }
 
 static void
 act_retevis_rc2(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char s[256] = {0};
-    if (ui_prompt_string("Retevis AP string", s, sizeof s)) {
-        retevis_rc2_keystream_creation(c->state, s);
-    }
+    ui_prompt_open_string_async("Retevis AP string", NULL, 256, cb_retevis_rc2, c);
 }
 
 static void
 act_tyt_ep(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char s[256] = {0};
-    if (ui_prompt_string("TYT EP string", s, sizeof s)) {
-        tyt_ep_aes_keystream_creation(c->state, s);
-    }
+    ui_prompt_open_string_async("TYT EP string", NULL, 256, cb_tyt_ep, c);
 }
 
 static void
 act_ken_scr(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char s[256] = {0};
-    if (ui_prompt_string("Kenwood scrambler", s, sizeof s)) {
-        ken_dmr_scrambler_keystream_creation(c->state, s);
-    }
+    ui_prompt_open_string_async("Kenwood scrambler", NULL, 256, cb_ken_scr, c);
 }
 
 static void
 act_anytone_bp(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char s[256] = {0};
-    if (ui_prompt_string("Anytone BP", s, sizeof s)) {
-        anytone_bp_keystream_creation(c->state, s);
-    }
+    ui_prompt_open_string_async("Anytone BP", NULL, 256, cb_anytone_bp, c);
 }
 
 static void
 act_xor_ks(void* v) {
     UiCtx* c = (UiCtx*)v;
-    char s[256] = {0};
-    if (ui_prompt_string("XOR keystream", s, sizeof s)) {
-        straight_mod_xor_keystream_creation(c->state, s);
-    }
+    ui_prompt_open_string_async("XOR keystream", NULL, 256, cb_xor_ks, c);
 }
 #ifdef USE_RTLSDR
 static void
@@ -4579,17 +5798,7 @@ act_rtl_opts(void* v) {
 }
 #endif
 
-static __attribute__((unused)) void
-act_key_entry(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_key_entry(c->opts, c->state);
-}
-
-static __attribute__((unused)) void
-act_io_opts(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_io_options(c->opts, c->state);
-}
+/* removed unused: act_key_entry, act_io_opts */
 
 static void
 act_devices_io(void* v) {
@@ -4780,15 +5989,16 @@ act_lrrp_opts(void* v) {
 static void
 act_p2_params(void* v) {
     UiCtx* c = (UiCtx*)v;
-    unsigned long long w = 0, s = 0, n = 0;
-    char buf[64];
-    snprintf(buf, sizeof buf, "%llX", (unsigned long long)c->state->p2_wacn);
-    if (ui_prompt_string_prefill("Enter Phase 2 WACN (HEX)", buf, buf, sizeof buf) && parse_hex_u64(buf, &w)) {}
-    snprintf(buf, sizeof buf, "%llX", (unsigned long long)c->state->p2_sysid);
-    if (ui_prompt_string_prefill("Enter Phase 2 SYSID (HEX)", buf, buf, sizeof buf) && parse_hex_u64(buf, &s)) {}
-    snprintf(buf, sizeof buf, "%llX", (unsigned long long)c->state->p2_cc);
-    if (ui_prompt_string_prefill("Enter Phase 2 NAC/CC (HEX)", buf, buf, sizeof buf) && parse_hex_u64(buf, &n)) {}
-    svc_set_p2_params(c->state, w, s, n);
+    P2Ctx* pc = (P2Ctx*)calloc(1, sizeof(P2Ctx));
+    if (!pc) {
+        return;
+    }
+    pc->c = c;
+    pc->step = 0;
+    pc->w = pc->s = pc->n = 0ULL;
+    char pre[64];
+    snprintf(pre, sizeof pre, "%llX", (unsigned long long)c->state->p2_wacn);
+    ui_prompt_open_string_async("Enter Phase 2 WACN (HEX)", pre, sizeof pre, cb_p2_step, pc);
 }
 
 static void
@@ -4798,8 +6008,8 @@ act_exit(void* v) {
 }
 
 void
-ui_menu_main(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
+ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
+    UiCtx* c = ctx;
     static const NcMenuItem decode_items[] = {
         {.id = "auto", .label = "Auto", .help = "Auto-detect: P25p1, P25p2, DMR, YSF.", .on_select = act_mode_auto},
         {.id = "tdma", .label = "TDMA", .help = "TDMA focus: P25p1, P25p2, DMR.", .on_select = act_mode_tdma},
@@ -4845,7 +6055,24 @@ ui_menu_main(dsd_opts* opts, dsd_state* state) {
         {.id = "lrrp", .label = "LRRP Output", .help = "Configure LRRP file output.", .on_select = act_lrrp_opts},
         {.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit},
     };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
+    (void)c; // context used by callbacks; arrays are static so safe to expose
+    if (out_items) {
+        *out_items = items;
+    }
+    if (out_n) {
+        *out_n = sizeof items / sizeof items[0];
+    }
+}
+
+void
+ui_menu_main(dsd_opts* opts, dsd_state* state) {
+    UiCtx ctx = {opts, state};
+    const NcMenuItem* items = NULL;
+    size_t n = 0;
+    ui_menu_get_main_items(&items, &n, &ctx);
+    if (items && n > 0) {
+        ui_menu_run(items, n, &ctx);
+    }
 }
 
 /* Blanker UI handlers implementation */

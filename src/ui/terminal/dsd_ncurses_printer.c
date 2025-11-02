@@ -25,6 +25,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/ui/keymap.h>
+#include <dsd-neo/ui/menu_core.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -542,7 +543,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     // Improve ESC-key responsiveness and UI ergonomics
     set_escdelay(25);
     curs_set(0); // hide cursor in main UI (menus will show it when needed)
-    timeout(0);  // non-blocking input on stdscr; menus use blocking wtimeout
+    timeout(0);  // non-blocking input on stdscr; menus use nonblocking wtimeout
     start_color();
     // Ensure special keys (arrows, keypad Enter) are decoded as KEY_* constants
     keypad(stdscr, TRUE);
@@ -3035,6 +3036,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 
+    // Defer overlay drawing to the end so it stays on top.
+
     //Variable reset/set section
 
     //set lls sync types
@@ -5480,6 +5483,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     attroff(COLOR_PAIR(4)); //cyan for history
 
     refresh();
+
+    // Draw menu overlay last so it sits above base UI
+    if (ui_menu_is_open()) {
+        ui_menu_tick(opts, state);
+    }
 
     //handle input
     ncurses_input_handler(opts, state, c);

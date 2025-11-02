@@ -39,17 +39,8 @@ void ui_menu_run(const NcMenuItem* items, size_t n_items, void* ctx);
 // Shows for a short time at the bottom of the menu window.
 void ui_statusf(const char* fmt, ...);
 
-// Prompt helpers (standardized windows, input and validation)
-// These helpers return 1 on success, 0 on user cancel/empty input.
-int ui_prompt_string(const char* title, char* out, size_t out_cap);
-int ui_prompt_int(const char* title, int* out);
-int ui_prompt_double(const char* title, double* out);
-int ui_prompt_confirm(const char* title); // 1 = yes, 0 = no
-
-// Prefill variants that show current value in the input box
-int ui_prompt_string_prefill(const char* title, const char* current, char* out, size_t out_cap);
-int ui_prompt_int_prefill(const char* title, int current, int* out);
-int ui_prompt_double_prefill(const char* title, double current, double* out);
+// Legacy blocking prompt helpers have been removed in favor of
+// nonblocking overlay prompts managed internally by the UI menu engine.
 
 // IO submenu entry point using the core framework
 void ui_menu_io_options(dsd_opts* opts, dsd_state* state);
@@ -67,3 +58,14 @@ void ui_menu_lrrp_options(dsd_opts* opts, dsd_state* state);
 
 // Top-level Main Menu
 void ui_menu_main(dsd_opts* opts, dsd_state* state);
+
+// Nonblocking menu overlay API
+// Open the main menu as a nonblocking overlay. Subsequent draws happen via ui_menu_tick,
+// and keys are routed via ui_menu_handle_key. The overlay preserves the same look/feel.
+void ui_menu_open_async(dsd_opts* opts, dsd_state* state);
+// Returns 1 when the overlay is currently open.
+int ui_menu_is_open(void);
+// Handle a key for the overlay. Returns 1 if the key was consumed by the menu.
+int ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state);
+// Draw/update one frame of the overlay (no input read here).
+void ui_menu_tick(dsd_opts* opts, dsd_state* state);

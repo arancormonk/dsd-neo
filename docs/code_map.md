@@ -77,7 +77,7 @@ Key public headers:
 - Keep UI/business logic separate:
   - Do not perform device or file operations directly in `dsd_ncurses_menu.c`. Use services instead to make behavior testable and reusable by other front‑ends.
 - Prompts and exit:
-  - Use `ui_prompt_string/int/double/confirm`. Handlers can set `exitflag` to request immediate exit; the loop will return.
+  - Use the nonblocking prompt overlays provided by the menu core (string/int/double/confirm equivalents handled asynchronously). Handlers can set `exitflag` to request immediate exit; the loop will return.
 
 ## Include Prefix Summary
 
