@@ -932,7 +932,8 @@ verbose_direct_sampling(rtlsdr_dev_t* dev, int on) {
  * @param dev RTL-SDR device handle.
  * @return 0 on success or a negative error code.
  */
-static int
+// Not currently used; keep for potential future diagnostics.
+static __attribute__((unused)) int
 verbose_offset_tuning(rtlsdr_dev_t* dev) {
     int r;
     r = rtlsdr_set_offset_tuning(dev, 1);

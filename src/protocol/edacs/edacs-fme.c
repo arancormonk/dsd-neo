@@ -760,8 +760,6 @@ edacs(dsd_opts* opts, dsd_state* state) {
     } else //BCH Pass, continue from here.
     {
 
-        //Auto Detection Modes Have Been Removed due to reliability issues,
-        //users will now need to manually specify these options:
         /*
       -fh             Decode only EDACS Standard/ProVoice*\n");
       -fH             Decode only EDACS Standard/ProVoice with ESK 0xA0*\n");

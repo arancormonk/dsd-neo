@@ -2754,7 +2754,6 @@ ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) {
 
 // Compose a short string describing any active patch/system mode for trunking
 // Example outputs: "P25p2 trunk", "P25p1 trunk", "EDACS trunk", "DMR TIII trunk", "DMR Con+ trunk", "Trunking"
-/* (removed) ui_compose_active_patch_label: replaced with p25_patch_compose_summary */
 
 // Try to resolve an active VC frequency from current state when p25_vc_freq is unset
 static long int

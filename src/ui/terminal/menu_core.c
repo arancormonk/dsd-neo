@@ -86,7 +86,6 @@ static void act_toggle_invert(void* v);
 static void act_toggle_payload(void* v);
 static void act_reset_eh(void* v);
 static void act_p2_params(void* v);
-/* removed unused: act_key_entry */
 // New action prototypes used before definitions
 static void act_event_log_set(void* v);
 static void act_event_log_disable(void* v);
@@ -121,7 +120,6 @@ static void act_ken_scr(void* v);
 static void act_anytone_bp(void* v);
 static void act_xor_ks(void* v);
 #ifdef USE_RTLSDR
-/* removed: act_rtl_opts */
 /* Blanker UI helpers */
 static const char* lbl_blanker(void* v, char* b, size_t n);
 static const char* lbl_blanker_thr(void* v, char* b, size_t n);
@@ -259,8 +257,6 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
         g_prompt.len = strlen(g_prompt.buf);
     }
 }
-
-/* confirm overlay support removed (unused) */
 
 // Convenience typed wrappers
 typedef struct {
@@ -1710,10 +1706,6 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     ui_draw_menu(f->win, f->items, f->n, f->hi, &g_ctx_overlay);
 }
 
-/* Legacy blocking helpers (ui_show_help/ui_menu_run) removed in favor of overlay engine */
-
-/* Legacy blocking prompt helpers removed (string/int/double/confirm). */
-
 // ---- IO submenu ----
 
 static bool
@@ -1754,8 +1746,6 @@ io_toggle_cc_candidates(void* vctx) {
         fprintf(stderr, "\n P25: Prefer CC Candidates: Off\n");
     }
 }
-
-/* removed unused: io_list_pulse */
 
 static void
 io_enable_per_call_wav(void* vctx) {
@@ -1804,7 +1794,6 @@ io_stop_symbol_saving(void* vctx) {
 }
 
 // Simple list chooser for short lists
-/* removed unused: ui_choose_from_strings */
 
 static void
 io_set_pulse_out(void* vctx) {
@@ -2023,7 +2012,7 @@ io_set_udp_out(void* vctx) {
     }
     u->c = c;
     const char* src = c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1";
-    snprintf(u->host, sizeof u->host, "%s", src);
+    snprintf(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, src);
     ui_prompt_open_string_async("UDP blaster host", u->host, sizeof u->host, cb_udp_out_host, u);
 }
 
@@ -2041,14 +2030,18 @@ lbl_current_output(void* vctx, char* b, size_t n) {
     }
     if (c->opts->audio_out_type == 0) {
         if (c->opts->pa_output_idx[0]) {
-            snprintf(b, n, "Current Output: Pulse [%s]", c->opts->pa_output_idx);
+            size_t prefix = strlen("Current Output: Pulse []") - 2; /* exclude %s */
+            int m = (n > prefix) ? (int)(n - prefix) : 0;
+            snprintf(b, n, "Current Output: Pulse [%.*s]", m, c->opts->pa_output_idx);
         } else {
             snprintf(b, n, "Current Output: Pulse [default]");
         }
     } else if (c->opts->audio_out_type == 8) {
-        snprintf(b, n, "Current Output: UDP %s:%d", c->opts->udp_hostname, c->opts->udp_portno);
+        int m = (n > 32) ? (int)(n - 32) : 0; /* leave room for prefix and port */
+        snprintf(b, n, "Current Output: UDP %.*s:%d", m, c->opts->udp_hostname, c->opts->udp_portno);
     } else if (c->opts->audio_out_type == 2 || c->opts->audio_out_type == 5) {
-        snprintf(b, n, "Current Output: %s (%s)", c->opts->audio_out_dev, name);
+        int m = (n > 24) ? (int)(n - 24) : 0; /* room for suffix */
+        snprintf(b, n, "Current Output: %.*s (%s)", m, c->opts->audio_out_dev, name);
     } else {
         snprintf(b, n, "Current Output: %s", name);
     }
@@ -2454,7 +2447,7 @@ io_tcp_direct_link(void* vctx) {
     }
     u->c = c;
     const char* defh = c->opts->tcp_hostname[0] ? c->opts->tcp_hostname : "localhost";
-    snprintf(u->host, sizeof u->host, "%s", defh);
+    snprintf(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
     ui_prompt_open_string_async("Enter TCP Direct Link Hostname", u->host, sizeof u->host, cb_tcp_host, u);
 }
 
@@ -2476,12 +2469,15 @@ lbl_current_input(void* vctx, char* b, size_t n) {
         default: name = "?"; break;
     }
     if (c->opts->audio_in_type == 8) {
-        snprintf(b, n, "Current Input: TCP %s:%d", c->opts->tcp_hostname, c->opts->tcp_portno);
+        int m = (n > 32) ? (int)(n - 32) : 0;
+        snprintf(b, n, "Current Input: TCP %.*s:%d", m, c->opts->tcp_hostname, c->opts->tcp_portno);
     } else if (c->opts->audio_in_type == 6) {
-        snprintf(b, n, "Current Input: UDP %s:%d", c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1",
-                 c->opts->udp_in_portno);
+        const char* addr = c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1";
+        int m = (n > 32) ? (int)(n - 32) : 0;
+        snprintf(b, n, "Current Input: UDP %.*s:%d", m, addr, c->opts->udp_in_portno);
     } else if (c->opts->audio_in_type == 2 || c->opts->audio_in_type == 4 || c->opts->audio_in_type == 44) {
-        snprintf(b, n, "Current Input: %s", c->opts->audio_in_dev);
+        int m = (n > 18) ? (int)(n - 18) : 0;
+        snprintf(b, n, "Current Input: %.*s", m, c->opts->audio_in_dev);
     } else if (c->opts->audio_in_type == 3) {
         snprintf(b, n, "Current Input: RTL-SDR dev %d", c->opts->rtl_dev_index);
     } else {
@@ -2531,7 +2527,7 @@ switch_to_udp(void* vctx) {
     }
     u->c = c;
     const char* defa = c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1";
-    snprintf(u->addr, sizeof u->addr, "%s", defa);
+    snprintf(u->addr, sizeof u->addr, "%.*s", (int)sizeof(u->addr) - 1, defa);
     ui_prompt_open_string_async("Enter UDP bind address", u->addr, sizeof u->addr, cb_udp_in_addr, u);
 }
 
@@ -2544,7 +2540,7 @@ io_rigctl_config(void* vctx) {
     }
     u->c = c;
     const char* defh = c->opts->rigctlhostname[0] ? c->opts->rigctlhostname : "localhost";
-    snprintf(u->host, sizeof u->host, "%s", defh);
+    snprintf(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
     ui_prompt_open_string_async("Enter RIGCTL Hostname", u->host, sizeof u->host, cb_rig_host, u);
 }
 
@@ -2553,7 +2549,9 @@ static const char*
 lbl_sym_save(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
     if (c->opts->symbol_out_f) {
-        snprintf(b, n, "Save Symbols to File [Active: %s]", c->opts->symbol_out_file);
+        size_t prefix = strlen("Save Symbols to File [Active: ]") - 2; /* exclude %s */
+        int m = (n > prefix) ? (int)(n - prefix) : 0;
+        snprintf(b, n, "Save Symbols to File [Active: %.*s]", m, c->opts->symbol_out_file);
     } else {
         snprintf(b, n, "Save Symbols to File [Inactive]");
     }
@@ -2565,10 +2563,11 @@ lbl_tcp(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
     int active = (c->opts->audio_in_type == 8 && c->opts->tcp_file_in != NULL);
     if (c->opts->tcp_hostname[0] != '\0' && c->opts->tcp_portno > 0) {
+        int m = (n > 32) ? (int)(n - 32) : 0;
         if (active) {
-            snprintf(b, n, "TCP Direct Audio: %s:%d [Active]", c->opts->tcp_hostname, c->opts->tcp_portno);
+            snprintf(b, n, "TCP Direct Audio: %.*s:%d [Active]", m, c->opts->tcp_hostname, c->opts->tcp_portno);
         } else {
-            snprintf(b, n, "TCP Direct Audio: %s:%d [Inactive]", c->opts->tcp_hostname, c->opts->tcp_portno);
+            snprintf(b, n, "TCP Direct Audio: %.*s:%d [Inactive]", m, c->opts->tcp_hostname, c->opts->tcp_portno);
         }
     } else {
         snprintf(b, n, active ? "TCP Direct Audio [Active]" : "Start TCP Direct Audio [Inactive]");
@@ -2581,10 +2580,11 @@ lbl_rigctl(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
     int connected = (c->opts->use_rigctl && c->opts->rigctl_sockfd != 0);
     if (c->opts->rigctlhostname[0] != '\0' && c->opts->rigctlportno > 0) {
+        int m = (n > 24) ? (int)(n - 24) : 0;
         if (connected) {
-            snprintf(b, n, "Rigctl: %s:%d [Active]", c->opts->rigctlhostname, c->opts->rigctlportno);
+            snprintf(b, n, "Rigctl: %.*s:%d [Active]", m, c->opts->rigctlhostname, c->opts->rigctlportno);
         } else {
-            snprintf(b, n, "Rigctl: %s:%d [Inactive]", c->opts->rigctlhostname, c->opts->rigctlportno);
+            snprintf(b, n, "Rigctl: %.*s:%d [Inactive]", m, c->opts->rigctlhostname, c->opts->rigctlportno);
         }
     } else {
         snprintf(b, n, connected ? "Rigctl [Active]" : "Configure Rigctl [Inactive]");
@@ -2722,6 +2722,7 @@ static const char*
 lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
 #ifdef USE_RTLSDR
+    (void)c;
     int on = rtl_stream_get_p25p2_rrc_autoprobe();
 #else
     int on = c->opts->p25_p2_rrc_autoprobe;
@@ -2864,16 +2865,11 @@ lbl_muting(void* v, char* b, size_t n) {
     return b;
 }
 
-/* blocking IO menu removed; overlay uses IO_MENU_ITEMS */
-
 // Logging & Capture submenu
-/* blocking Logging & Capture menu removed; overlay uses LOGGING_MENU_ITEMS */
 
 // Trunking & Control submenu
-/* blocking Trunking & Control menu removed; overlay uses TRUNK_MENU_ITEMS */
 
 // Keys & Security submenu
-/* blocking Keys & Security menu removed; overlay uses KEYS_MENU_ITEMS */
 
 #ifdef USE_RTLSDR
 // Declarative DSP menu with dynamic labels
@@ -4355,11 +4351,8 @@ static const NcMenuItem AUTO_DSP_CFG_ITEMS[] = {
 #endif
 
 #ifdef USE_RTLSDR
-/* removed: act_auto_cfg; use AUTO_DSP_CFG_ITEMS submenu instead */
 #endif
 
-/* blocking DSP options menu removed; overlay uses DSP_MENU_ITEMS */
-/* formerly: ui_menu_dsp_options with many items */
 /*
 void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
@@ -4664,8 +4657,6 @@ parse_hex_u64(const char* s, unsigned long long* out) {
     return 1;
 }
 
-/* Legacy prompt_hex_u64 removed; hex parsing uses async string prompt chain. */
-
 // Key Entry actions (declarative)
 static void
 key_basic(void* v) {
@@ -4731,8 +4722,6 @@ key_aes(void* v) {
     ui_prompt_open_string_async("AES Segment 1 (HEX) or 0", NULL, 128, cb_aes_step, ac);
 }
 
-/* blocking key entry menu removed; overlay uses KEYS_ENTRY_ITEMS */
-
 // ---- LRRP Options (declarative) ----
 static void
 lr_home(void* v) {
@@ -4777,8 +4766,6 @@ lbl_lrrp_current(void* vctx, char* b, size_t n) {
     }
     return b;
 }
-
-/* blocking LRRP menu removed; overlay uses LRRP_MENU_ITEMS */
 
 // ---- Main Menu ----
 
@@ -5065,10 +5052,7 @@ act_xor_ks(void* v) {
     ui_prompt_open_string_async("XOR keystream", NULL, 256, cb_xor_ks, c);
 }
 #ifdef USE_RTLSDR
-/* act_rtl_opts removed; use RTL_MENU_ITEMS submenu instead */
 #endif
-
-/* removed unused: act_key_entry, act_io_opts */
 
 // ---- UI Display Options ----
 static const char*
@@ -5183,10 +5167,6 @@ act_toggle_ui_channels(void* v) {
     }
     c->opts->show_channels = c->opts->show_channels ? 0 : 1;
 }
-
-/* blocking UI display menu removed; overlay uses UI_DISPLAY_MENU_ITEMS */
-
-/* removed: act_lrrp_opts; use LRRP_MENU_ITEMS submenu */
 
 static void
 act_p2_params(void* v) {
@@ -5836,8 +5816,6 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
         *out_n = sizeof items / sizeof items[0];
     }
 }
-
-/* blocking ui_menu_main removed; ncursesMenu opens overlay via ui_menu_open_async */
 
 /* Blanker UI handlers implementation */
 #ifdef USE_RTLSDR

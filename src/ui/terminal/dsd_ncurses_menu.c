@@ -19,8 +19,6 @@
 
 uint32_t temp_freq = -1;
 
-// (legacy file-scope variables removed)
-
 //testing a few things, going to put this into ncursesMenu
 #define WIDTH  36
 #define HEIGHT 25
@@ -28,17 +26,8 @@ uint32_t temp_freq = -1;
 int startx = 0;
 int starty = 0;
 
-static void
-destroy_window(WINDOW** win) {
-    if (win != NULL && *win != NULL) {
-        delwin(*win);
-        *win = NULL;
-    }
-}
-
-// (legacy helpers and static choice tables removed)
-
 #ifdef USE_RTLSDR
+#if 0  /* Unused helpers kept for reference; re-enable when wired */
 // Snapshot and reapply DSP settings selected in the ncurses menu so they
 // persist across stream destroy/recreate during menu lifetime.
 typedef struct {
@@ -92,6 +81,7 @@ dsp_apply_snapshot(const DspMenuSnapshot* s) {
     // IQ balance (mode-aware)
     rtl_stream_toggle_iq_balance(s->iqbal_enable);
 }
+#endif /* 0 */
 #endif
 
 //ncursesMenu

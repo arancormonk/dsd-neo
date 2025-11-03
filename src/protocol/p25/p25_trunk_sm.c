@@ -498,6 +498,7 @@ dsd_p25_sm_on_group_grant_impl(dsd_opts* opts, dsd_state* state, int channel, in
 void
 dsd_p25_sm_on_indiv_grant_impl(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     UNUSED(src);
+    UNUSED(dst);
     // Centralized gating mirroring group-grant policy to avoid accidental
     // bypass when new call paths reach the SM directly.
     // 1) Respect Data-call policy (svc bit 0x10) when data tuning is disabled

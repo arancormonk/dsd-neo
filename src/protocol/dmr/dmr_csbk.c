@@ -474,8 +474,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         state->last_vc_sync_time = 0;
                     }
 
-                    // Legacy TIII retune gating removed — rely on trunk SM to manage VC↔VC retunes
-
                     //shim in here for ncurses freq display when not trunking (playback, not live)
                     if (opts->trunk_enable == 0 && freq != 0) {
                         //just set to both for now, could go on tslot later
@@ -565,7 +563,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     dmr_sm_on_indiv_grant(opts, state, /*freq_hz*/ freq, /*lpcn*/ lpchannum, target,
                                                           source);
                                 }
-                                /* legacy direct tuner paths removed; tuning is handled by DMR SM above */
                             }
                         }
                     }

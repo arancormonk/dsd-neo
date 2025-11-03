@@ -2454,7 +2454,7 @@ select_defaults_for_mode(dsd_opts* opts) {
     int env_fll_beta_set = dsd_neo_get_config()->fll_beta_is_set;
     int env_ted_sps_set = dsd_neo_get_config()->ted_sps_is_set;
     int env_ted_gain_set = dsd_neo_get_config()->ted_gain_is_set;
-    int env_iq_dc_set = dsd_neo_get_config()->iq_dc_block_is_set;
+    /* iq_dc_block flag not required here; defaults handled elsewhere */
     /* Treat all digital voice modes as digital for FLL/TED defaults */
     int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
@@ -3322,9 +3322,10 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
     do {
         static int init = 0;
         static int enabled = 0;
-        static double snr_thr_db = 6.0; /* minimum SNR to trigger */
+        /* minimum SNR to trigger (kept for env/opt parsing below) */
+        static double snr_thr_db = 6.0;
         static int cooldown = 0;        /* simple rate limiter (loops) */
-        static int cooldown_max = 40;   /* ~tens of ms depending on read cadence */
+        /* legacy cooldown_max unused after time-based throttle added */
         if (!init) {
             init = 1;
             const char* on = getenv("DSD_NEO_AUTO_PPM");
@@ -3496,11 +3497,8 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             pwr_gate_active
             && (std::chrono::duration_cast<std::chrono::milliseconds>(now_gate - pwr_gate_since).count()
                 >= pwr_gate_debounce_ms);
-        /* Also require spectral SNR above a modest threshold (default 6 dB, reuse option if provided) */
-        double spec_thr_db = 6.0;
-        if (opts && opts->rtl_auto_ppm_snr_db > 0.0f && opts->rtl_auto_ppm_snr_db <= 60.0f) {
-            spec_thr_db = (double)opts->rtl_auto_ppm_snr_db;
-        }
+        /* Also require spectral SNR above threshold; reuse parsed env/opt value */
+        double spec_thr_db = snr_thr_db;
         if (!pwr_debounced || spec_snr_db < spec_thr_db) {
             g_auto_ppm_training.store(0, std::memory_order_relaxed);
             g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
@@ -4550,7 +4548,6 @@ dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delt
     /* Hysteresis: engage with margin_on / low ok; relax with margin_off and ok_min */
     int aggressive_on = (err > ok + g_auto_cfg.p25p2_err_margin_on) || (ok < g_auto_cfg.p25p2_ok_min);
     int moderate_on = (err > 0);
-    /* moderate_off was unused; condition folded into logic below */
 
     int desired = MODE_CLEAN;
     switch (mode) {
