@@ -497,10 +497,26 @@ demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
     struct output_state* o = d->output_target;
     maybe_set_thread_realtime_and_affinity("DEMOD");
-    /* Optional supervisory tuner autogain (env-gated) */
+    /* Optional supervisory tuner autogain (env-gated).
+       Goals:
+       - Avoid constant twitching: throttle adjustments and add retune/scan holdoff.
+       - Be conservative on quiet systems: allow down-steps anytime on clipping,
+         but only permit up-steps when a carrier is actually present (squelch open
+         and reasonable SNR).
+       - If device starts in driver auto-gain, we may exit into manual on threshold
+         events and continue supervising thereafter. */
     static int ag_initialized = 0;
     static int ag_blocks = 0, ag_high = 0, ag_low = 0;
-    static int ag_manual_target = 180; /* 18.0 dB initial manual target if needed */
+    static int ag_manual_target = 180;    /* 18.0 dB initial manual target if needed */
+    static int ag_target_initialized = 0; /* latched from current driver gain on first window */
+    /* Adjustment throttle (ms) and retune holdoff (ms) */
+    static auto ag_next_allowed = std::chrono::steady_clock::now();
+    static auto ag_hold_until = std::chrono::steady_clock::time_point{};
+    static uint32_t ag_last_freq = 0;
+    const int ag_throttle_ms = 1500; /* min interval between changes */
+    const int ag_hold_ms = 1200;     /* pause after retune/scanning before adjusting */
+    /* Up-step gating: require squelch gate open and SNR >= threshold */
+    const double ag_up_snr_db = 8.0;
     int logged_once = 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Read a block from input ring */
@@ -517,6 +533,12 @@ demod_thread_fn(void* arg) {
         }
         /* Update simple occupancy metrics on pre-DSP input for autogain */
         if (g_tuner_autogain_on.load(std::memory_order_relaxed)) {
+            /* Detect retune and apply short holdoff to avoid reacting on noise */
+            if (ag_last_freq != dongle.freq) {
+                ag_last_freq = dongle.freq;
+                ag_blocks = ag_high = ag_low = 0;
+                ag_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ag_hold_ms);
+            }
             int max_abs = 0;
             int64_t sum_abs = 0;
             int pairs = got >> 1;
@@ -542,28 +564,62 @@ demod_thread_fn(void* arg) {
             }
             /* Every ~40 blocks, consider a nudge */
             if (ag_blocks >= 40) {
-                int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
-                if (is_auto > 0) {
+                /* Initialize manual target from current driver state once */
+                if (!ag_target_initialized) {
+                    int cg = rtl_device_get_tuner_gain(rtl_device_handle);
+                    if (cg >= 0) {
+                        ag_manual_target = cg;
+                    }
+                    ag_target_initialized = 1;
+                }
+                /* Respect retune holdoff and throttle */
+                auto now = std::chrono::steady_clock::now();
+                bool in_hold = (ag_hold_until.time_since_epoch().count() != 0) && (now < ag_hold_until);
+                bool throttled = now < ag_next_allowed;
+
+                if (!in_hold && !throttled) {
+                    int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
+                    bool changed = false;
+                    /* Always allow downward steps on clipping */
                     if (ag_high >= 3) {
-                        /* Too hot while in auto: switch to manual slightly lower gain */
-                        ag_manual_target -= 50;
+                        ag_manual_target -= 50; /* -5.0 dB */
                         if (ag_manual_target < 0) {
                             ag_manual_target = 0;
                         }
-                        rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
-                        dongle.gain = ag_manual_target;
-                        LOG_INFO("AUTOGAIN: clipping detected; switching to manual ~%d.%d dB.\n", ag_manual_target / 10,
-                                 ag_manual_target % 10);
-                    } else if (ag_low >= (ag_blocks * 3) / 4) {
-                        /* Very low occupancy: switch to manual slightly higher gain */
-                        ag_manual_target += 50;
-                        if (ag_manual_target > 490) {
-                            ag_manual_target = 490;
+                        changed = true;
+                    } else {
+                        /* Only consider upward steps when squelch gate is open and SNR is healthy */
+                        double s0 = g_snr_c4fm_db.load(std::memory_order_relaxed);
+                        double s1 = g_snr_qpsk_db.load(std::memory_order_relaxed);
+                        double s2 = g_snr_gfsk_db.load(std::memory_order_relaxed);
+                        double snr_db = s0;
+                        if (s1 > snr_db) {
+                            snr_db = s1;
                         }
+                        if (s2 > snr_db) {
+                            snr_db = s2;
+                        }
+                        if (d->squelch_gate_open && snr_db >= ag_up_snr_db && ag_low >= (ag_blocks * 3) / 4) {
+                            ag_manual_target += 50; /* +5.0 dB */
+                            if (ag_manual_target > 490) {
+                                ag_manual_target = 490;
+                            }
+                            changed = true;
+                        }
+                    }
+
+                    if (changed) {
+                        /* Apply manual gain near target regardless of prior auto/manual. */
                         rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
                         dongle.gain = ag_manual_target;
-                        LOG_INFO("AUTOGAIN: low occupancy; switching to manual ~%d.%d dB.\n", ag_manual_target / 10,
-                                 ag_manual_target % 10);
+                        ag_next_allowed = now + std::chrono::milliseconds(ag_throttle_ms);
+                        if (is_auto > 0) {
+                            LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n",
+                                     ag_manual_target / 10, ag_manual_target % 10);
+                        } else {
+                            LOG_INFO("AUTOGAIN: adjusting manual gain to ~%d.%d dB.\n", ag_manual_target / 10,
+                                     ag_manual_target % 10);
+                        }
                     }
                 }
                 ag_blocks = ag_high = ag_low = 0;
