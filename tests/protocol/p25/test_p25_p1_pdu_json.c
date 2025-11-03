@@ -134,17 +134,11 @@ static int
 parse_last_json(const char* buf, int len, int* out_sap, int* out_mfid, int* out_io, int* out_len, char* out_summary,
                 size_t sum_cap) {
     // find last JSON line
-    const char* p = buf + len;
-    if (p > buf) {
-        p--;
+    if (!buf || len <= 0) {
+        return -1;
     }
-    if (*p == '\n' && p > buf) {
-        p--;
-    }
-    const char* line = p;
-    while (line > buf && *(line - 1) != '\n') {
-        line--;
-    }
+    const char* last_nl = strrchr(buf, '\n');
+    const char* line = last_nl ? (last_nl + 1) : buf;
 
     int sap = -1, mfid = -1, io = -1, jlen = -1;
     const char* q = strstr(line, "\"sap\":");
@@ -268,15 +262,18 @@ main(void) {
         return 103;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
     fclose(rf);
 
     // Parse last (SysCfg)
     int sap = -1, mfid = -1, io = -1, jlen = -1;
     char summary[128];
-    int er = parse_last_json(buf, (int)sz, &sap, &mfid, &io, &jlen, summary, sizeof(summary));
+    int er = parse_last_json(buf, (int)nread, &sap, &mfid, &io, &jlen, summary, sizeof(summary));
     free(buf);
     if (er != 0) {
         fprintf(stderr, "parse_last_json er=%d\n", er);

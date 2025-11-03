@@ -640,7 +640,10 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     // fprintf (stderr, "\n WR: %d TG: %d SRC: %d Res: %d Len: %d STR: %s", wr, ttg, tsrc, res, len, str);
 
     //reset storage
-    memset(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+    {
+        uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+        memset(state->dmr_pdu_sf[slot_idx], 0, sizeof(state->dmr_pdu_sf[slot_idx]));
+    }
 }
 
 void

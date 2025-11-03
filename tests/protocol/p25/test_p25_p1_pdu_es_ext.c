@@ -117,13 +117,16 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 static void
-pack_bits(uint8_t* dst, int bit_offset, int width, uint32_t value) {
+pack_bits(uint8_t* dst, size_t cap_bytes, int bit_offset, int width, uint32_t value) {
     // MSB-first placement into dst byte array
     for (int i = 0; i < width; i++) {
         int b = (value >> (width - 1 - i)) & 1;
         int pos = bit_offset + i;
         int byte = pos / 8;
         int bit = 7 - (pos % 8);
+        if ((size_t)byte >= cap_bytes) {
+            break; // guard against overflow when called with bad params
+        }
         dst[byte] = (uint8_t)(dst[byte] & ~(1u << bit));
         dst[byte] = (uint8_t)(dst[byte] | (b << bit));
     }
@@ -131,17 +134,11 @@ pack_bits(uint8_t* dst, int bit_offset, int width, uint32_t value) {
 
 static int
 parse_last_json(const char* buf, int len, int* out_sap) {
-    const char* p = buf + len;
-    if (p > buf) {
-        p--;
+    if (!buf || len <= 0) {
+        return -1;
     }
-    if (*p == '\n' && p > buf) {
-        p--;
-    }
-    const char* line = p;
-    while (line > buf && *(line - 1) != '\n') {
-        line--;
-    }
+    const char* last_nl = strrchr(buf, '\n');
+    const char* line = last_nl ? (last_nl + 1) : buf;
     int sap = -1;
     const char* q = strstr(line, "\"sap\":");
     if (!q || sscanf(q, "\"sap\":%d", &sap) != 1) {
@@ -187,9 +184,9 @@ main(void) {
     // Layout: ea_sap @ bit 10 (6b) → 1; ea_mfid @16 (6b) → 0x15; ea_llid @24 (24b) → 0x000102
     uint8_t* ext = pdu + 12;
     memset(ext, 0, 12);
-    pack_bits(ext, 10, 6, 1);         // ea_sap = 1 (encryption header follows)
-    pack_bits(ext, 16, 6, 0x15);      // ea_mfid
-    pack_bits(ext, 24, 24, 0x000102); // ea_llid
+    pack_bits(ext, 12, 10, 6, 1);         // ea_sap = 1 (encryption header follows)
+    pack_bits(ext, 12, 16, 6, 0x15);      // ea_mfid
+    pack_bits(ext, 12, 24, 24, 0x000102); // ea_llid
 
     // ES header (13 bytes) immediately after ext
     uint8_t* es = pdu + 12 + 12;
@@ -210,8 +207,8 @@ main(void) {
     es[10] = 0x12;
     es[11] = 0x34;
     // aux_res (2b) at [96..97] = 3, aux_sap (6b) [98..103] = 32
-    pack_bits(es, 96, 2, 3);
-    pack_bits(es, 98, 6, 32);
+    pack_bits(es, 13, 96, 2, 3);
+    pack_bits(es, 13, 98, 6, 32);
 
     // Minimal payload for SAP 32 after headers (place at current index)
     int payload_off = 12 + 12 + 13;
@@ -235,13 +232,16 @@ main(void) {
         return 103;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
     fclose(rf);
 
     int sap = -1;
-    if (parse_last_json(buf, (int)sz, &sap) != 0) {
+    if (parse_last_json(buf, (int)nread, &sap) != 0) {
         free(buf);
         return 103;
     }

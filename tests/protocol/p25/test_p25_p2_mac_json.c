@@ -101,21 +101,14 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 extract_last_fields(const char* buf, int len, char* out_xch, size_t xch_cap, int* out_b, int* out_c, int* out_slot,
                     char* out_summary, size_t sum_cap) {
-    const char* end = buf + len;
-    const char* pcur = end;
-    if (pcur > buf) {
-        pcur--;
+    if (!buf || len <= 0) {
+        return -1;
     }
-    if (pcur >= buf && *pcur == '\n') {
-        if (pcur == buf) {
-            return -1;
-        }
-        pcur--;
+    const char* last_brace = strrchr(buf, '{');
+    if (!last_brace) {
+        return -1;
     }
-    const char* line = pcur;
-    while (line > buf && *(line - 1) != '\n') {
-        line--;
-    }
+    const char* line = last_brace;
 
     const char* p;
     int b = -1, c = -1, s = -1;
@@ -288,14 +281,17 @@ main(void) {
         return 103;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
 
     // Last line should be Case D (FACCH clamp)
     char xch[8] = {0}, summary[32] = {0};
     int lenB = -1, lenC = -1, slot = -1;
-    int er = extract_last_fields(buf, (int)sz, xch, sizeof xch, &lenB, &lenC, &slot, summary, sizeof summary);
+    int er = extract_last_fields(buf, (int)nread, xch, sizeof xch, &lenB, &lenC, &slot, summary, sizeof summary);
     free(buf);
     if (er != 0) {
         fprintf(stderr, "parse JSON er=%d\n", er);

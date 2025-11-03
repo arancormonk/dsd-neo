@@ -581,9 +581,12 @@ harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input) {
 
     // fprintf (stderr, " SRC: %08d;", src);
 
-    //save to array for ncurses
-    snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: (%f%s, %f%s)", lat_dec,
-             deg_glyph, lon_dec, deg_glyph);
+    //save to array for ncurses (guard slot index)
+    {
+        uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+        snprintf(state->dmr_embedded_gps[slot_idx], sizeof state->dmr_embedded_gps[slot_idx], "GPS: (%f%s, %f%s)",
+                 lat_dec, deg_glyph, lon_dec, deg_glyph);
+    }
 
     //save to LRRP report for mapping/logging
     FILE* pFile; //file pointer
@@ -822,16 +825,17 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
                 src = state->lastsrcR;
             }
 
-            //save to array for ncurses
-            snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+            //save to array for ncurses (guard slot index)
+            uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+            snprintf(state->dmr_embedded_gps[slot_idx], sizeof state->dmr_embedded_gps[slot_idx],
                      "GPS: %lf%s%s %lf%s%s (%lf, %lf) %s", latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr,
                      latitude, longitude, valid);
 
             //save to event history string
-            if (state->event_history_s[slot].Event_History_Items[0].source_id == src) {
-                snprintf(state->event_history_s[slot].Event_History_Items[0].gps_s,
-                         sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
-                         state->dmr_embedded_gps[slot]);
+            if (state->event_history_s[slot_idx].Event_History_Items[0].source_id == src) {
+                snprintf(state->event_history_s[slot_idx].Event_History_Items[0].gps_s,
+                         sizeof state->event_history_s[slot_idx].Event_History_Items[0].gps_s, "%s",
+                         state->dmr_embedded_gps[slot_idx]);
             }
 
             //save to LRRP report for mapping/logging

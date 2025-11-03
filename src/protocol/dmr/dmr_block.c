@@ -1107,22 +1107,28 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
         //time to send the completed 'superframe' to the DMR PDU message handler
         if (state->data_block_counter[slot] == state->data_header_blocks[slot] && state->data_header_valid[slot] == 1) {
+            uint8_t slot_idx = (slot >= 2) ? 1 : slot;
             //CRC32 on completed messages
             for (i = 0, j = 0; i < ctr; i++, j += 8) {
-                dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
-                dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
-                dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
-                dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
-                dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
-                dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
-                dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
-                dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
+                dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot_idx][i] >> 7) & 0x01;
+                dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot_idx][i] >> 6) & 0x01;
+                dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot_idx][i] >> 5) & 0x01;
+                dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot_idx][i] >> 4) & 0x01;
+                dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot_idx][i] >> 3) & 0x01;
+                dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot_idx][i] >> 2) & 0x01;
+                dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot_idx][i] >> 1) & 0x01;
+                dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot_idx][i] >> 0) & 0x01;
             }
 
             // block_num is not used below for indexing; ensure future uses validate separately if needed
 
-            CRCExtracted = (state->dmr_pdu_sf[slot][ctr - 4] << 24) | (state->dmr_pdu_sf[slot][ctr - 3] << 16)
-                           | (state->dmr_pdu_sf[slot][ctr - 2] << 8) | (state->dmr_pdu_sf[slot][ctr - 1] << 0);
+            if (ctr >= 4) {
+                CRCExtracted =
+                    (state->dmr_pdu_sf[slot_idx][ctr - 4] << 24) | (state->dmr_pdu_sf[slot_idx][ctr - 3] << 16)
+                    | (state->dmr_pdu_sf[slot_idx][ctr - 2] << 8) | (state->dmr_pdu_sf[slot_idx][ctr - 1] << 0);
+            } else {
+                CRCExtracted = 0u;
+            }
 
             int offset = 0;
             if (state->data_p_head[slot] == 1) {
@@ -1131,14 +1137,16 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
             //rearrage for ridiculously stupid CRC32 LSO/MSO ordering
             for (i = 0, j = 0; i < ctr; i += 2, j += 16) {
-                dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i + 1] >> 7) & 0x01;
-                dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i + 1] >> 6) & 0x01;
-                dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i + 1] >> 5) & 0x01;
-                dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i + 1] >> 4) & 0x01;
-                dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i + 1] >> 3) & 0x01;
-                dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i + 1] >> 2) & 0x01;
-                dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i + 1] >> 1) & 0x01;
-                dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i + 1] >> 0) & 0x01;
+                if ((i + 1) < ctr) {
+                    dmr_pdu_sf_bits[j + 0] = (state->dmr_pdu_sf[slot][i + 1] >> 7) & 0x01;
+                    dmr_pdu_sf_bits[j + 1] = (state->dmr_pdu_sf[slot][i + 1] >> 6) & 0x01;
+                    dmr_pdu_sf_bits[j + 2] = (state->dmr_pdu_sf[slot][i + 1] >> 5) & 0x01;
+                    dmr_pdu_sf_bits[j + 3] = (state->dmr_pdu_sf[slot][i + 1] >> 4) & 0x01;
+                    dmr_pdu_sf_bits[j + 4] = (state->dmr_pdu_sf[slot][i + 1] >> 3) & 0x01;
+                    dmr_pdu_sf_bits[j + 5] = (state->dmr_pdu_sf[slot][i + 1] >> 2) & 0x01;
+                    dmr_pdu_sf_bits[j + 6] = (state->dmr_pdu_sf[slot][i + 1] >> 1) & 0x01;
+                    dmr_pdu_sf_bits[j + 7] = (state->dmr_pdu_sf[slot][i + 1] >> 0) & 0x01;
+                }
 
                 dmr_pdu_sf_bits[j + 8] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
                 dmr_pdu_sf_bits[j + 9] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;

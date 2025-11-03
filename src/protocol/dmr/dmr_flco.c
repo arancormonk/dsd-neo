@@ -55,6 +55,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     UNUSED3(xpt_res_a, xpt_res_b, xpt_res_c);
 
     uint8_t slot = state->currentslot;
+    uint8_t slot_idx = (slot >= 2) ? 1 : slot;
     uint8_t unk = 0; //flag for unknown FLCO + FID combo
 
     pf = (uint8_t)(lc_bits[0]);       //Protect Flag -- Hytera XPT uses this to signify which TS the PDU is on
@@ -567,39 +568,39 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         //its possible that both EMB FID 0x10 FLCO 0x20 and 0x23 are just Moto but non-specific (observed 0x20 on Tier 2)
 
         if (fid == 0x68) {
-            sprintf(state->call_string[slot], " Hytera  ");
+            sprintf(state->call_string[slot_idx], " Hytera  ");
         }
 
         else if (flco == 0x4 || flco == 0x5 || flco == 0x7 || flco == 0x23) //Cap+ Things
         {
-            // sprintf (state->call_string[slot], " Cap+");
-            sprintf(state->call_string[slot], "%s", "");
+            // sprintf (state->call_string[slot_idx], " Cap+");
+            sprintf(state->call_string[slot_idx], "%s", "");
             fprintf(stderr, "Cap+ ");
             if (flco == 0x4) {
-                // strcat (state->call_string[slot], " Grp");
-                sprintf(state->call_string[slot], "   Group ");
+                // strcat (state->call_string[slot_idx], " Grp");
+                sprintf(state->call_string[slot_idx], "   Group ");
                 fprintf(stderr, "Group ");
                 state->gi[slot] = 0;
             } else {
-                // strcat (state->call_string[slot], " Pri");
-                sprintf(state->call_string[slot], " Private ");
+                // strcat (state->call_string[slot_idx], " Pri");
+                sprintf(state->call_string[slot_idx], " Private ");
                 fprintf(stderr, "Private ");
                 state->gi[slot] = 1;
             }
         } else if (flco == 0x3) //UU_V_Ch_Usr
         {
-            sprintf(state->call_string[slot], " Private ");
+            sprintf(state->call_string[slot_idx], " Private ");
             fprintf(stderr, "Private ");
             state->gi[slot] = 1;
         } else //Grp_V_Ch_Usr -- still valid on hytera VLC
         {
-            sprintf(state->call_string[slot], "   Group ");
+            sprintf(state->call_string[slot_idx], "   Group ");
             fprintf(stderr, "Group ");
             state->gi[slot] = 0;
         }
 
         if (so & 0x80) {
-            dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
+            dsd_append(state->call_string[slot_idx], sizeof state->call_string[slot_idx], " Emergency  ");
             fprintf(stderr, "%s", KRED);
             fprintf(stderr, "Emergency ");
         } else {

@@ -100,23 +100,15 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 static int
 extract_last_fields_from_json(const char* buf, int len, int* out_b, int* out_c, int* out_slot, char* out_xch,
                               size_t xch_cap) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
     // Find start of last line
-    const char* end = buf + len;
-    const char* pcur = end;
-    if (pcur > buf) {
-        pcur--; // point to last valid char
+    const char* last_brace = strrchr(buf, '{');
+    if (!last_brace) {
+        return -1;
     }
-    if (pcur >= buf && *pcur == '\n') {
-        if (pcur == buf) {
-            return -1; // empty
-        }
-        pcur--; // skip trailing newline
-    }
-    // Find start of line
-    const char* line = pcur;
-    while (line > buf && *(line - 1) != '\n') {
-        line--;
-    }
+    const char* line = last_brace;
 
     int b = -1, c = -1, s = -1;
     const char* p;
@@ -233,19 +225,22 @@ main(void) {
         return 104;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
     if (!buf) {
         fprintf(stderr, "malloc failed\n");
         fclose(rf);
         return 104;
     }
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
     fclose(rf);
 
     int lenB = -1, lenC = -1, slot = -1;
     char xch[8] = {0};
-    int er = extract_last_fields_from_json(buf, (int)sz, &lenB, &lenC, &slot, xch, sizeof(xch));
+    int er = extract_last_fields_from_json(buf, (int)nread, &lenB, &lenC, &slot, xch, sizeof(xch));
     free(buf);
     if (er != 0) {
         fprintf(stderr, "failed to parse JSON len fields (er=%d)\n", er);

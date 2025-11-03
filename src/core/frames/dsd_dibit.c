@@ -26,7 +26,7 @@
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 static void
-print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2) {
+print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2, int count) {
     int i, j, o;
     char modulation[8];
     int spectrum[64];
@@ -42,8 +42,14 @@ print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2) {
     for (i = 0; i < 64; i++) {
         spectrum[i] = 0;
     }
-    for (i = 0; i < opts->ssize; i++) {
+    for (i = 0; i < count; i++) {
         o = (sbuf2[i] + 32768) / 1024;
+        if (o < 0) {
+            o = 0;
+        }
+        if (o > 63) {
+            o = 63;
+        }
         spectrum[o]++;
     }
     if (state->symbolcnt > (4800 / opts->scoperate)) {
@@ -98,18 +104,29 @@ use_symbol(dsd_opts* opts, dsd_state* state, int symbol) {
     int sbuf2[128];
     int lmin, lmax, lsum;
 
-    for (i = 0; i < opts->ssize; i++) {
+    int cap = opts->ssize;
+    if (cap < 0) {
+        cap = 0;
+    }
+    if (cap > (int)(sizeof(sbuf2) / sizeof(sbuf2[0]))) {
+        cap = (int)(sizeof(sbuf2) / sizeof(sbuf2[0]));
+    }
+    for (i = 0; i < cap; i++) {
         sbuf2[i] = state->sbuf[i];
     }
 
-    qsort(sbuf2, opts->ssize, sizeof(int), comp);
+    qsort(sbuf2, (size_t)cap, sizeof(int), comp);
 
     // Continuous update of min/max
     // - QPSK: always (as before)
     // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
     if (state->rf_mod == 1 || (state->rf_mod == 0 && (state->lastsynctype == 0 || state->lastsynctype == 1))) {
-        lmin = (sbuf2[0] + sbuf2[1]) / 2;
-        lmax = (sbuf2[(opts->ssize - 1)] + sbuf2[(opts->ssize - 2)]) / 2;
+        if (cap >= 2) {
+            lmin = (sbuf2[0] + sbuf2[1]) / 2;
+            lmax = (sbuf2[(cap - 1)] + sbuf2[(cap - 2)]) / 2;
+        } else {
+            lmin = lmax = 0;
+        }
         state->minbuf[state->midx] = lmin;
         state->maxbuf[state->midx] = lmax;
         if (state->midx == (opts->msize - 1)) {
@@ -138,11 +155,13 @@ use_symbol(dsd_opts* opts, dsd_state* state, int symbol) {
     }
 
     // Increase sidx
-    if (state->sidx >= (opts->ssize - 1)) {
+    if (cap <= 0) {
+        // nothing to do
+    } else if (state->sidx >= (cap - 1)) {
         state->sidx = 0;
 
         if (opts->datascope == 1) {
-            print_datascope(opts, state, sbuf2);
+            print_datascope(opts, state, sbuf2, cap);
         }
     } else {
         state->sidx++;

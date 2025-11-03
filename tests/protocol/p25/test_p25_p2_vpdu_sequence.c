@@ -154,13 +154,16 @@ main(void) {
         return 103;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
     if (!buf) {
         fclose(rf);
         return 103;
     }
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
     fclose(rf);
 
     // Order check: first occurrence indices must be increasing

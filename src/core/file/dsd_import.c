@@ -282,12 +282,23 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
             LOG_INFO("Key [%04llX] [out-of-range]", keynumber);
         }
 
-        //if longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset, then print the full key listing)
-        if ((keynumber + 0x301) < 0x1FFFF) {
-            if ((state->rkey_array[keynumber + 0x101] != 0) || (state->rkey_array[keynumber + 0x201] != 0)
-                || (state->rkey_array[keynumber + 0x301] != 0)) {
-                LOG_INFO(" [%016llX] [%016llX] [%016llX]", state->rkey_array[keynumber + 0x101],
-                         state->rkey_array[keynumber + 0x201], state->rkey_array[keynumber + 0x301]);
+        // If longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset), then print the full key listing.
+        if (keynumber < 0x1FFFFULL) {
+            unsigned long long out1 = 0, out2 = 0, out3 = 0;
+            unsigned long long idx1 = keynumber + 0x101ULL;
+            unsigned long long idx2 = keynumber + 0x201ULL;
+            unsigned long long idx3 = keynumber + 0x301ULL;
+            if (idx1 < 0x1FFFFULL) {
+                out1 = state->rkey_array[idx1];
+            }
+            if (idx2 < 0x1FFFFULL) {
+                out2 = state->rkey_array[idx2];
+            }
+            if (idx3 < 0x1FFFFULL) {
+                out3 = state->rkey_array[idx3];
+            }
+            if (out1 != 0 || out2 != 0 || out3 != 0) {
+                LOG_INFO(" [%016llX] [%016llX] [%016llX]", out1, out2, out3);
             }
         }
         LOG_INFO("\n");

@@ -529,10 +529,12 @@ process_4V(dsd_opts* opts, dsd_state* state) {
             t++;
         }
 
-        ambe_fr1[*w][b] = p2xbit[x + 2 + vc_counter];
-        ambe_fr2[*w][b] = p2xbit[x + 76 + vc_counter];
-        ambe_fr3[*w][b] = p2xbit[x + 172 + vc_counter];
-        ambe_fr4[*w][b] = p2xbit[x + 246 + vc_counter];
+        if (*w >= 0 && *w < 4 && b >= 0 && b < 24) {
+            ambe_fr1[*w][b] = p2xbit[x + 2 + vc_counter];
+            ambe_fr2[*w][b] = p2xbit[x + 76 + vc_counter];
+            ambe_fr3[*w][b] = p2xbit[x + 172 + vc_counter];
+            ambe_fr4[*w][b] = p2xbit[x + 246 + vc_counter];
+        }
         w++;
     }
 
@@ -1037,8 +1039,10 @@ process_2V(dsd_opts* opts, dsd_state* state) {
             t++;
         }
 
-        ambe_fr1[*w][b] = p2xbit[x + 2 + vc_counter];
-        ambe_fr2[*w][b] = p2xbit[x + 76 + vc_counter];
+        if (*w >= 0 && *w < 4 && b >= 0 && b < 24) {
+            ambe_fr1[*w][b] = p2xbit[x + 2 + vc_counter];
+            ambe_fr2[*w][b] = p2xbit[x + 76 + vc_counter];
+        }
         w++;
     }
 

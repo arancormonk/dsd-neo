@@ -100,12 +100,12 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 static int
 extract_last_lenB(const char* buf, int len) {
-    // Find last JSON object by scanning backwards for '{'
-    const char* p = buf + len;
-    while (p > buf && *p != '{') {
-        p--;
+    if (!buf || len <= 0) {
+        return -1;
     }
-    if (p == buf && *p != '{') {
+    // Find last JSON object by scanning backwards for '{'
+    const char* p = strrchr(buf, '{');
+    if (!p) {
         return -1;
     }
     int b = -1;
@@ -162,16 +162,19 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
         return 102;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
     if (!buf) {
         fclose(rf);
         return 103;
     }
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
     fclose(rf);
 
-    int lenB = extract_last_lenB(buf, (int)sz);
+    int lenB = extract_last_lenB(buf, (int)nread);
     free(buf);
     if (lenB < 0) {
         fprintf(stderr, "failed to parse lenB (er=%d)\n", lenB);

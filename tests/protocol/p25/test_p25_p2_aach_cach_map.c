@@ -97,19 +97,16 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 static int
 extract_fields(const char* buf, int len, char* out_xch, size_t xch_cap, int* out_slot) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
     // Scan backward to find the last JSON line (contains '"xch"')
-    const char* p = buf + len;
+    // Find the last occurrence of '"xch"' anywhere in the buffer
     const char* line_start = NULL;
-    while (p > buf) {
-        const char* q = p - 1;
-        while (q > buf && *(q - 1) != '\n') {
-            q--;
-        }
-        if (q < p && strstr(q, "\"xch\"")) {
-            line_start = q;
-            break;
-        }
-        p = q;
+    const char* cur = buf;
+    while ((cur = strstr(cur, "\"xch\"")) != NULL) {
+        line_start = cur;
+        cur++; // advance to find last occurrence
     }
     if (!line_start) {
         return -1;
@@ -198,18 +195,21 @@ run_case(int type, int is_lcch, int currentslot, const char* want_xch) {
         return 103;
     }
     fseek(rf, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz + 1);
+    size_t alloc = (size_t)sz + 1;
+    char* buf = (char*)calloc(alloc, 1);
     if (!buf) {
         fclose(rf);
         return 103;
     }
-    fread(buf, 1, (size_t)sz, rf);
-    buf[sz] = '\0';
+    size_t nread = fread(buf, 1, alloc - 1, rf);
+    if (nread >= alloc) {
+        nread = alloc - 1;
+    }
     fclose(rf);
 
     char xch[12] = {0};
     int slot = -1;
-    extract_fields(buf, (int)sz, xch, sizeof(xch), &slot);
+    extract_fields(buf, (int)nread, xch, sizeof(xch), &slot);
     free(buf);
 
     int rc = 0;

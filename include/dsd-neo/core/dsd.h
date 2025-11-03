@@ -1479,7 +1479,9 @@ int pa_get_devicelist(pa_devicelist_t* input, pa_devicelist_t* output);
 int pulse_list();
 
 //parse a user string into a uint8_t array
-uint16_t parse_raw_user_string(char* input, uint8_t* output);
+// Parse a hex string into octets with bounds checking.
+// Returns number of octets written to `output` (<= out_cap).
+uint16_t parse_raw_user_string(char* input, uint8_t* output, size_t out_cap);
 
 int getDibit(dsd_opts* opts, dsd_state* state);
 int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);

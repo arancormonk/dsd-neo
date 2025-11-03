@@ -94,7 +94,7 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
 
     uint8_t ks_bytes[112];
     memset(ks_bytes, 0, sizeof(ks_bytes));
-    parse_raw_user_string(curr, ks_bytes);
+    parse_raw_user_string(curr, ks_bytes, sizeof(ks_bytes));
 
     uint8_t ks_bits[896];
     memset(ks_bits, 0, sizeof(ks_bits));

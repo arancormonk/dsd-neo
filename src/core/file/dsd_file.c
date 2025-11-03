@@ -858,49 +858,66 @@ reverse_lfsr_64_to_len(dsd_opts* opts, uint8_t* iv, int16_t len) {
 
 //convert a user string into a uint8_t array
 uint16_t
-parse_raw_user_string(char* input, uint8_t* output) {
-    //since we want this as octets, get strlen value, then divide by two
-    uint16_t len = strlen((const char*)input);
-
-    uint8_t shift = 0;
-
-    //if zero is returned, just do two
-    // if (len == 0) len = 2;
-
-    //if zero, return as 0 len string
-    if (len == 0) {
+parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
+    if (!input || !output || out_cap == 0) {
         return 0;
     }
 
-    //if odd number, then user didn't pass complete octets,
-    //add one to len value and set the shift flag to left shift
-    if (len & 1) {
-        shift = 1;
-        len++;
+    // Since we want this as octets, get strlen value, then divide by two
+    size_t in_len = strlen((const char*)input);
+    if (in_len == 0) {
+        return 0;
     }
 
-    //divide by two to get octet len
-    len /= 2;
+    // If odd number of nibbles, we will logically pad one nibble (shift last)
+    int shift = 0;
+    if (in_len & 1U) {
+        shift = 1;
+        in_len++; // treat as if one extra nibble was provided
+    }
+
+    // Number of octets we intend to produce from input
+    size_t want_octets = in_len / 2U;
+    // Respect the capacity of the output buffer
+    size_t max_octets = out_cap;
+    if (want_octets > max_octets) {
+        want_octets = max_octets;
+        // If truncating, do not attempt to left-shift any octet beyond bounds
+        if (shift && want_octets == 0) {
+            shift = 0;
+        }
+    }
 
     char octet_char[3];
-    octet_char[2] = 0;
-    uint16_t k = 0;
-    uint16_t i = 0;
+    octet_char[2] = '\0';
+    size_t k = 0; // input nibble offset
 
-    for (i = 0; i < len; i++) {
-        strncpy(octet_char, input + k, 2);
-        octet_char[2] = 0;
-        sscanf(octet_char, "%hhX", &output[i]);
-
+    for (size_t i = 0; i < want_octets; i++) {
+        // Copy up to two hex chars (nibbles); guard against reading past input
+        octet_char[0] = '\0';
+        octet_char[1] = '\0';
+        for (int c = 0; c < 2; c++) {
+            size_t pos = k + (size_t)c;
+            if (pos < strlen(input)) {
+                octet_char[c] = input[pos];
+            } else {
+                // logical pad with zero if input ended (only possible on odd nibble)
+                octet_char[c] = '0';
+            }
+        }
+        // Parse two nibbles into a byte
+        unsigned int val = 0;
+        (void)sscanf(octet_char, "%2X", &val);
+        output[i] = (uint8_t)val;
         k += 2;
     }
 
-    //if we had an odd input value, then left shift the last octet 4 to make it flush
-    if (shift) {
-        output[len - 1] <<= 4;
+    // If we had an odd input nibble count, left shift the last written octet
+    if (shift && want_octets > 0) {
+        output[want_octets - 1] <<= 4;
     }
 
-    return len;
+    return (uint16_t)want_octets;
 }
 
 uint16_t
@@ -1431,7 +1448,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
                 kiv[4] = ((state->R & 0xFF) >> 0);
 
                 //load the str_buffer into the IV portion of kiv
-                parse_raw_user_string(str_buffer, kiv + 5);
+                // KIV is 15 bytes; IV occupies bytes [5..14] → capacity 10
+                parse_raw_user_string(str_buffer, kiv + 5, sizeof(kiv) - 5);
 
                 rc4_block_output(rc4_db, rc4_mod, 200, kiv, ks_bytes);
 

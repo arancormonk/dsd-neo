@@ -214,9 +214,12 @@ main(void) {
             return 24;
         }
         fseek(rf, 0, SEEK_SET);
-        char* buf = (char*)malloc((size_t)sz + 1);
-        fread(buf, 1, (size_t)sz, rf);
-        buf[sz] = '\0';
+        size_t alloc = (size_t)sz + 1;
+        char* buf = (char*)calloc(alloc, 1);
+        size_t nread = fread(buf, 1, alloc - 1, rf);
+        if (nread >= alloc) {
+            nread = alloc - 1;
+        }
         fclose(rf);
         const char* line = strrchr(buf, '{');
         if (!line) {
@@ -259,9 +262,12 @@ main(void) {
             return 34;
         }
         fseek(rf, 0, SEEK_SET);
-        char* buf = (char*)malloc((size_t)sz + 1);
-        fread(buf, 1, (size_t)sz, rf);
-        buf[sz] = '\0';
+        size_t alloc2 = (size_t)sz + 1;
+        char* buf = (char*)calloc(alloc2, 1);
+        size_t nread2 = fread(buf, 1, alloc2 - 1, rf);
+        if (nread2 >= alloc2) {
+            nread2 = alloc2 - 1;
+        }
         fclose(rf);
         const char* line = strrchr(buf, '{');
         if (!line) {

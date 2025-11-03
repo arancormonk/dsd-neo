@@ -293,6 +293,9 @@ encode_bch()
     register int i, j;
     register int feedback;
 
+    if (k <= 0 || length <= k) {
+        return; // invalid parameters; avoid out-of-bounds when indexing bb[length-k-1]
+    }
     for (i = 0; i < length - k; i++) {
         bb[i] = 0;
     }

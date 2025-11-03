@@ -402,9 +402,12 @@ pc4encrypt(PC4Context* ctx) {
         ctx->r[i % 2][2] = ctx->l[(i - 1) % 2][2] - ctx->tot[2];
     }
 
-    for (i = 0; i < 3; i++) {
-        ctx->convert[i + 3] = ctx->l[(ctx->rounds - 1) % 2][i];
-        ctx->convert[i] = ctx->r[(ctx->rounds - 1) % 2][i];
+    {
+        uint8_t prev = (ctx->rounds > 0) ? (uint8_t)((ctx->rounds - 1) % 2) : 0;
+        for (i = 0; i < 3; i++) {
+            ctx->convert[i + 3] = ctx->l[prev][i];
+            ctx->convert[i] = ctx->r[prev][i];
+        }
     }
 
     ctx->totb %= 2;
@@ -472,9 +475,12 @@ pc4decrypt(PC4Context* ctx) {
         ctx->r[i % 2][2] = ctx->l[(i - 1) % 2][2] + ctx->tot[2];
     }
 
-    for (i = 0; i < 3; i++) {
-        ctx->convert[i + 3] = ctx->l[(ctx->rounds - 1) % 2][i];
-        ctx->convert[i] = ctx->r[(ctx->rounds - 1) % 2][i];
+    {
+        uint8_t prev = (ctx->rounds > 0) ? (uint8_t)((ctx->rounds - 1) % 2) : 0;
+        for (i = 0; i < 3; i++) {
+            ctx->convert[i + 3] = ctx->l[prev][i];
+            ctx->convert[i] = ctx->r[prev][i];
+        }
     }
 
     ctx->totb %= 2;

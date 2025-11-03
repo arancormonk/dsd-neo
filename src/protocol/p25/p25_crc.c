@@ -35,9 +35,12 @@ ComputeCrcCCITT16b(const uint8_t buf[], unsigned int len) {
 
 //modified from crc12_ok to run a quickie on 16 instead
 static uint16_t
-crc16_ok(const uint8_t bits[], unsigned int len) {
+crc16_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t crc = 0;
     // fprintf (stderr, "\n  LEN = %d", len);
+    if ((unsigned int)16 > cap || len > cap || (len + 16) > cap) {
+        return (uint16_t)-1;
+    }
     for (int i = 0; i < 16; i++) {
         crc = crc << 1;
         crc = crc | bits[i + len];
@@ -70,7 +73,7 @@ crc16_lb_bridge(const int* payload, int len) {
     for (int i = 0; i < total; i++) {
         buf[i] = (uint8_t)payload[i];
     }
-    err = crc16_ok(buf, len);
+    err = crc16_ok(buf, (unsigned int)len, (unsigned int)sizeof buf);
     return (err);
 }
 
@@ -105,8 +108,11 @@ crc12(const uint8_t bits[], unsigned int len) {
 
 //borrowing crc12_ok from OP25
 static uint16_t
-crc12_ok(const uint8_t bits[], unsigned int len) {
+crc12_ok(const uint8_t bits[], unsigned int len, unsigned int cap) {
     uint16_t crc = 0;
+    if ((unsigned int)12 > cap || len > cap || (len + 12) > cap) {
+        return (uint16_t)-1;
+    }
     for (int i = 0; i < 12; i++) {
         crc = crc << 1;
         crc = crc | bits[i + len];
@@ -139,7 +145,7 @@ crc12_xb_bridge(const int* payload, int len) {
     for (int i = 0; i < total; i++) {
         buf[i] = (uint8_t)payload[i];
     }
-    err = crc12_ok(buf, len);
+    err = crc12_ok(buf, (unsigned int)len, (unsigned int)sizeof buf);
     return (err);
 }
 

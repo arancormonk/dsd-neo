@@ -300,7 +300,10 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         memset(state->ysf_txt, 0, sizeof(state->ysf_txt));
         memset(state->dstar_gps, 0, sizeof(state->dstar_gps));
         memset(state->dstar_txt, 0, sizeof(state->dstar_txt));
-        state->gi[slot] = -1; //return to an unset value
+        {
+            uint8_t slot_idx = (slot >= 2) ? 1 : slot;
+            state->gi[slot_idx] = -1; //return to an unset value
+        }
 
         //end of voice call alert
         if (opts->call_alert == 1) {

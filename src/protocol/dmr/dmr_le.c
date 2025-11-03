@@ -15,6 +15,7 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
                            uint8_t ambe_fr2[4][24], uint8_t ambe_fr3[4][24]) {
 
     uint8_t slot = state->currentslot;
+    uint8_t slot_idx = (slot >= 2) ? 1 : slot;
 
     //enforce RC4 due to missing PI header, but with valid SVC Opts
     //ideally, this would be handled by VC-F single burst, but its not fully reliable compared to this
@@ -31,9 +32,11 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
     }
 
     //collect our fragments and place them into storage
-    state->late_entry_mi_fragment[slot][vc][0] = (uint64_t)ConvertBitIntoBytes(&ambe_fr[3][0], 4);
-    state->late_entry_mi_fragment[slot][vc][1] = (uint64_t)ConvertBitIntoBytes(&ambe_fr2[3][0], 4);
-    state->late_entry_mi_fragment[slot][vc][2] = (uint64_t)ConvertBitIntoBytes(&ambe_fr3[3][0], 4);
+    if (vc < 8) {
+        state->late_entry_mi_fragment[slot_idx][vc][0] = (uint64_t)ConvertBitIntoBytes(&ambe_fr[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][1] = (uint64_t)ConvertBitIntoBytes(&ambe_fr2[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][2] = (uint64_t)ConvertBitIntoBytes(&ambe_fr3[3][0], 4);
+    }
 
     if (vc == 6) {
         dmr_late_entry_mi(opts, state);
@@ -273,6 +276,7 @@ void
 dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
     int i;
     uint8_t slot = state->currentslot;
+    uint8_t slot_idx = (slot >= 2) ? 1 : slot;
     uint8_t sbrc_interleaved[32];
     uint8_t sbrc_return[32];
     uint8_t sbrc_retcrc[32]; //crc significant bits of the return for SB
@@ -304,7 +308,7 @@ dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
     // 1 - The embedded signalling carries RC information associated to the other logical channel
 
     for (i = 0; i < 32; i++) {
-        sbrc_interleaved[i] = state->dmr_embedded_signalling[slot][5][i + 8];
+        sbrc_interleaved[i] = state->dmr_embedded_signalling[slot_idx][5][i + 8];
     }
     //power == 0 should be single burst
     if (power == 0) {

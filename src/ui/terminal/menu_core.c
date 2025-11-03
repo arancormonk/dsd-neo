@@ -226,6 +226,15 @@ static UiPrompt g_prompt = {0};
 
 static void
 ui_prompt_close_all(void) {
+    // If an active prompt is being closed without an explicit completion,
+    // signal a cancel to allow user context cleanup.
+    if (g_prompt.active && g_prompt.on_done_str) {
+        void (*cb)(void*, const char*) = g_prompt.on_done_str;
+        void* up = g_prompt.user;
+        g_prompt.on_done_str = NULL; // prevent double-callback
+        cb(up, NULL);
+    }
+
     if (g_prompt.win) {
         delwin(g_prompt.win);
         g_prompt.win = NULL;
@@ -251,6 +260,14 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
     g_prompt.buf = (char*)calloc(cap, 1);
     g_prompt.cap = cap;
     g_prompt.len = 0;
+    if (!g_prompt.buf) {
+        // Allocation failed: immediately signal cancel to ensure user context can be freed.
+        if (on_done) {
+            on_done(user, NULL);
+        }
+        g_prompt.active = 0;
+        return;
+    }
     if (prefill && *prefill) {
         strncpy(g_prompt.buf, prefill, cap - 1);
         g_prompt.buf[cap - 1] = '\0';
@@ -353,25 +370,9 @@ ui_prompt_open_double_async(const char* title, double initial, void (*cb)(void* 
 // ---- Async prompt action callbacks and contexts ----
 typedef struct {
     UiCtx* c;
-} GainDigCtx;
-
-typedef struct {
-    UiCtx* c;
-} GainAnaCtx;
-
-typedef struct {
-    UiCtx* c;
-} InputVolCtx;
-
-typedef struct {
-    UiCtx* c;
     char host[256];
     int port;
 } UdpOutCtx;
-
-typedef struct {
-    UiCtx* c;
-} RtlCtx;
 
 typedef struct {
     UiCtx* c;
@@ -899,8 +900,8 @@ cb_udp_out_host(void* u, const char* host) {
 // Gain setters
 static void
 cb_gain_dig(void* u, int ok, double g) {
-    GainDigCtx* ctx = (GainDigCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
@@ -910,17 +911,16 @@ cb_gain_dig(void* u, int ok, double g) {
         if (g > 50.0) {
             g = 50.0;
         }
-        ctx->c->opts->audio_gain = (float)g;
-        ctx->c->opts->audio_gainR = (float)g;
+        c->opts->audio_gain = (float)g;
+        c->opts->audio_gainR = (float)g;
         ui_statusf("Digital gain set to %.1f", g);
     }
-    free(ctx);
 }
 
 static void
 cb_gain_ana(void* u, int ok, double g) {
-    GainAnaCtx* ctx = (GainAnaCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
@@ -930,16 +930,15 @@ cb_gain_ana(void* u, int ok, double g) {
         if (g > 100.0) {
             g = 100.0;
         }
-        ctx->c->opts->audio_gainA = (float)g;
+        c->opts->audio_gainA = (float)g;
         ui_statusf("Analog gain set to %.1f", g);
     }
-    free(ctx);
 }
 
 static void
 cb_input_vol(void* u, int ok, int m) {
-    InputVolCtx* ctx = (InputVolCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
@@ -949,95 +948,87 @@ cb_input_vol(void* u, int ok, int m) {
         if (m > 16) {
             m = 16;
         }
-        ctx->c->opts->input_volume_multiplier = m;
+        c->opts->input_volume_multiplier = m;
         ui_statusf("Input Volume set to %dX", m);
     }
-    free(ctx);
 }
 
 // RTL typed callbacks reuse RtlCtx with specific one-offs
 static void
 cb_rtl_dev(void* u, int ok, int i) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_dev_index(ctx->c->opts, i);
+        svc_rtl_set_dev_index(c->opts, i);
     }
-    free(ctx);
 }
 
 static void
 cb_rtl_freq(void* u, int ok, int f) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_freq(ctx->c->opts, (uint32_t)f);
+        svc_rtl_set_freq(c->opts, (uint32_t)f);
     }
-    free(ctx);
 }
 
 static void
 cb_rtl_gain(void* u, int ok, int g) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_gain(ctx->c->opts, g);
+        svc_rtl_set_gain(c->opts, g);
     }
-    free(ctx);
 }
 
 static void
 cb_rtl_ppm(void* u, int ok, int p) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_ppm(ctx->c->opts, p);
+        svc_rtl_set_ppm(c->opts, p);
     }
-    free(ctx);
 }
 
 static void
 cb_rtl_bw(void* u, int ok, int bw) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_bandwidth(ctx->c->opts, bw);
+        svc_rtl_set_bandwidth(c->opts, bw);
     }
-    free(ctx);
 }
 
 static void
 cb_rtl_sql(void* u, int ok, double dB) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_sql_db(ctx->c->opts, dB);
+        svc_rtl_set_sql_db(c->opts, dB);
     }
-    free(ctx);
 }
 
 static void
 cb_rtl_vol(void* u, int ok, int m) {
-    RtlCtx* ctx = (RtlCtx*)u;
-    if (!ctx) {
+    UiCtx* c = (UiCtx*)u;
+    if (!c) {
         return;
     }
     if (ok) {
-        svc_rtl_set_volume_mult(ctx->c->opts, m);
+        svc_rtl_set_volume_mult(c->opts, m);
     }
-    free(ctx);
 }
 
 // WAV/SYM
@@ -1341,6 +1332,24 @@ ui_overlay_ensure_window(UiMenuFrame* f) {
     }
 }
 
+// If the desired geometry for the current frame has changed since the window
+// was created, drop and recreate it on the next ensure pass. This allows the
+// nonblocking menu to grow/shrink immediately when item visibility flips.
+static void
+ui_overlay_recreate_if_needed(UiMenuFrame* f) {
+    if (!f || !f->win) {
+        return;
+    }
+    int cur_h = 0, cur_w = 0;
+    int cur_y = 0, cur_x = 0;
+    getmaxyx(f->win, cur_h, cur_w);
+    getbegyx(f->win, cur_y, cur_x);
+    if (cur_h != f->h || cur_w != f->w || cur_y != f->y || cur_x != f->x) {
+        delwin(f->win);
+        f->win = NULL;
+    }
+}
+
 // Forward declare a helper that exposes main menu items for async open
 void ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx);
 
@@ -1405,7 +1414,10 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
         }
         if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q') {
             if (g_prompt.on_done_str) {
-                g_prompt.on_done_str(g_prompt.user, NULL);
+                void (*cb)(void*, const char*) = g_prompt.on_done_str;
+                void* up = g_prompt.user;
+                g_prompt.on_done_str = NULL; // prevent close_all() from calling again
+                cb(up, NULL);
             }
             ui_prompt_close_all();
             return 1;
@@ -1418,10 +1430,13 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
         }
         if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
             if (g_prompt.on_done_str) {
+                void (*cb)(void*, const char*) = g_prompt.on_done_str;
+                void* up = g_prompt.user;
+                g_prompt.on_done_str = NULL; // prevent close_all() from calling again
                 if (g_prompt.len == 0) {
-                    g_prompt.on_done_str(g_prompt.user, NULL);
+                    cb(up, NULL);
                 } else {
-                    g_prompt.on_done_str(g_prompt.user, g_prompt.buf);
+                    cb(up, g_prompt.buf);
                 }
             }
             ui_prompt_close_all();
@@ -1554,6 +1569,14 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
                 ui_overlay_close_all();
                 return 1;
             }
+            // After a toggle or action, visible items may have changed.
+            // Ensure the highlight points at a visible item and recompute size.
+            UiMenuFrame* cf = &g_stack[g_depth - 1];
+            if (!ui_is_enabled(&cf->items[cf->hi], &g_ctx_overlay)) {
+                cf->hi = ui_next_enabled(cf->items, cf->n, &g_ctx_overlay, cf->hi, +1);
+            }
+            ui_overlay_layout(cf, &g_ctx_overlay);
+            ui_overlay_recreate_if_needed(cf);
         }
         if (!it->on_select && (!it->submenu || it->submenu_len == 0) && it->help && *it->help) {
             ui_help_open(it->help);
@@ -1702,6 +1725,7 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     UiMenuFrame* f = &g_stack[g_depth - 1];
     // Ensure window exists with up-to-date geometry
     ui_overlay_layout(f, &g_ctx_overlay);
+    ui_overlay_recreate_if_needed(f);
     ui_overlay_ensure_window(f);
     ui_draw_menu(f->win, f->items, f->n, f->hi, &g_ctx_overlay);
 }
@@ -2092,23 +2116,13 @@ switch_out_toggle_mute(void* vctx) {
 static void
 io_set_gain_dig(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    GainDigCtx* u = (GainDigCtx*)calloc(1, sizeof(GainDigCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_double_async("Digital output gain (0=auto; 1..50)", c->opts->audio_gain, cb_gain_dig, u);
+    ui_prompt_open_double_async("Digital output gain (0=auto; 1..50)", c->opts->audio_gain, cb_gain_dig, c);
 }
 
 static void
 io_set_gain_ana(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    GainAnaCtx* u = (GainAnaCtx*)calloc(1, sizeof(GainAnaCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_double_async("Analog output gain (0..100)", c->opts->audio_gainA, cb_gain_ana, u);
+    ui_prompt_open_double_async("Analog output gain (0..100)", c->opts->audio_gainA, cb_gain_ana, c);
 }
 
 static void
@@ -2133,12 +2147,7 @@ io_set_input_volume(void* vctx) {
     if (m > 16) {
         m = 16;
     }
-    InputVolCtx* u = (InputVolCtx*)calloc(1, sizeof(InputVolCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("Input Volume Multiplier (1..16)", m, cb_input_vol, u);
+    ui_prompt_open_int_async("Input Volume Multiplier (1..16)", m, cb_input_vol, c);
 }
 
 static void
@@ -2253,78 +2262,43 @@ rtl_restart(void* v) {
 static void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("Device index", c->opts->rtl_dev_index, cb_rtl_dev, u);
+    ui_prompt_open_int_async("Device index", c->opts->rtl_dev_index, cb_rtl_dev, c);
 }
 
 static void
 rtl_set_freq(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("Frequency (Hz)", (int)c->opts->rtlsdr_center_freq, cb_rtl_freq, u);
+    ui_prompt_open_int_async("Frequency (Hz)", (int)c->opts->rtlsdr_center_freq, cb_rtl_freq, c);
 }
 
 static void
 rtl_set_gain(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("Gain (0=AGC, 0..49)", c->opts->rtl_gain_value, cb_rtl_gain, u);
+    ui_prompt_open_int_async("Gain (0=AGC, 0..49)", c->opts->rtl_gain_value, cb_rtl_gain, c);
 }
 
 static void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("PPM error (-200..200)", c->opts->rtlsdr_ppm_error, cb_rtl_ppm, u);
+    ui_prompt_open_int_async("PPM error (-200..200)", c->opts->rtlsdr_ppm_error, cb_rtl_ppm, c);
 }
 
 static void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("Bandwidth kHz (4,6,8,12,16,24)", c->opts->rtl_bandwidth, cb_rtl_bw, u);
+    ui_prompt_open_int_async("Bandwidth kHz (4,6,8,12,16,24)", c->opts->rtl_bandwidth, cb_rtl_bw, c);
 }
 
 static void
 rtl_set_sql(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_double_async("Squelch (dB, negative)", pwr_to_dB(c->opts->rtl_squelch_level), cb_rtl_sql, u);
+    ui_prompt_open_double_async("Squelch (dB, negative)", pwr_to_dB(c->opts->rtl_squelch_level), cb_rtl_sql, c);
 }
 
 static void
 rtl_set_vol(void* v) {
     UiCtx* c = (UiCtx*)v;
-    RtlCtx* u = (RtlCtx*)calloc(1, sizeof(RtlCtx));
-    if (!u) {
-        return;
-    }
-    u->c = c;
-    ui_prompt_open_int_async("Volume multiplier (0..3)", c->opts->rtl_volume_multiplier, cb_rtl_vol, u);
+    ui_prompt_open_int_async("Volume multiplier (0..3)", c->opts->rtl_volume_multiplier, cb_rtl_vol, c);
 }
 
 static void
