@@ -1487,6 +1487,12 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
     if (!dev) {
         return -1;
     }
+    /* Avoid redundant writes: if requested PPM equals current cached value,
+       skip making a driver call. This prevents a spurious warning on startup
+       when no PPM is provided (defaults to 0) or when re-applying zero. */
+    if (ppm_error == dev->ppm_error) {
+        return 0;
+    }
     dev->ppm_error = ppm_error;
     if (dev->backend == 0) {
         if (!dev->dev) {
