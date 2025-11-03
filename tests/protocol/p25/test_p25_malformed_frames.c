@@ -216,10 +216,7 @@ main(void) {
         fseek(rf, 0, SEEK_SET);
         size_t alloc = (size_t)sz + 1;
         char* buf = (char*)calloc(alloc, 1);
-        size_t nread = fread(buf, 1, alloc - 1, rf);
-        if (nread >= alloc) {
-            nread = alloc - 1;
-        }
+        (void)fread(buf, 1, alloc - 1, rf);
         fclose(rf);
         const char* line = strrchr(buf, '{');
         if (!line) {
@@ -264,10 +261,7 @@ main(void) {
         fseek(rf, 0, SEEK_SET);
         size_t alloc2 = (size_t)sz + 1;
         char* buf = (char*)calloc(alloc2, 1);
-        size_t nread2 = fread(buf, 1, alloc2 - 1, rf);
-        if (nread2 >= alloc2) {
-            nread2 = alloc2 - 1;
-        }
+        (void)fread(buf, 1, alloc2 - 1, rf);
         fclose(rf);
         const char* line = strrchr(buf, '{');
         if (!line) {

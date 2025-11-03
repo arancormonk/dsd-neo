@@ -219,10 +219,7 @@ main(void) {
         fclose(rf);
         return 104;
     }
-    size_t nread = fread(buf, 1, alloc - 1, rf);
-    if (nread >= alloc) {
-        nread = alloc - 1;
-    }
+    (void)fread(buf, 1, alloc - 1, rf);
     fclose(rf);
 
     // Clamp expectations: cc should remain 0 (no retune), and diagnostic text present

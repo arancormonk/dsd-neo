@@ -160,10 +160,7 @@ main(void) {
         fclose(rf);
         return 103;
     }
-    size_t nread = fread(buf, 1, alloc - 1, rf);
-    if (nread >= alloc) {
-        nread = alloc - 1;
-    }
+    (void)fread(buf, 1, alloc - 1, rf);
     fclose(rf);
 
     // Order check: first occurrence indices must be increasing
