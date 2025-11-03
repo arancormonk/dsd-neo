@@ -886,7 +886,8 @@ svc_rtl_enable_input(dsd_opts* opts) {
         return -1;
     }
     opts->audio_in_type = 3;
-    return 0;
+    /* Ensure an RTL stream is ready immediately when switching inputs. */
+    return svc_rtl_restart(opts);
 }
 
 int
@@ -894,15 +895,29 @@ svc_rtl_restart(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    /* Mark that a full restart is required. If a context exists, drop it now
-       so a fresh one will be created on next activation. */
-    opts->rtl_needs_restart = 1;
+    /* Stop and destroy any existing stream context. */
     if (g_rtl_ctx) {
         rtl_stream_soft_stop(g_rtl_ctx);
         rtl_stream_destroy(g_rtl_ctx);
         g_rtl_ctx = NULL;
     }
     opts->rtl_started = 0;
+    opts->rtl_needs_restart = 0;
+
+    /* If RTL-SDR is the active input, immediately recreate and start the stream
+       so changes take effect as soon as the user confirms the setting. */
+    if (opts->audio_in_type == 3) {
+        if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
+            return -1;
+        }
+        if (rtl_stream_start(g_rtl_ctx) < 0) {
+            rtl_stream_destroy(g_rtl_ctx);
+            g_rtl_ctx = NULL;
+            return -1;
+        }
+        opts->rtl_started = 1;
+        opts->rtl_needs_restart = 0;
+    }
     return 0;
 }
 
@@ -917,6 +932,9 @@ svc_rtl_set_dev_index(dsd_opts* opts, int index) {
     opts->rtl_dev_index = index;
     /* Changing device requires reopen */
     opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(opts);
+    }
     return 0;
 }
 
@@ -946,6 +964,9 @@ svc_rtl_set_gain(dsd_opts* opts, int value) {
     opts->rtl_gain_value = value;
     /* Manual gain change requires reopen to apply */
     opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(opts);
+    }
     return 0;
 }
 
@@ -975,6 +996,9 @@ svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
     opts->rtl_bandwidth = khz;
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(opts);
+    }
     return 0;
 }
 
