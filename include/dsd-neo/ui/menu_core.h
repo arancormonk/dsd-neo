@@ -30,34 +30,12 @@ struct NcMenuItem {
     size_t submenu_len;        // length of submenu
 };
 
-// Run a simple vertical menu within the current ncurses screen.
-// Returns when an item without a submenu finishes its action, or the user presses 'q'.
-// If an item has a submenu, it is invoked recursively.
-void ui_menu_run(const NcMenuItem* items, size_t n_items, void* ctx);
-
 // Transient status footer (small one-line messages)
 // Shows for a short time at the bottom of the menu window.
 void ui_statusf(const char* fmt, ...);
 
 // Legacy blocking prompt helpers have been removed in favor of
 // nonblocking overlay prompts managed internally by the UI menu engine.
-
-// IO submenu entry point using the core framework
-void ui_menu_io_options(dsd_opts* opts, dsd_state* state);
-// Additional grouped submenus
-void ui_menu_logging_capture(dsd_opts* opts, dsd_state* state);
-void ui_menu_trunking_control(dsd_opts* opts, dsd_state* state);
-void ui_menu_keys_security(dsd_opts* opts, dsd_state* state);
-
-// DSP submenu for RTL-SDR builds
-void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state);
-
-// Key Entry and LRRP menus
-void ui_menu_key_entry(dsd_opts* opts, dsd_state* state);
-void ui_menu_lrrp_options(dsd_opts* opts, dsd_state* state);
-
-// Top-level Main Menu
-void ui_menu_main(dsd_opts* opts, dsd_state* state);
 
 // Nonblocking menu overlay API
 // Open the main menu as a nonblocking overlay. Subsequent draws happen via ui_menu_tick,

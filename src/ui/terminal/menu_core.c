@@ -79,8 +79,7 @@ typedef struct {
     dsd_state* state;
 } UiCtx;
 
-// Forward decl for help overlay used by async handler
-static void ui_show_help(const NcMenuItem* it);
+// Help overlay handled via nonblocking ui_help_open/ui_help_close
 
 // forward declarations for actions referenced from multiple menus
 static void act_toggle_invert(void* v);
@@ -122,7 +121,7 @@ static void act_ken_scr(void* v);
 static void act_anytone_bp(void* v);
 static void act_xor_ks(void* v);
 #ifdef USE_RTLSDR
-static void act_rtl_opts(void* v);
+/* removed: act_rtl_opts */
 /* Blanker UI helpers */
 static const char* lbl_blanker(void* v, char* b, size_t n);
 static const char* lbl_blanker_thr(void* v, char* b, size_t n);
@@ -1711,264 +1710,7 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     ui_draw_menu(f->win, f->items, f->n, f->hi, &g_ctx_overlay);
 }
 
-static void
-ui_show_help(const NcMenuItem* it) {
-    const char* help = it->help;
-    if (!help || !*help) {
-        return;
-    }
-    int h = 8;
-    int w = (int)(strlen(help) + 6);
-    if (w < 40) {
-        w = 40;
-    }
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    int hy = (scr_h - h) / 2;
-    int hx = (scr_w - w) / 2;
-    if (hy < 0) {
-        hy = 0;
-    }
-    if (hx < 0) {
-        hx = 0;
-    }
-    WINDOW* hw = ui_make_window(h, w, hy, hx);
-    mvwprintw(hw, 1, 2, "Help:");
-    mvwprintw(hw, 3, 2, "%s", help);
-    mvwprintw(hw, h - 2, 2, "Press any key to continue...");
-    // Nonblocking: poll until a key is pressed
-    wrefresh(hw);
-    wtimeout(hw, 0);
-    while (1) {
-        int ch = wgetch(hw);
-        if (ch != ERR) {
-            break;
-        }
-        // keep UI responsive without busy-waiting
-        napms(10);
-    }
-    ui_destroy_window(&hw);
-    // Restore base and let caller redraw menu
-    redrawwin(stdscr);
-    refresh();
-}
-
-static void
-ui_menu_loop(const NcMenuItem* items, size_t n, void* ctx) {
-    // Determine number of visible items and the maximum rendered label length
-    int vis = 0;
-    int maxlab = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (!ui_is_enabled(&items[i], ctx)) {
-            continue;
-        }
-        const char* lab = items[i].label ? items[i].label : items[i].id;
-        char dyn[128];
-        if (items[i].label_fn) {
-            const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
-            if (got && *got) {
-                lab = got;
-            }
-        }
-        int L = (int)strlen(lab);
-        if (L > maxlab) {
-            maxlab = L;
-        }
-        vis++;
-    }
-
-    // Footer lines (keep in sync with ui_draw_menu)
-    const char* f1 = "Arrows: move  Enter: select";
-    const char* f2 = "h: help  Esc/q: back";
-
-    // Layout constants
-    int pad_x = 2; // left margin inside box
-
-    // Compute minimal width to hold content and footer
-    int width = pad_x + ((maxlab > 0) ? maxlab : 1);
-    int f1w = pad_x + (int)strlen(f1);
-    int f2w = pad_x + (int)strlen(f2);
-    if (f1w > width) {
-        width = f1w;
-    }
-    if (f2w > width) {
-        width = f2w;
-    }
-    width += 2; // account for borders
-
-    // Compute minimal height: items + blank gap(1) + footer(2) + status(1) + borders(2)
-    // Footer at mh-4 (line1), mh-3 (line2), status at mh-2, blank line at mh-5 above footer.
-    int height = vis + 6;
-    if (height < 8) {
-        height = 8;
-    }
-
-    // Clamp to terminal size
-    int term_h = 24, term_w = 80;
-    getmaxyx(stdscr, term_h, term_w);
-    if (width > term_w - 2) {
-        width = term_w - 2;
-        if (width < 10) {
-            width = 10;
-        }
-    }
-    if (height > term_h - 2) {
-        height = term_h - 2;
-        if (height < 7) {
-            height = 7;
-        }
-    }
-
-    // Redraw underlying stdscr so base application remains visible beneath menu
-    redrawwin(stdscr);
-    refresh();
-    int my = (term_h - height) / 2;
-    int mx = (term_w - width) / 2;
-    if (my < 0) {
-        my = 0;
-    }
-    if (mx < 0) {
-        mx = 0;
-    }
-    WINDOW* menu_win = ui_make_window(height, width, my, mx);
-    keypad(menu_win, TRUE);
-    // Nonblocking input for menu navigation
-    wtimeout(menu_win, 0);
-
-    int hi = 0;
-    while (1) {
-        if (n == 0) {
-            // No items to navigate
-            break;
-        }
-        ui_draw_menu(menu_win, items, n, hi, ctx);
-        int c = wgetch(menu_win);
-        if (c == ERR) {
-            // No input available yet; yield briefly to avoid busy loop
-            napms(10);
-            continue;
-        }
-        if (c == KEY_RESIZE) {
-            // Terminal resized: recompute geometry and re-center the window
-            // Recompute visible items and longest label (content-driven width)
-            int vis = 0;
-            int maxlab = 0;
-            for (size_t i = 0; i < n; i++) {
-                if (!ui_is_enabled(&items[i], ctx)) {
-                    continue;
-                }
-                const char* lab = items[i].label ? items[i].label : items[i].id;
-                char dyn[128];
-                if (items[i].label_fn) {
-                    const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
-                    if (got && *got) {
-                        lab = got;
-                    }
-                }
-                int L = (int)strlen(lab);
-                if (L > maxlab) {
-                    maxlab = L;
-                }
-                vis++;
-            }
-            const char* f1 = "Arrows: move  Enter: select";
-            const char* f2 = "h: help  Esc/q: back";
-            int pad_x = 2;
-            int width = pad_x + ((maxlab > 0) ? maxlab : 1);
-            int f1w = pad_x + (int)strlen(f1);
-            int f2w = pad_x + (int)strlen(f2);
-            if (f1w > width) {
-                width = f1w;
-            }
-            if (f2w > width) {
-                width = f2w;
-            }
-            width += 2;           // borders
-            int height = vis + 6; // items + blank + footer(2) + status(1) + borders
-            if (height < 8) {
-                height = 8;
-            }
-
-            // Clamp to current terminal and re-center
-            getmaxyx(stdscr, term_h, term_w);
-            if (width > term_w - 2) {
-                width = term_w - 2;
-            }
-            if (width < 10) {
-                width = 10;
-            }
-            if (height > term_h - 2) {
-                height = term_h - 2;
-            }
-            if (height < 7) {
-                height = 7;
-            }
-            int my = (term_h - height) / 2;
-            int mx = (term_w - width) / 2;
-            if (my < 0) {
-                my = 0;
-            }
-            if (mx < 0) {
-                mx = 0;
-            }
-
-            // Recreate the window at the new centered position
-            ui_destroy_window(&menu_win);
-            menu_win = ui_make_window(height, width, my, mx);
-            keypad(menu_win, TRUE);
-            wtimeout(menu_win, 0);
-            // Skip other key handling this iteration
-            continue;
-        } else if (c == KEY_UP) {
-            do {
-                hi = (hi - 1 + (int)n) % (int)n;
-            } while (!ui_is_enabled(&items[hi], ctx));
-        } else if (c == KEY_DOWN) {
-            do {
-                hi = (hi + 1) % (int)n;
-            } while (!ui_is_enabled(&items[hi], ctx));
-        } else if (c == 'h' || c == 'H') {
-            ui_show_help(&items[hi]);
-        } else if (c == DSD_KEY_ESC || c == 'q' || c == 'Q') {
-            // Back out of current menu (no program exit)
-            break;
-        } else if (c == 10 || c == KEY_ENTER || c == '\r') {
-            const NcMenuItem* it = &items[hi];
-            if (!ui_is_enabled(it, ctx)) {
-                continue;
-            }
-            if (it->submenu && it->submenu_len > 0) {
-                ui_menu_loop(it->submenu, it->submenu_len, ctx);
-                // Restore base screen after closing submenu
-                redrawwin(stdscr);
-                refresh();
-            }
-            if (it->on_select) {
-                it->on_select(ctx);
-            }
-            if (!it->on_select && (!it->submenu || it->submenu_len == 0) && it->help && *it->help) {
-                ui_show_help(it);
-            }
-            if (exitflag) {
-                break; // allow actions to request immediate exit
-            }
-            // After select, re-draw menu
-        }
-    }
-
-    ui_destroy_window(&menu_win);
-    // Leave base application visible after menu closes
-    redrawwin(stdscr);
-    refresh();
-}
-
-void
-ui_menu_run(const NcMenuItem* items, size_t n_items, void* ctx) {
-    if (!items || n_items == 0) {
-        return;
-    }
-    ui_menu_loop(items, n_items, ctx);
-}
+/* Legacy blocking helpers (ui_show_help/ui_menu_run) removed in favor of overlay engine */
 
 /* Legacy blocking prompt helpers removed (string/int/double/confirm). */
 
@@ -2667,52 +2409,40 @@ lbl_rtl_tuner_autogain(void* v, char* b, size_t n) {
     return b;
 }
 
-static void
-ui_menu_rtl_options(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        /*{.id = "summary",
-         .label = "Current Config",
-         .label_fn = lbl_rtl_summary,
-         .help = "Snapshot of RTL-SDR settings."},*/
-        {.id = "enable", .label = "Enable RTL-SDR Input", .help = "Switch input to RTL-SDR.", .on_select = rtl_enable},
-        {.id = "restart",
-         .label = "Restart RTL Stream",
-         .help = "Apply config by restarting the stream.",
-         .on_select = rtl_restart},
-        {.id = "dev", .label = "Set Device Index...", .help = "Select RTL device index.", .on_select = rtl_set_dev},
-        {.id = "freq",
-         .label = "Set Frequency (Hz)...",
-         .help = "Set center frequency in Hz.",
-         .on_select = rtl_set_freq},
-        {.id = "gain", .label = "Set Gain...", .help = "0=AGC; else driver gain units.", .on_select = rtl_set_gain},
-        {.id = "ppm", .label = "Set PPM error...", .help = "-200..200.", .on_select = rtl_set_ppm},
-        {.id = "bw", .label = "Set Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
-        {.id = "sql", .label = "Set Squelch (dB)...", .help = "More negative -> tighter.", .on_select = rtl_set_sql},
-        {.id = "vol", .label = "Set Volume Multiplier...", .help = "0..3 sample scaler.", .on_select = rtl_set_vol},
-        {.id = "auto_ppm",
-         .label = "Auto-PPM (Spectrum)",
-         .label_fn = lbl_rtl_auto_ppm,
-         .help = "Enable/disable spectrum-based auto PPM tracking",
-         .on_select = rtl_toggle_auto_ppm},
-        {.id = "tuner_autogain",
-         .label = "Tuner Autogain",
-         .label_fn = lbl_rtl_tuner_autogain,
-         .help = "Enable/disable supervisory tuner autogain.",
-         .on_select = rtl_toggle_tuner_autogain},
-        {.id = "bias",
-         .label = "Toggle Bias Tee",
-         .label_fn = lbl_rtl_bias,
-         .help = "Enable/disable 5V bias tee (USB or rtl_tcp)",
-         .on_select = rtl_toggle_bias},
-        {.id = "rtltcp_autotune",
-         .label = "RTL-TCP Adaptive Networking",
-         .label_fn = lbl_rtl_rtltcp_autotune,
-         .help = "Enable/disable adaptive buffering for rtl_tcp",
-         .on_select = rtl_toggle_rtltcp_autotune},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+static const NcMenuItem RTL_MENU_ITEMS[] = {
+    {.id = "enable", .label = "Enable RTL-SDR Input", .help = "Switch input to RTL-SDR.", .on_select = rtl_enable},
+    {.id = "restart",
+     .label = "Restart RTL Stream",
+     .help = "Apply config by restarting the stream.",
+     .on_select = rtl_restart},
+    {.id = "dev", .label = "Set Device Index...", .help = "Select RTL device index.", .on_select = rtl_set_dev},
+    {.id = "freq", .label = "Set Frequency (Hz)...", .help = "Set center frequency in Hz.", .on_select = rtl_set_freq},
+    {.id = "gain", .label = "Set Gain...", .help = "0=AGC; else driver gain units.", .on_select = rtl_set_gain},
+    {.id = "ppm", .label = "Set PPM error...", .help = "-200..200.", .on_select = rtl_set_ppm},
+    {.id = "bw", .label = "Set Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
+    {.id = "sql", .label = "Set Squelch (dB)...", .help = "More negative -> tighter.", .on_select = rtl_set_sql},
+    {.id = "vol", .label = "Set Volume Multiplier...", .help = "0..3 sample scaler.", .on_select = rtl_set_vol},
+    {.id = "auto_ppm",
+     .label = "Auto-PPM (Spectrum)",
+     .label_fn = lbl_rtl_auto_ppm,
+     .help = "Enable/disable spectrum-based auto PPM tracking",
+     .on_select = rtl_toggle_auto_ppm},
+    {.id = "tuner_autogain",
+     .label = "Tuner Autogain",
+     .label_fn = lbl_rtl_tuner_autogain,
+     .help = "Enable/disable supervisory tuner autogain.",
+     .on_select = rtl_toggle_tuner_autogain},
+    {.id = "bias",
+     .label = "Toggle Bias Tee",
+     .label_fn = lbl_rtl_bias,
+     .help = "Enable/disable 5V bias tee (USB or rtl_tcp)",
+     .on_select = rtl_toggle_bias},
+    {.id = "rtltcp_autotune",
+     .label = "RTL-TCP Adaptive Networking",
+     .label_fn = lbl_rtl_rtltcp_autotune,
+     .help = "Enable/disable adaptive buffering for rtl_tcp",
+     .on_select = rtl_toggle_rtltcp_autotune},
+};
 #endif
 
 static void
@@ -3134,414 +2864,16 @@ lbl_muting(void* v, char* b, size_t n) {
     return b;
 }
 
-void
-ui_menu_io_options(dsd_opts* opts, dsd_state* state) {
-    // Reorganized: Devices & IO (sources and immediate playback controls)
-    UiCtx ctx = {opts, state};
-    // Switch Input submenu (always compiled; RTL option gated by build)
-    static const NcMenuItem switch_items[] = {
-        {.id = "current", .label = "Current", .label_fn = lbl_current_input, .help = "Shows current input."},
-        {.id = "pulse",
-         .label = "Pulse Audio (mic/line)",
-         .help = "Use Pulse Audio input.",
-         .on_select = switch_to_pulse},
-#ifdef USE_RTLSDR
-        {.id = "rtl", .label = "RTL-SDR", .help = "Switch to RTL-SDR input.", .on_select = switch_to_rtl},
-#endif
-        {.id = "tcp",
-         .label = "TCP Direct Audio...",
-         .help = "Connect to PCM16LE over TCP.",
-         .on_select = switch_to_tcp},
-        {.id = "wav", .label = "WAV/File...", .help = "Open WAV/RAW file or named pipe.", .on_select = switch_to_wav},
-        {.id = "sym",
-         .label = "Symbol Capture (.bin/.raw/.sym)...",
-         .help = "Replay captured symbols.",
-         .on_select = switch_to_symbol},
-        {.id = "udp", .label = "UDP Signal Input...", .help = "Bind UDP PCM16LE input.", .on_select = switch_to_udp},
-    };
-    static const NcMenuItem out_switch_items[] = {
-        {.id = "current_out",
-         .label = "Current Output",
-         .label_fn = lbl_current_output,
-         .help = "Shows the active output sink."},
-        {.id = "pulse_out",
-         .label = "Pulse Digital Output",
-         .help = "Play decoded audio via Pulse.",
-         .on_select = switch_out_pulse},
-        {.id = "udp_out_set",
-         .label = "UDP Audio Output...",
-         .help = "Send decoded audio via UDP.",
-         .on_select = switch_out_udp},
-        {.id = "mute",
-         .label = "Mute Output",
-         .label_fn = lbl_out_mute,
-         .help = "Toggle mute without changing sink.",
-         .on_select = switch_out_toggle_mute},
-    };
-
-    static const NcMenuItem items[] = {
-        {.id = "switch_input",
-         .label = "Switch Input...",
-         .help = "Change active input source.",
-         .submenu = switch_items,
-         .submenu_len = sizeof switch_items / sizeof switch_items[0]},
-        {.id = "switch_output",
-         .label = "Switch Output...",
-         .help = "Change audio output sink.",
-         .submenu = out_switch_items,
-         .submenu_len = sizeof out_switch_items / sizeof out_switch_items[0]},
-        {.id = "tcp_input",
-         .label = "TCP Direct Audio",
-         .label_fn = lbl_tcp,
-         .help = "Connect to a remote PCM16LE source via TCP.",
-         .is_enabled = io_always_on,
-         .on_select = io_tcp_direct_link},
-#ifdef USE_RTLSDR
-        {.id = "rtl",
-         .label = "RTL-SDR...",
-         .help = "Configure RTL device, gain, PPM, BW, SQL.",
-         .is_enabled = io_rtl_active,
-         .on_select = act_rtl_opts},
-#endif
-        {.id = "pulse_in",
-         .label = "Set Pulse Input...",
-         .help = "Set Pulse input by index/name.",
-         .is_enabled = io_always_on,
-         .on_select = io_set_pulse_in},
-        {.id = "pulse_out",
-         .label = "Set Pulse Output...",
-         .help = "Set Pulse output by index/name.",
-         .is_enabled = io_always_on,
-         .on_select = io_set_pulse_out},
-        {.id = "read_sym",
-         .label = "Read Symbol Capture File",
-         .help = "Open an existing symbol capture for replay.",
-         .is_enabled = io_always_on,
-         .on_select = io_read_symbol_bin},
-        {.id = "replay_last",
-         .label = "Replay Last Symbol Capture",
-         .label_fn = lbl_replay_last,
-         .help = "Re-open the last used symbol capture file.",
-         .is_enabled = io_always_on,
-         .on_select = io_replay_last_symbol_bin},
-        {.id = "stop_playback",
-         .label = "Stop Symbol Playback",
-         .label_fn = lbl_stop_symbol_playback,
-         .help = "Stop replaying the symbol capture and restore input mode.",
-         .is_enabled = io_always_on,
-         .on_select = io_stop_symbol_playback},
-        {.id = "invert",
-         .label = "Toggle Signal Inversion",
-         .label_fn = lbl_invert_all,
-         .help = "Invert/uninvert all supported inputs.",
-         .is_enabled = io_always_on,
-         .on_select = act_toggle_invert},
-        {.id = "inv_x2",
-         .label = "Invert X2-TDMA",
-         .label_fn = lbl_inv_x2,
-         .help = "Toggle X2 inversion.",
-         .on_select = inv_x2},
-        {.id = "inv_dmr",
-         .label = "Invert DMR",
-         .label_fn = lbl_inv_dmr,
-         .help = "Toggle DMR inversion.",
-         .on_select = inv_dmr},
-        {.id = "inv_dpmr",
-         .label = "Invert dPMR",
-         .label_fn = lbl_inv_dpmr,
-         .help = "Toggle dPMR inversion.",
-         .on_select = inv_dpmr},
-        {.id = "inv_m17",
-         .label = "Invert M17",
-         .label_fn = lbl_inv_m17,
-         .help = "Toggle M17 inversion.",
-         .on_select = inv_m17},
-        {.id = "udp_out",
-         .label = "Configure UDP Output...",
-         .help = "Set UDP blaster host/port and enable.",
-         .on_select = io_set_udp_out},
-        {.id = "gain_d", .label = "Set Digital Output Gain...", .help = "0=auto; 1..50.", .on_select = io_set_gain_dig},
-        {.id = "gain_a", .label = "Set Analog Output Gain...", .help = "0..100.", .on_select = io_set_gain_ana},
-        {.id = "in_vol_set",
-         .label = "Set Input Volume...",
-         .label_fn = lbl_input_volume,
-         .help = "Scale non-RTL inputs by N (1..16).",
-         .on_select = io_set_input_volume},
-        {.id = "in_vol_up",
-         .label = "Input Volume +1X",
-         .help = "Increase non-RTL input gain.",
-         .on_select = io_input_vol_up},
-        {.id = "in_vol_dn",
-         .label = "Input Volume -1X",
-         .help = "Decrease non-RTL input gain.",
-         .on_select = io_input_vol_dn},
-        {.id = "monitor",
-         .label = "Toggle Source Audio Monitor",
-         .label_fn = lbl_monitor,
-         .help = "Enable analog source monitor.",
-         .on_select = io_toggle_monitor},
-        {.id = "cosine",
-         .label = "Toggle Cosine Filter",
-         .label_fn = lbl_cosine,
-         .help = "Enable/disable cosine filter.",
-         .on_select = io_toggle_cosine},
-        {.id = "p25_rrc",
-         .label = "P25 C4FM RRC alpha=0.5",
-         .label_fn = lbl_p25_rrc,
-         .help = "Use fixed RRC(alpha=0.5) for P25p1 C4FM when Cosine Filter is enabled.",
-         .on_select = io_toggle_p25_rrc},
-        {.id = "p25_rrc_auto",
-         .label = "P25 C4FM RRC Auto-Probe",
-         .label_fn = lbl_p25_rrc_autoprobe,
-         .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
-         .on_select = io_toggle_p25_rrc_autoprobe},
-        {.id = "p25p2_rrc",
-         .label = "P25p2 CQPSK RRC alpha=0.5",
-         .label_fn = lbl_p25p2_rrc,
-         .help = "Use fixed RRC(alpha=0.5) for P25p2 CQPSK (matched filter).",
-         .on_select = io_toggle_p25p2_rrc},
-        {.id = "p25p2_rrc_auto",
-         .label = "P25p2 CQPSK RRC Auto-Probe",
-         .label_fn = lbl_p25p2_rrc_autoprobe,
-         .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
-         .on_select = io_toggle_p25p2_rrc_autoprobe},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* blocking IO menu removed; overlay uses IO_MENU_ITEMS */
 
 // Logging & Capture submenu
-void
-ui_menu_logging_capture(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        {.id = "save_sym",
-         .label = "Save Symbols to File",
-         .label_fn = lbl_sym_save,
-         .help = "Write raw symbols to a capture file for replay.",
-         .is_enabled = io_always_on,
-         .on_select = io_save_symbol_capture},
-        {.id = "stop_save",
-         .label = "Stop Symbol Capture",
-         .label_fn = lbl_stop_symbol_capture,
-         .help = "Close the current symbol capture output file.",
-         .is_enabled = io_always_on,
-         .on_select = io_stop_symbol_saving},
-        {.id = "per_call_wav",
-         .label = "Save Per-Call WAV",
-         .label_fn = lbl_per_call_wav,
-         .help = "Create per-call WAV files under the configured directory.",
-         .is_enabled = io_always_on,
-         .on_select = io_enable_per_call_wav},
-        {.id = "payload",
-         .label = "Toggle Payload Logging",
-         .label_fn = lbl_toggle_payload,
-         .help = "Toggle raw payloads to console.",
-         .is_enabled = io_always_on,
-         .on_select = act_toggle_payload},
-        {.id = "event_on",
-         .label = "Set Event Log File...",
-         .help = "Append event history to a file.",
-         .on_select = act_event_log_set},
-        {.id = "event_off",
-         .label = "Disable Event Log",
-         .help = "Stop logging events to file.",
-         .on_select = act_event_log_disable},
-        {.id = "static_wav",
-         .label = "Static WAV Output...",
-         .help = "Append decoded audio to one WAV file.",
-         .on_select = act_static_wav},
-        {.id = "raw_wav",
-         .label = "Raw Audio WAV...",
-         .help = "Write raw 48k/1 input audio to WAV.",
-         .on_select = act_raw_wav},
-        {.id = "dsp_out",
-         .label = "DSP Structured Output...",
-         .help = "Write DSP structured or M17 stream to ./DSP/",
-         .on_select = act_dsp_out},
-        {.id = "crc_relax",
-         .label = "Toggle Relaxed CRC checks",
-         .label_fn = lbl_crc_relax,
-         .help = "Relax CRC checks across protocols.",
-         .on_select = act_crc_relax},
-        {.id = "reset_eh",
-         .label = "Reset Event History",
-         .help = "Clear ring-buffered event history.",
-         .is_enabled = io_always_on,
-         .on_select = act_reset_eh},
-        {.id = "call_alert",
-         .label = "Toggle Call Alert Beep",
-         .label_fn = lbl_call_alert,
-         .help = "Audible beep on call start.",
-         .is_enabled = io_always_on,
-         .on_select = io_toggle_call_alert},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* blocking Logging & Capture menu removed; overlay uses LOGGING_MENU_ITEMS */
 
 // Trunking & Control submenu
-void
-ui_menu_trunking_control(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        {.id = "trunk_on",
-         .label = "Toggle Trunking",
-         .label_fn = lbl_trunk,
-         .help = "Enable/disable trunking features.",
-         .on_select = act_trunk_toggle},
-        {.id = "scan_on",
-         .label = "Toggle Scanning Mode",
-         .label_fn = lbl_scan,
-         .help = "Enable/disable conventional scanning.",
-         .on_select = act_scan_toggle},
-        {.id = "prefer_cc",
-         .label = "Prefer P25 CC Candidates",
-         .label_fn = lbl_pref_cc,
-         .help = "Prefer viable control-channel candidates during hunt.",
-         .is_enabled = io_always_on,
-         .on_select = io_toggle_cc_candidates},
-        {.id = "lcw_retune",
-         .label = "Toggle P25 LCW Retune",
-         .label_fn = lbl_lcw,
-         .help = "Enable LCW explicit retune.",
-         .on_select = act_lcw_toggle},
-        {.id = "p25_sm_basic",
-         .label = "P25 Simple SM (basic)",
-         .label_fn = lbl_p25_sm_basic,
-         .help = "Enable simplified P25 SM (reduced safeties/post-hang gating).",
-         .on_select = act_p25_sm_basic},
-        {.id = "p25_auto_adapt",
-         .label = "P25 Auto-Adapt (beta)",
-         .label_fn = lbl_p25_auto_adapt,
-         .help = "Enable/disable per-site adaptive follower timing.",
-         .on_select = act_p25_auto_adapt},
-        {.id = "p2params",
-         .label = "Set P25 Phase 2 Parameters",
-         .help = "Set WACN/SYSID/NAC manually.",
-         .is_enabled = io_always_on,
-         .on_select = act_p2_params},
-        {.id = "rigctl",
-         .label = "Rigctl",
-         .label_fn = lbl_rigctl,
-         .help = "Connect to a rigctl server for tuner control.",
-         .is_enabled = io_always_on,
-         .on_select = io_rigctl_config},
-        {.id = "setmod_bw",
-         .label = "Set Rigctl Setmod BW...",
-         .help = "Set rigctl setmod bandwidth (Hz).",
-         .on_select = act_setmod_bw},
-        {.id = "chan_map",
-         .label = "Import Channel Map CSV...",
-         .help = "Load channel->frequency map.",
-         .on_select = act_import_chan},
-        {.id = "group_list",
-         .label = "Import Group List CSV...",
-         .help = "Load groups allow/block & labels.",
-         .on_select = act_import_group},
-        {.id = "allow_list",
-         .label = "Toggle Allow/White List",
-         .label_fn = lbl_allow,
-         .help = "Use group list as allow list.",
-         .on_select = act_allow_toggle},
-        {.id = "tune_group",
-         .label = "Toggle Tune Group Calls",
-         .label_fn = lbl_tune_group,
-         .help = "Enable/disable group call tuning.",
-         .on_select = act_tune_group},
-        {.id = "tune_priv",
-         .label = "Toggle Tune Private Calls",
-         .label_fn = lbl_tune_priv,
-         .help = "Enable/disable private call tuning.",
-         .on_select = act_tune_priv},
-        {.id = "tune_data",
-         .label = "Toggle Tune Data Calls",
-         .label_fn = lbl_tune_data,
-         .help = "Enable/disable data call tuning.",
-         .on_select = act_tune_data},
-        {.id = "tg_hold",
-         .label = "Set TG Hold...",
-         .help = "Hold on a specific TG while trunking.",
-         .on_select = act_tg_hold},
-        {.id = "hangtime",
-         .label = "Set Hangtime (s)...",
-         .help = "VC/sync loss hangtime (seconds).",
-         .on_select = act_hangtime},
-        {.id = "reverse_mute",
-         .label = "Toggle Reverse Mute",
-         .label_fn = lbl_rev_mute,
-         .help = "Reverse mute behavior.",
-         .on_select = act_rev_mute},
-        {.id = "dmr_le",
-         .label = "Toggle DMR Late Entry",
-         .label_fn = lbl_dmr_le,
-         .help = "Enable/disable DMR late entry.",
-         .on_select = act_dmr_le},
-        {.id = "slot_pref",
-         .label = "Set TDMA Slot Preference...",
-         .label_fn = lbl_slotpref,
-         .help = "Prefer slot 1 or 2 (DMR/P25p2).",
-         .on_select = act_slot_pref},
-        {.id = "slots_on",
-         .label = "Set TDMA Synth Slots...",
-         .label_fn = lbl_slots_on,
-         .help = "Bitmask: 1=slot1, 2=slot2, 3=both, 0=off.",
-         .on_select = act_slots_on},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* blocking Trunking & Control menu removed; overlay uses TRUNK_MENU_ITEMS */
 
 // Keys & Security submenu
-static void
-act_keys_submenu(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_key_entry(c->opts, c->state);
-}
-
-void
-ui_menu_keys_security(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        {.id = "keys",
-         .label = "Manage Encryption Keys...",
-         .help = "Enter or edit BP/Hytera/RC4/AES keys.",
-         .on_select = act_keys_submenu},
-        {.id = "keys_dec",
-         .label = "Import Keys CSV (DEC)...",
-         .help = "Import decimal keys CSV.",
-         .on_select = act_keys_dec},
-        {.id = "keys_hex",
-         .label = "Import Keys CSV (HEX)...",
-         .help = "Import hexadecimal keys CSV.",
-         .on_select = act_keys_hex},
-        {.id = "muting",
-         .label = "Toggle Encrypted Audio Muting",
-         .label_fn = lbl_muting,
-         .help = "Toggle P25 and DMR encrypted audio muting.",
-         .is_enabled = io_always_on,
-         .on_select = io_toggle_mute_enc},
-        {.id = "tyt_ap",
-         .label = "TYT AP (PC4) Keystream...",
-         .help = "Enter AP seed string.",
-         .on_select = act_tyt_ap},
-        {.id = "retevis_rc2",
-         .label = "Retevis AP (RC2) Keystream...",
-         .help = "Enter AP seed string.",
-         .on_select = act_retevis_rc2},
-        {.id = "tyt_ep",
-         .label = "TYT EP (AES) Keystream...",
-         .help = "Enter EP seed string.",
-         .on_select = act_tyt_ep},
-        {.id = "ken_scr",
-         .label = "Kenwood DMR Scrambler...",
-         .help = "Enter scrambler seed.",
-         .on_select = act_ken_scr},
-        {.id = "anytone_bp", .label = "Anytone BP Keystream...", .help = "Enter BP seed.", .on_select = act_anytone_bp},
-        {.id = "xor_ks",
-         .label = "Straight XOR Keystream...",
-         .help = "Enter raw string to XOR.",
-         .on_select = act_xor_ks},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* blocking Keys & Security menu removed; overlay uses KEYS_MENU_ITEMS */
 
 #ifdef USE_RTLSDR
 // Declarative DSP menu with dynamic labels
@@ -4646,6 +3978,8 @@ act_toggle_dqpsk(void* v) {
     rtl_stream_cqpsk_set_dqpsk(on ? 0 : 1);
 }
 
+#endif /* end of USE_RTLSDR block started at 2881 (DSP labels/actions) */
+
 #ifdef USE_RTLSDR
 // ---- Auto-DSP status & config (UI) ----
 static const char*
@@ -4970,76 +4304,64 @@ dec_alpha(void* v) {
     cfg_apply();
 }
 
-static void
-ui_menu_auto_dsp_config(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        {.id = "p1_win",
-         .label = "P25P1 Window (status)",
-         .label_fn = lbl_p1_win,
-         .help = "Min symbols per decision window."},
-        {.id = "p1_win+", .label = "P25P1 Window +50", .help = "Increase window.", .on_select = inc_p1_win},
-        {.id = "p1_win-", .label = "P25P1 Window -50", .help = "Decrease window.", .on_select = dec_p1_win},
-        {.id = "p1_mon",
-         .label = "P25P1 Moderate On%",
-         .label_fn = lbl_p1_mod_on,
-         .help = "Engage moderate threshold."},
-        {.id = "p1_mon+", .label = "Moderate On% +1", .on_select = inc_p1_mod_on},
-        {.id = "p1_mon-", .label = "Moderate On% -1", .on_select = dec_p1_mod_on},
-        {.id = "p1_moff", .label = "P25P1 Moderate Off%", .label_fn = lbl_p1_mod_off, .help = "Relax to clean."},
-        {.id = "p1_moff+", .label = "Moderate Off% +1", .on_select = inc_p1_mod_off},
-        {.id = "p1_moff-", .label = "Moderate Off% -1", .on_select = dec_p1_mod_off},
-        {.id = "p1_hon", .label = "P25P1 Heavy On%", .label_fn = lbl_p1_hvy_on, .help = "Engage heavy threshold."},
-        {.id = "p1_hon+", .label = "Heavy On% +1", .on_select = inc_p1_hvy_on},
-        {.id = "p1_hon-", .label = "Heavy On% -1", .on_select = dec_p1_hvy_on},
-        {.id = "p1_hoff", .label = "P25P1 Heavy Off%", .label_fn = lbl_p1_hvy_off, .help = "Relax from heavy."},
-        {.id = "p1_hoff+", .label = "Heavy Off% +1", .on_select = inc_p1_hvy_off},
-        {.id = "p1_hoff-", .label = "Heavy Off% -1", .on_select = dec_p1_hvy_off},
-        {.id = "p1_cool",
-         .label = "P25P1 Cooldown (status)",
-         .label_fn = lbl_p1_cool,
-         .help = "Cooldown ms between changes."},
-        {.id = "p1_cool+", .label = "Cooldown +100ms", .on_select = inc_p1_cool},
-        {.id = "p1_cool-", .label = "Cooldown -100ms", .on_select = dec_p1_cool},
-        {.id = "p2_ok", .label = "P25P2 OK min (status)", .label_fn = lbl_p2_okmin, .help = "Min OKs to avoid heavy."},
-        {.id = "p2_ok+", .label = "OK min +1", .on_select = inc_p2_okmin},
-        {.id = "p2_ok-", .label = "OK min -1", .on_select = dec_p2_okmin},
-        {.id = "p2_mon",
-         .label = "P25P2 Err margin On",
-         .label_fn = lbl_p2_margin_on,
-         .help = "Err > OK + margin -> heavy."},
-        {.id = "p2_mon+", .label = "Margin On +1", .on_select = inc_p2_m_on},
-        {.id = "p2_mon-", .label = "Margin On -1", .on_select = dec_p2_m_on},
-        {.id = "p2_moff", .label = "P25P2 Err margin Off", .label_fn = lbl_p2_margin_off, .help = "Relax heavy."},
-        {.id = "p2_moff+", .label = "Margin Off +1", .on_select = inc_p2_m_off},
-        {.id = "p2_moff-", .label = "Margin Off -1", .on_select = dec_p2_m_off},
-        {.id = "p2_cool",
-         .label = "P25P2 Cooldown (status)",
-         .label_fn = lbl_p2_cool,
-         .help = "Cooldown ms between changes."},
-        {.id = "p2_cool+", .label = "Cooldown +100ms", .on_select = inc_p2_cool},
-        {.id = "p2_cool-", .label = "Cooldown -100ms", .on_select = dec_p2_cool},
-        {.id = "ema",
-         .label = "EMA alpha (status)",
-         .label_fn = lbl_ema_alpha,
-         .help = "Smoothing constant for P25P1."},
-        {.id = "ema+", .label = "EMA alpha +512", .on_select = inc_alpha},
-        {.id = "ema-", .label = "EMA alpha -512", .on_select = dec_alpha},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* Nonblocking Auto-DSP config submenu */
+static const NcMenuItem AUTO_DSP_CFG_ITEMS[] = {
+    {.id = "p1_win",
+     .label = "P25P1 Window (status)",
+     .label_fn = lbl_p1_win,
+     .help = "Min symbols per decision window."},
+    {.id = "p1_win+", .label = "P25P1 Window +50", .help = "Increase window.", .on_select = inc_p1_win},
+    {.id = "p1_win-", .label = "P25P1 Window -50", .help = "Decrease window.", .on_select = dec_p1_win},
+    {.id = "p1_mon", .label = "P25P1 Moderate On%", .label_fn = lbl_p1_mod_on, .help = "Engage moderate threshold."},
+    {.id = "p1_mon+", .label = "Moderate On% +1", .on_select = inc_p1_mod_on},
+    {.id = "p1_mon-", .label = "Moderate On% -1", .on_select = dec_p1_mod_on},
+    {.id = "p1_moff", .label = "P25P1 Moderate Off%", .label_fn = lbl_p1_mod_off, .help = "Relax to clean."},
+    {.id = "p1_moff+", .label = "Moderate Off% +1", .on_select = inc_p1_mod_off},
+    {.id = "p1_moff-", .label = "Moderate Off% -1", .on_select = dec_p1_mod_off},
+    {.id = "p1_hon", .label = "P25P1 Heavy On%", .label_fn = lbl_p1_hvy_on, .help = "Engage heavy threshold."},
+    {.id = "p1_hon+", .label = "Heavy On% +1", .on_select = inc_p1_hvy_on},
+    {.id = "p1_hon-", .label = "Heavy On% -1", .on_select = dec_p1_hvy_on},
+    {.id = "p1_hoff", .label = "P25P1 Heavy Off%", .label_fn = lbl_p1_hvy_off, .help = "Relax from heavy."},
+    {.id = "p1_hoff+", .label = "Heavy Off% +1", .on_select = inc_p1_hvy_off},
+    {.id = "p1_hoff-", .label = "Heavy Off% -1", .on_select = dec_p1_hvy_off},
+    {.id = "p1_cool",
+     .label = "P25P1 Cooldown (status)",
+     .label_fn = lbl_p1_cool,
+     .help = "Cooldown ms between changes."},
+    {.id = "p1_cool+", .label = "Cooldown +100ms", .on_select = inc_p1_cool},
+    {.id = "p1_cool-", .label = "Cooldown -100ms", .on_select = dec_p1_cool},
+    {.id = "p2_ok", .label = "P25P2 OK min (status)", .label_fn = lbl_p2_okmin, .help = "Min OKs to avoid heavy."},
+    {.id = "p2_ok+", .label = "OK min +1", .on_select = inc_p2_okmin},
+    {.id = "p2_ok-", .label = "OK min -1", .on_select = dec_p2_okmin},
+    {.id = "p2_mon",
+     .label = "P25P2 Err margin On",
+     .label_fn = lbl_p2_margin_on,
+     .help = "Err > OK + margin -> heavy."},
+    {.id = "p2_mon+", .label = "Margin On +1", .on_select = inc_p2_m_on},
+    {.id = "p2_mon-", .label = "Margin On -1", .on_select = dec_p2_m_on},
+    {.id = "p2_moff", .label = "P25P2 Err margin Off", .label_fn = lbl_p2_margin_off, .help = "Relax heavy."},
+    {.id = "p2_moff+", .label = "Margin Off +1", .on_select = inc_p2_m_off},
+    {.id = "p2_moff-", .label = "Margin Off -1", .on_select = dec_p2_m_off},
+    {.id = "p2_cool",
+     .label = "P25P2 Cooldown (status)",
+     .label_fn = lbl_p2_cool,
+     .help = "Cooldown ms between changes."},
+    {.id = "p2_cool+", .label = "Cooldown +100ms", .on_select = inc_p2_cool},
+    {.id = "p2_cool-", .label = "Cooldown -100ms", .on_select = dec_p2_cool},
+    {.id = "ema", .label = "EMA alpha (status)", .label_fn = lbl_ema_alpha, .help = "Smoothing constant for P25P1."},
+    {.id = "ema+", .label = "EMA alpha +512", .on_select = inc_alpha},
+    {.id = "ema-", .label = "EMA alpha -512", .on_select = dec_alpha},
+};
 #endif
 
 #ifdef USE_RTLSDR
-static void
-act_auto_cfg(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_auto_dsp_config(c->opts, c->state);
-}
+/* removed: act_auto_cfg; use AUTO_DSP_CFG_ITEMS submenu instead */
 #endif
 
-void
-ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
+/* blocking DSP options menu removed; overlay uses DSP_MENU_ITEMS */
+/* formerly: ui_menu_dsp_options with many items */
+/*
+void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
     UiCtx ctx = {opts, state};
     static const NcMenuItem items[] = {
         {.id = "hint",
@@ -5322,12 +4644,9 @@ ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
     ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
 }
 #else
-void
-ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
-    UNUSED(opts);
-    UNUSED(state);
-}
+void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) { UNUSED(opts); UNUSED(state); }
 #endif
+*/
 
 // ---- Key Entry ----
 
@@ -5412,31 +4731,7 @@ key_aes(void* v) {
     ui_prompt_open_string_async("AES Segment 1 (HEX) or 0", NULL, 128, cb_aes_step, ac);
 }
 
-void
-ui_menu_key_entry(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        {.id = "basic",
-         .label = "Basic Privacy (DEC)",
-         .help = "Set 0..255 basic privacy key.",
-         .on_select = key_basic},
-        {.id = "hytera",
-         .label = "Hytera Privacy (HEX)",
-         .help = "Set up to 4 x 16-hex segments.",
-         .on_select = key_hytera},
-        {.id = "scrambler",
-         .label = "NXDN/dPMR Scrambler (DEC)",
-         .help = "Set 0..32767 scrambler key.",
-         .on_select = key_scrambler},
-        {.id = "force_bp",
-         .label = "Force BP/Scr Priority",
-         .help = "Toggle basic/scrambler priority.",
-         .on_select = key_force_bp},
-        {.id = "rc4des", .label = "RC4/DES Key (HEX)", .help = "Set RC4/DES key.", .on_select = key_rc4des},
-        {.id = "aes", .label = "AES-128/256 Keys (HEX)", .help = "Set AES key segments.", .on_select = key_aes},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* blocking key entry menu removed; overlay uses KEYS_ENTRY_ITEMS */
 
 // ---- LRRP Options (declarative) ----
 static void
@@ -5483,28 +4778,7 @@ lbl_lrrp_current(void* vctx, char* b, size_t n) {
     return b;
 }
 
-void
-ui_menu_lrrp_options(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    static const NcMenuItem items[] = {
-        {.id = "current",
-         .label = "Current Output",
-         .label_fn = lbl_lrrp_current,
-         .help = "Shows the active LRRP output target.",
-         .is_enabled = io_always_on},
-        {.id = "home",
-         .label = "Write to ~/lrrp.txt (QGIS)",
-         .help = "Standard QGIS-friendly output.",
-         .on_select = lr_home},
-        {.id = "dsdp",
-         .label = "Write to ./DSDPlus.LRRP (LRRP.exe)",
-         .help = "DSDPlus LRRP format.",
-         .on_select = lr_dsdp},
-        {.id = "custom", .label = "Custom Filename...", .help = "Choose a custom path.", .on_select = lr_custom},
-        {.id = "disable", .label = "Disable/Stop", .help = "Disable LRRP output.", .on_select = lr_off},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], &ctx);
-}
+/* blocking LRRP menu removed; overlay uses LRRP_MENU_ITEMS */
 
 // ---- Main Menu ----
 
@@ -5791,44 +5065,10 @@ act_xor_ks(void* v) {
     ui_prompt_open_string_async("XOR keystream", NULL, 256, cb_xor_ks, c);
 }
 #ifdef USE_RTLSDR
-static void
-act_rtl_opts(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_rtl_options(c->opts, c->state);
-}
+/* act_rtl_opts removed; use RTL_MENU_ITEMS submenu instead */
 #endif
 
 /* removed unused: act_key_entry, act_io_opts */
-
-static void
-act_devices_io(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_io_options(c->opts, c->state);
-}
-
-static void
-act_logging_capture_menu(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_logging_capture(c->opts, c->state);
-}
-
-static void
-act_trunk_ctrl_menu(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_trunking_control(c->opts, c->state);
-}
-
-static void
-act_keys_sec_menu(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_keys_security(c->opts, c->state);
-}
-
-static void
-act_dsp_opts(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_dsp_options(c->opts, c->state);
-}
 
 // ---- UI Display Options ----
 static const char*
@@ -5944,47 +5184,9 @@ act_toggle_ui_channels(void* v) {
     c->opts->show_channels = c->opts->show_channels ? 0 : 1;
 }
 
-static void
-act_ui_display(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    static const NcMenuItem items[] = {
-        {.id = "p25m",
-         .label_fn = lbl_ui_p25_metrics,
-         .help = "Toggle P25 Metrics section.",
-         .on_select = act_toggle_ui_p25_metrics},
-        {.id = "p25aff",
-         .label_fn = lbl_ui_p25_affil,
-         .help = "Toggle P25 Affiliations section (RID list).",
-         .on_select = act_toggle_ui_p25_affil},
-        {.id = "p25ga",
-         .label_fn = lbl_ui_p25_ga,
-         .help = "Toggle P25 Group Affiliation section (RID↔TG).",
-         .on_select = act_toggle_ui_p25_ga},
-        {.id = "p25nb",
-         .label_fn = lbl_ui_p25_neighbors,
-         .help = "Toggle P25 Neighbors section (adjacent/candidate freqs).",
-         .on_select = act_toggle_ui_p25_neighbors},
-        {.id = "p25iden",
-         .label_fn = lbl_ui_p25_iden,
-         .help = "Toggle P25 IDEN Plan table.",
-         .on_select = act_toggle_ui_p25_iden},
-        {.id = "p25ccc",
-         .label_fn = lbl_ui_p25_ccc,
-         .help = "Toggle P25 CC Candidates list.",
-         .on_select = act_toggle_ui_p25_ccc},
-        {.id = "chans",
-         .label_fn = lbl_ui_channels,
-         .help = "Toggle Channels section.",
-         .on_select = act_toggle_ui_channels},
-    };
-    ui_menu_run(items, sizeof items / sizeof items[0], c);
-}
+/* blocking UI display menu removed; overlay uses UI_DISPLAY_MENU_ITEMS */
 
-static void
-act_lrrp_opts(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_menu_lrrp_options(c->opts, c->state);
-}
+/* removed: act_lrrp_opts; use LRRP_MENU_ITEMS submenu */
 
 static void
 act_p2_params(void* v) {
@@ -6006,6 +5208,559 @@ act_exit(void* v) {
     (void)v;
     exitflag = 1;
 }
+
+// ---- Declarative submenu tables for nonblocking overlay ----
+// Devices & IO
+#ifdef USE_RTLSDR
+extern const NcMenuItem RTL_MENU_ITEMS[]; // defined above in this file
+#endif
+static const NcMenuItem IO_SWITCH_INPUT_ITEMS[] = {
+    {.id = "current", .label = "Current", .label_fn = lbl_current_input, .help = "Shows current input."},
+    {.id = "pulse", .label = "Pulse Audio (mic/line)", .help = "Use Pulse Audio input.", .on_select = switch_to_pulse},
+#ifdef USE_RTLSDR
+    {.id = "rtl", .label = "RTL-SDR", .help = "Switch to RTL-SDR input.", .on_select = switch_to_rtl},
+#endif
+    {.id = "tcp", .label = "TCP Direct Audio...", .help = "Connect to PCM16LE over TCP.", .on_select = switch_to_tcp},
+    {.id = "wav", .label = "WAV/File...", .help = "Open WAV/RAW file or named pipe.", .on_select = switch_to_wav},
+    {.id = "sym",
+     .label = "Symbol Capture (.bin/.raw/.sym)...",
+     .help = "Replay captured symbols.",
+     .on_select = switch_to_symbol},
+    {.id = "udp", .label = "UDP Signal Input...", .help = "Bind UDP PCM16LE input.", .on_select = switch_to_udp},
+};
+
+static const NcMenuItem IO_SWITCH_OUTPUT_ITEMS[] = {
+    {.id = "current_out",
+     .label = "Current Output",
+     .label_fn = lbl_current_output,
+     .help = "Shows the active output sink."},
+    {.id = "pulse_out",
+     .label = "Pulse Digital Output",
+     .help = "Play decoded audio via Pulse.",
+     .on_select = switch_out_pulse},
+    {.id = "udp_out_set",
+     .label = "UDP Audio Output...",
+     .help = "Send decoded audio via UDP.",
+     .on_select = switch_out_udp},
+    {.id = "mute",
+     .label = "Mute Output",
+     .label_fn = lbl_out_mute,
+     .help = "Toggle mute without changing sink.",
+     .on_select = switch_out_toggle_mute},
+};
+
+static const NcMenuItem IO_MENU_ITEMS[] = {
+    {.id = "switch_input",
+     .label = "Switch Input...",
+     .help = "Change active input source.",
+     .submenu = IO_SWITCH_INPUT_ITEMS,
+     .submenu_len = sizeof IO_SWITCH_INPUT_ITEMS / sizeof IO_SWITCH_INPUT_ITEMS[0]},
+    {.id = "switch_output",
+     .label = "Switch Output...",
+     .help = "Change audio output sink.",
+     .submenu = IO_SWITCH_OUTPUT_ITEMS,
+     .submenu_len = sizeof IO_SWITCH_OUTPUT_ITEMS / sizeof IO_SWITCH_OUTPUT_ITEMS[0]},
+    {.id = "tcp_input",
+     .label = "TCP Direct Audio",
+     .label_fn = lbl_tcp,
+     .help = "Connect to a remote PCM16LE source via TCP.",
+     .is_enabled = io_always_on,
+     .on_select = io_tcp_direct_link},
+#ifdef USE_RTLSDR
+    {.id = "rtl",
+     .label = "RTL-SDR...",
+     .help = "Configure RTL device, gain, PPM, BW, SQL.",
+     .is_enabled = io_rtl_active,
+     .submenu = RTL_MENU_ITEMS,
+     .submenu_len = sizeof RTL_MENU_ITEMS / sizeof RTL_MENU_ITEMS[0]},
+#endif
+    {.id = "pulse_in",
+     .label = "Set Pulse Input...",
+     .help = "Set Pulse input by index/name.",
+     .is_enabled = io_always_on,
+     .on_select = io_set_pulse_in},
+    {.id = "pulse_out",
+     .label = "Set Pulse Output...",
+     .help = "Set Pulse output by index/name.",
+     .is_enabled = io_always_on,
+     .on_select = io_set_pulse_out},
+    {.id = "read_sym",
+     .label = "Read Symbol Capture File",
+     .help = "Open an existing symbol capture for replay.",
+     .is_enabled = io_always_on,
+     .on_select = io_read_symbol_bin},
+    {.id = "replay_last",
+     .label = "Replay Last Symbol Capture",
+     .label_fn = lbl_replay_last,
+     .help = "Re-open the last used symbol capture file.",
+     .is_enabled = io_always_on,
+     .on_select = io_replay_last_symbol_bin},
+    {.id = "stop_playback",
+     .label = "Stop Symbol Playback",
+     .label_fn = lbl_stop_symbol_playback,
+     .help = "Stop replaying the symbol capture and restore input mode.",
+     .is_enabled = io_always_on,
+     .on_select = io_stop_symbol_playback},
+    {.id = "invert",
+     .label = "Toggle Signal Inversion",
+     .label_fn = lbl_invert_all,
+     .help = "Invert/uninvert all supported inputs.",
+     .is_enabled = io_always_on,
+     .on_select = act_toggle_invert},
+    {.id = "inv_x2",
+     .label = "Invert X2-TDMA",
+     .label_fn = lbl_inv_x2,
+     .help = "Toggle X2 inversion.",
+     .on_select = inv_x2},
+    {.id = "inv_dmr",
+     .label = "Invert DMR",
+     .label_fn = lbl_inv_dmr,
+     .help = "Toggle DMR inversion.",
+     .on_select = inv_dmr},
+    {.id = "inv_dpmr",
+     .label = "Invert dPMR",
+     .label_fn = lbl_inv_dpmr,
+     .help = "Toggle dPMR inversion.",
+     .on_select = inv_dpmr},
+    {.id = "inv_m17",
+     .label = "Invert M17",
+     .label_fn = lbl_inv_m17,
+     .help = "Toggle M17 inversion.",
+     .on_select = inv_m17},
+    {.id = "udp_out",
+     .label = "Configure UDP Output...",
+     .help = "Set UDP blaster host/port and enable.",
+     .on_select = io_set_udp_out},
+    {.id = "gain_d", .label = "Set Digital Output Gain...", .help = "0=auto; 1..50.", .on_select = io_set_gain_dig},
+    {.id = "gain_a", .label = "Set Analog Output Gain...", .help = "0..100.", .on_select = io_set_gain_ana},
+    {.id = "in_vol_set",
+     .label = "Set Input Volume...",
+     .label_fn = lbl_input_volume,
+     .help = "Scale non-RTL inputs by N (1..16).",
+     .on_select = io_set_input_volume},
+    {.id = "in_vol_up",
+     .label = "Input Volume +1X",
+     .help = "Increase non-RTL input gain.",
+     .on_select = io_input_vol_up},
+    {.id = "in_vol_dn",
+     .label = "Input Volume -1X",
+     .help = "Decrease non-RTL input gain.",
+     .on_select = io_input_vol_dn},
+    {.id = "monitor",
+     .label = "Toggle Source Audio Monitor",
+     .label_fn = lbl_monitor,
+     .help = "Enable analog source monitor.",
+     .on_select = io_toggle_monitor},
+    {.id = "cosine",
+     .label = "Toggle Cosine Filter",
+     .label_fn = lbl_cosine,
+     .help = "Enable/disable cosine filter.",
+     .on_select = io_toggle_cosine},
+    {.id = "p25_rrc",
+     .label = "P25 C4FM RRC alpha=0.5",
+     .label_fn = lbl_p25_rrc,
+     .help = "Use fixed RRC(alpha=0.5) for P25p1 C4FM when Cosine Filter is enabled.",
+     .on_select = io_toggle_p25_rrc},
+    {.id = "p25_rrc_auto",
+     .label = "P25 C4FM RRC Auto-Probe",
+     .label_fn = lbl_p25_rrc_autoprobe,
+     .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
+     .on_select = io_toggle_p25_rrc_autoprobe},
+    {.id = "p25p2_rrc",
+     .label = "P25p2 CQPSK RRC alpha=0.5",
+     .label_fn = lbl_p25p2_rrc,
+     .help = "Use fixed RRC(alpha=0.5) for P25p2 CQPSK (matched filter).",
+     .on_select = io_toggle_p25p2_rrc},
+    {.id = "p25p2_rrc_auto",
+     .label = "P25p2 CQPSK RRC Auto-Probe",
+     .label_fn = lbl_p25p2_rrc_autoprobe,
+     .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
+     .on_select = io_toggle_p25p2_rrc_autoprobe},
+};
+
+// Logging & Capture
+static const NcMenuItem LOGGING_MENU_ITEMS[] = {
+    {.id = "save_sym",
+     .label = "Save Symbols to File",
+     .label_fn = lbl_sym_save,
+     .help = "Write raw symbols to a capture file for replay.",
+     .is_enabled = io_always_on,
+     .on_select = io_save_symbol_capture},
+    {.id = "stop_save",
+     .label = "Stop Symbol Capture",
+     .label_fn = lbl_stop_symbol_capture,
+     .help = "Close the current symbol capture output file.",
+     .is_enabled = io_always_on,
+     .on_select = io_stop_symbol_saving},
+    {.id = "per_call_wav",
+     .label = "Save Per-Call WAV",
+     .label_fn = lbl_per_call_wav,
+     .help = "Create per-call WAV files under the configured directory.",
+     .is_enabled = io_always_on,
+     .on_select = io_enable_per_call_wav},
+    {.id = "payload",
+     .label = "Toggle Payload Logging",
+     .label_fn = lbl_toggle_payload,
+     .help = "Toggle raw payloads to console.",
+     .is_enabled = io_always_on,
+     .on_select = act_toggle_payload},
+    {.id = "event_on",
+     .label = "Set Event Log File...",
+     .help = "Append event history to a file.",
+     .on_select = act_event_log_set},
+    {.id = "event_off",
+     .label = "Disable Event Log",
+     .help = "Stop logging events to file.",
+     .on_select = act_event_log_disable},
+    {.id = "static_wav",
+     .label = "Static WAV Output...",
+     .help = "Append decoded audio to one WAV file.",
+     .on_select = act_static_wav},
+    {.id = "raw_wav",
+     .label = "Raw Audio WAV...",
+     .help = "Write raw 48k/1 input audio to WAV.",
+     .on_select = act_raw_wav},
+    {.id = "dsp_out",
+     .label = "DSP Structured Output...",
+     .help = "Write DSP structured or M17 stream to ./DSP/",
+     .on_select = act_dsp_out},
+    {.id = "crc_relax",
+     .label = "Toggle Relaxed CRC checks",
+     .label_fn = lbl_crc_relax,
+     .help = "Relax CRC checks across protocols.",
+     .on_select = act_crc_relax},
+    {.id = "reset_eh",
+     .label = "Reset Event History",
+     .help = "Clear ring-buffered event history.",
+     .is_enabled = io_always_on,
+     .on_select = act_reset_eh},
+    {.id = "call_alert",
+     .label = "Toggle Call Alert Beep",
+     .label_fn = lbl_call_alert,
+     .help = "Audible beep on call start.",
+     .is_enabled = io_always_on,
+     .on_select = io_toggle_call_alert},
+};
+
+// Trunking & Control
+static const NcMenuItem TRUNK_MENU_ITEMS[] = {
+    {.id = "trunk_on",
+     .label = "Toggle Trunking",
+     .label_fn = lbl_trunk,
+     .help = "Enable/disable trunking features.",
+     .on_select = act_trunk_toggle},
+    {.id = "scan_on",
+     .label = "Toggle Scanning Mode",
+     .label_fn = lbl_scan,
+     .help = "Enable/disable conventional scanning.",
+     .on_select = act_scan_toggle},
+    {.id = "prefer_cc",
+     .label = "Prefer P25 CC Candidates",
+     .label_fn = lbl_pref_cc,
+     .help = "Prefer viable control-channel candidates during hunt.",
+     .is_enabled = io_always_on,
+     .on_select = io_toggle_cc_candidates},
+    {.id = "lcw_retune",
+     .label = "Toggle P25 LCW Retune",
+     .label_fn = lbl_lcw,
+     .help = "Enable LCW explicit retune.",
+     .on_select = act_lcw_toggle},
+    {.id = "p25_sm_basic",
+     .label = "P25 Simple SM (basic)",
+     .label_fn = lbl_p25_sm_basic,
+     .help = "Enable simplified P25 SM (reduced safeties/post-hang gating).",
+     .on_select = act_p25_sm_basic},
+    {.id = "p25_auto_adapt",
+     .label = "P25 Auto-Adapt (beta)",
+     .label_fn = lbl_p25_auto_adapt,
+     .help = "Enable/disable per-site adaptive follower timing.",
+     .on_select = act_p25_auto_adapt},
+    {.id = "p2params",
+     .label = "Set P25 Phase 2 Parameters",
+     .help = "Set WACN/SYSID/NAC manually.",
+     .is_enabled = io_always_on,
+     .on_select = act_p2_params},
+    {.id = "rigctl",
+     .label = "Rigctl",
+     .label_fn = lbl_rigctl,
+     .help = "Connect to a rigctl server for tuner control.",
+     .is_enabled = io_always_on,
+     .on_select = io_rigctl_config},
+    {.id = "setmod_bw",
+     .label = "Set Rigctl Setmod BW...",
+     .help = "Set rigctl setmod bandwidth (Hz).",
+     .on_select = act_setmod_bw},
+    {.id = "chan_map",
+     .label = "Import Channel Map CSV...",
+     .help = "Load channel->frequency map.",
+     .on_select = act_import_chan},
+    {.id = "group_list",
+     .label = "Import Group List CSV...",
+     .help = "Load groups allow/block & labels.",
+     .on_select = act_import_group},
+    {.id = "allow_list",
+     .label = "Toggle Allow/White List",
+     .label_fn = lbl_allow,
+     .help = "Use group list as allow list.",
+     .on_select = act_allow_toggle},
+    {.id = "tune_group",
+     .label = "Toggle Tune Group Calls",
+     .label_fn = lbl_tune_group,
+     .help = "Enable/disable group call tuning.",
+     .on_select = act_tune_group},
+    {.id = "tune_priv",
+     .label = "Toggle Tune Private Calls",
+     .label_fn = lbl_tune_priv,
+     .help = "Enable/disable private call tuning.",
+     .on_select = act_tune_priv},
+    {.id = "tune_data",
+     .label = "Toggle Tune Data Calls",
+     .label_fn = lbl_tune_data,
+     .help = "Enable/disable data call tuning.",
+     .on_select = act_tune_data},
+    {.id = "tg_hold",
+     .label = "Set TG Hold...",
+     .help = "Hold on a specific TG while trunking.",
+     .on_select = act_tg_hold},
+    {.id = "hangtime",
+     .label = "Set Hangtime (s)...",
+     .help = "VC/sync loss hangtime (seconds).",
+     .on_select = act_hangtime},
+    {.id = "reverse_mute",
+     .label = "Toggle Reverse Mute",
+     .label_fn = lbl_rev_mute,
+     .help = "Reverse mute behavior.",
+     .on_select = act_rev_mute},
+    {.id = "dmr_le",
+     .label = "Toggle DMR Late Entry",
+     .label_fn = lbl_dmr_le,
+     .help = "Enable/disable DMR late entry.",
+     .on_select = act_dmr_le},
+    {.id = "slot_pref",
+     .label = "Set TDMA Slot Preference...",
+     .label_fn = lbl_slotpref,
+     .help = "Prefer slot 1 or 2 (DMR/P25p2).",
+     .on_select = act_slot_pref},
+    {.id = "slots_on",
+     .label = "Set TDMA Synth Slots...",
+     .label_fn = lbl_slots_on,
+     .help = "Bitmask: 1=slot1, 2=slot2, 3=both, 0=off.",
+     .on_select = act_slots_on},
+};
+
+// Keys & Security
+static const NcMenuItem KEYS_ENTRY_ITEMS[] = {
+    {.id = "basic", .label = "Basic Privacy (DEC)", .help = "Set 0..255 basic privacy key.", .on_select = key_basic},
+    {.id = "hytera",
+     .label = "Hytera Privacy (HEX)",
+     .help = "Set up to 4 x 16-hex segments.",
+     .on_select = key_hytera},
+    {.id = "scrambler",
+     .label = "NXDN/dPMR Scrambler (DEC)",
+     .help = "Set 0..32767 scrambler key.",
+     .on_select = key_scrambler},
+    {.id = "force_bp",
+     .label = "Force BP/Scr Priority",
+     .help = "Toggle basic/scrambler priority.",
+     .on_select = key_force_bp},
+    {.id = "rc4des", .label = "RC4/DES Key (HEX)", .help = "Set RC4/DES key.", .on_select = key_rc4des},
+    {.id = "aes", .label = "AES-128/256 Keys (HEX)", .help = "Set AES key segments.", .on_select = key_aes},
+};
+
+static const NcMenuItem KEYS_MENU_ITEMS[] = {
+    {.id = "keys",
+     .label = "Manage Encryption Keys...",
+     .help = "Enter or edit BP/Hytera/RC4/AES keys.",
+     .submenu = KEYS_ENTRY_ITEMS,
+     .submenu_len = sizeof KEYS_ENTRY_ITEMS / sizeof KEYS_ENTRY_ITEMS[0]},
+    {.id = "keys_dec",
+     .label = "Import Keys CSV (DEC)...",
+     .help = "Import decimal keys CSV.",
+     .on_select = act_keys_dec},
+    {.id = "keys_hex",
+     .label = "Import Keys CSV (HEX)...",
+     .help = "Import hexadecimal keys CSV.",
+     .on_select = act_keys_hex},
+    {.id = "muting",
+     .label = "Toggle Encrypted Audio Muting",
+     .label_fn = lbl_muting,
+     .help = "Toggle P25 and DMR encrypted audio muting.",
+     .is_enabled = io_always_on,
+     .on_select = io_toggle_mute_enc},
+    {.id = "tyt_ap", .label = "TYT AP (PC4) Keystream...", .help = "Enter AP seed string.", .on_select = act_tyt_ap},
+    {.id = "retevis_rc2",
+     .label = "Retevis AP (RC2) Keystream...",
+     .help = "Enter AP seed string.",
+     .on_select = act_retevis_rc2},
+    {.id = "tyt_ep", .label = "TYT EP (AES) Keystream...", .help = "Enter EP seed string.", .on_select = act_tyt_ep},
+    {.id = "ken_scr", .label = "Kenwood DMR Scrambler...", .help = "Enter scrambler seed.", .on_select = act_ken_scr},
+    {.id = "anytone_bp", .label = "Anytone BP Keystream...", .help = "Enter BP seed.", .on_select = act_anytone_bp},
+    {.id = "xor_ks", .label = "Straight XOR Keystream...", .help = "Enter raw string to XOR.", .on_select = act_xor_ks},
+};
+
+// UI Display
+static const NcMenuItem UI_DISPLAY_MENU_ITEMS[] = {
+    {.id = "p25m",
+     .label_fn = lbl_ui_p25_metrics,
+     .help = "Toggle P25 Metrics section.",
+     .on_select = act_toggle_ui_p25_metrics},
+    {.id = "p25aff",
+     .label_fn = lbl_ui_p25_affil,
+     .help = "Toggle P25 Affiliations section (RID list).",
+     .on_select = act_toggle_ui_p25_affil},
+    {.id = "p25ga",
+     .label_fn = lbl_ui_p25_ga,
+     .help = "Toggle P25 Group Affiliation section (RID↔TG).",
+     .on_select = act_toggle_ui_p25_ga},
+    {.id = "p25nb",
+     .label_fn = lbl_ui_p25_neighbors,
+     .help = "Toggle P25 Neighbors section (adjacent/candidate freqs).",
+     .on_select = act_toggle_ui_p25_neighbors},
+    {.id = "p25iden",
+     .label_fn = lbl_ui_p25_iden,
+     .help = "Toggle P25 IDEN Plan table.",
+     .on_select = act_toggle_ui_p25_iden},
+    {.id = "p25ccc",
+     .label_fn = lbl_ui_p25_ccc,
+     .help = "Toggle P25 CC Candidates list.",
+     .on_select = act_toggle_ui_p25_ccc},
+    {.id = "chans",
+     .label_fn = lbl_ui_channels,
+     .help = "Toggle Channels section.",
+     .on_select = act_toggle_ui_channels},
+};
+
+// LRRP
+static const NcMenuItem LRRP_MENU_ITEMS[] = {
+    {.id = "current",
+     .label = "Current Output",
+     .label_fn = lbl_lrrp_current,
+     .help = "Shows the active LRRP output target.",
+     .is_enabled = io_always_on},
+    {.id = "home",
+     .label = "Write to ~/lrrp.txt (QGIS)",
+     .help = "Standard QGIS-friendly output.",
+     .on_select = lr_home},
+    {.id = "dsdp", .label = "Write to ./DSDPlus.LRRP (LRRP.exe)", .help = "DSDPlus LRRP format.", .on_select = lr_dsdp},
+    {.id = "custom", .label = "Custom Filename...", .help = "Choose a custom path.", .on_select = lr_custom},
+    {.id = "disable", .label = "Disable/Stop", .help = "Disable LRRP output.", .on_select = lr_off},
+};
+
+// DSP
+#ifdef USE_RTLSDR
+static const NcMenuItem DSP_MENU_ITEMS[] = {
+    {.id = "status",
+     .label = "Show DSP Panel",
+     .label_fn = lbl_dsp_panel,
+     .help = "Toggle compact DSP status panel in main UI.",
+     .on_select = act_toggle_dsp_panel},
+    {.id = "man",
+     .label = "Manual DSP Override",
+     .label_fn = lbl_manual_dsp,
+     .help = "Enable Manual DSP override.",
+     .on_select = act_toggle_manual_dsp},
+    {.id = "auto",
+     .label = "Toggle Auto-DSP",
+     .label_fn = lbl_onoff_auto,
+     .help = "Enable/disable auto-DSP.",
+     .on_select = act_toggle_auto},
+    {.id = "auto_status",
+     .label = "Auto-DSP Status",
+     .label_fn = lbl_auto_status,
+     .help = "Show current Auto-DSP mode/status."},
+    {.id = "auto_cfg",
+     .label = "Auto-DSP Config",
+     .help = "Adjust Auto-DSP thresholds and windows.",
+     .submenu = AUTO_DSP_CFG_ITEMS,
+     .submenu_len = sizeof AUTO_DSP_CFG_ITEMS / sizeof AUTO_DSP_CFG_ITEMS[0]},
+    {.id = "rrc",
+     .label = "Matched Filter / RRC",
+     .label_fn = lbl_toggle_rrc,
+     .help = "Toggle Matched Filter (RRC).",
+     .on_select = act_toggle_rrc},
+    {.id = "rrc_a+",
+     .label = "RRC alpha +5%",
+     .label_fn = lbl_rrc_a_up,
+     .help = "Increase RRC alpha.",
+     .on_select = act_rrc_a_up},
+    {.id = "rrc_a-",
+     .label = "RRC alpha -5%",
+     .label_fn = lbl_rrc_a_dn,
+     .help = "Decrease RRC alpha.",
+     .on_select = act_rrc_a_dn},
+    {.id = "rrc_s+",
+     .label = "RRC span +1",
+     .label_fn = lbl_rrc_s_up,
+     .help = "Increase RRC span.",
+     .on_select = act_rrc_s_up},
+    {.id = "rrc_s-",
+     .label = "RRC span -1",
+     .label_fn = lbl_rrc_s_dn,
+     .help = "Decrease RRC span.",
+     .on_select = act_rrc_s_dn},
+    {.id = "dqpsk",
+     .label = "DQPSK Decision",
+     .label_fn = lbl_onoff_dqpsk,
+     .help = "Toggle DQPSK decision path.",
+     .on_select = act_toggle_dqpsk},
+    {.id = "lms",
+     .label = "LMS Equalizer",
+     .label_fn = lbl_onoff_lms,
+     .help = "Toggle LMS equalizer.",
+     .on_select = act_toggle_lms},
+    {.id = "taps",
+     .label = "CMA Taps",
+     .label_fn = lbl_fm_cma_taps,
+     .help = "Cycle taps between 1/3/5/7/9.",
+     .on_select = act_fm_cma_taps_cycle},
+    {.id = "mu", .label = "CMA mu (Q15)", .label_fn = lbl_fm_cma_mu, .help = "Adjust CMA mu parameter."},
+    {.id = "mu+", .label = "CMA mu +1", .help = "Increase mu.", .on_select = act_fm_cma_mu_up},
+    {.id = "mu-", .label = "CMA mu -1", .help = "Decrease mu.", .on_select = act_fm_cma_mu_dn},
+    {.id = "wl",
+     .label = "Enable WL",
+     .label_fn = lbl_onoff_wl,
+     .help = "Toggle WL enhancement.",
+     .on_select = act_toggle_wl},
+    {.id = "dfe",
+     .label = "Enable DFE",
+     .label_fn = lbl_onoff_dfe,
+     .help = "Toggle decision-feedback equalizer.",
+     .on_select = act_toggle_dfe},
+    {.id = "mf",
+     .label = "Matched Filter",
+     .label_fn = lbl_onoff_mf,
+     .help = "Toggle RX matched filter stage.",
+     .on_select = act_toggle_mf},
+    {.id = "cma",
+     .label = "CMA Equalizer",
+     .label_fn = lbl_fm_cma,
+     .help = "Toggle adaptive CMA equalizer.",
+     .on_select = act_toggle_fm_cma},
+    {.id = "cma_s",
+     .label = "CMA Strength",
+     .label_fn = lbl_fm_cma_strength,
+     .help = "Cycle strength L/M/S.",
+     .on_select = act_fm_cma_strength_cycle},
+    {.id = "ted",
+     .label = "Timing Error (TED)",
+     .label_fn = lbl_onoff_ted,
+     .help = "Toggle TED and configure SPS.",
+     .on_select = act_toggle_ted},
+    {.id = "ted_sps", .label = "TED SPS (status)", .label_fn = lbl_ted_sps, .help = "Nominal samples-per-symbol."},
+    {.id = "ted_sps+", .label = "TED SPS +1", .help = "Increase TED SPS.", .on_select = act_ted_sps_up},
+    {.id = "ted_sps-", .label = "TED SPS -1", .help = "Decrease TED SPS.", .on_select = act_ted_sps_dn},
+    {.id = "auto_smart",
+     .label = "C4FM Robustness Preset",
+     .label_fn = lbl_c4fm_robust,
+     .help = "Apply robust DD eq + CMA preset.",
+     .on_select = act_c4fm_robust},
+    {.id = "iqb",
+     .label = "IQ Balance",
+     .label_fn = lbl_onoff_iqbal,
+     .help = "Toggle IQ imbalance compensation.",
+     .on_select = act_toggle_iqbal},
+};
+#endif
 
 void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
@@ -6033,26 +5788,44 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
         {.id = "devices_io",
          .label = "Devices & IO",
          .help = "TCP, symbol replay, inversion.",
-         .on_select = act_devices_io},
+         .submenu = IO_MENU_ITEMS,
+         .submenu_len = sizeof IO_MENU_ITEMS / sizeof IO_MENU_ITEMS[0]},
         {.id = "logging",
          .label = "Logging & Capture",
          .help = "Symbols, WAV, payloads, alerts, history.",
-         .on_select = act_logging_capture_menu},
+         .submenu = LOGGING_MENU_ITEMS,
+         .submenu_len = sizeof LOGGING_MENU_ITEMS / sizeof LOGGING_MENU_ITEMS[0]},
         {.id = "trunk_ctrl",
          .label = "Trunking & Control",
          .help = "P25 CC prefs, Phase 2 params, rigctl.",
-         .on_select = act_trunk_ctrl_menu},
+         .submenu = TRUNK_MENU_ITEMS,
+         .submenu_len = sizeof TRUNK_MENU_ITEMS / sizeof TRUNK_MENU_ITEMS[0]},
         {.id = "keys_sec",
          .label = "Keys & Security",
          .help = "Manage keys and encrypted audio muting.",
-         .on_select = act_keys_sec_menu},
+         .submenu = KEYS_MENU_ITEMS,
+         .submenu_len = sizeof KEYS_MENU_ITEMS / sizeof KEYS_MENU_ITEMS[0]},
         {.id = "dsp",
          .label = "DSP Options",
          .help = "RTL-SDR DSP toggles and tuning.",
          .is_enabled = io_rtl_active,
-         .on_select = act_dsp_opts},
-        {.id = "ui_display", .label = "UI Display", .help = "Toggle on-screen sections.", .on_select = act_ui_display},
-        {.id = "lrrp", .label = "LRRP Output", .help = "Configure LRRP file output.", .on_select = act_lrrp_opts},
+#ifdef USE_RTLSDR
+         .submenu = DSP_MENU_ITEMS,
+         .submenu_len = sizeof DSP_MENU_ITEMS / sizeof DSP_MENU_ITEMS[0]},
+#else
+         .submenu = NULL,
+         .submenu_len = 0},
+#endif
+        {.id = "ui_display",
+         .label = "UI Display",
+         .help = "Toggle on-screen sections.",
+         .submenu = UI_DISPLAY_MENU_ITEMS,
+         .submenu_len = sizeof UI_DISPLAY_MENU_ITEMS / sizeof UI_DISPLAY_MENU_ITEMS[0]},
+        {.id = "lrrp",
+         .label = "LRRP Output",
+         .help = "Configure LRRP file output.",
+         .submenu = LRRP_MENU_ITEMS,
+         .submenu_len = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITEMS[0]},
         {.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit},
     };
     (void)c; // context used by callbacks; arrays are static so safe to expose
@@ -6064,16 +5837,7 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
     }
 }
 
-void
-ui_menu_main(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
-    const NcMenuItem* items = NULL;
-    size_t n = 0;
-    ui_menu_get_main_items(&items, &n, &ctx);
-    if (items && n > 0) {
-        ui_menu_run(items, n, &ctx);
-    }
-}
+/* blocking ui_menu_main removed; ncursesMenu opens overlay via ui_menu_open_async */
 
 /* Blanker UI handlers implementation */
 #ifdef USE_RTLSDR
