@@ -89,7 +89,12 @@ struct rtl_device {
     int testmode_on;
     uint32_t rtl_xtal_hz;
     uint32_t tuner_xtal_hz;
-    struct { int stage; int gain; } if_gains[16];
+
+    struct {
+        int stage;
+        int gain;
+    } if_gains[16];
+
     int if_gain_count;
 };
 

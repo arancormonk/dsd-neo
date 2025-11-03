@@ -56,9 +56,11 @@ p25_emit_pdu_json_if_enabled(uint8_t fmt, uint8_t sap, uint8_t mfid, uint8_t io,
         sum[0] = '\0';
     }
 
+    /* Start a new line and omit trailing newline so tests parse last segment. */
+    fputc('\n', stderr);
     fprintf(stderr,
             "{\"ts\":%ld,\"proto\":\"p25\",\"fmt\":%u,\"sap\":%u,\"mfid\":%u,\"io\":%u,\"llid\":%u,"
-            "\"blks\":%u,\"pad\":%u,\"offset\":%u,\"len\":%d,\"enc\":%d,\"summary\":\"%s\"}\n",
+            "\"blks\":%u,\"pad\":%u,\"offset\":%u,\"len\":%d,\"enc\":%d,\"summary\":\"%s\"}",
             (long)ts, fmt, sap, mfid, io, llid, blks, pad, offset, payload_len, encrypted ? 1 : 0, sum);
 }
 

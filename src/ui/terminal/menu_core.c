@@ -19,6 +19,11 @@
 
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_services.h>
+#include <strings.h>
+
+#if defined(__SSE__) || defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -98,6 +103,7 @@ static void act_scan_toggle(void* v);
 static void act_lcw_toggle(void* v);
 static void act_p25_auto_adapt(void* v);
 static void act_p25_sm_basic(void* v);
+static void act_p25_enc_lockout(void* v);
 static void act_setmod_bw(void* v);
 static void act_import_chan(void* v);
 static void act_import_group(void* v);
@@ -119,6 +125,11 @@ static void act_tyt_ep(void* v);
 static void act_ken_scr(void* v);
 static void act_anytone_bp(void* v);
 static void act_xor_ks(void* v);
+// Prototypes for DSP C4FM clock assist controls defined later
+static const char* lbl_c4fm_clk(void* v, char* b, size_t n);
+static void act_c4fm_clk_cycle(void* v);
+static const char* lbl_c4fm_clk_sync(void* v, char* b, size_t n);
+static void act_c4fm_clk_sync_toggle(void* v);
 #ifdef USE_RTLSDR
 /* Blanker UI helpers */
 static const char* lbl_blanker(void* v, char* b, size_t n);
@@ -346,6 +357,10 @@ ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* user, 
     snprintf(pre, sizeof pre, "%d", initial);
     PromptIntCtx* pic = (PromptIntCtx*)calloc(1, sizeof(PromptIntCtx));
     if (!pic) {
+        // Allocation failed: immediately signal cancel so caller can clean up.
+        if (cb) {
+            cb(user, 0, 0);
+        }
         return;
     }
     pic->cb = cb;
@@ -360,6 +375,10 @@ ui_prompt_open_double_async(const char* title, double initial, void (*cb)(void* 
     snprintf(pre, sizeof pre, "%.6f", initial);
     PromptDblCtx* pdc = (PromptDblCtx*)calloc(1, sizeof(PromptDblCtx));
     if (!pdc) {
+        // Allocation failed: immediately signal cancel so caller can clean up.
+        if (cb) {
+            cb(user, 0, 0.0);
+        }
         return;
     }
     pdc->cb = cb;
@@ -1193,6 +1212,623 @@ ui_help_open(const char* help) {
         delwin(g_help.win);
         g_help.win = NULL;
     }
+}
+
+// -------------------- Advanced/Env helpers --------------------
+
+// Common helpers to get/set numeric env values with defaults.
+static int
+env_get_int(const char* name, int defv) {
+    const char* v = getenv(name);
+    return (v && *v) ? atoi(v) : defv;
+}
+
+static double
+env_get_double(const char* name, double defv) {
+    const char* v = getenv(name);
+    return (v && *v) ? atof(v) : defv;
+}
+
+static void
+env_set_int(const char* name, int v) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "%d", v);
+    setenv(name, buf, 1);
+}
+
+static void
+env_set_double(const char* name, double v) {
+    char buf[64];
+    // limit precision just for display sanity
+    snprintf(buf, sizeof buf, "%.6g", v);
+    setenv(name, buf, 1);
+}
+
+// After changing env-backed runtime config, re-parse to apply immediately.
+static void
+env_reparse_runtime_cfg(dsd_opts* opts) {
+    dsd_neo_config_init(opts);
+}
+
+// FTZ/DAZ toggle (SSE)
+static void
+act_toggle_ftz_daz(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    (void)c;
+#if defined(__SSE__) || defined(__SSE2__)
+    int on = 0;
+    const char* e = getenv("DSD_NEO_FTZ_DAZ");
+    on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+    on = on ? 0 : 1; // flip
+    setenv("DSD_NEO_FTZ_DAZ", on ? "1" : "0", 1);
+    unsigned int mxcsr = _mm_getcsr();
+    if (on) {
+        mxcsr |= (1u << 15) | (1u << 6);
+    } else {
+        mxcsr &= ~((1u << 15) | (1u << 6));
+    }
+    _mm_setcsr(mxcsr);
+#else
+    // no-op on non-SSE builds
+#endif
+}
+
+static const char*
+lbl_ftz_daz(void* v, char* b, size_t n) {
+    (void)v;
+#if defined(__SSE__) || defined(__SSE2__)
+    const char* e = getenv("DSD_NEO_FTZ_DAZ");
+    int on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+    snprintf(b, n, "SSE FTZ/DAZ: %s", on ? "On" : "Off");
+    return b;
+#else
+    snprintf(b, n, "SSE FTZ/DAZ: Unavailable");
+    return b;
+#endif
+}
+
+// Low input-level warning threshold (dBFS)
+static void
+cb_input_warn(void* v, int ok, double thr) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (!ok) {
+        return;
+    }
+    if (thr < -200.0) {
+        thr = -200.0;
+    }
+    if (thr > 0.0) {
+        thr = 0.0;
+    }
+    c->opts->input_warn_db = thr;
+    env_set_double("DSD_NEO_INPUT_WARN_DB", thr);
+}
+
+static const char*
+lbl_input_warn(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    double thr = c ? c->opts->input_warn_db : env_get_double("DSD_NEO_INPUT_WARN_DB", -40.0);
+    snprintf(b, n, "Low Input Warning: %.1f dBFS", thr);
+    return b;
+}
+
+static void
+act_set_input_warn(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    double thr = c ? c->opts->input_warn_db : env_get_double("DSD_NEO_INPUT_WARN_DB", -40.0);
+    ui_prompt_open_double_async("Low input warning threshold (dBFS)", thr, cb_input_warn, c);
+}
+
+// P25 adaptive follower numeric settings (env-driven at runtime)
+typedef struct {
+    UiCtx* c;
+    const char* name;
+} P25NumCtx;
+
+static void
+cb_set_p25_num(void* u, int ok, double val) {
+    P25NumCtx* pc = (P25NumCtx*)u;
+    if (!pc) {
+        return;
+    }
+    if (ok) {
+        env_set_double(pc->name, val);
+        // sync select mirrored opts fields when present
+        if (pc->c && pc->c->opts) {
+            if (strcmp(pc->name, "DSD_NEO_P25_VC_GRACE") == 0) {
+                pc->c->opts->p25_vc_grace_s = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25_MIN_FOLLOW_DWELL") == 0) {
+                pc->c->opts->p25_min_follow_dwell_s = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25_GRANT_VOICE_TO") == 0) {
+                pc->c->opts->p25_grant_voice_to_s = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25_RETUNE_BACKOFF") == 0) {
+                pc->c->opts->p25_retune_backoff_s = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25_FORCE_RELEASE_EXTRA") == 0) {
+                pc->c->opts->p25_force_release_extra_s = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25_FORCE_RELEASE_MARGIN") == 0) {
+                pc->c->opts->p25_force_release_margin_s = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25P1_ERR_HOLD_PCT") == 0) {
+                pc->c->opts->p25_p1_err_hold_pct = val;
+            } else if (strcmp(pc->name, "DSD_NEO_P25P1_ERR_HOLD_S") == 0) {
+                pc->c->opts->p25_p1_err_hold_s = val;
+            }
+        }
+    }
+    free(pc);
+}
+
+static void
+act_prompt_p25_num(void* v, const char* env_name, const char* title, double defv) {
+    UiCtx* c = (UiCtx*)v;
+    P25NumCtx* pc = (P25NumCtx*)calloc(1, sizeof(P25NumCtx));
+    if (!pc) {
+        return;
+    }
+    pc->c = c;
+    pc->name = env_name;
+    ui_prompt_open_double_async(title, defv, cb_set_p25_num, pc);
+}
+
+static const char*
+lbl_p25_num(void* v, char* b, size_t n, const char* env_name, const char* fmt, double defv) {
+    (void)v;
+    double val = env_get_double(env_name, defv);
+    snprintf(b, n, fmt, val);
+    return b;
+}
+
+static void
+act_set_p25_vc_grace(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_VC_GRACE", "P25: VC grace seconds", env_get_double("DSD_NEO_P25_VC_GRACE", 0));
+}
+
+static const char*
+lbl_p25_vc_grace(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_VC_GRACE", "P25: VC grace (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_min_follow(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_MIN_FOLLOW_DWELL", "P25: Min follow dwell (s)",
+                       env_get_double("DSD_NEO_P25_MIN_FOLLOW_DWELL", 0));
+}
+
+static const char*
+lbl_p25_min_follow(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_MIN_FOLLOW_DWELL", "P25: Min follow dwell (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_grant_voice(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_GRANT_VOICE_TO", "P25: Grant->Voice timeout (s)",
+                       env_get_double("DSD_NEO_P25_GRANT_VOICE_TO", 0));
+}
+
+static const char*
+lbl_p25_grant_voice(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_GRANT_VOICE_TO", "P25: Grant->Voice timeout (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_retune_backoff(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_RETUNE_BACKOFF", "P25: Retune backoff (s)",
+                       env_get_double("DSD_NEO_P25_RETUNE_BACKOFF", 0));
+}
+
+static const char*
+lbl_p25_retune_backoff(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_RETUNE_BACKOFF", "P25: Retune backoff (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_cc_grace(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_CC_GRACE", "P25: CC hunt grace (s)", env_get_double("DSD_NEO_P25_CC_GRACE", 0));
+}
+
+static const char*
+lbl_p25_cc_grace(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_CC_GRACE", "P25: CC hunt grace (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_force_extra(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_FORCE_RELEASE_EXTRA", "P25: Safety-net extra (s)",
+                       env_get_double("DSD_NEO_P25_FORCE_RELEASE_EXTRA", 0));
+}
+
+static const char*
+lbl_p25_force_extra(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_FORCE_RELEASE_EXTRA", "P25: Force release extra (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_force_margin(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25_FORCE_RELEASE_MARGIN", "P25: Safety-net margin (s)",
+                       env_get_double("DSD_NEO_P25_FORCE_RELEASE_MARGIN", 0));
+}
+
+static const char*
+lbl_p25_force_margin(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25_FORCE_RELEASE_MARGIN", "P25: Force release margin (s): %.3f", 0.0);
+}
+
+static void
+act_set_p25_p1_err_pct(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25P1_ERR_HOLD_PCT", "P25p1: Error-hold percent",
+                       env_get_double("DSD_NEO_P25P1_ERR_HOLD_PCT", 0));
+}
+
+static const char*
+lbl_p25_p1_err_pct(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25P1_ERR_HOLD_PCT", "P25p1: Err-hold pct: %.1f%%", 0.0);
+}
+
+static void
+act_set_p25_p1_err_sec(void* v) {
+    act_prompt_p25_num(v, "DSD_NEO_P25P1_ERR_HOLD_S", "P25p1: Error-hold seconds",
+                       env_get_double("DSD_NEO_P25P1_ERR_HOLD_S", 0));
+}
+
+static const char*
+lbl_p25_p1_err_sec(void* v, char* b, size_t n) {
+    return lbl_p25_num(v, b, n, "DSD_NEO_P25P1_ERR_HOLD_S", "P25p1: Err-hold sec: %.3f", 0.0);
+}
+
+// C4FM clock assist control is already provided by RTL stream layer
+
+// Deemphasis and audio LPF (config-backed)
+static const char*
+lbl_deemph(void* v, char* b, size_t n) {
+    (void)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    const char* s = "Unset";
+    if (cfg) {
+        switch (cfg->deemph_mode) {
+            case DSD_NEO_DEEMPH_OFF: s = "Off"; break;
+            case DSD_NEO_DEEMPH_50: s = "50"; break;
+            case DSD_NEO_DEEMPH_75: s = "75"; break;
+            case DSD_NEO_DEEMPH_NFM: s = "NFM"; break;
+            default: s = "Unset"; break;
+        }
+    }
+    snprintf(b, n, "Deemphasis: %s", s);
+    return b;
+}
+
+static void
+act_deemph_cycle(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int mode = cfg ? cfg->deemph_mode : DSD_NEO_DEEMPH_UNSET;
+    mode = (mode + 1) % 5; // cycle through UNSET->OFF->50->75->NFM->UNSET
+    switch (mode) {
+        case DSD_NEO_DEEMPH_UNSET: setenv("DSD_NEO_DEEMPH", "", 1); break;
+        case DSD_NEO_DEEMPH_OFF: setenv("DSD_NEO_DEEMPH", "off", 1); break;
+        case DSD_NEO_DEEMPH_50: setenv("DSD_NEO_DEEMPH", "50", 1); break;
+        case DSD_NEO_DEEMPH_75: setenv("DSD_NEO_DEEMPH", "75", 1); break;
+        case DSD_NEO_DEEMPH_NFM: setenv("DSD_NEO_DEEMPH", "nfm", 1); break;
+        default: break;
+    }
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
+}
+
+static const char*
+lbl_audio_lpf(void* v, char* b, size_t n) {
+    (void)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->audio_lpf_is_set && !cfg->audio_lpf_disable && cfg->audio_lpf_cutoff_hz > 0) {
+        snprintf(b, n, "Audio LPF: %d Hz", cfg->audio_lpf_cutoff_hz);
+    } else {
+        snprintf(b, n, "Audio LPF: Off");
+    }
+    return b;
+}
+
+static void
+cb_audio_lpf(void* v, int ok, int hz) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !ok) {
+        return;
+    }
+    if (hz <= 0) {
+        setenv("DSD_NEO_AUDIO_LPF", "off", 1);
+    } else {
+        env_set_int("DSD_NEO_AUDIO_LPF", hz);
+    }
+    env_reparse_runtime_cfg(c->opts);
+}
+
+static void
+act_set_audio_lpf(void* v) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int def = (cfg && cfg->audio_lpf_is_set && !cfg->audio_lpf_disable) ? cfg->audio_lpf_cutoff_hz : 0;
+    ui_prompt_open_int_async("Audio LPF cutoff Hz (0=off)", def, cb_audio_lpf, v);
+}
+
+static const char*
+lbl_window_freeze(void* v, char* b, size_t n) {
+    (void)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->window_freeze_is_set) ? cfg->window_freeze : 0;
+    snprintf(b, n, "Freeze Symbol Window: %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_window_freeze_toggle(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->window_freeze_is_set) ? cfg->window_freeze : 0;
+    setenv("DSD_NEO_WINDOW_FREEZE", on ? "0" : "1", 1);
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
+}
+
+// RTL/TCP networking/Auto-PPM
+static const char*
+lbl_auto_ppm_snr(void* v, char* b, size_t n) {
+    (void)v;
+    double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 18.0);
+    snprintf(b, n, "Auto-PPM SNR threshold: %.1f dB", d);
+    return b;
+}
+
+static void
+cb_auto_ppm_snr(void* v, int ok, double d) {
+    (void)v;
+    if (!ok) {
+        return;
+    }
+    env_set_double("DSD_NEO_AUTO_PPM_SNR_DB", d);
+}
+
+static const char*
+lbl_auto_ppm_pwr(void* v, char* b, size_t n) {
+    (void)v;
+    double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -10.0);
+    snprintf(b, n, "Auto-PPM Min power: %.1f dB", d);
+    return b;
+}
+
+static void
+cb_auto_ppm_pwr(void* v, int ok, double d) {
+    (void)v;
+    if (ok) {
+        env_set_double("DSD_NEO_AUTO_PPM_PWR_DB", d);
+    }
+}
+
+static const char*
+lbl_auto_ppm_zeroppm(void* v, char* b, size_t n) {
+    (void)v;
+    int p = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 3);
+    snprintf(b, n, "Auto-PPM Zero-lock PPM: %d", p);
+    return b;
+}
+
+static void
+cb_auto_ppm_zeroppm(void* v, int ok, int p) {
+    (void)v;
+    if (ok) {
+        env_set_int("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", p);
+    }
+}
+
+static const char*
+lbl_auto_ppm_zerohz(void* v, char* b, size_t n) {
+    (void)v;
+    int h = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", 1500);
+    snprintf(b, n, "Auto-PPM Zero-lock Hz: %d", h);
+    return b;
+}
+
+static void
+cb_auto_ppm_zerohz(void* v, int ok, int h) {
+    (void)v;
+    if (ok) {
+        env_set_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", h);
+    }
+}
+
+static const char*
+lbl_auto_ppm_freeze(void* v, char* b, size_t n) {
+    (void)v;
+    const char* e = getenv("DSD_NEO_AUTO_PPM_FREEZE");
+    int on = (e && *e && *e != '0');
+    snprintf(b, n, "Auto-PPM Freeze: %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_auto_ppm_freeze(void* v) {
+    (void)v;
+    const char* e = getenv("DSD_NEO_AUTO_PPM_FREEZE");
+    int on = (e && *e && *e != '0');
+    setenv("DSD_NEO_AUTO_PPM_FREEZE", on ? "0" : "1", 1);
+}
+
+static const char*
+lbl_tcp_prebuf(void* v, char* b, size_t n) {
+    (void)v;
+    int ms = env_get_int("DSD_NEO_TCP_PREBUF_MS", 30);
+    snprintf(b, n, "RTL-TCP Prebuffer: %d ms", ms);
+    return b;
+}
+
+static void
+cb_tcp_prebuf(void* v, int ok, int ms) {
+    UiCtx* c = (UiCtx*)v;
+    if (!ok) {
+        return;
+    }
+    env_set_int("DSD_NEO_TCP_PREBUF_MS", ms);
+    if (c && c->opts && c->opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(c->opts);
+    }
+}
+
+static const char*
+lbl_tcp_rcvbuf(void* v, char* b, size_t n) {
+    (void)v;
+    int sz = env_get_int("DSD_NEO_TCP_RCVBUF", 0);
+    if (sz > 0) {
+        snprintf(b, n, "RTL-TCP SO_RCVBUF: %d bytes", sz);
+    } else {
+        snprintf(b, n, "RTL-TCP SO_RCVBUF: system default");
+    }
+    return b;
+}
+
+static void
+cb_tcp_rcvbuf(void* v, int ok, int sz) {
+    UiCtx* c = (UiCtx*)v;
+    if (!ok) {
+        return;
+    }
+    if (sz <= 0) {
+        setenv("DSD_NEO_TCP_RCVBUF", "", 1);
+    } else {
+        env_set_int("DSD_NEO_TCP_RCVBUF", sz);
+    }
+    if (c && c->opts && c->opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(c->opts);
+    }
+}
+
+static const char*
+lbl_tcp_rcvtimeo(void* v, char* b, size_t n) {
+    (void)v;
+    int ms = env_get_int("DSD_NEO_TCP_RCVTIMEO", 0);
+    if (ms > 0) {
+        snprintf(b, n, "RTL-TCP SO_RCVTIMEO: %d ms", ms);
+    } else {
+        snprintf(b, n, "RTL-TCP SO_RCVTIMEO: off");
+    }
+    return b;
+}
+
+static void
+cb_tcp_rcvtimeo(void* v, int ok, int ms) {
+    UiCtx* c = (UiCtx*)v;
+    if (!ok) {
+        return;
+    }
+    if (ms <= 0) {
+        setenv("DSD_NEO_TCP_RCVTIMEO", "", 1);
+    } else {
+        env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
+    }
+    if (c && c->opts && c->opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(c->opts);
+    }
+}
+
+static const char*
+lbl_tcp_waitall(void* v, char* b, size_t n) {
+    (void)v;
+    const char* e = getenv("DSD_NEO_TCP_WAITALL");
+    int on = (e && *e && *e != '0');
+    snprintf(b, n, "RTL-TCP MSG_WAITALL: %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_tcp_waitall(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    const char* e = getenv("DSD_NEO_TCP_WAITALL");
+    int on = (e && *e && *e != '0');
+    setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
+    if (c && c->opts && c->opts->audio_in_type == 3) {
+        (void)svc_rtl_restart(c->opts);
+    }
+}
+
+// Runtime scheduling and threads
+static const char*
+lbl_rt_sched(void* v, char* b, size_t n) {
+    (void)v;
+    const char* e = getenv("DSD_NEO_RT_SCHED");
+    int on = (e && *e && *e != '0');
+    snprintf(b, n, "Realtime Scheduling: %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_rt_sched(void* v) {
+    (void)v;
+    const char* e = getenv("DSD_NEO_RT_SCHED");
+    int on = (e && *e && *e != '0');
+    setenv("DSD_NEO_RT_SCHED", on ? "0" : "1", 1);
+}
+
+static const char*
+lbl_mt(void* v, char* b, size_t n) {
+    (void)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
+    snprintf(b, n, "Intra-block MT: %s", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_mt(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
+    setenv("DSD_NEO_MT", on ? "0" : "1", 1);
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
+}
+
+// Generic editor for DSD_NEO_* env var
+typedef struct {
+    UiCtx* c;
+    char name[64];
+} EnvEditCtx;
+
+static void
+cb_env_edit_value(void* u, const char* val) {
+    EnvEditCtx* ec = (EnvEditCtx*)u;
+    if (!ec) {
+        return;
+    }
+    if (val && *val) {
+        setenv(ec->name, val, 1);
+        // Apply to runtime config as appropriate
+        env_reparse_runtime_cfg(ec->c ? ec->c->opts : NULL);
+    }
+    free(ec);
+}
+
+static void
+cb_env_edit_name(void* u, const char* name) {
+    EnvEditCtx* ec = (EnvEditCtx*)u;
+    if (!ec) {
+        return;
+    }
+    if (!name || !*name) {
+        free(ec);
+        return;
+    }
+    // Require DSD_NEO_ prefix for safety
+    if (strncasecmp(name, "DSD_NEO_", 8) != 0) {
+        free(ec);
+        return;
+    }
+    snprintf(ec->name, sizeof ec->name, "%s", name);
+    const char* cur = getenv(ec->name);
+    ui_prompt_open_string_async("Enter value (empty to clear)", cur ? cur : "", 256, cb_env_edit_value, ec);
+}
+
+static void
+act_env_editor(void* v) {
+    EnvEditCtx* ec = (EnvEditCtx*)calloc(1, sizeof(EnvEditCtx));
+    if (!ec) {
+        return;
+    }
+    ec->c = (UiCtx*)v;
+    ui_prompt_open_string_async("Enter DSD_NEO_* variable name", "DSD_NEO_", 128, cb_env_edit_name, ec);
 }
 
 static void
@@ -2774,6 +3410,23 @@ lbl_allow(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Allow/White List [%s]", c->opts->trunk_use_allow_list ? "Active" : "Inactive");
     return b;
+}
+
+static const char*
+lbl_p25_enc_lockout(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    int on = (c && c->opts) ? ((c->opts->trunk_tune_enc_calls == 0) ? 1 : 0) : 0;
+    snprintf(b, n, "P25 Encrypted Call Lockout [%s]", on ? "On" : "Off");
+    return b;
+}
+
+static void
+act_p25_enc_lockout(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    c->opts->trunk_tune_enc_calls = c->opts->trunk_tune_enc_calls ? 0 : 1;
 }
 
 static const char*
@@ -5028,6 +5681,45 @@ act_xor_ks(void* v) {
 #ifdef USE_RTLSDR
 #endif
 
+// M17 encoder user data (CAN/DST/SRC)
+typedef struct {
+    UiCtx* c;
+} M17Ctx;
+
+static const char*
+lbl_m17_user_data(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    const char* s = (c && c->state && c->state->m17dat[0]) ? c->state->m17dat : "<unset>";
+    int m = (int)n - 18;
+    if (m < 0) {
+        m = 0;
+    }
+    snprintf(b, n, "M17 Encoder User Data: %.*s", m, s);
+    return b;
+}
+
+static void
+cb_m17_user_data(void* u, const char* text) {
+    M17Ctx* mc = (M17Ctx*)u;
+    if (mc && mc->c && mc->c->state && text) {
+        strncpy(mc->c->state->m17dat, text, 49);
+        mc->c->state->m17dat[49] = '\0';
+    }
+    free(mc);
+}
+
+static void
+act_m17_user_data(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    const char* pre = (c && c->state && c->state->m17dat[0]) ? c->state->m17dat : "";
+    M17Ctx* mc = (M17Ctx*)calloc(1, sizeof(M17Ctx));
+    if (!mc) {
+        return;
+    }
+    mc->c = c;
+    ui_prompt_open_string_async("Enter M17 User Data (CAN,DST,SRC)", pre, 128, cb_m17_user_data, mc);
+}
+
 // ---- UI Display Options ----
 static const char*
 lbl_ui_p25_metrics(void* v, char* b, size_t n) {
@@ -5261,6 +5953,11 @@ static const NcMenuItem IO_MENU_ITEMS[] = {
      .help = "Invert/uninvert all supported inputs.",
      .is_enabled = io_always_on,
      .on_select = act_toggle_invert},
+    {.id = "input_warn",
+     .label = "Low Input Warning (dBFS)",
+     .label_fn = lbl_input_warn,
+     .help = "Warn if input magnitude below threshold.",
+     .on_select = act_set_input_warn},
     {.id = "inv_x2",
      .label = "Invert X2-TDMA",
      .label_fn = lbl_inv_x2,
@@ -5424,6 +6121,11 @@ static const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .label_fn = lbl_p25_sm_basic,
      .help = "Enable simplified P25 SM (reduced safeties/post-hang gating).",
      .on_select = act_p25_sm_basic},
+    {.id = "p25_enc",
+     .label = "P25 Encrypted Call Lockout",
+     .label_fn = lbl_p25_enc_lockout,
+     .help = "Do not tune encrypted calls when On.",
+     .on_select = act_p25_enc_lockout},
     {.id = "p25_auto_adapt",
      .label = "P25 Auto-Adapt (beta)",
      .label_fn = lbl_p25_auto_adapt,
@@ -5550,6 +6252,11 @@ static const NcMenuItem KEYS_MENU_ITEMS[] = {
     {.id = "ken_scr", .label = "Kenwood DMR Scrambler...", .help = "Enter scrambler seed.", .on_select = act_ken_scr},
     {.id = "anytone_bp", .label = "Anytone BP Keystream...", .help = "Enter BP seed.", .on_select = act_anytone_bp},
     {.id = "xor_ks", .label = "Straight XOR Keystream...", .help = "Enter raw string to XOR.", .on_select = act_xor_ks},
+    {.id = "m17_ud",
+     .label = "M17 Encoder User Data...",
+     .label_fn = lbl_m17_user_data,
+     .help = "Set M17 encoder CAN/DST/SRC user data.",
+     .on_select = act_m17_user_data},
 };
 
 // UI Display
@@ -5716,6 +6423,229 @@ static const NcMenuItem DSP_MENU_ITEMS[] = {
 };
 #endif
 
+// ---- Advanced & Env submenus ----
+static const NcMenuItem P25_FOLLOW_ITEMS[] = {
+    {.id = "p25_vc_grace",
+     .label = "P25: VC grace (s)",
+     .label_fn = lbl_p25_vc_grace,
+     .help = "Seconds after VC tune before eligible to return to CC.",
+     .on_select = act_set_p25_vc_grace},
+    {.id = "p25_min_follow",
+     .label = "P25: Min follow dwell (s)",
+     .label_fn = lbl_p25_min_follow,
+     .help = "Minimum follow dwell after first voice.",
+     .on_select = act_set_p25_min_follow},
+    {.id = "p25_grant_voice",
+     .label = "P25: Grant->Voice timeout (s)",
+     .label_fn = lbl_p25_grant_voice,
+     .help = "Max seconds from grant to voice before return.",
+     .on_select = act_set_p25_grant_voice},
+    {.id = "p25_retune_backoff",
+     .label = "P25: Retune backoff (s)",
+     .label_fn = lbl_p25_retune_backoff,
+     .help = "Block immediate re-tune to same VC for N seconds.",
+     .on_select = act_set_p25_retune_backoff},
+    {.id = "p25_cc_grace",
+     .label = "P25: CC hunt grace (s)",
+     .label_fn = lbl_p25_cc_grace,
+     .help = "Grace period for CC candidate transitions.",
+     .on_select = act_set_p25_cc_grace},
+    {.id = "p25_force_extra",
+     .label = "P25: Safety-net extra (s)",
+     .label_fn = lbl_p25_force_extra,
+     .help = "Extra seconds beyond hangtime before force-release.",
+     .on_select = act_set_p25_force_extra},
+    {.id = "p25_force_margin",
+     .label = "P25: Safety-net margin (s)",
+     .label_fn = lbl_p25_force_margin,
+     .help = "Hard margin seconds beyond extra.",
+     .on_select = act_set_p25_force_margin},
+    {.id = "p25p1_err_pct",
+     .label = "P25p1: Err-hold %%",
+     .label_fn = lbl_p25_p1_err_pct,
+     .help = "IMBE error %% threshold to extend hang.",
+     .on_select = act_set_p25_p1_err_pct},
+    {.id = "p25p1_err_s",
+     .label = "P25p1: Err-hold seconds",
+     .label_fn = lbl_p25_p1_err_sec,
+     .help = "Additional seconds to hold when threshold exceeded.",
+     .on_select = act_set_p25_p1_err_sec},
+};
+
+static const NcMenuItem DSP_ADV_ITEMS[] = {
+    {.id = "clk_assist",
+     .label = "C4FM Clock Assist",
+     .label_fn = lbl_c4fm_clk,
+     .help = "Cycle C4FM clock assist: Off/EL/MM.",
+     .on_select = act_c4fm_clk_cycle},
+    {.id = "clk_sync",
+     .label = "C4FM Clock Assist while Synced",
+     .label_fn = lbl_c4fm_clk_sync,
+     .help = "Allow clock assist to run while voice is synced.",
+     .on_select = act_c4fm_clk_sync_toggle},
+    {.id = "deemph",
+     .label = "Deemphasis",
+     .label_fn = lbl_deemph,
+     .help = "Cycle deemphasis: Unset/Off/50/75/NFM.",
+     .on_select = act_deemph_cycle},
+    {.id = "audio_lpf",
+     .label = "Audio LPF cutoff...",
+     .label_fn = lbl_audio_lpf,
+     .help = "Set post-demod LPF cutoff in Hz (0=off).",
+     .on_select = act_set_audio_lpf},
+    {.id = "win_freeze",
+     .label = "Freeze Symbol Window",
+     .label_fn = lbl_window_freeze,
+     .help = "Freeze window selection and disable auto-centering.",
+     .on_select = act_window_freeze_toggle},
+    {.id = "ftz_daz",
+     .label = "SSE FTZ/DAZ",
+     .label_fn = lbl_ftz_daz,
+     .help = "Toggle Flush-To-Zero / Denormals-Are-Zero (x86 SSE).",
+     .on_select = act_toggle_ftz_daz},
+};
+
+/* (placeholder removed; see RTL_TCP_ADV_ITEMS_REAL below) */
+
+// Provide explicit wrappers for prompts (avoid function pointer type mismatch)
+static void
+act_auto_ppm_snr_prompt(void* v) {
+    double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 18.0);
+    ui_prompt_open_double_async("Auto-PPM SNR threshold (dB)", d, cb_auto_ppm_snr, v);
+}
+
+static void
+act_auto_ppm_pwr_prompt(void* v) {
+    double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -10.0);
+    ui_prompt_open_double_async("Auto-PPM min power (dB)", d, cb_auto_ppm_pwr, v);
+}
+
+static void
+act_auto_ppm_zeroppm_prompt(void* v) {
+    int p = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 3);
+    ui_prompt_open_int_async("Auto-PPM zero-lock PPM", p, cb_auto_ppm_zeroppm, v);
+}
+
+static void
+act_auto_ppm_zerohz_prompt(void* v) {
+    int h = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", 1500);
+    ui_prompt_open_int_async("Auto-PPM zero-lock Hz", h, cb_auto_ppm_zerohz, v);
+}
+
+static void
+act_tcp_prebuf_prompt(void* v) {
+    int ms = env_get_int("DSD_NEO_TCP_PREBUF_MS", 30);
+    ui_prompt_open_int_async("RTL-TCP prebuffer (ms)", ms, cb_tcp_prebuf, v);
+}
+
+static void
+act_tcp_rcvbuf_prompt(void* v) {
+    int sz = env_get_int("DSD_NEO_TCP_RCVBUF", 0);
+    ui_prompt_open_int_async("RTL-TCP SO_RCVBUF (0=default)", sz, cb_tcp_rcvbuf, v);
+}
+
+static void
+act_tcp_rcvtimeo_prompt(void* v) {
+    int ms = env_get_int("DSD_NEO_TCP_RCVTIMEO", 0);
+    ui_prompt_open_int_async("RTL-TCP SO_RCVTIMEO (ms; 0=off)", ms, cb_tcp_rcvtimeo, v);
+}
+
+static const NcMenuItem RTL_TCP_ADV_ITEMS_REAL[] = {
+    {.id = "ap_snr",
+     .label = "Auto-PPM SNR threshold...",
+     .label_fn = lbl_auto_ppm_snr,
+     .help = "Minimum SNR to allow spectrum-based PPM tracking.",
+     .on_select = act_auto_ppm_snr_prompt},
+    {.id = "ap_pwr",
+     .label = "Auto-PPM Min power...",
+     .label_fn = lbl_auto_ppm_pwr,
+     .help = "Minimum spectral power to track PPM.",
+     .on_select = act_auto_ppm_pwr_prompt},
+    {.id = "ap_zero_ppm",
+     .label = "Auto-PPM Zero-lock PPM...",
+     .label_fn = lbl_auto_ppm_zeroppm,
+     .help = "Snap to PPM=0 when within threshold.",
+     .on_select = act_auto_ppm_zeroppm_prompt},
+    {.id = "ap_zero_hz",
+     .label = "Auto-PPM Zero-lock Hz...",
+     .label_fn = lbl_auto_ppm_zerohz,
+     .help = "Snap to PPM=0 when within frequency threshold.",
+     .on_select = act_auto_ppm_zerohz_prompt},
+    {.id = "ap_freeze",
+     .label = "Auto-PPM Freeze",
+     .label_fn = lbl_auto_ppm_freeze,
+     .help = "Temporarily freeze auto-PPM updates.",
+     .on_select = act_auto_ppm_freeze},
+    {.id = "tcp_prebuf",
+     .label = "RTL-TCP Prebuffer (ms)...",
+     .label_fn = lbl_tcp_prebuf,
+     .help = "Internal prebuffering to absorb jitter.",
+     .on_select = act_tcp_prebuf_prompt},
+    {.id = "tcp_rcvbuf",
+     .label = "RTL-TCP SO_RCVBUF...",
+     .label_fn = lbl_tcp_rcvbuf,
+     .help = "Socket receive buffer size (bytes).",
+     .on_select = act_tcp_rcvbuf_prompt},
+    {.id = "tcp_rcvtimeo",
+     .label = "RTL-TCP SO_RCVTIMEO...",
+     .label_fn = lbl_tcp_rcvtimeo,
+     .help = "Socket receive timeout (ms).",
+     .on_select = act_tcp_rcvtimeo_prompt},
+    {.id = "tcp_waitall",
+     .label = "RTL-TCP MSG_WAITALL",
+     .label_fn = lbl_tcp_waitall,
+     .help = "Enable recv() MSG_WAITALL for full-block reads.",
+     .on_select = act_tcp_waitall},
+};
+
+static const NcMenuItem RUNTIME_ADV_ITEMS[] = {
+    {.id = "rt_sched",
+     .label = "Realtime Scheduling",
+     .label_fn = lbl_rt_sched,
+     .help = "Best-effort realtime threads (requires privileges).",
+     .on_select = act_rt_sched},
+    {.id = "mt",
+     .label = "Intra-block Multithreading",
+     .label_fn = lbl_mt,
+     .help = "Enable light worker-pool for hot loops.",
+     .on_select = act_mt},
+};
+
+static const NcMenuItem ENV_EDITOR_ITEMS[] = {
+    {.id = "edit",
+     .label = "Set DSD_NEO_* Variable...",
+     .help = "Edit any DSD_NEO_* environment variable.",
+     .on_select = act_env_editor},
+};
+
+static const NcMenuItem ADV_MENU_ITEMS[] = {
+    {.id = "p25_follow",
+     .label = "P25 Follower Tuning",
+     .help = "Adjust P25 SM/follower timing parameters.",
+     .submenu = P25_FOLLOW_ITEMS,
+     .submenu_len = sizeof P25_FOLLOW_ITEMS / sizeof P25_FOLLOW_ITEMS[0]},
+    {.id = "dsp_adv",
+     .label = "DSP Advanced",
+     .help = "Clock assist, deemph, LPF, window freeze, FTZ/DAZ.",
+     .submenu = DSP_ADV_ITEMS,
+     .submenu_len = sizeof DSP_ADV_ITEMS / sizeof DSP_ADV_ITEMS[0]},
+    {.id = "rtl_tcp_adv",
+     .label = "RTL/TCP Advanced",
+     .help = "Auto-PPM thresholds and RTL-TCP socket tuning.",
+     .submenu = RTL_TCP_ADV_ITEMS_REAL,
+     .submenu_len = sizeof RTL_TCP_ADV_ITEMS_REAL / sizeof RTL_TCP_ADV_ITEMS_REAL[0]},
+    {.id = "runtime",
+     .label = "Runtime & Threads",
+     .help = "Realtime scheduling and light MT.",
+     .submenu = RUNTIME_ADV_ITEMS,
+     .submenu_len = sizeof RUNTIME_ADV_ITEMS / sizeof RUNTIME_ADV_ITEMS[0]},
+    {.id = "env_editor",
+     .label = "Environment Editor",
+     .help = "Set any DSD_NEO_* variable.",
+     .submenu = ENV_EDITOR_ITEMS,
+     .submenu_len = sizeof ENV_EDITOR_ITEMS / sizeof ENV_EDITOR_ITEMS[0]},
+};
+
 void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
     UiCtx* c = ctx;
@@ -5780,6 +6710,11 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
          .help = "Configure LRRP file output.",
          .submenu = LRRP_MENU_ITEMS,
          .submenu_len = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITEMS[0]},
+        {.id = "advanced",
+         .label = "Advanced & Env",
+         .help = "P25 follower, DSP advanced, RTL/TCP, env editor.",
+         .submenu = ADV_MENU_ITEMS,
+         .submenu_len = sizeof ADV_MENU_ITEMS / sizeof ADV_MENU_ITEMS[0]},
         {.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit},
     };
     (void)c; // context used by callbacks; arrays are static so safe to expose

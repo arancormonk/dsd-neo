@@ -3324,7 +3324,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         static int enabled = 0;
         /* minimum SNR to trigger (kept for env/opt parsing below) */
         static double snr_thr_db = 6.0;
-        static int cooldown = 0;        /* simple rate limiter (loops) */
+        static int cooldown = 0; /* simple rate limiter (loops) */
         /* legacy cooldown_max unused after time-based throttle added */
         if (!init) {
             init = 1;
