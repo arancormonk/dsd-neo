@@ -63,6 +63,9 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 }
 #endif
 
+/* Forward decl: refresh TED SPS on rate change */
+static void maybe_refresh_ted_sps_after_rate_change(const dsd_opts* opts);
+
 /* Forward declaration for eye ring append used in demod loop */
 static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
 
@@ -220,6 +223,7 @@ struct RtlSdrInternals {
     struct controller_state* controller;
     struct input_ring_state* input_ring;
     struct udp_control** udp_ctrl_ptr;
+    const dsd_opts* opts; /* snapshot for mode hints (P25p1/2, etc.) */
     const dsdneoRuntimeConfig* cfg;
     /* Cooperative shutdown flag for threads launched by this stream */
     std::atomic<int> should_exit;
@@ -1119,6 +1123,8 @@ apply_capture_settings(uint32_t center_freq_hz) {
         LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", prev, dongle.rate,
                  demod.rate_out);
     }
+    /* Ensure TED SPS reflects the current effective sampling rate unless explicitly overridden. */
+    maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
 }
 
 /**
@@ -1181,6 +1187,60 @@ maybe_update_resampler_after_rate_change(void) {
         LOG_INFO("Resampler reconfigured: %d -> %d Hz (L=%d,M=%d).\n", inRate, target, L, M);
     }
     output.rate = target;
+    /* Re-derive TED SPS in case the effective output rate changed. */
+    maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
+}
+
+/*
+ * Derive a sensible default TED SPS from the current effective output rate.
+ *
+ * This keeps the timing loop aligned when users change the RTL bandwidth
+ * (e.g., 12 kHz -> 24 kHz) or when the resampler target/output rate changes.
+ * If DSD_NEO_TED_SPS is explicitly set, we do not override it. When a
+ * resampler is active, we prefer its target rate; otherwise we fall back to
+ * the demod output rate already computed for the current capture settings.
+ */
+static void
+maybe_refresh_ted_sps_after_rate_change(const dsd_opts* opts) {
+    (void)opts;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    /* Honor explicit TED_SPS; only auto-derive when not set by user. */
+    int env_sps_set = (cfg && cfg->ted_sps_is_set) ? 1 : 0;
+    if (env_sps_set) {
+        return;
+    }
+    /* Only apply when TED is in use or forced on digital paths. */
+    if (!demod.ted_enabled && !demod.ted_force) {
+        return;
+    }
+    /* Choose the current complex sample rate seen by the timing/discriminator path. */
+    int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
+                                             : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
+    if (Fs_cx <= 0) {
+        Fs_cx = 48000; /* conservative default */
+    }
+    int sps = 0;
+    /* Map by active digital mode when available; fall back to generic 4800 sym/s. */
+    if (opts && opts->frame_p25p2 == 1) {
+        /* 6000 sym/s */
+        sps = (Fs_cx + 3000) / 6000;
+    } else if (opts && opts->frame_p25p1 == 1) {
+        /* 4800 sym/s */
+        sps = (Fs_cx + 2400) / 4800;
+    } else if (opts && opts->frame_nxdn48 == 1) {
+        /* 2400 sym/s */
+        sps = (Fs_cx + 1200) / 2400;
+    } else {
+        /* Generic digital default (4800 sym/s) */
+        sps = (Fs_cx + 2400) / 4800;
+    }
+    if (sps < 2) {
+        sps = 2;
+    }
+    if (sps > 64) {
+        sps = 64;
+    }
+    demod.ted_sps = sps;
 }
 
 /**
@@ -1304,6 +1364,7 @@ controller_thread_fn(void* arg) {
             s->manual_retune_pending.store(0);
             apply_capture_settings((uint32_t)tgt);
             maybe_update_resampler_after_rate_change();
+            maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
             /* Reset demod/FLL/TED and clear any stale buffers on retune */
             demod_reset_on_retune(&demod);
             input_ring_clear(&input_ring);
@@ -1329,6 +1390,7 @@ controller_thread_fn(void* arg) {
         s->freq_now = (s->freq_now + 1) % s->freq_len;
         apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
         maybe_update_resampler_after_rate_change();
+        maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
         /* Reset demod/FLL/TED and clear any stale buffers on hop */
         demod_reset_on_retune(&demod);
         input_ring_clear(&input_ring);
@@ -3102,6 +3164,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         demod.resamp_enabled = 0;
     }
 
+    /* With demod.rate_out known and resampler configured, refresh TED SPS unless overridden. */
+    maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
+
     /* Reset endpoint before we start reading from it (mandatory) */
     rtl_device_reset_buffer(rtl_device_handle);
 
@@ -3119,6 +3184,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         g_stream->controller = &controller;
         g_stream->input_ring = &input_ring;
         g_stream->udp_ctrl_ptr = &g_udp_ctrl;
+        g_stream->opts = opts;
         g_stream->cfg = dsd_neo_get_config();
         g_stream->should_exit.store(0);
     }
