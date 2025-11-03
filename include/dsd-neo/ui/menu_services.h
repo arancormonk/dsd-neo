@@ -33,19 +33,6 @@ int svc_lrrp_set_dsdp(dsd_opts* opts); // ./DSDPlus.LRRP
 int svc_lrrp_set_custom(dsd_opts* opts, const char* filename);
 void svc_lrrp_disable(dsd_opts* opts);
 
-// Decode mode presets
-int svc_mode_auto(dsd_opts* opts, dsd_state* state);
-int svc_mode_tdma(dsd_opts* opts, dsd_state* state);
-int svc_mode_dstar(dsd_opts* opts, dsd_state* state);
-int svc_mode_m17(dsd_opts* opts, dsd_state* state);
-int svc_mode_edacs(dsd_opts* opts, dsd_state* state);
-int svc_mode_p25p2(dsd_opts* opts, dsd_state* state);
-int svc_mode_dpmr(dsd_opts* opts, dsd_state* state);
-int svc_mode_nxdn48(dsd_opts* opts, dsd_state* state);
-int svc_mode_nxdn96(dsd_opts* opts, dsd_state* state);
-int svc_mode_dmr(dsd_opts* opts, dsd_state* state);
-int svc_mode_ysf(dsd_opts* opts, dsd_state* state);
-
 // Misc toggles/actions
 void svc_toggle_inversion(dsd_opts* opts);
 void svc_reset_event_history(dsd_state* state);

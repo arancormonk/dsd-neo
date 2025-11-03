@@ -77,7 +77,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - Expanded DSP controls (power users welcome)
 
-  - Adaptive equalizer and decision‑feedback equalizer toggles with quick presets.
+  - Adaptive equalizer and decision‑feedback equalizer toggles with adjustable parameters.
   - Matched filters with adjustable RRC parameters (alpha, span) and a CMA warmup assist.
   - Timing and carrier helpers: enable/disable TED and FLL, tweak TED rate/gain, and force TED when needed.
   - IQ balance prefilter and DQPSK decision mode for tough RF environments.

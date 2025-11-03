@@ -3706,33 +3706,6 @@ act_c4fm_clk_sync_toggle(void* v) {
     rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
 }
 
-/* ---- One-click C4FM robustness preset ---- */
-static const char*
-lbl_c4fm_robust(void* v, char* b, size_t n) {
-    UNUSED(v);
-    snprintf(b, n, "C4FM Robustness Preset (apply)");
-    return b;
-}
-
-static void
-act_c4fm_robust(void* v) {
-    UNUSED(v);
-    /* Enable DD eq with modest settings */
-    rtl_stream_set_c4fm_dd_eq(1);
-    rtl_stream_set_c4fm_dd_eq_params(5, 2);
-    /* Enable adaptive CMA with longer span; medium strength, continuous */
-    rtl_stream_set_fm_cma(1);
-    rtl_stream_set_fm_cma_params(7, 2, 0);
-    rtl_stream_set_fm_cma_strength(1);
-    /* Ensure limiter/AGC won't fight CMA */
-    rtl_stream_set_fm_limiter(0);
-    rtl_stream_set_fm_agc(0);
-    /* Enable TED and force it for FM/C4FM; set SPS ~10 */
-    rtl_stream_toggle_ted(1);
-    rtl_stream_set_ted_force(1);
-    rtl_stream_set_ted_sps(10);
-}
-
 static void
 act_toggle_fm_cma(void* v) {
     UNUSED(v);
@@ -5173,11 +5146,6 @@ void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "0=continuous; otherwise samples."},
         {.id = "fm_cma_w+", .label = "Warmup +5000", .on_select = act_fm_cma_warm_up},
         {.id = "fm_cma_w-", .label = "Warmup -5000", .on_select = act_fm_cma_warm_dn},
-        {.id = "c4fm_robust",
-         .label = "C4FM Robustness Preset",
-         .label_fn = lbl_c4fm_robust,
-         .help = "Applies: DD EQ (5/2), CMA (7/2, Medium), TED On/Force, SPS=10; disables FM AGC/Limiter.",
-         .on_select = act_c4fm_robust},
         {.id = "c4fm_dd",
          .label = "C4FM DD Equalizer",
          .label_fn = lbl_c4fm_dd,
@@ -5422,71 +5390,6 @@ lbl_lrrp_current(void* vctx, char* b, size_t n) {
 // ---- Main Menu ----
 
 // action wrappers
-static void
-act_mode_auto(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_auto(c->opts, c->state);
-}
-
-static void
-act_mode_tdma(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_tdma(c->opts, c->state);
-}
-
-static void
-act_mode_dstar(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_dstar(c->opts, c->state);
-}
-
-static void
-act_mode_m17(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_m17(c->opts, c->state);
-}
-
-static void
-act_mode_edacs(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_edacs(c->opts, c->state);
-}
-
-static void
-act_mode_p25p2(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_p25p2(c->opts, c->state);
-}
-
-static void
-act_mode_dpmr(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_dpmr(c->opts, c->state);
-}
-
-static void
-act_mode_n48(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_nxdn48(c->opts, c->state);
-}
-
-static void
-act_mode_n96(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_nxdn96(c->opts, c->state);
-}
-
-static void
-act_mode_dmr(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_dmr(c->opts, c->state);
-}
-
-static void
-act_mode_ysf(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_mode_ysf(c->opts, c->state);
-}
 
 static void
 act_toggle_invert(void* v) {
@@ -6521,11 +6424,6 @@ static const NcMenuItem DSP_OVERVIEW_ITEMS[] = {
      .help = "Adjust Auto-DSP thresholds and windows.",
      .submenu = AUTO_DSP_CFG_ITEMS,
      .submenu_len = sizeof AUTO_DSP_CFG_ITEMS / sizeof AUTO_DSP_CFG_ITEMS[0]},
-    {.id = "auto_smart",
-     .label = "Apply C4FM Robustness Preset",
-     .label_fn = lbl_c4fm_robust,
-     .help = "Apply robust DD EQ + CMA + TED preset.",
-     .on_select = act_c4fm_robust},
 };
 
 static const NcMenuItem DSP_PATH_ITEMS[] = {
@@ -6772,8 +6670,8 @@ static const NcMenuItem DSP_BLANKER_ITEMS[] = {
 
 static const NcMenuItem DSP_MENU_ITEMS[] = {
     {.id = "overview",
-     .label = "Overview & Presets...",
-     .help = "Global toggles, status, and preset.",
+     .label = "Overview...",
+     .help = "Global toggles and status.",
      .submenu = DSP_OVERVIEW_ITEMS,
      .submenu_len = sizeof DSP_OVERVIEW_ITEMS / sizeof DSP_OVERVIEW_ITEMS[0]},
     {.id = "path",
@@ -7035,26 +6933,7 @@ static const NcMenuItem ADV_MENU_ITEMS[] = {
 void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
     UiCtx* c = ctx;
-    static const NcMenuItem decode_items[] = {
-        {.id = "auto", .label = "Auto", .help = "Auto-detect: P25p1, P25p2, DMR, YSF.", .on_select = act_mode_auto},
-        {.id = "tdma", .label = "TDMA", .help = "TDMA focus: P25p1, P25p2, DMR.", .on_select = act_mode_tdma},
-        {.id = "p25p2", .label = "P25 Phase 2", .help = "P25 Phase 2 control or voice.", .on_select = act_mode_p25p2},
-        {.id = "dmr", .label = "DMR", .help = "Switch to DMR (stereo).", .on_select = act_mode_dmr},
-        {.id = "ysf", .label = "YSF", .help = "Switch to Yaesu System Fusion.", .on_select = act_mode_ysf},
-        {.id = "dstar", .label = "D-STAR", .help = "Switch to D-STAR demodulation.", .on_select = act_mode_dstar},
-        {.id = "m17", .label = "M17", .help = "Switch to M17 demodulation.", .on_select = act_mode_m17},
-        {.id = "edacs", .label = "EDACS / ProVoice", .help = "EDACS/ProVoice (GFSK).", .on_select = act_mode_edacs},
-        {.id = "n48", .label = "NXDN 48", .help = "Switch to NXDN 48.", .on_select = act_mode_n48},
-        {.id = "n96", .label = "NXDN 96", .help = "Switch to NXDN 96.", .on_select = act_mode_n96},
-        {.id = "dpmr", .label = "dPMR", .help = "Switch to dPMR demodulation.", .on_select = act_mode_dpmr},
-    };
-
     static const NcMenuItem items[] = {
-        {.id = "decode",
-         .label = "Decode...",
-         .help = "Select decode mode.",
-         .submenu = decode_items,
-         .submenu_len = sizeof decode_items / sizeof decode_items[0]},
         {.id = "devices_io",
          .label = "Devices & IO",
          .help = "TCP, symbol replay, inversion.",
