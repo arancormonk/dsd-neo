@@ -47,7 +47,7 @@ ui_thread_main(void* arg) {
 
     struct timespec ts;
     ts.tv_sec = 0;
-    ts.tv_nsec = 15 * 1000 * 1000; // ~15 ms sleep cadence
+    ts.tv_nsec = 15L * 1000L * 1000L; // ~15 ms sleep cadence
 
     // Initialize ncurses lifecycle in UI thread
     if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
@@ -56,7 +56,7 @@ ui_thread_main(void* arg) {
 
     struct timespec last_draw = {0, 0};
     clock_gettime(CLOCK_MONOTONIC, &last_draw);
-    const long frame_ns = 66 * 1000 * 1000; // ~15 FPS cap
+    const long frame_ns = 66L * 1000L * 1000L; // ~15 FPS cap
 
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays handled in the UI thread when curses is ready.
