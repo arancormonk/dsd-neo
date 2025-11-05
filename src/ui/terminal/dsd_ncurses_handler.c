@@ -40,8 +40,17 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     }
 
     // When async UI is ON, convert actions to queued commands and avoid direct mutations.
+    // All keys are consumed in this branch; no legacy handlers run.
     if (opts->ui_async) {
         switch (c) {
+            case DSD_KEY_ESC: {
+                // Drain any pending escape sequence bytes without spinning.
+                int ch2;
+                while ((ch2 = getch()) != ERR) {
+                    (void)ch2;
+                }
+                return 1;
+            }
             case DSD_KEY_MUTE_LOWER:
             case DSD_KEY_MUTE_UPPER: ui_post_cmd(UI_CMD_TOGGLE_MUTE, NULL, 0); return 1;
             case DSD_KEY_COMPACT: ui_post_cmd(UI_CMD_TOGGLE_COMPACT, NULL, 0); return 1;
@@ -193,10 +202,12 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
                 }
                 return 1;
             default:
-                // Fallback: allow legacy handlers below to run for keys not yet
-                // migrated to async commands so hotkeys keep working.
-                break;
+                // Consume unknown keys in async mode to avoid legacy mutations.
+                return 1;
         }
+        // If we handled a known key above, we already returned. For anything
+        // else in async mode, consume the key and do not fall through.
+        return 1;
     }
 
     if (c == DSD_KEY_TOGGLE_P25GA) //'T' key, toggle P25 Group Affiliation section
@@ -215,18 +226,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
     // if (c != -1)
     //   fprintf (stderr, "\n User Input: %i / %c ;;", c, c);
 
-    //TEST: Handle Escape Characters
-    //if issues arise, just go back to the way it was before
-    //this is primarly a fix for scroll wheel activatign the menu
-    //and Windows Powershell right-click doing a copy and paste
-    //and sendign tons of garbage getch chars here and changing things
+    // Handle ESC in legacy mode as well by draining any pending bytes.
     if (c == DSD_KEY_ESC) {
-        // Drain any pending escape sequence bytes without spinning for long periods.
-        // getch() is configured non-blocking via timeout(0) in ncursesPrinter.
-        // Read until the input queue is empty (ERR), then return.
         int ch;
         while ((ch = getch()) != ERR) {
-            (void)ch; // discard
+            (void)ch;
         }
         return 1;
     }

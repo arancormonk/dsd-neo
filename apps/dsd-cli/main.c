@@ -2040,7 +2040,7 @@ initState(dsd_state* state) {
     state->data_ks_start[0] = 0;
     state->data_ks_start[1] = 0;
 
-    state->menuopen = 0; //is the ncurses menu open, if so, don't process frame sync
+    /* menu overlay is now fully async and nonblocking; no demod gating needed */
 
     state->dmr_encL = 0;
     state->dmr_encR = 0;

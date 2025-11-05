@@ -796,7 +796,6 @@ typedef struct {
     int payload_mfidR;
     int p25vc;
     int M;
-    int menuopen;
 
     //AES Key Segments
     int aes_key_loaded[2];

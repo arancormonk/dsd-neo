@@ -541,7 +541,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
     UNUSED(state);
 
-    // state->menuopen = 1; //flag the menu is open, stop processing getFrameSync
+    // menu overlays are nonblocking and do not gate demod processing
     mbe_printVersion(mbeversionstr);
     setlocale(LC_ALL, "");
     initscr(); //Initialize NCURSES screen window
@@ -1226,12 +1226,11 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         }
         s_unicode_ready = ok;
     }
-    if (opts->eye_unicode && !s_unicode_ready) {
-        opts->eye_unicode = 0;
-        if (!s_unicode_warned) {
-            printw("| (Unicode block glyphs unsupported; falling back to ASCII)\n");
-            s_unicode_warned = 1;
-        }
+    /* Compute effective Unicode use for this frame without mutating opts */
+    int use_unicode_ui = (opts && opts->eye_unicode && s_unicode_ready);
+    if (opts && opts->eye_unicode && !s_unicode_ready && !s_unicode_warned) {
+        printw("| (Unicode block glyphs unsupported; falling back to ASCII)\n");
+        s_unicode_warned = 1;
     }
     if (n <= 0 || sps <= 0) {
         ui_print_lborder();
@@ -1525,7 +1524,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                     used_guide = gp;
                 }
             }
-            if (opts->eye_unicode && ch == 0 && !used_guide) {
+            if (use_unicode_ui && ch == 0 && !used_guide) {
                 /* Redetermine density index for unicode and print glyph */
                 unsigned short d2 = den[(size_t)y * (size_t)W + (size_t)x];
                 double f2 = (double)d2 / (double)dmax;
@@ -1584,7 +1583,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     /* Legend + reference info */
     ui_print_lborder();
     printw(" Ref: '-' Q1/Q3, '=' median; '|' edges; '+' crossings\n");
-    if (opts->eye_unicode) {
+    if (use_unicode_ui) {
         ui_print_lborder();
         printw(" Density: ▁ ▂ ▃ ▄ ▅ ▆ ▇ █  (low -> high)%s\n", (opts->eye_color && has_colors()) ? "; colored" : "");
     } else {
@@ -1599,7 +1598,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         printw(" Color:   ");
         for (int i = 0; i < color_len; i++) {
             attron(COLOR_PAIR((short)(color_base + i)));
-            if (opts->eye_unicode) {
+            if (use_unicode_ui) {
                 addstr("██");
             } else {
                 addstr("##");
