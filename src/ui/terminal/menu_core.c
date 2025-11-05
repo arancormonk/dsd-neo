@@ -8,6 +8,7 @@
 #include <dsd-neo/ui/menu_core.h>
 
 #include <ctype.h>
+#include <ncurses.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,8 @@
 
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_services.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_cmd.h>
 #include <strings.h>
 
 #if defined(__SSE__) || defined(__SSE2__)
@@ -28,6 +31,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/ui/ui_dsp_cmd.h>
 
 /* Forward declarations for new P25p2 RRC UI handlers */
 static const char* lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n);
@@ -429,9 +433,8 @@ cb_event_log_set(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        if (svc_set_event_log(c->opts, path) == 0) {
-            ui_statusf("Event log: %s", path);
-        }
+        ui_post_cmd(UI_CMD_EVENT_LOG_SET, path, strlen(path) + 1);
+        ui_statusf("Event log set requested");
     }
 }
 
@@ -442,9 +445,8 @@ cb_static_wav(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        if (svc_open_static_wav(c->opts, c->state, path) == 0) {
-            ui_statusf("Static WAV: %s", path);
-        }
+        ui_post_cmd(UI_CMD_WAV_STATIC_OPEN, path, strlen(path) + 1);
+        ui_statusf("Static WAV open requested");
     }
 }
 
@@ -455,9 +457,8 @@ cb_raw_wav(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        if (svc_open_raw_wav(c->opts, c->state, path) == 0) {
-            ui_statusf("Raw WAV: %s", path);
-        }
+        ui_post_cmd(UI_CMD_WAV_RAW_OPEN, path, strlen(path) + 1);
+        ui_statusf("Raw WAV open requested");
     }
 }
 
@@ -468,9 +469,8 @@ cb_dsp_out(void* v, const char* name) {
         return;
     }
     if (name && *name) {
-        if (svc_set_dsp_output_file(c->opts, name) == 0) {
-            ui_statusf("DSP out: %s", c->opts->dsp_out_file);
-        }
+        ui_post_cmd(UI_CMD_DSP_OUT_SET, name, strlen(name) + 1);
+        ui_statusf("DSP output set requested");
     }
 }
 
@@ -482,7 +482,8 @@ cb_import_chan(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        svc_import_channel_map(c->opts, c->state, p);
+        ui_post_cmd(UI_CMD_IMPORT_CHANNEL_MAP, p, strlen(p) + 1);
+        ui_statusf("Import channel map requested");
     }
 }
 
@@ -493,7 +494,8 @@ cb_import_group(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        svc_import_group_list(c->opts, c->state, p);
+        ui_post_cmd(UI_CMD_IMPORT_GROUP_LIST, p, strlen(p) + 1);
+        ui_statusf("Import group list requested");
     }
 }
 
@@ -504,7 +506,8 @@ cb_keys_dec(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        svc_import_keys_dec(c->opts, c->state, p);
+        ui_post_cmd(UI_CMD_IMPORT_KEYS_DEC, p, strlen(p) + 1);
+        ui_statusf("Import keys (DEC) requested");
     }
 }
 
@@ -515,7 +518,8 @@ cb_keys_hex(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        svc_import_keys_hex(c->opts, c->state, p);
+        ui_post_cmd(UI_CMD_IMPORT_KEYS_HEX, p, strlen(p) + 1);
+        ui_statusf("Import keys (HEX) requested");
     }
 }
 
@@ -527,7 +531,8 @@ cb_setmod_bw(void* v, int ok, int bw) {
         return;
     }
     if (ok) {
-        svc_set_rigctl_setmod_bw(c->opts, bw);
+        int32_t hz = bw;
+        ui_post_cmd(UI_CMD_RIGCTL_SET_MOD_BW, &hz, sizeof hz);
     }
 }
 
@@ -538,7 +543,8 @@ cb_tg_hold(void* v, int ok, int tg) {
         return;
     }
     if (ok) {
-        svc_set_tg_hold(c->state, (unsigned)tg);
+        uint32_t t = (unsigned)tg;
+        ui_post_cmd(UI_CMD_TG_HOLD_SET, &t, sizeof t);
     }
 }
 
@@ -549,7 +555,8 @@ cb_hangtime(void* v, int ok, double s) {
         return;
     }
     if (ok) {
-        svc_set_hangtime(c->opts, s);
+        double d = s;
+        ui_post_cmd(UI_CMD_HANGTIME_SET, &d, sizeof d);
     }
 }
 
@@ -566,7 +573,8 @@ cb_slot_pref(void* v, int ok, int p) {
         if (p > 2) {
             p = 2;
         }
-        svc_set_slot_pref(c->opts, p - 1);
+        int32_t pref01 = p - 1;
+        ui_post_cmd(UI_CMD_SLOT_PREF_SET, &pref01, sizeof pref01);
     }
 }
 
@@ -577,7 +585,8 @@ cb_slots_on(void* v, int ok, int m) {
         return;
     }
     if (ok) {
-        svc_set_slots_onoff(c->opts, m);
+        int32_t mask = m;
+        ui_post_cmd(UI_CMD_SLOTS_ONOFF_SET, &mask, sizeof mask);
     }
 }
 
@@ -589,9 +598,8 @@ cb_tyt_ap(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        char tmp[256];
-        snprintf(tmp, sizeof tmp, "%s", s);
-        tyt_ap_pc4_keystream_creation(c->state, tmp);
+        ui_post_cmd(UI_CMD_KEY_TYT_AP_SET, s, strlen(s) + 1);
+        ui_statusf("TYT AP keystream set requested");
     }
 }
 
@@ -602,9 +610,8 @@ cb_retevis_rc2(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        char tmp[256];
-        snprintf(tmp, sizeof tmp, "%s", s);
-        retevis_rc2_keystream_creation(c->state, tmp);
+        ui_post_cmd(UI_CMD_KEY_RETEVIS_RC2_SET, s, strlen(s) + 1);
+        ui_statusf("Retevis AP keystream set requested");
     }
 }
 
@@ -615,9 +622,8 @@ cb_tyt_ep(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        char tmp[256];
-        snprintf(tmp, sizeof tmp, "%s", s);
-        tyt_ep_aes_keystream_creation(c->state, tmp);
+        ui_post_cmd(UI_CMD_KEY_TYT_EP_SET, s, strlen(s) + 1);
+        ui_statusf("TYT EP keystream set requested");
     }
 }
 
@@ -628,9 +634,8 @@ cb_ken_scr(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        char tmp[256];
-        snprintf(tmp, sizeof tmp, "%s", s);
-        ken_dmr_scrambler_keystream_creation(c->state, tmp);
+        ui_post_cmd(UI_CMD_KEY_KEN_SCR_SET, s, strlen(s) + 1);
+        ui_statusf("Kenwood scrambler keystream set requested");
     }
 }
 
@@ -641,9 +646,8 @@ cb_anytone_bp(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        char tmp[256];
-        snprintf(tmp, sizeof tmp, "%s", s);
-        anytone_bp_keystream_creation(c->state, tmp);
+        ui_post_cmd(UI_CMD_KEY_ANYTONE_BP_SET, s, strlen(s) + 1);
+        ui_statusf("Anytone BP keystream set requested");
     }
 }
 
@@ -654,9 +658,8 @@ cb_xor_ks(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        char tmp[256];
-        snprintf(tmp, sizeof tmp, "%s", s);
-        straight_mod_xor_keystream_creation(c->state, tmp);
+        ui_post_cmd(UI_CMD_KEY_XOR_SET, s, strlen(s) + 1);
+        ui_statusf("XOR keystream set requested");
     }
 }
 
@@ -672,10 +675,8 @@ cb_key_basic(void* v, int ok, int val) {
         if (vdec > 255ULL) {
             vdec = 255ULL;
         }
-        c->state->K = vdec;
-        c->state->keyloader = 0;
-        c->state->payload_keyid = c->state->payload_keyidR = 0;
-        c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
+        uint32_t k = (uint32_t)vdec;
+        ui_post_cmd(UI_CMD_KEY_BASIC_SET, &k, sizeof k);
     }
 }
 
@@ -690,10 +691,8 @@ cb_key_scrambler(void* v, int ok, int val) {
         if (vdec > 0x7FFFULL) {
             vdec = 0x7FFFULL;
         }
-        c->state->R = vdec;
-        c->state->keyloader = 0;
-        c->state->payload_keyid = c->state->payload_keyidR = 0;
-        c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
+        uint32_t r = (uint32_t)vdec;
+        ui_post_cmd(UI_CMD_KEY_SCRAMBLER_SET, &r, sizeof r);
     }
 }
 
@@ -706,11 +705,8 @@ cb_key_rc4des(void* v, const char* text) {
     if (text && *text) {
         unsigned long long th = 0ULL;
         if (parse_hex_u64(text, &th)) {
-            c->state->R = th;
-            c->state->RR = th;
-            c->state->keyloader = 0;
-            c->state->payload_keyid = c->state->payload_keyidR = 0;
-            c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
+            uint64_t r = th;
+            ui_post_cmd(UI_CMD_KEY_RC4DES_SET, &r, sizeof r);
         }
     }
 }
@@ -719,6 +715,7 @@ cb_key_rc4des(void* v, const char* text) {
 typedef struct {
     UiCtx* c;
     int step;
+    unsigned long long H, K1, K2, K3, K4;
 } HyCtx;
 
 static void
@@ -728,18 +725,16 @@ cb_hytera_step(void* u, const char* text) {
         return;
     }
     unsigned long long t = 0ULL;
-    if (text && *text) {
-        if (parse_hex_u64(text, &t)) {
-            if (hc->step == 0) {
-                hc->c->state->H = t;
-                hc->c->state->K1 = t;
-            } else if (hc->step == 1) {
-                hc->c->state->K2 = t;
-            } else if (hc->step == 2) {
-                hc->c->state->K3 = t;
-            } else if (hc->step == 3) {
-                hc->c->state->K4 = t;
-            }
+    if (text && *text && parse_hex_u64(text, &t)) {
+        if (hc->step == 0) {
+            hc->H = t;
+            hc->K1 = t;
+        } else if (hc->step == 1) {
+            hc->K2 = t;
+        } else if (hc->step == 2) {
+            hc->K3 = t;
+        } else if (hc->step == 3) {
+            hc->K4 = t;
         }
     }
     hc->step++;
@@ -755,13 +750,19 @@ cb_hytera_step(void* u, const char* text) {
         ui_prompt_open_string_async("Hytera Privacy Key 4 (HEX) or 0", NULL, 128, cb_hytera_step, hc);
         return;
     }
-    hc->c->state->keyloader = 0;
+
+    struct {
+        uint64_t H, K1, K2, K3, K4;
+    } p = {hc->H, hc->K1, hc->K2, hc->K3, hc->K4};
+
+    ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
     free(hc);
 }
 
 typedef struct {
     UiCtx* c;
     int step;
+    unsigned long long K1, K2, K3, K4;
 } AesCtx;
 
 static void
@@ -773,13 +774,13 @@ cb_aes_step(void* u, const char* text) {
     unsigned long long t = 0ULL;
     if (text && *text && parse_hex_u64(text, &t)) {
         if (ac->step == 0) {
-            ac->c->state->K1 = t;
+            ac->K1 = t;
         } else if (ac->step == 1) {
-            ac->c->state->K2 = t;
+            ac->K2 = t;
         } else if (ac->step == 2) {
-            ac->c->state->K3 = t;
+            ac->K3 = t;
         } else if (ac->step == 3) {
-            ac->c->state->K4 = t;
+            ac->K4 = t;
         }
     }
     ac->step++;
@@ -795,7 +796,12 @@ cb_aes_step(void* u, const char* text) {
         ui_prompt_open_string_async("AES Segment 4 (HEX) or 0", NULL, 128, cb_aes_step, ac);
         return;
     }
-    ac->c->state->keyloader = 0;
+
+    struct {
+        uint64_t K1, K2, K3, K4;
+    } p = {ac->K1, ac->K2, ac->K3, ac->K4};
+
+    ui_post_cmd(UI_CMD_KEY_AES_SET, &p, sizeof p);
     free(ac);
 }
 
@@ -807,11 +813,8 @@ cb_lr_custom(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        if (svc_lrrp_set_custom(c->opts, path) == 0) {
-            ui_statusf("LRRP output: %s", c->opts->lrrp_out_file);
-        } else {
-            ui_statusf("Failed to set LRRP custom output");
-        }
+        ui_post_cmd(UI_CMD_LRRP_SET_CUSTOM, path, strlen(path) + 1);
+        ui_statusf("LRRP custom output requested");
     }
 }
 
@@ -845,7 +848,14 @@ cb_p2_step(void* u, const char* text) {
         ui_prompt_open_string_async("Enter Phase 2 NAC/CC (HEX)", pre, sizeof pre, cb_p2_step, pc);
         return;
     }
-    svc_set_p2_params(pc->c->state, pc->w, pc->s, pc->n);
+
+    struct {
+        uint64_t w;
+        uint64_t s;
+        uint64_t n;
+    } p = {pc->w, pc->s, pc->n};
+
+    ui_post_cmd(UI_CMD_P25_P2_PARAMS_SET, &p, sizeof p);
     free(pc);
 }
 
@@ -857,11 +867,8 @@ cb_io_save_symbol_capture(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        if (svc_open_symbol_out(c->opts, c->state, path) == 0) {
-            ui_statusf("Symbol capture: %s", c->opts->symbol_out_file);
-        } else {
-            ui_statusf("Failed to open symbol capture");
-        }
+        ui_post_cmd(UI_CMD_SYMCAP_OPEN, path, strlen(path) + 1);
+        ui_statusf("Symbol capture open requested");
     }
 }
 
@@ -873,11 +880,8 @@ cb_io_read_symbol_bin(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        if (svc_open_symbol_in(c->opts, c->state, path) == 0) {
-            ui_statusf("Symbol input: %s", path);
-        } else {
-            ui_statusf("Failed to open: %s", path);
-        }
+        ui_post_cmd(UI_CMD_SYMBOL_IN_OPEN, path, strlen(path) + 1);
+        ui_statusf("Symbol input open requested");
     }
 }
 
@@ -893,11 +897,16 @@ cb_udp_out_port(void* u, int ok, int port) {
         return;
     }
     ctx->port = port;
-    if (svc_udp_output_config(ctx->c->opts, ctx->c->state, ctx->host, ctx->port) == 0) {
-        ui_statusf("UDP out: %s:%d", ctx->host, ctx->port);
-    } else {
-        ui_statusf("UDP out failed");
-    }
+
+    struct {
+        char host[256];
+        int32_t port;
+    } payload = {0};
+
+    snprintf(payload.host, sizeof payload.host, "%s", ctx->host);
+    payload.port = port;
+    ui_post_cmd(UI_CMD_UDP_OUT_CFG, &payload, sizeof payload);
+    ui_statusf("UDP out requested: %s:%d", ctx->host, ctx->port);
     free(ctx);
 }
 
@@ -930,9 +939,9 @@ cb_gain_dig(void* u, int ok, double g) {
         if (g > 50.0) {
             g = 50.0;
         }
-        c->opts->audio_gain = (float)g;
-        c->opts->audio_gainR = (float)g;
-        ui_statusf("Digital gain set to %.1f", g);
+        int32_t v = (int32_t)g;
+        ui_post_cmd(UI_CMD_GAIN_SET, &v, sizeof v);
+        ui_statusf("Digital gain set requested to %.1f", g);
     }
 }
 
@@ -949,8 +958,9 @@ cb_gain_ana(void* u, int ok, double g) {
         if (g > 100.0) {
             g = 100.0;
         }
-        c->opts->audio_gainA = (float)g;
-        ui_statusf("Analog gain set to %.1f", g);
+        int32_t v = (int32_t)g;
+        ui_post_cmd(UI_CMD_AGAIN_SET, &v, sizeof v);
+        ui_statusf("Analog gain set requested to %.1f", g);
     }
 }
 
@@ -967,8 +977,9 @@ cb_input_vol(void* u, int ok, int m) {
         if (m > 16) {
             m = 16;
         }
-        c->opts->input_volume_multiplier = m;
-        ui_statusf("Input Volume set to %dX", m);
+        int32_t v = m;
+        ui_post_cmd(UI_CMD_INPUT_VOL_SET, &v, sizeof v);
+        ui_statusf("Input Volume set requested to %dX", m);
     }
 }
 
@@ -980,7 +991,8 @@ cb_rtl_dev(void* u, int ok, int i) {
         return;
     }
     if (ok) {
-        svc_rtl_set_dev_index(c->opts, i);
+        int32_t v = i;
+        ui_post_cmd(UI_CMD_RTL_SET_DEV, &v, sizeof v);
     }
 }
 
@@ -991,7 +1003,8 @@ cb_rtl_freq(void* u, int ok, int f) {
         return;
     }
     if (ok) {
-        svc_rtl_set_freq(c->opts, (uint32_t)f);
+        int32_t v = f;
+        ui_post_cmd(UI_CMD_RTL_SET_FREQ, &v, sizeof v);
     }
 }
 
@@ -1002,7 +1015,8 @@ cb_rtl_gain(void* u, int ok, int g) {
         return;
     }
     if (ok) {
-        svc_rtl_set_gain(c->opts, g);
+        int32_t v = g;
+        ui_post_cmd(UI_CMD_RTL_SET_GAIN, &v, sizeof v);
     }
 }
 
@@ -1013,7 +1027,8 @@ cb_rtl_ppm(void* u, int ok, int p) {
         return;
     }
     if (ok) {
-        svc_rtl_set_ppm(c->opts, p);
+        int32_t v = p;
+        ui_post_cmd(UI_CMD_RTL_SET_PPM, &v, sizeof v);
     }
 }
 
@@ -1024,7 +1039,8 @@ cb_rtl_bw(void* u, int ok, int bw) {
         return;
     }
     if (ok) {
-        svc_rtl_set_bandwidth(c->opts, bw);
+        int32_t v = bw;
+        ui_post_cmd(UI_CMD_RTL_SET_BW, &v, sizeof v);
     }
 }
 
@@ -1035,7 +1051,8 @@ cb_rtl_sql(void* u, int ok, double dB) {
         return;
     }
     if (ok) {
-        svc_rtl_set_sql_db(c->opts, dB);
+        double v = dB;
+        ui_post_cmd(UI_CMD_RTL_SET_SQL_DB, &v, sizeof v);
     }
 }
 
@@ -1046,7 +1063,8 @@ cb_rtl_vol(void* u, int ok, int m) {
         return;
     }
     if (ok) {
-        svc_rtl_set_volume_mult(c->opts, m);
+        int32_t v = m;
+        ui_post_cmd(UI_CMD_RTL_SET_VOL_MULT, &v, sizeof v);
     }
 }
 
@@ -1058,8 +1076,8 @@ cb_switch_to_wav(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
-        c->opts->audio_in_type = 2;
+        ui_post_cmd(UI_CMD_INPUT_WAV_SET, path, strlen(path) + 1);
+        ui_statusf("WAV input requested: %s", path);
     }
 }
 
@@ -1072,12 +1090,11 @@ cb_switch_to_symbol(void* v, const char* path) {
     if (path && *path) {
         size_t len = strlen(path);
         if (len >= 4 && strcasecmp(path + len - 4, ".bin") == 0) {
-            if (svc_open_symbol_in(c->opts, c->state, path) != 0) {
-                ui_statusf("Failed to open %s", path);
-            }
+            ui_post_cmd(UI_CMD_SYMBOL_IN_OPEN, path, strlen(path) + 1);
+            ui_statusf("Symbol input open requested");
         } else {
-            snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", path);
-            c->opts->audio_in_type = 44;
+            ui_post_cmd(UI_CMD_INPUT_SYM_STREAM_SET, path, strlen(path) + 1);
+            ui_statusf("Symbol stream input requested");
         }
     }
 }
@@ -1094,13 +1111,16 @@ cb_tcp_port(void* u, int ok, int port) {
         return;
     }
     ctx->port = port;
-    snprintf(ctx->c->opts->tcp_hostname, sizeof ctx->c->opts->tcp_hostname, "%s", ctx->host);
-    ctx->c->opts->tcp_portno = ctx->port;
-    if (svc_tcp_connect_audio(ctx->c->opts, ctx->c->opts->tcp_hostname, ctx->c->opts->tcp_portno) == 0) {
-        ui_statusf("TCP connected: %s:%d", ctx->c->opts->tcp_hostname, ctx->c->opts->tcp_portno);
-    } else {
-        ui_statusf("TCP connect failed: %s:%d", ctx->c->opts->tcp_hostname, ctx->c->opts->tcp_portno);
-    }
+
+    struct {
+        char host[256];
+        int32_t port;
+    } payload = {0};
+
+    snprintf(payload.host, sizeof payload.host, "%s", ctx->host);
+    payload.port = ctx->port;
+    ui_post_cmd(UI_CMD_TCP_CONNECT_AUDIO_CFG, &payload, sizeof payload);
+    ui_statusf("TCP connect requested: %s:%d", ctx->host, ctx->port);
     free(ctx);
 }
 
@@ -1131,10 +1151,16 @@ cb_udp_in_port(void* u, int ok, int port) {
         return;
     }
     ctx->port = port;
-    snprintf(ctx->c->opts->udp_in_bindaddr, sizeof ctx->c->opts->udp_in_bindaddr, "%s", ctx->addr);
-    ctx->c->opts->udp_in_portno = ctx->port;
-    snprintf(ctx->c->opts->audio_in_dev, sizeof ctx->c->opts->audio_in_dev, "%s", "udp");
-    ctx->c->opts->audio_in_type = 6;
+
+    struct {
+        char bind[256];
+        int32_t port;
+    } payload = {0};
+
+    snprintf(payload.bind, sizeof payload.bind, "%s", ctx->addr);
+    payload.port = ctx->port;
+    ui_post_cmd(UI_CMD_UDP_INPUT_CFG, &payload, sizeof payload);
+    ui_statusf("UDP input set requested: %s:%d", ctx->addr, ctx->port);
     free(ctx);
 }
 
@@ -1161,18 +1187,20 @@ cb_rig_port(void* u, int ok, int port) {
         return;
     }
     if (!ok) {
-        ctx->c->opts->use_rigctl = 0;
         free(ctx);
         return;
     }
     ctx->port = port;
-    snprintf(ctx->c->opts->rigctlhostname, sizeof ctx->c->opts->rigctlhostname, "%s", ctx->host);
-    ctx->c->opts->rigctlportno = ctx->port;
-    if (svc_rigctl_connect(ctx->c->opts, ctx->c->opts->rigctlhostname, ctx->c->opts->rigctlportno) == 0) {
-        ui_statusf("Rigctl connected: %s:%d", ctx->c->opts->rigctlhostname, ctx->c->opts->rigctlportno);
-    } else {
-        ui_statusf("Rigctl connect failed: %s:%d", ctx->c->opts->rigctlhostname, ctx->c->opts->rigctlportno);
-    }
+
+    struct {
+        char host[256];
+        int32_t port;
+    } payload = {0};
+
+    snprintf(payload.host, sizeof payload.host, "%s", ctx->host);
+    payload.port = ctx->port;
+    ui_post_cmd(UI_CMD_RIGCTL_CONNECT_CFG, &payload, sizeof payload);
+    ui_statusf("Rigctl connect requested: %s:%d", ctx->host, ctx->port);
     free(ctx);
 }
 
@@ -1183,7 +1211,6 @@ cb_rig_host(void* u, const char* host) {
         return;
     }
     if (!host || !*host) {
-        ctx->c->opts->use_rigctl = 0;
         free(ctx);
         return;
     }
@@ -1303,7 +1330,7 @@ cb_input_warn(void* v, int ok, double thr) {
     if (thr > 0.0) {
         thr = 0.0;
     }
-    c->opts->input_warn_db = thr;
+    ui_post_cmd(UI_CMD_INPUT_WARN_DB_SET, &thr, sizeof thr);
     env_set_double("DSD_NEO_INPUT_WARN_DB", thr);
 }
 
@@ -1336,26 +1363,6 @@ cb_set_p25_num(void* u, int ok, double val) {
     }
     if (ok) {
         env_set_double(pc->name, val);
-        // sync select mirrored opts fields when present
-        if (pc->c && pc->c->opts) {
-            if (strcmp(pc->name, "DSD_NEO_P25_VC_GRACE") == 0) {
-                pc->c->opts->p25_vc_grace_s = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25_MIN_FOLLOW_DWELL") == 0) {
-                pc->c->opts->p25_min_follow_dwell_s = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25_GRANT_VOICE_TO") == 0) {
-                pc->c->opts->p25_grant_voice_to_s = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25_RETUNE_BACKOFF") == 0) {
-                pc->c->opts->p25_retune_backoff_s = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25_FORCE_RELEASE_EXTRA") == 0) {
-                pc->c->opts->p25_force_release_extra_s = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25_FORCE_RELEASE_MARGIN") == 0) {
-                pc->c->opts->p25_force_release_margin_s = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25P1_ERR_HOLD_PCT") == 0) {
-                pc->c->opts->p25_p1_err_hold_pct = val;
-            } else if (strcmp(pc->name, "DSD_NEO_P25P1_ERR_HOLD_S") == 0) {
-                pc->c->opts->p25_p1_err_hold_s = val;
-            }
-        }
     }
     free(pc);
 }
@@ -1665,7 +1672,7 @@ cb_tcp_prebuf(void* v, int ok, int ms) {
     }
     env_set_int("DSD_NEO_TCP_PREBUF_MS", ms);
     if (c && c->opts && c->opts->audio_in_type == 3) {
-        (void)svc_rtl_restart(c->opts);
+        ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }
 
@@ -1693,7 +1700,7 @@ cb_tcp_rcvbuf(void* v, int ok, int sz) {
         env_set_int("DSD_NEO_TCP_RCVBUF", sz);
     }
     if (c && c->opts && c->opts->audio_in_type == 3) {
-        (void)svc_rtl_restart(c->opts);
+        ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }
 
@@ -1721,7 +1728,7 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
         env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
     }
     if (c && c->opts && c->opts->audio_in_type == 3) {
-        (void)svc_rtl_restart(c->opts);
+        ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }
 
@@ -1741,7 +1748,7 @@ act_tcp_waitall(void* v) {
     int on = (e && *e && *e != '0');
     setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
     if (c && c->opts && c->opts->audio_in_type == 3) {
-        (void)svc_rtl_restart(c->opts);
+        ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }
 
@@ -2386,34 +2393,31 @@ io_rtl_active(void* ctx) {
 
 static void
 io_toggle_mute_enc(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    svc_toggle_all_mutes(c->opts);
+    (void)vctx;
+    ui_post_cmd(UI_CMD_ALL_MUTES_TOGGLE, NULL, 0);
 }
 
 static void
 io_toggle_call_alert(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    svc_toggle_call_alert(c->opts);
+    (void)vctx;
+    ui_post_cmd(UI_CMD_CALL_ALERT_TOGGLE, NULL, 0);
 }
 
 static void
 io_toggle_cc_candidates(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->p25_prefer_candidates = !c->opts->p25_prefer_candidates;
-    if (c->opts->p25_prefer_candidates) {
-        fprintf(stderr, "\n P25: Prefer CC Candidates: On\n");
-    } else {
-        fprintf(stderr, "\n P25: Prefer CC Candidates: Off\n");
-    }
+    (void)vctx;
+    ui_post_cmd(UI_CMD_P25_CC_CAND_TOGGLE, NULL, 0);
 }
 
 static void
 io_enable_per_call_wav(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    if (svc_enable_per_call_wav(c->opts, c->state) == 0) {
-        ui_statusf("Per-call WAV enabled to %s", c->opts->wav_out_dir);
+    if (c->opts->dmr_stereo_wav == 1 && c->opts->wav_out_f != NULL) {
+        ui_post_cmd(UI_CMD_WAV_STOP, NULL, 0);
+        ui_statusf("Per-call WAV stop requested");
     } else {
-        ui_statusf("Failed to enable per-call WAV");
+        ui_post_cmd(UI_CMD_WAV_START, NULL, 0);
+        ui_statusf("Per-call WAV start requested");
     }
 }
 
@@ -2431,26 +2435,23 @@ io_read_symbol_bin(void* vctx) {
 
 static void
 io_replay_last_symbol_bin(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    if (svc_replay_last_symbol(c->opts, c->state) == 0) {
-        ui_statusf("Replaying: %s", c->opts->audio_in_dev);
-    } else {
-        ui_statusf("Failed to replay last symbol file");
-    }
+    (void)vctx;
+    ui_post_cmd(UI_CMD_REPLAY_LAST, NULL, 0);
+    ui_statusf("Replay last requested");
 }
 
 static void
 io_stop_symbol_playback(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    svc_stop_symbol_playback(c->opts);
-    ui_statusf("Symbol playback stopped");
+    (void)vctx;
+    ui_post_cmd(UI_CMD_STOP_PLAYBACK, NULL, 0);
+    ui_statusf("Stop playback requested");
 }
 
 static void
 io_stop_symbol_saving(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    svc_stop_symbol_saving(c->opts, c->state);
-    ui_statusf("Symbol capture stopped");
+    (void)vctx;
+    ui_post_cmd(UI_CMD_SYMCAP_STOP, NULL, 0);
+    ui_statusf("Stop symbol capture requested");
 }
 
 // Simple list chooser for short lists
@@ -2634,8 +2635,9 @@ chooser_done_pulse_out(void* u, int sel) {
     PulseSelCtx* pc = (PulseSelCtx*)u;
     if (pc) {
         if (sel >= 0 && sel < pc->n) {
-            svc_set_pulse_output(pc->c->opts, pc->names[sel]);
-            ui_statusf("Pulse out: %s", pc->names[sel]);
+            const char* name = pc->names[sel];
+            ui_post_cmd(UI_CMD_PULSE_OUT_SET, name, strlen(name) + 1);
+            ui_statusf("Pulse out requested: %s", name);
         }
         chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
         free(pc);
@@ -2655,8 +2657,9 @@ chooser_done_pulse_in(void* u, int sel) {
     PulseInSelCtx* pc = (PulseInSelCtx*)u;
     if (pc) {
         if (sel >= 0 && sel < pc->n) {
-            svc_set_pulse_input(pc->c->opts, pc->names[sel]);
-            ui_statusf("Pulse in: %s", pc->names[sel]);
+            const char* name = pc->names[sel];
+            ui_post_cmd(UI_CMD_PULSE_IN_SET, name, strlen(name) + 1);
+            ui_statusf("Pulse in requested: %s", name);
         }
         chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
         free(pc);
@@ -2713,7 +2716,7 @@ switch_out_pulse(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     // Keep current Pulse sink index if set; else default
     const char* idx = c->opts->pa_output_idx[0] ? c->opts->pa_output_idx : "";
-    svc_set_pulse_output(c->opts, idx);
+    ui_post_cmd(UI_CMD_PULSE_OUT_SET, idx, strlen(idx) + 1);
 }
 
 static void
@@ -2730,23 +2733,9 @@ lbl_out_mute(void* vctx, char* b, size_t n) {
 
 static void
 switch_out_toggle_mute(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    /* Toggle mute and, on unmute, reinitialize the audio sink to avoid
-       potential blocking on a long-idle/stale backend handle. */
-    c->opts->audio_out = (c->opts->audio_out == 0) ? 1 : 0;
-    if (c->opts->audio_out == 1) {
-        if (c->opts->audio_out_type == 0) { /* Pulse */
-            closePulseOutput(c->opts);
-            openPulseOutput(c->opts);
-        } else if (c->opts->audio_out_type == 2 || c->opts->audio_out_type == 5) { /* OSS */
-            if (c->opts->audio_out_fd >= 0) {
-                close(c->opts->audio_out_fd);
-                c->opts->audio_out_fd = -1;
-            }
-            openOSSOutput(c->opts);
-        }
-    }
-    ui_statusf("Output: %s", c->opts->audio_out ? "On" : "Muted");
+    (void)vctx;
+    ui_post_cmd(UI_CMD_TOGGLE_MUTE, NULL, 0);
+    ui_statusf("Output mute toggle requested");
 }
 
 static void
@@ -2763,14 +2752,14 @@ io_set_gain_ana(void* vctx) {
 
 static void
 io_toggle_monitor(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->monitor_input_audio = !c->opts->monitor_input_audio;
+    (void)vctx;
+    ui_post_cmd(UI_CMD_INPUT_MONITOR_TOGGLE, NULL, 0);
 }
 
 static void
 io_toggle_cosine(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->use_cosine_filter = c->opts->use_cosine_filter ? 0 : 1;
+    (void)vctx;
+    ui_post_cmd(UI_CMD_COSINE_FILTER_TOGGLE, NULL, 0);
 }
 
 static void
@@ -2793,8 +2782,9 @@ io_input_vol_up(void* vctx) {
     if (m < 16) {
         m++;
     }
-    c->opts->input_volume_multiplier = m;
-    ui_statusf("Input Volume: %dX", m);
+    int32_t v = m;
+    ui_post_cmd(UI_CMD_INPUT_VOL_SET, &v, sizeof v);
+    ui_statusf("Input Volume requested: %dX", m);
 }
 
 static void
@@ -2804,8 +2794,9 @@ io_input_vol_dn(void* vctx) {
     if (m > 1) {
         m--;
     }
-    c->opts->input_volume_multiplier = m;
-    ui_statusf("Input Volume: %dX", m);
+    int32_t v = m;
+    ui_post_cmd(UI_CMD_INPUT_VOL_SET, &v, sizeof v);
+    ui_statusf("Input Volume requested: %dX", m);
 }
 
 static const char*
@@ -2821,78 +2812,64 @@ lbl_input_volume(void* vctx, char* b, size_t n) {
 
 static void
 io_toggle_p25_rrc(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->p25_c4fm_rrc_fixed = c->opts->p25_c4fm_rrc_fixed ? 0 : 1;
+    (void)vctx;
+    ui_post_cmd(UI_CMD_P25_RRC_FIXED_TOGGLE, NULL, 0);
 }
 
 static void
 io_toggle_p25p2_rrc(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->p25_p2_rrc_fixed = c->opts->p25_p2_rrc_fixed ? 0 : 1;
-#ifdef USE_RTLSDR
-    int alpha = c->opts->p25_p2_rrc_fixed ? 50 : 20;
-    rtl_stream_cqpsk_set_rrc(1, alpha, 0);
-#endif
+    (void)vctx;
+    ui_post_cmd(UI_CMD_P25P2_RRC_FIXED_TOGGLE, NULL, 0);
 }
 
 static void
 io_toggle_p25p2_rrc_autoprobe(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->p25_p2_rrc_autoprobe = c->opts->p25_p2_rrc_autoprobe ? 0 : 1;
-#ifdef USE_RTLSDR
-    rtl_stream_set_p25p2_rrc_autoprobe(c->opts->p25_p2_rrc_autoprobe);
-#endif
+    (void)vctx;
+    ui_post_cmd(UI_CMD_P25P2_RRC_AUTOPROBE_TOGGLE, NULL, 0);
 }
 
 static void
 io_toggle_p25_rrc_autoprobe(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    c->opts->p25_c4fm_rrc_autoprobe = c->opts->p25_c4fm_rrc_autoprobe ? 0 : 1;
-    // Reset auto-probe runtime state on toggle
-    if (c->state) {
-        c->state->p25_rrc_auto_state = 0;
-        c->state->p25_rrc_auto_decided = 0;
-        c->state->p25_rrc_auto_start = 0;
-        c->state->p25_rrc_auto_fec_ok_base = 0;
-        c->state->p25_rrc_auto_fec_err_base = 0;
-        c->state->p25_rrc_auto_dyn_fec_err = 0;
-        c->state->p25_rrc_auto_fix_fec_err = 0;
-        c->state->p25_rrc_auto_dyn_voice_avg = 0.0;
-        c->state->p25_rrc_auto_fix_voice_avg = 0.0;
-        c->state->p25_rrc_auto_choice = 0;
-    }
+    (void)vctx;
+    ui_post_cmd(UI_CMD_P25_RRC_AUTOPROBE_TOGGLE, NULL, 0);
 }
 
 static void
 inv_x2(void* v) {
-    svc_toggle_inv_x2(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_INV_X2_TOGGLE, NULL, 0);
 }
 
 static void
 inv_dmr(void* v) {
-    svc_toggle_inv_dmr(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_INV_DMR_TOGGLE, NULL, 0);
 }
 
 static void
 inv_dpmr(void* v) {
-    svc_toggle_inv_dpmr(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_INV_DPMR_TOGGLE, NULL, 0);
 }
 
 static void
 inv_m17(void* v) {
-    svc_toggle_inv_m17(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_INV_M17_TOGGLE, NULL, 0);
 }
 
 #ifdef USE_RTLSDR
 // ---- RTL-SDR submenu ----
 static void
 rtl_enable(void* v) {
-    svc_rtl_enable_input(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_RTL_ENABLE_INPUT, NULL, 0);
 }
 
 static void
 rtl_restart(void* v) {
-    svc_rtl_restart(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
 }
 
 static void
@@ -2940,7 +2917,8 @@ rtl_set_vol(void* v) {
 static void
 rtl_toggle_bias(void* v) {
     UiCtx* c = (UiCtx*)v;
-    svc_rtl_set_bias_tee(c->opts, c->opts->rtl_bias_tee ? 0 : 1);
+    int32_t on = c->opts->rtl_bias_tee ? 0 : 1;
+    ui_post_cmd(UI_CMD_RTL_SET_BIAS_TEE, &on, sizeof on);
 }
 
 static const char*
@@ -2953,7 +2931,8 @@ lbl_rtl_bias(void* v, char* b, size_t n) {
 static void
 rtl_toggle_rtltcp_autotune(void* v) {
     UiCtx* c = (UiCtx*)v;
-    svc_rtltcp_set_autotune(c->opts, c->opts->rtltcp_autotune ? 0 : 1);
+    int32_t on = c->opts->rtltcp_autotune ? 0 : 1;
+    ui_post_cmd(UI_CMD_RTLTCP_SET_AUTOTUNE, &on, sizeof on);
 }
 
 static const char*
@@ -2966,7 +2945,8 @@ lbl_rtl_rtltcp_autotune(void* v, char* b, size_t n) {
 static void
 rtl_toggle_auto_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
-    svc_rtl_set_auto_ppm(c->opts, c->opts->rtl_auto_ppm ? 0 : 1);
+    int32_t on = c->opts->rtl_auto_ppm ? 0 : 1;
+    ui_post_cmd(UI_CMD_RTL_SET_AUTO_PPM, &on, sizeof on);
 }
 
 static const char*
@@ -2987,8 +2967,8 @@ rtl_toggle_tuner_autogain(void* v) {
     UiCtx* c = (UiCtx*)v;
     int on = 0;
     if (g_rtl_ctx) {
-        on = rtl_stream_get_tuner_autogain();
-        rtl_stream_set_tuner_autogain(on ? 0 : 1);
+        UiDspPayload p = {.op = UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
+        ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
     } else {
         /* Persist choice into env for the next start */
         const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");
@@ -3124,15 +3104,17 @@ lbl_current_input(void* vctx, char* b, size_t n) {
 static void
 switch_to_pulse(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    snprintf(c->opts->audio_in_dev, sizeof c->opts->audio_in_dev, "%s", "pulse");
-    c->opts->audio_in_type = 0;
+    (void)c;
+    ui_post_cmd(UI_CMD_INPUT_SET_PULSE, NULL, 0);
+    ui_statusf("Pulse input requested");
 }
 
 #ifdef USE_RTLSDR
 static void
 switch_to_rtl(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    svc_rtl_enable_input(c->opts);
+    (void)c;
+    ui_post_cmd(UI_CMD_RTL_ENABLE_INPUT, NULL, 0);
 }
 #endif
 
@@ -3447,11 +3429,8 @@ lbl_p25_enc_lockout(void* v, char* b, size_t n) {
 
 static void
 act_p25_enc_lockout(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->trunk_tune_enc_calls = c->opts->trunk_tune_enc_calls ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_TRUNK_ENC_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -3614,8 +3593,8 @@ lbl_c4fm_dd(void* v, char* b, size_t n) {
 static void
 act_toggle_c4fm_dd(void* v) {
     UNUSED(v);
-    int on = rtl_stream_get_c4fm_dd_eq();
-    rtl_stream_set_c4fm_dd_eq(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3636,41 +3615,22 @@ lbl_c4fm_dd_params(void* v, char* b, size_t n) {
 static void
 act_c4fm_dd_taps_cycle(void* v) {
     UNUSED(v);
-    int taps = 0, mu = 0;
-    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
-    int nt;
-    if (taps < 5) {
-        nt = 5;
-    } else if (taps < 7) {
-        nt = 7;
-    } else if (taps < 9) {
-        nt = 9;
-    } else {
-        nt = 3;
-    }
-    rtl_stream_set_c4fm_dd_eq_params(nt, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_TAPS_CYCLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_c4fm_dd_mu_up(void* v) {
     UNUSED(v);
-    int taps = 0, mu = 0;
-    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
-    if (mu < 64) {
-        mu++;
-    }
-    rtl_stream_set_c4fm_dd_eq_params(-1, mu);
+    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_MU_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_c4fm_dd_mu_dn(void* v) {
     UNUSED(v);
-    int taps = 0, mu = 0;
-    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
-    if (mu > 1) {
-        mu--;
-    }
-    rtl_stream_set_c4fm_dd_eq_params(-1, mu);
+    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_MU_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 /* ---- C4FM clock assist (EL/MM) ---- */
@@ -3686,9 +3646,8 @@ lbl_c4fm_clk(void* v, char* b, size_t n) {
 static void
 act_c4fm_clk_cycle(void* v) {
     UNUSED(v);
-    int mode = rtl_stream_get_c4fm_clk();
-    mode = (mode + 1) % 3; /* 0->1->2->0 */
-    rtl_stream_set_c4fm_clk(mode);
+    UiDspPayload p = {.op = UI_DSP_OP_C4FM_CLK_CYCLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3702,15 +3661,15 @@ lbl_c4fm_clk_sync(void* v, char* b, size_t n) {
 static void
 act_c4fm_clk_sync_toggle(void* v) {
     UNUSED(v);
-    int en = rtl_stream_get_c4fm_clk_sync();
-    rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_fm_cma(void* v) {
     UNUSED(v);
-    int on = rtl_stream_get_fm_cma();
-    rtl_stream_set_fm_cma(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3740,21 +3699,8 @@ lbl_fm_cma_taps(void* v, char* b, size_t n) {
 static void
 act_fm_cma_taps_cycle(void* v) {
     UNUSED(v);
-    int taps = 0;
-    rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
-    int nt;
-    if (taps < 3) {
-        nt = 3; /* 1 -> 3 */
-    } else if (taps < 5) {
-        nt = 5; /* 3 -> 5 */
-    } else if (taps < 7) {
-        nt = 7; /* 5 -> 7 */
-    } else if (taps < 9) {
-        nt = 9; /* 7 -> 9 */
-    } else {
-        nt = 1; /* 9 -> 1 */
-    }
-    rtl_stream_set_fm_cma_params(nt, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_TAPS_CYCLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3799,31 +3745,22 @@ lbl_fm_cma_guard(void* v, char* b, size_t n) {
 static void
 act_fm_cma_strength_cycle(void* v) {
     UNUSED(v);
-    int s = rtl_stream_get_fm_cma_strength();
-    s = (s + 1) % 3;
-    rtl_stream_set_fm_cma_strength(s);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_STRENGTH_CYCLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_cma_mu_up(void* v) {
     UNUSED(v);
-    int taps = 0, mu = 0, warm = 0;
-    rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
-    if (mu < 64) {
-        mu++;
-    }
-    rtl_stream_set_fm_cma_params(-1, mu, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_MU_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_cma_mu_dn(void* v) {
     UNUSED(v);
-    int taps = 0, mu = 0, warm = 0;
-    rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
-    if (mu > 1) {
-        mu--;
-    }
-    rtl_stream_set_fm_cma_params(-1, mu, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_MU_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3842,39 +3779,22 @@ lbl_fm_cma_warm(void* v, char* b, size_t n) {
 static void
 act_fm_cma_warm_up(void* v) {
     UNUSED(v);
-    int warm = 0;
-    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
-    if (warm < 0) {
-        warm = 0;
-    }
-    warm += 5000;
-    if (warm > 200000) {
-        warm = 200000;
-    }
-    rtl_stream_set_fm_cma_params(-1, -1, warm);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_WARM_DELTA, .a = +5000};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_cma_warm_dn(void* v) {
     UNUSED(v);
-    int warm = 0;
-    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
-    if (warm <= 0) {
-        warm = 0;
-    } else {
-        warm -= 5000;
-        if (warm < 0) {
-            warm = 0;
-        }
-    }
-    rtl_stream_set_fm_cma_params(-1, -1, warm);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_WARM_DELTA, .a = -5000};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_fm_agc(void* v) {
     UNUSED(v);
-    int on = rtl_stream_get_fm_agc();
-    rtl_stream_set_fm_agc(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3896,15 +3816,15 @@ lbl_fm_agc_auto(void* v, char* b, size_t n) {
 static void
 act_toggle_fm_agc_auto(void* v) {
     UNUSED(v);
-    int on = rtl_stream_get_fm_agc_auto();
-    rtl_stream_set_fm_agc_auto(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_AUTO_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_fm_limiter(void* v) {
     UNUSED(v);
-    int on = rtl_stream_get_fm_limiter();
-    rtl_stream_set_fm_limiter(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_LIMITER_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -3919,25 +3839,15 @@ lbl_fm_agc_target(void* v, char* b, size_t n) {
 static void
 act_fm_agc_target_up(void* v) {
     UNUSED(v);
-    int tgt = 0;
-    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-    tgt += 500;
-    if (tgt > 20000) {
-        tgt = 20000;
-    }
-    rtl_stream_set_fm_agc_params(tgt, -1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = +500};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_target_dn(void* v) {
     UNUSED(v);
-    int tgt = 0;
-    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-    tgt -= 500;
-    if (tgt < 1000) {
-        tgt = 1000;
-    }
-    rtl_stream_set_fm_agc_params(tgt, -1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = -500};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -4008,37 +3918,22 @@ act_fm_agc_alpha_up_up(void* v) {
 static void
 act_fm_agc_alpha_up_dn(void* v) {
     UNUSED(v);
-    int au = 0;
-    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-    au -= 1024;
-    if (au < 1) {
-        au = 1;
-    }
-    rtl_stream_set_fm_agc_params(-1, -1, au, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_ATTACK_DELTA, .a = -1024};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_alpha_down_up(void* v) {
     UNUSED(v);
-    int ad = 0;
-    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-    ad += 1024;
-    if (ad > 32768) {
-        ad = 32768;
-    }
-    rtl_stream_set_fm_agc_params(-1, -1, -1, ad);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = +1024};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_alpha_down_dn(void* v) {
     UNUSED(v);
-    int ad = 0;
-    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-    ad -= 1024;
-    if (ad < 1) {
-        ad = 1;
-    }
-    rtl_stream_set_fm_agc_params(-1, -1, -1, ad);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = -1024};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -4053,9 +3948,8 @@ lbl_iq_dc(void* v, char* b, size_t n) {
 static void
 act_toggle_iq_dc(void* v) {
     UNUSED(v);
-    int k = 0;
-    int on = rtl_stream_get_iq_dc(&k);
-    rtl_stream_set_iq_dc(on ? 0 : 1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_IQ_DC_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -4070,23 +3964,15 @@ lbl_iq_dc_k(void* v, char* b, size_t n) {
 static void
 act_iq_dc_k_up(void* v) {
     UNUSED(v);
-    int k = 0;
-    rtl_stream_get_iq_dc(&k);
-    if (k < 15) {
-        k++;
-    }
-    rtl_stream_set_iq_dc(-1, k);
+    UiDspPayload p = {.op = UI_DSP_OP_IQ_DC_K_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_iq_dc_k_dn(void* v) {
     UNUSED(v);
-    int k = 0;
-    rtl_stream_get_iq_dc(&k);
-    if (k > 6) {
-        k--;
-    }
-    rtl_stream_set_iq_dc(-1, k);
+    UiDspPayload p = {.op = UI_DSP_OP_IQ_DC_K_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -4104,7 +3990,8 @@ act_ted_sps_up(void* v) {
     if (sps < 32) {
         sps++;
     }
-    rtl_stream_set_ted_sps(sps);
+    UiDspPayload p = {.op = UI_DSP_OP_TED_SPS_SET, .a = sps};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
@@ -4114,7 +4001,8 @@ act_ted_sps_dn(void* v) {
     if (sps > 2) {
         sps--;
     }
-    rtl_stream_set_ted_sps(sps);
+    UiDspPayload p = {.op = UI_DSP_OP_TED_SPS_SET, .a = sps};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
@@ -4132,7 +4020,8 @@ act_ted_gain_up(void* v) {
     if (g < 512) {
         g += 8;
     }
-    rtl_stream_set_ted_gain(g);
+    UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
@@ -4142,22 +4031,15 @@ act_ted_gain_dn(void* v) {
     if (g > 16) {
         g -= 8;
     }
-    rtl_stream_set_ted_gain(g);
+    UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_iqbal(void* v) {
     UNUSED(v);
-    int on = rtl_stream_get_iq_balance();
-    /* If Auto-DSP is active and Manual Override is off, enable Manual Override so the user's
-       choice isn't immediately overwritten by auto toggling. */
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
-    int man = rtl_stream_get_manual_dsp();
-    if (a && !man) {
-        rtl_stream_set_manual_dsp(1);
-    }
-    rtl_stream_toggle_iq_balance(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_IQBAL};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 #ifdef USE_RTLSDR
@@ -4171,11 +4053,8 @@ lbl_dsp_panel(void* v, char* b, size_t n) {
 
 static void
 act_toggle_dsp_panel(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_dsp_panel = c->opts->show_dsp_panel ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE, NULL, 0);
 }
 #endif
 
@@ -4356,247 +4235,128 @@ lbl_lsm_simple(void* v, char* b, size_t n) {
 
 static void
 act_lsm_simple_toggle(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    /* Persist prior DQPSK decision state across toggles */
-    static int prev_dqpsk = -1;
-    /* Persist prior FLL/TED states across toggles */
-    static int prev_fll = -1;
-    static int prev_ted_enable = -1;
-    static int prev_ted_force = -1;
-    /* Persist prior Manual-DSP override state across toggles */
-    static int prev_manual = -1;
-    int now = dsd_neo_get_lsm_simple();
-    int next = now ? 0 : 1;
-    dsd_neo_set_lsm_simple(next);
-    if (next) {
-        /* Save current DQPSK decision state so we can restore on disable */
-        int dq = 0;
-        rtl_stream_cqpsk_get_dqpsk(&dq);
-        prev_dqpsk = dq;
-        /* Save current FLL/TED states */
-        int cq = 0, f = 0, t = 0, a = 0;
-        rtl_stream_dsp_get(&cq, &f, &t, &a);
-        prev_fll = f;
-        prev_ted_enable = t;
-        prev_ted_force = rtl_stream_get_ted_force();
-        /* Save and force Manual-DSP override so Auto-DSP cannot fight LSM Simple */
-        prev_manual = rtl_stream_get_manual_dsp();
-        if (!prev_manual) {
-            rtl_stream_set_manual_dsp(1);
-        }
-        /* Force CQPSK ON + RRC(alpha≈0.2, span≈6). Skip EQ via runtime config. */
-        if (!cq) {
-            rtl_stream_toggle_cqpsk(1);
-        }
-        /* Ensure FLL is on for one-switch lock-in */
-        rtl_stream_toggle_fll(1);
-        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, 0, -1, 1, -1); /* DFE off, MF on */
-        rtl_stream_cqpsk_set_rrc(1, 20, 6);                     /* alpha=20%, span=6 */
-        /* Enable DQPSK-aware decision */
-        rtl_stream_cqpsk_set_dqpsk(1);
-        /* Auto-enable TED and force it for CQPSK/FM demod path */
-        rtl_stream_toggle_ted(1);
-        rtl_stream_set_ted_force(1);
-        /* Set a reasonable default SPS for P25p1 (4800 sym/s at 48k -> ~10) */
-        rtl_stream_set_ted_sps(10);
-        /* Ensure symbol sampler uses QPSK windows immediately. */
-        if (c && c->state) {
-            c->state->rf_mod = 1; /* QPSK */
-        }
-        if (c && c->opts) {
-            c->opts->mod_qpsk = 1; /* reflect in UI */
-        }
-        /* Leave LMS state as-is; runtime will skip EQ when simple is on. */
-        ui_statusf("LSM Simple: On (CQPSK+RRC; DQPSK; FLL+TED; EQ off)");
-    } else {
-        /* Restore prior DQPSK decision state if we saved one */
-        if (prev_dqpsk != -1) {
-            rtl_stream_cqpsk_set_dqpsk(prev_dqpsk);
-            prev_dqpsk = -1;
-        }
-        /* Restore FLL/TED states if captured */
-        if (prev_fll != -1) {
-            rtl_stream_toggle_fll(prev_fll);
-            prev_fll = -1;
-        }
-        if (prev_ted_enable != -1) {
-            rtl_stream_toggle_ted(prev_ted_enable);
-            prev_ted_enable = -1;
-        }
-        if (prev_ted_force != -1) {
-            rtl_stream_set_ted_force(prev_ted_force);
-            prev_ted_force = -1;
-        }
-        /* Restore prior Manual-DSP override */
-        if (prev_manual != -1) {
-            rtl_stream_set_manual_dsp(prev_manual);
-            prev_manual = -1;
-        }
-        ui_statusf("LSM Simple: Off");
-    }
+    (void)v;
+    UiDspPayload p = {.op = UI_DSP_OP_LSM_SIMPLE_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_cq(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
-    int next = cq ? 0 : 1;
-    rtl_stream_toggle_cqpsk(next);
-    /* Keep symbol sampler windowing in sync with runtime DSP path. */
-    if (c && c->state) {
-        c->state->rf_mod = next ? 1 : 0;
-    }
-    if (c && c->opts) {
-        if (next) {
-            c->opts->mod_qpsk = 1;
-        }
-    }
+    (void)v;
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_CQ};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_fll(void* v) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
-    rtl_stream_toggle_fll(f ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_FLL};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_ted(void* v) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
-    rtl_stream_toggle_ted(t ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_TED};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_auto(void* v) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
-    rtl_stream_toggle_auto_dsp(a ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_AUTO};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_lms(void* v) {
     UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    rtl_stream_cqpsk_set(l ? 0 : 1, -1, -1, -1, -1, -1, -1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_LMS};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_mf(void* v) {
     UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, mf ? 0 : 1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_MF};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_rrc(void* v) {
     UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    rtl_stream_cqpsk_set_rrc(on ? 0 : 1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_RRC};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_rrc_a_up(void* v) {
     UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    int na = a + 5;
-    if (na > 50) {
-        na = 50;
-    }
-    rtl_stream_cqpsk_set_rrc(-1, na, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_RRC_ALPHA_DELTA, .a = +5};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_rrc_a_dn(void* v) {
     UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    int na = a - 5;
-    if (na < 5) {
-        na = 5;
-    }
-    rtl_stream_cqpsk_set_rrc(-1, na, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_RRC_ALPHA_DELTA, .a = -5};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_rrc_s_up(void* v) {
     UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    int ns = s + 1;
-    if (ns > 16) {
-        ns = 16;
-    }
-    rtl_stream_cqpsk_set_rrc(-1, -1, ns);
+    UiDspPayload p = {.op = UI_DSP_OP_RRC_SPAN_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_rrc_s_dn(void* v) {
     UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    int ns = s - 1;
-    if (ns < 3) {
-        ns = 3;
-    }
-    rtl_stream_cqpsk_set_rrc(-1, -1, ns);
+    UiDspPayload p = {.op = UI_DSP_OP_RRC_SPAN_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_cma(void* v) {
     UNUSED(v);
-    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, -1, 1500);
+    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_CMA_WARMUP};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_wl(void* v) {
     UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    rtl_stream_cqpsk_set(-1, -1, -1, -1, wl ? 0 : 1, -1, -1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_WL};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_dfe(void* v) {
     UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, dfe ? 0 : 1, dft, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_DFE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_cycle_dft(void* v) {
     UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    int nd = (dft + 1) & 3;
-    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, dfe, nd, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_CYCLE_DFT};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_taps_5_7(void* v) {
     UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    int nt = (taps >= 7) ? 5 : 7;
-    rtl_stream_cqpsk_set(-1, nt, -1, -1, -1, -1, -1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_TAPS_TOGGLE_5_7};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_toggle_dqpsk(void* v) {
     UNUSED(v);
-    int on = 0;
-    rtl_stream_cqpsk_get_dqpsk(&on);
-    extern void rtl_stream_cqpsk_set_dqpsk(int);
-    rtl_stream_cqpsk_set_dqpsk(on ? 0 : 1);
+    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_DQPSK};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 #endif /* end of USE_RTLSDR block started at 2881 (DSP labels/actions) */
@@ -5281,18 +5041,12 @@ parse_hex_u64(const char* s, unsigned long long* out) {
 static void
 key_basic(void* v) {
     UiCtx* c = (UiCtx*)v;
-    c->state->payload_keyid = c->state->payload_keyidR = 0;
-    c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
     ui_prompt_open_int_async("Basic Privacy Key Number (DEC)", 0, cb_key_basic, c);
 }
 
 static void
 key_hytera(void* v) {
     UiCtx* c = (UiCtx*)v;
-    c->state->payload_keyid = c->state->payload_keyidR = 0;
-    c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
-    c->state->K1 = c->state->K2 = c->state->K3 = c->state->K4 = 0ULL;
-    c->state->H = 0ULL;
     HyCtx* hc = (HyCtx*)calloc(1, sizeof(HyCtx));
     if (!hc) {
         return;
@@ -5305,34 +5059,24 @@ key_hytera(void* v) {
 static void
 key_scrambler(void* v) {
     UiCtx* c = (UiCtx*)v;
-    c->state->payload_keyid = c->state->payload_keyidR = 0;
-    c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
     ui_prompt_open_int_async("NXDN/dPMR Scrambler Key (DEC)", 0, cb_key_scrambler, c);
 }
 
 static void
 key_force_bp(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    c->state->M = (c->state->M == 1 || c->state->M == 0x21) ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_FORCE_PRIV_TOGGLE, NULL, 0);
 }
 
 static void
 key_rc4des(void* v) {
     UiCtx* c = (UiCtx*)v;
-    c->state->payload_keyid = c->state->payload_keyidR = 0;
-    c->opts->dmr_mute_encL = c->opts->dmr_mute_encR = 0;
     ui_prompt_open_string_async("RC4/DES Key (HEX)", NULL, 128, cb_key_rc4des, c);
 }
 
 static void
 key_aes(void* v) {
     UiCtx* c = (UiCtx*)v;
-    c->state->K1 = c->state->K2 = c->state->K3 = c->state->K4 = 0ULL;
-    c->state->H = 0ULL;
-    memset(c->state->A1, 0, sizeof(c->state->A1));
-    memset(c->state->A2, 0, sizeof(c->state->A2));
-    memset(c->state->A3, 0, sizeof(c->state->A3));
-    memset(c->state->A4, 0, sizeof(c->state->A4));
     AesCtx* ac = (AesCtx*)calloc(1, sizeof(AesCtx));
     if (!ac) {
         return;
@@ -5346,21 +5090,17 @@ key_aes(void* v) {
 static void
 lr_home(void* v) {
     UiCtx* c = (UiCtx*)v;
-    if (svc_lrrp_set_home(c->opts) == 0) {
-        ui_statusf("LRRP output: %s", c->opts->lrrp_out_file);
-    } else {
-        ui_statusf("Failed to set LRRP home output");
-    }
+    (void)c;
+    ui_post_cmd(UI_CMD_LRRP_SET_HOME, NULL, 0);
+    ui_statusf("LRRP set home requested");
 }
 
 static void
 lr_dsdp(void* v) {
     UiCtx* c = (UiCtx*)v;
-    if (svc_lrrp_set_dsdp(c->opts) == 0) {
-        ui_statusf("LRRP output: %s", c->opts->lrrp_out_file);
-    } else {
-        ui_statusf("Failed to set LRRP DSDPlus output");
-    }
+    (void)c;
+    ui_post_cmd(UI_CMD_LRRP_SET_DSDP, NULL, 0);
+    ui_statusf("LRRP set DSDPlus requested");
 }
 
 static void
@@ -5371,9 +5111,9 @@ lr_custom(void* v) {
 
 static void
 lr_off(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_lrrp_disable(c->opts);
-    ui_statusf("LRRP output disabled");
+    (void)v;
+    ui_post_cmd(UI_CMD_LRRP_DISABLE, NULL, 0);
+    ui_statusf("LRRP disable requested");
 }
 
 static const char*
@@ -5394,19 +5134,20 @@ lbl_lrrp_current(void* vctx, char* b, size_t n) {
 static void
 act_toggle_invert(void* v) {
     UiCtx* c = (UiCtx*)v;
-    svc_toggle_inversion(c->opts);
+    (void)c;
+    ui_post_cmd(UI_CMD_INVERT_TOGGLE, NULL, 0);
 }
 
 static void
 act_reset_eh(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_reset_event_history(c->state);
+    (void)v;
+    ui_post_cmd(UI_CMD_EH_RESET, NULL, 0);
 }
 
 static void
 act_toggle_payload(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_toggle_payload(c->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_PAYLOAD_TOGGLE, NULL, 0);
 }
 
 // Generic small actions used by menus (C, no lambdas!)
@@ -5418,7 +5159,8 @@ act_event_log_set(void* v) {
 
 static void
 act_event_log_disable(void* v) {
-    svc_disable_event_log(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_EVENT_LOG_DISABLE, NULL, 0);
 }
 
 static void
@@ -5441,48 +5183,51 @@ act_dsp_out(void* v) {
 
 static void
 act_crc_relax(void* v) {
-    svc_toggle_crc_relax(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_CRC_RELAX_TOGGLE, NULL, 0);
 }
 
 static void
 act_trunk_toggle(void* v) {
-    svc_toggle_trunking(((UiCtx*)v)->opts);
+    UiCtx* c = (UiCtx*)v;
+    if (c && c->opts && c->opts->ui_async) {
+        ui_post_cmd(UI_CMD_TRUNK_TOGGLE, NULL, 0);
+        ui_statusf("Trunking toggle requested...");
+    } else {
+        /* Safe even if c is NULL; service guards NULL opts. */
+        svc_toggle_trunking(c ? c->opts : NULL);
+    }
 }
 
 static void
 act_scan_toggle(void* v) {
-    svc_toggle_scanner(((UiCtx*)v)->opts);
+    UiCtx* c = (UiCtx*)v;
+    if (c && c->opts && c->opts->ui_async) {
+        ui_post_cmd(UI_CMD_SCANNER_TOGGLE, NULL, 0);
+        ui_statusf("Scanner toggle requested...");
+    } else {
+        /* Safe even if c is NULL; service guards NULL opts. */
+        svc_toggle_scanner(c ? c->opts : NULL);
+    }
 }
 
 static void
 act_lcw_toggle(void* v) {
-    svc_toggle_lcw_retune(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_LCW_RETUNE_TOGGLE, NULL, 0);
 }
 
 static void
 act_p25_auto_adapt(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    svc_toggle_p25_auto_adapt(c->opts);
-    ui_statusf("P25 Auto-Adapt: %s", c->opts->p25_auto_adapt ? "On" : "Off");
+    (void)v;
+    ui_post_cmd(UI_CMD_P25_AUTO_ADAPT_TOGGLE, NULL, 0);
 }
 
 static void
 act_p25_sm_basic(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->p25_sm_basic_mode = c->opts->p25_sm_basic_mode ? 0 : 1;
-    if (c->opts->p25_sm_basic_mode) {
-        setenv("DSD_NEO_P25_SM_BASIC", "1", 1);
-        ui_statusf("P25 Simple SM: On");
-        fprintf(stderr, "\n P25 SM basic mode enabled (UI).\n");
-    } else {
-        setenv("DSD_NEO_P25_SM_BASIC", "0", 1);
-        setenv("DSD_NEO_P25_SM_NO_SAFETY", "0", 1);
-        ui_statusf("P25 Simple SM: Off");
-        fprintf(stderr, "\n P25 SM basic mode disabled (UI).\n");
-    }
+    (void)v;
+    ui_post_cmd(UI_CMD_P25_SM_BASIC_TOGGLE, NULL, 0);
+    ui_statusf("P25 Simple SM toggle requested");
 }
 
 static void
@@ -5505,23 +5250,27 @@ act_import_group(void* v) {
 
 static void
 act_allow_toggle(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    c->opts->trunk_use_allow_list = !c->opts->trunk_use_allow_list;
+    (void)v;
+    ui_post_cmd(UI_CMD_TRUNK_WLIST_TOGGLE, NULL, 0);
 }
 
 static void
 act_tune_group(void* v) {
-    svc_toggle_tune_group(((UiCtx*)v)->opts);
+    (void)v;
+    // Toggle group-call tuning (was incorrectly wired to allow/whitelist toggle)
+    ui_post_cmd(UI_CMD_TRUNK_GROUP_TOGGLE, NULL, 0);
 }
 
 static void
 act_tune_priv(void* v) {
-    svc_toggle_tune_private(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_TRUNK_PRIV_TOGGLE, NULL, 0);
 }
 
 static void
 act_tune_data(void* v) {
-    svc_toggle_tune_data(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_TRUNK_DATA_TOGGLE, NULL, 0);
 }
 
 static void
@@ -5538,12 +5287,14 @@ act_hangtime(void* v) {
 
 static void
 act_rev_mute(void* v) {
-    svc_toggle_reverse_mute(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_REVERSE_MUTE_TOGGLE, NULL, 0);
 }
 
 static void
 act_dmr_le(void* v) {
-    svc_toggle_dmr_le(((UiCtx*)v)->opts);
+    (void)v;
+    ui_post_cmd(UI_CMD_DMR_LE_TOGGLE, NULL, 0);
 }
 
 static void
@@ -5629,9 +5380,9 @@ lbl_m17_user_data(void* v, char* b, size_t n) {
 static void
 cb_m17_user_data(void* u, const char* text) {
     M17Ctx* mc = (M17Ctx*)u;
-    if (mc && mc->c && mc->c->state && text) {
-        strncpy(mc->c->state->m17dat, text, 49);
-        mc->c->state->m17dat[49] = '\0';
+    if (mc && mc->c && text && *text) {
+        ui_post_cmd(UI_CMD_M17_USER_DATA_SET, text, strlen(text) + 1);
+        ui_statusf("M17 user data set requested");
     }
     free(mc);
 }
@@ -5658,11 +5409,8 @@ lbl_ui_p25_metrics(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_p25_metrics(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_p25_metrics = c->opts->show_p25_metrics ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_P25_METRICS_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -5674,11 +5422,8 @@ lbl_ui_p25_affil(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_p25_affil(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_p25_affiliations = c->opts->show_p25_affiliations ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -5691,11 +5436,8 @@ lbl_ui_p25_ga(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_p25_ga(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_p25_group_affiliations = c->opts->show_p25_group_affiliations ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_P25_GA_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -5707,11 +5449,8 @@ lbl_ui_p25_neighbors(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_p25_neighbors(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_p25_neighbors = c->opts->show_p25_neighbors ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -5723,11 +5462,8 @@ lbl_ui_p25_iden(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_p25_iden(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_p25_iden_plan = c->opts->show_p25_iden_plan ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_P25_IDEN_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -5739,11 +5475,8 @@ lbl_ui_p25_ccc(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_p25_ccc(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_p25_cc_candidates = c->opts->show_p25_cc_candidates ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_P25_CCC_TOGGLE, NULL, 0);
 }
 
 static const char*
@@ -5755,11 +5488,8 @@ lbl_ui_channels(void* v, char* b, size_t n) {
 
 static void
 act_toggle_ui_channels(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (!c || !c->opts) {
-        return;
-    }
-    c->opts->show_channels = c->opts->show_channels ? 0 : 1;
+    (void)v;
+    ui_post_cmd(UI_CMD_UI_SHOW_CHANNELS_TOGGLE, NULL, 0);
 }
 
 static void
@@ -7023,56 +6753,35 @@ lbl_blanker_win(void* v, char* b, size_t n) {
 static void
 act_toggle_blanker(void* v) {
     UNUSED(v);
-    int thr = 0, win = 0;
-    int on = rtl_stream_get_blanker(&thr, &win);
-    rtl_stream_set_blanker(on ? 0 : 1, -1, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_blanker_thr_up(void* v) {
     UNUSED(v);
-    int thr = 0;
-    rtl_stream_get_blanker(&thr, NULL);
-    thr += 2000;
-    if (thr > 60000) {
-        thr = 60000;
-    }
-    rtl_stream_set_blanker(-1, thr, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_THR_DELTA, .a = +2000};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_blanker_thr_dn(void* v) {
     UNUSED(v);
-    int thr = 0;
-    rtl_stream_get_blanker(&thr, NULL);
-    thr -= 2000;
-    if (thr < 0) {
-        thr = 0;
-    }
-    rtl_stream_set_blanker(-1, thr, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_THR_DELTA, .a = -2000};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_blanker_win_up(void* v) {
     UNUSED(v);
-    int win = 0;
-    rtl_stream_get_blanker(NULL, &win);
-    win += 1;
-    if (win > 16) {
-        win = 16;
-    }
-    rtl_stream_set_blanker(-1, -1, win);
+    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_WIN_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_blanker_win_dn(void* v) {
     UNUSED(v);
-    int win = 0;
-    rtl_stream_get_blanker(NULL, &win);
-    win -= 1;
-    if (win < 0) {
-        win = 0;
-    }
-    rtl_stream_set_blanker(-1, -1, win);
+    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_WIN_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 #endif

@@ -4,6 +4,10 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   dsd_ncurses_handler.c
   dsd_ncurses_menu.c
   dsd_ncurses_printer.c
+  ui_snapshot.c
+  ui_opts_snapshot.c
+  ui_cmd_queue.c
+  ui_async.c
   menu_core.c
   menu_services.c
 )

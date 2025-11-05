@@ -26,7 +26,12 @@
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 #include <math.h>
+#include <ncurses.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3018,8 +3023,30 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* Factor render function. For now this function simply wraps
+ * the legacy drawing path; the body will be migrated here later
+ * without changing behavior. */
+static void
+ui_draw_frame(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    /* Drawing implementation lives in the legacy block below and will be
+       moved here in a follow-up to keep behavior identical. */
+}
+
 void
 ncursesPrinter(dsd_opts* opts, dsd_state* state) {
+    /* Guard against null opts. Without opts we cannot render safely. */
+    if (!opts) {
+        return;
+    }
+    /* When async UI is enabled, demod path must not touch ncurses.
+       Allow calls only from the UI thread context; otherwise post a redraw and return. */
+    if (opts->ui_async && !ui_is_thread_context()) {
+        // Publish snapshots for the UI thread to consume and request a redraw
+        ui_publish_both_and_redraw(opts, state);
+        return;
+    }
     uint8_t idas = 0;
     int level = 0;
     int c = 0;
@@ -3070,7 +3097,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    //Start Printing Section
+    //Start Printing Section (render factored function placeholder)
+    ui_draw_frame(opts, state);
     erase();
     if (opts->ncurses_compact == 1) {
         ui_print_hr();
@@ -3110,7 +3138,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attr_set(saved_attrs, saved_pair, NULL);
 #endif
         } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
-            // clear stale message
+            // Clear stale message. In async mode, post a command so the
+            // canonical state is updated; also clear the snapshot to avoid
+            // repeated posts/draws before the command is applied.
+            if (opts->ui_async) {
+                ui_post_cmd(UI_CMD_UI_MSG_CLEAR, NULL, 0);
+            }
             state->ui_msg[0] = '\0';
         }
     }

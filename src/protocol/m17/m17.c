@@ -18,6 +18,9 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 
 //try to find a fancy lfsr or calculation for this and not an array if possible
 uint8_t m17_scramble[369] = {
@@ -1539,7 +1542,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     opts->frame_m17 = 1;
     state->m17encoder_tx = 1;
 
-    if (opts->use_ncurses_terminal == 1) {
+    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
         ncursesOpen(opts, state);
     }
 
@@ -1872,6 +1875,8 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     while (!exitflag) //while the software is running
     {
+        // Drain any pending UI→Demod commands so hotkeys/menu actions apply
+        ui_drain_cmds(opts, state);
 
         //if not decoding internally, assign values for ncurses display
         if (opts->monitor_input_audio == 1) {
@@ -2778,7 +2783,11 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
         //refresh ncurses printer, if enabled
         if (opts->use_ncurses_terminal == 1) {
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         //slot 1
@@ -2832,6 +2841,8 @@ encodeM17BRT(dsd_opts* opts, dsd_state* state) {
     m17_b1[0] = 1;
 
     while (!exitflag) {
+        // Drain UI commands so queued actions take effect during BERT loop
+        ui_drain_cmds(opts, state);
 
         //Generate sequence (if doing 197 at a time)
         // for (j = 0; j < 197; j++)
@@ -3439,6 +3450,8 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     int new_lsf = 1;
 
     while (!exitflag) {
+        // Drain UI commands so queued actions take effect during PKT loop
+        ui_drain_cmds(opts, state);
         //send LSF frame once, if new encode session
         if (new_lsf == 1) {
 
@@ -3907,7 +3920,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
     //Tweaks and Enable Ncurses Terminal
     opts->dmr_stereo = 0;
     opts->audio_in_type = 9; //NULL
-    if (opts->use_ncurses_terminal == 1) {
+    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
         ncursesOpen(opts, state);
     }
 
@@ -3945,6 +3958,8 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
     char c;
 
     while (!exitflag) {
+        // Drain UI commands so queued actions take effect during IPF loop
+        ui_drain_cmds(opts, state);
 
         //if reading from socket receiver
         if (opts->udp_sockfd) {
@@ -4259,7 +4274,11 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
         //refresh ncurses printer, if enabled
         if (opts->use_ncurses_terminal == 1) {
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         //slot 1

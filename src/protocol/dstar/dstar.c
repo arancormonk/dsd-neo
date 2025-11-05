@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #include <dsd-neo/fec/fcs.h>
@@ -45,7 +48,11 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
 
         //since we are in a long loop, use this to improve response time in ncurses
         if (opts->use_ncurses_terminal == 1) {
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         //slot 1

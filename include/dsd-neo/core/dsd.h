@@ -98,7 +98,16 @@ typedef struct mbe_parms mbe_parms;
 #endif
 
 #include <locale.h>
-#include <ncurses.h>
+
+// Provide portable boolean-style macros for legacy code paths that used
+// ncurses-provided TRUE/FALSE. Keep these independent from ncurses to avoid
+// leaking curses into non-UI translation units.
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
 
 #define UNUSED(x)                   (void)(x)
 #define UNUSED2(x1, x2)             (UNUSED(x1), UNUSED(x2))
@@ -424,6 +433,8 @@ typedef struct {
     int pulse_digi_out_channels;
     int pulse_flush;
     uint8_t use_ncurses_terminal;
+    /* Async UI feature flag (0=off, 1=on). Default ON; override via env DSD_NEO_UI_ASYNC. */
+    uint8_t ui_async;
     uint8_t ncurses_compact;
     uint8_t ncurses_history;
     uint8_t eye_view;                    //ncurses timing/eye diagram for C4FM/FSK (0=off)

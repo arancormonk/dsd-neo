@@ -31,6 +31,9 @@
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
 
 void
@@ -186,7 +189,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     //run here as well
     if (opts->use_ncurses_terminal == 1) {
-        ncursesPrinter(opts, state);
+        if (opts->ui_async) {
+            ui_publish_both_and_redraw(opts, state);
+        } else {
+            ncursesPrinter(opts, state);
+        }
     }
 
     //slot 1
@@ -215,7 +222,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         //run ncurses printer more frequently when no sync to speed up responsiveness of it during no sync period
         //NOTE: Need to monitor and test this, if responsiveness issues arise, then disable this
         if (opts->use_ncurses_terminal == 1 && ((t % 300) == 0)) { //t maxes out at 1800 (6 times each getFrameSync)
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         symbol = getSymbol(opts, state, 0);

@@ -11,6 +11,7 @@ target_sources(dsd-neo_runtime PRIVATE
   rt_sched.cpp
   unicode.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
+  ui_async_stubs.c
 )
 
 # Generate git version source within this target's build dir

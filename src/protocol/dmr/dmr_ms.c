@@ -13,6 +13,9 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 
 // #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
 
@@ -331,7 +334,11 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
         //since we are in a loop, run ncursesPrinter here
         if (opts->use_ncurses_terminal == 1) {
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         //slot 1

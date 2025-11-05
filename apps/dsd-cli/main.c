@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/ui/ui_async.h>
 
 #include <ctype.h>
 #include <limits.h>
@@ -1555,6 +1556,7 @@ initOpts(dsd_opts* opts) {
     snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->use_ncurses_terminal = 0;
+    opts->ui_async = 1; // default ON; can disable via env DSD_NEO_UI_ASYNC=0
     opts->ncurses_compact = 0;
     opts->ncurses_history = 1;
 #ifdef LIMAZULUTWEAKS
@@ -2692,7 +2694,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     }
 #endif
 
-    if (opts->use_ncurses_terminal == 1) {
+    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
         ncursesOpen(opts, state);
     }
 
@@ -2744,24 +2746,30 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     p25_sm_watchdog_start(opts, state);
 
     while (!exitflag) {
+        // Drain any pending UI→Demod commands before heavy work
+        ui_drain_cmds(opts, state);
 
         // Cooperative tick: runs only if another tick isn't in progress
         p25_sm_try_tick(opts, state);
 
+        // Drain again to reduce latency for common key actions
+        ui_drain_cmds(opts, state);
+
         noCarrier(opts, state);
-        if (state->menuopen == 0) {
-            state->synctype = getFrameSync(opts, state);
-            // Recompute thresholds only when extrema change
-            if (state->max != last_max || state->min != last_min) {
-                state->center = ((state->max) + (state->min)) / 2;
-                state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-                state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-                last_max = state->max;
-                last_min = state->min;
-            }
+        state->synctype = getFrameSync(opts, state);
+        // Recompute thresholds only when extrema change
+        if (state->max != last_max || state->min != last_min) {
+            state->center = ((state->max) + (state->min)) / 2;
+            state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
+            state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
+            last_max = state->max;
+            last_min = state->min;
         }
 
         while (state->synctype != -1) {
+            // Drain UI commands during active decoding so hotkeys work in-call
+            ui_drain_cmds(opts, state);
+
             processFrame(opts, state);
 
 #ifdef TRACE_DSD
@@ -2778,16 +2786,16 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
             // state->center = ((state->max) + (state->min)) / 2;
             // state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
             // state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-            if (state->menuopen == 0) {
-                state->synctype = getFrameSync(opts, state);
-                // Recompute thresholds only when extrema change
-                if (state->max != last_max || state->min != last_min) {
-                    state->center = ((state->max) + (state->min)) / 2;
-                    state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-                    state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-                    last_max = state->max;
-                    last_min = state->min;
-                }
+            // Drain again between frames to reduce latency
+            ui_drain_cmds(opts, state);
+            state->synctype = getFrameSync(opts, state);
+            // Recompute thresholds only when extrema change
+            if (state->max != last_max || state->min != last_min) {
+                state->center = ((state->max) + (state->min)) / 2;
+                state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
+                state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
+                last_max = state->max;
+                last_min = state->min;
             }
         }
     }
@@ -2800,8 +2808,13 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
     // Signal that everything should shutdown.
     exitflag = 1;
 
-    // Close ncurses early so subsequent logs (e.g., ring stats) print to TTY
-    if (opts->use_ncurses_terminal == 1) {
+    // Stop async UI thread if running
+    if (opts->ui_async) {
+        ui_stop();
+    }
+
+    // Close ncurses if legacy path owned it. UI thread already closed on ui_stop().
+    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
         ncursesClose();
     }
 
@@ -2962,6 +2975,17 @@ main(int argc, char** argv) {
     initOpts(&opts);
     initState(&state);
     maybe_enable_ftz_daz_from_env();
+    /* Async UI default ON; allow env override via DSD_NEO_UI_ASYNC=0/1. */
+    {
+        const char* eaa = getenv("DSD_NEO_UI_ASYNC");
+        if (eaa && *eaa) {
+            if (is_truthy_env(eaa)) {
+                opts.ui_async = 1;
+            } else if (eaa[0] == '0' || eaa[0] == 'n' || eaa[0] == 'N' || eaa[0] == 'f' || eaa[0] == 'F') {
+                opts.ui_async = 0;
+            }
+        }
+    }
     init_audio_filters(&state); //audio filters
     init_rrc_filter_memory();   //initialize input filtering
     InitAllFecFunction();
@@ -5305,6 +5329,10 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
+        // Start async UI thread when enabled so ncursesPrinter updates are rendered
+        if (opts.ui_async) {
+            (void)ui_start(&opts, &state);
+        }
         //All input and output now opened and handled correctly, so let's not break things by tweaking
         encodeM17STR(&opts, &state);
     }
@@ -5314,6 +5342,10 @@ main(int argc, char** argv) {
         //open any outputs, if not already opened
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
+        }
+        // Start async UI thread when enabled so ncursesPrinter updates are rendered
+        if (opts.ui_async) {
+            (void)ui_start(&opts, &state);
         }
         encodeM17BRT(&opts, &state);
     }
@@ -5327,6 +5359,10 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
+        // Start async UI thread when enabled so ncursesPrinter updates are rendered
+        if (opts.ui_async) {
+            (void)ui_start(&opts, &state);
+        }
         encodeM17PKT(&opts, &state);
     }
 
@@ -5336,11 +5372,18 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
+        // Start async UI thread when enabled so ncursesPrinter updates are rendered
+        if (opts.ui_async) {
+            (void)ui_start(&opts, &state);
+        }
         processM17IPF(&opts, &state);
     }
 
     else {
-
+        // Start async UI thread before entering main decode loop when enabled
+        if (opts.ui_async) {
+            (void)ui_start(&opts, &state);
+        }
         liveScanner(&opts, &state);
     }
 

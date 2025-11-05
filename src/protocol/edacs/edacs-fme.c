@@ -28,6 +28,9 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 
 int
 isCustomAfsString(dsd_state* state) {
@@ -596,7 +599,11 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         //Update Ncurses Terminal
         if (opts->use_ncurses_terminal == 1) {
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         //write to wav file if opened

@@ -19,6 +19,9 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 
 // Clear per-slot audio gates, small audio rings, encryption indicators, and
 // UI call banners for both logical slots. Intended for use on call teardown
@@ -1391,7 +1394,11 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         }
         //since we are in a while loop, run ncursesPrinter here.
         if (opts->use_ncurses_terminal == 1) {
-            ncursesPrinter(opts, state);
+            if (opts->ui_async) {
+                ui_publish_both_and_redraw(opts, state);
+            } else {
+                ncursesPrinter(opts, state);
+            }
         }
 
         //slot 1
