@@ -72,7 +72,7 @@ Key public headers:
   - Prefer a service in `include/dsd-neo/ui/menu_services.h` with implementation in `src/ui/terminal/menu_services.c` for side effects (I/O, mode switches, file ops).
   - UI handlers in `menu_core.c` should be thin wrappers that call service helpers and use `ui_prompt_*` to gather input.
 - Extend a menu table:
-  - Add an `NcMenuItem` entry to the relevant table (e.g., `ui_menu_main`, `ui_menu_io_options`, `ui_menu_dsp_options`). Set `id`, `label`, optional `help`, and `.on_select`.
+  - Add an `NcMenuItem` entry to the relevant menu array in `menu_core.c`. Set `id`, `label`, optional `help`, and `.on_select`.
   - For nested menus, set `.submenu` and `.submenu_len` to a child array.
 - Keep UI/business logic separate:
   - Do not perform device or file operations directly in `dsd_ncurses_menu.c`. Use services instead to make behavior testable and reusable by other front‑ends.
