@@ -21,6 +21,17 @@
 static int16_t fll_qsine_q15_lut[1025]; /* 0..pi/2 in 1024 steps, +1 guard for exact pi/2 */
 static pthread_once_t fll_lut_once = PTHREAD_ONCE_INIT;
 
+/* Clamp helper */
+static inline int
+clamp_i(int v, int lo, int hi) {
+    return (v < lo) ? lo : ((v > hi) ? hi : v);
+}
+
+/* Very small integrator leakage to avoid long-term windup/drift.
+ * Chosen as 1/4096 per update (>>12), small enough to be inaudible
+ * for FM and gentle for digital modes while providing slow decay. */
+static const int kFllIntLeakShift = 12; /* leak = x - (x >> 12) */
+
 /**
  * @brief Build quarter-wave sine LUT (Q15) for FLL rotator.
  *
@@ -200,6 +211,7 @@ fll_init_state(fll_state_t* state) {
     state->phase_q15 = 0;
     state->prev_r = 0;
     state->prev_j = 0;
+    state->int_q15 = 0;
 }
 
 /**
@@ -324,37 +336,41 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
 
     int32_t err = err_acc / count; /* Q14 */
 
-    /* Deadband: ignore tiny phase errors to avoid audible low-frequency ramps */
+    /* Pre-apply small integrator leakage each update (even in deadband). */
+    const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
+    int32_t i_base = state->int_q15 - (state->int_q15 >> kFllIntLeakShift);
+    i_base = clamp_i(i_base, -F_CLAMP, F_CLAMP);
+
+    /* Deadband: ignore tiny phase errors to avoid audible low-frequency ramps.
+       Keep leaked integrator so it slowly returns toward zero. */
     if (err < config->deadband_q14 && err > -config->deadband_q14) {
+        state->int_q15 = (int)i_base;
         return;
     }
 
-    /* Standard PI loop: adjust frequency only (no direct phase steps). */
-    int32_t p = ((int64_t)alpha * err) >> 14;   /* -> Q15 */
-    int32_t iacc = ((int64_t)beta * err) >> 14; /* -> Q15 */
-    int32_t df = p + iacc;                      /* Q15 */
+    /* True PI: I[z] accumulates error; control u = Kp*e + I. Apply slew on delta(u).
+       Everything is in Q15 except err (Q14). */
 
-    /* Negative feedback */
-    /* Slew-rate limit */
-    if (df > config->slew_max_q15) {
-        df = config->slew_max_q15;
-    }
-    if (df < -config->slew_max_q15) {
-        df = -config->slew_max_q15;
-    }
+    int32_t p = ((int64_t)alpha * err) >> 14;     /* -> Q15 */
+    int32_t i_term = ((int64_t)beta * err) >> 14; /* -> Q15 */
 
-    state->freq_q15 += (int)df;
+    /* Integrator update with simple anti-windup bound */
+    int32_t i_next = i_base + i_term;
+    i_next = clamp_i(i_next, -F_CLAMP, F_CLAMP);
 
-    /* Clamp NCO frequency to safe range */
-    {
-        const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
-        if (state->freq_q15 > F_CLAMP) {
-            state->freq_q15 = F_CLAMP;
-        }
-        if (state->freq_q15 < -F_CLAMP) {
-            state->freq_q15 = -F_CLAMP;
-        }
-    }
+    /* Positional controller output */
+    int32_t u = p + i_next; /* Q15 */
+
+    /* Apply slew limit to change in frequency per update */
+    int32_t df = u - state->freq_q15; /* desired delta */
+    df = clamp_i(df, -config->slew_max_q15, config->slew_max_q15);
+    int32_t f_new = state->freq_q15 + df;
+
+    /* Clamp absolute frequency range */
+    f_new = clamp_i(f_new, -F_CLAMP, F_CLAMP);
+
+    state->freq_q15 = (int)f_new;
+    state->int_q15 = (int)i_next;
 }
 
 /**
@@ -403,32 +419,32 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
 
     int32_t err = err_acc / count; /* Q14 */
 
-    /* Deadband to avoid audible low-frequency sweeps or chattering */
+    /* Pre-apply small integrator leakage each update (even in deadband). */
+    const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
+    int32_t i_base = state->int_q15 - (state->int_q15 >> kFllIntLeakShift);
+    i_base = clamp_i(i_base, -F_CLAMP, F_CLAMP);
+
+    /* Deadband to avoid audible low-frequency sweeps or chattering.
+       Keep leaked integrator so it slowly returns toward zero. */
     if (err < config->deadband_q14 && err > -config->deadband_q14) {
+        state->int_q15 = (int)i_base;
         return;
     }
 
-    /* 2nd-order PI on frequency only */
-    int32_t p = ((int64_t)config->alpha_q15 * err) >> 14;   /* -> Q15 */
-    int32_t iacc = ((int64_t)config->beta_q15 * err) >> 14; /* -> Q15 */
-    int32_t df = p + iacc;                                  /* Q15 */
+    /* True PI (symbol-spaced detector): u = Kp*e + I; slew limit delta(u) */
 
-    /* Slew-rate limit to prevent runaway */
-    if (df > config->slew_max_q15) {
-        df = config->slew_max_q15;
-    }
-    if (df < -config->slew_max_q15) {
-        df = -config->slew_max_q15;
-    }
+    int32_t p = ((int64_t)config->alpha_q15 * err) >> 14;     /* -> Q15 */
+    int32_t i_term = ((int64_t)config->beta_q15 * err) >> 14; /* -> Q15 */
 
-    state->freq_q15 += (int)df;
+    int32_t i_next = i_base + i_term;
+    i_next = clamp_i(i_next, -F_CLAMP, F_CLAMP);
 
-    /* Clamp NCO frequency to a safe range */
-    const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
-    if (state->freq_q15 > F_CLAMP) {
-        state->freq_q15 = F_CLAMP;
-    }
-    if (state->freq_q15 < -F_CLAMP) {
-        state->freq_q15 = -F_CLAMP;
-    }
+    int32_t u = p + i_next;           /* Q15 */
+    int32_t df = u - state->freq_q15; /* desired delta */
+    df = clamp_i(df, -config->slew_max_q15, config->slew_max_q15);
+    int32_t f_new = state->freq_q15 + df;
+    f_new = clamp_i(f_new, -F_CLAMP, F_CLAMP);
+
+    state->freq_q15 = (int)f_new;
+    state->int_q15 = (int)i_next;
 }

@@ -36,6 +36,7 @@ typedef struct {
     int phase_q15; /* NCO phase accumulator (wrap at 2*pi -> 1<<15 scale) */
     int prev_r;
     int prev_j;
+    int int_q15; /* PI integrator state (Q15), bounded for anti-windup */
 } fll_state_t;
 
 /**
