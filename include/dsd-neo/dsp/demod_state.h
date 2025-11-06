@@ -37,9 +37,13 @@
 #endif
 
 /* Half-band decimator taps (HB_TAPS) are defined where needed in DSP modules.
-   Here we only dimension history arrays using HB_TAPS-1 = 14 for 15-tap HB. */
+   Here we dimension histories against the maximum half-band used by the
+   complex decimator cascade. */
 #ifndef HB_TAPS
 #define HB_TAPS 15
+#endif
+#ifndef HB_TAPS_MAX
+#define HB_TAPS_MAX 31
 #endif
 
 /* Forward declaration to avoid heavy dependencies here */
@@ -136,8 +140,8 @@ struct demod_state {
     int dc_block, dc_avg;
     /* Half-band decimator */
     int16_t hb_workbuf[MAXIMUM_BUF_LENGTH];
-    int16_t hb_hist_i[10][HB_TAPS - 1];
-    int16_t hb_hist_q[10][HB_TAPS - 1];
+    int16_t hb_hist_i[10][HB_TAPS_MAX - 1];
+    int16_t hb_hist_q[10][HB_TAPS_MAX - 1];
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;

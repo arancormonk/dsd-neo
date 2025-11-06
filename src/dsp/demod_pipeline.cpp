@@ -356,10 +356,17 @@ extern int fll_lut_enabled;
  * @param hist_q  Persistent Q-channel history of length HB_TAPS-1.
  * @return Number of output complex samples.
  */
+/* Generalized complex half-band decimator by 2 that accepts arbitrary Q15 tap sets.
+   Falls back to an optimized unrolled path for 15-tap filters. */
 static int
-hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, int16_t* DSD_NEO_RESTRICT out,
-                              int16_t* DSD_NEO_RESTRICT hist_i, int16_t* DSD_NEO_RESTRICT hist_q) {
+hb_decim2_complex_interleaved_ex(const int16_t* DSD_NEO_RESTRICT in, int in_len, int16_t* DSD_NEO_RESTRICT out,
+                                 int16_t* DSD_NEO_RESTRICT hist_i, int16_t* DSD_NEO_RESTRICT hist_q,
+                                 const int16_t* DSD_NEO_RESTRICT taps_q15, int taps_len) {
     const int hist_len = HB_TAPS - 1;
+    (void)hist_len; /* not used in generalized path */
+    if (taps_len < 3 || (taps_len & 1) == 0) {
+        return 0; /* invalid */
+    }
     int ch_len = in_len >> 1;     /* per-channel samples */
     int out_ch_len = ch_len >> 1; /* decimated per-channel */
     if (out_ch_len <= 0) {
@@ -371,15 +378,97 @@ hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, in
     int16_t* DSD_NEO_RESTRICT hq = assume_aligned_ptr(hist_q, DSD_NEO_ALIGN);
     int16_t lastI = (ch_len > 0) ? in_al[in_len - 2] : 0;
     int16_t lastQ = (ch_len > 0) ? in_al[in_len - 1] : 0;
-    /* Hoist half-band coefficients out of the loop */
-    const int16_t c0 = hb_q15_taps[0];
-    const int16_t c2 = hb_q15_taps[2];
-    const int16_t c4 = hb_q15_taps[4];
-    const int16_t c6 = hb_q15_taps[6];
-    const int16_t c7 = hb_q15_taps[7];
+    const int center = (taps_len - 1) >> 1;
     for (int n = 0; n < out_ch_len; n++) {
-        int center_idx = hist_len + (n << 1); /* per-channel index */
-        /* Half-band optimization: only even taps and the center tap contribute (symmetric). */
+        int center_idx = (taps_len - 1) + (n << 1); /* per-channel index with left history */
+        auto get_iq = [&](int src_idx, int16_t& xi, int16_t& xq) {
+            if (src_idx < (taps_len - 1)) {
+                xi = hi[src_idx];
+                xq = hq[src_idx];
+            } else {
+                int rel = src_idx - (taps_len - 1);
+                if (rel < ch_len) {
+                    xi = in_al[(size_t)(rel << 1)];
+                    xq = in_al[(size_t)(rel << 1) + 1];
+                } else {
+                    xi = lastI;
+                    xq = lastQ;
+                }
+            }
+        };
+        int64_t accI = 0;
+        int64_t accQ = 0;
+        /* center tap */
+        {
+            int16_t ci, cq;
+            get_iq(center_idx, ci, cq);
+            int16_t cc = taps_q15[center];
+            accI += (int32_t)cc * (int32_t)ci;
+            accQ += (int32_t)cc * (int32_t)cq;
+        }
+        /* symmetric pairs: only even indices in the full taps array are non-zero */
+        for (int e = 0; e < center; e += 2) {
+            int d = center - e; /* distance from center */
+            int16_t ce = taps_q15[e];
+            if (ce == 0) {
+                continue;
+            }
+            int16_t xmI, xmQ, xpI, xpQ;
+            get_iq(center_idx - d, xmI, xmQ);
+            get_iq(center_idx + d, xpI, xpQ);
+            accI += (int32_t)ce * (int32_t)(xmI + xpI);
+            accQ += (int32_t)ce * (int32_t)(xmQ + xpQ);
+        }
+        accI += (1 << 14);
+        accQ += (1 << 14);
+        out_al[(size_t)(n << 1)] = sat16((int32_t)(accI >> 15));
+        out_al[(size_t)(n << 1) + 1] = sat16((int32_t)(accQ >> 15));
+    }
+    /* Update histories with last (taps_len-1) per-channel input samples */
+    if (ch_len >= (taps_len - 1)) {
+        int start = ch_len - (taps_len - 1);
+        for (int k = 0; k < (taps_len - 1); k++) {
+            int rel = start + k;
+            hi[k] = in_al[(size_t)(rel << 1)];
+            hq[k] = in_al[(size_t)(rel << 1) + 1];
+        }
+    } else {
+        int existing = ch_len;
+        for (int k = 0; k < (taps_len - 1); k++) {
+            if (k < existing) {
+                int rel = k;
+                hi[k] = in_al[(size_t)(rel << 1)];
+                hq[k] = in_al[(size_t)(rel << 1) + 1];
+            } else {
+                hi[k] = 0;
+                hq[k] = 0;
+            }
+        }
+    }
+    return out_ch_len << 1;
+}
+
+/* Backward-compatible wrapper for 15-tap half-band (optimized path). */
+static int
+hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, int16_t* DSD_NEO_RESTRICT out,
+                              int16_t* DSD_NEO_RESTRICT hist_i, int16_t* DSD_NEO_RESTRICT hist_q) {
+    /* Optimized unrolled path for HB_TAPS==15 */
+    const int16_t* t = hb_q15_taps;
+    const int hist_len = HB_TAPS - 1;
+    int ch_len = in_len >> 1;
+    int out_ch_len = ch_len >> 1;
+    if (out_ch_len <= 0) {
+        return 0;
+    }
+    const int16_t* DSD_NEO_RESTRICT in_al = assume_aligned_ptr(in, DSD_NEO_ALIGN);
+    int16_t* DSD_NEO_RESTRICT out_al = assume_aligned_ptr(out, DSD_NEO_ALIGN);
+    int16_t* DSD_NEO_RESTRICT hi = assume_aligned_ptr(hist_i, DSD_NEO_ALIGN);
+    int16_t* DSD_NEO_RESTRICT hq = assume_aligned_ptr(hist_q, DSD_NEO_ALIGN);
+    int16_t lastI = (ch_len > 0) ? in_al[in_len - 2] : 0;
+    int16_t lastQ = (ch_len > 0) ? in_al[in_len - 1] : 0;
+    const int16_t c0 = t[0], c2 = t[2], c4 = t[4], c6 = t[6], c7 = t[7];
+    for (int n = 0; n < out_ch_len; n++) {
+        int center_idx = hist_len + (n << 1);
         auto get_iq = [&](int src_idx, int16_t& xi, int16_t& xq) {
             if (src_idx < hist_len) {
                 xi = hi[src_idx];
@@ -395,11 +484,7 @@ hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, in
                 }
             }
         };
-        int16_t ci, cq;
-        int16_t im1, qm1, ip1, qp1;
-        int16_t im3, qm3, ip3, qp3;
-        int16_t im5, qm5, ip5, qp5;
-        int16_t im7, qm7, ip7, qp7;
+        int16_t ci, cq, im1, qm1, ip1, qp1, im3, qm3, ip3, qp3, im5, qm5, ip5, qp5, im7, qm7, ip7, qp7;
         get_iq(center_idx, ci, cq);
         get_iq(center_idx - 1, im1, qm1);
         get_iq(center_idx + 1, ip1, qp1);
@@ -409,8 +494,7 @@ hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, in
         get_iq(center_idx + 5, ip5, qp5);
         get_iq(center_idx - 7, im7, qm7);
         get_iq(center_idx + 7, ip7, qp7);
-        int64_t accI = 0;
-        int64_t accQ = 0;
+        int64_t accI = 0, accQ = 0;
         accI += (int32_t)c7 * (int32_t)ci;
         accQ += (int32_t)c7 * (int32_t)cq;
         accI += (int32_t)c6 * (int32_t)(im1 + ip1);
@@ -423,12 +507,10 @@ hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, in
         accQ += (int32_t)c0 * (int32_t)(qm7 + qp7);
         accI += (1 << 14);
         accQ += (1 << 14);
-        int32_t yI = (int32_t)(accI >> 15);
-        int32_t yQ = (int32_t)(accQ >> 15);
-        out_al[(size_t)(n << 1)] = sat16(yI);
-        out_al[(size_t)(n << 1) + 1] = sat16(yQ);
+        out_al[(size_t)(n << 1)] = sat16((int32_t)(accI >> 15));
+        out_al[(size_t)(n << 1) + 1] = sat16((int32_t)(accQ >> 15));
     }
-    /* Update histories with last HB_TAPS-1 per-channel input samples */
+    /* Update histories */
     if (ch_len >= hist_len) {
         int start = ch_len - hist_len;
         for (int k = 0; k < hist_len; k++) {
@@ -437,7 +519,6 @@ hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, in
             hq[k] = in_al[(size_t)(rel << 1) + 1];
         }
     } else {
-        /* Not enough input samples; pad with zeros */
         int existing = ch_len;
         for (int k = 0; k < hist_len; k++) {
             if (k < existing) {
@@ -450,7 +531,7 @@ hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, in
             }
         }
     }
-    return out_ch_len << 1; /* Return total elements (2 * complex samples) */
+    return out_ch_len << 1;
 }
 
 /**
@@ -1906,9 +1987,16 @@ full_demod(struct demod_state* d) {
             int16_t* src = d->lowpassed;
             int16_t* dst = d->hb_workbuf;
             for (i = 0; i < ds_p; i++) {
+                /* Stage-aware HB selection: heavier early, light later */
+                const int16_t* taps = hb_q15_taps;
+                int taps_len = HB_TAPS;
+                if (i == 0) {
+                    taps = hb31_q15_taps;
+                    taps_len = 31;
+                }
                 /* Fused complex HB decimation on interleaved I/Q */
-                int out_len_interleaved =
-                    hb_decim2_complex_interleaved(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i]);
+                int out_len_interleaved = hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i],
+                                                                           d->hb_hist_q[i], taps, taps_len);
                 /* Next stage */
                 src = dst;
                 in_len = out_len_interleaved;

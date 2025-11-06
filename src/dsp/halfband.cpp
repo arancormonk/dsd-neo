@@ -19,6 +19,17 @@
 /* Q15-scaled half-band coefficients (see declaration in header) */
 const int16_t hb_q15_taps[HB_TAPS] = {-108, 0, 1800, 0, -500, 0, 7000, 16384, 7000, 0, -500, 0, 1800, 0, -108};
 
+/*
+ * Higher-order half-band coefficients generated via windowed-sinc (Blackman)
+ * and renormalized so that the center tap is exactly 0.5 and the sum equals 1.
+ * Odd-indexed taps are zero except the center.
+ */
+const int16_t hb31_q15_taps[31] = {0,     0, 13,    0, -73,  0, 233,  0, -587, 0, 1314, 0, -2953, 0, 10244, 16386,
+                                   10244, 0, -2953, 0, 1314, 0, -587, 0, 233,  0, -73,  0, 13,    0, 0};
+
+const int16_t hb23_q15_taps[23] = {0,     0, 38,    0, -238, 0, 865,  0, -2559, 0, 10087, 16382,
+                                   10087, 0, -2559, 0, 865,  0, -238, 0, 38,    0, 0};
+
 /**
  * @brief Decimate one real-valued channel by 2 using a half-band FIR.
  *

@@ -20,6 +20,11 @@
  */
 #define HB_TAPS 15
 
+/* Maximum half-band tap count supported by the complex decimator history. */
+#ifndef HB_TAPS_MAX
+#define HB_TAPS_MAX 31
+#endif
+
 /**
  * Q15-scaled symmetric half-band coefficients.
  *
@@ -27,6 +32,10 @@
  * taps sum to 0.5 to yield unity DC gain.
  */
 extern const int16_t hb_q15_taps[HB_TAPS];
+
+/* Optional higher-order half-band prototypes (Q15). */
+extern const int16_t hb31_q15_taps[31];
+extern const int16_t hb23_q15_taps[23];
 
 /**
  * Decimate a real-valued sequence by 2 using a half-band FIR.
