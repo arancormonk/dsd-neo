@@ -731,7 +731,8 @@ demod_thread_fn(void* arg) {
                         if (ema < -50.0) {
                             ema = snr;
                         } else {
-                            ema = 0.8 * ema + 0.2 * snr;
+                            /* Make SNR meter snappier: 60% old, 40% new */
+                            ema = 0.6 * ema + 0.4 * snr;
                         }
                         g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
                         g_snr_qpsk_src.store(1, std::memory_order_relaxed);
@@ -810,7 +811,8 @@ demod_thread_fn(void* arg) {
                                     if (ema < -50.0) {
                                         ema = snr;
                                     } else {
-                                        ema = 0.8 * ema + 0.2 * snr;
+                                        /* Make SNR meter snappier: 60% old, 40% new */
+                                        ema = 0.6 * ema + 0.4 * snr;
                                     }
                                     g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
                                     g_snr_c4fm_src.store(1, std::memory_order_relaxed);
@@ -859,7 +861,8 @@ demod_thread_fn(void* arg) {
                                         if (ema < -50.0) {
                                             ema = snr;
                                         } else {
-                                            ema = 0.8 * ema + 0.2 * snr;
+                                            /* Make SNR meter snappier: 60% old, 40% new */
+                                            ema = 0.6 * ema + 0.4 * snr;
                                         }
                                         g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
                                         g_snr_gfsk_src.store(1, std::memory_order_relaxed);
@@ -884,7 +887,8 @@ demod_thread_fn(void* arg) {
                     double fb = dsd_rtl_stream_estimate_snr_c4fm_eye();
                     if (fb > -50.0) {
                         double prev = g_snr_c4fm_db.load(std::memory_order_relaxed);
-                        double blended = (prev < -50.0) ? fb : (0.9 * prev + 0.1 * fb);
+                        /* Slightly quicker fallback blending to avoid long stalls */
+                        double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
                         g_snr_c4fm_db.store(blended, std::memory_order_relaxed);
                         g_snr_c4fm_src.store(2, std::memory_order_relaxed);
                         auto now = std::chrono::steady_clock::now();
@@ -903,7 +907,8 @@ demod_thread_fn(void* arg) {
                     double fb = dsd_rtl_stream_estimate_snr_qpsk_const();
                     if (fb > -50.0) {
                         double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
-                        double blended = (prev < -50.0) ? fb : (0.9 * prev + 0.1 * fb);
+                        /* Slightly quicker fallback blending to avoid long stalls */
+                        double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
                         g_snr_qpsk_db.store(blended, std::memory_order_relaxed);
                         g_snr_qpsk_src.store(2, std::memory_order_relaxed);
                         auto now = std::chrono::steady_clock::now();
@@ -922,7 +927,8 @@ demod_thread_fn(void* arg) {
                     double fb = dsd_rtl_stream_estimate_snr_gfsk_eye();
                     if (fb > -50.0) {
                         double prev = g_snr_gfsk_db.load(std::memory_order_relaxed);
-                        double blended = (prev < -50.0) ? fb : (0.9 * prev + 0.1 * fb);
+                        /* Slightly quicker fallback blending to avoid long stalls */
+                        double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
                         g_snr_gfsk_db.store(blended, std::memory_order_relaxed);
                         g_snr_gfsk_src.store(2, std::memory_order_relaxed);
                         auto now = std::chrono::steady_clock::now();
