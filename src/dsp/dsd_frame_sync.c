@@ -278,10 +278,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (lastt == t_max) {
             lastt = 0;
             /* Skip auto switching entirely if user locked demod (-m[c/g/q/2]). */
-            int want_mod = state->rf_mod; /* default: maintain current */
             if (!opts->mod_cli_lock) {
                 /* Decide preferred modulation for this window */
-                want_mod = 0; /* 0=C4FM, 1=QPSK, 2=GFSK */
+                int want_mod; /* 0=C4FM, 1=QPSK, 2=GFSK */
                 if (state->numflips > opts->mod_threshold) {
                     want_mod = 1; /* QPSK */
                 } else if (state->numflips > 18 && opts->mod_gfsk == 1) {
