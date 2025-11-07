@@ -519,11 +519,18 @@ demod_thread_fn(void* arg) {
     /* Adjustment throttle (ms) and retune holdoff (ms) */
     static auto ag_next_allowed = std::chrono::steady_clock::now();
     static auto ag_hold_until = std::chrono::steady_clock::time_point{};
+    static auto ag_probe_until = std::chrono::steady_clock::time_point{};
     static uint32_t ag_last_freq = 0;
     const int ag_throttle_ms = 1500; /* min interval between changes */
     const int ag_hold_ms = 1200;     /* pause after retune/scanning before adjusting */
-    /* Up-step gating: require squelch gate open and SNR >= threshold */
-    const double ag_up_snr_db = 8.0;
+    /* Up-step gating: require squelch gate open and SNR >= threshold.
+       Default lowered post-SNR-debias; can be overridden via env. */
+    static double s_ag_up_snr_db = 3.0; /* default gate in dB */
+    static int s_snr_age_ms = 1500;     /* require fresh SNR (ms) */
+    /* Probe window: allow RTL device auto-gain to settle before any takeover. */
+    static int s_probe_ms = 3000;       /* allow device AGC to work first */
+    /* Manual seed gain used when exiting device auto due to persistently low level. */
+    static int s_seed_gain_db10 = 300;  /* 30.0 dB in tenth-dB units */
     int logged_once = 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Read a block from input ring */
@@ -536,6 +543,31 @@ demod_thread_fn(void* arg) {
             if (ag && (*ag != '\0') && (*ag != '0') && (*ag != 'f') && (*ag != 'F') && (*ag != 'n') && (*ag != 'N')) {
                 g_tuner_autogain_on.store(1, std::memory_order_relaxed);
             }
+            /* Optional env overrides for SNR gate, freshness window and probe behavior */
+            if (const char* es = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_SNR_DB")) {
+                double v = atof(es);
+                if (v > -60.0 && v < 60.0) {
+                    s_ag_up_snr_db = v;
+                }
+            }
+            if (const char* ea = getenv("DSD_NEO_TUNER_AUTOGAIN_SNR_AGE_MS")) {
+                int v = atoi(ea);
+                if (v >= 200 && v <= 10000) {
+                    s_snr_age_ms = v;
+                }
+            }
+            if (const char* ep = getenv("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS")) {
+                int v = atoi(ep);
+                if (v >= 0 && v <= 20000) {
+                    s_probe_ms = v;
+                }
+            }
+            if (const char* eg = getenv("DSD_NEO_TUNER_AUTOGAIN_SEED_DB")) {
+                double v = atof(eg);
+                if (v >= 0.0 && v <= 60.0) {
+                    s_seed_gain_db10 = (int)lrint(v * 10.0);
+                }
+            }
             ag_initialized = 1;
         }
         /* Update simple occupancy metrics on pre-DSP input for autogain */
@@ -545,6 +577,12 @@ demod_thread_fn(void* arg) {
                 ag_last_freq = dongle.freq;
                 ag_blocks = ag_high = ag_low = 0;
                 ag_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ag_hold_ms);
+                /* On retune, defer any takeover to allow device auto to settle */
+                if (s_probe_ms > 0) {
+                    ag_probe_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(s_probe_ms);
+                } else {
+                    ag_probe_until = std::chrono::steady_clock::time_point{};
+                }
             }
             int max_abs = 0;
             int64_t sum_abs = 0;
@@ -574,7 +612,11 @@ demod_thread_fn(void* arg) {
                 /* Initialize manual target from current driver state once */
                 if (!ag_target_initialized) {
                     int cg = rtl_device_get_tuner_gain(rtl_device_handle);
-                    if (cg >= 0) {
+                    int is_auto_boot = rtl_device_is_auto_gain(rtl_device_handle);
+                    /* If the device is already in manual mode, honor the exact manual setting, including 0 dB.
+                       When still in device auto, skip latching (to avoid capturing a synthetic 0).
+                       We'll bootstrap out of auto separately if needed. */
+                    if (!is_auto_boot && cg >= 0) {
                         ag_manual_target = cg;
                     }
                     ag_target_initialized = 1;
@@ -582,11 +624,45 @@ demod_thread_fn(void* arg) {
                 /* Respect retune holdoff and throttle */
                 auto now = std::chrono::steady_clock::now();
                 bool in_hold = (ag_hold_until.time_since_epoch().count() != 0) && (now < ag_hold_until);
+                bool in_probe = (ag_probe_until.time_since_epoch().count() != 0) && (now < ag_probe_until)
+                                && (rtl_device_is_auto_gain(rtl_device_handle) > 0);
                 bool throttled = now < ag_next_allowed;
 
                 if (!in_hold && !throttled) {
                     int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
                     bool changed = false;
+                    /* During probe window, let device AGC act; skip takeover/adjustments unless clipping. */
+                    if (in_probe) {
+                        if (ag_high >= 3) {
+                            /* Severe clipping even in auto: take control and step down. */
+                            int seed = s_seed_gain_db10;
+                            if (seed < 0) seed = 0;
+                            if (seed > 490) seed = 490;
+                            ag_manual_target = seed - 50; /* start slightly below seed when clipping */
+                            if (ag_manual_target < 0) ag_manual_target = 0;
+                            rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
+                            dongle.gain = ag_manual_target;
+                            ag_next_allowed = now + std::chrono::milliseconds(ag_throttle_ms);
+                            LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n",
+                                     ag_manual_target / 10, ag_manual_target % 10);
+                        }
+                        goto after_adjustments; /* skip below logic during probe */
+                    }
+                    /* One-time bootstrap: if device is still in auto and input level is consistently low,
+                       exit auto into a reasonable manual gain even when SNR is not yet measurable. */
+                    if (is_auto > 0 && ag_high == 0 && ag_low >= (ag_blocks * 3) / 4) {
+                        int kick = s_seed_gain_db10;
+                        if (kick < 0) kick = 0;
+                        if (kick > 490) kick = 490;
+                        rtl_device_set_gain_nearest(rtl_device_handle, kick);
+                        dongle.gain = kick;
+                        ag_manual_target = kick; /* keep target in sync with seeded manual gain */
+                        ag_next_allowed = now + std::chrono::milliseconds(ag_throttle_ms);
+                        LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n",
+                                 kick / 10, kick % 10);
+                        /* After exiting auto, subsequent adjustments use normal thresholds */
+                        changed = false; /* already applied */
+                    }
                     /* Always allow downward steps on clipping */
                     if (ag_high >= 3) {
                         ag_manual_target -= 50; /* -5.0 dB */
@@ -595,18 +671,42 @@ demod_thread_fn(void* arg) {
                         }
                         changed = true;
                     } else {
-                        /* Only consider upward steps when squelch gate is open and SNR is healthy */
+                        /* Only consider upward steps when squelch gate is open and SNR is healthy.
+                           Prefer fresh, direct SNR from the active path; avoid stale/fallback values. */
+                        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                           std::chrono::steady_clock::now().time_since_epoch())
+                                           .count();
                         double s0 = g_snr_c4fm_db.load(std::memory_order_relaxed);
                         double s1 = g_snr_qpsk_db.load(std::memory_order_relaxed);
                         double s2 = g_snr_gfsk_db.load(std::memory_order_relaxed);
-                        double snr_db = s0;
-                        if (s1 > snr_db) {
-                            snr_db = s1;
+                        long long t0 = g_snr_c4fm_last_ms.load(std::memory_order_relaxed);
+                        long long t1 = g_snr_qpsk_last_ms.load(std::memory_order_relaxed);
+                        long long t2 = g_snr_gfsk_last_ms.load(std::memory_order_relaxed);
+                        int src0 = g_snr_c4fm_src.load(std::memory_order_relaxed);
+                        int src1 = g_snr_qpsk_src.load(std::memory_order_relaxed);
+                        int src2 = g_snr_gfsk_src.load(std::memory_order_relaxed);
+                        bool fresh0 = (now_ms - t0) <= s_snr_age_ms && src0 == 1;
+                        bool fresh1 = (now_ms - t1) <= s_snr_age_ms && src1 == 1;
+                        bool fresh2 = (now_ms - t2) <= s_snr_age_ms && src2 == 1;
+                        double snr_db = -100.0;
+                        if (d->cqpsk_enable) {
+                            if (fresh1) {
+                                snr_db = s1;
+                            } else if (fresh0 || fresh2) {
+                                snr_db = fresh0 ? s0 : s2;
+                            }
+                        } else {
+                            if (fresh0 || fresh2) {
+                                snr_db = fresh0 ? s0 : s2;
+                                if (fresh0 && fresh2 && s2 > snr_db) {
+                                    snr_db = s2;
+                                }
+                            } else if (fresh1) {
+                                /* Only if FSK SNRs are stale, consider QPSK */
+                                snr_db = s1;
+                            }
                         }
-                        if (s2 > snr_db) {
-                            snr_db = s2;
-                        }
-                        if (d->squelch_gate_open && snr_db >= ag_up_snr_db && ag_low >= (ag_blocks * 3) / 4) {
+                        if (d->squelch_gate_open && snr_db >= s_ag_up_snr_db && ag_low >= (ag_blocks * 3) / 4) {
                             ag_manual_target += 50; /* +5.0 dB */
                             if (ag_manual_target > 490) {
                                 ag_manual_target = 490;
@@ -628,6 +728,7 @@ demod_thread_fn(void* arg) {
                                      ag_manual_target % 10);
                         }
                     }
+                after_adjustments:
                 }
                 ag_blocks = ag_high = ag_low = 0;
             }
