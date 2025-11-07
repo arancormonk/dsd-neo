@@ -738,7 +738,7 @@ demod_thread_fn(void* arg) {
                                      ag_manual_target % 10);
                         }
                     }
-                after_adjustments:
+                after_adjustments:;
                 }
                 ag_blocks = ag_high = ag_low = 0;
             }
