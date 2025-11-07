@@ -528,9 +528,9 @@ demod_thread_fn(void* arg) {
     static double s_ag_up_snr_db = 3.0; /* default gate in dB */
     static int s_snr_age_ms = 1500;     /* require fresh SNR (ms) */
     /* Probe window: allow RTL device auto-gain to settle before any takeover. */
-    static int s_probe_ms = 3000;       /* allow device AGC to work first */
+    static int s_probe_ms = 3000; /* allow device AGC to work first */
     /* Manual seed gain used when exiting device auto due to persistently low level. */
-    static int s_seed_gain_db10 = 300;  /* 30.0 dB in tenth-dB units */
+    static int s_seed_gain_db10 = 300; /* 30.0 dB in tenth-dB units */
     int logged_once = 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Read a block from input ring */
@@ -636,15 +636,21 @@ demod_thread_fn(void* arg) {
                         if (ag_high >= 3) {
                             /* Severe clipping even in auto: take control and step down. */
                             int seed = s_seed_gain_db10;
-                            if (seed < 0) seed = 0;
-                            if (seed > 490) seed = 490;
+                            if (seed < 0) {
+                                seed = 0;
+                            }
+                            if (seed > 490) {
+                                seed = 490;
+                            }
                             ag_manual_target = seed - 50; /* start slightly below seed when clipping */
-                            if (ag_manual_target < 0) ag_manual_target = 0;
+                            if (ag_manual_target < 0) {
+                                ag_manual_target = 0;
+                            }
                             rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
                             dongle.gain = ag_manual_target;
                             ag_next_allowed = now + std::chrono::milliseconds(ag_throttle_ms);
-                            LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n",
-                                     ag_manual_target / 10, ag_manual_target % 10);
+                            LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", ag_manual_target / 10,
+                                     ag_manual_target % 10);
                         }
                         goto after_adjustments; /* skip below logic during probe */
                     }
@@ -652,8 +658,12 @@ demod_thread_fn(void* arg) {
                        exit auto into a reasonable manual gain even when SNR is not yet measurable. */
                     if (is_auto > 0 && ag_high == 0 && ag_low >= (ag_blocks * 3) / 4) {
                         int kick = s_seed_gain_db10;
-                        if (kick < 0) kick = 0;
-                        if (kick > 490) kick = 490;
+                        if (kick < 0) {
+                            kick = 0;
+                        }
+                        if (kick > 490) {
+                            kick = 490;
+                        }
                         rtl_device_set_gain_nearest(rtl_device_handle, kick);
                         dongle.gain = kick;
                         ag_manual_target = kick; /* keep target in sync with seeded manual gain */
@@ -674,8 +684,8 @@ demod_thread_fn(void* arg) {
                         /* Only consider upward steps when squelch gate is open and SNR is healthy.
                            Prefer fresh, direct SNR from the active path; avoid stale/fallback values. */
                         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                           std::chrono::steady_clock::now().time_since_epoch())
-                                           .count();
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count();
                         double s0 = g_snr_c4fm_db.load(std::memory_order_relaxed);
                         double s1 = g_snr_qpsk_db.load(std::memory_order_relaxed);
                         double s2 = g_snr_gfsk_db.load(std::memory_order_relaxed);

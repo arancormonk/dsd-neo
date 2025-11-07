@@ -1495,6 +1495,7 @@ initOpts(dsd_opts* opts) {
     opts->mod_c4fm = 1;
     opts->mod_qpsk = 0;
     opts->mod_gfsk = 0;
+    opts->mod_cli_lock = 0; // by default, allow auto modulation selection
     opts->uvquality = 3;
     opts->inverted_x2tdma = 1; // most transmitter + scanner + sound card combinations show inverted signals for this
     opts->inverted_dmr = 0; // most transmitter + scanner + sound card combinations show non-inverted signals for this
@@ -2541,10 +2542,10 @@ usage() {
     printf("                 (Setting 0 will show full Site ID, no area/subarea)\n");
     printf("\n");
     printf("  -ma           Auto-select modulation optimizations\n");
-    printf("  -mc           Use only C4FM modulation optimizations (default)\n");
-    printf("  -mg           Use only GFSK modulation optimizations\n");
-    printf("  -mq           Use only QPSK modulation optimizations\n");
-    printf("  -m2           Use P25p2 6000 sps QPSK modulation optimizations\n");
+    printf("  -mc           Only C4FM optimizations (locks demod; no auto override)\n");
+    printf("  -mg           Only GFSK optimizations (locks demod; no auto override)\n");
+    printf("  -mq           Only QPSK optimizations (locks demod; no auto override)\n");
+    printf("  -m2           P25p2 6000 sps QPSK (locks demod)\n");
     printf("  -mL           Enable CQPSK LMS (experimental)\n");
     //printf ("                 (4 Level, not 8 Level LSM) (this is honestly unknown since I can't verify what local systems are using)\n");
     printf("  -F            Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");
@@ -4475,18 +4476,21 @@ main(int argc, char** argv) {
                     opts.mod_qpsk = 1;
                     opts.mod_gfsk = 1;
                     state.rf_mod = 0;
+                    opts.mod_cli_lock = 0; // do not lock when enabling all
                     LOG_NOTICE("Don't use the -ma switch.\n");
                 } else if (optarg[0] == 'c') {
                     opts.mod_c4fm = 1;
                     opts.mod_qpsk = 0;
                     opts.mod_gfsk = 0;
                     state.rf_mod = 0;
+                    opts.mod_cli_lock = 1; // lock to C4FM
                     LOG_NOTICE("Enabling only C4FM modulation optimizations.\n");
                 } else if (optarg[0] == 'g') {
                     opts.mod_c4fm = 0;
                     opts.mod_qpsk = 0;
                     opts.mod_gfsk = 1;
                     state.rf_mod = 2;
+                    opts.mod_cli_lock = 1; // lock to GFSK
                     LOG_NOTICE("Enabling only GFSK modulation optimizations.\n");
                 } else if (optarg[0] == 'q') {
                     opts.mod_c4fm = 0;
@@ -4494,6 +4498,7 @@ main(int argc, char** argv) {
                     opts.mod_gfsk = 0;
                     state.rf_mod = 1;
                     // opts.setmod_bw = 12000;
+                    opts.mod_cli_lock = 1; // lock to QPSK
                     LOG_NOTICE("Enabling only QPSK modulation optimizations.\n");
                 } else if (optarg[0] == '2') {
                     opts.mod_c4fm = 0;
@@ -4503,6 +4508,7 @@ main(int argc, char** argv) {
                     state.samplesPerSymbol = 8;
                     state.symbolCenter = 3;
                     // opts.setmod_bw = 12000;
+                    opts.mod_cli_lock = 1; // lock to QPSK
                     LOG_NOTICE("Enabling 6000 sps P25p2 QPSK.\n");
                 } else if (optarg[0] == 'L') {
                     opts.cqpsk_lms = 1;
@@ -4520,6 +4526,8 @@ main(int argc, char** argv) {
                     state.samplesPerSymbol = 10;
                     state.symbolCenter = 4;
                     // opts.setmod_bw = 12000;
+                    // This is a P25p2 C4FM test mode; treat as a lock for demod path
+                    opts.mod_cli_lock = 1;
                     LOG_NOTICE("Enabling 6000 sps P25p2 C4FM.\n");
                 } else if (optarg[0] == '4') {
                     opts.mod_c4fm = 1;
@@ -4529,6 +4537,8 @@ main(int argc, char** argv) {
                     state.samplesPerSymbol = 8;
                     state.symbolCenter = 3;
                     // opts.setmod_bw = 12000;
+                    // All optimizations: do not lock (allow auto)
+                    opts.mod_cli_lock = 0;
                     LOG_NOTICE("Enabling 6000 sps P25p2 all optimizations.\n");
                 }
                 break;
