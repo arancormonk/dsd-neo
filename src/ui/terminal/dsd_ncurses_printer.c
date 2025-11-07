@@ -401,8 +401,8 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Respect the UI toggle: only use Unicode blocks when enabled and locale supports it */
     int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
     const int levels = 8;
-    const int W = 24;                           /* sparkline width */
-    const double clip_lo = 0.0, clip_hi = 30.0; /* dB window */
+    const int W = 24;                             /* sparkline width */
+    const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
     const double span = (clip_hi - clip_lo) > 1e-6 ? (clip_hi - clip_lo) : 1.0;
 
     const double* buf = NULL;
@@ -429,8 +429,18 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Map most recent to the right; older to the left */
     int idx = (start + (len - count)) % SNR_HIST_N;
 
-    /* Color bands: poor<12 red, 12..18 yellow, >18 green */
+    /* Color bands (per modulation, unbiased SNR):
+       - C4FM: poor<4, 4..10 moderate, >10 good
+       - QPSK/GFSK: poor<10, 10..16 moderate, >16 good */
     const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
+    double thr1 = 12.0, thr2 = 18.0; /* fallback */
+    if (mod == 0) {                  /* C4FM */
+        thr1 = 4.0;
+        thr2 = 10.0;
+    } else if (mod == 1 || mod == 2) { /* QPSK or GFSK */
+        thr1 = 10.0;
+        thr2 = 16.0;
+    }
     for (int x = 0; x < count; x++) {
         double v = buf[idx];
         idx = (idx + 1) % SNR_HIST_N;
@@ -448,7 +458,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
         if (li >= levels) {
             li = levels - 1;
         }
-        short cp = (v < 12.0) ? C_POOR : (v < 18.0) ? C_MOD : C_GOOD;
+        short cp = (v < thr1) ? C_POOR : (v < thr2) ? C_MOD : C_GOOD;
 #ifdef PRETTY_COLORS
         attron(COLOR_PAIR(cp));
 #endif
@@ -469,28 +479,37 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
 
 /* Render a compact horizontal meter for current SNR using existing glyphs. */
 static void
-print_snr_meter(const dsd_opts* opts, double snr_db) {
+print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     /* Preserve the current color pair so our temporary colors don't clear it */
 #ifdef PRETTY_COLORS
     attr_t saved_attrs = 0;
     short saved_pair = 0;
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
-    /* Color bands match sparkline thresholds */
+    /* Color bands match sparkline thresholds (per modulation) */
     const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
-    /* Map 0..30 dB onto 8 glyph levels (same set used elsewhere) */
+    double thr1 = 12.0, thr2 = 18.0; /* fallback */
+    if (mod == 0) {                  /* C4FM */
+        thr1 = 4.0;
+        thr2 = 10.0;
+    } else if (mod == 1 || mod == 2) { /* QPSK or GFSK */
+        thr1 = 10.0;
+        thr2 = 16.0;
+    }
+    /* Map -15..30 dB onto 8 glyph levels (same set used elsewhere) */
     static const char* uni8[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
 
+    const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
     double v = snr_db;
-    if (v < 0.0) {
-        v = 0.0;
+    if (v < clip_lo) {
+        v = clip_lo;
     }
-    if (v > 30.0) {
-        v = 30.0;
+    if (v > clip_hi) {
+        v = clip_hi;
     }
     const int levels = 8;
-    int li = (int)floor((v / 30.0) * (levels - 1) + 0.5);
+    int li = (int)floor(((v - clip_lo) / (clip_hi - clip_lo)) * (levels - 1) + 0.5);
     if (li < 0) {
         li = 0;
     }
@@ -499,7 +518,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db) {
     }
 
     int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
-    short cp = (snr_db < 12.0) ? C_POOR : (snr_db < 18.0) ? C_MOD : C_GOOD;
+    short cp = (snr_db < thr1) ? C_POOR : (snr_db < thr2) ? C_MOD : C_GOOD;
 #ifdef PRETTY_COLORS
     attron(COLOR_PAIR(cp));
 #endif
@@ -1697,12 +1716,14 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 }
                 double sig_var = ssum / (double)total;
                 if (noise_var > 1e-9 && sig_var > 1e-9) {
-                    snr_db = 10.0 * log10(sig_var / noise_var);
+                    /* Apply same unbiased C4FM calibration as radio path (approx 7.95 dB). */
+                    const double kC4fmSNRNoiseBiasDb_UI = 7.95;
+                    snr_db = 10.0 * log10(sig_var / noise_var) - kC4fmSNRNoiseBiasDb_UI;
                 }
             }
         }
     }
-    if (is_c4fm && snr_db >= 0.0) {
+    if (is_c4fm && snr_db > -50.0) {
         ui_print_lborder();
         printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=%.1f dB\n", yq1, yq2, yq3, sps, snr_db);
     } else {
@@ -3882,7 +3903,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             /* Show current SNR as a compact, colorized meter */
             printw(" SNR: %.1f dB ", snr);
             printw("[");
-            print_snr_meter(opts, snr);
+            /* Pass current modulation for per-mod color bands */
+            print_snr_meter(opts, snr, state->rf_mod);
             printw("]");
             printw(" (%s)", m);
         } else {

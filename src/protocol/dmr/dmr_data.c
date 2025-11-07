@@ -295,11 +295,12 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                 snr_db = rtl_stream_estimate_snr_c4fm_eye();
             }
             int w256 = 0;
-            if (snr_db > -5.0) {
-                if (snr_db >= 20.0) {
+            /* After C4FM SNR bias removal (~8 dB), shift window from [-5,20] to [-13,12]. */
+            if (snr_db > -13.0) {
+                if (snr_db >= 12.0) {
                     w256 = 255;
                 } else {
-                    double w = (snr_db + 5.0) / 25.0;
+                    double w = (snr_db + 13.0) / 25.0;
                     if (w < 0.0) {
                         w = 0.0;
                     }
@@ -405,11 +406,12 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                 snr_db = rtl_stream_estimate_snr_c4fm_eye();
             }
             int w256 = 0;
-            if (snr_db > -5.0) {
-                if (snr_db >= 20.0) {
+            /* After C4FM SNR bias removal (~8 dB), shift window from [-5,20] to [-13,12]. */
+            if (snr_db > -13.0) {
+                if (snr_db >= 12.0) {
                     w256 = 255;
                 } else {
-                    double w = (snr_db + 5.0) / 25.0;
+                    double w = (snr_db + 13.0) / 25.0;
                     if (w < 0.0) {
                         w = 0.0;
                     }

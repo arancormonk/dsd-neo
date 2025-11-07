@@ -88,6 +88,9 @@ static int lcm_post[17] = {1, 1, 1, 3, 1, 5, 3, 7, 1, 9, 5, 11, 3, 13, 7, 15, 1}
 static int ACTUAL_BUF_LENGTH;
 
 static const double kPi = 3.14159265358979323846;
+static const double kC4fmSNRNoiseBiasDb = 7.95;
+/* Bias for EVM/2-level SNR on Gaussian noise (QPSK/GFSK): ~2.43 dB */
+static const double kEvmSNRNoiseBiasDb = 2.43;
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)
@@ -723,6 +726,7 @@ demod_thread_fn(void* arg) {
                         }
                     }
                     if (snr > -99.0) {
+                        snr -= kEvmSNRNoiseBiasDb;
                         static double ema = -100.0;
                         if (ema < -50.0) {
                             ema = snr;
@@ -801,7 +805,7 @@ demod_thread_fn(void* arg) {
                                 }
                                 double sig_var = ssum / (double)total;
                                 if (sig_var > 1e-9) {
-                                    double snr = 10.0 * log10(sig_var / noise_var);
+                                    double snr = 10.0 * log10(sig_var / noise_var) - kC4fmSNRNoiseBiasDb;
                                     static double ema = -100.0;
                                     if (ema < -50.0) {
                                         ema = snr;
@@ -850,7 +854,7 @@ demod_thread_fn(void* arg) {
                                                   + (double)cntH * (muH - mu_all) * (muH - mu_all);
                                     double sig_var = ssum / (double)total;
                                     if (sig_var > 1e-9) {
-                                        double snr = 10.0 * log10(sig_var / noise_var);
+                                        double snr = 10.0 * log10(sig_var / noise_var) - kEvmSNRNoiseBiasDb;
                                         static double ema = -100.0;
                                         if (ema < -50.0) {
                                             ema = snr;
@@ -1594,7 +1598,7 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    return 10.0 * log10(sig_var / noise_var);
+    return 10.0 * log10(sig_var / noise_var) - kC4fmSNRNoiseBiasDb;
 }
 
 /* ---------------- Constellation-based SNR estimation (QPSK fallback) ---------------- */
@@ -1659,7 +1663,7 @@ dsd_rtl_stream_estimate_snr_qpsk_const(void) {
             best_snr = snr_d;
         }
     }
-    return best_snr;
+    return best_snr - kEvmSNRNoiseBiasDb;
 }
 
 /* ---------------- Eye-based SNR estimation (GFSK fallback, 2-level) ---------------- */
@@ -1743,7 +1747,7 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    return 10.0 * log10(sig_var / noise_var);
+    return 10.0 * log10(sig_var / noise_var) - kEvmSNRNoiseBiasDb;
 }
 
 /* ---------------- Spectrum capture (lightweight FFT over recent I/Q) ---------------- */

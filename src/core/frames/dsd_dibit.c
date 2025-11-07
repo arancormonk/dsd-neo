@@ -242,13 +242,13 @@ dmr_compute_reliability(const dsd_state* st, int sym) {
         // fallback estimate when smooth SNR not available
         snr_db = rtl_stream_estimate_snr_c4fm_eye();
     }
-    // Map [-5, 20] dB to [0, 255]
+    // Map unbiased C4FM SNR [-13, 12] dB to [0, 255] (shifted from [-5,20])
     int w256 = 0;
-    if (snr_db > -5.0) {
-        if (snr_db >= 20.0) {
+    if (snr_db > -13.0) {
+        if (snr_db >= 12.0) {
             w256 = 255;
         } else {
-            double w = (snr_db + 5.0) / 25.0; // 0..1
+            double w = (snr_db + 13.0) / 25.0; // 0..1
             if (w < 0.0) {
                 w = 0.0;
             }

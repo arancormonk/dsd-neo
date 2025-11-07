@@ -489,11 +489,14 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     snr_db = rtl_stream_estimate_snr_c4fm_eye();
                 }
                 int w256 = 0;
-                if (snr_db > -5.0) {
-                    if (snr_db >= 20.0) {
+                /* Map unbiased C4FM SNR to [0,1] over roughly 25 dB span.
+                   Before bias fix, noise ~8 dB; mapping was [-5, 20] dB.
+                   After bias removal, shift by ~8 dB: [-13, 12] dB. */
+                if (snr_db > -13.0) {
+                    if (snr_db >= 12.0) {
                         w256 = 255;
                     } else {
-                        double w = (snr_db + 5.0) / 25.0;
+                        double w = (snr_db + 13.0) / 25.0;
                         if (w < 0.0) {
                             w = 0.0;
                         }
