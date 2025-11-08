@@ -14,7 +14,6 @@
 
 // Provide globals expected by demod_pipeline.cpp
 int use_halfband_decimator = 0;
-int fll_lut_enabled = 0;
 
 static double
 rms_mag(const int16_t* iq, int pairs) {

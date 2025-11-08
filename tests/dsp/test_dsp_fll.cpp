@@ -26,11 +26,11 @@ arrays_close(const int16_t* a, const int16_t* b, int n, int tol) {
 
 int
 main(void) {
-    // Test 1: mix with freq=0 should be no-op (both fast and LUT rotators)
+    // Test 1: mix with freq=0 should be a no-op
     {
         fll_config_t cfg = {0};
         cfg.enabled = 1;
-        cfg.use_lut = 0;
+
         fll_state_t st;
         fll_init_state(&st);
         st.freq_q15 = 0; // no rotation
@@ -48,12 +48,11 @@ main(void) {
             return 1;
         }
 
-        // LUT path
-        cfg.use_lut = 1;
+        /* Re-run once more to ensure determinism */
         memcpy(x, y, sizeof(x));
         fll_mix_and_update(&cfg, &st, x, 20);
         if (!arrays_close(x, y, 20, 1)) {
-            fprintf(stderr, "FLL mix (LUT): freq=0 deviated >1 LSB\n");
+            fprintf(stderr, "FLL mix: freq=0 deviated >1 LSB\n");
             return 1;
         }
     }

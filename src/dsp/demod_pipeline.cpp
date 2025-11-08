@@ -331,7 +331,6 @@ static const int cic_9_tables[][10] = {
 
 /* Global flags provided by rtl front-end */
 extern int use_halfband_decimator;
-extern int fll_lut_enabled;
 
 /**
  * Decimate one real channel by 2 using a half-band FIR with persistent left history.
@@ -921,7 +920,6 @@ fll_update_error(struct demod_state* d) {
     cfg.beta_q15 = d->fll_beta_q15;
     cfg.deadband_q14 = d->fll_deadband_q14;
     cfg.slew_max_q15 = d->fll_slew_max_q15;
-    cfg.use_lut = fll_lut_enabled;
 
     /* Use QPSK-friendly symbol-spaced update when CQPSK path is active */
     if (d->cqpsk_enable && d->ted_sps >= 2) {
@@ -963,7 +961,6 @@ fll_mix_and_update(struct demod_state* d) {
     cfg.beta_q15 = d->fll_beta_q15;
     cfg.deadband_q14 = d->fll_deadband_q14;
     cfg.slew_max_q15 = d->fll_slew_max_q15;
-    cfg.use_lut = fll_lut_enabled;
 
     fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
 

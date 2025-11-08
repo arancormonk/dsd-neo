@@ -183,7 +183,7 @@ cmake --build build/dev-release --target uninstall
   - Env: `DSD_NEO_RESAMP=48000` (default) or `off/0` to disable; sets demod/output target rate and L/M design.
 
 - FLL/TED controls:
-  - Env: `DSD_NEO_FLL=1`, `DSD_NEO_FLL_LUT=1`, `DSD_NEO_FLL_ALPHA/BETA/DEADBAND/SLEW` (Q15/Q14 gains),
+  - Env: `DSD_NEO_FLL=1`, `DSD_NEO_FLL_ALPHA/BETA/DEADBAND/SLEW` (Q15/Q14 gains),
     `DSD_NEO_TED=1`, `DSD_NEO_TED_SPS=<int>`, `DSD_NEO_TED_GAIN=<Q20>`, `DSD_NEO_TED_FORCE=1`.
 
 - FM/C4FM stabilization:

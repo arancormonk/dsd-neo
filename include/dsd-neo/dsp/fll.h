@@ -27,7 +27,6 @@ typedef struct {
     int beta_q15;     /* integral gain (Q15) */
     int deadband_q14; /* ignore small phase errors |err| <= deadband (Q14) */
     int slew_max_q15; /* max |delta freq| per update (Q15) */
-    int use_lut;      /* use LUT-based rotator instead of fast approximation */
 } fll_config_t;
 
 /* FLL State structure - minimal fields needed for FLL operations */
@@ -50,7 +49,7 @@ void fll_init_state(fll_state_t* state);
  * @brief Mix I/Q by an NCO and advance phase by freq_q15 per sample.
  *
  * Phase and frequency are Q15 where a full turn (2*pi) maps to 1<<15.
- * When enabled, applies either LUT-based or fast sin/cos rotator.
+ * Uses high-quality sin/cos from the math library for rotation.
  *
  * @param config FLL configuration.
  * @param state  FLL state (updates phase_q15).

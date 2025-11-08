@@ -15,7 +15,6 @@
 
 // Provide globals expected by demod_pipeline.cpp to avoid undefined refs
 int use_halfband_decimator = 0;
-int fll_lut_enabled = 0;
 
 int
 main(void) {

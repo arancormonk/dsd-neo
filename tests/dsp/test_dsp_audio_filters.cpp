@@ -13,7 +13,6 @@
 
 // Provide globals expected by demod_pipeline.cpp to avoid linking RTL front-end
 int use_halfband_decimator = 0;
-int fll_lut_enabled = 0;
 
 static int
 monotonic_nondecreasing(const int16_t* x, int n) {

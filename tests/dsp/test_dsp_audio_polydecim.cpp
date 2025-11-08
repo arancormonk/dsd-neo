@@ -25,7 +25,6 @@
 
 // Provide globals expected by demod_pipeline.cpp
 int use_halfband_decimator = 1;
-int fll_lut_enabled = 0;
 
 static double
 rms(const std::vector<int16_t>& x) {

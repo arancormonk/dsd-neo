@@ -13,7 +13,6 @@
 
 // Provide globals expected by demod_pipeline.cpp
 int use_halfband_decimator = 0;
-int fll_lut_enabled = 0;
 
 static int
 approx_eq(int a, int b, int tol) {

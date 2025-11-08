@@ -13,7 +13,6 @@
 
 // Provide globals expected by demod_pipeline.cpp
 int use_halfband_decimator = 0;
-int fll_lut_enabled = 0;
 
 static double
 mean_of(const int16_t* x, int n, int step) {

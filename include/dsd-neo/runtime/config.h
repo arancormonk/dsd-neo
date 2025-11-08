@@ -57,9 +57,6 @@ extern "C" {
  * - DSD_NEO_FLL
  *     Enable residual carrier frequency correction.
  *     Values: "1" or unset to enable; other values disable. Default: enabled.
- * - DSD_NEO_FLL_LUT
- *     Use higher-quality quarter-wave sine LUT mixer for FLL rotation.
- *     Values: 1 enable, 0/empty disable. Default: 0 (disabled; fast piecewise approx).
  * - DSD_NEO_FLL_ALPHA, DSD_NEO_FLL_BETA
  *     Proportional and integral gains (Q15 fixed-point, ~value/32768). Typical small values.
  *     Defaults: ALPHA=100 (~0.003), BETA=10 (~0.0003). May be adjusted for digital modes if not set.
@@ -185,8 +182,6 @@ typedef struct dsdneoRuntimeConfig {
     /* Residual CFO FLL */
     int fll_is_set;
     int fll_enable;
-    int fll_lut_is_set;
-    int fll_lut_enable;
     int fll_alpha_is_set;
     int fll_alpha_q15;
     int fll_beta_is_set;

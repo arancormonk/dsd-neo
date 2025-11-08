@@ -154,7 +154,6 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 #define DSD_NEO_RESTRICT
 #endif
 
-int fll_lut_enabled = 1; /* DSD_NEO_FLL_LUT default enabled: use higher-quality LUT rotator */
 /* Debug/compat toggles via env */
 static int combine_rotate_enabled = 1;      /* DSD_NEO_COMBINE_ROT (1 default) */
 static int upsample_fixedpoint_enabled = 1; /* DSD_NEO_UPSAMPLE_FP (1 default) */
@@ -2573,8 +2572,6 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.resamp_enabled = 0;
 
     demod.fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : 0;
-    /* If env provided, honor it; otherwise keep default (enabled) */
-    fll_lut_enabled = cfg->fll_lut_is_set ? (cfg->fll_lut_enable != 0) : 1;
     demod.fll_alpha_q15 = cfg->fll_alpha_is_set ? cfg->fll_alpha_q15 : 50;
     demod.fll_beta_q15 = cfg->fll_beta_is_set ? cfg->fll_beta_q15 : 5;
     demod.fll_deadband_q14 = cfg->fll_deadband_is_set ? cfg->fll_deadband_q14 : 45;
