@@ -2950,14 +2950,8 @@ main(int argc, char** argv) {
     char versionstr[25];
     mbe_printVersion(versionstr);
 
-// Simple banner with semantic version and short git hash
-#if 0
-    LOG_NOTICE("------------------------------------------------------------------------------\\n");
-    LOG_NOTICE("| Digital Speech Decoder: DSD-neo %s (%s) \\n+", GIT_TAG, GIT_HASH);
-    fprintf(stderr, "| Digital Speech Decoder: DSD-neo %s (%s) \\n+", GIT_TAG, GIT_HASH);
-    LOG_NOTICE("------------------------------------------------------------------------------\\n");
+    // Simple banner with semantic version and short git hash
 
-#endif
     LOG_NOTICE("------------------------------------------------------------------------------\n");
     LOG_NOTICE("| Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
     LOG_NOTICE("------------------------------------------------------------------------------\n");
