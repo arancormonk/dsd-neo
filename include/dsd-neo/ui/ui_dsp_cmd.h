@@ -46,6 +46,7 @@ enum UiDspOp {
     UI_DSP_OP_BLANKER_WIN_DELTA = 41, // a: delta (+/-)
     UI_DSP_OP_MANUAL_TOGGLE = 42,
     UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE = 43,
+    UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE = 44,
 };
 
 typedef struct {

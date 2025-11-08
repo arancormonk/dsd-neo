@@ -4197,6 +4197,26 @@ lbl_onoff_dfe(void* v, char* b, size_t n) {
     return b;
 }
 
+/* ---- CQPSK acquisition-only FLL (pre-Costas) ---- */
+static const char*
+lbl_cqpsk_acq_fll(void* v, char* b, size_t n) {
+    UNUSED(v);
+#ifdef USE_RTLSDR
+    int on = rtl_stream_get_cqpsk_acq_fll();
+    snprintf(b, n, "CQPSK Acquisition FLL [%s]", on ? "On" : "Off");
+#else
+    snprintf(b, n, "CQPSK Acquisition FLL [N/A]");
+#endif
+    return b;
+}
+
+static void
+act_toggle_cqpsk_acq_fll(void* v) {
+    UNUSED(v);
+    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+}
+
 static const char*
 lbl_dft_cycle(void* v, char* b, size_t n) {
     UNUSED(v);
@@ -6173,6 +6193,12 @@ static const NcMenuItem DSP_PATH_ITEMS[] = {
      .label_fn = lbl_onoff_fll,
      .help = "Enable/disable frequency-locked loop.",
      .on_select = act_toggle_fll},
+    {.id = "cq_acq_fll",
+     .label = "CQPSK Acquisition FLL",
+     .label_fn = lbl_cqpsk_acq_fll,
+     .help = "Pre-Costas pull-in FLL for CQPSK; auto-disables on lock.",
+     .is_enabled = dsp_cq_on,
+     .on_select = act_toggle_cqpsk_acq_fll},
     {.id = "ted",
      .label = "Timing Error (TED)",
      .label_fn = lbl_onoff_ted,

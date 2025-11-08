@@ -2028,6 +2028,47 @@ full_demod(struct demod_state* d) {
      *   DC block -> AGC/limiter (when allowed) -> FM CMA/smoother -> FLL (if enabled)
      */
     if (d->cqpsk_enable) {
+        /* Optional acquisition-only FLL for CQPSK (pre-Costas).
+           When enabled, we run a symbol-spaced FLL before Costas to
+           quickly pull-in residual CFO, then stop once 'locked'. */
+        if (d->fll_enabled && d->cqpsk_acq_fll_enable && !d->cqpsk_acq_fll_locked && d->ted_sps >= 2) {
+            /* Build FLL config from current demod state */
+            fll_config_t cfg;
+            cfg.enabled = 1;
+            cfg.alpha_q15 = (d->fll_alpha_q15 > 0) ? d->fll_alpha_q15 : 150;
+            cfg.beta_q15 = (d->fll_beta_q15 > 0) ? d->fll_beta_q15 : 15;
+            cfg.deadband_q14 = (d->fll_deadband_q14 > 0) ? d->fll_deadband_q14 : 45;
+            cfg.slew_max_q15 = (d->fll_slew_max_q15 > 0) ? d->fll_slew_max_q15 : 64;
+
+            /* Update only when we likely have a carrier; use the squelch gate as proxy. */
+            if (d->squelch_gate_open) {
+                fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
+            }
+            /* Always apply current rotation to help the MF/Costas stage */
+            fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
+
+            /* Sync back minimal state */
+            d->fll_freq_q15 = d->fll_state.freq_q15;
+            d->fll_phase_q15 = d->fll_state.phase_q15;
+            d->fll_prev_r = d->fll_state.prev_r;
+            d->fll_prev_j = d->fll_state.prev_j;
+
+            /* Simple lock detector: when |freq| stays small for several blocks, stop acquisition FLL */
+            int fmag = d->fll_state.freq_q15;
+            if (fmag < 0) {
+                fmag = -fmag;
+            }
+            const int kLockFreqThr = 64; /* small residual */
+            const int kLockBlocks = 6;   /* consecutive blocks */
+            if (fmag <= kLockFreqThr) {
+                d->cqpsk_acq_quiet_runs++;
+            } else {
+                d->cqpsk_acq_quiet_runs = 0;
+            }
+            if (d->cqpsk_acq_quiet_runs >= kLockBlocks) {
+                d->cqpsk_acq_fll_locked = 1;
+            }
+        }
         /* Optional complex DC removal */
         iq_dc_block(d);
         /* CQPSK matched filter before carrier recovery */
@@ -2059,6 +2100,50 @@ full_demod(struct demod_state* d) {
            3) Optional per-sample limiter to clamp fast AM ripple (skipped when CMA is adapting)
            4) FM/C4FM CMA/smoother/adaptive FIR */
         iq_dc_block(d);
+        /* Light heuristic: auto-enable FM CMA on constant-envelope paths when
+           envelope ripple suggests short-delay multipath and no other amplitude
+           correction is engaged yet. One-shot enable, no auto-disable. */
+        if (!d->fm_cma_enable && !d->fm_agc_enable && !d->fm_limiter_enable && d->lowpassed && d->lp_len >= 64) {
+            /* Sample envelope magnitude using |I|+|Q| on a decimated stride */
+            const int pairs = d->lp_len >> 1;
+            int stride = (pairs > 1024) ? (pairs / 1024) : 1;
+            if (stride < 1) {
+                stride = 1;
+            }
+            int64_t sum = 0, sumsq = 0;
+            int count = 0;
+            for (int n = 0; n < pairs; n += stride) {
+                int16_t I = d->lowpassed[(size_t)(n << 1) + 0];
+                int16_t Q = d->lowpassed[(size_t)(n << 1) + 1];
+                int aI = (I >= 0) ? I : -I;
+                int aQ = (Q >= 0) ? Q : -Q;
+                int m = aI + aQ;
+                sum += m;
+                sumsq += (int64_t)m * (int64_t)m;
+                count++;
+                if (count >= 2048) {
+                    break; /* cap work */
+                }
+            }
+            if (count > 8) {
+                /* Coefficient of variation ≈ sqrt(Var)/mean */
+                double mean = (double)sum / (double)count;
+                double var = ((double)sumsq / (double)count) - (mean * mean);
+                if (var < 0.0) {
+                    var = 0.0;
+                }
+                double cv = (mean > 1e-6) ? (sqrt(var) / mean) : 0.0;
+                /* Thresholds chosen conservatively to avoid over-triggering */
+                if (cv >= 0.28) {
+                    d->fm_cma_enable = 1;
+                    /* Start with 3-tap symmetric smoother to tame ripple; allow user to escalate. */
+                    d->fm_cma_taps = 3;
+                    if (d->fm_cma_mu_q15 <= 0) {
+                        d->fm_cma_mu_q15 = 2;
+                    }
+                }
+            }
+        }
         /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping".
            When CMA (>=5 taps or pure complex gain) is active, skip both.
            Otherwise prefer AGC if enabled; fall back to limiter if AGC is off. */
@@ -2073,7 +2158,10 @@ full_demod(struct demod_state* d) {
         fm_cma_equalize(d);
         /* Residual-CFO FLL when enabled */
         if (d->fll_enabled) {
-            fll_update_error(d);
+            /* Update control only when squelch indicates a carrier; always apply rotation. */
+            if (d->squelch_gate_open) {
+                fll_update_error(d);
+            }
             fll_mix_and_update(d);
         }
     }

@@ -248,6 +248,9 @@ void rtl_stream_cqpsk_set_dqpsk(int onoff);
 int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 /** Get DQPSK decision mode; returns 0 on success. */
 int rtl_stream_cqpsk_get_dqpsk(int* onoff);
+/* CQPSK acquisition-only pre-Costas FLL (0/1) */
+int rtl_stream_get_cqpsk_acq_fll(void);
+void rtl_stream_set_cqpsk_acq_fll(int onoff);
 /* P25p2 CQPSK RRC auto-probe controls */
 void rtl_stream_set_p25p2_rrc_autoprobe(int onoff);
 int rtl_stream_get_p25p2_rrc_autoprobe(void);

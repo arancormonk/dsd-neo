@@ -2318,6 +2318,11 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
         fprintf(stderr, " DSP: CQPSK/LSM pre-processing enabled (experimental)\n");
     }
 
+    /* CQPSK acquisition FLL defaults */
+    s->cqpsk_acq_fll_enable = 0;
+    s->cqpsk_acq_fll_locked = 0;
+    s->cqpsk_acq_quiet_runs = 0;
+
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {
         s->downsample_passes = 1;
@@ -2592,6 +2597,16 @@ configure_from_env_and_opts(dsd_opts* opts) {
     if (ev_cq && (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T')) {
         demod.cqpsk_enable = 1;
     }
+
+    /* Optional: acquisition-only FLL for CQPSK (pre-Costas) */
+    demod.cqpsk_acq_fll_enable = 0;
+    if (const char* af = getenv("DSD_NEO_CQPSK_ACQ_FLL")) {
+        if (*af == '1' || *af == 'y' || *af == 'Y' || *af == 't' || *af == 'T') {
+            demod.cqpsk_acq_fll_enable = 1;
+        }
+    }
+    demod.cqpsk_acq_fll_locked = 0;
+    demod.cqpsk_acq_quiet_runs = 0;
 
     /* Map CLI runtime toggles for CQPSK LMS */
     if (opts->cqpsk_lms != 0) {
@@ -5050,6 +5065,20 @@ rtl_stream_toggle_cqpsk(int onoff) {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
     }
+}
+
+/* CQPSK acquisition-only FLL toggle/get */
+extern "C" int
+dsd_rtl_stream_get_cqpsk_acq_fll(void) {
+    return demod.cqpsk_acq_fll_enable ? 1 : 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_cqpsk_acq_fll(int onoff) {
+    demod.cqpsk_acq_fll_enable = onoff ? 1 : 0;
+    /* Reset latch so it can re-acquire if re-enabled */
+    demod.cqpsk_acq_fll_locked = 0;
+    demod.cqpsk_acq_quiet_runs = 0;
 }
 
 extern "C" void

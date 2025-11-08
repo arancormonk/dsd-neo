@@ -276,4 +276,9 @@ struct demod_state {
     /* CQPSK equalizer state (per-instance; replaces previous static singleton) */
     int cqpsk_eq_initialized;
     cqpsk_eq_state_t cqpsk_eq;
+
+    /* CQPSK acquisition-only FLL helper (pre-Costas) */
+    int cqpsk_acq_fll_enable; /* 0/1: allow pre-Costas FLL pull-in */
+    int cqpsk_acq_fll_locked; /* 0/1: stop when locked */
+    int cqpsk_acq_quiet_runs; /* consecutive quiet blocks for lock */
 };

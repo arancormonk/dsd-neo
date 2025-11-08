@@ -341,6 +341,20 @@ rtl_stream_get_p25p2_rrc_auto_status(int* decided, int* state, int* choice) {
     return 0;
 }
 
+/* CQPSK acquisition-only FLL (pre-Costas) */
+extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll(void);
+extern "C" void dsd_rtl_stream_set_cqpsk_acq_fll(int onoff);
+
+extern "C" int
+rtl_stream_get_cqpsk_acq_fll(void) {
+    return dsd_rtl_stream_get_cqpsk_acq_fll();
+}
+
+extern "C" void
+rtl_stream_set_cqpsk_acq_fll(int onoff) {
+    dsd_rtl_stream_set_cqpsk_acq_fll(onoff);
+}
+
 extern "C" int
 rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
     return dsd_rtl_stream_constellation_get(out_xy, max_points);
