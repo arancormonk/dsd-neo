@@ -61,9 +61,6 @@ target_include_directories(dsd-neo_test_p25_crc12_16 PRIVATE ${PROJECT_SOURCE_DI
 target_link_libraries(dsd-neo_test_p25_crc12_16 PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_CRC12_16 COMMAND dsd-neo_test_p25_crc12_16)
 
-# (Removed) Generic RS parity regen smoke test in favor of
-# targeted RS(63,35) wrappers and correction limit tests.
-
 # P25 P2 MAC decode (JSON len derivation via MCO fallback)
 
 # P25 P1 MBT decode sanity (NET_STS_BCST → CC freq/sysid/wacn)
@@ -208,9 +205,6 @@ add_test(NAME P25_P2_AUDIO_ENABLE COMMAND dsd-neo_test_p25_p2_audio_enable)
 # target_include_directories(dsd-neo_test_p25_malformed_frames PRIVATE ${PROJECT_SOURCE_DIR}/include)
 # target_link_libraries(dsd-neo_test_p25_malformed_frames PRIVATE dsd-neo_proto_p25)
 # add_test(NAME P25_MALFORMED_FRAMES COMMAND dsd-neo_test_p25_malformed_frames)
-
-# (Removed) Randomized FEC properties test due to low signal and
-# platform variability. Deterministic boundary tests retained.
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
 add_executable(dsd-neo_test_p25_p1_tsbk_vpdu protocol/p25/test_p25_p1_tsbk_vpdu.c)

@@ -122,37 +122,29 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
             state->rf_mod = forced;
 #ifdef USE_RTLSDR
-            /* Align RTL DSP path with forced demod when in auto-DSP mode. */
+            /* Align RTL DSP path with forced demod. */
             do {
-                int cq = 0, f = 0, t = 0, a = 0;
-                rtl_stream_dsp_get(&cq, &f, &t, &a);
-                if (a && !rtl_stream_get_manual_dsp()) {
-                    if (forced == 1) {
-                        if (!cq) {
-                            rtl_stream_toggle_iq_balance(0);
-                            rtl_stream_toggle_cqpsk(1);
-                            rtl_stream_toggle_fll(1);
-                            rtl_stream_toggle_ted(1);
-                            /* Conservative CQPSK defaults */
-                            rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
-                        }
-                    } else {
-                        if (cq) {
-                            rtl_stream_toggle_iq_balance(1);
-                            rtl_stream_toggle_cqpsk(0);
-                            rtl_stream_toggle_fll(0);
-                            rtl_stream_toggle_ted(0);
-                        }
+                int cq = 0, f = 0, t = 0;
+                rtl_stream_dsp_get(&cq, &f, &t);
+                if (forced == 1) {
+                    if (!cq) {
+                        rtl_stream_toggle_iq_balance(0);
+                        rtl_stream_toggle_cqpsk(1);
+                        rtl_stream_toggle_fll(1);
+                        rtl_stream_toggle_ted(1);
+                        /* Conservative CQPSK defaults */
+                        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
+                    }
+                } else {
+                    if (cq) {
+                        rtl_stream_toggle_iq_balance(1);
+                        rtl_stream_toggle_cqpsk(0);
+                        rtl_stream_toggle_fll(0);
+                        rtl_stream_toggle_ted(0);
                     }
                 }
             } while (0);
 #endif
-        } else {
-            /* When LSM Simple is enabled, prefer QPSK windowing. */
-            int lsm_simple = dsd_neo_get_lsm_simple();
-            if (lsm_simple) {
-                state->rf_mod = 1; /* QPSK */
-            }
         }
     }
 
@@ -333,13 +325,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 } while (0);
 #endif
 
-                /* If LSM Simple is active, lock to QPSK and do not allow modulation flaps. */
-                {
-                    int lsm_simple_active = dsd_neo_get_lsm_simple();
-                    if (lsm_simple_active) {
-                        want_mod = 1; /* prefer QPSK */
-                    }
-                }
                 /* Update votes (use hysteresis; be more eager for GFSK to avoid misclassification dwell) */
                 if (want_mod == 1) {
                     vote_qpsk++;
@@ -356,24 +341,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 }
 
                 int do_switch = -1; /* -1=no-op, else new rf_mod */
-                /* Guard: if LSM Simple is active, suppress switching logic entirely.
-                   However, ensure CQPSK DSP path is actually enabled once. */
-                if (dsd_neo_get_lsm_simple()) {
-#ifdef USE_RTLSDR
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
-                    if (a && !rtl_stream_get_manual_dsp() && !cq) {
-                        /* Bring up the CQPSK path with conservative defaults */
-                        rtl_stream_toggle_iq_balance(0);
-                        rtl_stream_toggle_cqpsk(1);
-                        rtl_stream_toggle_fll(1);
-                        rtl_stream_toggle_ted(1);
-                        /* LMS on; 5 taps; µ=2; stride=6; WL off; DFE off; MF on; short CMA warmup */
-                        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
-                    }
-#endif
-                    do_switch = -1;
-                } else {
+                {
                     /*
              * Require 2 consecutive windows for C4FM<->QPSK to prevent flapping on marginal signals.
              * For GFSK (DMR/dPMR/NXDN), permit immediate switch on first qualifying window to minimize
@@ -394,30 +362,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 }
                 if (do_switch >= 0) {
                     state->rf_mod = do_switch;
-#ifdef USE_RTLSDR
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
-                    if (a && !rtl_stream_get_manual_dsp()) {
-                        if (do_switch == 1) {
-                            /* Switch to CQPSK path */
-                            rtl_stream_toggle_iq_balance(0);
-                            rtl_stream_toggle_cqpsk(1);
-                            rtl_stream_toggle_fll(1);
-                            rtl_stream_toggle_ted(1);
-                            /* Conservative initial preset: LMS on; 5 taps; µ=2; stride=6; WL off; DFE off; MF on; CMA warmup */
-                            rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
-                            /* Start CQPSK dwell timer */
-                            qpsk_dwell_enter_m = dsd_time_now_monotonic_s();
-                        } else {
-                            /* Switch away from CQPSK path */
-                            rtl_stream_toggle_iq_balance(1);
-                            rtl_stream_toggle_cqpsk(0);
-                            rtl_stream_toggle_fll(0);
-                            rtl_stream_toggle_ted(0);
-                            qpsk_dwell_enter_m = 0.0;
-                        }
-                    }
-#endif
+                    /* Manual-only DSP: avoid automatic toggling here. */
                 }
             } /* end !mod_cli_lock */
 

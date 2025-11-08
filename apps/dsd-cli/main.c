@@ -1510,11 +1510,10 @@ initOpts(dsd_opts* opts) {
     opts->m17decoderip = 0;
     opts->delay = 0;
     opts->use_cosine_filter = 1;
-    // Default P25p1 C4FM matched filter to fixed RRC(alpha=0.5);
-    // dynamic(alpha≈0.2) remains available via UI or auto-probe.
+    // Default P25p1 C4FM matched filter to fixed RRC(alpha=0.5)
     opts->p25_c4fm_rrc_fixed = 1;
     opts->p25_c4fm_rrc_autoprobe = 0;
-    // Default P25p2 CQPSK to fixed RRC(alpha=0.5); can toggle to dynamic via UI
+    // Default P25p2 CQPSK to fixed RRC(alpha=0.5)
     opts->p25_p2_rrc_fixed = 1;
     opts->p25_p2_rrc_autoprobe = 0;
     opts->unmute_encrypted_p25 = 0;
@@ -2471,7 +2470,7 @@ usage() {
     printf("  -fZ           M17 Stream Voice Encoder\n");
     printf("\n");
     printf("Other options:\n");
-    printf("  --lsm-simple  Enable simplified LSM/CQPSK pipeline (CQPSK+RRC; DQPSK; FLL+TED; EQ off)\n");
+
     printf("  --auto-ppm    Enable spectrum-based RTL auto PPM (6 dB gate; 1 ppm step)\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
@@ -3009,13 +3008,7 @@ main(int argc, char** argv) {
         const char* input_warn_db_cli = NULL;
 
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--lsm-simple") == 0) {
-                /* Enable simplified LSM/CQPSK pipeline at startup. */
-                dsd_neo_set_lsm_simple(1);
-                setenv("DSD_NEO_LSM_SIMPLE", "1", 1);
-                LOG_NOTICE("LSM Simple: On (CQPSK+RRC; DQPSK; FLL+TED; EQ off).\n");
-                continue;
-            }
+
             if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
                 opts.rtltcp_autotune = 1;
                 setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
@@ -3293,9 +3286,7 @@ main(int argc, char** argv) {
     {
         int w = 1;
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--lsm-simple") == 0) {
-                continue; /* already consumed above */
-            }
+
             if (strcmp(argv[i], "--auto-ppm") == 0) {
                 continue; /* already consumed above */
             }

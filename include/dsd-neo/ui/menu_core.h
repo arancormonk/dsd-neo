@@ -34,9 +34,6 @@ struct NcMenuItem {
 // Shows for a short time at the bottom of the menu window.
 void ui_statusf(const char* fmt, ...);
 
-// Legacy blocking prompt helpers have been removed in favor of
-// nonblocking overlay prompts managed internally by the UI menu engine.
-
 // Nonblocking menu overlay API
 // Open the main menu as a nonblocking overlay. Subsequent draws happen via ui_menu_tick,
 // and keys are routed via ui_menu_handle_key. The overlay preserves the same look/feel.

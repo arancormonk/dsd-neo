@@ -665,8 +665,8 @@ print_dsp_status(void) {
     short saved_pair = 0;
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
-    int cq = 0, fll = 0, ted = 0, auto_on = 0;
-    rtl_stream_dsp_get(&cq, &fll, &ted, &auto_on);
+    int cq = 0, fll = 0, ted = 0;
+    rtl_stream_dsp_get(&cq, &fll, &ted);
     int lms = 0, taps = 0, mu = 0, stride = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
     rtl_stream_cqpsk_get(&lms, &taps, &mu, &stride, &wl, &dfe, &dft, &mf, &cma);
     int rrc_en = 0, rrc_a = 0, rrc_s = 0;
@@ -676,15 +676,11 @@ print_dsp_status(void) {
     ui_print_header("DSP");
     ui_print_lborder();
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
-    printw(" Auto: %s ", auto_on ? "On" : "Off");
     printw(" IQ BAL: %s ", iqb ? "On" : "Off");
     printw(" FLL: %s ", fll ? "On" : "Off");
     printw(" TED: %s ", ted ? "On" : "Off");
     printw(" CQPSK: %s", cq ? "On" : "Off");
-    /* Show LSM Simple hint when active */
-    if (dsd_neo_get_lsm_simple()) {
-        printw(" LSM:Simple");
-    }
+
     if (cq) {
         printw(" [LMS: %s WL: %s DFE: %s MF: %s", lms ? "On" : "Off", wl ? "On" : "Off", dfe ? "On" : "Off",
                mf ? (rrc_en ? "RRC" : "On") : "Off");
@@ -2191,23 +2187,10 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             }
         }
 
-        /* P1 C4FM matched filter mode (when cosine filter is enabled), with auto-probe status */
+        /* P1 C4FM matched filter mode (when cosine filter is enabled) */
         if (opts) {
             if (opts->use_cosine_filter) {
-                if (opts->p25_c4fm_rrc_autoprobe) {
-                    if (state->p25_rrc_auto_decided) {
-                        printw("| P1 C4FM RRC (auto): %s\n",
-                               opts->p25_c4fm_rrc_fixed ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)");
-                    } else if (state->p25_rrc_auto_state != 0) {
-                        const char* stage = (state->p25_rrc_auto_state == 1) ? "dynamic" : "fixed";
-                        printw("| P1 C4FM RRC (auto): probing %s...\n", stage);
-                    } else {
-                        printw("| P1 C4FM RRC (auto): waiting for P25p1\n");
-                    }
-                } else {
-                    printw("| P1 C4FM RRC: %s\n",
-                           opts->p25_c4fm_rrc_fixed ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)");
-                }
+                printw("| P1 C4FM RRC: alpha=0.5 (fixed)\n");
             } else {
                 printw("| P1 C4FM RRC: Off\n");
             }
@@ -2252,25 +2235,9 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RTLSDR
         if (opts) {
             int enable = 0, alpha_pct = 0, span = 0;
-            int ap_on = rtl_stream_get_p25p2_rrc_autoprobe();
-            int ap_decided = 0, ap_state = 0, ap_choice = 0;
-            rtl_stream_get_p25p2_rrc_auto_status(&ap_decided, &ap_state, &ap_choice);
             if (rtl_stream_cqpsk_get_rrc(&enable, &alpha_pct, &span) == 0) {
                 if (enable) {
-                    if (ap_on) {
-                        if (ap_decided) {
-                            printw("| P2 CQPSK RRC (auto): %s\n",
-                                   (alpha_pct >= 50 ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)"));
-                        } else if (ap_state == 1) {
-                            printw("| P2 CQPSK RRC (auto): probing dynamic...\n");
-                        } else if (ap_state == 2) {
-                            printw("| P2 CQPSK RRC (auto): probing fixed...\n");
-                        } else {
-                            printw("| P2 CQPSK RRC (auto): waiting for P25p2\n");
-                        }
-                    } else {
-                        printw("| P2 CQPSK RRC: %s\n", (alpha_pct >= 50 ? "alpha=0.5 (fixed)" : "alpha≈0.2 (dynamic)"));
-                    }
+                    printw("| P2 CQPSK RRC: alpha=0.5 (fixed)\n");
                 } else {
                     printw("| P2 CQPSK RRC: Off\n");
                 }

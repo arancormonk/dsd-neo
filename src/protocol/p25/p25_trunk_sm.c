@@ -20,15 +20,6 @@
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
-
-// Weak fallback so unit tests that link only the P25 library do not need the
-// IO Radio library just for Auto-DSP status. Returns zeros.
-__attribute__((weak)) void
-rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
-    if (out) {
-        memset(out, 0, sizeof(*out));
-    }
-}
 #endif
 
 // Weak fallback for trunk_tune_to_freq so unit tests that link only the P25
@@ -955,15 +946,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     avg_pct = (double)state->p25_p1_voice_err_hist_sum / (double)len;
                 }
             }
-#ifdef USE_RTLSDR
-            if (avg_pct < 0.0) {
-                rtl_auto_dsp_status st = {0};
-                rtl_stream_auto_dsp_get_status(&st);
-                if (st.p25p1_ema_pct > 0) {
-                    avg_pct = (double)st.p25p1_ema_pct;
-                }
-            }
-#endif
+            (void)opts;
             if (avg_pct >= 0.0 && avg_pct >= thr_pct) {
                 p1_err_hold_s = add_s;
             }

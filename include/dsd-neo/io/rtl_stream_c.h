@@ -251,10 +251,7 @@ int rtl_stream_cqpsk_get_dqpsk(int* onoff);
 /* CQPSK acquisition-only pre-Costas FLL (0/1) */
 int rtl_stream_get_cqpsk_acq_fll(void);
 void rtl_stream_set_cqpsk_acq_fll(int onoff);
-/* P25p2 CQPSK RRC auto-probe controls */
-void rtl_stream_set_p25p2_rrc_autoprobe(int onoff);
-int rtl_stream_get_p25p2_rrc_autoprobe(void);
-int rtl_stream_get_p25p2_rrc_auto_status(int* decided, int* state, int* choice);
+
 /** Toggle generic IQ balance prefilter (mode-aware image cancel). */
 void rtl_stream_toggle_iq_balance(int onoff);
 /** Get generic IQ balance prefilter state; returns 1 if enabled. */
@@ -273,63 +270,7 @@ void rtl_stream_toggle_fll(int onoff);
 /** Toggle TED on/off (0=off, nonzero=on). */
 void rtl_stream_toggle_ted(int onoff);
 /** Get current coarse DSP feature flags; any pointer may be NULL. Returns 0 on success. */
-int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* auto_dsp_enable);
-/** Toggle all automatic DSP assistance (e.g., BER-based tuning). */
-void rtl_stream_toggle_auto_dsp(int onoff);
-
-/**
- * @brief Auto-DSP tuning configuration (thresholds, windows, smoothing).
- *
- * All values are integers for easy ABI stability. Reasonable defaults are
- * applied internally; unset fields should be initialized to 0 to accept
- * defaults. Percent thresholds are in whole-percent units.
- */
-typedef struct rtl_auto_dsp_config {
-    /* P25 Phase 1 (BER-driven) */
-    int p25p1_window_min_total; /* default 200 symbols */
-    int p25p1_moderate_on_pct;  /* default 7 */
-    int p25p1_moderate_off_pct; /* default 5 */
-    int p25p1_heavy_on_pct;     /* default 15 */
-    int p25p1_heavy_off_pct;    /* default 10 */
-    int p25p1_cooldown_ms;      /* default 700 */
-
-    /* P25 Phase 2 (FACCH/SACCH/voice deltas) */
-    int p25p2_ok_min;         /* default 4 */
-    int p25p2_err_margin_on;  /* default 2 */
-    int p25p2_err_margin_off; /* default 0 */
-    int p25p2_cooldown_ms;    /* default 500 */
-
-    /* Common smoothing (Q15 fixed-point alpha; 0..32768). default ~0.2 */
-    int ema_alpha_q15; /* default 6553 */
-} rtl_auto_dsp_config;
-
-/** Get current Auto-DSP configuration. Any pointer may be NULL. */
-void rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out);
-/** Set Auto-DSP configuration (applies sane bounds; 0 uses defaults). */
-void rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
-
-/**
- * @brief Auto-DSP live status snapshot.
- *
- * Modes: 0=Clean, 1=Moderate, 2=Heavy.
- * Percent fields are whole-percent integers (0..100).
- */
-typedef struct rtl_auto_dsp_status {
-    int p25p1_mode;     /* 0..2 */
-    int p25p1_ema_pct;  /* 0..100 */
-    int p25p1_since_ms; /* milliseconds since last mode change */
-    int p25p2_mode;     /* 0..2 */
-    int p25p2_since_ms; /* milliseconds since last mode change */
-} rtl_auto_dsp_status;
-
-/** Get Auto-DSP live status (any pointer may be NULL). */
-void rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
-
-/** Manual DSP override: when enabled, frame-sync logic will not auto-toggle
- * CQPSK/FLL/TED based on detected modulation. Useful to pin user-selected
- * DSP behavior across menu closes and non-QPSK intervals. */
-void rtl_stream_set_manual_dsp(int onoff);
-int rtl_stream_get_manual_dsp(void);
+int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
 
 /**
  * @brief Set or disable the resampler target rate (applied on controller thread).
@@ -347,10 +288,10 @@ void rtl_stream_set_resampler_target(int target_hz);
 void rtl_stream_set_ted_sps(int sps);
 
 /**
- * @brief Provide P25 Phase 2 RS/voice error deltas to drive auto-DSP tuning.
+ * @brief Provide P25 Phase 2 RS/voice error deltas for runtime helpers.
  *
  * Pass positive deltas (not totals). Slot is 0 or 1. Any delta may be 0 when
- * not applicable. No-ops when RTL stream inactive or auto-DSP disabled.
+ * not applicable. No-ops when RTL stream inactive.
  */
 void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                  int sacch_err_delta, int voice_err_delta);
@@ -408,10 +349,6 @@ void rtl_stream_set_fm_limiter(int onoff);
 int rtl_stream_get_iq_dc(int* out_shift_k);
 /** Set DC blocker enable (0/1) and/or shift k (>=6..<=15). Pass shift_k<0 to keep unchanged. */
 void rtl_stream_set_iq_dc(int enable, int shift_k);
-
-/* FM AGC Auto-tune (0/1) */
-int rtl_stream_get_fm_agc_auto(void);
-void rtl_stream_set_fm_agc_auto(int onoff);
 
 /* FM/FSK blind CMA equalizer (pre-discriminator) */
 /** Get FM CMA enable state (1 on, 0 off). */

@@ -81,7 +81,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - Matched filters with adjustable RRC parameters (alpha, span) and a CMA warmup assist.
   - Timing and carrier helpers: enable/disable TED and FLL, tweak TED rate/gain, and force TED when needed.
   - IQ balance prefilter and DQPSK decision mode for tough RF environments.
-  - Auto‑DSP assist that adapts based on live error metrics (P25/TDMA), helping stabilize challenging signals.
+  - Sane DSP defaults per modulation/standard, with quick toggles for power users.
   - Changes apply instantly from the UI and persist across retunes, so you can iterate quickly without restarting.
   - These controls go beyond what most open DSD projects expose directly.
 

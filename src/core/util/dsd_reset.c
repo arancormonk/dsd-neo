@@ -188,18 +188,6 @@ resetState(dsd_state* state) {
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
 
-    // Reset P25p1 RRC auto-probe state
-    state->p25_rrc_auto_state = 0;
-    state->p25_rrc_auto_decided = 0;
-    state->p25_rrc_auto_start = 0;
-    state->p25_rrc_auto_fec_ok_base = 0;
-    state->p25_rrc_auto_fec_err_base = 0;
-    state->p25_rrc_auto_dyn_fec_err = 0;
-    state->p25_rrc_auto_fix_fec_err = 0;
-    state->p25_rrc_auto_dyn_voice_avg = 0.0;
-    state->p25_rrc_auto_fix_voice_avg = 0.0;
-    state->p25_rrc_auto_choice = 0;
-
     // Reset P25 affiliation table
     state->p25_aff_count = 0;
     memset(state->p25_aff_rid, 0, sizeof(state->p25_aff_rid));

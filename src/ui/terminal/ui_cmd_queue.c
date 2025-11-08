@@ -1375,29 +1375,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 #endif
             break;
         }
-        case UI_CMD_P25P2_RRC_AUTOPROBE_TOGGLE: {
-            opts->p25_p2_rrc_autoprobe = opts->p25_p2_rrc_autoprobe ? 0 : 1;
-#ifdef USE_RTLSDR
-            rtl_stream_set_p25p2_rrc_autoprobe(opts->p25_p2_rrc_autoprobe);
-#endif
-            break;
-        }
-        case UI_CMD_P25_RRC_AUTOPROBE_TOGGLE: {
-            opts->p25_c4fm_rrc_autoprobe = opts->p25_c4fm_rrc_autoprobe ? 0 : 1;
-            if (state) {
-                state->p25_rrc_auto_state = 0;
-                state->p25_rrc_auto_decided = 0;
-                state->p25_rrc_auto_start = 0;
-                state->p25_rrc_auto_fec_ok_base = 0;
-                state->p25_rrc_auto_fec_err_base = 0;
-                state->p25_rrc_auto_dyn_fec_err = 0;
-                state->p25_rrc_auto_fix_fec_err = 0;
-                state->p25_rrc_auto_dyn_voice_avg = 0.0;
-                state->p25_rrc_auto_fix_voice_avg = 0.0;
-                state->p25_rrc_auto_choice = 0;
-            }
-            break;
-        }
+
         case UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE: opts->show_dsp_panel = opts->show_dsp_panel ? 0 : 1; break;
         case UI_CMD_UI_SHOW_P25_METRICS_TOGGLE: opts->show_p25_metrics = opts->show_p25_metrics ? 0 : 1; break;
         case UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE: opts->show_p25_affiliations = opts->show_p25_affiliations ? 0 : 1; break;
@@ -1591,81 +1569,22 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(&p, c->data, sizeof p);
             }
             switch (p.op) {
-                case UI_DSP_OP_LSM_SIMPLE_TOGGLE: {
-                    static int prev_dqpsk = -1, prev_fll = -1, prev_ted_enable = -1, prev_ted_force = -1,
-                               prev_manual = -1;
-                    int now = dsd_neo_get_lsm_simple();
-                    int next = now ? 0 : 1;
-                    dsd_neo_set_lsm_simple(next);
-                    if (next) {
-                        int dq = 0;
-                        rtl_stream_cqpsk_get_dqpsk(&dq);
-                        prev_dqpsk = dq;
-                        int cq = 0, f = 0, t = 0, a = 0;
-                        rtl_stream_dsp_get(&cq, &f, &t, &a);
-                        prev_fll = f;
-                        prev_ted_enable = t;
-                        prev_ted_force = rtl_stream_get_ted_force();
-                        prev_manual = rtl_stream_get_manual_dsp();
-                        if (!prev_manual) {
-                            rtl_stream_set_manual_dsp(1);
-                        }
-                        if (!cq) {
-                            rtl_stream_toggle_cqpsk(1);
-                        }
-                        rtl_stream_toggle_fll(1);
-                        rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, 0, -1, 1, -1);
-                        rtl_stream_cqpsk_set_rrc(1, 20, 6);
-                        rtl_stream_cqpsk_set_dqpsk(1);
-                        rtl_stream_toggle_ted(1);
-                        rtl_stream_set_ted_force(1);
-                        rtl_stream_set_ted_sps(10);
-                    } else {
-                        if (prev_dqpsk != -1) {
-                            rtl_stream_cqpsk_set_dqpsk(prev_dqpsk);
-                            prev_dqpsk = -1;
-                        }
-                        if (prev_fll != -1) {
-                            rtl_stream_toggle_fll(prev_fll);
-                            prev_fll = -1;
-                        }
-                        if (prev_ted_enable != -1) {
-                            rtl_stream_toggle_ted(prev_ted_enable);
-                            prev_ted_enable = -1;
-                        }
-                        if (prev_ted_force != -1) {
-                            rtl_stream_set_ted_force(prev_ted_force);
-                            prev_ted_force = -1;
-                        }
-                        if (prev_manual != -1) {
-                            rtl_stream_set_manual_dsp(prev_manual);
-                            prev_manual = -1;
-                        }
-                    }
-                    break;
-                }
                 case UI_DSP_OP_TOGGLE_CQ: {
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
+                    int cq = 0, f = 0, t = 0;
+                    rtl_stream_dsp_get(&cq, &f, &t);
                     rtl_stream_toggle_cqpsk(cq ? 0 : 1);
                     break;
                 }
                 case UI_DSP_OP_TOGGLE_FLL: {
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
+                    int cq = 0, f = 0, t = 0;
+                    rtl_stream_dsp_get(&cq, &f, &t);
                     rtl_stream_toggle_fll(f ? 0 : 1);
                     break;
                 }
                 case UI_DSP_OP_TOGGLE_TED: {
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
+                    int cq = 0, f = 0, t = 0;
+                    rtl_stream_dsp_get(&cq, &f, &t);
                     rtl_stream_toggle_ted(t ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_AUTO: {
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
-                    rtl_stream_toggle_auto_dsp(a ? 0 : 1);
                     break;
                 }
                 case UI_DSP_OP_TOGGLE_LMS: {
@@ -1750,12 +1669,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 }
                 case UI_DSP_OP_TOGGLE_IQBAL: {
                     int on = rtl_stream_get_iq_balance();
-                    int cq = 0, f = 0, t = 0, a = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t, &a);
-                    int man = rtl_stream_get_manual_dsp();
-                    if (a && !man) {
-                        rtl_stream_set_manual_dsp(1);
-                    }
+
                     rtl_stream_toggle_iq_balance(on ? 0 : 1);
                     break;
                 }
@@ -1892,11 +1806,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_fm_agc(on ? 0 : 1);
                     break;
                 }
-                case UI_DSP_OP_FM_AGC_AUTO_TOGGLE: {
-                    int on = rtl_stream_get_fm_agc_auto();
-                    rtl_stream_set_fm_agc_auto(on ? 0 : 1);
-                    break;
-                }
+
                 case UI_DSP_OP_FM_LIMITER_TOGGLE: {
                     int on = rtl_stream_get_fm_limiter();
                     rtl_stream_set_fm_limiter(on ? 0 : 1);
@@ -1986,11 +1896,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_blanker(-1, -1, nw);
                     break;
                 }
-                case UI_DSP_OP_MANUAL_TOGGLE: {
-                    int man = rtl_stream_get_manual_dsp();
-                    rtl_stream_set_manual_dsp(man ? 0 : 1);
-                    break;
-                }
+
                 case UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE: {
                     int on = rtl_stream_get_tuner_autogain();
                     rtl_stream_set_tuner_autogain(on ? 0 : 1);

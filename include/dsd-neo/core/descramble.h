@@ -203,17 +203,6 @@ FECdecoder(int* in, int* out) {
 
     outLen = traceBack(out, m_pathMemory0, m_pathMemory1, m_pathMemory2, m_pathMemory3);
 
-    // Swap endian-ness
-    // code removed (done converting bits into octets), done in main program
-
-    //for (loop=0;loop<330;loop+=8) {
-    //	int temp;
-    //	temp=out[loop];out[loop]=out[loop+7];out[loop+7]=temp;
-    //	temp=out[loop+1];out[loop+1]=out[loop+6];out[loop+6]=temp;
-    //	temp=out[loop+2];out[loop+2]=out[loop+5];out[loop+5]=temp;
-    //	temp=out[loop+3];out[loop+3]=out[loop+4];out[loop+4]=temp;
-    //}
-
     return (outLen);
 
 } // end function FECdecoder

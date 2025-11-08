@@ -27,8 +27,7 @@
 /* Provide weak references so unit tests that do not link RTL stream still link. */
 extern "C" {
 #ifdef __GNUC__
-__attribute__((weak)) void rtl_stream_auto_dsp_get_status(struct rtl_auto_dsp_status* out);
-__attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*, int*);
+__attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*);
 #endif
 }
 #include <algorithm>
@@ -434,92 +433,6 @@ hb_decim2_complex_interleaved_ex(const int16_t* DSD_NEO_RESTRICT in, int in_len,
     } else {
         int existing = ch_len;
         for (int k = 0; k < (taps_len - 1); k++) {
-            if (k < existing) {
-                int rel = k;
-                hi[k] = in_al[(size_t)(rel << 1)];
-                hq[k] = in_al[(size_t)(rel << 1) + 1];
-            } else {
-                hi[k] = 0;
-                hq[k] = 0;
-            }
-        }
-    }
-    return out_ch_len << 1;
-}
-
-/* Backward-compatible wrapper for 15-tap half-band (optimized path). */
-static int
-hb_decim2_complex_interleaved(const int16_t* DSD_NEO_RESTRICT in, int in_len, int16_t* DSD_NEO_RESTRICT out,
-                              int16_t* DSD_NEO_RESTRICT hist_i, int16_t* DSD_NEO_RESTRICT hist_q) {
-    /* Optimized unrolled path for HB_TAPS==15 */
-    const int16_t* t = hb_q15_taps;
-    const int hist_len = HB_TAPS - 1;
-    int ch_len = in_len >> 1;
-    int out_ch_len = ch_len >> 1;
-    if (out_ch_len <= 0) {
-        return 0;
-    }
-    const int16_t* DSD_NEO_RESTRICT in_al = assume_aligned_ptr(in, DSD_NEO_ALIGN);
-    int16_t* DSD_NEO_RESTRICT out_al = assume_aligned_ptr(out, DSD_NEO_ALIGN);
-    int16_t* DSD_NEO_RESTRICT hi = assume_aligned_ptr(hist_i, DSD_NEO_ALIGN);
-    int16_t* DSD_NEO_RESTRICT hq = assume_aligned_ptr(hist_q, DSD_NEO_ALIGN);
-    int16_t lastI = (ch_len > 0) ? in_al[in_len - 2] : 0;
-    int16_t lastQ = (ch_len > 0) ? in_al[in_len - 1] : 0;
-    const int16_t c0 = t[0], c2 = t[2], c4 = t[4], c6 = t[6], c7 = t[7];
-    for (int n = 0; n < out_ch_len; n++) {
-        int center_idx = hist_len + (n << 1);
-        auto get_iq = [&](int src_idx, int16_t& xi, int16_t& xq) {
-            if (src_idx < hist_len) {
-                xi = hi[src_idx];
-                xq = hq[src_idx];
-            } else {
-                int rel = src_idx - hist_len;
-                if (rel < ch_len) {
-                    xi = in_al[(size_t)(rel << 1)];
-                    xq = in_al[(size_t)(rel << 1) + 1];
-                } else {
-                    xi = lastI;
-                    xq = lastQ;
-                }
-            }
-        };
-        int16_t ci, cq, im1, qm1, ip1, qp1, im3, qm3, ip3, qp3, im5, qm5, ip5, qp5, im7, qm7, ip7, qp7;
-        get_iq(center_idx, ci, cq);
-        get_iq(center_idx - 1, im1, qm1);
-        get_iq(center_idx + 1, ip1, qp1);
-        get_iq(center_idx - 3, im3, qm3);
-        get_iq(center_idx + 3, ip3, qp3);
-        get_iq(center_idx - 5, im5, qm5);
-        get_iq(center_idx + 5, ip5, qp5);
-        get_iq(center_idx - 7, im7, qm7);
-        get_iq(center_idx + 7, ip7, qp7);
-        int64_t accI = 0, accQ = 0;
-        accI += (int32_t)c7 * (int32_t)ci;
-        accQ += (int32_t)c7 * (int32_t)cq;
-        accI += (int32_t)c6 * (int32_t)(im1 + ip1);
-        accQ += (int32_t)c6 * (int32_t)(qm1 + qp1);
-        accI += (int32_t)c4 * (int32_t)(im3 + ip3);
-        accQ += (int32_t)c4 * (int32_t)(qm3 + qp3);
-        accI += (int32_t)c2 * (int32_t)(im5 + ip5);
-        accQ += (int32_t)c2 * (int32_t)(qm5 + qp5);
-        accI += (int32_t)c0 * (int32_t)(im7 + ip7);
-        accQ += (int32_t)c0 * (int32_t)(qm7 + qp7);
-        accI += (1 << 14);
-        accQ += (1 << 14);
-        out_al[(size_t)(n << 1)] = sat16((int32_t)(accI >> 15));
-        out_al[(size_t)(n << 1) + 1] = sat16((int32_t)(accQ >> 15));
-    }
-    /* Update histories */
-    if (ch_len >= hist_len) {
-        int start = ch_len - hist_len;
-        for (int k = 0; k < hist_len; k++) {
-            int rel = start + k;
-            hi[k] = in_al[(size_t)(rel << 1)];
-            hq[k] = in_al[(size_t)(rel << 1) + 1];
-        }
-    } else {
-        int existing = ch_len;
-        for (int k = 0; k < hist_len; k++) {
             if (k < existing) {
                 int rel = k;
                 hi[k] = in_al[(size_t)(rel << 1)];
@@ -1076,93 +989,6 @@ fm_envelope_agc(struct demod_state* d) {
         out[(size_t)(n << 1) + 1] = (int16_t)yQ;
     }
     d->fm_agc_gain_q15 = g_q15;
-
-    /* Auto-tune AGC parameters heuristically (optional) */
-    if (d->fm_agc_auto_enable) {
-        /* Track envelope ripple and clipping over time */
-        enum { MAXC = 8 };
-
-        int& clip_run = d->fm_agc_clip_run;
-        int& under_run = d->fm_agc_under_run;
-        if (!d->fm_agc_auto_init) {
-            d->fm_agc_ema_rms = rms;
-            d->fm_agc_auto_init = 1;
-        } else {
-            d->fm_agc_ema_rms = 0.9 * d->fm_agc_ema_rms + 0.1 * rms;
-        }
-        int clip_thresh = pairs / 512; /* ~0.2% of complex samples */
-        if (clip_thresh < 1) {
-            clip_thresh = 1;
-        }
-        if (clip_cnt > clip_thresh) {
-            if (clip_run < MAXC) {
-                clip_run++;
-            }
-        } else if (clip_run > 0) {
-            clip_run--;
-        }
-        /* If we're far from full-scale with no clipping for a while, nudge target up */
-        if (max_abs < 20000 && clip_cnt == 0) {
-            if (under_run < MAXC) {
-                under_run++;
-            }
-        } else if (under_run > 0) {
-            under_run--;
-        }
-        /* Adjust target based on persistent conditions */
-        int tgt = d->fm_agc_target_rms;
-        if (clip_run >= 4) {
-            tgt -= 400;
-            if (tgt < 6000) {
-                tgt = 6000;
-            }
-            d->fm_agc_target_rms = tgt;
-            clip_run = 0;
-        } else if (under_run >= 8) {
-            tgt += 300;
-            if (tgt > 14000) {
-                tgt = 14000;
-            }
-            d->fm_agc_target_rms = tgt;
-            under_run = 0;
-        }
-        /* Adapt response speed based on ripple (how much rms deviates) */
-        double dev = fabs(rms - d->fm_agc_ema_rms);
-        double ripple = (d->fm_agc_ema_rms > 1e-6) ? (dev / d->fm_agc_ema_rms) : 0.0;
-        int au = d->fm_agc_alpha_up_q15;
-        int ad = d->fm_agc_alpha_down_q15;
-        if (ripple > 0.10) { /* >10% short-term change */
-            if (au < 24576) {
-                au += 1024;
-            }
-            if (ad < 28672) {
-                ad += 1024;
-            }
-        } else if (ripple < 0.03) {
-            if (au > 4096) {
-                au -= 512;
-            }
-            if (ad > 16384) {
-                ad -= 512;
-            }
-        }
-        if (au < 1) {
-            au = 1;
-        }
-        if (au > 32768) {
-            au = 32768;
-        }
-        if (ad < 1) {
-            ad = 1;
-        }
-        if (ad > 32768) {
-            ad = 32768;
-        }
-        d->fm_agc_alpha_up_q15 = au;
-        d->fm_agc_alpha_down_q15 = ad;
-        /* Keep min_rms as a fraction of target so it engages when useful */
-        d->fm_agc_min_rms = d->fm_agc_target_rms / 4;
-    }
 }
 
 /* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator) */
@@ -1390,20 +1216,6 @@ fm_cma_equalize(struct demod_state* d) {
         }
 
         int adapt_this = (d->fm_cma5_warm_rem > 0 && d->fm_cma_guard_freeze <= 0) ? 1 : 0;
-        /* Gate adaptation using P25p1 RS errors (requires RTL stream path) */
-        if (adapt_this) {
-#ifdef USE_RTLSDR
-            struct rtl_auto_dsp_status st;
-            st.p25p1_mode = st.p25p1_ema_pct = st.p25p1_since_ms = 0;
-            st.p25p2_mode = st.p25p2_since_ms = 0;
-            rtl_stream_auto_dsp_get_status(&st);
-            int auto_on = 0;
-            rtl_stream_dsp_get(NULL, NULL, NULL, &auto_on);
-            if (auto_on && st.p25p1_mode == 0 && st.p25p1_ema_pct <= 2) {
-                adapt_this = 0;
-            }
-#endif
-        }
 
         /* Accumulate normalized gradients and baseline cost over block */
         double g0 = 0.0, g1 = 0.0, g2 = 0.0, g3 = 0.0, g4 = 0.0;
@@ -2084,15 +1896,8 @@ full_demod(struct demod_state* d) {
         if (d->mode_demod != &raw_demod) {
             cqpsk_costas_mix_and_update(d);
         }
-        /* Lightweight decision-directed equalizer after rotation.
-           Skip when LSM simple mode is enabled. */
-        {
-            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-            int lsm_simple = (cfg && cfg->lsm_simple_is_set && cfg->lsm_simple_enable) ? 1 : 0;
-            if (!lsm_simple) {
-                cqpsk_process_block(d);
-            }
-        }
+        /* Lightweight decision-directed equalizer after rotation. */
+        cqpsk_process_block(d);
     } else {
         /* Baseband conditioning order (FM/C4FM):
            1) Remove DC offset on I/Q to avoid biasing AGC and discriminator

@@ -69,9 +69,6 @@ static void maybe_refresh_ted_sps_after_rate_change(const dsd_opts* opts);
 /* Forward declaration for eye ring append used in demod loop */
 static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
 
-/* Forward declaration for CQPSK ISI auto-updater (used in demod loop) */
-static void update_cqpsk_isi_auto();
-
 #define DEFAULT_SAMPLE_RATE      48000
 #define DEFAULT_BUF_LENGTH       (1 * 16384)
 #define MAXIMUM_OVERSAMPLE       16
@@ -1052,8 +1049,7 @@ demod_thread_fn(void* arg) {
                 gfsk_missed = 0;
             }
         }
-        /* Simulcast ISI auto-correction (CQPSK path): derives severity from EQ taps and adapts EQ/DFE/WL */
-        update_cqpsk_isi_auto();
+
         if (d->exit_flag) {
             exitflag = 1;
         }
@@ -1441,32 +1437,6 @@ controller_thread_fn(void* arg) {
     /* Apply tuner IF bandwidth with mode-aware heuristic */
     rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
-
-    /* Ensure TED engages in LSM Simple by setting a sensible SPS after
-       actual output rate is known. Without this, SPS may remain default or
-       mismatched when LSM Simple is enabled via CLI/env, leading users to
-       believe TED is inactive. */
-    {
-        const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
-        if (cfg2 && cfg2->lsm_simple_is_set && cfg2->lsm_simple_enable) {
-            int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
-                                                     : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
-            if (Fs_cx <= 0) {
-                Fs_cx = 48000; /* conservative default */
-            }
-            /* For P25 Phase 1 (4800 sym/s) round(Fs/4800) */
-            int sps = (Fs_cx + 2400) / 4800;
-            if (sps < 2) {
-                sps = 2;
-            }
-            if (sps > 32) {
-                sps = 32;
-            }
-            demod.ted_sps = sps;
-            demod.ted_enabled = 1;
-            demod.ted_force = 1; /* engage even when not on FM demod path */
-        }
-    }
 
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Wait for a hop signal or a pending retune, with proper predicate guard */
@@ -2746,20 +2716,19 @@ select_defaults_for_mode(dsd_opts* opts) {
             demod.fll_beta_q15 = 15;
         }
         /* Keep FLL disabled by default; user/UI can enable as needed. */
-        /* P25 CQPSK RRC defaults: enable RRC MF, use ntaps=11*sps+1 (span_syms=0 sentinel),
-           alpha ~ 0.2 for Phase 1 LSM (CQPSK) and 0.5 when fixed toggle active for Phase 2. */
+        /* P25 CQPSK RRC defaults: enable RRC MF, ntaps=11*sps+1 (span_syms=0 sentinel), alpha=0.5. */
         if (opts->frame_p25p1 == 1) {
             demod.cqpsk_enable = 1;
             demod.cqpsk_mf_enable = 1;
             demod.cqpsk_rrc_enable = 1;
-            demod.cqpsk_rrc_alpha_q15 = (int)(0.20 * 32768.0);
+            demod.cqpsk_rrc_alpha_q15 = (int)(0.50 * 32768.0);
             demod.cqpsk_rrc_span_syms = 0; /* ntaps = 11*sps+1 */
         }
         if (opts->frame_p25p2 == 1) {
             demod.cqpsk_enable = 1;
             demod.cqpsk_mf_enable = 1;
             demod.cqpsk_rrc_enable = 1;
-            demod.cqpsk_rrc_alpha_q15 = (int)(((opts->p25_p2_rrc_fixed ? 0.50 : 0.20) * 32768.0));
+            demod.cqpsk_rrc_alpha_q15 = (int)(0.50 * 32768.0);
             demod.cqpsk_rrc_span_syms = 0; /* ntaps = 11*sps+1 */
         }
     } else {
@@ -2856,13 +2825,9 @@ extern "C" int dsd_rtl_stream_get_auto_ppm(void);
  * @param opts Decoder options used to configure the pipeline.
  * @return 0 on success, negative on error.
  */
-/* Forward decl for manual-DSP override query used during open */
-extern "C" int rtl_stream_get_manual_dsp(void);
-
 extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
-    /* If Manual DSP Override is active, preserve current DSP toggles across
-       demod re-initialization so they don't reset to defaults. */
+
     struct {
         int use;
         int cqpsk_enable;
@@ -2875,19 +2840,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int rrc_enable, rrc_alpha_q15, rrc_span_syms;
     } persist = {};
 
-    if (rtl_stream_get_manual_dsp()) {
-        persist.use = 1;
-        persist.cqpsk_enable = demod.cqpsk_enable;
-        persist.fll_enable = demod.fll_enabled;
-        persist.ted_enable = demod.ted_enabled;
-        persist.ted_sps = demod.ted_sps;
-        persist.ted_gain_q20 = demod.ted_gain_q20;
-        persist.ted_force = demod.ted_force ? 1 : 0;
-        persist.mf_enable = demod.cqpsk_mf_enable;
-        persist.rrc_enable = demod.cqpsk_rrc_enable;
-        persist.rrc_alpha_q15 = demod.cqpsk_rrc_alpha_q15;
-        persist.rrc_span_syms = demod.cqpsk_rrc_span_syms;
-    }
     rtl_bandwidth = opts->rtl_bandwidth * 1000; //reverted back to straight value
     bandwidth_multiplier = (bandwidth_divisor / rtl_bandwidth);
     /* Guard multiplier to a safe range [1, MAX_BANDWIDTH_MULTIPLIER] */
@@ -2973,35 +2925,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
         if (persist.rrc_span_syms > 0) {
             demod.cqpsk_rrc_span_syms = persist.rrc_span_syms;
-        }
-    }
-
-    /* LSM simple mode (env override): force CQPSK+RRC on and CQPSK EQ off.
-       Also enable FLL and TED for a true one‑switch setup. */
-    {
-        const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
-        if (cfg2 && cfg2->lsm_simple_is_set && cfg2->lsm_simple_enable) {
-            demod.cqpsk_enable = 1;
-            demod.cqpsk_mf_enable = 1;
-            demod.cqpsk_rrc_enable = 1;
-            /* Use ntaps = 11*sps+1 sentinel by setting span_syms=0; alpha ≈ 0.2 */
-            demod.cqpsk_rrc_span_syms = 0;
-            demod.cqpsk_rrc_alpha_q15 = (int)(0.20 * 32768.0);
-            /* Keep adaptive CQPSK EQ off for stability */
-            demod.cqpsk_lms_enable = 0;
-            /* Ensure FLL is active for initial pull‑in */
-            demod.fll_enabled = 1;
-            /* Tie in TED for easier first lock (force for FM demod path) */
-            demod.ted_enabled = 1;
-            demod.ted_force = 1;
-            if (demod.ted_gain_q20 <= 0) {
-                demod.ted_gain_q20 = 96;
-            }
-            /* Prefer DQPSK decision like OP25’s diffdecoder; set env so EQ init adopts it */
-            setenv("DSD_NEO_CQPSK_DQPSK", "1", 1);
-            /* Force Manual-DSP override while LSM Simple env is active so Auto-DSP can't fight it */
-            rtl_stream_set_manual_dsp(1);
-            /* If FLL gains are unset, keep the digital defaults from select_defaults_for_mode() */
         }
     }
 
@@ -3580,7 +3503,6 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
         /* minimum SNR to trigger (kept for env/opt parsing below) */
         static double snr_thr_db = 6.0;
         static int cooldown = 0; /* simple rate limiter (loops) */
-        /* legacy cooldown_max unused after time-based throttle added */
         if (!init) {
             init = 1;
             const char* on = getenv("DSD_NEO_AUTO_PPM");
@@ -4254,16 +4176,6 @@ dsd_rtl_stream_set_iq_dc(int enable, int shift_k) {
     }
 }
 
-extern "C" int
-dsd_rtl_stream_get_fm_agc_auto(void) {
-    return demod.fm_agc_auto_enable ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_fm_agc_auto(int onoff) {
-    demod.fm_agc_auto_enable = onoff ? 1 : 0;
-}
-
 /* -------- FM CMA equalizer runtime control -------- */
 extern "C" int
 dsd_rtl_stream_get_fm_cma(void) {
@@ -4383,52 +4295,6 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
 }
 
 /* Runtime DSP tuning entrypoints (C shim) */
-static std::atomic<int> g_auto_dsp_enable{1}; /* default On */
-static std::atomic<int> g_auto_dsp_simple{1}; /* simplified: only mode-aware toggles */
-static int g_manual_dsp_override = 0;         /* default Off: allow auto toggles */
-
-/* Auto-DSP configuration with sensible defaults and light validation */
-struct AutoDspConfig {
-    int p25p1_window_min_total = 200;
-    int p25p1_moderate_on_pct = 7;
-    int p25p1_moderate_off_pct = 5;
-    int p25p1_heavy_on_pct = 15;
-    int p25p1_heavy_off_pct = 10;
-    int p25p1_cooldown_ms = 700;
-
-    int p25p2_ok_min = 4;
-    int p25p2_err_margin_on = 2;
-    int p25p2_err_margin_off = 0;
-    int p25p2_cooldown_ms = 500;
-
-    int ema_alpha_q15 = 6553; /* ~0.2 */
-};
-
-static AutoDspConfig g_auto_cfg; /* default initialized */
-
-/* Auto-DSP live status; modes: 0=clean,1=moderate,2=heavy */
-static std::atomic<int> g_p25p1_mode{0};
-static std::atomic<int> g_p25p2_mode{0};
-static std::atomic<int> g_p25p1_ema_pct{0};
-static std::chrono::steady_clock::time_point g_p25p1_last_change;
-static std::chrono::steady_clock::time_point g_p25p2_last_change;
-/* P25p2 CQPSK RRC auto-probe runtime */
-static std::atomic<int> g_p25p2_rrc_autoprobe{0};
-static std::atomic<int> g_p25p2_rrc_auto_state{0};   /* 0 idle, 1 dynamic, 2 fixed */
-static std::atomic<int> g_p25p2_rrc_auto_decided{0}; /* 1 when a choice has been made */
-static std::atomic<int> g_p25p2_rrc_auto_choice{0};  /* 0 dynamic, 1 fixed */
-static std::chrono::steady_clock::time_point g_p25p2_rrc_auto_start;
-static int g_p25p2_rrc_auto_dyn_err = 0;
-static int g_p25p2_rrc_auto_fix_err = 0;
-static int g_p25p2_rrc_auto_dyn_voice = 0;
-static int g_p25p2_rrc_auto_fix_voice = 0;
-
-/* CQPSK/LSM ISI detector: mode 0=clean,1=moderate,2=heavy; updated from demod thread */
-static std::atomic<int> g_cqpsk_isi_mode{0};
-static std::chrono::steady_clock::time_point g_cqpsk_isi_last_change;
-
-/* Forward decl for ISI auto-updater used in demod loop */
-static void update_cqpsk_isi_auto();
 
 /* Forward decl for CQPSK RRC reconfig */
 extern "C" void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
@@ -4443,66 +4309,6 @@ clampi(int v, int lo, int hi) {
         return hi;
     }
     return v;
-}
-
-extern "C" void
-dsd_rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out) {
-    if (!out) {
-        return;
-    }
-    out->p25p1_window_min_total = g_auto_cfg.p25p1_window_min_total;
-    out->p25p1_moderate_on_pct = g_auto_cfg.p25p1_moderate_on_pct;
-    out->p25p1_moderate_off_pct = g_auto_cfg.p25p1_moderate_off_pct;
-    out->p25p1_heavy_on_pct = g_auto_cfg.p25p1_heavy_on_pct;
-    out->p25p1_heavy_off_pct = g_auto_cfg.p25p1_heavy_off_pct;
-    out->p25p1_cooldown_ms = g_auto_cfg.p25p1_cooldown_ms;
-    out->p25p2_ok_min = g_auto_cfg.p25p2_ok_min;
-    out->p25p2_err_margin_on = g_auto_cfg.p25p2_err_margin_on;
-    out->p25p2_err_margin_off = g_auto_cfg.p25p2_err_margin_off;
-    out->p25p2_cooldown_ms = g_auto_cfg.p25p2_cooldown_ms;
-    out->ema_alpha_q15 = g_auto_cfg.ema_alpha_q15;
-}
-
-extern "C" void
-dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in) {
-    if (!in) {
-        return;
-    }
-    AutoDspConfig c = g_auto_cfg; /* start from current */
-    if (in->p25p1_window_min_total > 0) {
-        c.p25p1_window_min_total = clampi(in->p25p1_window_min_total, 50, 2000);
-    }
-    if (in->p25p1_moderate_on_pct > 0) {
-        c.p25p1_moderate_on_pct = clampi(in->p25p1_moderate_on_pct, 1, 50);
-    }
-    if (in->p25p1_moderate_off_pct > 0) {
-        c.p25p1_moderate_off_pct = clampi(in->p25p1_moderate_off_pct, 0, 50);
-    }
-    if (in->p25p1_heavy_on_pct > 0) {
-        c.p25p1_heavy_on_pct = clampi(in->p25p1_heavy_on_pct, 1, 90);
-    }
-    if (in->p25p1_heavy_off_pct > 0) {
-        c.p25p1_heavy_off_pct = clampi(in->p25p1_heavy_off_pct, 0, 90);
-    }
-    if (in->p25p1_cooldown_ms > 0) {
-        c.p25p1_cooldown_ms = clampi(in->p25p1_cooldown_ms, 50, 5000);
-    }
-    if (in->p25p2_ok_min > 0) {
-        c.p25p2_ok_min = clampi(in->p25p2_ok_min, 1, 50);
-    }
-    if (in->p25p2_err_margin_on > 0) {
-        c.p25p2_err_margin_on = clampi(in->p25p2_err_margin_on, 0, 50);
-    }
-    if (in->p25p2_err_margin_off > 0) {
-        c.p25p2_err_margin_off = clampi(in->p25p2_err_margin_off, 0, 50);
-    }
-    if (in->p25p2_cooldown_ms > 0) {
-        c.p25p2_cooldown_ms = clampi(in->p25p2_cooldown_ms, 50, 5000);
-    }
-    if (in->ema_alpha_q15 > 0) {
-        c.ema_alpha_q15 = clampi(in->ema_alpha_q15, 1, 32768);
-    }
-    g_auto_cfg = c;
 }
 
 /* ---------------- CQPSK ISI-based auto-EQ (simulcast helper) ---------------- */
@@ -4543,148 +4349,23 @@ isi_index_from_eq() {
     return e_side / e_tot;
 }
 
-static void
-update_cqpsk_isi_auto() {
-    /* Only act when auto-DSP is enabled, CQPSK path active, and user isn't forcing manual DSP */
-    if (!g_auto_dsp_enable.load() || g_manual_dsp_override || !demod.cqpsk_enable) {
-        return;
-    }
-    /* Skip if we don't have a reasonable SPS to gate decisions */
-    if (!(demod.ted_sps >= 2 && demod.ted_sps <= 24)) {
-        return;
-    }
-    /* Opportunistic pre-training: if LMS is off and no warmup pending, kick a tiny CMA warmup to probe taps. */
-    if (!demod.cqpsk_eq.lms_enable && demod.cqpsk_eq.cma_warmup <= 0) {
-        demod.cqpsk_eq.cma_warmup = 800; /* ~0.17 s at 4800 sym/s */
-    }
-
-    /* Compute ISI index with light smoothing to reduce jitter */
-    static double isi_ema = 0.0;
-    double idx = isi_index_from_eq();
-    const double a = 0.2; /* EMA alpha */
-    if (isi_ema <= 0.0) {
-        isi_ema = idx;
-    } else {
-        isi_ema = a * idx + (1.0 - a) * isi_ema;
-    }
-
-    /* Classify: thresholds tuned conservatively to avoid over-triggering. */
-    enum { MODE_CLEAN = 0, MODE_MODERATE = 1, MODE_HEAVY = 2 };
-
-    int desired = MODE_CLEAN;
-    if (isi_ema >= 0.06) {
-        desired = MODE_HEAVY;
-    } else if (isi_ema >= 0.02) {
-        desired = MODE_MODERATE;
-    }
-    /* Cooldown/hysteresis: respect P25p1 cooldown to avoid thrash */
-    auto now = std::chrono::steady_clock::now();
-    bool can_change = true;
-    if (g_cqpsk_isi_last_change.time_since_epoch().count() != 0) {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_cqpsk_isi_last_change).count();
-        can_change = (ms >= g_auto_cfg.p25p1_cooldown_ms);
-    }
-    int prev = g_cqpsk_isi_mode.load();
-    if (desired != prev && !can_change) {
-        desired = prev; /* hold until cooldown expires */
-    }
-    if (desired == prev) {
-        return; /* nothing to do */
-    }
-    /* Apply presets consistent with BER-driven Auto-DSP to keep behavior aligned. */
-    if (desired == MODE_HEAVY) {
-        int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-        rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-        int cma_burst = (cma > 0) ? 0 : 2000;
-        rtl_stream_cqpsk_set(1, 7, 2, 4, 1, 1, 3, -1, cma_burst);
-        /* Ensure TED is enabled for better symbol timing under ISI */
-        demod.ted_enabled = 1;
-        if (demod.ted_gain_q20 < 64) {
-            demod.ted_gain_q20 = 64;
-        }
-    } else if (desired == MODE_MODERATE) {
-        int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-        rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-        int cma_burst = (cma > 0) ? 0 : 1000;
-        rtl_stream_cqpsk_set(1, (t >= 7 ? 7 : 5), 2, 6, 0, 1, 2, -1, cma_burst);
-        demod.ted_enabled = 1;
-    } else { /* MODE_CLEAN */
-        rtl_stream_cqpsk_set(1, 5, 1, 8, 0, 0, 0, -1, 0);
-    }
-    g_cqpsk_isi_mode.store(desired);
-    g_cqpsk_isi_last_change = now;
-}
-
-/* P25p2 RRC auto-probe control */
-extern "C" void
-dsd_rtl_stream_set_p25p2_rrc_autoprobe(int onoff) {
-    g_p25p2_rrc_autoprobe.store(onoff ? 1 : 0);
-    g_p25p2_rrc_auto_state.store(0);
-    g_p25p2_rrc_auto_decided.store(0);
-    g_p25p2_rrc_auto_choice.store(0);
-    g_p25p2_rrc_auto_start = std::chrono::steady_clock::time_point{};
-    g_p25p2_rrc_auto_dyn_err = g_p25p2_rrc_auto_fix_err = 0;
-    g_p25p2_rrc_auto_dyn_voice = g_p25p2_rrc_auto_fix_voice = 0;
-}
-
-extern "C" int
-dsd_rtl_stream_get_p25p2_rrc_autoprobe(void) {
-    return g_p25p2_rrc_autoprobe.load() ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_get_p25p2_rrc_auto(int* decided, int* state, int* choice) {
-    if (decided) {
-        *decided = g_p25p2_rrc_auto_decided.load();
-    }
-    if (state) {
-        *state = g_p25p2_rrc_auto_state.load();
-    }
-    if (choice) {
-        *choice = g_p25p2_rrc_auto_choice.load();
-    }
-}
-
-extern "C" void
-dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
-    if (!out) {
-        return;
-    }
-    out->p25p1_mode = g_p25p1_mode.load();
-    out->p25p1_ema_pct = g_p25p1_ema_pct.load();
-    out->p25p1_since_ms = 0;
-    out->p25p2_mode = g_p25p2_mode.load();
-    out->p25p2_since_ms = 0;
-    const auto now = std::chrono::steady_clock::now();
-    if (g_p25p1_last_change.time_since_epoch().count() != 0) {
-        out->p25p1_since_ms =
-            (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - g_p25p1_last_change).count();
-        if (out->p25p1_since_ms < 0) {
-            out->p25p1_since_ms = 0;
-        }
-    }
-    if (g_p25p2_last_change.time_since_epoch().count() != 0) {
-        out->p25p2_since_ms =
-            (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - g_p25p2_last_change).count();
-        if (out->p25p2_since_ms < 0) {
-            out->p25p2_since_ms = 0;
-        }
-    }
-}
-
-/* Forward declaration for CQPSK runtime setter used by auto-DSP update below */
+/* Forward declaration for CQPSK runtime setter used by runtime helpers */
 extern "C" void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable,
                                      int dfe_enable, int dfe_taps, int mf_enable, int cma_warmup_samples);
 
 /**
- * @brief P25 Phase 2 error-driven auto-DSP adaptation.
- * Aggregates recent RS/voice error deltas and nudges CQPSK EQ settings.
- * No-ops when auto-DSP is disabled.
+ * @brief P25 Phase 2 error callbacks for runtime helpers.
+ * Aggregates recent RS/voice error deltas.
  */
 extern "C" void
 dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                 int sacch_err_delta, int voice_err_delta) {
-    (void)slot; /* reserved for future per-slot tuning */
+    (void)slot;            /* reserved for future per-slot tuning */
+    (void)facch_ok_delta;  /* currently unused */
+    (void)facch_err_delta; /* currently unused */
+    (void)sacch_ok_delta;  /* currently unused */
+    (void)sacch_err_delta; /* currently unused */
+    (void)voice_err_delta; /* currently unused */
 
     /* Auto-set TED SPS for P25 Phase 2 (≈6000 sym/s). */
     if (demod.ted_enabled) {
@@ -4703,188 +4384,6 @@ dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delt
         if (demod.ted_sps != sps) {
             dsd_rtl_stream_set_ted_sps(sps);
         }
-    }
-
-    /* RRC alpha auto-probe (dynamic vs fixed) for P25p2 CQPSK */
-    if (g_p25p2_rrc_autoprobe.load()) {
-        auto now = std::chrono::steady_clock::now();
-        int st = g_p25p2_rrc_auto_state.load();
-        if (st == 0) {
-            /* Stage 1: dynamic alpha≈0.2 */
-            dsd_rtl_stream_cqpsk_set_rrc(1, 20, 0);
-            g_p25p2_rrc_auto_dyn_err = 0;
-            g_p25p2_rrc_auto_dyn_voice = 0;
-            g_p25p2_rrc_auto_start = now;
-            g_p25p2_rrc_auto_state.store(1);
-            g_p25p2_rrc_auto_decided.store(0);
-        } else if (st == 1) {
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_p25p2_rrc_auto_start).count();
-            /* accumulate dynamic window */
-            int err_add = 0;
-            if (facch_err_delta > 0) {
-                err_add += facch_err_delta;
-            }
-            if (sacch_err_delta > 0) {
-                err_add += sacch_err_delta;
-            }
-            if (voice_err_delta > 0) {
-                err_add += voice_err_delta / 2;
-            }
-            g_p25p2_rrc_auto_dyn_err += err_add;
-            if (voice_err_delta > 0) {
-                g_p25p2_rrc_auto_dyn_voice += voice_err_delta;
-            }
-            if (ms >= 1000) {
-                /* Switch to Stage 2: fixed alpha=0.5 */
-                dsd_rtl_stream_cqpsk_set_rrc(1, 50, 0);
-                g_p25p2_rrc_auto_fix_err = 0;
-                g_p25p2_rrc_auto_fix_voice = 0;
-                g_p25p2_rrc_auto_start = now;
-                g_p25p2_rrc_auto_state.store(2);
-            }
-        } else if (st == 2) {
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_p25p2_rrc_auto_start).count();
-            int err_add = 0;
-            if (facch_err_delta > 0) {
-                err_add += facch_err_delta;
-            }
-            if (sacch_err_delta > 0) {
-                err_add += sacch_err_delta;
-            }
-            if (voice_err_delta > 0) {
-                err_add += voice_err_delta / 2;
-            }
-            g_p25p2_rrc_auto_fix_err += err_add;
-            if (voice_err_delta > 0) {
-                g_p25p2_rrc_auto_fix_voice += voice_err_delta;
-            }
-            if (ms >= 1000) {
-                /* Decide */
-                int choose_fixed = 0;
-                if (g_p25p2_rrc_auto_fix_err < g_p25p2_rrc_auto_dyn_err) {
-                    choose_fixed = 1;
-                } else if (g_p25p2_rrc_auto_fix_err == g_p25p2_rrc_auto_dyn_err) {
-                    if (g_p25p2_rrc_auto_fix_voice <= g_p25p2_rrc_auto_dyn_voice) {
-                        choose_fixed = 1;
-                    }
-                }
-                dsd_rtl_stream_cqpsk_set_rrc(1, choose_fixed ? 50 : 20, 0);
-                g_p25p2_rrc_auto_choice.store(choose_fixed ? 1 : 0);
-                g_p25p2_rrc_auto_decided.store(1);
-                g_p25p2_rrc_auto_state.store(0);
-            }
-        }
-    }
-    if (!g_auto_dsp_enable.load() || g_auto_dsp_simple.load()) {
-        return;
-    }
-
-    enum { MODE_CLEAN = 0, MODE_MODERATE = 1, MODE_HEAVY = 2 };
-
-    static int mode = MODE_CLEAN;
-    static std::chrono::steady_clock::time_point last_change;
-    const auto now = std::chrono::steady_clock::now();
-    int ok = 0, err = 0;
-    if (facch_ok_delta > 0) {
-        ok += facch_ok_delta;
-    }
-    if (sacch_ok_delta > 0) {
-        ok += sacch_ok_delta;
-    }
-    if (facch_err_delta > 0) {
-        err += facch_err_delta;
-    }
-    if (sacch_err_delta > 0) {
-        err += sacch_err_delta;
-    }
-    if (voice_err_delta > 0) {
-        err += voice_err_delta / 2; /* voice errors are noisier; downweight */
-    }
-    /* Hysteresis: engage with margin_on / low ok; relax with margin_off and ok_min */
-    int aggressive_on = (err > ok + g_auto_cfg.p25p2_err_margin_on) || (ok < g_auto_cfg.p25p2_ok_min);
-    int moderate_on = (err > 0);
-
-    int desired = MODE_CLEAN;
-    switch (mode) {
-        case MODE_HEAVY:
-            if (aggressive_on) {
-                desired = MODE_HEAVY;
-            } else if (!aggressive_on && !moderate_on) {
-                desired = MODE_CLEAN;
-            } else {
-                desired = MODE_MODERATE;
-            }
-            break;
-        case MODE_MODERATE:
-            if (aggressive_on) {
-                desired = MODE_HEAVY;
-            } else if (!moderate_on) {
-                desired = MODE_CLEAN;
-            } else {
-                desired = MODE_MODERATE;
-            }
-            break;
-        default:
-            if (aggressive_on) {
-                desired = MODE_HEAVY;
-            } else if (moderate_on) {
-                desired = MODE_MODERATE;
-            } else {
-                desired = MODE_CLEAN;
-            }
-            break;
-    }
-    /* Cooldown to avoid thrashing */
-    bool can_change = true;
-    if (last_change.time_since_epoch().count() != 0) {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_change).count();
-        can_change = (ms >= g_auto_cfg.p25p2_cooldown_ms);
-    }
-    if (desired != mode && !can_change) {
-        desired = mode; /* hold until cooldown expires */
-    }
-
-    /* Guard: only adjust when CQPSK path active; otherwise, ensure defaults modest */
-    if (!demod.cqpsk_enable) {
-        if (desired != MODE_CLEAN) {
-            /* Don't stack CMA bursts */
-            int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-            rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-            int cma_burst = (cma > 0) ? 0 : 800;
-            rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 1, 2, 1, cma_burst);
-            demod.ted_enabled = 1;
-            if (demod.ted_gain_q20 < 64) {
-                demod.ted_gain_q20 = 64;
-            }
-        }
-        return;
-    }
-
-    if (desired == MODE_HEAVY) {
-        /* More taps, enable WL+DFE, small µ, enable MF; brief CMA warmup */
-        int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-        rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-        int cma_burst = (cma > 0) ? 0 : 2000;
-        rtl_stream_cqpsk_set(1, 7, 2, 4, 1, 1, 3, 1, cma_burst);
-        demod.ted_enabled = 1;
-        if (demod.ted_gain_q20 < 64) {
-            demod.ted_gain_q20 = 64;
-        }
-    } else if (desired == MODE_MODERATE) {
-        int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-        rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-        int cma_burst = (cma > 0) ? 0 : 1000;
-        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 1, 2, 1, cma_burst);
-        demod.ted_enabled = 1;
-    } else {
-        /* Relax settings when clean */
-        rtl_stream_cqpsk_set(1, 5, 1, 8, 0, 0, 0, 1, 0);
-    }
-    if (desired != mode) {
-        mode = desired;
-        last_change = now;
-        g_p25p2_mode.store(desired);
-        g_p25p2_last_change = now;
     }
 }
 
@@ -4922,112 +4421,8 @@ rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
             dsd_rtl_stream_set_ted_sps(sps);
         }
     }
-    if (!g_auto_dsp_enable.load() || g_auto_dsp_simple.load()) {
-        return; /* auto-DSP disabled: ignore BER-driven tuning */
-    }
-    static int64_t ok_acc = 0;
-    static int64_t err_acc = 0;
-    static double err_ema = 0.0; /* EMA of error rate [0..1] */
-    static std::chrono::steady_clock::time_point last_change;
-    const auto now = std::chrono::steady_clock::now();
-    if (fec_ok_delta > 0) {
-        ok_acc += fec_ok_delta;
-    }
-    if (fec_err_delta > 0) {
-        err_acc += fec_err_delta;
-    }
-    int64_t total = ok_acc + err_acc;
-    if (total < g_auto_cfg.p25p1_window_min_total) {
-        return; /* wait for window */
-    }
-    /* Compute error rate */
-    const double er = (total > 0) ? ((double)err_acc / (double)total) : 0.0;
-    /* EMA smoothing */
-    const double a = (double)g_auto_cfg.ema_alpha_q15 / 32768.0;
-    err_ema = a * er + (1.0 - a) * err_ema;
-    /* Reset for next window */
-    ok_acc = 0;
-    err_acc = 0;
-    /* Guard: only adjust when CQPSK path active */
-    if (!demod.cqpsk_enable) {
-        return;
-    }
-    /* Hysteresis thresholds with cooldown */
-    int er_pct = (int)lrint(err_ema * 100.0);
-    g_p25p1_ema_pct.store(er_pct);
-
-    enum { MODE_CLEAN = 0, MODE_MODERATE = 1, MODE_HEAVY = 2 };
-
-    static int mode = MODE_CLEAN;
-    int desired = MODE_CLEAN;
-    switch (mode) {
-        case MODE_HEAVY:
-            if (er_pct >= g_auto_cfg.p25p1_heavy_on_pct) {
-                desired = MODE_HEAVY;
-            } else if (er_pct >= g_auto_cfg.p25p1_moderate_on_pct) {
-                desired = MODE_MODERATE;
-            } else if (er_pct <= g_auto_cfg.p25p1_moderate_off_pct) {
-                desired = MODE_CLEAN;
-            } else {
-                desired = MODE_MODERATE;
-            }
-            break;
-        case MODE_MODERATE:
-            if (er_pct >= g_auto_cfg.p25p1_heavy_on_pct) {
-                desired = MODE_HEAVY;
-            } else if (er_pct <= g_auto_cfg.p25p1_moderate_off_pct) {
-                desired = MODE_CLEAN;
-            } else {
-                desired = MODE_MODERATE;
-            }
-            break;
-        default:
-            if (er_pct >= g_auto_cfg.p25p1_heavy_on_pct) {
-                desired = MODE_HEAVY;
-            } else if (er_pct >= g_auto_cfg.p25p1_moderate_on_pct) {
-                desired = MODE_MODERATE;
-            } else {
-                desired = MODE_CLEAN;
-            }
-            break;
-    }
-    bool can_change = true;
-    if (last_change.time_since_epoch().count() != 0) {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_change).count();
-        can_change = (ms >= g_auto_cfg.p25p1_cooldown_ms);
-    }
-    if (desired != mode && !can_change) {
-        desired = mode;
-    }
-
-    if (desired == MODE_HEAVY) {
-        /* Enable WL, DFE, more taps, small µ; brief CMA kick */
-        int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-        rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-        int cma_burst = (cma > 0) ? 0 : 2000;
-        rtl_stream_cqpsk_set(1, 7, 2, 4, 1, 1, 3, -1, cma_burst);
-        /* Ensure TED is on and gain modest */
-        demod.ted_enabled = 1;
-        if (demod.ted_gain_q20 < 64) {
-            demod.ted_gain_q20 = 64;
-        }
-    } else if (desired == MODE_MODERATE) {
-        /* Keep WL off by default, enable DFE lightly, 5–7 taps, µ=2 */
-        int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-        rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-        int cma_burst = (cma > 0) ? 0 : 1000;
-        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 1, 2, -1, cma_burst);
-        demod.ted_enabled = 1;
-    } else {
-        /* Relax settings when clean: fewer taps, µ=1, DFE off */
-        rtl_stream_cqpsk_set(1, 5, 1, 8, 0, 0, 0, -1, 0);
-    }
-    if (desired != mode) {
-        mode = desired;
-        last_change = now;
-        g_p25p1_mode.store(desired);
-        g_p25p1_last_change = now;
-    }
+    (void)fec_ok_delta;
+    (void)fec_err_delta;
 }
 
 extern "C" int
@@ -5105,7 +4500,7 @@ rtl_stream_toggle_ted(int onoff) {
 }
 
 extern "C" int
-rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* auto_dsp_enable) {
+rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
     if (cqpsk_enable) {
         *cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
     }
@@ -5114,9 +4509,6 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable, int* aut
     }
     if (ted_enable) {
         *ted_enable = demod.ted_enabled ? 1 : 0;
-    }
-    if (auto_dsp_enable) {
-        *auto_dsp_enable = g_auto_dsp_enable.load() ? 1 : 0;
     }
     return 0;
 }
@@ -5138,21 +4530,6 @@ dsd_rtl_stream_get_auto_ppm(void) {
     }
     /* Fallback to last enabled value */
     return g_auto_ppm_enabled.load(std::memory_order_relaxed) ? 1 : 0;
-}
-
-extern "C" void
-rtl_stream_toggle_auto_dsp(int onoff) {
-    g_auto_dsp_enable.store(onoff ? 1 : 0);
-}
-
-extern "C" void
-rtl_stream_set_manual_dsp(int onoff) {
-    g_manual_dsp_override = onoff ? 1 : 0;
-}
-
-extern "C" int
-rtl_stream_get_manual_dsp(void) {
-    return g_manual_dsp_override ? 1 : 0;
 }
 
 /* Configure RRC matched filter parameters. Any arg <0 leaves it unchanged. */

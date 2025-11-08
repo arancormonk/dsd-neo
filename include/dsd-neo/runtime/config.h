@@ -122,15 +122,6 @@ extern "C" {
  *     Values: 1 enable, 0 disable. Default: off.
  * - DSD_NEO_IQ_DC_SHIFT
  *     k in the above relation (10..14 typical, larger=k -> slower). Default: 11.
- *
- * LSM/CQPSK simple mode
- * - DSD_NEO_LSM_SIMPLE
- *     Force a simplified CQPSK (LSM) pipeline for easier initial lock: enable CQPSK path,
- *     run matched filter (RRC) with ntaps=11*sps+1 and alpha≈0.2, always run Costas (handled
- *     by pipeline), enable FLL and TED for pull‑in and timing assist, and keep the adaptive
- *     CQPSK equalizer off (decision‑directed LMS/DFE/WL disabled).
- *     Values: 1 enable, else disabled. Default: 0 (disabled).
- *
  * Frontend tuning behavior
  * - DSD_NEO_DISABLE_FS4_SHIFT
  *     Disable +fs/4 capture frequency shift when offset_tuning is off. Useful for trunking where exact

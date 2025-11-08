@@ -33,9 +33,6 @@
 #endif
 #include <dsd-neo/ui/ui_dsp_cmd.h>
 
-/* Forward declarations for new P25p2 RRC UI handlers */
-static const char* lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n);
-static void io_toggle_p25p2_rrc_autoprobe(void* vctx);
 // Forward decl for hex parser used by async callbacks
 static int parse_hex_u64(const char* s, unsigned long long* out);
 
@@ -2823,18 +2820,6 @@ io_toggle_p25p2_rrc(void* vctx) {
 }
 
 static void
-io_toggle_p25p2_rrc_autoprobe(void* vctx) {
-    (void)vctx;
-    ui_post_cmd(UI_CMD_P25P2_RRC_AUTOPROBE_TOGGLE, NULL, 0);
-}
-
-static void
-io_toggle_p25_rrc_autoprobe(void* vctx) {
-    (void)vctx;
-    ui_post_cmd(UI_CMD_P25_RRC_AUTOPROBE_TOGGLE, NULL, 0);
-}
-
-static void
 inv_x2(void* v) {
     (void)v;
     ui_post_cmd(UI_CMD_INV_X2_TOGGLE, NULL, 0);
@@ -3322,29 +3307,9 @@ lbl_p25_rrc(void* v, char* b, size_t n) {
 }
 
 static const char*
-lbl_p25_rrc_autoprobe(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    snprintf(b, n, "P25 C4FM RRC Auto-Probe [%s]", c->opts->p25_c4fm_rrc_autoprobe ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
 lbl_p25p2_rrc(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "P25p2 CQPSK RRC alpha=0.5 [%s]", c->opts->p25_p2_rrc_fixed ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
-lbl_p25p2_rrc_autoprobe(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-#ifdef USE_RTLSDR
-    (void)c;
-    int on = rtl_stream_get_p25p2_rrc_autoprobe();
-#else
-    int on = c->opts->p25_p2_rrc_autoprobe;
-#endif
-    snprintf(b, n, "P25p2 CQPSK RRC Auto-Probe [%s]", on ? "Active" : "Inactive");
     return b;
 }
 
@@ -3507,8 +3472,8 @@ lbl_muting(void* v, char* b, size_t n) {
 static bool
 dsp_cq_on(void* v) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
+    int cq = 0, f = 0, t = 0;
+    rtl_stream_dsp_get(&cq, &f, &t);
     return cq != 0;
 }
 
@@ -3531,8 +3496,8 @@ dsp_dfe_on(void* v) {
 static const char*
 lbl_onoff_cq(void* v, char* b, size_t n) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
+    int cq = 0, f = 0, t = 0;
+    rtl_stream_dsp_get(&cq, &f, &t);
     snprintf(b, n, "Toggle CQPSK [%s]", cq ? "Active" : "Inactive");
     return b;
 }
@@ -3540,8 +3505,8 @@ lbl_onoff_cq(void* v, char* b, size_t n) {
 static const char*
 lbl_onoff_fll(void* v, char* b, size_t n) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
+    int cq = 0, f = 0, t = 0;
+    rtl_stream_dsp_get(&cq, &f, &t);
     snprintf(b, n, "Toggle FLL [%s]", f ? "Active" : "Inactive");
     return b;
 }
@@ -3549,8 +3514,8 @@ lbl_onoff_fll(void* v, char* b, size_t n) {
 static const char*
 lbl_onoff_ted(void* v, char* b, size_t n) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
+    int cq = 0, f = 0, t = 0;
+    rtl_stream_dsp_get(&cq, &f, &t);
     snprintf(b, n, "Toggle TED [%s]", t ? "Active" : "Inactive");
     return b;
 }
@@ -3803,21 +3768,6 @@ lbl_fm_limiter(void* v, char* b, size_t n) {
     int on = rtl_stream_get_fm_limiter();
     snprintf(b, n, "FM Limiter [%s]", on ? "On" : "Off");
     return b;
-}
-
-static const char*
-lbl_fm_agc_auto(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_fm_agc_auto();
-    snprintf(b, n, "FM AGC Auto [%s]", on ? "On" : "Off");
-    return b;
-}
-
-static void
-act_toggle_fm_agc_auto(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_AUTO_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
@@ -4073,8 +4023,8 @@ act_ted_force_toggle(void* v) {
     if (!f) {
         // Enabling force: also ensure TED itself is enabled so forcing has effect.
         rtl_stream_set_ted_force(1);
-        int cq = 0, fl = 0, t = 0, a = 0;
-        rtl_stream_dsp_get(&cq, &fl, &t, &a);
+        int cq = 0, fl = 0, t = 0;
+        rtl_stream_dsp_get(&cq, &fl, &t);
         if (!t) {
             rtl_stream_toggle_ted(1);
         }
@@ -4089,30 +4039,6 @@ lbl_ted_bias(void* v, char* b, size_t n) {
     UNUSED(v);
     int eb = rtl_stream_ted_bias(NULL);
     snprintf(b, n, "TED Bias (EMA): %d", eb);
-    return b;
-}
-
-static const char*
-lbl_manual_dsp(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int man = rtl_stream_get_manual_dsp();
-    snprintf(b, n, "Manual DSP Override [%s]", man ? "Active" : "Inactive");
-    return b;
-}
-
-static void
-act_toggle_manual_dsp(void* v) {
-    UNUSED(v);
-    int man = rtl_stream_get_manual_dsp();
-    rtl_stream_set_manual_dsp(man ? 0 : 1);
-}
-
-static const char*
-lbl_onoff_auto(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int cq = 0, f = 0, t = 0, a = 0;
-    rtl_stream_dsp_get(&cq, &f, &t, &a);
-    snprintf(b, n, "Toggle Auto-DSP [%s]", a ? "Active" : "Inactive");
     return b;
 }
 
@@ -4144,24 +4070,6 @@ lbl_toggle_rrc(void* v, char* b, size_t n) {
 }
 
 static const char*
-lbl_rrc_a_up(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "RRC alpha +5%% (now %d%%)", a);
-    return b;
-}
-
-static const char*
-lbl_rrc_a_dn(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "RRC alpha -5%% (now %d%%)", a);
-    return b;
-}
-
-static const char*
 lbl_rrc_s_up(void* v, char* b, size_t n) {
     UNUSED(v);
     int on = 0, a = 0, s = 0;
@@ -4176,6 +4084,24 @@ lbl_rrc_s_dn(void* v, char* b, size_t n) {
     int on = 0, a = 0, s = 0;
     rtl_stream_cqpsk_get_rrc(&on, &a, &s);
     snprintf(b, n, "RRC span -1 (now %d)", s);
+    return b;
+}
+
+static const char*
+lbl_rrc_a_up(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int on = 0, a = 0, s = 0;
+    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
+    snprintf(b, n, "RRC alpha +5%% (now %d%%)", a);
+    return b;
+}
+
+static const char*
+lbl_rrc_a_dn(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int on = 0, a = 0, s = 0;
+    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
+    snprintf(b, n, "RRC alpha -5%% (now %d%%)", a);
     return b;
 }
 
@@ -4244,22 +4170,6 @@ lbl_onoff_dqpsk(void* v, char* b, size_t n) {
     return b;
 }
 
-/* ---- LSM Simple (CQPSK+RRC; Costas; EQ off) ---- */
-static const char*
-lbl_lsm_simple(void* v, char* b, size_t n) {
-    (void)v;
-    int on = dsd_neo_get_lsm_simple();
-    snprintf(b, n, "LSM Simple [%s]", on ? "On" : "Off");
-    return b;
-}
-
-static void
-act_lsm_simple_toggle(void* v) {
-    (void)v;
-    UiDspPayload p = {.op = UI_DSP_OP_LSM_SIMPLE_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
 static void
 act_toggle_cq(void* v) {
     (void)v;
@@ -4278,13 +4188,6 @@ static void
 act_toggle_ted(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_TED};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_auto(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_AUTO};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -4382,377 +4285,6 @@ act_toggle_dqpsk(void* v) {
 #endif /* end of USE_RTLSDR block started at 2881 (DSP labels/actions) */
 
 #ifdef USE_RTLSDR
-// ---- Auto-DSP status & config (UI) ----
-static const char*
-mode_to_str(int m) {
-    switch (m) {
-        case 2: return "Heavy";
-        case 1: return "Moderate";
-        default: return "Clean";
-    }
-}
-
-static const char*
-lbl_auto_status(void* v, char* b, size_t n) {
-    (void)v;
-    rtl_auto_dsp_status s = {0};
-    rtl_stream_auto_dsp_get_status(&s);
-    snprintf(b, n, "Auto-DSP Status [P1: %s %d%%, P2: %s]", mode_to_str(s.p25p1_mode), s.p25p1_ema_pct,
-             mode_to_str(s.p25p2_mode));
-    return b;
-}
-
-// Config helpers
-static rtl_auto_dsp_config g_auto_cfg_cache;
-
-static void
-cfg_refresh(void) {
-    rtl_stream_auto_dsp_get_config(&g_auto_cfg_cache);
-}
-
-static void
-cfg_apply(void) {
-    rtl_stream_auto_dsp_set_config(&g_auto_cfg_cache);
-}
-
-static const char*
-lbl_p1_win(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P1 Window min total: %d", g_auto_cfg_cache.p25p1_window_min_total);
-    return b;
-}
-
-static const char*
-lbl_p1_mod_on(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P1 Moderate On %%: %d", g_auto_cfg_cache.p25p1_moderate_on_pct);
-    return b;
-}
-
-static const char*
-lbl_p1_mod_off(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P1 Moderate Off %%: %d", g_auto_cfg_cache.p25p1_moderate_off_pct);
-    return b;
-}
-
-static const char*
-lbl_p1_hvy_on(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P1 Heavy On %%: %d", g_auto_cfg_cache.p25p1_heavy_on_pct);
-    return b;
-}
-
-static const char*
-lbl_p1_hvy_off(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P1 Heavy Off %%: %d", g_auto_cfg_cache.p25p1_heavy_off_pct);
-    return b;
-}
-
-static const char*
-lbl_p1_cool(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P1 Cooldown (ms): %d", g_auto_cfg_cache.p25p1_cooldown_ms);
-    return b;
-}
-
-static const char*
-lbl_p2_okmin(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P2 OK min: %d", g_auto_cfg_cache.p25p2_ok_min);
-    return b;
-}
-
-static const char*
-lbl_p2_margin_on(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P2 Err margin On: %d", g_auto_cfg_cache.p25p2_err_margin_on);
-    return b;
-}
-
-static const char*
-lbl_p2_margin_off(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P2 Err margin Off: %d", g_auto_cfg_cache.p25p2_err_margin_off);
-    return b;
-}
-
-static const char*
-lbl_p2_cool(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    snprintf(b, n, "P25P2 Cooldown (ms): %d", g_auto_cfg_cache.p25p2_cooldown_ms);
-    return b;
-}
-
-static const char*
-lbl_ema_alpha(void* v, char* b, size_t n) {
-    UNUSED(v);
-    cfg_refresh();
-    int pct = (int)((g_auto_cfg_cache.ema_alpha_q15 * 100 + 16384) / 32768); // approx
-    snprintf(b, n, "EMA alpha (Q15 ~%d%%): %d", pct, g_auto_cfg_cache.ema_alpha_q15);
-    return b;
-}
-
-// Adjusters
-static void
-inc_p1_win(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    g_auto_cfg_cache.p25p1_window_min_total += 50;
-    cfg_apply();
-}
-
-static void
-dec_p1_win(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    if (g_auto_cfg_cache.p25p1_window_min_total > 50) {
-        g_auto_cfg_cache.p25p1_window_min_total -= 50;
-    }
-    cfg_apply();
-}
-
-static void
-inc_i(int* p, int d, int max) {
-    int v = *p + d;
-    if (v > max) {
-        v = max;
-    }
-    *p = v;
-}
-
-static void
-dec_i(int* p, int d, int min) {
-    int v = *p - d;
-    if (v < min) {
-        v = min;
-    }
-    *p = v;
-}
-
-static void
-inc_p1_mod_on(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p1_moderate_on_pct, 1, 50);
-    cfg_apply();
-}
-
-static void
-dec_p1_mod_on(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p1_moderate_on_pct, 1, 1);
-    cfg_apply();
-}
-
-static void
-inc_p1_mod_off(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p1_moderate_off_pct, 1, 50);
-    cfg_apply();
-}
-
-static void
-dec_p1_mod_off(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p1_moderate_off_pct, 1, 0);
-    cfg_apply();
-}
-
-static void
-inc_p1_hvy_on(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p1_heavy_on_pct, 1, 90);
-    cfg_apply();
-}
-
-static void
-dec_p1_hvy_on(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p1_heavy_on_pct, 1, 1);
-    cfg_apply();
-}
-
-static void
-inc_p1_hvy_off(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p1_heavy_off_pct, 1, 90);
-    cfg_apply();
-}
-
-static void
-dec_p1_hvy_off(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p1_heavy_off_pct, 1, 0);
-    cfg_apply();
-}
-
-static void
-inc_p1_cool(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    g_auto_cfg_cache.p25p1_cooldown_ms += 100;
-    cfg_apply();
-}
-
-static void
-dec_p1_cool(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    if (g_auto_cfg_cache.p25p1_cooldown_ms > 100) {
-        g_auto_cfg_cache.p25p1_cooldown_ms -= 100;
-    }
-    cfg_apply();
-}
-
-static void
-inc_p2_okmin(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p2_ok_min, 1, 50);
-    cfg_apply();
-}
-
-static void
-dec_p2_okmin(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p2_ok_min, 1, 1);
-    cfg_apply();
-}
-
-static void
-inc_p2_m_on(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p2_err_margin_on, 1, 50);
-    cfg_apply();
-}
-
-static void
-dec_p2_m_on(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p2_err_margin_on, 1, 0);
-    cfg_apply();
-}
-
-static void
-inc_p2_m_off(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.p25p2_err_margin_off, 1, 50);
-    cfg_apply();
-}
-
-static void
-dec_p2_m_off(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.p25p2_err_margin_off, 1, 0);
-    cfg_apply();
-}
-
-static void
-inc_p2_cool(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    g_auto_cfg_cache.p25p2_cooldown_ms += 100;
-    cfg_apply();
-}
-
-static void
-dec_p2_cool(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    if (g_auto_cfg_cache.p25p2_cooldown_ms > 100) {
-        g_auto_cfg_cache.p25p2_cooldown_ms -= 100;
-    }
-    cfg_apply();
-}
-
-static void
-inc_alpha(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    inc_i(&g_auto_cfg_cache.ema_alpha_q15, 512, 32768);
-    cfg_apply();
-}
-
-static void
-dec_alpha(void* v) {
-    UNUSED(v);
-    cfg_refresh();
-    dec_i(&g_auto_cfg_cache.ema_alpha_q15, 512, 1);
-    cfg_apply();
-}
-
-/* Nonblocking Auto-DSP config submenu */
-static const NcMenuItem AUTO_DSP_CFG_ITEMS[] = {
-    {.id = "p1_win",
-     .label = "P25P1 Window (status)",
-     .label_fn = lbl_p1_win,
-     .help = "Min symbols per decision window."},
-    {.id = "p1_win+", .label = "P25P1 Window +50", .help = "Increase window.", .on_select = inc_p1_win},
-    {.id = "p1_win-", .label = "P25P1 Window -50", .help = "Decrease window.", .on_select = dec_p1_win},
-    {.id = "p1_mon", .label = "P25P1 Moderate On%", .label_fn = lbl_p1_mod_on, .help = "Engage moderate threshold."},
-    {.id = "p1_mon+", .label = "Moderate On% +1", .on_select = inc_p1_mod_on},
-    {.id = "p1_mon-", .label = "Moderate On% -1", .on_select = dec_p1_mod_on},
-    {.id = "p1_moff", .label = "P25P1 Moderate Off%", .label_fn = lbl_p1_mod_off, .help = "Relax to clean."},
-    {.id = "p1_moff+", .label = "Moderate Off% +1", .on_select = inc_p1_mod_off},
-    {.id = "p1_moff-", .label = "Moderate Off% -1", .on_select = dec_p1_mod_off},
-    {.id = "p1_hon", .label = "P25P1 Heavy On%", .label_fn = lbl_p1_hvy_on, .help = "Engage heavy threshold."},
-    {.id = "p1_hon+", .label = "Heavy On% +1", .on_select = inc_p1_hvy_on},
-    {.id = "p1_hon-", .label = "Heavy On% -1", .on_select = dec_p1_hvy_on},
-    {.id = "p1_hoff", .label = "P25P1 Heavy Off%", .label_fn = lbl_p1_hvy_off, .help = "Relax from heavy."},
-    {.id = "p1_hoff+", .label = "Heavy Off% +1", .on_select = inc_p1_hvy_off},
-    {.id = "p1_hoff-", .label = "Heavy Off% -1", .on_select = dec_p1_hvy_off},
-    {.id = "p1_cool",
-     .label = "P25P1 Cooldown (status)",
-     .label_fn = lbl_p1_cool,
-     .help = "Cooldown ms between changes."},
-    {.id = "p1_cool+", .label = "Cooldown +100ms", .on_select = inc_p1_cool},
-    {.id = "p1_cool-", .label = "Cooldown -100ms", .on_select = dec_p1_cool},
-    {.id = "p2_ok", .label = "P25P2 OK min (status)", .label_fn = lbl_p2_okmin, .help = "Min OKs to avoid heavy."},
-    {.id = "p2_ok+", .label = "OK min +1", .on_select = inc_p2_okmin},
-    {.id = "p2_ok-", .label = "OK min -1", .on_select = dec_p2_okmin},
-    {.id = "p2_mon",
-     .label = "P25P2 Err margin On",
-     .label_fn = lbl_p2_margin_on,
-     .help = "Err > OK + margin -> heavy."},
-    {.id = "p2_mon+", .label = "Margin On +1", .on_select = inc_p2_m_on},
-    {.id = "p2_mon-", .label = "Margin On -1", .on_select = dec_p2_m_on},
-    {.id = "p2_moff", .label = "P25P2 Err margin Off", .label_fn = lbl_p2_margin_off, .help = "Relax heavy."},
-    {.id = "p2_moff+", .label = "Margin Off +1", .on_select = inc_p2_m_off},
-    {.id = "p2_moff-", .label = "Margin Off -1", .on_select = dec_p2_m_off},
-    {.id = "p2_cool",
-     .label = "P25P2 Cooldown (status)",
-     .label_fn = lbl_p2_cool,
-     .help = "Cooldown ms between changes."},
-    {.id = "p2_cool+", .label = "Cooldown +100ms", .on_select = inc_p2_cool},
-    {.id = "p2_cool-", .label = "Cooldown -100ms", .on_select = dec_p2_cool},
-    {.id = "ema", .label = "EMA alpha (status)", .label_fn = lbl_ema_alpha, .help = "Smoothing constant for P25P1."},
-    {.id = "ema+", .label = "EMA alpha +512", .on_select = inc_alpha},
-    {.id = "ema-", .label = "EMA alpha -512", .on_select = dec_alpha},
-};
 #endif
 
 #ifdef USE_RTLSDR
@@ -4772,11 +4304,7 @@ void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "Toggle compact DSP status panel in main UI.",
          .on_select = act_toggle_dsp_panel},
 #endif
-        {.id = "manual",
-         .label = "Manual DSP Override",
-         .label_fn = lbl_manual_dsp,
-         .help = "When active, prevents auto on/off based on modulation.",
-         .on_select = act_toggle_manual_dsp},
+        
         {.id = "cqpsk",
          .label = "Toggle CQPSK",
          .label_fn = lbl_onoff_cq,
@@ -4844,11 +4372,7 @@ void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .label_fn = lbl_fm_limiter,
          .help = "Toggle constant-envelope limiter.",
          .on_select = act_toggle_fm_limiter},
-        {.id = "fm_agc_auto",
-         .label = "FM AGC Auto",
-         .label_fn = lbl_fm_agc_auto,
-         .help = "Auto-tune AGC target/alphas.",
-         .on_select = act_toggle_fm_agc_auto},
+        
         {.id = "fm_tgt",
          .label = "AGC Target (status)",
          .label_fn = lbl_fm_agc_target,
@@ -4938,19 +4462,7 @@ void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
         {.id = "c4fm_dd_t*", .label = "Cycle DD Taps 3/5/7/9", .on_select = act_c4fm_dd_taps_cycle},
         {.id = "c4fm_dd_mu+", .label = "DD Mu +1", .on_select = act_c4fm_dd_mu_up},
         {.id = "c4fm_dd_mu-", .label = "DD Mu -1", .on_select = act_c4fm_dd_mu_dn},
-        {.id = "auto_status",
-         .label = "Auto-DSP Status",
-         .label_fn = lbl_auto_status,
-         .help = "Live mode and smoothed error rate."},
-        {.id = "auto",
-         .label = "Toggle Auto-DSP",
-         .label_fn = lbl_onoff_auto,
-         .help = "Enable/disable auto-DSP.",
-         .on_select = act_toggle_auto},
-        {.id = "auto_cfg",
-         .label = "Auto-DSP Config",
-         .help = "Adjust Auto-DSP thresholds and windows.",
-         .on_select = act_auto_cfg},
+        
         {.id = "lms",
          .label = "Toggle LMS",
          .label_fn = lbl_onoff_lms,
@@ -4963,29 +4475,14 @@ void ui_menu_dsp_options(dsd_opts* opts, dsd_state* state) {
          .help = "Enable/disable matched filter.",
          .is_enabled = dsp_cq_on,
          .on_select = act_toggle_mf},
-        {.id = "lsm_simple",
-         .label = "LSM Simple",
-         .label_fn = lbl_lsm_simple,
-         .help = "Simplified LSM (CQPSK+RRC; Costas; FLL+TED; EQ off).",
-         .on_select = act_lsm_simple_toggle},
+        
         {.id = "rrc",
          .label = "Toggle RRC",
          .label_fn = lbl_toggle_rrc,
          .help = "Enable/disable RRC matched filter.",
          .is_enabled = dsp_cq_on,
          .on_select = act_toggle_rrc},
-        {.id = "rrc_a+",
-         .label = "RRC alpha +5%",
-         .label_fn = lbl_rrc_a_up,
-         .help = "Increase RRC alpha.",
-         .is_enabled = dsp_cq_on,
-         .on_select = act_rrc_a_up},
-        {.id = "rrc_a-",
-         .label = "RRC alpha -5%",
-         .label_fn = lbl_rrc_a_dn,
-         .help = "Decrease RRC alpha.",
-         .is_enabled = dsp_cq_on,
-         .on_select = act_rrc_a_dn},
+        
         {.id = "rrc_s+",
          .label = "RRC span +1",
          .label_fn = lbl_rrc_s_up,
@@ -5698,26 +5195,6 @@ static const NcMenuItem IO_FILTER_ITEMS[] = {
      .label_fn = lbl_cosine,
      .help = "Enable/disable cosine filter.",
      .on_select = io_toggle_cosine},
-    {.id = "p25_rrc",
-     .label = "P25 C4FM RRC alpha=0.5",
-     .label_fn = lbl_p25_rrc,
-     .help = "Use fixed RRC(alpha=0.5) for P25p1 C4FM when Cosine Filter is enabled.",
-     .on_select = io_toggle_p25_rrc},
-    {.id = "p25_rrc_auto",
-     .label = "P25 C4FM RRC Auto-Probe",
-     .label_fn = lbl_p25_rrc_autoprobe,
-     .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
-     .on_select = io_toggle_p25_rrc_autoprobe},
-    {.id = "p25p2_rrc",
-     .label = "P25p2 CQPSK RRC alpha=0.5",
-     .label_fn = lbl_p25p2_rrc,
-     .help = "Use fixed RRC(alpha=0.5) for P25p2 CQPSK (matched filter).",
-     .on_select = io_toggle_p25p2_rrc},
-    {.id = "p25p2_rrc_auto",
-     .label = "P25p2 CQPSK RRC Auto-Probe",
-     .label_fn = lbl_p25p2_rrc_autoprobe,
-     .help = "Probe alpha≈0.2 vs alpha=0.5 briefly and choose best.",
-     .on_select = io_toggle_p25p2_rrc_autoprobe},
 };
 
 static const NcMenuItem IO_MENU_ITEMS[] = {
@@ -6155,25 +5632,7 @@ static const NcMenuItem DSP_OVERVIEW_ITEMS[] = {
      .label_fn = lbl_dsp_panel,
      .help = "Toggle compact DSP status panel in main UI.",
      .on_select = act_toggle_dsp_panel},
-    {.id = "man",
-     .label = "Manual DSP Override",
-     .label_fn = lbl_manual_dsp,
-     .help = "Pin manual control; disables auto on/off by modulation.",
-     .on_select = act_toggle_manual_dsp},
-    {.id = "auto",
-     .label = "Toggle Auto-DSP",
-     .label_fn = lbl_onoff_auto,
-     .help = "Enable/disable auto-DSP.",
-     .on_select = act_toggle_auto},
-    {.id = "auto_status",
-     .label = "Auto-DSP Status",
-     .label_fn = lbl_auto_status,
-     .help = "Current Auto-DSP mode and P25 metrics."},
-    {.id = "auto_cfg",
-     .label = "Auto-DSP Config...",
-     .help = "Adjust Auto-DSP thresholds and windows.",
-     .submenu = AUTO_DSP_CFG_ITEMS,
-     .submenu_len = sizeof AUTO_DSP_CFG_ITEMS / sizeof AUTO_DSP_CFG_ITEMS[0]},
+
 };
 
 static const NcMenuItem DSP_PATH_ITEMS[] = {
@@ -6358,11 +5817,7 @@ static const NcMenuItem DSP_AGC_ITEMS[] = {
      .label_fn = lbl_fm_agc,
      .help = "Toggle pre-discriminator FM AGC.",
      .on_select = act_toggle_fm_agc},
-    {.id = "fm_agc_auto",
-     .label = "FM AGC Auto",
-     .label_fn = lbl_fm_agc_auto,
-     .help = "Auto-tune AGC target/alphas.",
-     .on_select = act_toggle_fm_agc_auto},
+
     {.id = "fm_lim",
      .label = "FM Limiter",
      .label_fn = lbl_fm_limiter,
@@ -6544,8 +5999,6 @@ static const NcMenuItem DSP_ADV_ITEMS[] = {
      .help = "Toggle Flush-To-Zero / Denormals-Are-Zero (x86 SSE).",
      .on_select = act_toggle_ftz_daz},
 };
-
-/* (placeholder removed; see RTL_TCP_ADV_ITEMS_REAL below) */
 
 // Provide explicit wrappers for prompts (avoid function pointer type mismatch)
 static void

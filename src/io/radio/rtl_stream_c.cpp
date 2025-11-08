@@ -43,14 +43,7 @@ int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
 int dsd_rtl_stream_spectrum_set_size(int n);
 int dsd_rtl_stream_spectrum_get_size(void);
-/* P25p2 RRC auto-probe (implemented in rtl_sdr_fm.cpp) */
-void dsd_rtl_stream_set_p25p2_rrc_autoprobe(int onoff);
-int dsd_rtl_stream_get_p25p2_rrc_autoprobe(void);
-void dsd_rtl_stream_get_p25p2_rrc_auto(int* decided, int* state, int* choice);
-/* Auto-DSP config accessors (implemented in rtl_sdr_fm.cpp) */
-void dsd_rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out);
-void dsd_rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in);
-void dsd_rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out);
+
 /* Gain query helper implemented in rtl_sdr_fm.cpp */
 int dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
 /* Auto-PPM runtime toggle */
@@ -325,22 +318,6 @@ rtl_stream_cqpsk_get_dqpsk(int* onoff) {
     return dsd_rtl_stream_cqpsk_get_dqpsk(onoff);
 }
 
-extern "C" void
-rtl_stream_set_p25p2_rrc_autoprobe(int onoff) {
-    dsd_rtl_stream_set_p25p2_rrc_autoprobe(onoff);
-}
-
-extern "C" int
-rtl_stream_get_p25p2_rrc_autoprobe(void) {
-    return dsd_rtl_stream_get_p25p2_rrc_autoprobe();
-}
-
-extern "C" int
-rtl_stream_get_p25p2_rrc_auto_status(int* decided, int* state, int* choice) {
-    dsd_rtl_stream_get_p25p2_rrc_auto(decided, state, choice);
-    return 0;
-}
-
 /* CQPSK acquisition-only FLL (pre-Costas) */
 extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll(void);
 extern "C" void dsd_rtl_stream_set_cqpsk_acq_fll(int onoff);
@@ -421,8 +398,6 @@ extern "C" int dsd_rtl_stream_get_fm_limiter(void);
 extern "C" void dsd_rtl_stream_set_fm_limiter(int onoff);
 extern "C" int dsd_rtl_stream_get_iq_dc(int* out_shift_k);
 extern "C" void dsd_rtl_stream_set_iq_dc(int enable, int shift_k);
-extern "C" int dsd_rtl_stream_get_fm_agc_auto(void);
-extern "C" void dsd_rtl_stream_set_fm_agc_auto(int onoff);
 extern "C" int dsd_rtl_stream_get_fm_cma(void);
 extern "C" void dsd_rtl_stream_set_fm_cma(int onoff);
 extern "C" void dsd_rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup);
@@ -469,16 +444,6 @@ rtl_stream_get_iq_dc(int* out_shift_k) {
 extern "C" void
 rtl_stream_set_iq_dc(int enable, int shift_k) {
     dsd_rtl_stream_set_iq_dc(enable, shift_k);
-}
-
-extern "C" int
-rtl_stream_get_fm_agc_auto(void) {
-    return dsd_rtl_stream_get_fm_agc_auto();
-}
-
-extern "C" void
-rtl_stream_set_fm_agc_auto(int onoff) {
-    dsd_rtl_stream_set_fm_agc_auto(onoff);
 }
 
 /* FM CMA wrappers */
@@ -607,21 +572,6 @@ rtl_stream_set_c4fm_clk_sync(int enable) {
 extern "C" int
 rtl_stream_get_c4fm_clk_sync(void) {
     return dsd_neo_get_c4fm_clk_sync();
-}
-
-extern "C" void
-rtl_stream_auto_dsp_get_config(rtl_auto_dsp_config* out) {
-    dsd_rtl_stream_auto_dsp_get_config(out);
-}
-
-extern "C" void
-rtl_stream_auto_dsp_set_config(const rtl_auto_dsp_config* in) {
-    dsd_rtl_stream_auto_dsp_set_config(in);
-}
-
-extern "C" void
-rtl_stream_auto_dsp_get_status(rtl_auto_dsp_status* out) {
-    dsd_rtl_stream_auto_dsp_get_status(out);
 }
 
 /* IQ balance prefilter toggle/get */

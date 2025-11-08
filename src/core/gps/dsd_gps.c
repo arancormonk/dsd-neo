@@ -343,9 +343,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     uint8_t nmea_emin = (uint8_t)ConvertBitIntoBytes(&input[90], 6);     //Longitude Minutes
     uint16_t nmea_eminf = (uint16_t)ConvertBitIntoBytes(&input[74], 14); //Longitude Fractions of Minutes
 
-    //NOTE: Removed UTC hh.mm.ss6 format found in DMR UDT, could not make it work
-    //with bits already established for time and it works extremely well as is
-
     //Course Over Ground in Degrees (0-360)
     uint16_t nmea_cog = (uint16_t)ConvertBitIntoBytes(&input[135], 9)
                         % 360; //course over ground in degrees //working on due west sample without %360
