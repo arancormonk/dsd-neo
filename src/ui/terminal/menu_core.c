@@ -5039,7 +5039,7 @@ static const NcMenuItem IO_MENU_ITEMS[] = {
      .submenu_len = sizeof IO_INV_ITEMS / sizeof IO_INV_ITEMS[0]},
     {.id = "filters",
      .label = "Filters...",
-     .help = "Cosine and fixed/probed RRC presets.",
+     .help = "Cosine and fixed RRC presets.",
      .submenu = IO_FILTER_ITEMS,
      .submenu_len = sizeof IO_FILTER_ITEMS / sizeof IO_FILTER_ITEMS[0]},
 };
