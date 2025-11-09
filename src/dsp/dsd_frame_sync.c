@@ -139,8 +139,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (cq) {
                         rtl_stream_toggle_iq_balance(1);
                         rtl_stream_toggle_cqpsk(0);
-                        rtl_stream_toggle_fll(0);
-                        rtl_stream_toggle_ted(0);
+                        /* Only force-disable FLL/TED when locking to GFSK/FSK.
+                           For C4FM lock, preserve user-configured FLL/TED. */
+                        if (forced == 2) {
+                            rtl_stream_toggle_fll(0);
+                            rtl_stream_toggle_ted(0);
+                        }
                     }
                 }
             } while (0);
@@ -616,17 +620,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             /* When DMR/dPMR/NXDN are enabled targets, proactively disable FM AGC/limiter which can
              * distort 2-level/FSK symbol envelopes and elevate early audio errors under marginal SNR.
-             * Also force FLL/TED off for FSK paths. */
+             * Also force FLL/TED off for FSK paths — but only when we are actually on the FSK/GFSK path. */
 #ifdef USE_RTLSDR
-            if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)) {
+            if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)
+                && state->rf_mod == 2) { /* 2 = GFSK/FSK family */
                 extern void rtl_stream_set_fm_agc(int onoff);
                 extern void rtl_stream_set_fm_limiter(int onoff);
-                extern void rtl_stream_toggle_iq_balance(int onoff);
                 extern void rtl_stream_toggle_fll(int onoff);
                 extern void rtl_stream_toggle_ted(int onoff);
                 rtl_stream_set_fm_agc(0);
                 rtl_stream_set_fm_limiter(0);
-                rtl_stream_toggle_iq_balance(0);
                 rtl_stream_toggle_fll(0);
                 rtl_stream_toggle_ted(0);
             }
