@@ -7,6 +7,7 @@
 #include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 static inline int64_t
 i64abs(int64_t v) {
@@ -102,6 +103,10 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->wl_mu_q15 = 1;              /* smaller than FFE by default */
     st->wl_improp_ema_q15 = 0;      /* start at 0 */
     st->wl_improp_alpha_q15 = 8192; /* ~0.25 */
+    st->wl_x2_re_ema = 0;
+    st->wl_x2_im_ema = 0;
+    st->wl_p2_ema = 0;
+    st->wl_stat_alpha_q15 = 8192; /* default to ~0.25 */
     /* Decoupled adaptation defaults */
     st->adapt_mode = 0; /* start adapting FFE */
     st->adapt_hold = 0;
@@ -112,6 +117,53 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->sym_len = 0;
     for (int i = 0; i < kSymMax * 2; i++) {
         st->sym_xy[i] = 0;
+    }
+
+    /* Optional environment overrides for WL gating */
+    const char* env;
+    env = getenv("DSD_NEO_WL_GATE_THR_Q15");
+    if (env) {
+        int v = (int)strtol(env, NULL, 0);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 32767) {
+            v = 32767;
+        }
+        st->wl_gate_thr_q15 = v;
+    }
+    env = getenv("DSD_NEO_WL_THR_OFF_Q15");
+    if (env) {
+        int v = (int)strtol(env, NULL, 0);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 32767) {
+            v = 32767;
+        }
+        st->wl_thr_off_q15 = v;
+    }
+    env = getenv("DSD_NEO_WL_IMPROP_ALPHA_Q15");
+    if (env) {
+        int v = (int)strtol(env, NULL, 0);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 32767) {
+            v = 32767;
+        }
+        st->wl_improp_alpha_q15 = v;
+    }
+    env = getenv("DSD_NEO_WL_STAT_ALPHA_Q15");
+    if (env) {
+        int v = (int)strtol(env, NULL, 0);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 32767) {
+            v = 32767;
+        }
+        st->wl_stat_alpha_q15 = v;
     }
 }
 
@@ -148,6 +200,9 @@ cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st) {
     st->cma_warmup = 0;
     /* Clear symbol ring validity; next appends will repopulate */
     st->sym_len = 0;
+    st->wl_x2_re_ema = 0;
+    st->wl_x2_im_ema = 0;
+    st->wl_p2_ema = 0;
 }
 
 void
@@ -234,8 +289,8 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
             for (int k = 0; k < st->dfe_taps && k < 4; k++) {
                 int16_t br = st->b_i[k];
                 int16_t bj = st->b_q[k];
-                int16_t dr = st->d_i[k];
-                int16_t dj = st->d_q[k];
+                int32_t dr = st->d_i[k];
+                int32_t dj = st->d_q[k];
                 int32_t ri = ((int32_t)dr * br - (int32_t)dj * bj) >> 14; /* Q14 */
                 int32_t rq = ((int32_t)dr * bj + (int32_t)dj * br) >> 14; /* Q14 */
                 accI_q14 -= ri;
@@ -260,20 +315,11 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
             sym_tick = 1;
         }
 
-        /* Build desired symbol decision 'd' (use sym_tick for DQPSK mode) */
+        /* Build desired symbol decision 'd' (use sym_tick for DQPSK mode).
+           Use constant-amplitude slicer target to stabilize DD updates. */
         int32_t di, dq;
         {
-            int32_t rad_q14 = (int32_t)i64abs(accI_q14);
-            int32_t tmp_q14 = (int32_t)i64abs(accQ_q14);
-            if (tmp_q14 > rad_q14) {
-                rad_q14 = tmp_q14;
-            }
-            if (rad_q14 < (1 << 12)) {
-                rad_q14 = (1 << 12);
-            }
-            if (rad_q14 > (1 << 20)) {
-                rad_q14 = (1 << 20);
-            }
+            const int32_t A = (st->max_abs_q14 > 0) ? st->max_abs_q14 : (1 << 14);
 
             if (st->dqpsk_decision && st->have_last_sym && sym_tick) {
                 /* Differential decision: z = y * conj(y_prev) in Q14 */
@@ -281,28 +327,29 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                 int32_t lyq = st->last_y_q_q14;
                 int32_t zr_q14 = (int32_t)(((int64_t)accI_q14 * lyi + (int64_t)accQ_q14 * lyq) >> 14);
                 int32_t zq_q14 = (int32_t)(((int64_t)accQ_q14 * lyi - (int64_t)accI_q14 * lyq) >> 14);
-                int32_t radz_q14 = (zr_q14 >= 0 ? zr_q14 : -zr_q14);
-                int32_t tmp2 = (zq_q14 >= 0 ? zq_q14 : -zq_q14);
-                if (tmp2 > radz_q14) {
-                    radz_q14 = tmp2;
+                /* Constant-amplitude decision in differential domain */
+                int32_t dzr = (zr_q14 >= 0) ? A : -A;
+                int32_t dzq = (zq_q14 >= 0) ? A : -A;
+                /* Normalize previous symbol to constant amplitude to avoid amplitude blow-up */
+                int32_t rprev = (lyi >= 0 ? lyi : -lyi);
+                int32_t tmp2 = (lyq >= 0 ? lyq : -lyq);
+                if (tmp2 > rprev) {
+                    rprev = tmp2;
                 }
-                if (radz_q14 < (1 << 12)) {
-                    radz_q14 = (1 << 12);
+                if (rprev < (1 << 8)) {
+                    rprev = (1 << 8);
                 }
-                if (radz_q14 > (1 << 20)) {
-                    radz_q14 = (1 << 20);
-                }
-                int32_t dzr = (zr_q14 >= 0) ? radz_q14 : -radz_q14;
-                int32_t dzq = (zq_q14 >= 0) ? radz_q14 : -radz_q14;
-                /* Rotate back: d = dz * y_prev (conj^-1)
-                   (dzr + j dzq) * (lyi + j lyq) */
-                int64_t dri = (int64_t)dzr * lyi - (int64_t)dzq * lyq;
-                int64_t drq = (int64_t)dzr * lyq + (int64_t)dzq * lyi;
+                int32_t nlyi = (int32_t)(((int64_t)lyi * A) / (int64_t)rprev);
+                int32_t nlyq = (int32_t)(((int64_t)lyq * A) / (int64_t)rprev);
+                /* Rotate back: d = dz * (normalized y_prev) */
+                int64_t dri = (int64_t)dzr * nlyi - (int64_t)dzq * nlyq;
+                int64_t drq = (int64_t)dzr * nlyq + (int64_t)dzq * nlyi;
                 di = (int32_t)(dri >> 14);
                 dq = (int32_t)(drq >> 14);
             } else {
-                di = (accI_q14 >= 0) ? rad_q14 : -rad_q14;
-                dq = (accQ_q14 >= 0) ? rad_q14 : -rad_q14;
+                /* Axis-aligned constant-amplitude slicer */
+                di = (accI_q14 >= 0) ? A : -A;
+                dq = (accQ_q14 >= 0) ? A : -A;
             }
         }
 
@@ -312,8 +359,8 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                 st->d_i[k] = st->d_i[k - 1];
                 st->d_q[k] = st->d_q[k - 1];
             }
-            st->d_i[0] = (int16_t)di;
-            st->d_q[0] = (int16_t)dq;
+            st->d_i[0] = di;
+            st->d_q[0] = dq;
         }
 
         /* CMA warmup pre-training */
@@ -418,21 +465,50 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                 /* WL impropriety gate: EMA(|E[x^2]|/E[|x|^2]) vs threshold to avoid rapid toggling */
                 int allow_wl_update = 0;
                 if (st->wl_enable) {
-                    double sx2_re = 0.0, sx2_im = 0.0, sp2 = 0.0;
-                    int jj = h;
-                    for (int k = 0; k < T; k++) {
-                        if (jj < 0) {
-                            jj += T;
-                        }
-                        double xr = (double)st->x_i[jj];
-                        double xj = (double)st->x_q[jj];
-                        sx2_re += xr * xr - xj * xj;
-                        sx2_im += 2.0 * xr * xj;
-                        sp2 += xr * xr + xj * xj;
-                        jj--;
+                    /* Running impropriety stats decoupled from tap/window length */
+                    int32_t xr0 = st->x_i[h];
+                    int32_t xj0 = st->x_q[h];
+                    int64_t x2r = (int64_t)xr0 * xr0 - (int64_t)xj0 * xj0; /* Re{x^2} */
+                    int64_t x2i = (int64_t)2 * xr0 * xj0;                  /* Im{x^2} */
+                    int64_t p2 = (int64_t)xr0 * xr0 + (int64_t)xj0 * xj0;  /* |x|^2 */
+                    int stat_alpha = (st->wl_stat_alpha_q15 > 0) ? st->wl_stat_alpha_q15 : st->wl_improp_alpha_q15;
+                    /* EMA update: s <- s + alpha * (v - s) >> 15 */
+                    int64_t dre = x2r - (int64_t)st->wl_x2_re_ema;
+                    int64_t dim = x2i - (int64_t)st->wl_x2_im_ema;
+                    int64_t dp2 = p2 - (int64_t)st->wl_p2_ema;
+                    int64_t are = (dre * stat_alpha) >> 15;
+                    int64_t aim = (dim * stat_alpha) >> 15;
+                    int64_t ap2 = (dp2 * stat_alpha) >> 15;
+                    int64_t new_re = (int64_t)st->wl_x2_re_ema + are;
+                    int64_t new_im = (int64_t)st->wl_x2_im_ema + aim;
+                    int64_t new_p2 = (int64_t)st->wl_p2_ema + ap2;
+                    if (new_re > INT32_MAX) {
+                        new_re = INT32_MAX;
                     }
-                    if (sp2 < 1e-12) {
-                        sp2 = 1e-12;
+                    if (new_re < INT32_MIN) {
+                        new_re = INT32_MIN;
+                    }
+                    if (new_im > INT32_MAX) {
+                        new_im = INT32_MAX;
+                    }
+                    if (new_im < INT32_MIN) {
+                        new_im = INT32_MIN;
+                    }
+                    if (new_p2 > INT32_MAX) {
+                        new_p2 = INT32_MAX;
+                    }
+                    if (new_p2 < 1) {
+                        new_p2 = 1;
+                    }
+                    st->wl_x2_re_ema = (int)new_re;
+                    st->wl_x2_im_ema = (int)new_im;
+                    st->wl_p2_ema = (int)new_p2;
+
+                    double sx2_re = (double)st->wl_x2_re_ema;
+                    double sx2_im = (double)st->wl_x2_im_ema;
+                    double sp2 = (double)st->wl_p2_ema;
+                    if (sp2 < 1.0) {
+                        sp2 = 1.0;
                     }
                     double improp = sqrt(sx2_re * sx2_re + sx2_im * sx2_im) / sp2;
                     int meas_q15 = (int)(improp * 32768.0 + 0.5);
@@ -444,7 +520,6 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                     }
                     int ema = st->wl_improp_ema_q15;
                     int alpha = st->wl_improp_alpha_q15;
-                    /* ema += alpha * (meas - ema) >> 15 */
                     int delta = meas_q15 - ema;
                     int adj = (int)(((int64_t)alpha * (int64_t)delta) >> 15);
                     ema += adj;
@@ -485,18 +560,20 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                     }
                     int32_t xr = st->x_i[j];
                     int32_t xj2 = st->x_q[j];
-                    /* Real/imag grad in Q14: ei*xr + eq*xj , eq*xr - ei*xj */
-                    int64_t gi_q14 = (int64_t)ei * xr + (int64_t)eq * xj2;
-                    int64_t gq_q14 = (int64_t)eq * xr - (int64_t)ei * xj2;
+                    /* Real/imag grad: scale e (Q14) by x (Q0) and renormalize to Q14 */
+                    int64_t gi_q14 = ((int64_t)ei * xr + (int64_t)eq * xj2) >> 14;
+                    int64_t gq_q14 = ((int64_t)eq * xr - (int64_t)ei * xj2) >> 14;
                     /* Apply mu (Q15): -> Q29 */
                     int64_t gi_q29 = gi_q14 * (int64_t)mu;
                     int64_t gq_q29 = gq_q14 * (int64_t)mu;
-                    /* Normalize by denom_q15 (Q15). Keep guard shift to control step. */
+                    /* Normalize by denom_q15 (Q15). Result is ~Q14. */
                     int32_t dci = (int32_t)(gi_q29 / (int64_t)denom_q15); /* ~Q14 after div */
                     int32_t dcq = (int32_t)(gq_q29 / (int64_t)denom_q15);
-                    int ffe_shift = 8;
+                    /* Additional guard scaling (conservative) */
+                    int ffe_shift = 6;
                     dci >>= ffe_shift;
                     dcq >>= ffe_shift;
+                    /* NLMS: w <- w + mu * e * conj(x) / (||x||^2 + eps) */
                     int32_t nci = (int32_t)st->c_i[k] + dci;
                     int32_t ncq = (int32_t)st->c_q[k] + dcq;
                     if (nci > maxc) {
@@ -517,16 +594,16 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                         st->c_q[k] = (int16_t)ncq;
                     }
                     if (st->wl_enable && allow_wl_update) {
-                        /* conj-branch update: e * x_k */
-                        int64_t giw_q14 = (int64_t)ei * xr - (int64_t)eq * xj2;
-                        int64_t gqw_q14 = (int64_t)eq * xr + (int64_t)ei * xj2;
+                        /* conj-branch update: e * x_k, renormalized to Q14 */
+                        int64_t giw_q14 = ((int64_t)ei * xr - (int64_t)eq * xj2) >> 14;
+                        int64_t gqw_q14 = ((int64_t)eq * xr + (int64_t)ei * xj2) >> 14;
                         int wl_mu = (st->wl_mu_q15 > 0) ? st->wl_mu_q15 : 1;
                         int64_t giw_q29 = giw_q14 * (int64_t)wl_mu;
                         int64_t gqw_q29 = gqw_q14 * (int64_t)wl_mu;
                         int32_t dwi = (int32_t)(giw_q29 / (int64_t)denom_q15);
                         int32_t dwq = (int32_t)(gqw_q29 / (int64_t)denom_q15);
-                        dwi >>= 8;
-                        dwq >>= 8;
+                        dwi >>= 3;
+                        dwq >>= 3;
                         int32_t nwi = (int32_t)st->cw_i[k] + dwi;
                         int32_t nwq = (int32_t)st->cw_q[k] + dwq;
                         /* Stronger cap for WL taps: keep within ~1/8 of max */
@@ -671,8 +748,8 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
 
         /* Update last symbol output at symbol ticks */
         if (sym_tick) {
-            st->last_y_i_q14 = (int16_t)accI_q14;
-            st->last_y_q_q14 = (int16_t)accQ_q14;
+            st->last_y_i_q14 = (int32_t)accI_q14;
+            st->last_y_q_q14 = (int32_t)accQ_q14;
             st->have_last_sym = 1;
             /* Append equalized symbol (Q0) to ring for EVM/SNR */
             sym_ring_append_q0(st, yI, yQ);

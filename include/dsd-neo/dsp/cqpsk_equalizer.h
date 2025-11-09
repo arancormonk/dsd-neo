@@ -55,8 +55,8 @@ typedef struct cqpsk_eq_state_s {
     int16_t b_i[4]; /* feedback taps (Q14) real */
     int16_t b_q[4]; /* feedback taps (Q14) imag */
     /* Short history of past decisions (sliced symbols) for feedback */
-    int16_t d_i[4];
-    int16_t d_q[4];
+    int32_t d_i[4];
+    int32_t d_q[4];
     /* Widely-linear augmentation (conjugate branch) */
     int wl_enable;                   /* include conj(x) taps when set */
     int16_t cw_i[CQPSK_EQ_MAX_TAPS]; /* conj taps real */
@@ -68,8 +68,8 @@ typedef struct cqpsk_eq_state_s {
     /* Optional DQPSK-aware decision mode */
     int dqpsk_decision;   /* 0=axis-aligned (default), 1=DQPSK decision */
     int have_last_sym;    /* whether previous symbol output is valid */
-    int16_t last_y_i_q14; /* previous symbol output (Q14) */
-    int16_t last_y_q_q14; /* previous symbol output (Q14) */
+    int32_t last_y_i_q14; /* previous symbol output (Q14) */
+    int32_t last_y_q_q14; /* previous symbol output (Q14) */
 
     /* WL stability helpers */
     int wl_leak_shift;       /* leakage shift for WL taps (e.g., 12 => ~1/4096 per update) */
@@ -77,6 +77,11 @@ typedef struct cqpsk_eq_state_s {
     int wl_mu_q15;           /* WL step size (Q15), separate from FFE mu */
     int wl_improp_ema_q15;   /* EMA of impropriety ratio in Q15 */
     int wl_improp_alpha_q15; /* EMA alpha in Q15 (e.g., 8192 ~ 0.25) */
+    /* Running statistics for impropriety, decoupled from tap/window length */
+    int wl_x2_re_ema;      /* EMA of Re{E[x^2]} in Q0 */
+    int wl_x2_im_ema;      /* EMA of Im{E[x^2]} in Q0 */
+    int wl_p2_ema;         /* EMA of E[|x|^2] in Q0 */
+    int wl_stat_alpha_q15; /* EMA alpha for running stats (Q15) */
     /* Phase decoupling between FFE and WL */
     int adapt_mode;     /* 0 = FFE adapting, 1 = WL adapting */
     int adapt_hold;     /* countdown ticks before a mode switch is allowed */
