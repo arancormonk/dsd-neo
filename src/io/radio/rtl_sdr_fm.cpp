@@ -486,6 +486,8 @@ extern "C" double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 /* Fwd decl: QPSK and GFSK fallbacks */
 extern "C" double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 extern "C" double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
+/* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
+extern "C" int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
 /* Blanker and tuner autogain runtime get/set */
 extern "C" int dsd_rtl_stream_get_blanker(int* out_thr, int* out_win);
 extern "C" void dsd_rtl_stream_set_blanker(int enable, int thr, int win);
@@ -519,14 +521,17 @@ demod_thread_fn(void* arg) {
     static uint32_t ag_last_freq = 0;
     const int ag_throttle_ms = 1500; /* min interval between changes */
     const int ag_hold_ms = 1200;     /* pause after retune/scanning before adjusting */
-    /* Up-step gating: require squelch gate open and SNR >= threshold.
-       Default lowered post-SNR-debias; can be overridden via env. */
-    static double s_ag_up_snr_db = 3.0; /* default gate in dB */
-    static int s_snr_age_ms = 1500;     /* require fresh SNR (ms) */
+    /* Up-step gating: now uses spectral SNR + in-band power ratio (see below). */
     /* Probe window: allow RTL device auto-gain to settle before any takeover. */
     static int s_probe_ms = 3000; /* allow device AGC to work first */
     /* Manual seed gain used when exiting device auto due to persistently low level. */
     static int s_seed_gain_db10 = 300; /* 30.0 dB in tenth-dB units */
+    /* Spectral gating for up-steps: thresholds and persistence */
+    static double s_ag_spec_snr_db = 6.0;   /* min spectral SNR (dB) within channel */
+    static double s_ag_inband_ratio = 0.60; /* min fraction of power near center */
+    static int s_ag_up_step_db10 = 30;      /* up-step size in tenth-dB (default +3.0 dB) */
+    static int s_ag_up_persist = 2;         /* require consecutive passes before stepping up */
+    static int ag_spec_pass = 0;            /* persistence counter for spectral gate */
     int logged_once = 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Read a block from input ring */
@@ -539,19 +544,7 @@ demod_thread_fn(void* arg) {
             if (ag && (*ag != '\0') && (*ag != '0') && (*ag != 'f') && (*ag != 'F') && (*ag != 'n') && (*ag != 'N')) {
                 g_tuner_autogain_on.store(1, std::memory_order_relaxed);
             }
-            /* Optional env overrides for SNR gate, freshness window and probe behavior */
-            if (const char* es = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_SNR_DB")) {
-                double v = atof(es);
-                if (v > -60.0 && v < 60.0) {
-                    s_ag_up_snr_db = v;
-                }
-            }
-            if (const char* ea = getenv("DSD_NEO_TUNER_AUTOGAIN_SNR_AGE_MS")) {
-                int v = atoi(ea);
-                if (v >= 200 && v <= 10000) {
-                    s_snr_age_ms = v;
-                }
-            }
+            /* Optional env overrides for probe behavior */
             if (const char* ep = getenv("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS")) {
                 int v = atoi(ep);
                 if (v >= 0 && v <= 20000) {
@@ -562,6 +555,32 @@ demod_thread_fn(void* arg) {
                 double v = atof(eg);
                 if (v >= 0.0 && v <= 60.0) {
                     s_seed_gain_db10 = (int)lrint(v * 10.0);
+                }
+            }
+            /* Optional env overrides for spectral SNR gating */
+            if (const char* esn = getenv("DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB")) {
+                double v = atof(esn);
+                if (v >= 0.0 && v <= 60.0) {
+                    s_ag_spec_snr_db = v;
+                }
+            }
+            if (const char* eir = getenv("DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO")) {
+                char* endp = NULL;
+                double v = strtod(eir, &endp);
+                if (endp && eir != endp && v >= 0.10 && v <= 0.95) {
+                    s_ag_inband_ratio = v;
+                }
+            }
+            if (const char* eus = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB")) {
+                double v = atof(eus);
+                if (v >= 1.0 && v <= 10.0) {
+                    s_ag_up_step_db10 = (int)lrint(v * 10.0);
+                }
+            }
+            if (const char* epp = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST")) {
+                int v = atoi(epp);
+                if (v >= 1 && v <= 5) {
+                    s_ag_up_persist = v;
                 }
             }
             ag_initialized = 1;
@@ -579,6 +598,7 @@ demod_thread_fn(void* arg) {
                 } else {
                     ag_probe_until = std::chrono::steady_clock::time_point{};
                 }
+                ag_spec_pass = 0; /* reset spectral gate persistence on retune */
             }
             int max_abs = 0;
             int64_t sum_abs = 0;
@@ -677,43 +697,89 @@ demod_thread_fn(void* arg) {
                         }
                         changed = true;
                     } else {
-                        /* Only consider upward steps when squelch gate is open and SNR is healthy.
-                           Prefer fresh, direct SNR from the active path; avoid stale/fallback values. */
-                        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::steady_clock::now().time_since_epoch())
-                                          .count();
-                        double s0 = g_snr_c4fm_db.load(std::memory_order_relaxed);
-                        double s1 = g_snr_qpsk_db.load(std::memory_order_relaxed);
-                        double s2 = g_snr_gfsk_db.load(std::memory_order_relaxed);
-                        long long t0 = g_snr_c4fm_last_ms.load(std::memory_order_relaxed);
-                        long long t1 = g_snr_qpsk_last_ms.load(std::memory_order_relaxed);
-                        long long t2 = g_snr_gfsk_last_ms.load(std::memory_order_relaxed);
-                        int src0 = g_snr_c4fm_src.load(std::memory_order_relaxed);
-                        int src1 = g_snr_qpsk_src.load(std::memory_order_relaxed);
-                        int src2 = g_snr_gfsk_src.load(std::memory_order_relaxed);
-                        bool fresh0 = (now_ms - t0) <= s_snr_age_ms && src0 == 1;
-                        bool fresh1 = (now_ms - t1) <= s_snr_age_ms && src1 == 1;
-                        bool fresh2 = (now_ms - t2) <= s_snr_age_ms && src2 == 1;
-                        double snr_db = -100.0;
-                        if (d->cqpsk_enable) {
-                            if (fresh1) {
-                                snr_db = s1;
-                            } else if (fresh0 || fresh2) {
-                                snr_db = fresh0 ? s0 : s2;
+                        /* Only consider upward steps when squelch gate is open and spectral SNR indicates
+                           a dominant in-band carrier. Avoid chasing spurs or OOB energy by requiring:
+                           - spectral SNR >= threshold (peak - median)
+                           - energy concentrated near DC (central band ratio)
+                           - reject sharp isolated DC spikes
+                           - persistence over s_ag_up_persist windows */
+                        bool spec_ok = false;
+                        if (d->squelch_gate_open) {
+                            const int kLocalMaxSpec = 1024;
+                            float spec_db[kLocalMaxSpec];
+                            int rate_hz = 0;
+                            int N = dsd_rtl_stream_spectrum_get(spec_db, kLocalMaxSpec, &rate_hz);
+                            if (N >= 64 && N <= kLocalMaxSpec) {
+                                int i_max = 0;
+                                float p_max = -1e30f;
+                                for (int i = 0; i < N; i++) {
+                                    float v = spec_db[i];
+                                    if (v > p_max) {
+                                        p_max = v;
+                                        i_max = i;
+                                    }
+                                }
+                                /* median noise (dB) */
+                                float tmp_med[kLocalMaxSpec];
+                                for (int i = 0; i < N; i++) {
+                                    tmp_med[i] = spec_db[i];
+                                }
+                                int mid = N / 2;
+                                std::nth_element(tmp_med, tmp_med + mid, tmp_med + N);
+                                float noise_med_db = tmp_med[mid];
+                                float spec_snr_db = p_max - noise_med_db;
+                                /* DC spur guard */
+                                int k_center = N / 2;
+                                bool dc_spur = false;
+                                if (i_max == k_center && i_max > 0 && i_max + 1 < N) {
+                                    float l = spec_db[i_max - 1];
+                                    float r = spec_db[i_max + 1];
+                                    float side_max = (l > r) ? l : r;
+                                    if ((p_max - side_max) > 12.0f) {
+                                        dc_spur = true;
+                                    }
+                                }
+                                /* In-band ratio: central +/- N/8 bins */
+                                int half = N / 8;
+                                if (half < 2) {
+                                    half = 2;
+                                }
+                                int i0 = k_center - half;
+                                int i1 = k_center + half;
+                                if (i0 < 0) {
+                                    i0 = 0;
+                                }
+                                if (i1 > (N - 1)) {
+                                    i1 = N - 1;
+                                }
+                                double sum_all = 0.0, sum_center = 0.0;
+                                for (int i = 0; i < N; i++) {
+                                    /* convert dB to linear power */
+                                    double p = pow(10.0, (double)spec_db[i] / 10.0);
+                                    sum_all += p;
+                                    if (i >= i0 && i <= i1) {
+                                        sum_center += p;
+                                    }
+                                }
+                                double ratio_center = (sum_all > 0.0) ? (sum_center / sum_all) : 0.0;
+                                /* Require peak within central band */
+                                bool peak_in_center = (i_max >= i0 && i_max <= i1);
+                                bool gate = (!dc_spur) && peak_in_center && (spec_snr_db >= s_ag_spec_snr_db)
+                                            && (ratio_center >= s_ag_inband_ratio);
+                                if (gate) {
+                                    ag_spec_pass++;
+                                } else {
+                                    ag_spec_pass = 0;
+                                }
+                                spec_ok = (ag_spec_pass >= s_ag_up_persist);
+                            } else {
+                                ag_spec_pass = 0;
                             }
                         } else {
-                            if (fresh0 || fresh2) {
-                                snr_db = fresh0 ? s0 : s2;
-                                if (fresh0 && fresh2 && s2 > snr_db) {
-                                    snr_db = s2;
-                                }
-                            } else if (fresh1) {
-                                /* Only if FSK SNRs are stale, consider QPSK */
-                                snr_db = s1;
-                            }
+                            ag_spec_pass = 0;
                         }
-                        if (d->squelch_gate_open && snr_db >= s_ag_up_snr_db && ag_low >= (ag_blocks * 3) / 4) {
-                            ag_manual_target += 50; /* +5.0 dB */
+                        if (spec_ok && ag_low >= (ag_blocks * 3) / 4) {
+                            ag_manual_target += s_ag_up_step_db10; /* up-step */
                             if (ag_manual_target > 490) {
                                 ag_manual_target = 490;
                             }
@@ -726,6 +792,7 @@ demod_thread_fn(void* arg) {
                         rtl_device_set_gain_nearest(rtl_device_handle, ag_manual_target);
                         dongle.gain = ag_manual_target;
                         ag_next_allowed = now + std::chrono::milliseconds(ag_throttle_ms);
+                        ag_spec_pass = 0; /* reset persistence after applying */
                         if (is_auto > 0) {
                             LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n",
                                      ag_manual_target / 10, ag_manual_target % 10);
