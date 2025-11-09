@@ -587,6 +587,12 @@ target_include_directories(dsd-neo_test_dsp_channel_filters PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_dsp_channel_filters PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CHANNEL_FILTERS COMMAND dsd-neo_test_dsp_channel_filters)
 
+# Costas loop (CQPSK carrier recovery)
+add_executable(dsd-neo_test_dsp_costas dsp/test_dsp_costas.cpp)
+target_include_directories(dsd-neo_test_dsp_costas PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_costas PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_COSTAS COMMAND dsd-neo_test_dsp_costas)
+
 # DMR utility/CRC property tests
 add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
 target_include_directories(dsd-neo_test_dmr_crc_props PRIVATE ${PROJECT_SOURCE_DIR}/include)
