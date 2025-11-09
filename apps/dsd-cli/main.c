@@ -1633,8 +1633,9 @@ initOpts(dsd_opts* opts) {
     opts->p25_trunk = 0;                  //0 disabled, 1 is enabled
     opts->trunk_enable = opts->p25_trunk; // keep alias in sync
     opts->p25_is_tuned = 0;               //set to 1 if currently on VC, set back to 0 on carrier drop
-    opts->trunk_hangtime =
-        1; //1 second hangtime by default before tuning back to CC, going sub 1 sec causes issues with cc slip
+    // Bump default hangtime to reduce VC↔CC thrash and premature CC hunts
+    // on marginal or bursty control channels across protocols (DMR/NXDN/P25).
+    opts->trunk_hangtime = 2;
 
     opts->scanner_mode = 0; //0 disabled, 1 is enabled
 

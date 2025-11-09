@@ -153,6 +153,8 @@ Notes
   - Env (advanced): When P25 Phase 1 voice error rate is elevated, extend hangtime to reduce VC↔CC thrash:
     - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 8.0)
     - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` (default 2.0)
+  - Env (DMR): Short post‑tune grace before returning to CC if voice hasn’t started yet:
+    - `DSD_NEO_DMR_VC_GRACE=<seconds>` (default 1.25)
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 

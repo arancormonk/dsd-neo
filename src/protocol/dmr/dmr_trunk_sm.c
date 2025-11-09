@@ -213,7 +213,9 @@ dmr_sm_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq_hz) {
     dmr_reset_blocks(opts, state);
 
     trunk_tune_to_freq(opts, state, freq_hz);
-    state->last_t3_tune_time = state->last_vc_sync_time;
+    // Record the actual tune time so release logic can apply a short VC grace
+    // period even before any voice sync arrives.
+    state->last_t3_tune_time = time(NULL);
     state->p25_sm_tune_count++;
     if (opts->verbose > 0) {
         fprintf(stderr, "\n  DMR SM: Tune VC freq=%.6lf MHz\n", (double)freq_hz / 1000000.0);
@@ -303,7 +305,10 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
     // calls on the same VC when the first call exceeded the hangtime window.
     if (opts->trunk_hangtime > 0.0f) {
         time_t now = time(NULL);
-        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
+        // If we haven't observed voice yet on this VC, treat the elapsed voice
+        // time as 0 to allow hangtime to hold the VC instead of immediately
+        // returning to CC.
+        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 0.0;
         if (opts->verbose > 2) {
             fprintf(stderr, "\n  DMR SM: Hangtime check dt=%.2f hang=%.2f last_vc_sync=%ld now=%ld\n", dt,
                     opts->trunk_hangtime, (long)state->last_vc_sync_time, (long)now);
@@ -313,6 +318,27 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
                 fprintf(stderr, "\n  DMR SM: Release deferred (recent voice) dt=%.2f\n", dt);
             }
             return; // defer return to CC
+        }
+    }
+
+    // Apply a short post-tune grace window to allow audio to begin before
+    // permitting a return to CC, even if no voice sync has been observed yet.
+    {
+        time_t now = time(NULL);
+        double dt_tune = (state->last_t3_tune_time != 0) ? (double)(now - state->last_t3_tune_time) : 1e9;
+        double vc_grace = 1.25; // seconds default
+        const char* env = getenv("DSD_NEO_DMR_VC_GRACE");
+        if (env && env[0] != '\0') {
+            double v = atof(env);
+            if (v >= 0.0 && v <= 5.0) {
+                vc_grace = v;
+            }
+        }
+        if (dt_tune < vc_grace) {
+            if (opts->verbose > 1) {
+                fprintf(stderr, "\n  DMR SM: Release deferred (VC grace) dt=%.2f < %.2f\n", dt_tune, vc_grace);
+            }
+            return;
         }
     }
 

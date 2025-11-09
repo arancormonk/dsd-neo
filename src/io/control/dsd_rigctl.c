@@ -609,28 +609,30 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_active_slot = -1;
     // Do not alter user slot On/Off toggles here; UI controls own persistence.
 
-    // Tune back to the control channel when known (best-effort). Avoid
-    // sending a zero/unknown frequency to the tuner which can wedge the
+    // Tune back to the control channel when known (best-effort). Prefer the
+    // explicit CC when available; otherwise fall back to any tracked CC.
+    // Avoid sending a zero/unknown frequency to the tuner which can wedge the
     // pipeline at DC and delay CC hunting.
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0) {
+    long int cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
+    if (opts->p25_trunk == 1 && cc != 0) {
         // RIGCTL
         if (opts->use_rigctl == 1) {
             if (opts->setmod_bw != 0) {
                 SetModulation(opts->rigctl_sockfd, opts->setmod_bw); // cached internally
             }
-            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq); // cached internally
+            SetFreq(opts->rigctl_sockfd, cc); // cached internally
         }
 // RTL
 #ifdef USE_RTLSDR
         if (opts->audio_in_type == 3) {
             if (g_rtl_ctx) {
-                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq); // cached internally
+                rtl_stream_tune(g_rtl_ctx, (uint32_t)cc); // cached internally
             }
         }
 #endif
         state->last_cc_sync_time = now;
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-        state->trunk_cc_freq = state->p25_cc_freq;
+        state->trunk_cc_freq = cc;
     }
 
     //if P25p2 VCH and going back to P25p1 CC, flip symbolrate

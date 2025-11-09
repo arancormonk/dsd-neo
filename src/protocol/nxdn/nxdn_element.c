@@ -125,16 +125,77 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             state->nxdn_last_rid = 0;
             state->nxdn_last_tg = 0;
             NXDN_decode_srv_info(opts, state, ElementsContent);
+            // Early CC anchor: if trunking and not voice-tuned and CC unknown,
+            // set CC from current tuner so follower has a target.
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+                long int ccfreq = 0;
+                if (opts->use_rigctl == 1) {
+                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                    ccfreq = (long int)opts->rtlsdr_center_freq;
+#endif
+                }
+                if (ccfreq != 0) {
+                    state->p25_cc_freq = ccfreq;
+                }
+            }
             break;
 
         //CCH_INFO
-        case 0x1A: NXDN_decode_cch_info(opts, state, ElementsContent); break;
+        case 0x1A:
+            NXDN_decode_cch_info(opts, state, ElementsContent);
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+                long int ccfreq = 0;
+                if (opts->use_rigctl == 1) {
+                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                    ccfreq = (long int)opts->rtlsdr_center_freq;
+#endif
+                }
+                if (ccfreq != 0) {
+                    state->p25_cc_freq = ccfreq;
+                }
+            }
+            break;
 
         //SITE_INFO
-        case 0x18: NXDN_decode_site_info(opts, state, ElementsContent); break;
+        case 0x18:
+            NXDN_decode_site_info(opts, state, ElementsContent);
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+                long int ccfreq = 0;
+                if (opts->use_rigctl == 1) {
+                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                    ccfreq = (long int)opts->rtlsdr_center_freq;
+#endif
+                }
+                if (ccfreq != 0) {
+                    state->p25_cc_freq = ccfreq;
+                }
+            }
+            break;
 
         //ADJ_SITE_INFO
-        case 0x1B: NXDN_decode_adj_site(opts, state, ElementsContent); break;
+        case 0x1B:
+            NXDN_decode_adj_site(opts, state, ElementsContent);
+            // Adjacent site info often originates from CC. Apply the same anchor.
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+                long int ccfreq = 0;
+                if (opts->use_rigctl == 1) {
+                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                    ccfreq = (long int)opts->rtlsdr_center_freq;
+#endif
+                }
+                if (ccfreq != 0) {
+                    state->p25_cc_freq = ccfreq;
+                }
+            }
+            break;
 
         //VCALL, TX_REL_EXT and TX_REL
         case 0x07: //TX_REL_EXT

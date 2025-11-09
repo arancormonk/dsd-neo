@@ -252,6 +252,22 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
         //in the middle of voice call on current Control Channel (con+ and t3)
         state->last_cc_sync_time = time(NULL);
 
+        // If trunking is enabled and we don't yet know the CC frequency, set it
+        // from the current tuner so return-to-CC and SM logic have an anchor.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+            long int ccfreq = 0;
+            if (opts->use_rigctl == 1) {
+                ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+            } else if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                ccfreq = (long int)opts->rtlsdr_center_freq;
+#endif
+            }
+            if (ccfreq != 0) {
+                state->p25_cc_freq = ccfreq;
+            }
+        }
+
         if (csbk_pf == 0) //okay to run
         {
 
@@ -2873,6 +2889,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
             //I'm not even sure what a revert data channel is
             //Moto Unknown Data Opcode: 29; 00 00 00 39 04 FC 00 00
         }
+    }
+    // Relaxed CC heartbeat: when CRC fails (e.g., RAS/vendor variants), allow
+    // a last_cc_sync_time refresh to prevent premature CC hunts if configured.
+    // This does not process the PDU further — it only keeps the CC timer warm.
+    else if (opts->dmr_crc_relaxed_default) {
+        state->last_cc_sync_time = time(NULL);
     }
 
     fprintf(stderr, "%s", KNRM);
