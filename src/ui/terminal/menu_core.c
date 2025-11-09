@@ -130,7 +130,6 @@ static void act_trunk_toggle(void* v);
 static void act_scan_toggle(void* v);
 static void act_lcw_toggle(void* v);
 static void act_p25_auto_adapt(void* v);
-static void act_p25_sm_basic(void* v);
 static void act_p25_enc_lockout(void* v);
 static void act_setmod_bw(void* v);
 static void act_import_chan(void* v);
@@ -3398,13 +3397,6 @@ lbl_p25_auto_adapt(void* v, char* b, size_t n) {
 }
 
 static const char*
-lbl_p25_sm_basic(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    snprintf(b, n, "P25 Simple SM (basic) [%s]", (c && c->opts && c->opts->p25_sm_basic_mode) ? "On" : "Off");
-    return b;
-}
-
-static const char*
 lbl_allow(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Allow/White List [%s]", c->opts->trunk_use_allow_list ? "Active" : "Inactive");
@@ -4562,13 +4554,6 @@ act_p25_auto_adapt(void* v) {
 }
 
 static void
-act_p25_sm_basic(void* v) {
-    (void)v;
-    ui_post_cmd(UI_CMD_P25_SM_BASIC_TOGGLE, NULL, 0);
-    ui_statusf("P25 Simple SM toggle requested");
-}
-
-static void
 act_setmod_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_int_async("Setmod BW (Hz)", c->opts->setmod_bw, cb_setmod_bw, c);
@@ -5150,11 +5135,7 @@ static const NcMenuItem TRUNK_P25_ITEMS[] = {
      .label_fn = lbl_lcw,
      .help = "Enable LCW explicit retune.",
      .on_select = act_lcw_toggle},
-    {.id = "p25_sm_basic",
-     .label = "P25 Simple SM (basic)",
-     .label_fn = lbl_p25_sm_basic,
-     .help = "Enable simplified P25 SM (reduced safeties/post-hang gating).",
-     .on_select = act_p25_sm_basic},
+
     {.id = "p25_enc",
      .label = "P25 Encrypted Call Lockout",
      .label_fn = lbl_p25_enc_lockout,

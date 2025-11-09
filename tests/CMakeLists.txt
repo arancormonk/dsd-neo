@@ -691,12 +691,6 @@ target_include_directories(dsd-neo_test_p25_enc_override_clear PRIVATE ${PROJECT
 target_link_libraries(dsd-neo_test_p25_enc_override_clear PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_ENC_OVERRIDE_CLEAR COMMAND dsd-neo_test_p25_enc_override_clear)
 
-# P25 basic mode sanity
-add_executable(dsd-neo_test_p25_sm_basic_mode protocol/p25/test_p25_sm_basic_mode.c)
-target_include_directories(dsd-neo_test_p25_sm_basic_mode PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_sm_basic_mode PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_SM_BASIC_MODE COMMAND dsd-neo_test_p25_sm_basic_mode)
-
 # P25 individual grant gating
 add_executable(dsd-neo_test_p25_indiv_gating protocol/p25/test_p25_indiv_gating.c)
 target_include_directories(dsd-neo_test_p25_indiv_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)

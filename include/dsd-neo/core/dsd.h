@@ -463,7 +463,6 @@ typedef struct {
     double p25_force_release_margin_s; // safety-net hard margin seconds beyond extra
     double p25_p1_err_hold_pct;        // P25p1 IMBE error average threshold (percent) to extend hang
     double p25_p1_err_hold_s;          // additional seconds to hold when threshold exceeded
-    uint8_t p25_sm_basic_mode;         // 1 to run in basic mode (disable added safeties)
     int reset_state;
     int payload;
     unsigned int dPMR_curr_frame_is_encrypted;

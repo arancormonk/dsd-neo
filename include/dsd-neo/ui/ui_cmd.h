@@ -157,7 +157,6 @@ enum UiCmdId {
     UI_CMD_HANGTIME_SET = 502,      // payload: double seconds
     UI_CMD_SLOT_PREF_SET = 503,     // payload: int32_t pref01
     UI_CMD_SLOTS_ONOFF_SET = 504,   // payload: int32_t mask
-    UI_CMD_P25_SM_BASIC_TOGGLE = 505,
 
     // Pulse audio device selection
     UI_CMD_PULSE_OUT_SET = 520, // payload: char name[]

@@ -95,23 +95,6 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
 
 // UI/status tagging moved to p25_sm_ui.c
 
-// Return 1 when running in a stripped-down "basic" mode that disables added
-// safeties/fallbacks and post-hang gating. Enabled via either of these env vars:
-//  - DSD_NEO_P25_SM_BASIC=1
-//  - DSD_NEO_P25_SM_NO_SAFETY=1
-static int
-p25_sm_basic_mode(void) {
-    const char* s = getenv("DSD_NEO_P25_SM_BASIC");
-    if (s && s[0] != '\0' && !(s[0] == '0' || s[0] == 'n' || s[0] == 'N' || s[0] == 'f' || s[0] == 'F')) {
-        return 1;
-    }
-    s = getenv("DSD_NEO_P25_SM_NO_SAFETY");
-    if (s && s[0] != '\0' && !(s[0] == '0' || s[0] == 'n' || s[0] == 'N' || s[0] == 'f' || s[0] == 'F')) {
-        return 1;
-    }
-    return 0;
-}
-
 // Central helper: mark a talkgroup as ENC locked-out and emit a single event.
 // No-op if the TG is already marked as encrypted (mode "DE").
 void
@@ -546,37 +529,6 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         }
     }
     int is_p2_vc = (state && state->p25_p2_active_slot != -1);
-    if ((opts && opts->p25_sm_basic_mode) || p25_sm_basic_mode()) {
-        p25_sm_log_status(opts, state, "release-cc");
-        state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
-        // Flush per-slot audio gates and jitter buffers on release
-        state->p25_p2_audio_allowed[0] = 0;
-        state->p25_p2_audio_allowed[1] = 0;
-        p25_p2_audio_ring_reset(state, -1);
-        state->p25_p2_last_mac_active[0] = 0;
-        state->p25_p2_last_mac_active[1] = 0;
-        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
-        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
-        state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
-        state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
-        state->payload_algid = state->payload_algidR = 0;
-        state->payload_keyid = state->payload_keyidR = 0;
-        state->payload_miP = 0;
-        state->payload_miN = 0;
-        state->p25_p2_enc_pending[0] = state->p25_p2_enc_pending[1] = 0;
-        state->p25_p2_enc_pending_ttg[0] = state->p25_p2_enc_pending_ttg[1] = 0;
-        state->p25_p2_last_end_ptt[0] = state->p25_p2_last_end_ptt[1] = 0;
-        state->p25_call_is_packet[0] = state->p25_call_is_packet[1] = 0;
-        state->p25_p1_last_tdu = 0;
-        state->p25_p1_last_tdu_m = 0.0;
-        state->p25_sm_posthang_start = 0;
-        return_to_cc(opts, state);
-        if (state) {
-            state->p25_sm_cc_return_count++;
-        }
-        p25_sm_log_status(opts, state, "after-release");
-        return;
-    }
     if (is_p2_vc) {
         // Determine activity using P25-specific gates and a short recent-voice window.
         // Do NOT rely on DMR burst flags here; they can be stale across protocol
@@ -888,30 +840,6 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // Note: do not unconditionally release here; rely on the post-hang
         // gating and safety-net logic below. An unconditional release causes
         // premature VC->CC bounce before MAC/voice activity appears.
-        if ((opts && opts->p25_sm_basic_mode) || p25_sm_basic_mode()) {
-            // Basic mode: unconditionally release after hangtime (and grace)
-            // when voice activity is stale, without post-hang gating or extra
-            // safety windows.
-            if (dt_since_tune >= vc_grace && dt >= opts->trunk_hangtime) {
-                p25_sm_log_status(opts, state, "tick-basic-release");
-                if (state->p25_cc_freq != 0) {
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                } else {
-                    state->p25_p2_audio_allowed[0] = 0;
-                    state->p25_p2_audio_allowed[1] = 0;
-                    state->p25_p2_active_slot = -1;
-                    state->p25_vc_freq[0] = 0;
-                    state->p25_vc_freq[1] = 0;
-                    opts->p25_is_tuned = 0;
-                    opts->trunk_is_tuned = 0;
-                    state->last_cc_sync_time = now;
-                    state->last_cc_sync_time_m = nowm;
-                }
-                p25_sm_log_status(opts, state, "tick-basic-release");
-                return;
-            }
-        }
         int cur_is_p25p2_sync = (state->lastsynctype == 35 || state->lastsynctype == 36);
 
         // Optional Phase 1 elevated-error hold: when average IMBE error is

@@ -1726,7 +1726,6 @@ initOpts(dsd_opts* opts) {
     opts->p25_force_release_margin_s = 0.0;
     opts->p25_p1_err_hold_pct = 0.0;
     opts->p25_p1_err_hold_s = 0.0;
-    opts->p25_sm_basic_mode = 0;
 
 } //initopts
 
@@ -2344,8 +2343,7 @@ usage() {
     printf("      --p25-force-release-margin <s> P25: Safety-net hard margin seconds beyond extra\n");
     printf("      --p25-p1-err-hold-pct <pct>   P25p1: IMBE error %% threshold to extend hang\n");
     printf("      --p25-p1-err-hold-sec <s>     P25p1: Additional seconds to hold when threshold exceeded\n");
-    printf("      --p25-sm-basic         P25: Enable basic SM mode (disable added safeties)\n");
-    printf("      --no-p25-sm-basic      P25: Disable basic SM mode\n");
+
     printf("\n");
     printf("Device Options:\n");
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
@@ -3106,19 +3104,7 @@ main(int argc, char** argv) {
                 LOG_NOTICE("P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts.p25_p1_err_hold_s);
                 continue;
             }
-            if (strcmp(argv[i], "--p25-sm-basic") == 0) {
-                opts.p25_sm_basic_mode = 1;
-                setenv("DSD_NEO_P25_SM_BASIC", "1", 1);
-                LOG_NOTICE("P25: SM basic mode enabled (CLI).\n");
-                continue;
-            }
-            if (strcmp(argv[i], "--no-p25-sm-basic") == 0) {
-                opts.p25_sm_basic_mode = 0;
-                setenv("DSD_NEO_P25_SM_BASIC", "0", 1);
-                setenv("DSD_NEO_P25_SM_NO_SAFETY", "0", 1);
-                LOG_NOTICE("P25: SM basic mode disabled (CLI).\n");
-                continue;
-            }
+
             if (strcmp(argv[i], "--calc-lcn") == 0 && i + 1 < argc) {
                 calc_csv_cli = argv[++i];
                 continue;
