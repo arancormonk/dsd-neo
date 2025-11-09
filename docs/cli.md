@@ -15,7 +15,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex`, `-k keys.csv`, `-K keys_hex.csv`, `-4`, `-0`, `-3`
-- Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`
+- Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`
 
 ## Quick Start
 
@@ -25,6 +25,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (TCP IQ input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
+
+Tip: Running with no arguments starts an interactive setup. Set `DSD_NEO_NO_BOOTSTRAP=1` to skip it.
 
 ## Inputs (`-i`)
 
@@ -42,6 +44,10 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - M17 UDP/IP input: `-i m17udp[:bind_addr:port]` (defaults 127.0.0.1:17000)
 
 - Set WAV sample rate: `-s <rate>` (48k or 96k typical)
+
+Other input options
+- `--input-volume <1..16>` scale non‑RTL input samples (file/UDP/TCP) by an integer factor.
+- `--input-level-warn-db <dB>` warn if input power falls below dBFS (default −40).
 
 Tip: If paths or names contain spaces, wrap them in single quotes.
 
@@ -61,6 +67,16 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-^` P25: prefer CC candidates during control channel hunt
  - `--p25-auto-adapt` enable per‑site adaptive follower timing (default On)
  - `--no-p25-auto-adapt` disable adaptive follower timing (CLI override)
+
+### P25 Follower (Advanced)
+- `--p25-vc-grace <s>` seconds after VC tune before eligible to return to CC
+- `--p25-min-follow-dwell <s>` minimum follow dwell after first voice
+- `--p25-grant-voice-timeout <s>` max seconds from grant to voice before returning
+- `--p25-retune-backoff <s>` block immediate re‑tune to same VC for N seconds after return
+- `--p25-force-release-extra <s>` safety‑net extra seconds beyond hangtime
+- `--p25-force-release-margin <s>` safety‑net hard margin seconds beyond extra
+- `--p25-p1-err-hold-pct <pct>` P25p1 IMBE error percentage threshold to extend hang
+- `--p25-p1-err-hold-sec <s>` additional seconds to hold when threshold exceeded
 
 ## Recording & Files
 
@@ -197,6 +213,9 @@ Examples
 - RTL auto‑PPM drift correction:
   - `--auto-ppm` enable
   - `--auto-ppm-snr <dB>` set SNR gate (default 6)
+
+- RTL‑TCP networking:
+  - `--rtltcp-autotune` enable adaptive tuning of buffering/recv size for RTL‑TCP links.
 
 ## Handy Examples
 
