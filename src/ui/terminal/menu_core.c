@@ -1600,7 +1600,8 @@ act_window_freeze_toggle(void* v) {
 static const char*
 lbl_auto_ppm_snr(void* v, char* b, size_t n) {
     (void)v;
-    double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 18.0);
+    // Align UI default with algorithm/README: 6 dB
+    double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 6.0);
     snprintf(b, n, "Auto-PPM SNR threshold: %.1f dB", d);
     return b;
 }
@@ -1617,7 +1618,8 @@ cb_auto_ppm_snr(void* v, int ok, double d) {
 static const char*
 lbl_auto_ppm_pwr(void* v, char* b, size_t n) {
     (void)v;
-    double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -10.0);
+    // Align UI default with algorithm/README: -80 dB
+    double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -80.0);
     snprintf(b, n, "Auto-PPM Min power: %.1f dB", d);
     return b;
 }
@@ -1633,23 +1635,25 @@ cb_auto_ppm_pwr(void* v, int ok, double d) {
 static const char*
 lbl_auto_ppm_zeroppm(void* v, char* b, size_t n) {
     (void)v;
-    int p = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 3);
-    snprintf(b, n, "Auto-PPM Zero-lock PPM: %d", p);
+    // Align UI default with algorithm/README: 0.6 PPM
+    double p = env_get_double("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 0.6);
+    snprintf(b, n, "Auto-PPM Zero-lock PPM: %.2f", p);
     return b;
 }
 
 static void
-cb_auto_ppm_zeroppm(void* v, int ok, int p) {
+cb_auto_ppm_zeroppm(void* v, int ok, double p) {
     (void)v;
     if (ok) {
-        env_set_int("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", p);
+        env_set_double("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", p);
     }
 }
 
 static const char*
 lbl_auto_ppm_zerohz(void* v, char* b, size_t n) {
     (void)v;
-    int h = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", 1500);
+    // Align UI default with algorithm/README: 60 Hz
+    int h = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", 60);
     snprintf(b, n, "Auto-PPM Zero-lock Hz: %d", h);
     return b;
 }
@@ -5902,25 +5906,25 @@ static const NcMenuItem DSP_ADV_ITEMS[] = {
 // Provide explicit wrappers for prompts (avoid function pointer type mismatch)
 static void
 act_auto_ppm_snr_prompt(void* v) {
-    double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 18.0);
+    double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 6.0);
     ui_prompt_open_double_async("Auto-PPM SNR threshold (dB)", d, cb_auto_ppm_snr, v);
 }
 
 static void
 act_auto_ppm_pwr_prompt(void* v) {
-    double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -10.0);
+    double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -80.0);
     ui_prompt_open_double_async("Auto-PPM min power (dB)", d, cb_auto_ppm_pwr, v);
 }
 
 static void
 act_auto_ppm_zeroppm_prompt(void* v) {
-    int p = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 3);
-    ui_prompt_open_int_async("Auto-PPM zero-lock PPM", p, cb_auto_ppm_zeroppm, v);
+    double p = env_get_double("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 0.6);
+    ui_prompt_open_double_async("Auto-PPM zero-lock PPM", p, cb_auto_ppm_zeroppm, v);
 }
 
 static void
 act_auto_ppm_zerohz_prompt(void* v) {
-    int h = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", 1500);
+    int h = env_get_int("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", 60);
     ui_prompt_open_int_async("Auto-PPM zero-lock Hz", h, cb_auto_ppm_zerohz, v);
 }
 

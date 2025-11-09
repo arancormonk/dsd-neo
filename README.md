@@ -104,6 +104,15 @@ Requirements
   - Optional: librtlsdr (RTL‑SDR support), Codec2 (additional vocoder paths), help2man (man page generation).
   - Vocoder: prefers mbelib‑neo CMake package (`mbe-neo`); otherwise uses legacy `MBE` find module.
 
+OS package hints
+
+- Ubuntu/Debian (apt):
+  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev libitpp-dev librtlsdr-dev`
+- macOS (Homebrew):
+  - `brew install cmake ninja libsndfile itpp ncurses pulseaudio librtlsdr codec2`
+- Windows:
+  - Source builds generally target POSIX layers (Cygwin/MSYS2). For a portable runtime, see `packaging/windows-cygwin/README-windows.txt`.
+
 Using CMake presets (recommended)
 
 ```
@@ -119,12 +128,20 @@ cmake --build --preset dev-release -j
 
 # Run tests
 ctest --preset dev-debug -V
+
+# Coverage (optional)
+tools/coverage.sh  # generates build/coverage-debug/coverage_html
 ```
 
 Notes
 
 - Presets create out‑of‑source builds under `build/<preset>/`. Run from the repo root.
 - The CLI binary outputs to `build/<preset>/apps/dsd-cli/dsd-neo`.
+
+Quick examples
+
+- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
+- DMR trunking from TCP IQ (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 
 Manual configure/build
 
@@ -211,7 +228,7 @@ cmake --build build/dev-release --target uninstall
   - Env: `DSD_NEO_TCP_BUFSZ=<bytes>` — user‑space read size per `recv` (default ~16 KiB for rtl_tcp).
   - Env: `DSD_NEO_TCP_WAITALL=0/1` — require full reads (`MSG_WAITALL`) for steadier cadence (default off for rtl_tcp).
   - Env: `DSD_NEO_TCP_STATS=1` — print periodic throughput/queue stats.
-  - CLI: `--rtltcp-autotune` — enable adaptive tuning of buffering/recv size for imperfect networks.
+  - CLI: `--rtltcp-autotune` — enable adaptive tuning of buffering/recv size (BUFSZ/WAITALL) for imperfect networks.
   - Behavior: TCP keepalive is enabled; if the link drops, the client auto‑reconnects and reapplies tuner settings.
   - On reconnect, advanced driver options (direct sampling, offset tuning, testmode, xtal, IF gains) are replayed.
 
