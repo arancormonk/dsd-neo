@@ -281,4 +281,9 @@ struct demod_state {
     int cqpsk_acq_fll_enable; /* 0/1: allow pre-Costas FLL pull-in */
     int cqpsk_acq_fll_locked; /* 0/1: stop when locked */
     int cqpsk_acq_quiet_runs; /* consecutive quiet blocks for lock */
+
+    /* Costas diagnostics (updated per block) */
+    int costas_err_avg_q14; /* average |err| from 4th-power detector (Q14, pi=1<<14) */
+    int costas_e4_prev_q14; /* last unwrapped 4*phase (Q14) for continuity */
+    int costas_e4_prev_set; /* 0/1 flag */
 };

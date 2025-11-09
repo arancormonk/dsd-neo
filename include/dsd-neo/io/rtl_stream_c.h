@@ -251,6 +251,8 @@ int rtl_stream_cqpsk_get_dqpsk(int* onoff);
 /* CQPSK acquisition-only pre-Costas FLL (0/1) */
 int rtl_stream_get_cqpsk_acq_fll(void);
 void rtl_stream_set_cqpsk_acq_fll(int onoff);
+/** Get CQPSK acquisition FLL lock status (1 locked, 0 not locked). */
+int rtl_stream_get_cqpsk_acq_fll_locked(void);
 
 /** Toggle generic IQ balance prefilter (mode-aware image cancel). */
 void rtl_stream_toggle_iq_balance(int onoff);
@@ -322,6 +324,20 @@ int rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
 int rtl_stream_spectrum_set_size(int n);
 /** Get current spectrum FFT size. */
 int rtl_stream_spectrum_get_size(void);
+
+/* Carrier/Costas diagnostics */
+/** Return current NCO frequency used for carrier rotation (Costas/FLL), in Hz. */
+double rtl_stream_get_cfo_hz(void);
+/** Return residual CFO estimated from the spectrum peak offset from DC, in Hz. */
+double rtl_stream_get_residual_cfo_hz(void);
+/** Return 1 when carrier loop appears locked (CQPSK active, CFO/residual small, SNR ok), else 0. */
+int rtl_stream_get_carrier_lock(void);
+/** Return last average absolute Costas error magnitude (Q14, pi==1<<14). */
+int rtl_stream_get_costas_err_q14(void);
+/** Return raw NCO frequency control (Q15 cycles per sample). */
+int rtl_stream_get_nco_q15(void);
+/** Return current demod output sample rate (Hz). */
+int rtl_stream_get_demod_rate_hz(void);
 
 /* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
 /** Get FM AGC enable state (1 on, 0 off). */

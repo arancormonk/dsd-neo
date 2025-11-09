@@ -422,6 +422,9 @@ demod_reset_on_retune(struct demod_state* s) {
     s->fll_phase_q15 = 0;
     s->fll_prev_r = 0;
     s->fll_prev_j = 0;
+    s->costas_err_avg_q14 = 0;
+    s->costas_e4_prev_q14 = 0;
+    s->costas_e4_prev_set = 0;
     /* TED */
     ted_init_state(&s->ted_state);
     s->ted_mu_q20 = 0;
@@ -1909,6 +1912,13 @@ static float g_spec_db[kSpecMaxN];
 static std::atomic<int> g_spec_rate_hz{0};
 static std::atomic<int> g_spec_ready{0};
 static std::atomic<int> g_spec_N{256}; /* default N */
+/* Carrier diagnostics (updated alongside spectrum) */
+static std::atomic<double> g_cfo_nco_hz{0.0};
+static std::atomic<double> g_resid_cfo_spec_hz{0.0};
+static std::atomic<int> g_carrier_lock{0};
+static std::atomic<int> g_nco_q15{0};
+static std::atomic<int> g_demod_rate_hz{0};
+static std::atomic<int> g_costas_err_avg_q14{0};
 
 /* Auto-PPM status (spectrum-based) */
 static std::atomic<int> g_auto_ppm_enabled{0};
@@ -2036,6 +2046,60 @@ update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int 
     }
     g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_spec_ready.store(1, std::memory_order_release);
+
+    /* Compute residual CFO from spectrum peak around DC using quadratic interp. */
+    int i_max = 0;
+    float p_max = -1e30f;
+    for (int k = 0; k < N; k++) {
+        float v = g_spec_db[k];
+        if (v > p_max) {
+            p_max = v;
+            i_max = k;
+        }
+    }
+    double df_spec_hz = 0.0;
+    if (N >= 3 && i_max > 0 && i_max + 1 < N) {
+        double p1 = g_spec_db[i_max - 1];
+        double p2 = g_spec_db[i_max + 0];
+        double p3 = g_spec_db[i_max + 1];
+        double denom = (p1 - 2.0 * p2 + p3);
+        double delta = 0.0; /* -0.5..+0.5 bin */
+        if (fabs(denom) > 1e-9) {
+            delta = 0.5 * (p1 - p3) / denom;
+            if (delta < -0.5) {
+                delta = -0.5;
+            }
+            if (delta > +0.5) {
+                delta = +0.5;
+            }
+        }
+        double center = (double)(N / 2);
+        double k_off = ((double)i_max + delta) - center; /* signed bins from DC */
+        df_spec_hz = (out_rate_hz > 0) ? (k_off * (double)out_rate_hz / (double)N) : 0.0;
+    }
+    g_resid_cfo_spec_hz.store(df_spec_hz, std::memory_order_relaxed);
+
+    /* NCO CFO from Costas/FLL (Q15 cycles/sample scaled by Fs) */
+    double cfo_hz = 0.0;
+    if (out_rate_hz > 0) {
+        int fq = demod.fll_freq_q15; /* shared with Costas */
+        cfo_hz = ((double)fq * (double)out_rate_hz) / 32768.0;
+    }
+    g_cfo_nco_hz.store(cfo_hz, std::memory_order_relaxed);
+    g_nco_q15.store(demod.fll_freq_q15, std::memory_order_relaxed);
+    g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
+    g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
+
+    /* Simple lock heuristic for CQPSK: small residual df and reasonable SNR */
+    int locked = 0;
+    if (demod.cqpsk_enable) {
+        double snr = g_snr_qpsk_db.load(std::memory_order_relaxed);
+        double thr_df = 120.0; /* Hz */
+        if (fabs(df_spec_hz) < thr_df && snr > 8.0) {
+            locked = 1;
+        }
+    }
+    g_carrier_lock.store(locked, std::memory_order_relaxed);
 }
 
 /* ---------------- Runtime getters/setters: Blanker and Tuner Autogain ---------------- */
@@ -2203,6 +2267,37 @@ rtl_stream_get_snr_cqpsk(void) {
 extern "C" double
 rtl_stream_get_snr_gfsk(void) {
     return g_snr_gfsk_db.load(std::memory_order_relaxed);
+}
+
+/* Carrier diagnostics exports */
+extern "C" double
+dsd_rtl_stream_get_cfo_hz(void) {
+    return g_cfo_nco_hz.load(std::memory_order_relaxed);
+}
+
+extern "C" double
+dsd_rtl_stream_get_residual_cfo_hz(void) {
+    return g_resid_cfo_spec_hz.load(std::memory_order_relaxed);
+}
+
+extern "C" int
+dsd_rtl_stream_get_carrier_lock(void) {
+    return g_carrier_lock.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_nco_q15(void) {
+    return g_nco_q15.load(std::memory_order_relaxed);
+}
+
+extern "C" int
+dsd_rtl_stream_get_demod_rate_hz(void) {
+    return g_demod_rate_hz.load(std::memory_order_relaxed);
+}
+
+extern "C" int
+dsd_rtl_stream_get_costas_err_q14(void) {
+    return g_costas_err_avg_q14.load(std::memory_order_relaxed);
 }
 
 /**
@@ -2621,6 +2716,9 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.fll_freq_q15 = 0;
     demod.fll_phase_q15 = 0;
     demod.fll_prev_r = demod.fll_prev_j = 0;
+    demod.costas_err_avg_q14 = 0;
+    demod.costas_e4_prev_q14 = 0;
+    demod.costas_e4_prev_set = 0;
 
     demod.ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : 0;
     demod.ted_gain_q20 = cfg->ted_gain_is_set ? cfg->ted_gain_q20 : 64;
@@ -4541,6 +4639,11 @@ dsd_rtl_stream_set_cqpsk_acq_fll(int onoff) {
     /* Reset latch so it can re-acquire if re-enabled */
     demod.cqpsk_acq_fll_locked = 0;
     demod.cqpsk_acq_quiet_runs = 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_cqpsk_acq_fll_locked(void) {
+    return demod.cqpsk_acq_fll_locked ? 1 : 0;
 }
 
 extern "C" void

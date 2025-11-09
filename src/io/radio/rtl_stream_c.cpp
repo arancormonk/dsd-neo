@@ -321,6 +321,7 @@ rtl_stream_cqpsk_get_dqpsk(int* onoff) {
 /* CQPSK acquisition-only FLL (pre-Costas) */
 extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll(void);
 extern "C" void dsd_rtl_stream_set_cqpsk_acq_fll(int onoff);
+extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll_locked(void);
 
 extern "C" int
 rtl_stream_get_cqpsk_acq_fll(void) {
@@ -330,6 +331,11 @@ rtl_stream_get_cqpsk_acq_fll(void) {
 extern "C" void
 rtl_stream_set_cqpsk_acq_fll(int onoff) {
     dsd_rtl_stream_set_cqpsk_acq_fll(onoff);
+}
+
+extern "C" int
+rtl_stream_get_cqpsk_acq_fll_locked(void) {
+    return dsd_rtl_stream_get_cqpsk_acq_fll_locked();
 }
 
 extern "C" int
@@ -350,6 +356,45 @@ rtl_stream_spectrum_set_size(int n) {
 extern "C" int
 rtl_stream_spectrum_get_size(void) {
     return dsd_rtl_stream_spectrum_get_size();
+}
+
+/* Carrier/Costas diagnostics */
+extern "C" double dsd_rtl_stream_get_cfo_hz(void);
+extern "C" double dsd_rtl_stream_get_residual_cfo_hz(void);
+extern "C" int dsd_rtl_stream_get_carrier_lock(void);
+
+extern "C" double
+rtl_stream_get_cfo_hz(void) {
+    return dsd_rtl_stream_get_cfo_hz();
+}
+
+extern "C" double
+rtl_stream_get_residual_cfo_hz(void) {
+    return dsd_rtl_stream_get_residual_cfo_hz();
+}
+
+extern "C" int
+rtl_stream_get_carrier_lock(void) {
+    return dsd_rtl_stream_get_carrier_lock();
+}
+
+extern "C" int dsd_rtl_stream_get_nco_q15(void);
+extern "C" int dsd_rtl_stream_get_demod_rate_hz(void);
+extern "C" int dsd_rtl_stream_get_costas_err_q14(void);
+
+extern "C" int
+rtl_stream_get_nco_q15(void) {
+    return dsd_rtl_stream_get_nco_q15();
+}
+
+extern "C" int
+rtl_stream_get_demod_rate_hz(void) {
+    return dsd_rtl_stream_get_demod_rate_hz();
+}
+
+extern "C" int
+rtl_stream_get_costas_err_q14(void) {
+    return dsd_rtl_stream_get_costas_err_q14();
 }
 
 /* Auto-PPM status snapshot */

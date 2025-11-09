@@ -675,33 +675,61 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     int iqb = rtl_stream_get_iq_balance();
 
     ui_print_header("DSP");
-    ui_print_lborder();
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
     /* Determine current modulation for capability-aware display: 0=C4FM, 1=CQPSK, 2=GFSK */
     int mod = (state ? state->rf_mod : (cq ? 1 : 0));
-    if (mod != 1) { /* hide IQ BAL on CQPSK */
-        printw(" IQ BAL: %s ", iqb ? "On" : "Off");
+
+    /* Per-line organization */
+    if (mod != 1) {
+        ui_print_kv_line("IQ BAL", "[%s]", iqb ? "On" : "Off");
     }
-    if (mod != 2) { /* hide FLL on GFSK/FSK */
-        printw(" FLL: %s ", fll ? "On" : "Off");
+    if (mod != 2) {
+        ui_print_kv_line("FLL", "[%s]", fll ? "On" : "Off");
     }
-    if (mod == 0) { /* TED only relevant for C4FM/FM path */
-        printw(" TED: %s ", ted ? "On" : "Off");
+    if (mod == 0) {
+        ui_print_kv_line("TED", "[%s]", ted ? "On" : "Off");
     }
     if (mod == 1 || cq) {
-        printw(" CQPSK: %s", cq ? "On" : "Off");
+        ui_print_kv_line("CQPSK Path", "[%s]", cq ? "On" : "Off");
     }
 
     if (cq) {
-        printw(" [LMS: %s WL: %s DFE: %s MF: %s", lms ? "On" : "Off", wl ? "On" : "Off", dfe ? "On" : "Off",
-               mf ? (rrc_en ? "RRC" : "On") : "Off");
+        const char* mf_lab = mf ? (rrc_en ? "RRC" : "On") : "Off";
         if (rrc_en) {
-            printw(" a: %d%% s: %d", rrc_a, rrc_s);
+            ui_print_kv_line("CQPSK EQ", "LMS:%s WL:%s DFE:%s MF:%s  a:%d%% s:%d", lms ? "On" : "Off",
+                             wl ? "On" : "Off", dfe ? "On" : "Off", mf_lab, rrc_a, rrc_s);
+        } else {
+            ui_print_kv_line("CQPSK EQ", "LMS:%s WL:%s DFE:%s MF:%s", lms ? "On" : "Off", wl ? "On" : "Off",
+                             dfe ? "On" : "Off", mf_lab);
         }
-        printw("]");
+        int acq = rtl_stream_get_cqpsk_acq_fll();
+        int lck = 0;
+#ifdef USE_RTLSDR
+        extern int rtl_stream_get_cqpsk_acq_fll_locked(void);
+        lck = rtl_stream_get_cqpsk_acq_fll_locked();
+#endif
+        ui_print_kv_line("Acq FLL", "[%s]", acq ? (lck ? "On (Locked)" : "On (Acq)") : "Off");
+
+#ifdef USE_RTLSDR
+        extern double rtl_stream_get_cfo_hz(void);
+        extern double rtl_stream_get_residual_cfo_hz(void);
+        extern int rtl_stream_get_carrier_lock(void);
+        extern int rtl_stream_get_costas_err_q14(void);
+        extern int rtl_stream_get_nco_q15(void);
+        extern int rtl_stream_get_demod_rate_hz(void);
+        double cfo = rtl_stream_get_cfo_hz();
+        double rcf = rtl_stream_get_residual_cfo_hz();
+        int clk = rtl_stream_get_carrier_lock();
+        int e14 = rtl_stream_get_costas_err_q14();
+        int nco_q15 = rtl_stream_get_nco_q15();
+        int Fs = rtl_stream_get_demod_rate_hz();
+        ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  Residual=%+0.1f Hz  %s", cfo, rcf, clk ? "Locked" : "Acq");
+        ui_print_kv_line("Costas/NCO", "Err=%d(Q14)  NCO(q15)=%d  Fs=%d Hz", e14, nco_q15, Fs);
+#else
+        ui_print_kv_line("Carrier", "(RTL disabled)");
+#endif
     }
 
-    /* C4FM/FM specific quick status: DD EQ, CMA, AGC/Limiter, Clock */
     if (mod == 0) {
         int dd = 0, dd_taps = 0, dd_mu = 0;
         int agc_on = 0, lim_on = 0, cma_on = 0;
@@ -713,11 +741,10 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         cma_on = rtl_stream_get_fm_cma();
         clk_mode = rtl_stream_get_c4fm_clk();
         const char* clk = (clk_mode == 1) ? "EL" : (clk_mode == 2) ? "MM" : "Off";
-        printw(" [DD:%s CMA:%s AGC:%s LIM:%s CLK:%s]", dd ? "On" : "Off", cma_on ? "On" : "Off", agc_on ? "On" : "Off",
-               lim_on ? "On" : "Off", clk);
+        ui_print_kv_line("C4FM", "DD:%s CMA:%s AGC:%s LIM:%s CLK:%s", dd ? "On" : "Off", cma_on ? "On" : "Off",
+                         agc_on ? "On" : "Off", lim_on ? "On" : "Off", clk);
     }
     attroff(COLOR_PAIR(14));
-    printw("\n");
     attron(COLOR_PAIR(4));
     ui_print_hr();
     attroff(COLOR_PAIR(4));
