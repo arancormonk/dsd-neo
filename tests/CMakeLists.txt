@@ -486,7 +486,7 @@ add_test(NAME DSP_RESAMPLER COMMAND dsd-neo_test_dsp_resampler)
 
 add_executable(dsd-neo_test_dsp_fll dsp/test_dsp_fll.cpp)
 target_include_directories(dsd-neo_test_dsp_fll PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp)
+target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp m)
 add_test(NAME DSP_FLL COMMAND dsd-neo_test_dsp_fll)
 
 add_executable(dsd-neo_test_dsp_ted dsp/test_dsp_ted.cpp)
