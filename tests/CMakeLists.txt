@@ -564,6 +564,41 @@ target_include_directories(dsd-neo_test_dsp_cqpsk_path PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(dsd-neo_test_dsp_cqpsk_path PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CQPSK_PATH COMMAND dsd-neo_test_dsp_cqpsk_path)
 
+add_executable(dsd-neo_test_dsp_cqpsk_path_safety dsp/test_dsp_cqpsk_path_safety.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_safety PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_safety PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_SAFETY COMMAND dsd-neo_test_dsp_cqpsk_path_safety)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path_runtime dsp/test_dsp_cqpsk_path_runtime.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_runtime PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_runtime PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_RUNTIME COMMAND dsd-neo_test_dsp_cqpsk_path_runtime)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path_env dsp/test_dsp_cqpsk_path_env.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_env PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_env PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_ENV COMMAND dsd-neo_test_dsp_cqpsk_path_env)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path_resets dsp/test_dsp_cqpsk_path_resets.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_resets PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_resets PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_RESETS COMMAND dsd-neo_test_dsp_cqpsk_path_resets)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path_sps dsp/test_dsp_cqpsk_path_sps.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_sps PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_sps PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_SPS COMMAND dsd-neo_test_dsp_cqpsk_path_sps)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path_dqpsk dsp/test_dsp_cqpsk_path_dqpsk.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_dqpsk PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_dqpsk PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_DQPSK COMMAND dsd-neo_test_dsp_cqpsk_path_dqpsk)
+
+add_executable(dsd-neo_test_dsp_cqpsk_path_dqpsk_feedback dsp/test_dsp_cqpsk_path_dqpsk_feedback.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_path_dqpsk_feedback PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_path_dqpsk_feedback PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PATH_DQPSK_FEEDBACK COMMAND dsd-neo_test_dsp_cqpsk_path_dqpsk_feedback)
+
 add_executable(dsd-neo_test_dsp_demod_helpers dsp/test_dsp_demod_helpers.cpp)
 target_include_directories(dsd-neo_test_dsp_demod_helpers PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_demod_helpers PRIVATE dsd-neo_dsp)
