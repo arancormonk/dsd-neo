@@ -74,9 +74,36 @@ ui_destroy_window(WINDOW** win) {
     }
 }
 
+// Forward declare submenu visibility helper so ui_is_enabled can use it
+static int ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx);
+
 static int
 ui_is_enabled(const NcMenuItem* it, void* ctx) {
-    return (it->is_enabled == NULL) ? 1 : (it->is_enabled(ctx) ? 1 : 0);
+    if (!it) {
+        return 0;
+    }
+    if (it->is_enabled) {
+        return it->is_enabled(ctx) ? 1 : 0;
+    }
+    // If no explicit predicate, but this item has a submenu, hide it when the submenu is empty
+    if (it->submenu && it->submenu_len > 0) {
+        return ui_submenu_has_visible(it->submenu, it->submenu_len, ctx);
+    }
+    return 1;
+}
+
+// Returns 1 if any item in a submenu is visible/enabled under the given ctx
+static int
+ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx) {
+    if (!items || n == 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (ui_is_enabled(&items[i], ctx)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // Shared UI context for menu callbacks
@@ -3469,12 +3496,60 @@ lbl_muting(void* v, char* b, size_t n) {
 
 #ifdef USE_RTLSDR
 // Declarative DSP menu with dynamic labels
+#include <assert.h>
+
 static bool
 dsp_cq_on(void* v) {
     UNUSED(v);
     int cq = 0, f = 0, t = 0;
     rtl_stream_dsp_get(&cq, &f, &t);
     return cq != 0;
+}
+
+// ---- Modulation-aware capability helpers ----
+// rf_mod convention (from CLI): 0=C4FM/FM family, 1=QPSK/CQPSK, 2=GFSK/2-level FSK
+static int
+ui_current_mod(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    if (c && c->state) {
+        return c->state->rf_mod;
+    }
+    // Fallback: infer from CQPSK enable flag if state missing
+    int cq = 0;
+    rtl_stream_dsp_get(&cq, NULL, NULL);
+    return cq ? 1 : 0;
+}
+
+static bool
+is_mod_qpsk(void* v) {
+    return ui_current_mod(v) == 1;
+}
+
+static bool
+is_mod_c4fm(void* v) {
+    return ui_current_mod(v) == 0;
+}
+
+static bool
+is_mod_gfsk(void* v) {
+    return ui_current_mod(v) == 2;
+}
+
+static bool
+is_not_qpsk(void* v) {
+    return !is_mod_qpsk(v);
+}
+
+// Policy: FLL allowed on C4FM and CQPSK, hidden on GFSK (FSK family)
+static bool
+is_fll_allowed(void* v) {
+    return is_mod_c4fm(v) || is_mod_qpsk(v);
+}
+
+// Policy: TED controls are relevant for FM/C4FM family path
+static bool
+is_ted_allowed(void* v) {
+    return is_mod_c4fm(v);
 }
 
 static bool
@@ -5370,6 +5445,10 @@ static const NcMenuItem LRRP_MENU_ITEMS[] = {
 // DSP
 #ifdef USE_RTLSDR
 // Submenus for DSP groups
+// Forward declare submenu visibility predicates
+static bool dsp_filters_any(void* v);
+static bool dsp_agc_any(void* v);
+static bool dsp_ted_any(void* v);
 static const NcMenuItem DSP_OVERVIEW_ITEMS[] = {
     {.id = "status",
      .label = "Show DSP Panel",
@@ -5389,38 +5468,43 @@ static const NcMenuItem DSP_PATH_ITEMS[] = {
      .label = "DQPSK Decision",
      .label_fn = lbl_onoff_dqpsk,
      .help = "Toggle DQPSK decision stage.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_dqpsk},
     {.id = "fll",
      .label = "Toggle FLL",
      .label_fn = lbl_onoff_fll,
      .help = "Enable/disable frequency-locked loop.",
+     .is_enabled = is_fll_allowed,
      .on_select = act_toggle_fll},
     {.id = "cq_acq_fll",
      .label = "CQPSK Acquisition FLL",
      .label_fn = lbl_cqpsk_acq_fll,
      .help = "Pre-Costas pull-in FLL for CQPSK; auto-disables on lock.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_cqpsk_acq_fll},
     {.id = "ted",
      .label = "Timing Error (TED)",
      .label_fn = lbl_onoff_ted,
      .help = "Toggle TED (symbol timing).",
+     .is_enabled = is_ted_allowed,
      .on_select = act_toggle_ted},
     {.id = "ted_force",
      .label = "TED Force",
      .label_fn = lbl_ted_force,
      .help = "Force TED even for FM/C4FM paths.",
+     .is_enabled = is_ted_allowed,
      .on_select = act_ted_force_toggle},
     {.id = "c4fm_clk",
      .label = "C4FM Clock Assist",
      .label_fn = lbl_c4fm_clk,
      .help = "Cycle C4FM timing assist: Off → EL → MM.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_c4fm_clk_cycle},
     {.id = "c4fm_clk_sync",
      .label = "C4FM Clock While Synced",
      .label_fn = lbl_c4fm_clk_sync,
      .help = "Allow clock assist to remain active while synchronized.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_c4fm_clk_sync_toggle},
 };
 
@@ -5429,118 +5513,162 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .label = "RRC Filter",
      .label_fn = lbl_toggle_rrc,
      .help = "Toggle Root-Raised-Cosine matched filter.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_rrc},
     {.id = "rrc_a+",
      .label = "RRC alpha +5%",
      .label_fn = lbl_rrc_a_up,
      .help = "Increase RRC alpha.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_rrc_a_up},
     {.id = "rrc_a-",
      .label = "RRC alpha -5%",
      .label_fn = lbl_rrc_a_dn,
      .help = "Decrease RRC alpha.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_rrc_a_dn},
     {.id = "rrc_s+",
      .label = "RRC span +1",
      .label_fn = lbl_rrc_s_up,
      .help = "Increase RRC span.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_rrc_s_up},
     {.id = "rrc_s-",
      .label = "RRC span -1",
      .label_fn = lbl_rrc_s_dn,
      .help = "Decrease RRC span.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_rrc_s_dn},
     {.id = "mf",
      .label = "Matched Filter (legacy)",
      .label_fn = lbl_onoff_mf,
      .help = "Toggle RX matched filter stage.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_mf},
     {.id = "lms",
      .label = "LMS Equalizer",
      .label_fn = lbl_onoff_lms,
      .help = "Toggle LMS equalizer.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_lms},
     {.id = "wl",
      .label = "WL Enhancement",
      .label_fn = lbl_onoff_wl,
      .help = "Toggle WL enhancement (CQPSK).",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_wl},
     {.id = "dfe",
      .label = "Decision-Feedback EQ",
      .label_fn = lbl_onoff_dfe,
      .help = "Toggle DFE (CQPSK).",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_dfe},
     {.id = "dft",
      .label = "Cycle DFE taps",
      .label_fn = lbl_dft_cycle,
      .help = "Cycle DFE tap count/mode.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_cycle_dft},
     {.id = "eq_taps",
      .label = "Set EQ taps 5/7",
      .label_fn = lbl_eq_taps,
      .help = "Toggle 5 vs 7 taps for EQ.",
-     .is_enabled = dsp_cq_on,
+     .is_enabled = is_mod_qpsk,
      .on_select = act_taps_5_7},
     {.id = "c4fm_dd",
      .label = "C4FM DD Equalizer",
      .label_fn = lbl_c4fm_dd,
      .help = "Toggle symbol-domain decision-directed EQ.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_toggle_c4fm_dd},
     {.id = "c4fm_dd_params",
      .label = "DD Taps/Mu (status)",
      .label_fn = lbl_c4fm_dd_params,
-     .help = "Current DD EQ taps and mu."},
+     .help = "Current DD EQ taps and mu.",
+     .is_enabled = is_mod_c4fm},
     {.id = "c4fm_dd_taps",
      .label = "DD Taps cycle",
      .help = "Cycle DD EQ taps 3/5/7/9.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_c4fm_dd_taps_cycle},
-    {.id = "c4fm_dd_mu+", .label = "DD mu +1", .help = "Increase DD mu.", .on_select = act_c4fm_dd_mu_up},
-    {.id = "c4fm_dd_mu-", .label = "DD mu -1", .help = "Decrease DD mu.", .on_select = act_c4fm_dd_mu_dn},
+    {.id = "c4fm_dd_mu+",
+     .label = "DD mu +1",
+     .help = "Increase DD mu.",
+     .is_enabled = is_mod_c4fm,
+     .on_select = act_c4fm_dd_mu_up},
+    {.id = "c4fm_dd_mu-",
+     .label = "DD mu -1",
+     .help = "Decrease DD mu.",
+     .is_enabled = is_mod_c4fm,
+     .on_select = act_c4fm_dd_mu_dn},
     {.id = "cma",
      .label = "FM CMA Equalizer",
      .label_fn = lbl_fm_cma,
      .help = "Toggle pre-discriminator CMA equalizer.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_toggle_fm_cma},
     {.id = "cma_taps",
      .label = "CMA Taps (1/3/5/7/9)",
      .label_fn = lbl_fm_cma_taps,
      .help = "Cycle CMA taps.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_fm_cma_taps_cycle},
-    {.id = "cma_mu", .label = "CMA mu (status)", .label_fn = lbl_fm_cma_mu, .help = "Step size (Q15)."},
-    {.id = "cma_mu+", .label = "CMA mu +1", .help = "Increase mu.", .on_select = act_fm_cma_mu_up},
-    {.id = "cma_mu-", .label = "CMA mu -1", .help = "Decrease mu.", .on_select = act_fm_cma_mu_dn},
+    {.id = "cma_mu",
+     .label = "CMA mu (status)",
+     .label_fn = lbl_fm_cma_mu,
+     .help = "Step size (Q15).",
+     .is_enabled = is_mod_c4fm},
+    {.id = "cma_mu+",
+     .label = "CMA mu +1",
+     .help = "Increase mu.",
+     .is_enabled = is_mod_c4fm,
+     .on_select = act_fm_cma_mu_up},
+    {.id = "cma_mu-",
+     .label = "CMA mu -1",
+     .help = "Decrease mu.",
+     .is_enabled = is_mod_c4fm,
+     .on_select = act_fm_cma_mu_dn},
     {.id = "cma_s",
      .label = "CMA Strength",
      .label_fn = lbl_fm_cma_strength,
      .help = "Cycle strength L/M/S.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_fm_cma_strength_cycle},
     {.id = "cma_guard",
      .label = "CMA Adaptive (status)",
      .label_fn = lbl_fm_cma_guard,
-     .help = "Adapting/hold with accept/reject counts."},
+     .help = "Adapting/hold with accept/reject counts.",
+     .is_enabled = is_mod_c4fm},
     {.id = "cma_warm",
      .label = "CMA Warmup (status)",
      .label_fn = lbl_fm_cma_warm,
-     .help = "Samples to hold before adapting (0=continuous)."},
-    {.id = "cma_warm+", .label = "Warmup +5k", .help = "Increase warmup.", .on_select = act_fm_cma_warm_up},
-    {.id = "cma_warm-", .label = "Warmup -5k", .help = "Decrease warmup.", .on_select = act_fm_cma_warm_dn},
+     .help = "Samples to hold before adapting (0=continuous).",
+     .is_enabled = is_mod_c4fm},
+    {.id = "cma_warm+",
+     .label = "Warmup +5k",
+     .help = "Increase warmup.",
+     .is_enabled = is_mod_c4fm,
+     .on_select = act_fm_cma_warm_up},
+    {.id = "cma_warm-",
+     .label = "Warmup -5k",
+     .help = "Decrease warmup.",
+     .is_enabled = is_mod_c4fm,
+     .on_select = act_fm_cma_warm_dn},
 };
+
+// Visible only when at least one filter/EQ item applies
+static bool
+dsp_filters_any(void* v) {
+    return ui_submenu_has_visible(DSP_FILTER_ITEMS, sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0], v) ? true
+                                                                                                             : false;
+}
 
 static const NcMenuItem DSP_IQ_ITEMS[] = {
     {.id = "iqb",
      .label = "IQ Balance",
      .label_fn = lbl_onoff_iqbal,
      .help = "Toggle IQ imbalance compensation.",
+     .is_enabled = is_not_qpsk,
      .on_select = act_toggle_iqbal},
     {.id = "iq_dc",
      .label = "IQ DC Block",
@@ -5560,48 +5688,92 @@ static const NcMenuItem DSP_AGC_ITEMS[] = {
      .label = "FM AGC",
      .label_fn = lbl_fm_agc,
      .help = "Toggle pre-discriminator FM AGC.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_toggle_fm_agc},
 
     {.id = "fm_lim",
      .label = "FM Limiter",
      .label_fn = lbl_fm_limiter,
      .help = "Toggle constant-envelope limiter.",
+     .is_enabled = is_mod_c4fm,
      .on_select = act_toggle_fm_limiter},
     {.id = "fm_tgt",
      .label = "AGC Target (status)",
      .label_fn = lbl_fm_agc_target,
-     .help = "Target RMS amplitude (int16)."},
-    {.id = "fm_tgt+", .label = "AGC Target +500", .on_select = act_fm_agc_target_up},
-    {.id = "fm_tgt-", .label = "AGC Target -500", .on_select = act_fm_agc_target_dn},
-    {.id = "fm_min", .label = "AGC Min (status)", .label_fn = lbl_fm_agc_min, .help = "Min RMS to engage AGC."},
-    {.id = "fm_min+", .label = "AGC Min +500", .on_select = act_fm_agc_min_up},
-    {.id = "fm_min-", .label = "AGC Min -500", .on_select = act_fm_agc_min_dn},
+     .help = "Target RMS amplitude (int16).",
+     .is_enabled = is_mod_c4fm},
+    {.id = "fm_tgt+", .label = "AGC Target +500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_target_up},
+    {.id = "fm_tgt-", .label = "AGC Target -500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_target_dn},
+    {.id = "fm_min",
+     .label = "AGC Min (status)",
+     .label_fn = lbl_fm_agc_min,
+     .help = "Min RMS to engage AGC.",
+     .is_enabled = is_mod_c4fm},
+    {.id = "fm_min+", .label = "AGC Min +500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_min_up},
+    {.id = "fm_min-", .label = "AGC Min -500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_min_dn},
     {.id = "fm_au",
      .label = "AGC Alpha Up (status)",
      .label_fn = lbl_fm_agc_alpha_up,
-     .help = "Smoothing when gain increases (Q15)."},
-    {.id = "fm_au+", .label = "Alpha Up +1024", .on_select = act_fm_agc_alpha_up_up},
-    {.id = "fm_au-", .label = "Alpha Up -1024", .on_select = act_fm_agc_alpha_up_dn},
+     .help = "Smoothing when gain increases (Q15).",
+     .is_enabled = is_mod_c4fm},
+    {.id = "fm_au+", .label = "Alpha Up +1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_up_up},
+    {.id = "fm_au-", .label = "Alpha Up -1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_up_dn},
     {.id = "fm_ad",
      .label = "AGC Alpha Down (status)",
      .label_fn = lbl_fm_agc_alpha_down,
-     .help = "Smoothing when gain decreases (Q15)."},
-    {.id = "fm_ad+", .label = "Alpha Down +1024", .on_select = act_fm_agc_alpha_down_up},
-    {.id = "fm_ad-", .label = "Alpha Down -1024", .on_select = act_fm_agc_alpha_down_dn},
+     .help = "Smoothing when gain decreases (Q15).",
+     .is_enabled = is_mod_c4fm},
+    {.id = "fm_ad+", .label = "Alpha Down +1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_down_up},
+    {.id = "fm_ad-", .label = "Alpha Down -1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_down_dn},
 };
 
+static bool
+dsp_agc_any(void* v) {
+    return ui_submenu_has_visible(DSP_AGC_ITEMS, sizeof DSP_AGC_ITEMS / sizeof DSP_AGC_ITEMS[0], v) ? true : false;
+}
+
 static const NcMenuItem DSP_TED_ITEMS[] = {
-    {.id = "ted_sps", .label = "TED SPS (status)", .label_fn = lbl_ted_sps, .help = "Nominal samples-per-symbol."},
-    {.id = "ted_sps+", .label = "TED SPS +1", .help = "Increase TED SPS.", .on_select = act_ted_sps_up},
-    {.id = "ted_sps-", .label = "TED SPS -1", .help = "Decrease TED SPS.", .on_select = act_ted_sps_dn},
-    {.id = "ted_gain_status", .label = "TED Gain (status)", .label_fn = lbl_ted_gain, .help = "TED small gain (Q20)."},
-    {.id = "ted_gain+", .label = "TED Gain +", .help = "Increase TED small gain.", .on_select = act_ted_gain_up},
-    {.id = "ted_gain-", .label = "TED Gain -", .help = "Decrease TED small gain.", .on_select = act_ted_gain_dn},
+    {.id = "ted_sps",
+     .label = "TED SPS (status)",
+     .label_fn = lbl_ted_sps,
+     .help = "Nominal samples-per-symbol.",
+     .is_enabled = is_ted_allowed},
+    {.id = "ted_sps+",
+     .label = "TED SPS +1",
+     .help = "Increase TED SPS.",
+     .is_enabled = is_ted_allowed,
+     .on_select = act_ted_sps_up},
+    {.id = "ted_sps-",
+     .label = "TED SPS -1",
+     .help = "Decrease TED SPS.",
+     .is_enabled = is_ted_allowed,
+     .on_select = act_ted_sps_dn},
+    {.id = "ted_gain_status",
+     .label = "TED Gain (status)",
+     .label_fn = lbl_ted_gain,
+     .help = "TED small gain (Q20).",
+     .is_enabled = is_ted_allowed},
+    {.id = "ted_gain+",
+     .label = "TED Gain +",
+     .help = "Increase TED small gain.",
+     .is_enabled = is_ted_allowed,
+     .on_select = act_ted_gain_up},
+    {.id = "ted_gain-",
+     .label = "TED Gain -",
+     .help = "Decrease TED small gain.",
+     .is_enabled = is_ted_allowed,
+     .on_select = act_ted_gain_dn},
     {.id = "ted_bias",
      .label = "TED Bias (status)",
      .label_fn = lbl_ted_bias,
-     .help = "Smoothed Gardner residual (read-only)."},
+     .help = "Smoothed Gardner residual (read-only).",
+     .is_enabled = is_ted_allowed},
 };
+
+static bool
+dsp_ted_any(void* v) {
+    return ui_submenu_has_visible(DSP_TED_ITEMS, sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0], v) ? true : false;
+}
 
 static const NcMenuItem DSP_BLANKER_ITEMS[] = {
     {.id = "blanker",
@@ -5638,7 +5810,8 @@ static const NcMenuItem DSP_MENU_ITEMS[] = {
      .label = "Filtering & Equalizers...",
      .help = "RRC/MF/LMS/DFE, C4FM DD EQ, FM CMA.",
      .submenu = DSP_FILTER_ITEMS,
-     .submenu_len = sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0]},
+     .submenu_len = sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0],
+     .is_enabled = dsp_filters_any},
     {.id = "iq",
      .label = "IQ & Front-End...",
      .help = "IQ balance and DC blocker.",
@@ -5648,12 +5821,14 @@ static const NcMenuItem DSP_MENU_ITEMS[] = {
      .label = "AGC & Limiter...",
      .help = "FM AGC, limiter, and parameters.",
      .submenu = DSP_AGC_ITEMS,
-     .submenu_len = sizeof DSP_AGC_ITEMS / sizeof DSP_AGC_ITEMS[0]},
+     .submenu_len = sizeof DSP_AGC_ITEMS / sizeof DSP_AGC_ITEMS[0],
+     .is_enabled = dsp_agc_any},
     {.id = "ted",
      .label = "TED Controls...",
      .help = "Timing recovery parameters.",
      .submenu = DSP_TED_ITEMS,
-     .submenu_len = sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0]},
+     .submenu_len = sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0],
+     .is_enabled = dsp_ted_any},
     {.id = "blanker",
      .label = "Impulse Blanker...",
      .help = "Impulse blanker threshold and window.",

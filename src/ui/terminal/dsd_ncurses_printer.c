@@ -657,8 +657,9 @@ static int lls = -1;
 
 /* Print a compact DSP status summary (which blocks are active). */
 static void
-print_dsp_status(void) {
+print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
+    (void)opts;
     /* Preserve current color pair so our colored header/HR won't force default */
 #ifdef PRETTY_COLORS
     attr_t saved_attrs = 0;
@@ -676,10 +677,20 @@ print_dsp_status(void) {
     ui_print_header("DSP");
     ui_print_lborder();
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
-    printw(" IQ BAL: %s ", iqb ? "On" : "Off");
-    printw(" FLL: %s ", fll ? "On" : "Off");
-    printw(" TED: %s ", ted ? "On" : "Off");
-    printw(" CQPSK: %s", cq ? "On" : "Off");
+    /* Determine current modulation for capability-aware display: 0=C4FM, 1=CQPSK, 2=GFSK */
+    int mod = (state ? state->rf_mod : (cq ? 1 : 0));
+    if (mod != 1) { /* hide IQ BAL on CQPSK */
+        printw(" IQ BAL: %s ", iqb ? "On" : "Off");
+    }
+    if (mod != 2) { /* hide FLL on GFSK/FSK */
+        printw(" FLL: %s ", fll ? "On" : "Off");
+    }
+    if (mod == 0) { /* TED only relevant for C4FM/FM path */
+        printw(" TED: %s ", ted ? "On" : "Off");
+    }
+    if (mod == 1 || cq) {
+        printw(" CQPSK: %s", cq ? "On" : "Off");
+    }
 
     if (cq) {
         printw(" [LMS: %s WL: %s DFE: %s MF: %s", lms ? "On" : "Off", wl ? "On" : "Off", dfe ? "On" : "Off",
@@ -688,8 +699,24 @@ print_dsp_status(void) {
             printw(" a: %d%% s: %d", rrc_a, rrc_s);
         }
         printw("]");
-        attroff(COLOR_PAIR(14));
     }
+
+    /* C4FM/FM specific quick status: DD EQ, CMA, AGC/Limiter, Clock */
+    if (mod == 0) {
+        int dd = 0, dd_taps = 0, dd_mu = 0;
+        int agc_on = 0, lim_on = 0, cma_on = 0;
+        int clk_mode = 0;
+        dd = rtl_stream_get_c4fm_dd_eq();
+        rtl_stream_get_c4fm_dd_eq_params(&dd_taps, &dd_mu);
+        agc_on = rtl_stream_get_fm_agc();
+        lim_on = rtl_stream_get_fm_limiter();
+        cma_on = rtl_stream_get_fm_cma();
+        clk_mode = rtl_stream_get_c4fm_clk();
+        const char* clk = (clk_mode == 1) ? "EL" : (clk_mode == 2) ? "MM" : "Off";
+        printw(" [DD:%s CMA:%s AGC:%s LIM:%s CLK:%s]", dd ? "On" : "Off", cma_on ? "On" : "Off", agc_on ? "On" : "Off",
+               lim_on ? "On" : "Off", clk);
+    }
+    attroff(COLOR_PAIR(14));
     printw("\n");
     attron(COLOR_PAIR(4));
     ui_print_hr();
@@ -3270,7 +3297,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
         /* Show compact DSP status directly above audio sections (optional) */
         if (opts->show_dsp_panel) {
-            print_dsp_status();
+            print_dsp_status(opts, state);
         }
         /* Signal quality is shown inline above; no duplicate line here. */
     }
@@ -3752,16 +3779,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         ui_print_kv_line("Tuner state", "Free");
     }
     ui_print_label_pad("Demod/Rate");
-    if (opts->mod_qpsk == 1) {
-        printw("[QPSK]");
+    {
+        const char* modlab = (state->rf_mod == 1) ? "QPSK" : (state->rf_mod == 2) ? "GFSK" : "C4FM";
+        printw("[%s][%d] \n", modlab, (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
     }
-    if (opts->mod_c4fm == 1) {
-        printw("[C4FM]");
-    }
-    if (opts->mod_gfsk == 1) {
-        printw("[GFSK]");
-    }
-    printw("[%d] \n", (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
     /* (RTL-SDR controls moved to dedicated section above) */
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
