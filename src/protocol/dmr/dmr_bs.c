@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
@@ -631,7 +632,10 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             //update cc amd vc sync time for trunking purposes (particularly Con+)
             if (opts->p25_is_tuned == 1) {
                 state->last_vc_sync_time = time(NULL);
+                state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+                state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                 state->last_cc_sync_time = time(NULL);
+                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             }
 
             //reset err checks

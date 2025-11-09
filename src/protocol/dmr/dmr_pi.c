@@ -10,6 +10,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
@@ -22,7 +23,9 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
         //update cc amd vc sync time for trunking purposes (particularly Con+)
         if (opts->p25_is_tuned == 1) {
             state->last_vc_sync_time = time(NULL);
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
             state->last_cc_sync_time = time(NULL);
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         }
 
         if (MFID == 0x68) //Hytera Enhanced

@@ -18,6 +18,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -250,7 +251,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
         //update time to prevent random 'Control Channel Signal Lost' hopping
         //in the middle of voice call on current Control Channel (con+ and t3)
-        state->last_cc_sync_time = time(NULL);
+        dsd_mark_cc_sync(state);
 
         // If trunking is enabled and we don't yet know the CC frequency, set it
         // from the current tuner so return-to-CC and SM logic have an anchor.
@@ -488,6 +489,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     //if tg hold is specified and matches target, allow for a call pre-emption by nullifying the last vc sync time
                     if (state->tg_hold != 0 && state->tg_hold == target) {
                         state->last_vc_sync_time = 0;
+                        state->last_vc_sync_time_m = 0.0;
                     }
 
                     //shim in here for ncurses freq display when not trunking (playback, not live)
@@ -921,6 +923,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     if (p_kind == 2) {
                         if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
                             state->last_vc_sync_time = time(NULL);
+                            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                             if (opts->verbose > 2) {
                                 fprintf(stderr, " Hold VC (hangtime advisory) ");
                             }
@@ -2095,6 +2098,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     //Test allowing a group in the white list to preempt a call in progress and tune to a white listed call
                     if (opts->trunk_use_allow_list == 1) {
                         state->last_vc_sync_time = 0;
+                        state->last_vc_sync_time_m = 0.0;
                     }
 
                     //Test allowing a tg hold to pre-empt a call in progress and tune to the hold TG
@@ -2177,9 +2181,11 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                         }
                                         SetFreq(opts->rigctl_sockfd, state->trunk_chan_map[j + 1]);
                                         state->p25_vc_freq[0] = state->p25_vc_freq[1] = state->trunk_chan_map[j + 1];
-                                        opts->p25_is_tuned =
-                                            1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
+                                        opts->p25_is_tuned = 1; // set tuned so we don't keep tuning nonstop
                                         state->last_vc_sync_time = time(NULL);
+                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                                         j = 11; //break loop
                                     }
 
@@ -2220,6 +2226,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                         state->p25_vc_freq[0] = state->p25_vc_freq[1] = state->trunk_chan_map[j + 1];
                                         opts->p25_is_tuned = 1;
                                         state->last_vc_sync_time = time(NULL);
+                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
                                         j = 11; //break loop
 #endif
                                     }
@@ -2388,6 +2395,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //if tg hold is specified and matches target, allow for a call pre-emption by nullifying the last vc sync time
                 if (state->tg_hold != 0 && state->tg_hold == grpAddr) {
                     state->last_vc_sync_time = 0;
+                    state->last_vc_sync_time_m = 0.0;
                 }
 
                 char mode[8]; //allow, block, digital, enc, etc
@@ -2744,6 +2752,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //Test allowing a group in the white list to preempt a call in progress and tune to a white listed call
                 if (opts->trunk_use_allow_list == 1) {
                     state->last_vc_sync_time = 0;
+                    state->last_vc_sync_time_m = 0.0;
                 }
 
                 //Test allowing a tg hold to pre-empt a call in progress and tune to the hold TG
@@ -2895,6 +2904,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     // This does not process the PDU further — it only keeps the CC timer warm.
     else if (opts->dmr_crc_relaxed_default) {
         state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }
 
     fprintf(stderr, "%s", KNRM);

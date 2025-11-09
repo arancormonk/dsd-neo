@@ -12,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
@@ -319,7 +320,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         // cach_err = dmr_cach (opts, state, cachdata);
 
         //update voice sync time for trunking purposes (particularly Con+)
-        state->last_vc_sync_time = time(NULL);
+        dsd_mark_vc_sync(state);
 
         vc++;
 

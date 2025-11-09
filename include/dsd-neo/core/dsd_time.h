@@ -39,6 +39,45 @@ dsd_time_now_monotonic_s(void) {
 #endif
 }
 
+/* Convenience helpers to stamp/clear CC and VC sync times on state
+ * with both wall-clock and monotonic values.
+ */
+static inline void
+dsd_mark_cc_sync(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+}
+
+static inline void
+dsd_mark_vc_sync(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->last_vc_sync_time = time(NULL);
+    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+}
+
+static inline void
+dsd_clear_cc_sync(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->last_cc_sync_time = 0;
+    state->last_cc_sync_time_m = 0.0;
+}
+
+static inline void
+dsd_clear_vc_sync(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+}
+
 #ifdef __cplusplus
 }
 #endif

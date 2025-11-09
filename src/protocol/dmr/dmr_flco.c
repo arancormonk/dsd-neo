@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #ifdef USE_RTLSDR
@@ -479,8 +480,8 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
 
             //update cc amd vc sync time for trunking purposes (particularly Con+)
             if (opts->p25_is_tuned == 1) {
-                state->last_vc_sync_time = time(NULL);
-                state->last_cc_sync_time = time(NULL);
+                dsd_mark_vc_sync(state);
+                dsd_mark_cc_sync(state);
             }
         }
 
@@ -1440,6 +1441,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
                             state->last_cc_sync_time = time(NULL);
+                            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                             dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                         }
 
@@ -1453,7 +1455,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
-                            state->last_cc_sync_time = time(NULL);
+                            dsd_mark_cc_sync(state);
                             dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
 #endif
                         }
@@ -1512,7 +1514,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
-                            state->last_cc_sync_time = time(NULL);
+                            dsd_mark_cc_sync(state);
+                            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                             dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                         }
 
@@ -1526,7 +1529,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
-                            state->last_cc_sync_time = time(NULL);
+                            dsd_mark_cc_sync(state);
                             dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
 #endif
                         }

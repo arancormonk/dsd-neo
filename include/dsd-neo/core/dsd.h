@@ -637,8 +637,8 @@ typedef struct {
     double p25_last_vc_tune_time_m;
     time_t
         last_active_time; //time the a 'call grant' was received, used to clear the active_channel strings after x seconds
-    time_t
-        last_t3_tune_time; //last time a DMR T3 grant was received, this is used to prevent a rogue p_clear condition from immediately sending back to CC
+    time_t last_t3_tune_time;   // last time a DMR T3 grant was received (wall clock)
+    double last_t3_tune_time_m; // same as above, monotonic seconds
     // DMR: rate-limit for single-fragment SLCO logging per slot
     time_t slco_sfrag_last[2];
     unsigned long long int m17_dst;

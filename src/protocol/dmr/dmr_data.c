@@ -486,7 +486,9 @@ END:
         }
         if (clear == 1) {
             state->last_cc_sync_time = 0;
+            state->last_cc_sync_time_m = 0.0;
             state->last_vc_sync_time = 0;
+            state->last_vc_sync_time_m = 0.0;
         }
     }
 #endif

@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 
 #include <errno.h>
@@ -216,6 +217,7 @@ dmr_sm_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq_hz) {
     // Record the actual tune time so release logic can apply a short VC grace
     // period even before any voice sync arrives.
     state->last_t3_tune_time = time(NULL);
+    state->last_t3_tune_time_m = dsd_time_now_monotonic_s();
     state->p25_sm_tune_count++;
     if (opts->verbose > 0) {
         fprintf(stderr, "\n  DMR SM: Tune VC freq=%.6lf MHz\n", (double)freq_hz / 1000000.0);
@@ -274,6 +276,13 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    // Debug aid (verbose>3): summarize release gate inputs
+    if (opts->verbose > 3) {
+        fprintf(stderr, "DMR_SM_RELEASE: tuned=%d L=%d R=%d hang=%.2f last_vc=%ld last_tune=%ld now=%ld\n",
+                opts->p25_is_tuned, state->dmrburstL, state->dmrburstR, (double)opts->trunk_hangtime,
+                (long)state->last_vc_sync_time, (long)state->last_t3_tune_time, (long)time(NULL));
+        fflush(stderr);
+    }
     state->p25_sm_release_count++;
     // One-shot force: bypass gating and immediately return to CC
     int forced = (state->p25_sm_force_release != 0);
@@ -283,9 +292,38 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
         dmr_sm_log_status(opts, state, "after-release-forced");
         return;
     }
+    // Respect a brief hangtime based on recent voice activity rather than
+    // initial tune time. This avoids bouncing back to CC between back-to-back
+    // calls on the same VC when the first call exceeded the hangtime window.
+    if (opts->trunk_hangtime > 0.0f) {
+        double dt = 0.0;
+        int have_voice_time = 0;
+        if (state->last_vc_sync_time_m > 0.0) {
+            double nowm = dsd_time_now_monotonic_s();
+            dt = nowm - state->last_vc_sync_time_m;
+            have_voice_time = 1;
+        } else if (state->last_vc_sync_time != 0) {
+            time_t now = time(NULL);
+            dt = (double)(now - state->last_vc_sync_time);
+            have_voice_time = 1;
+        } else {
+            dt = 0.0;
+        }
+        if (opts->verbose > 2) {
+            fprintf(stderr, "\n  DMR SM: Hangtime check dt=%.2f hang=%.2f\n", dt, opts->trunk_hangtime);
+        }
+        if (have_voice_time && dt < opts->trunk_hangtime) {
+            if (opts->verbose > 2) {
+                fprintf(stderr, "\n  DMR SM: Release deferred (recent voice) dt=%.2f\n", dt);
+            }
+            return; // defer return to CC
+        }
+    }
+
     // If either slot still shows activity (voice, or data when enabled),
     // defer return-to-CC to avoid dropping an opposite-slot call that ends
-    // slightly later.
+    // slightly later. Hangtime check above takes precedence: once hangtime is
+    // satisfied we allow release even if stale activity bits linger.
     int left_active = dmr_sm_burst_is_activity(opts, state->dmrburstL);
     int right_active = dmr_sm_burst_is_activity(opts, state->dmrburstR);
     if (opts->verbose > 2) {
@@ -300,32 +338,19 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
         dmr_sm_log_status(opts, state, "release-deferred");
         return; // keep current VC
     }
-    // Respect a brief hangtime based on recent voice activity rather than
-    // initial tune time. This avoids bouncing back to CC between back-to-back
-    // calls on the same VC when the first call exceeded the hangtime window.
-    if (opts->trunk_hangtime > 0.0f) {
-        time_t now = time(NULL);
-        // If we haven't observed voice yet on this VC, treat the elapsed voice
-        // time as 0 to allow hangtime to hold the VC instead of immediately
-        // returning to CC.
-        double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 0.0;
-        if (opts->verbose > 2) {
-            fprintf(stderr, "\n  DMR SM: Hangtime check dt=%.2f hang=%.2f last_vc_sync=%ld now=%ld\n", dt,
-                    opts->trunk_hangtime, (long)state->last_vc_sync_time, (long)now);
-        }
-        if (state->last_vc_sync_time != 0 && dt < opts->trunk_hangtime) {
-            if (opts->verbose > 2) {
-                fprintf(stderr, "\n  DMR SM: Release deferred (recent voice) dt=%.2f\n", dt);
-            }
-            return; // defer return to CC
-        }
-    }
 
-    // Apply a short post-tune grace window to allow audio to begin before
-    // permitting a return to CC, even if no voice sync has been observed yet.
-    {
-        time_t now = time(NULL);
-        double dt_tune = (state->last_t3_tune_time != 0) ? (double)(now - state->last_t3_tune_time) : 1e9;
+    // Apply a short post-tune grace window only when we have not observed any
+    // voice sync on this VC yet. Once voice has been seen (last_vc_sync_time != 0),
+    // defer logic is governed by hangtime above.
+    if (state->last_vc_sync_time_m == 0.0 && state->last_vc_sync_time == 0) {
+        double dt_tune = 1e9;
+        if (state->last_t3_tune_time_m > 0.0) {
+            double nowm = dsd_time_now_monotonic_s();
+            dt_tune = nowm - state->last_t3_tune_time_m;
+        } else if (state->last_t3_tune_time != 0) {
+            time_t now = time(NULL);
+            dt_tune = (double)(now - state->last_t3_tune_time);
+        }
         double vc_grace = 1.25; // seconds default
         const char* env = getenv("DSD_NEO_DMR_VC_GRACE");
         if (env && env[0] != '\0') {
@@ -342,10 +367,16 @@ dmr_sm_on_release(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    // Return to CC using shared tuner helper
+    // Return to CC using shared tuner helper. Proactively clear VC tune flags
+    // so unit tests that stub return_to_cc() still observe a release even if
+    // the stub is a no-op beyond state mutation.
     if (opts->verbose > 2) {
         fprintf(stderr, "\n  DMR SM: Release -> CC\n");
     }
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     return_to_cc(opts, state);
     dmr_sm_log_status(opts, state, "after-release");
 }

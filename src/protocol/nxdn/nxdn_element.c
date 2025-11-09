@@ -16,6 +16,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dsd_time.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #ifdef USE_RTLSDR
@@ -125,6 +126,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             state->nxdn_last_rid = 0;
             state->nxdn_last_tg = 0;
             NXDN_decode_srv_info(opts, state, ElementsContent);
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             // Early CC anchor: if trunking and not voice-tuned and CC unknown,
             // set CC from current tuner so follower has a target.
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
@@ -145,6 +147,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         //CCH_INFO
         case 0x1A:
             NXDN_decode_cch_info(opts, state, ElementsContent);
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
@@ -163,6 +166,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         //SITE_INFO
         case 0x18:
             NXDN_decode_site_info(opts, state, ElementsContent);
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
@@ -181,6 +185,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         //ADJ_SITE_INFO
         case 0x1B:
             NXDN_decode_adj_site(opts, state, ElementsContent);
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             // Adjacent site info often originates from CC. Apply the same anchor.
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
