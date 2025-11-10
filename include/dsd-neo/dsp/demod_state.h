@@ -82,6 +82,10 @@ struct demod_state {
     int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
     struct output_state* output_target;
+    double fm_agc_ema_rms;
+    double fm_cma_guard_mu_scale;
+    int16_t* post_polydecim_taps; /* Q15 taps length K */
+    int16_t* post_polydecim_hist; /* circular history length K */
     pthread_t mt_threads[2];
 
     struct {
@@ -210,10 +214,9 @@ struct demod_state {
     int fm_agc_alpha_down_q15; /* smoothing when decreasing gain (signal got stronger) */
     int fm_agc_auto_enable;    /* auto-tune AGC target/alphas based on runtime stats */
     /* FM AGC auto-tune per-instance state */
-    int fm_agc_auto_init;  /* 0 until EMA initialized */
-    double fm_agc_ema_rms; /* EMA of RMS (double for stability) */
-    int fm_agc_clip_run;   /* run-length of clipping blocks */
-    int fm_agc_under_run;  /* run-length of under-utilized full-scale */
+    int fm_agc_auto_init; /* 0 until EMA initialized */
+    int fm_agc_clip_run;  /* run-length of clipping blocks */
+    int fm_agc_under_run; /* run-length of under-utilized full-scale */
 
     /* Optional constant-envelope limiter for FM/C4FM */
     int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
@@ -250,7 +253,6 @@ struct demod_state {
     /* Guard state for CMA >=5 taps */
     int fm_cma_guard_inited;
     int fm_cma_guard_reject_streak;
-    double fm_cma_guard_mu_scale; /* multiplicative scale (double) */
 
     /* FM CMA (1-tap) per-instance equalizer state (CMA-only via CQPSK EQ core) */
     int fm_cma_eq_inited;
@@ -270,8 +272,6 @@ struct demod_state {
     int post_polydecim_K;         /* taps per phase (phase==1), e.g., 16 */
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
-    int16_t* post_polydecim_taps; /* Q15 taps length K */
-    int16_t* post_polydecim_hist; /* circular history length K */
 
     /* CQPSK equalizer state (per-instance; replaces previous static singleton) */
     int cqpsk_eq_initialized;
