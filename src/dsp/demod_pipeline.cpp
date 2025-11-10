@@ -890,7 +890,7 @@ fll_mix_and_update(struct demod_state* d) {
  * Normalizes complex I/Q magnitude toward a target RMS to reduce amplitude
  * bounce from low-cost front-ends (e.g., RTL-SDR). Uses per-block RMS with a
  * smoothed gain (separate attack/decay alphas) to avoid pumping. Disabled for
- * CQPSK/LSM paths where constant-modulus EQ handles amplitude.
+ * CQPSK paths where constant-modulus EQ handles amplitude.
  */
 static inline void
 fm_envelope_agc(struct demod_state* d) {
@@ -1833,7 +1833,7 @@ full_demod(struct demod_state* d) {
     /*
      * Branch early by mode to simplify ordering.
      *
-     * CQPSK/LSM (QPSK-like):
+     * CQPSK (QPSK-like):
      *   DC block (optional) -> Matched Filter (RRC/MF) -> Costas -> CQPSK EQ
      *
      * FM/C4FM and others:
@@ -2108,7 +2108,7 @@ full_demod(struct demod_state* d) {
         }
     }
     /*
-     * For CQPSK/LSM, produce a single real stream from I-channel to feed the
+     * For CQPSK, produce a single real stream from I-channel to feed the
      * symbol sampler, instead of FM discriminating. For other paths, use the
      * configured demodulator.
      */

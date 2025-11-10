@@ -3,7 +3,6 @@
 #pragma once
 
 enum UiDspOp {
-    UI_DSP_OP_LSM_SIMPLE_TOGGLE = 1,
     UI_DSP_OP_TOGGLE_CQ = 2,
     UI_DSP_OP_TOGGLE_FLL = 3,
     UI_DSP_OP_TOGGLE_TED = 4,

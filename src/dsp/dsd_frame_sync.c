@@ -286,7 +286,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 }
 
                 /* Bias decision with demod SNR when available to avoid C4FM<->QPSK flapping
-               on P25 LSM/CQPSK. Prefer QPSK when its SNR clearly exceeds C4FM; conversely
+               on P25 CQPSK. Prefer QPSK when its SNR clearly exceeds C4FM; conversely
                prefer C4FM only when it exceeds QPSK by a larger margin. Also apply a small
                stickiness when already in QPSK and SNRs are similar. */
 #ifdef USE_RTLSDR
@@ -351,7 +351,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
              * For GFSK (DMR/dPMR/NXDN), permit immediate switch on first qualifying window to minimize
              * misclassification time that can corrupt early bursts and elevate audio errors.
              */
-                    /* Slightly increase hysteresis when leaving QPSK to avoid flip-flop on LSM */
+                    /* Slightly increase hysteresis when leaving QPSK to avoid flip-flop */
                     double nowm_dwell = dsd_time_now_monotonic_s();
                     int in_qpsk_dwell2 =
                         (state->rf_mod == 1 && qpsk_dwell_enter_m > 0.0 && (nowm_dwell - qpsk_dwell_enter_m) < 2.0);
@@ -366,7 +366,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 }
                 if (do_switch >= 0) {
                     /* Record entry time when switching into QPSK to add short dwell
-                     * that resists immediate fallback to C4FM on marginal LSM signals. */
+                     * that resists immediate fallback to C4FM on marginal signals. */
                     if (do_switch == 1) {
                         qpsk_dwell_enter_m = dsd_time_now_monotonic_s();
                     } else if (state->rf_mod == 1) {

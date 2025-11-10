@@ -11,7 +11,7 @@
  * Decision-directed CQPSK equalizer interface (fractionally-spaced, NLMS).
  *
  * Lightweight, fixed-point implementation intended to mitigate moderate ISI
- * on P25 LSM/CQPSK paths. Uses a short feed-forward FIR with complex taps
+ * on P25 CQPSK paths. Uses a short feed-forward FIR with complex taps
  * (Q14) and normalized LMS updates every N samples. Defaults to 5 taps and
  * tiny step size for stability; configurable via runtime/env.
  */

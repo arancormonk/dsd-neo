@@ -188,7 +188,7 @@ struct demod_state {
     int mt_posted_count;
     int mt_worker_id[2];
 
-    /* Experimental CQPSK/LSM pre-processing */
+    /* Experimental CQPSK pre-processing */
     int cqpsk_enable;
     int cqpsk_lms_enable;    /* enable decision-directed LMS for CQPSK EQ */
     int cqpsk_mu_q15;        /* step size (Q15), small (1..64) */

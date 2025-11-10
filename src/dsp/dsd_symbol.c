@@ -272,7 +272,7 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
  * Safety gates:
  *  - Only when using RTL input (audio_in_type == 3)
  *  - Only when not currently synchronized (have_sync == 0)
- *  - Only for C4FM path (rf_mod == 0) to avoid QPSK/LSM perturbations
+ *  - Only for C4FM path (rf_mod == 0) to avoid QPSK perturbations
  */
 static inline void
 maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
@@ -293,7 +293,7 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
     }
     if (state->rf_mod != 0) {
-        return; // limit to C4FM for now; avoid QPSK/LSM
+        return; // limit to C4FM for now; avoid QPSK
     }
 
     /* Cooldown to avoid rapid flips */

@@ -244,14 +244,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.iq_dc_shift_is_set = env_is_set(dck);
     c.iq_dc_shift = c.iq_dc_shift_is_set ? atoi(dck) : 11;
 
-    /* LSM/CQPSK simple mode */
-    const char* lsm = getenv("DSD_NEO_LSM_SIMPLE");
-    c.lsm_simple_is_set = env_is_set(lsm);
-    c.lsm_simple_enable =
-        c.lsm_simple_is_set
-            ? ((lsm[0] == '1' || lsm[0] == 'y' || lsm[0] == 'Y' || lsm[0] == 't' || lsm[0] == 'T') ? 1 : 0)
-            : 0;
-
     /* FM/FSK blind CMA equalizer (pre-discriminator) */
     const char* fcma = getenv("DSD_NEO_FM_CMA");
     const char* fcma_t = getenv("DSD_NEO_FM_CMA_TAPS");
@@ -341,24 +333,6 @@ dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15) {
         g_config.c4fm_dd_eq_mu_is_set = 1;
         g_config.c4fm_dd_eq_mu_q15 = v;
     }
-}
-
-void
-dsd_neo_set_lsm_simple(int enable) {
-    if (!g_config_inited) {
-        memset(&g_config, 0, sizeof(g_config));
-        g_config_inited = 1;
-    }
-    g_config.lsm_simple_is_set = 1;
-    g_config.lsm_simple_enable = enable ? 1 : 0;
-}
-
-int
-dsd_neo_get_lsm_simple(void) {
-    if (!g_config_inited) {
-        return 0;
-    }
-    return (g_config.lsm_simple_is_set && g_config.lsm_simple_enable) ? 1 : 0;
 }
 
 void

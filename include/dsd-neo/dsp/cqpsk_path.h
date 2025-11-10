@@ -17,7 +17,7 @@ extern "C" {
 void cqpsk_init(struct demod_state* s);
 
 /*
- * Process one block of interleaved I/Q baseband for QPSK/LSM robustness.
+ * Process one block of interleaved I/Q baseband for QPSK robustness.
  *
  * This runs after FLL mixing and before FM discrimination. Initial
  * implementation is a safe pass-through; subsequent versions will apply a

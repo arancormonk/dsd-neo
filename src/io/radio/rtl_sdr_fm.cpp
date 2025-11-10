@@ -2441,13 +2441,13 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
     s->fm_cma_guard_reject_streak = 0;
     s->fm_cma_guard_mu_scale = 1.0;
 
-    /* Experimental CQPSK/LSM path (off by default). Enable via env DSD_NEO_CQPSK=1 */
+    /* Experimental CQPSK path (off by default). Enable via env DSD_NEO_CQPSK=1 */
     s->cqpsk_enable = 0;
     const char* env_cqpsk = getenv("DSD_NEO_CQPSK");
     if (env_cqpsk
         && (*env_cqpsk == '1' || *env_cqpsk == 'y' || *env_cqpsk == 'Y' || *env_cqpsk == 't' || *env_cqpsk == 'T')) {
         s->cqpsk_enable = 1;
-        fprintf(stderr, " DSP: CQPSK/LSM pre-processing enabled (experimental)\n");
+        fprintf(stderr, " DSP: CQPSK pre-processing enabled (experimental)\n");
     }
 
     /* CQPSK acquisition FLL defaults */
