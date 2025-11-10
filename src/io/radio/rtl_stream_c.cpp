@@ -318,6 +318,19 @@ rtl_stream_cqpsk_get_dqpsk(int* onoff) {
     return dsd_rtl_stream_cqpsk_get_dqpsk(onoff);
 }
 
+/* CQPSK EQ debug snapshot */
+extern "C" int dsd_rtl_stream_cqpsk_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps,
+                                              int* isi_ratio_q15, int* wl_improp_q15, int* cma_warmup, int* mu_q15,
+                                              int* sym_stride, int* dfe_taps, int* err_ema_q14);
+
+extern "C" int
+rtl_stream_cqpsk_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
+                           int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
+                           int* err_ema_q14) {
+    return dsd_rtl_stream_cqpsk_get_debug(updates, adapt_mode, c0_i, c0_q, taps, isi_ratio_q15, wl_improp_q15,
+                                          cma_warmup, mu_q15, sym_stride, dfe_taps, err_ema_q14);
+}
+
 /* CQPSK acquisition-only FLL (pre-Costas) */
 extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll(void);
 extern "C" void dsd_rtl_stream_set_cqpsk_acq_fll(int onoff);

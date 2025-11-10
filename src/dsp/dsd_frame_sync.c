@@ -365,6 +365,14 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                 }
                 if (do_switch >= 0) {
+                    /* Record entry time when switching into QPSK to add short dwell
+                     * that resists immediate fallback to C4FM on marginal LSM signals. */
+                    if (do_switch == 1) {
+                        qpsk_dwell_enter_m = dsd_time_now_monotonic_s();
+                    } else if (state->rf_mod == 1) {
+                        /* Leaving QPSK: clear dwell marker */
+                        qpsk_dwell_enter_m = 0.0;
+                    }
                     state->rf_mod = do_switch;
                     /* Manual-only DSP: avoid automatic toggling here. */
                 }

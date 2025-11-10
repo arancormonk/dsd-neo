@@ -45,6 +45,7 @@ typedef struct cqpsk_eq_state_s {
     int16_t mu_q15;    /* small step size (e.g., 1..128) */
     int update_stride; /* apply update every N complex samples (e.g., 4) */
     int update_count;  /* internal counter */
+    int err_ema_q14;   /* EMA of |e| magnitude in Q14 (diagnostic) */
     int16_t eps_q15;   /* NLMS epsilon in Q15 to avoid div-by-zero (~1..8) */
     /* Symbol gating for DFE decisions/updates (approximate SPS) */
     int sym_stride; /* advance decision history every sym_stride samples */

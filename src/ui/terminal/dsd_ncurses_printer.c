@@ -654,6 +654,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 }
 
 static int lls = -1;
+static int s_prev_cqpsk_updates = -1; /* previous LMS update counter for delta display */
 
 /* Print a compact DSP status summary (which blocks are active). */
 static void
@@ -709,6 +710,22 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         lck = rtl_stream_get_cqpsk_acq_fll_locked();
 #endif
         ui_print_kv_line("Acq FLL", "[%s]", acq ? (lck ? "On (Locked)" : "On (Acq)") : "Off");
+
+        /* Additional CQPSK LMS diagnostics */
+        int upd = 0, mode = 0, c0i = 0, c0q = 0, nt = 0, isi_q15 = 0, imp_q15 = 0, cma_rem = 0, mu_q15 = 0;
+        int sps = 0, dfe_t = 0, e_ema = 0;
+        if (rtl_stream_cqpsk_get_debug(&upd, &mode, &c0i, &c0q, &nt, &isi_q15, &imp_q15, &cma_rem, &mu_q15, &sps,
+                                       &dfe_t, &e_ema)
+            == 0) {
+            int du = (s_prev_cqpsk_updates < 0) ? 0 : (upd - s_prev_cqpsk_updates);
+            s_prev_cqpsk_updates = upd;
+            const char* mlab = (mode == 1) ? "WL" : "FFE";
+            int isi_pct = (isi_q15 * 100 + 16384) / 32768;
+            int imp_pct = (imp_q15 * 100 + 16384) / 32768;
+            ui_print_kv_line("CQPSK LMS", "upd:%d (+%d) mu:%d sps:%d mode:%s cma:%d dfe:%dt", upd, du, mu_q15, sps,
+                             mlab, cma_rem, dfe_t);
+            ui_print_kv_line("EQ/ISI", "c0=(%d,%d) ISI:%d%% WLimp:%d%% |e|:%d(Q14)", c0i, c0q, isi_pct, imp_pct, e_ema);
+        }
 
 #ifdef USE_RTLSDR
         extern double rtl_stream_get_cfo_hz(void);

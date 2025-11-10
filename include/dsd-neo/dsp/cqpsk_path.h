@@ -44,6 +44,11 @@ void cqpsk_reset_all(void);
 void cqpsk_reset_runtime(void);
 void cqpsk_reset_wl(void);
 
+/* Debug snapshot of CQPSK EQ internals; any out ptr may be NULL. Returns 0 on success. */
+int cqpsk_runtime_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
+                            int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
+                            int* err_ema_q14);
+
 #ifdef __cplusplus
 }
 #endif

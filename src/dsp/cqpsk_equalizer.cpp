@@ -70,6 +70,7 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->mu_q15 = 1;        /* very small default step */
     st->update_stride = 4; /* update every 4 complex samples */
     st->update_count = 0;
+    st->err_ema_q14 = 0;
     st->eps_q15 = 4;    /* small epsilon for NLMS normalization */
     st->sym_stride = 4; /* default approximate SPS; refined by path init */
     st->sym_count = 0;
@@ -196,6 +197,7 @@ cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st) {
     }
     st->head = -1;
     st->update_count = 0;
+    st->err_ema_q14 = 0;
     st->sym_count = 0;
     st->cma_warmup = 0;
     /* Clear symbol ring validity; next appends will repopulate */
@@ -439,6 +441,21 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
                 /* Error e = d - y (Q14), with d scaled to current output radius */
                 int32_t ei = di - (int32_t)accI_q14; /* Q14 */
                 int32_t eq = dq - (int32_t)accQ_q14; /* Q14 */
+
+                /* Update diagnostic EMA of |e| (cheap L1 approx): err_ema += alpha*(|e|-ema) */
+                {
+                    int ai = (ei >= 0) ? ei : -ei;
+                    int aq = (eq >= 0) ? eq : -eq;
+                    int mag = ai + aq; /* simple proxy for |e| */
+                    int ema = st->err_ema_q14;
+                    /* alpha ~ 1/32 via >>5 */
+                    int delta = mag - ema;
+                    ema += (delta >> 5);
+                    if (ema < 0) {
+                        ema = 0;
+                    }
+                    st->err_ema_q14 = ema;
+                }
 
                 /* Input power over window (Q0), add small bias to avoid stall;
                    also guard very low-energy segments to prevent runaway updates. */

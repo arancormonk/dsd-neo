@@ -248,6 +248,10 @@ void rtl_stream_cqpsk_set_dqpsk(int onoff);
 int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 /** Get DQPSK decision mode; returns 0 on success. */
 int rtl_stream_cqpsk_get_dqpsk(int* onoff);
+/** Get CQPSK EQ debug snapshot; returns 0 on success. */
+int rtl_stream_cqpsk_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
+                               int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
+                               int* err_ema_q14);
 /* CQPSK acquisition-only pre-Costas FLL (0/1) */
 int rtl_stream_get_cqpsk_acq_fll(void);
 void rtl_stream_set_cqpsk_acq_fll(int onoff);

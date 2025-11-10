@@ -278,6 +278,81 @@ cqpsk_reset_wl(void) {
     cqpsk_eq_reset_wl(&g_cqpsk_demod->cqpsk_eq);
 }
 
+extern "C" int
+cqpsk_runtime_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
+                        int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
+                        int* err_ema_q14) {
+    if (!g_cqpsk_demod || !g_cqpsk_demod->cqpsk_eq_initialized) {
+        return -1;
+    }
+    const cqpsk_eq_state_t* eq = &g_cqpsk_demod->cqpsk_eq;
+    if (updates) {
+        *updates = eq->update_count;
+    }
+    if (adapt_mode) {
+        *adapt_mode = eq->adapt_mode;
+    }
+    if (c0_i) {
+        *c0_i = eq->c_i[0];
+    }
+    if (c0_q) {
+        *c0_q = eq->c_q[0];
+    }
+    if (taps) {
+        *taps = eq->num_taps;
+    }
+    if (mu_q15) {
+        *mu_q15 = eq->mu_q15;
+    }
+    if (sym_stride) {
+        *sym_stride = eq->sym_stride;
+    }
+    if (dfe_taps) {
+        *dfe_taps = eq->dfe_taps;
+    }
+    if (cma_warmup) {
+        *cma_warmup = eq->cma_warmup;
+    }
+    if (wl_improp_q15) {
+        *wl_improp_q15 = eq->wl_improp_ema_q15;
+    }
+    if (err_ema_q14) {
+        *err_ema_q14 = eq->err_ema_q14;
+    }
+    /* Compute ISI ratio: off-center energy (FFE side + DFE) / total energy (Q15 fraction) */
+    int T = eq->num_taps;
+    if (T < 1) {
+        T = 1;
+    }
+    double e_center = (double)eq->c_i[0] * (double)eq->c_i[0] + (double)eq->c_q[0] * (double)eq->c_q[0];
+    double e_side = 0.0;
+    for (int k = 1; k < T; k++) {
+        e_side += (double)eq->c_i[k] * (double)eq->c_i[k] + (double)eq->c_q[k] * (double)eq->c_q[k];
+    }
+    if (eq->dfe_taps > 0) {
+        int Nt = (eq->dfe_taps > 4) ? 4 : eq->dfe_taps;
+        for (int k = 0; k < Nt; k++) {
+            e_side += (double)eq->b_i[k] * (double)eq->b_i[k] + (double)eq->b_q[k] * (double)eq->b_q[k];
+        }
+    }
+    double e_tot = e_center + e_side;
+    int isi_q15 = 0;
+    if (e_tot > 1e-12) {
+        double r = e_side / e_tot;
+        if (r < 0.0) {
+            r = 0.0;
+        }
+        if (r > 1.0) {
+            r = 1.0;
+        }
+        isi_q15 = (int)(r * 32768.0 + 0.5);
+    }
+    if (isi_ratio_q15) {
+        *isi_ratio_q15 = isi_q15;
+    }
+    return 0;
+}
+
 extern "C" void
 cqpsk_runtime_set_params(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
                          int dfe_taps, int cma_warmup_samples) {
