@@ -319,15 +319,24 @@ cqpsk_runtime_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int
     if (err_ema_q14) {
         *err_ema_q14 = eq->err_ema_q14;
     }
-    /* Compute ISI ratio: off-center energy (FFE side + DFE) / total energy (Q15 fraction) */
+    /* Compute ISI ratio (WL-aware):
+     *   off-center energy / total energy, where off-center includes side-lag power from the
+     *   feed-forward (FFE) path, the widely-linear conjugate branch (WL), and (when enabled)
+     *   the decision feedback equalizer (DFE). The center energy includes both the FFE and WL
+     *   zero-lag taps. This is a heuristic using tap power as a proxy for ISI.
+     */
     int T = eq->num_taps;
     if (T < 1) {
         T = 1;
     }
-    double e_center = (double)eq->c_i[0] * (double)eq->c_i[0] + (double)eq->c_q[0] * (double)eq->c_q[0];
+    /* Center (k=0): include FFE and WL conj branch */
+    double e_center = (double)eq->c_i[0] * (double)eq->c_i[0] + (double)eq->c_q[0] * (double)eq->c_q[0]
+                      + (double)eq->cw_i[0] * (double)eq->cw_i[0] + (double)eq->cw_q[0] * (double)eq->cw_q[0];
     double e_side = 0.0;
     for (int k = 1; k < T; k++) {
+        /* Side taps from FFE and WL branches */
         e_side += (double)eq->c_i[k] * (double)eq->c_i[k] + (double)eq->c_q[k] * (double)eq->c_q[k];
+        e_side += (double)eq->cw_i[k] * (double)eq->cw_i[k] + (double)eq->cw_q[k] * (double)eq->cw_q[k];
     }
     if (eq->dfe_taps > 0) {
         int Nt = (eq->dfe_taps > 4) ? 4 : eq->dfe_taps;
