@@ -4122,6 +4122,62 @@ lbl_onoff_lms(void* v, char* b, size_t n) {
     return b;
 }
 
+// CQPSK LMS mu/stride helpers
+static const char*
+lbl_cqpsk_mu(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
+    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
+    snprintf(b, n, "LMS mu (Q15): %d", mu);
+    return b;
+}
+
+static void
+act_cqpsk_mu_up(void* v) {
+    UNUSED(v);
+    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_MU_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+}
+
+static void
+act_cqpsk_mu_dn(void* v) {
+    UNUSED(v);
+    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_MU_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+}
+
+static const char*
+lbl_cqpsk_stride(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
+    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
+    snprintf(b, n, "LMS Update Stride: %d sym", st);
+    return b;
+}
+
+static void
+act_cqpsk_stride_up(void* v) {
+    UNUSED(v);
+    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA, .a = +1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+}
+
+static void
+act_cqpsk_stride_dn(void* v) {
+    UNUSED(v);
+    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA, .a = -1};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
+}
+
+static const char*
+lbl_cqpsk_warm(void* v, char* b, size_t n) {
+    UNUSED(v);
+    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma_rem = 0;
+    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma_rem);
+    snprintf(b, n, "LMS Warmup (remaining): %d", cma_rem);
+    return b;
+}
+
 static const char*
 lbl_onoff_mf(void* v, char* b, size_t n) {
     UNUSED(v);
@@ -5506,7 +5562,7 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
     {.id = "rrc",
      .label = "RRC Filter",
      .label_fn = lbl_toggle_rrc,
-     .help = "Toggle Root-Raised-Cosine matched filter.",
+     .help = "Toggle RRC used by Matched Filter (requires MF enabled).",
      .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_rrc},
     {.id = "rrc_a+",
@@ -5534,9 +5590,9 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .is_enabled = is_mod_qpsk,
      .on_select = act_rrc_s_dn},
     {.id = "mf",
-     .label = "Matched Filter (legacy)",
+     .label = "Matched Filter (pre-Costas)",
      .label_fn = lbl_onoff_mf,
-     .help = "Toggle RX matched filter stage.",
+     .help = "Pre-Costas matched filter; uses RRC when enabled, else 5-tap fallback.",
      .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_mf},
     {.id = "lms",
@@ -5545,6 +5601,46 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .help = "Toggle LMS equalizer.",
      .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_lms},
+    {.id = "lms_mu",
+     .label = "LMS mu (status)",
+     .label_fn = lbl_cqpsk_mu,
+     .help = "Adaptation step (Q15).",
+     .is_enabled = is_mod_qpsk},
+    {.id = "lms_mu+",
+     .label = "LMS mu +1",
+     .help = "Increase LMS mu.",
+     .is_enabled = is_mod_qpsk,
+     .on_select = act_cqpsk_mu_up},
+    {.id = "lms_mu-",
+     .label = "LMS mu -1",
+     .help = "Decrease LMS mu.",
+     .is_enabled = is_mod_qpsk,
+     .on_select = act_cqpsk_mu_dn},
+    {.id = "lms_stride",
+     .label = "LMS Update Stride (status)",
+     .label_fn = lbl_cqpsk_stride,
+     .help = "Symbols between LMS updates.",
+     .is_enabled = is_mod_qpsk},
+    {.id = "lms_stride+",
+     .label = "Stride +1",
+     .help = "Increase update stride.",
+     .is_enabled = is_mod_qpsk,
+     .on_select = act_cqpsk_stride_up},
+    {.id = "lms_stride-",
+     .label = "Stride -1",
+     .help = "Decrease update stride.",
+     .is_enabled = is_mod_qpsk,
+     .on_select = act_cqpsk_stride_dn},
+    {.id = "lms_warm",
+     .label = "LMS Warmup (status)",
+     .label_fn = lbl_cqpsk_warm,
+     .help = "Remaining warmup samples (seed).",
+     .is_enabled = is_mod_qpsk},
+    {.id = "lms_seed",
+     .label = "Seed/Warmup (~1.5k)",
+     .help = "Run short CMA warmup to seed LMS.",
+     .is_enabled = is_mod_qpsk,
+     .on_select = act_cma},
     {.id = "wl",
      .label = "WL Enhancement",
      .label_fn = lbl_onoff_wl,

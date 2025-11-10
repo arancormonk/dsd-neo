@@ -1907,6 +1907,32 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_cqpsk_acq_fll(on ? 0 : 1);
                     break;
                 }
+                case UI_DSP_OP_CQPSK_LMS_MU_DELTA: {
+                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
+                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
+                    int nmu = mu + p.a;
+                    if (nmu < 1) {
+                        nmu = 1;
+                    }
+                    if (nmu > 64) {
+                        nmu = 64;
+                    }
+                    rtl_stream_cqpsk_set(-1, -1, nmu, -1, -1, -1, -1, -1, -1);
+                    break;
+                }
+                case UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA: {
+                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
+                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
+                    int ns = st + p.a;
+                    if (ns < 1) {
+                        ns = 1;
+                    }
+                    if (ns > 16) {
+                        ns = 16;
+                    }
+                    rtl_stream_cqpsk_set(-1, -1, -1, ns, -1, -1, -1, -1, -1);
+                    break;
+                }
                 default: break;
             }
             break;
