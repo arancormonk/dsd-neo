@@ -37,7 +37,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Enable QEMU for cross-arch containers
-        uses: docker/setup-qemu-action@v3.6.0
+        uses: docker/setup-qemu-action@v3.7.0
         with:
           platforms: all
       - name: Ensure binfmt for aarch64 is registered
