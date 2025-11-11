@@ -661,10 +661,26 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                     minute = ((DMR_PDU[i + 4] & 0x0F) << 2) + ((DMR_PDU[i + 5] & 0xC0) >> 6);
                     second = (DMR_PDU[i + 5] & 0x3F);
                     i += 5;
-                    // basic plausibility checks (range-limited fields only; do not clamp year)
-                    if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59
-                        && second <= 59) {
+                    // Validate decoded timestamp and fall back to system time if out-of-range.
+                    // Accept only years in [2000, 2037] to avoid epoch edge cases and bogus decodes.
+                    int valid = 1;
+                    if (!(month >= 1 && month <= 12)) {
+                        valid = 0;
+                    }
+                    if (!(day >= 1 && day <= 31)) {
+                        valid = 0;
+                    }
+                    if (!(hour <= 23 && minute <= 59 && second <= 59)) {
+                        valid = 0;
+                    }
+                    if (!(year >= 2000 && year <= 2037)) {
+                        valid = 0;
+                    }
+                    if (valid) {
                         lrrp_confidence++;
+                    } else {
+                        // Invalidate decoded time so downstream uses system time fallback.
+                        year = month = day = hour = minute = second = 0;
                     }
                 }
                 break;
@@ -922,11 +938,37 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
                 hour = ((DMR_PDU[i + 1] - 0x30) << 4) | (DMR_PDU[i + 2] - 0x30);
                 minute = ((DMR_PDU[i + 3] - 0x30) << 4) | (DMR_PDU[i + 4] - 0x30);
                 second = ((DMR_PDU[i + 5] - 0x30) << 4) | (DMR_PDU[i + 6] - 0x30);
-                //think this is in day, mon, year format
+                // think this is in day, mon, year format (packed BCD nibbles)
                 day = ((DMR_PDU[i + 7] - 0x30) << 4) | (DMR_PDU[i + 8] - 0x30);
                 month = ((DMR_PDU[i + 9] - 0x30) << 4) | (DMR_PDU[i + 10] - 0x30);
                 year = ((DMR_PDU[i + 11] - 0x30) << 4) | (DMR_PDU[i + 12] - 0x30);
                 i += 12;
+                // Validate BCD fields; if out-of-range, drop to system time fallback later.
+                {
+                    int yy = ((year >> 4) & 0xF) * 10 + (year & 0xF);
+                    int mm = ((month >> 4) & 0xF) * 10 + (month & 0xF);
+                    int dd = ((day >> 4) & 0xF) * 10 + (day & 0xF);
+                    int hh = ((hour >> 4) & 0xF) * 10 + (hour & 0xF);
+                    int mi = ((minute >> 4) & 0xF) * 10 + (minute & 0xF);
+                    int ss = ((second >> 4) & 0xF) * 10 + (second & 0xF);
+                    int full_year = 2000 + yy;
+                    int valid = 1;
+                    if (!(mm >= 1 && mm <= 12)) {
+                        valid = 0;
+                    }
+                    if (!(dd >= 1 && dd <= 31)) {
+                        valid = 0;
+                    }
+                    if (!(hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59 && ss >= 0 && ss <= 59)) {
+                        valid = 0;
+                    }
+                    if (!(full_year >= 2000 && full_year <= 2037)) {
+                        valid = 0;
+                    }
+                    if (!valid) {
+                        time = 0; // force writer to use system time
+                    }
+                }
                 break;
 
             case 0x53: //S -- South

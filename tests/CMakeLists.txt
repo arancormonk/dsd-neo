@@ -746,6 +746,30 @@ target_include_directories(dsd-neo_test_dmr_relaxed_header_ip PRIVATE ${PROJECT_
 target_compile_definitions(dsd-neo_test_dmr_relaxed_header_ip PRIVATE MBELIB_NO_HEADERS=1)
 add_test(NAME DMR_RELAXED_HEADER_IP COMMAND dsd-neo_test_dmr_relaxed_header_ip)
 
+# DMR LRRP: invalid decoded date should fall back to system time
+add_executable(dsd-neo_test_dmr_lrrp_time_fallback
+  protocol/dmr/test_dmr_lrrp_time_fallback.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_time_fallback PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LRRP_TIME_FALLBACK COMMAND dsd-neo_test_dmr_lrrp_time_fallback)
+
+# DMR LRRP: valid decoded date should be used (no fallback)
+add_executable(dsd-neo_test_dmr_lrrp_time_valid
+  protocol/dmr/test_dmr_lrrp_time_valid.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_time_valid PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LRRP_TIME_VALID COMMAND dsd-neo_test_dmr_lrrp_time_valid)
+
+# DMR LOCN: invalid decoded date should fall back to system time
+add_executable(dsd-neo_test_dmr_locn_time_fallback
+  protocol/dmr/test_dmr_locn_time_fallback.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_locn_time_fallback PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LOCN_TIME_FALLBACK COMMAND dsd-neo_test_dmr_locn_time_fallback)
+
 # FEC core (Hamming/Golay/QR) block code tests
 add_executable(dsd-neo_test_fec_block_codes fec/test_fec_block_codes.c)
 target_include_directories(dsd-neo_test_fec_block_codes PRIVATE ${PROJECT_SOURCE_DIR}/include)
