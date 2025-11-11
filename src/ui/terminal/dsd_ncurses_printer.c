@@ -327,8 +327,8 @@ ui_print_label_pad(const char* label) {
     if (lab_len < 0) {
         lab_len = 0;
     }
-    /* Draw border using the current active color (green during decode, cyan otherwise) */
-    addch('|');
+    /* Draw the left border in the primary UI color (teal/cyan) for consistency */
+    ui_print_lborder();
     addch(' ');
     addstr(label);
     addch(':');
