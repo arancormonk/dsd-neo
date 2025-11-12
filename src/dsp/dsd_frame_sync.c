@@ -67,9 +67,31 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
     // Periodic P25 trunk SM heartbeat (once per second) to enforce hangtime
     // fallbacks even if frame processing stalls due to signal loss.
+    // Note: Only run the P25 trunk SM tick when P25 is the active protocol
+    // context. This avoids unintended retunes (CC hunting) while trunking on
+    // other protocols such as NXDN/DMR/EDACS.
     static time_t last_tick = 0;
+    static time_t last_p25_seen = 0; // runtime cache of recent P25 activity
     if (now != last_tick) {
-        p25_sm_try_tick(opts, state);
+        // Detect current P25 activity via last observed sync type (P25p1: 0/1;
+        // P25p2: 35/36) and maintain a small grace window after last P25
+        // observation so watchdog fallbacks still run on brief fades.
+        int p25_by_sync = (state
+                           && (state->lastsynctype == 0 || state->lastsynctype == 1 || state->lastsynctype == 35
+                               || state->lastsynctype == 36))
+                              ? 1
+                              : 0;
+        if (p25_by_sync) {
+            last_p25_seen = now;
+        }
+        int p25_recent = (last_p25_seen != 0 && (now - last_p25_seen) <= 3) ? 1 : 0; // 3s grace
+        int p25_active = p25_by_sync || p25_recent || (state && state->p25_p2_active_slot != -1);
+        // Only drive the P25 trunk SM heartbeat when P25 trunking is enabled
+        // and P25 appears to be the active/most-recent protocol context. This
+        // avoids unintended CC hunts while trunking NXDN/DMR/EDACS.
+        if (opts && opts->p25_trunk == 1 && p25_active) {
+            p25_sm_try_tick(opts, state);
+        }
         last_tick = now;
     }
     /* detects frame sync and returns frame type
