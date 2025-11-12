@@ -2914,7 +2914,7 @@ rtl_set_ppm(void* v) {
 static void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Bandwidth kHz (4,6,8,12,16,24)", c->opts->rtl_bandwidth, cb_rtl_bw, c);
+    ui_prompt_open_int_async("DSP Bandwidth kHz (4,6,8,12,16,24)", c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
 }
 
 static void
@@ -3021,7 +3021,7 @@ static const NcMenuItem RTL_RF_ITEMS[] = {
     {.id = "freq", .label = "Set Frequency (Hz)...", .help = "Set center frequency in Hz.", .on_select = rtl_set_freq},
     {.id = "gain", .label = "Set Gain...", .help = "0=AGC; else driver gain units.", .on_select = rtl_set_gain},
     {.id = "ppm", .label = "Set PPM error...", .help = "-200..200.", .on_select = rtl_set_ppm},
-    {.id = "bw", .label = "Set Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
+    {.id = "bw", .label = "Set DSP Bandwidth (kHz)...", .help = "4,6,8,12,16,24.", .on_select = rtl_set_bw},
     {.id = "sql", .label = "Set Squelch (dB)...", .help = "More negative -> tighter.", .on_select = rtl_set_sql},
     {.id = "vol", .label = "Set Volume Multiplier...", .help = "0..3 sample scaler.", .on_select = rtl_set_vol},
 };

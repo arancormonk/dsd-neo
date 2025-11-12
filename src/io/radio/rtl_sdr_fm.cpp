@@ -69,17 +69,14 @@ static void maybe_refresh_ted_sps_after_rate_change(const dsd_opts* opts);
 /* Forward declaration for eye ring append used in demod loop */
 static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
 
-#define DEFAULT_SAMPLE_RATE      48000
-#define DEFAULT_BUF_LENGTH       (1 * 16384)
-#define MAXIMUM_OVERSAMPLE       16
-#define MAXIMUM_BUF_LENGTH       (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
-#define AUTO_GAIN                -100
-#define BUFFER_DUMP              4096
+#define DEFAULT_SAMPLE_RATE 48000
+#define DEFAULT_BUF_LENGTH  (1 * 16384)
+#define MAXIMUM_OVERSAMPLE  16
+#define MAXIMUM_BUF_LENGTH  (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
+#define AUTO_GAIN           -100
+#define BUFFER_DUMP         4096
 
-#define FREQUENCIES_LIMIT        1000
-
-/* Clamp for bandwidth upsampling multiplier to avoid extreme expansion */
-#define MAX_BANDWIDTH_MULTIPLIER 8
+#define FREQUENCIES_LIMIT   1000
 
 static int lcm_post[17] = {1, 1, 1, 3, 1, 5, 3, 7, 1, 9, 5, 11, 3, 13, 7, 15, 1};
 static int ACTUAL_BUF_LENGTH;
@@ -163,11 +160,8 @@ static int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
 // UDP control handle
 static struct udp_control* g_udp_ctrl = NULL;
 
-int rtl_bandwidth;
-int bandwidth_multiplier;
-int bandwidth_divisor =
-    48000; // multiplier = bandwidth_divisor / rtl_bandwidth; clamped to [1, MAX_BANDWIDTH_MULTIPLIER]
-
+/* DSP baseband for RTL path in Hz (derived from opts->rtl_dsp_bw_khz). */
+int rtl_dsp_bw_hz;
 short int volume_multiplier;
 uint16_t port;
 
@@ -1287,7 +1281,7 @@ apply_capture_settings(uint32_t center_freq_hz) {
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
     rtl_device_set_sample_rate(rtl_device_handle, dongle.rate);
     /* Use driver auto hardware bandwidth by default, or override via env */
-    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
+    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_dsp_bw_hz));
     /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != dongle.rate) {
@@ -1325,7 +1319,7 @@ maybe_update_resampler_after_rate_change(void) {
         return;
     }
     int target = demod.resamp_target_hz;
-    int inRate = demod.rate_out > 0 ? demod.rate_out : rtl_bandwidth;
+    int inRate = demod.rate_out > 0 ? demod.rate_out : rtl_dsp_bw_hz;
     int g = gcd_int(inRate, target);
     int L = target / g;
     int M = inRate / g;
@@ -1505,7 +1499,7 @@ controller_thread_fn(void* arg) {
         }
     }
     /* Apply tuner IF bandwidth with mode-aware heuristic */
-    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_bandwidth));
+    rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_dsp_bw_hz));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
@@ -2307,7 +2301,7 @@ dsd_rtl_stream_get_costas_err_q14(void) {
  */
 void
 dongle_init(struct dongle_state* s) {
-    s->rate = rtl_bandwidth;
+    s->rate = rtl_dsp_bw_hz;
     s->gain = AUTO_GAIN; // tenths of a dB
     s->mute = 0;
     s->direct_sampling = 0;
@@ -2334,8 +2328,8 @@ typedef struct {
 static void
 demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p) {
     /* Common defaults */
-    s->rate_in = rtl_bandwidth;
-    s->rate_out = rtl_bandwidth;
+    s->rate_in = rtl_dsp_bw_hz;
+    s->rate_out = rtl_dsp_bw_hz;
     s->squelch_level = 0;
     s->conseq_squelch = 10;
     s->terminate_on_squelch = 0;
@@ -2461,13 +2455,13 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p)
         s->comp_fir_size = 9;
         s->custom_atan = 1;
         s->deemph = 1;
-        s->rate_out2 = rtl_bandwidth;
+        s->rate_out2 = rtl_dsp_bw_hz;
     } else if (mode == DEMOD_RO2) {
         s->downsample_passes = 0;
         s->comp_fir_size = 0;
         s->custom_atan = 2;
         s->deemph = 0;
-        s->rate_out2 = rtl_bandwidth;
+        s->rate_out2 = rtl_dsp_bw_hz;
     } else {
         /* DEMOD_DIGITAL default already set */
         s->rate_out2 = -1;
@@ -2570,7 +2564,7 @@ demod_cleanup(struct demod_state* s) {
  */
 void
 output_init(struct output_state* s) {
-    s->rate = rtl_bandwidth;
+    s->rate = rtl_dsp_bw_hz;
     pthread_cond_init(&s->ready, NULL);
     pthread_cond_init(&s->space, NULL);
     pthread_mutex_init(&s->ready_m, NULL);
@@ -2925,7 +2919,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
         LOG_INFO("Setting RTL PPM Error Set to %d\n", opts->rtlsdr_ppm_error);
     }
     dongle.dev_index = opts->rtl_dev_index;
-    LOG_INFO("Setting RTL Bandwidth to %d Hz\n", rtl_bandwidth);
+    LOG_INFO("Setting DSP baseband to %d Hz\n", rtl_dsp_bw_hz);
     LOG_INFO("Setting RTL Power Squelch Level to %d\n", opts->rtl_squelch_level);
     if (opts->rtl_udp_port != 0) {
         int p = opts->rtl_udp_port;
@@ -3005,23 +2999,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int rrc_enable, rrc_alpha_q15, rrc_span_syms;
     } persist = {};
 
-    rtl_bandwidth = opts->rtl_bandwidth * 1000; //reverted back to straight value
-    bandwidth_multiplier = (bandwidth_divisor / rtl_bandwidth);
-    /* Guard multiplier to a safe range [1, MAX_BANDWIDTH_MULTIPLIER] */
-    {
-        int orig_mult = bandwidth_multiplier;
-        if (bandwidth_multiplier < 1) {
-            LOG_WARNING("bandwidth_multiplier computed as %d (divisor=%d, bandwidth=%d Hz). Clamping to 1.\n",
-                        orig_mult, bandwidth_divisor, rtl_bandwidth);
-            bandwidth_multiplier = 1;
-        } else if (bandwidth_multiplier > MAX_BANDWIDTH_MULTIPLIER) {
-            LOG_WARNING("bandwidth_multiplier computed as %d exceeds max %d (divisor=%d, bandwidth=%d Hz). "
-                        "Clamping to %d.\n",
-                        orig_mult, MAX_BANDWIDTH_MULTIPLIER, bandwidth_divisor, rtl_bandwidth,
-                        MAX_BANDWIDTH_MULTIPLIER);
-            bandwidth_multiplier = MAX_BANDWIDTH_MULTIPLIER;
-        }
-    }
+    rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
     /* Apply CLI volume multiplier (1..3), default to 1 if out of range */
     {
         int vm = opts->rtl_volume_multiplier;
@@ -3362,7 +3340,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* Recompute resampler with the actual demod output rate now known */
     if (demod.resamp_target_hz > 0) {
         int target = demod.resamp_target_hz;
-        int inRate = demod.rate_out > 0 ? demod.rate_out : rtl_bandwidth;
+        int inRate = demod.rate_out > 0 ? demod.rate_out : rtl_dsp_bw_hz;
         int g = gcd_int(inRate, target);
         int L = target / g;
         int M = inRate / g;

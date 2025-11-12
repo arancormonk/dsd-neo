@@ -32,9 +32,6 @@
 #ifndef MAXIMUM_BUF_LENGTH
 #define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 #endif
-#ifndef MAX_BANDWIDTH_MULTIPLIER
-#define MAX_BANDWIDTH_MULTIPLIER 8
-#endif
 
 /* Half-band decimator taps (HB_TAPS) are defined where needed in DSP modules.
    Here we dimension histories against the maximum half-band used by the
@@ -71,7 +68,6 @@ struct demod_state {
     alignas(64) int16_t result[MAXIMUM_BUF_LENGTH];
     alignas(64) int16_t timing_buf[MAXIMUM_BUF_LENGTH];
     alignas(64) int16_t resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
-    alignas(64) int16_t upsample_buf[MAXIMUM_BUF_LENGTH * MAX_BANDWIDTH_MULTIPLIER];
 
     /* Pointers and 64-bit items next */
     pthread_t thread;

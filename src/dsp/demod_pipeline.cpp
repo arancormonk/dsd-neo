@@ -51,9 +51,6 @@ __attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*);
 #ifndef MAXIMUM_BUF_LENGTH
 #define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 #endif
-#ifndef MAX_BANDWIDTH_MULTIPLIER
-#define MAX_BANDWIDTH_MULTIPLIER 8
-#endif
 
 #ifndef DSD_NEO_ALIGN
 #define DSD_NEO_ALIGN 64

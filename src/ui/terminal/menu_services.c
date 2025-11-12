@@ -717,7 +717,7 @@ svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
     if (khz != 4 && khz != 6 && khz != 8 && khz != 12 && khz != 16 && khz != 24) {
         khz = 12;
     }
-    opts->rtl_bandwidth = khz;
+    opts->rtl_dsp_bw_khz = khz;
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == 3) {

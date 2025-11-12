@@ -3306,7 +3306,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw(" PPM: %i;", opts->rtlsdr_ppm_error); //Adjust manually now with { and }
         printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
         printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
-        printw(" BW: %i;", opts->rtl_bandwidth);
+        printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         /* Show spectrum-based auto PPM status snapshot */
         {

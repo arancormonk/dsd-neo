@@ -406,7 +406,9 @@ typedef struct {
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
     int rtl_udp_port;
-    int rtl_bandwidth;
+    /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24). Influences capture rate planning.
+       Not the hardware tuner IF bandwidth. */
+    int rtl_dsp_bw_khz;
     int rtl_bias_tee; /* 1 to enable RTL-SDR bias tee (if supported) */
     int rtl_started;
     /* Mark when RTL-SDR stream must be destroyed/recreated to apply changes
