@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,8 +165,16 @@ main(void) {
     fseek(ef, 0, SEEK_END);
     long esz = ftell(ef);
     fseek(ef, 0, SEEK_SET);
-    char* ebuf = calloc((size_t)esz + 1, 1);
-    fread(ebuf, 1, (size_t)esz, ef);
+    size_t pesz = 0;
+    if (esz > 0 && (unsigned long)esz <= (unsigned long)(SIZE_MAX - 1)) {
+        pesz = (size_t)esz;
+    }
+    char* ebuf = calloc(pesz + 1u, 1u);
+    if (!ebuf) {
+        fclose(ef);
+        return 105;
+    }
+    fread(ebuf, 1, pesz, ef);
     fclose(ef);
     rc |= expect_has_substr(ebuf, " Time: 2024.12.01 23:59:58", "stderr has decoded Time");
     free(ebuf);
@@ -178,8 +187,16 @@ main(void) {
     fseek(of, 0, SEEK_END);
     long osz = ftell(of);
     fseek(of, 0, SEEK_SET);
-    char* obuf = calloc((size_t)osz + 1, 1);
-    fread(obuf, 1, (size_t)osz, of);
+    size_t posz = 0;
+    if (osz > 0 && (unsigned long)osz <= (unsigned long)(SIZE_MAX - 1)) {
+        posz = (size_t)osz;
+    }
+    char* obuf = calloc(posz + 1u, 1u);
+    if (!obuf) {
+        fclose(of);
+        return 106;
+    }
+    fread(obuf, 1, posz, of);
     fclose(of);
     rc |= expect_has_substr(obuf, "2024/12/01\t23:59:58\t", "LRRP uses decoded timestamp");
     rc |= expect_no_substr(obuf, "1999/01/02\t11:22:33\t", "LRRP not using system fallback");

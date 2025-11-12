@@ -11,6 +11,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -175,8 +176,16 @@ main(void) {
     fseek(ef, 0, SEEK_END);
     long esize = ftell(ef);
     fseek(ef, 0, SEEK_SET);
-    char* ebuf = calloc((size_t)esize + 1, 1);
-    fread(ebuf, 1, (size_t)esize, ef);
+    size_t pesize = 0;
+    if (esize > 0 && (unsigned long)esize <= (unsigned long)(SIZE_MAX - 1)) {
+        pesize = (size_t)esize;
+    }
+    char* ebuf = calloc(pesize + 1u, 1u);
+    if (!ebuf) {
+        fclose(ef);
+        return 105;
+    }
+    fread(ebuf, 1, pesize, ef);
     fclose(ef);
 
     // Ensure decoded time was NOT printed (fallback path)
@@ -191,8 +200,16 @@ main(void) {
     fseek(of, 0, SEEK_END);
     long osize = ftell(of);
     fseek(of, 0, SEEK_SET);
-    char* obuf = calloc((size_t)osize + 1, 1);
-    fread(obuf, 1, (size_t)osize, of);
+    size_t posize = 0;
+    if (osize > 0 && (unsigned long)osize <= (unsigned long)(SIZE_MAX - 1)) {
+        posize = (size_t)osize;
+    }
+    char* obuf = calloc(posize + 1u, 1u);
+    if (!obuf) {
+        fclose(of);
+        return 106;
+    }
+    fread(obuf, 1, posize, of);
     fclose(of);
 
     // Ensure the file has some content and does not contain the bogus decoded year "2038/"

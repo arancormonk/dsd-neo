@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,8 +169,17 @@ main(void) {
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char* buf = calloc((size_t)sz + 1, 1);
-    fread(buf, 1, (size_t)sz, f);
+    size_t psz = 0;
+    if (sz > 0 && (unsigned long)sz <= (unsigned long)(SIZE_MAX - 1)) {
+        psz = (size_t)sz;
+    }
+    char* buf = calloc(psz + 1u, 1u);
+    if (!buf) {
+        fclose(f);
+        remove(outtmpl);
+        return 102;
+    }
+    fread(buf, 1, psz, f);
     fclose(f);
 
     rc |= expect_nonempty(buf, "LOCN LRRP file non-empty");
