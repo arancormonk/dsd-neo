@@ -62,6 +62,11 @@ printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, ch
 
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
+    /* Defensive: inputs are required for sync logic */
+    if (!opts || !state) {
+        return -1;
+    }
+
     /* Dwell timer for CQPSK entry to prevent immediate fallback to C4FM. */
     static double qpsk_dwell_enter_m = 0.0;
     const time_t now = time(NULL);
