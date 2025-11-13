@@ -10,6 +10,9 @@ target_sources(dsd-neo_runtime PRIVATE
   worker_pool.cpp
   rt_sched.cpp
   unicode.cpp
+  cli/args.c
+  bootstrap/system.c
+  bootstrap/audio.c
   ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
   ui_async_stubs.c
 )
