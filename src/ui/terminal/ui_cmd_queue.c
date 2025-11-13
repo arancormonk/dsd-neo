@@ -7,6 +7,7 @@
 
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_cmd_dispatch.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
@@ -37,6 +38,20 @@ static size_t g_tail = 0; // push index
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint g_overflow = 0;
 static atomic_uint g_overflow_warn_gate = 0;
+
+// Dispatch commands via per-domain registries
+static int
+ui_cmd_dispatch(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    const struct UiCmdReg* regs[] = {ui_actions_audio, ui_actions_radio, ui_actions_trunk, ui_actions_logging, NULL};
+    for (int i = 0; regs[i] != NULL; ++i) {
+        for (const struct UiCmdReg* r = regs[i]; r && r->fn != NULL; ++r) {
+            if (r->id == c->id) {
+                return r->fn(opts, state, c);
+            }
+        }
+    }
+    return 0; // not handled
+}
 
 static inline int
 q_is_full_unlocked(void) {
@@ -74,26 +89,11 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
 }
 
 static void
-apply_gain_delta(dsd_opts* opts, dsd_state* state, int d) {
-    int g = opts->audio_gain + d;
-    if (g < 0) {
-        g = 0;
-    }
-    if (g > 50) {
-        g = 50;
-    }
-    opts->audio_gain = g;
-    state->aout_gain = opts->audio_gain;
-    state->aout_gainR = opts->audio_gain;
-    opts->audio_gainR = opts->audio_gain;
-    if (opts->audio_gain == 0) {
-        state->aout_gain = 25;
-        state->aout_gainR = 25;
-    }
-}
-
-static void
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    // Try dispatch table first; fall back to legacy switch.
+    if (ui_cmd_dispatch(opts, state, c)) {
+        return;
+    }
     switch (c->id) {
         case UI_CMD_QUIT: {
             exitflag = 1;
@@ -115,42 +115,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_TOGGLE_MUTE: {
-            opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
-            if (opts->audio_out == 1) {
-                if (opts->audio_out_type == 0) {
-                    closePulseOutput(opts);
-                    openPulseOutput(opts);
-                } else if (opts->audio_out_type == 2 || opts->audio_out_type == 5) {
-                    if (opts->audio_out_fd >= 0) {
-                        close(opts->audio_out_fd);
-                        opts->audio_out_fd = -1;
-                    }
-                    openOSSOutput(opts);
-                }
-            }
-            if (state) {
-                snprintf(state->ui_msg, sizeof state->ui_msg, "%s",
-                         (opts->audio_out == 0) ? "Output: Muted" : "Output: On");
-                state->ui_msg_expire = time(NULL) + 3;
-            }
-            break;
-        }
-        case UI_CMD_AGAIN_DELTA: {
-            int32_t d = 0;
-            if (c->n >= (int)sizeof(int32_t)) {
-                memcpy(&d, c->data, sizeof(int32_t));
-            }
-            int g = opts->audio_gainA + d;
-            if (g < 0) {
-                g = 0;
-            }
-            if (g > 50) {
-                g = 50;
-            }
-            opts->audio_gainA = g;
-            break;
-        }
+
         case UI_CMD_TOGGLE_COMPACT: {
             opts->ncurses_compact = opts->ncurses_compact ? 0 : 1;
             break;
@@ -206,32 +171,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_GAIN_DELTA: {
-            int delta = 0;
-            if (c->n >= sizeof(int32_t)) {
-                int32_t d = 0;
-                memcpy(&d, c->data, sizeof(int32_t));
-                delta = d;
-            }
-            apply_gain_delta(opts, state, delta);
-            break;
-        }
-        case UI_CMD_TRUNK_TOGGLE: {
-            if (opts->p25_trunk == 1) {
-                opts->p25_trunk = 0;
-                opts->trunk_enable = 0;
-            } else {
-                opts->p25_trunk = 1;
-                opts->trunk_enable = 1;
-            }
-            break;
-        }
-        case UI_CMD_SCANNER_TOGGLE: {
-            opts->scanner_mode = opts->scanner_mode ? 0 : 1;
-            opts->p25_trunk = 0;
-            opts->trunk_enable = 0;
-            break;
-        }
+
         case UI_CMD_PAYLOAD_TOGGLE: {
             opts->payload = opts->payload ? 0 : 1;
             break;
@@ -245,36 +185,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_TG_HOLD_TOGGLE: {
-            uint8_t slot = 0;
-            if (c->n >= 1) {
-                slot = c->data[0] & 1;
-            }
-            if (slot == 0) {
-                if (state->tg_hold == 0) {
-                    state->tg_hold = state->lasttg;
-                } else {
-                    state->tg_hold = 0;
-                }
-                if ((opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) && (state->tg_hold == 0)) {
-                    state->tg_hold = state->nxdn_last_tg;
-                } else if (opts->frame_provoice == 1 && state->ea_mode == 0) {
-                    state->tg_hold = state->lastsrc;
-                }
-            } else {
-                if (state->tg_hold == 0) {
-                    state->tg_hold = state->lasttgR;
-                } else {
-                    state->tg_hold = 0;
-                }
-                if ((opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) && (state->tg_hold == 0)) {
-                    state->tg_hold = state->nxdn_last_tg;
-                } else if (opts->frame_provoice == 1 && state->ea_mode == 0) {
-                    state->tg_hold = state->lastsrcR;
-                }
-            }
-            break;
-        }
+
         case UI_CMD_LPF_TOGGLE: opts->use_lpf = opts->use_lpf ? 0 : 1; break;
         case UI_CMD_HPF_TOGGLE: opts->use_hpf = opts->use_hpf ? 0 : 1; break;
         case UI_CMD_PBF_TOGGLE: opts->use_pbf = opts->use_pbf ? 0 : 1; break;
@@ -365,154 +276,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_INPUT_VOL_CYCLE: {
-            if (opts->audio_in_type == 3) {
-                if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
-                    opts->rtl_volume_multiplier++;
-                } else {
-                    opts->rtl_volume_multiplier = 1;
-                }
-                if (state) {
-                    snprintf(state->ui_msg, sizeof state->ui_msg, "RTL Volume: %dX", opts->rtl_volume_multiplier);
-                    state->ui_msg_expire = time(NULL) + 2;
-                }
-            } else {
-                if (opts->input_volume_multiplier == 1 || opts->input_volume_multiplier == 2) {
-                    opts->input_volume_multiplier++;
-                } else {
-                    opts->input_volume_multiplier = 1;
-                }
-                if (state) {
-                    snprintf(state->ui_msg, sizeof state->ui_msg, "Input Volume: %dX", opts->input_volume_multiplier);
-                    state->ui_msg_expire = time(NULL) + 2;
-                }
-            }
-            break;
-        }
 
-        case UI_CMD_TRUNK_GROUP_TOGGLE: {
-            if (opts->p25_trunk == 1) {
-                opts->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 0 : 1;
-            }
-            break;
-        }
-
-        case UI_CMD_EH_NEXT: state->eh_index++; break;
-        case UI_CMD_EH_PREV: state->eh_index--; break;
-        case UI_CMD_EH_TOGGLE_SLOT:
-            state->eh_slot ^= 1;
-            state->eh_index = 0;
-            break;
-
-        case UI_CMD_PPM_DELTA: {
-            int32_t d = 0;
-            if (c->n >= (int)sizeof(int32_t)) {
-                memcpy(&d, c->data, sizeof(int32_t));
-            }
-            opts->rtlsdr_ppm_error += d;
-            break;
-        }
-        case UI_CMD_INVERT_TOGGLE: {
-            int inv = opts->inverted_dmr ? 0 : 1;
-            opts->inverted_dmr = inv;
-            opts->inverted_dpmr = inv;
-            opts->inverted_x2tdma = inv;
-            opts->inverted_ysf = inv;
-            opts->inverted_m17 = inv;
-            break;
-        }
-        case UI_CMD_MOD_TOGGLE: {
-            if (state->rf_mod == 0) {
-                opts->mod_c4fm = 0;
-                opts->mod_qpsk = 1;
-                opts->mod_gfsk = 0;
-                state->rf_mod = 1;
-                state->samplesPerSymbol = 10;
-                state->symbolCenter = 4;
-            } else {
-                opts->mod_c4fm = 1;
-                opts->mod_qpsk = 0;
-                opts->mod_gfsk = 0;
-                state->rf_mod = 0;
-                // Keep current symbol timing unless other code adjusts it
-            }
-            break;
-        }
-        case UI_CMD_MOD_P2_TOGGLE: {
-            if (state->rf_mod == 0) {
-                opts->mod_c4fm = 0;
-                opts->mod_qpsk = 1;
-                opts->mod_gfsk = 0;
-                state->rf_mod = 1;
-                state->samplesPerSymbol = 8;
-                state->symbolCenter = 3;
-            } else {
-                opts->mod_c4fm = 1;
-                opts->mod_qpsk = 0;
-                opts->mod_gfsk = 0;
-                state->rf_mod = 0;
-                state->samplesPerSymbol = 8;
-                state->symbolCenter = 3;
-            }
-            break;
-        }
-        case UI_CMD_GAIN_SET: {
-            int32_t g = 0;
-            if (c->n >= (int)sizeof(int32_t)) {
-                memcpy(&g, c->data, sizeof g);
-            }
-            if (g < 0) {
-                g = 0;
-            }
-            if (g > 50) {
-                g = 50;
-            }
-            opts->audio_gain = g;
-            state->aout_gain = opts->audio_gain;
-            state->aout_gainR = opts->audio_gain;
-            opts->audio_gainR = opts->audio_gain;
-            if (opts->audio_gain == 0) {
-                state->aout_gain = 25;
-                state->aout_gainR = 25;
-            }
-            break;
-        }
-        case UI_CMD_AGAIN_SET: {
-            int32_t g = 0;
-            if (c->n >= (int)sizeof(int32_t)) {
-                memcpy(&g, c->data, sizeof g);
-            }
-            if (g < 0) {
-                g = 0;
-            }
-            if (g > 50) {
-                g = 50;
-            }
-            opts->audio_gainA = g;
-            break;
-        }
-        case UI_CMD_INPUT_WARN_DB_SET: {
-            double v = 0.0;
-            if (c->n >= (int)sizeof(double)) {
-                memcpy(&v, c->data, sizeof v);
-            }
-            if (v < -200.0) {
-                v = -200.0;
-            }
-            if (v > 0.0) {
-                v = 0.0;
-            }
-            opts->input_warn_db = v;
-            break;
-        }
-        case UI_CMD_INPUT_MONITOR_TOGGLE: {
-            opts->monitor_input_audio = opts->monitor_input_audio ? 0 : 1;
-            break;
-        }
-        case UI_CMD_COSINE_FILTER_TOGGLE: {
-            opts->use_cosine_filter = opts->use_cosine_filter ? 0 : 1;
-            break;
-        }
         case UI_CMD_DMR_RESET: {
             // Reset site params/strings and NXDN fields similar to handler
             state->dmr_rest_channel = -1;
@@ -925,53 +689,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_TRUNK_WLIST_TOGGLE: {
-            opts->trunk_use_allow_list = opts->trunk_use_allow_list ? 0 : 1;
-            break;
-        }
-        case UI_CMD_TRUNK_PRIV_TOGGLE: {
-            opts->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 0 : 1;
-            break;
-        }
-        case UI_CMD_TRUNK_DATA_TOGGLE: {
-            opts->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 0 : 1;
-            break;
-        }
-        case UI_CMD_TRUNK_ENC_TOGGLE: {
-            opts->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 0 : 1;
-            break;
-        }
-        case UI_CMD_UI_MSG_CLEAR: {
-            if (state) {
-                state->ui_msg[0] = '\0';
-                state->ui_msg_expire = 0;
-            }
-            break;
-        }
-        case UI_CMD_EH_RESET: {
-            // Reset ring-buffered event history on demod thread
-            if (state) {
-                svc_reset_event_history(state);
-            }
-            break;
-        }
-        case UI_CMD_EVENT_LOG_DISABLE: {
-            // Disable event log file output safely on demod thread
-            if (opts) {
-                svc_disable_event_log(opts);
-            }
-            break;
-        }
-        case UI_CMD_EVENT_LOG_SET: {
-            if (opts && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                svc_set_event_log(opts, path);
-            }
-            break;
-        }
+
         case UI_CMD_CRC_RELAX_TOGGLE: {
             if (opts) {
                 svc_toggle_crc_relax(opts);
@@ -1308,20 +1026,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_INPUT_VOL_SET: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 1;
-                memcpy(&v, c->data, sizeof v);
-                if (v < 1) {
-                    v = 1;
-                }
-                if (v > 16) {
-                    v = 16;
-                }
-                opts->input_volume_multiplier = v;
-            }
-            break;
-        }
+
         case UI_CMD_LRRP_SET_HOME: {
             if (opts) {
                 svc_lrrp_set_home(opts);

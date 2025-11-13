@@ -42,7 +42,19 @@ dsd_cli_usage(void) {
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc) {
 
-    const char* calc_csv_env = getenv("DSD_NEO_DMR_T3_CALC_CSV");
+    // Copy env to avoid invalidation by subsequent setenv() calls
+    char* calc_csv_env = NULL;
+    {
+        const char* p = getenv("DSD_NEO_DMR_T3_CALC_CSV");
+        if (p && *p) {
+            size_t l = strlen(p);
+            calc_csv_env = (char*)malloc(l + 1);
+            if (calc_csv_env) {
+                memcpy(calc_csv_env, p, l);
+                calc_csv_env[l] = '\0';
+            }
+        }
+    }
 
     // CLI long options (pre-scan) ------------------------------------------------
     const char* calc_csv_cli = NULL;
@@ -251,8 +263,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (out_oneshot_rc) {
             *out_oneshot_rc = rc;
         }
+        free(calc_csv_env);
         return DSD_PARSE_ONE_SHOT;
     }
+    free(calc_csv_env);
 
     // P25 Auto-Adapt via environment (if not set by CLI)
     if (!opts->p25_auto_adapt) {
