@@ -26,9 +26,11 @@
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <math.h>
 #include <ncurses.h>
@@ -60,40 +62,7 @@ swap_int_local(int* a, int* b) {
     *b = t;
 }
 
-/* Gamma LUT for density→glyph mapping (sqrt gamma 0.5) */
-static int s_gamma_ready = 0;
-static float s_gamma_lut[256];
-
-static inline void
-gamma_init_once(void) {
-    if (s_gamma_ready) {
-        return;
-    }
-    for (int i = 0; i < 256; i++) {
-        float x = (float)i / 255.0f;
-        s_gamma_lut[i] = sqrtf(x); /* gamma 0.5 */
-    }
-    s_gamma_ready = 1;
-}
-
-static inline double
-gamma_map01(double f) {
-    if (f <= 0.0) {
-        return 0.0;
-    }
-    if (f >= 1.0) {
-        return 1.0;
-    }
-    gamma_init_once();
-    int idx = (int)lrint(f * 255.0);
-    if (idx < 0) {
-        idx = 0;
-    }
-    if (idx > 255) {
-        idx = 255;
-    }
-    return (double)s_gamma_lut[idx];
-}
+// gamma mapping now provided by ui_prims
 
 /* Determine if an Active Channel label refers to a locked-out target.
  * Supports both "TG:" (group) and "TGT:" (target/private/data) fields.
@@ -180,76 +149,7 @@ static int snr_hist_len_gfsk = 0;
 static int snr_hist_head_gfsk = 0;
 
 /* UI helpers: dynamic headers and horizontal rules sized to terminal width */
-static void
-ui_print_hr(void) {
-    int rows = 0, cols = 80;
-    getmaxyx(stdscr, rows, cols);
-    (void)rows;
-    (void)rows;
-    if (cols < 1 || rows < 1) {
-        cols = 80;
-    }
-    int y = 0, x = 0;
-    getyx(stdscr, y, x);
-    (void)x;
-    mvhline(y, 0, '-', cols);
-    if (y + 1 < rows) {
-        move(y + 1, 0);
-    } else {
-        addch('\n');
-    }
-}
-
-static void
-ui_print_header(const char* title) {
-    int rows = 0, cols = 80;
-    getmaxyx(stdscr, rows, cols);
-    (void)rows;
-    (void)rows;
-    if (cols < 4) {
-        cols = 80;
-    }
-    const char* t = (title && *title) ? title : "";
-    int y = 0, x = 0;
-    getyx(stdscr, y, x);
-    (void)x;
-    addstr("--");
-    addstr(t);
-    int used = 2 + (int)strlen(t);
-    if (used < cols) {
-        mvhline(y, used, '-', cols - used);
-    }
-    if (y + 1 < rows) {
-        move(y + 1, 0);
-    } else {
-        addch('\n');
-    }
-}
-
-/* Print a single left border '|' using the primary UI color (pair 4) */
-static inline void
-ui_print_lborder(void) {
-    attr_t saved_attrs = 0;
-    short saved_pair = 0;
-    attr_get(&saved_attrs, &saved_pair, NULL);
-    attron(COLOR_PAIR(4));
-    addch('|');
-    /* Restore whatever attributes/pair was active before drawing the border */
-    attr_set(saved_attrs, saved_pair, NULL);
-}
-
-/* Print a single left border '|' using the Active/Green color (pair 3)
- * Used for sections that should visually align with "active" styling even when idle. */
-static inline void
-ui_print_lborder_green(void) {
-    attr_t saved_attrs = 0;
-    short saved_pair = 0;
-    attr_get(&saved_attrs, &saved_pair, NULL);
-    attron(COLOR_PAIR(3));
-    addch('|');
-    /* Restore previously active attributes/pair */
-    attr_set(saved_attrs, saved_pair, NULL);
-}
+// drawing helpers now provided by ui_prims
 
 /* Classify whether a channel mapping matches the active P25 IDEN parameters. */
 static int
@@ -310,14 +210,7 @@ ui_match_iden_channel(const dsd_state* state, int ch16, long int freq, int* out_
 }
 
 /* Map IDEN nibble (0..15) to a color pair in 21..28 (wrap by 8) */
-static inline short
-ui_iden_color_pair(int iden) {
-    if (iden < 0) {
-        iden = 0;
-    }
-    int idx = iden & 7;
-    return (short)(21 + idx);
-}
+// iden color helper now provided by ui_prims
 
 /* Small helpers to align key/value fields to a consistent value column. */
 static inline void
@@ -1086,7 +979,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                 if (f > 1.0) {
                     f = 1.0;
                 }
-                double g = gamma_map01(f); /* gamma brighten via LUT */
+                double g = ui_gamma_map01(f); /* gamma brighten via LUT */
                 if (opts && opts->eye_color && has_colors()) {
                     int ci = (int)lrint(g * (double)(color_len - 1));
                     if (ci < 0) {
@@ -1193,7 +1086,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
                         if (f > 1.0) {
                             f = 1.0;
                         }
-                        double g = gamma_map01(f);
+                        double g = ui_gamma_map01(f);
                         int ci = (int)lrint(g * (double)(color_len - 1));
                         if (ci < 0) {
                             ci = 0;
@@ -1523,7 +1416,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 if (f > 1.0) {
                     f = 1.0;
                 }
-                double g = gamma_map01(f); /* gamma = 0.5 via LUT */
+                double g = ui_gamma_map01(f); /* gamma = 0.5 via LUT */
                 if (opts->eye_unicode) {
                     int idx = (int)lrint(g * (double)(uni_len - 1));
                     if (idx < 0) {
@@ -1620,7 +1513,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 if (f2 > 1.0) {
                     f2 = 1.0;
                 }
-                double g2 = gamma_map01(f2);
+                double g2 = ui_gamma_map01(f2);
                 int uidx = (int)lrint(g2 * (double)(uni_len - 1));
                 if (uidx < 0) {
                     uidx = 0;
@@ -1645,7 +1538,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                     if (f > 1.0) {
                         f = 1.0;
                     }
-                    double g = gamma_map01(f);
+                    double g = ui_gamma_map01(f);
                     int ci = (int)lrint(g * (double)(color_len - 1));
                     if (ci < 0) {
                         ci = 0;
@@ -3158,52 +3051,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     //Start Printing Section (render factored function placeholder)
     ui_draw_frame(opts, state);
     erase();
-    if (opts->ncurses_compact == 1) {
-        ui_print_hr();
-        printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
-        ui_print_hr();
-    }
-    if (opts->ncurses_compact == 0) {
-        attron(COLOR_PAIR(6));
-        ui_print_hr();
-        printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
-        ui_print_hr();
-        attroff(COLOR_PAIR(6));
-        attron(COLOR_PAIR(4));
-    }
-
-    //fix color/pair issue when compact and trunking enabled
-    if (opts->ncurses_compact == 1 && opts->p25_trunk == 1) {
-        attron(COLOR_PAIR(4));
-    }
-
-    // Transient toast message (e.g., mute toggled)
+    ui_panel_header_render(opts, state);
     if (state) {
-        time_t now = time(NULL);
-        if (state->ui_msg[0] != '\0' && state->ui_msg_expire > now) {
-#ifdef PRETTY_COLORS
-            // Preserve current color pair to avoid forcing default/white after toast
-            attr_t saved_attrs = 0;
-            short saved_pair = 0;
-            attr_get(&saved_attrs, &saved_pair, NULL);
-#endif
-            attron(COLOR_PAIR(2));
-            printw("| %s\n", state->ui_msg);
-            attroff(COLOR_PAIR(2));
-            ui_print_hr();
-#ifdef PRETTY_COLORS
-            // Restore whichever color/attrs were active before the toast
-            attr_set(saved_attrs, saved_pair, NULL);
-#endif
-        } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
-            // Clear stale message. In async mode, post a command so the
-            // canonical state is updated; also clear the snapshot to avoid
-            // repeated posts/draws before the command is applied.
-            if (opts->ui_async) {
-                ui_post_cmd(UI_CMD_UI_MSG_CLEAR, NULL, 0);
-            }
-            state->ui_msg[0] = '\0';
-        }
+        ui_panel_footer_status_render(opts, state);
     }
 
     ui_print_header("Input Output");

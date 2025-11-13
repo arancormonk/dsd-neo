@@ -4,6 +4,7 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   dsd_ncurses_handler.c
   dsd_ncurses_menu.c
   dsd_ncurses_printer.c
+  ui_prims.c
   actions/actions_audio.c
   actions/actions_radio.c
   actions/actions_trunk.c
@@ -14,6 +15,9 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   ui_async.c
   menu_core.c
   menu_services.c
+  panels/header.c
+  panels/footer.c
+  menus/menu_defs.c
 )
 
 target_include_directories(dsd-neo_ui_terminal

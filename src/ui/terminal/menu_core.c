@@ -8,6 +8,7 @@
 #include <dsd-neo/ui/menu_core.h>
 
 #include <ctype.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <ncurses.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@
 #include <unistd.h>
 
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/menu_services.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
@@ -41,38 +43,7 @@ static int parse_hex_u64(const char* s, unsigned long long* out);
 #endif
 
 // Internal helpers
-static WINDOW*
-ui_make_window(int h, int w, int y, int x) {
-    WINDOW* win = newwin(h, w, y, x);
-    box(win, 0, 0);
-    wrefresh(win);
-    return win;
-}
-
-// global status footer (transient)
-static char g_status_msg[256];
-static time_t g_status_expire = 0;
-
-void
-ui_statusf(const char* fmt, ...) {
-    if (!fmt) {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    vsnprintf(g_status_msg, sizeof g_status_msg, fmt, ap); // NOLINT
-    va_end(ap);
-    g_status_expire = time(NULL) + 3; // show ~3 seconds
-}
-
-static void
-ui_destroy_window(WINDOW** win) {
-    if (win && *win) {
-        delwin(*win);
-        *win = NULL;
-    }
-}
+// window helpers and transient status moved to ui_prims
 
 // Forward declare submenu visibility helper so ui_is_enabled can use it
 static int ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx);
@@ -107,7 +78,7 @@ ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx) {
 }
 
 // Shared UI context for menu callbacks
-typedef struct {
+typedef struct UiCtx {
     dsd_opts* opts;
     dsd_state* state;
 } UiCtx;
@@ -203,12 +174,13 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
     mvwprintw(menu_win, mh - 3, x, "h: help  Esc/q: back");
     // transient status
     time_t now = time(NULL);
-    if (g_status_msg[0] != '\0' && now < g_status_expire) {
+    char sline[256];
+    if (ui_status_peek(sline, sizeof sline, now)) {
         // clear line then print
         mvwhline(menu_win, mh - 2, 1, ' ', mw - 2);
-        mvwprintw(menu_win, mh - 2, x, "Status: %s", g_status_msg);
+        mvwprintw(menu_win, mh - 2, x, "Status: %s", sline);
     } else {
-        g_status_msg[0] = '\0';
+        ui_status_clear_if_expired(now);
     }
     wrefresh(menu_win);
 }
@@ -2020,8 +1992,7 @@ ui_overlay_recreate_if_needed(UiMenuFrame* f) {
     }
 }
 
-// Forward declare a helper that exposes main menu items for async open
-void ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx);
+// main menu item provider declared in menu_defs.h
 
 void
 ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
@@ -2409,7 +2380,7 @@ io_always_on(void* ctx) {
 }
 
 // Enable items only when RTL-SDR is the active input
-static bool
+bool
 io_rtl_active(void* ctx) {
     UiCtx* c = (UiCtx*)ctx;
     if (!c || !c->opts) {
@@ -4888,7 +4859,7 @@ act_p2_params(void* v) {
     ui_prompt_open_string_async("Enter Phase 2 WACN (HEX)", pre, sizeof pre, cb_p2_step, pc);
 }
 
-static void
+void
 act_exit(void* v) {
     (void)v;
     exitflag = 1;
@@ -5070,7 +5041,7 @@ static const NcMenuItem IO_FILTER_ITEMS[] = {
      .on_select = io_toggle_cosine},
 };
 
-static const NcMenuItem IO_MENU_ITEMS[] = {
+const NcMenuItem IO_MENU_ITEMS[] = {
     {.id = "io.inputs",
      .label = "Inputs...",
      .help = "Select and configure inputs.",
@@ -5097,6 +5068,7 @@ static const NcMenuItem IO_MENU_ITEMS[] = {
      .submenu = IO_FILTER_ITEMS,
      .submenu_len = sizeof IO_FILTER_ITEMS / sizeof IO_FILTER_ITEMS[0]},
 };
+const size_t IO_MENU_ITEMS_LEN = sizeof IO_MENU_ITEMS / sizeof IO_MENU_ITEMS[0];
 
 // Logging & Capture
 static const NcMenuItem LOGGING_CAPTURE_ITEMS[] = {
@@ -5165,7 +5137,7 @@ static const NcMenuItem LOGGING_LOG_ITEMS[] = {
      .on_select = io_toggle_call_alert},
 };
 
-static const NcMenuItem LOGGING_MENU_ITEMS[] = {
+const NcMenuItem LOGGING_MENU_ITEMS[] = {
     {.id = "log.capture",
      .label = "Capture...",
      .help = "Symbol/audio capture and structured output.",
@@ -5177,6 +5149,7 @@ static const NcMenuItem LOGGING_MENU_ITEMS[] = {
      .submenu = LOGGING_LOG_ITEMS,
      .submenu_len = sizeof LOGGING_LOG_ITEMS / sizeof LOGGING_LOG_ITEMS[0]},
 };
+const size_t LOGGING_MENU_ITEMS_LEN = sizeof LOGGING_MENU_ITEMS / sizeof LOGGING_MENU_ITEMS[0];
 
 // Trunking & Control
 static const NcMenuItem TRUNK_MODES_ITEMS[] = {
@@ -5297,7 +5270,7 @@ static const NcMenuItem TRUNK_TDMA_ITEMS[] = {
      .on_select = act_slots_on},
 };
 
-static const NcMenuItem TRUNK_MENU_ITEMS[] = {
+const NcMenuItem TRUNK_MENU_ITEMS[] = {
     {.id = "trunk.modes",
      .label = "Modes...",
      .help = "Enable trunking or conventional scanning.",
@@ -5324,6 +5297,7 @@ static const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .submenu = TRUNK_TDMA_ITEMS,
      .submenu_len = sizeof TRUNK_TDMA_ITEMS / sizeof TRUNK_TDMA_ITEMS[0]},
 };
+const size_t TRUNK_MENU_ITEMS_LEN = sizeof TRUNK_MENU_ITEMS / sizeof TRUNK_MENU_ITEMS[0];
 
 // Keys & Security
 static const NcMenuItem KEYS_ENTRY_ITEMS[] = {
@@ -5389,7 +5363,7 @@ static const NcMenuItem KEYS_M17_ITEMS[] = {
      .on_select = act_m17_user_data},
 };
 
-static const NcMenuItem KEYS_MENU_ITEMS[] = {
+const NcMenuItem KEYS_MENU_ITEMS[] = {
     {.id = "keys.manage",
      .label = "Manage...",
      .help = "Enter/edit keys and priorities.",
@@ -5411,6 +5385,7 @@ static const NcMenuItem KEYS_MENU_ITEMS[] = {
      .submenu = KEYS_M17_ITEMS,
      .submenu_len = sizeof KEYS_M17_ITEMS / sizeof KEYS_M17_ITEMS[0]},
 };
+const size_t KEYS_MENU_ITEMS_LEN = sizeof KEYS_MENU_ITEMS / sizeof KEYS_MENU_ITEMS[0];
 
 // UI Display
 static const NcMenuItem UI_DISPLAY_P25_ITEMS[] = {
@@ -5447,7 +5422,7 @@ static const NcMenuItem UI_DISPLAY_GENERAL_ITEMS[] = {
      .on_select = act_toggle_ui_channels},
 };
 
-static const NcMenuItem UI_DISPLAY_MENU_ITEMS[] = {
+const NcMenuItem UI_DISPLAY_MENU_ITEMS[] = {
     {.id = "ui.p25",
      .label = "P25 Sections...",
      .help = "Toggle P25-related on-screen sections.",
@@ -5459,6 +5434,7 @@ static const NcMenuItem UI_DISPLAY_MENU_ITEMS[] = {
      .submenu = UI_DISPLAY_GENERAL_ITEMS,
      .submenu_len = sizeof UI_DISPLAY_GENERAL_ITEMS / sizeof UI_DISPLAY_GENERAL_ITEMS[0]},
 };
+const size_t UI_DISPLAY_MENU_ITEMS_LEN = sizeof UI_DISPLAY_MENU_ITEMS / sizeof UI_DISPLAY_MENU_ITEMS[0];
 
 // LRRP
 static const NcMenuItem LRRP_STATUS_ITEMS[] = {
@@ -5479,7 +5455,7 @@ static const NcMenuItem LRRP_DEST_ITEMS[] = {
     {.id = "disable", .label = "Disable/Stop", .help = "Disable LRRP output.", .on_select = lr_off},
 };
 
-static const NcMenuItem LRRP_MENU_ITEMS[] = {
+const NcMenuItem LRRP_MENU_ITEMS[] = {
     {.id = "lrrp.status_menu",
      .label = "Status...",
      .help = "Shows current output target.",
@@ -5491,6 +5467,7 @@ static const NcMenuItem LRRP_MENU_ITEMS[] = {
      .submenu = LRRP_DEST_ITEMS,
      .submenu_len = sizeof LRRP_DEST_ITEMS / sizeof LRRP_DEST_ITEMS[0]},
 };
+const size_t LRRP_MENU_ITEMS_LEN = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITEMS[0];
 
 // DSP
 #ifdef USE_RTLSDR
@@ -5885,7 +5862,7 @@ static const NcMenuItem DSP_BLANKER_ITEMS[] = {
     {.id = "blanker_win-", .label = "Blanker Win -1", .on_select = act_blanker_win_dn},
 };
 
-static const NcMenuItem DSP_MENU_ITEMS[] = {
+const NcMenuItem DSP_MENU_ITEMS[] = {
     {.id = "dsp.overview",
      .label = "Overview...",
      .help = "Global toggles and status.",
@@ -5925,6 +5902,7 @@ static const NcMenuItem DSP_MENU_ITEMS[] = {
      .submenu = DSP_BLANKER_ITEMS,
      .submenu_len = sizeof DSP_BLANKER_ITEMS / sizeof DSP_BLANKER_ITEMS[0]},
 };
+const size_t DSP_MENU_ITEMS_LEN = sizeof DSP_MENU_ITEMS / sizeof DSP_MENU_ITEMS[0];
 #endif
 
 // ---- Advanced & Env submenus ----
@@ -6110,7 +6088,7 @@ static const NcMenuItem ENV_EDITOR_ITEMS[] = {
      .on_select = act_env_editor},
 };
 
-static const NcMenuItem ADV_MENU_ITEMS[] = {
+const NcMenuItem ADV_MENU_ITEMS[] = {
     {.id = "p25_follow",
      .label = "P25 Follower Tuning",
      .help = "Adjust P25 SM/follower timing parameters.",
@@ -6137,67 +6115,9 @@ static const NcMenuItem ADV_MENU_ITEMS[] = {
      .submenu = ENV_EDITOR_ITEMS,
      .submenu_len = sizeof ENV_EDITOR_ITEMS / sizeof ENV_EDITOR_ITEMS[0]},
 };
+const size_t ADV_MENU_ITEMS_LEN = sizeof ADV_MENU_ITEMS / sizeof ADV_MENU_ITEMS[0];
 
-void
-ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
-    UiCtx* c = ctx;
-    static const NcMenuItem items[] = {
-        {.id = "main.io",
-         .label = "Devices & IO",
-         .help = "TCP, symbol replay, inversion.",
-         .submenu = IO_MENU_ITEMS,
-         .submenu_len = sizeof IO_MENU_ITEMS / sizeof IO_MENU_ITEMS[0]},
-        {.id = "main.logging",
-         .label = "Logging & Capture",
-         .help = "Symbols, WAV, payloads, alerts, history.",
-         .submenu = LOGGING_MENU_ITEMS,
-         .submenu_len = sizeof LOGGING_MENU_ITEMS / sizeof LOGGING_MENU_ITEMS[0]},
-        {.id = "main.trunk",
-         .label = "Trunking & Control",
-         .help = "P25 CC prefs, Phase 2 params, rigctl.",
-         .submenu = TRUNK_MENU_ITEMS,
-         .submenu_len = sizeof TRUNK_MENU_ITEMS / sizeof TRUNK_MENU_ITEMS[0]},
-        {.id = "main.keys",
-         .label = "Keys & Security",
-         .help = "Manage keys and encrypted audio muting.",
-         .submenu = KEYS_MENU_ITEMS,
-         .submenu_len = sizeof KEYS_MENU_ITEMS / sizeof KEYS_MENU_ITEMS[0]},
-        {.id = "main.dsp",
-         .label = "DSP Options",
-         .help = "RTL-SDR DSP toggles and tuning.",
-         .is_enabled = io_rtl_active,
-#ifdef USE_RTLSDR
-         .submenu = DSP_MENU_ITEMS,
-         .submenu_len = sizeof DSP_MENU_ITEMS / sizeof DSP_MENU_ITEMS[0]},
-#else
-         .submenu = NULL,
-         .submenu_len = 0},
-#endif
-        {.id = "main.ui",
-         .label = "UI Display",
-         .help = "Toggle on-screen sections.",
-         .submenu = UI_DISPLAY_MENU_ITEMS,
-         .submenu_len = sizeof UI_DISPLAY_MENU_ITEMS / sizeof UI_DISPLAY_MENU_ITEMS[0]},
-        {.id = "lrrp",
-         .label = "LRRP",
-         .help = "Configure LRRP file output.",
-         .submenu = LRRP_MENU_ITEMS,
-         .submenu_len = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITEMS[0]},
-        {.id = "main.adv",
-         .label = "Advanced & Env",
-         .help = "P25 follower, DSP advanced, RTL/TCP, env editor.",
-         .submenu = ADV_MENU_ITEMS,
-         .submenu_len = sizeof ADV_MENU_ITEMS / sizeof ADV_MENU_ITEMS[0]},
-        {.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit},
-    };
-    (void)c; // context used by callbacks; arrays are static so safe to expose
-    if (out_items) {
-        *out_items = items;
-    }
-    if (out_n) {
-        *out_n = sizeof items / sizeof items[0];
-    }
-}
+// main menu items now provided by src/ui/terminal/menus/menu_defs.c
 
 /* Blanker UI handlers implementation */
 #ifdef USE_RTLSDR
