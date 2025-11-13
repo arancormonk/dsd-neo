@@ -9,6 +9,7 @@
  * reused by tests and UI code without pulling in tuning policy.
  */
 
+#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 
 #include <errno.h>

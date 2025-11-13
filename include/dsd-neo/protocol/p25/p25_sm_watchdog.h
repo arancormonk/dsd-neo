@@ -5,7 +5,8 @@
 
 #pragma once
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 /*
  * Background watchdog for the P25 trunking state machine tick.

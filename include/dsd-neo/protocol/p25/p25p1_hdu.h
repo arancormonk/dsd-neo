@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: ISC
 // Ensure core types are visible for prototypes below
-#include <dsd-neo/core/dsd.h>
 #ifndef P25P1_HDU_H_9f95c3a5072842e8aaf94444e1452d20
 #define P25P1_HDU_H_9f95c3a5072842e8aaf94444e1452d20
+
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 

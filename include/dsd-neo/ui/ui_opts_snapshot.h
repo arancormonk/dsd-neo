@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
 
 #ifdef __cplusplus
 extern "C" {

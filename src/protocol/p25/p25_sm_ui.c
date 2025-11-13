@@ -7,6 +7,7 @@
  * UI/status tagging helpers for the P25 trunking state machine.
  */
 
+#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 
 #include <stdio.h>

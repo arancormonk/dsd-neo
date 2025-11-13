@@ -2,7 +2,8 @@
 #ifndef P25P1_LDU_H_a3c417fcb7804991b0e6d828066bd133
 #define P25P1_LDU_H_a3c417fcb7804991b0e6d828066bd133
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>

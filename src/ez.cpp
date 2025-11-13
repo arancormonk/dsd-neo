@@ -12,9 +12,15 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
 #include <unordered_map>
 #include "ezpwd/rs"
+
+extern "C" {
+int ez_rs28_ess(int payload[96], int parity[168]);
+int ez_rs28_facch(int payload[156], int parity[114]);
+int ez_rs28_sacch(int payload[180], int parity[132]);
+int isch_lookup(uint64_t isch);
+}
 
 std::vector<uint8_t> ESS_A(28, 0); // ESS_A and ESS_B are hexbits vectors
 std::vector<uint8_t> ESS_B(16, 0);

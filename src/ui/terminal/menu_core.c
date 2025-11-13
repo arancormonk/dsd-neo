@@ -8,6 +8,7 @@
 #include <dsd-neo/ui/menu_core.h>
 
 #include <ctype.h>
+#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <ncurses.h>
 #include <stdarg.h>

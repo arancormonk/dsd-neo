@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* Ensure dsd_opts type is visible to prototypes below */
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
 
 /*
  * Runtime configuration (environment variables)

@@ -3,13 +3,26 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#else
+#include <direct.h>
+#endif
+
+// External helpers from core/trunking codepaths
+void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
+void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq);
+void return_to_cc(dsd_opts* opts, dsd_state* state);
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>

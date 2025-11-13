@@ -13,7 +13,6 @@
  */
 
 #include <atomic>
-#include <dsd-neo/core/dsd.h> // for exitflag
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/runtime/input_ring.h>
@@ -46,7 +45,9 @@
 #define MSG_NOSIGNAL 0
 #endif
 
-// Forward declarations from main file
+#include <stdint.h>
+
+// Forward declarations from main file (exit flag shared with core)
 extern volatile uint8_t exitflag;
 
 // Internal RTL device structure

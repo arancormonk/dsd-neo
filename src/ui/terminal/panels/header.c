@@ -11,6 +11,7 @@
 #include <ncurses.h>
 #include <time.h>
 
+#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_prims.h>

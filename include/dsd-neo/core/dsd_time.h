@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/state.h>
 #include <time.h>
 #if defined(_WIN32)
 #include <windows.h>

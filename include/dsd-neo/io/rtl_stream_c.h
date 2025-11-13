@@ -16,11 +16,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <dsd-neo/core/opts_fwd.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <dsd-neo/core/dsd.h>
 
 /* Opaque stream context */
 typedef struct RtlSdrContext RtlSdrContext;

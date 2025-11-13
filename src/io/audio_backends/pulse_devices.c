@@ -10,6 +10,7 @@
  * 2024-05 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/runtime/log.h>
 

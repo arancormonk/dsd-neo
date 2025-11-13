@@ -11,7 +11,7 @@
  * an immutable accessor. Intended to be called early during application init.
  */
 
-#include <dsd-neo/core/dsd.h> /* for dsd_opts fields used in precedence */
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdlib.h>
 #include <string.h>

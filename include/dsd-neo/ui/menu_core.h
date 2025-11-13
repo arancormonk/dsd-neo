@@ -8,7 +8,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 // Minimal, reusable ncurses menu framework for DSD-neo terminal UI.
 // The UI layer renders and dispatches; business logic lives in callbacks.

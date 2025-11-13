@@ -11,7 +11,7 @@
 
 #pragma once
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
 extern "C" {

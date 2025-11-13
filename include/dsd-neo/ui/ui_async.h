@@ -7,7 +7,8 @@
 
 #include <stddef.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 /* Start the async UI subsystem.
  * Returns 0 on success. */

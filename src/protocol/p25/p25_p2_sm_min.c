@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 

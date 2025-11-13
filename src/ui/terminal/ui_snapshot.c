@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
 #include <pthread.h>
