@@ -1137,8 +1137,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     LOG_NOTICE("Decoding only DMR frames.\n");
                 } else if (optarg[0] == 'r') {
                     /* Legacy -fr alias: DMR BS/MS simplex with mono audio.
-                       Mirrors -fs but prefers mono output for users who relied
-                       on the older DMR mono switch behavior. */
+                       Mirrors -fs but prefers mono content while keeping a
+                       2-channel output interface for compatibility. */
                     opts->frame_dstar = 0;
                     opts->frame_x2tdma = 0;
                     opts->frame_p25p1 = 0;
@@ -1159,7 +1159,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     state->dmr_stereo = 0;
                     opts->dmr_mono = 1;
                     opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
+                    /* Use 2-channel digital output (like -fs) so audio
+                       routing stays consistent across sinks; mono behavior
+                       is provided by dmr_mono in the vocoder/mixers. */
+                    opts->pulse_digi_out_channels = 2;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");
                     LOG_NOTICE("Decoding DMR (legacy -fr mono mode).\n");
                 } else if (optarg[0] == 'i') {
