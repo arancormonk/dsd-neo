@@ -76,17 +76,21 @@ ring_write(struct output_state* o, const int16_t* data, size_t count) {
             continue;
         }
 
-        /* Handle wrap-around case */
+        /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
             memcpy(o->buffer + h, data, to_end * sizeof(int16_t));
             data += to_end;
-            count -= to_end;
         }
-        memcpy(o->buffer, data, count * sizeof(int16_t));
-        h = count;
+        size_t remaining = write_now - to_end;
+        if (remaining > 0) {
+            memcpy(o->buffer, data, remaining * sizeof(int16_t));
+            h = remaining;
+            data += remaining;
+        } else {
+            h = 0;
+        }
         o->head.store(h);
-        data += count;
-        count = 0;
+        count -= write_now;
     }
     if (need_signal) {
         pthread_mutex_lock(&o->ready_m);
@@ -153,17 +157,21 @@ ring_write_no_signal(struct output_state* o, const int16_t* data, size_t count) 
             continue;
         }
 
-        /* Handle wrap-around case */
+        /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
             memcpy(o->buffer + h, data, to_end * sizeof(int16_t));
             data += to_end;
-            count -= to_end;
         }
-        memcpy(o->buffer, data, count * sizeof(int16_t));
-        h = count;
+        size_t remaining = write_now - to_end;
+        if (remaining > 0) {
+            memcpy(o->buffer, data, remaining * sizeof(int16_t));
+            h = remaining;
+            data += remaining;
+        } else {
+            h = 0;
+        }
         o->head.store(h);
-        data += count;
-        count = 0;
+        count -= write_now;
     }
 }
 

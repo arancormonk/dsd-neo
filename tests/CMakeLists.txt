@@ -4,6 +4,11 @@ target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
 
 add_test(NAME AES_OFB COMMAND dsd-neo_test_aes_ofb)
 
+add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
+target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_RINGS COMMAND dsd-neo_test_runtime_rings)
+
 # P25 scaffolding tests
 add_executable(dsd-neo_test_p25_mbf34 protocol/p25/test_p25_mbf34.c)
 target_include_directories(dsd-neo_test_p25_mbf34 PRIVATE ${PROJECT_SOURCE_DIR}/include)

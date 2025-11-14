@@ -126,17 +126,21 @@ input_ring_write(struct input_ring_state* r, const int16_t* data, size_t count) 
             continue;
         }
 
-        /* Handle wrap-around case */
+        /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
             memcpy(r->buffer + h, data, to_end * sizeof(int16_t));
             data += to_end;
-            count -= to_end;
         }
-        memcpy(r->buffer, data, count * sizeof(int16_t));
-        h = count;
+        size_t remaining = write_now - to_end;
+        if (remaining > 0) {
+            memcpy(r->buffer, data, remaining * sizeof(int16_t));
+            h = remaining;
+            data += remaining;
+        } else {
+            h = 0;
+        }
         r->head.store(h);
-        data += count;
-        count = 0;
+        count -= write_now;
     }
     if (need_signal) {
         pthread_mutex_lock(&r->ready_m);
