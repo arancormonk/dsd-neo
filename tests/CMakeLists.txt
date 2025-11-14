@@ -197,6 +197,12 @@ endif()
 target_link_libraries(dsd-neo_test_p25_p2_audio_enable PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_AUDIO_ENABLE COMMAND dsd-neo_test_p25_p2_audio_enable)
 
+# P25 P1 heuristics circular history ring semantics
+add_executable(dsd-neo_test_p25_p1_heuristics_ring protocol/p25/test_p25_p1_heuristics_ring.c)
+target_include_directories(dsd-neo_test_p25_p1_heuristics_ring PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p1_heuristics_ring PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_HEURISTICS_RING COMMAND dsd-neo_test_p25_p1_heuristics_ring)
+
 # (Optional) DMR Tier III MBC smoke test is disabled by default due to
 # static-link ordering across platforms. Enable locally if needed.
 # add_executable(dsd-neo_test_dmr_mbc protocol/dmr/test_mbc.c)
@@ -811,6 +817,18 @@ add_executable(dsd-neo_test_p25_sm_cand_cooldown protocol/p25/test_p25_sm_cand_c
 target_include_directories(dsd-neo_test_p25_sm_cand_cooldown PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_sm_cand_cooldown PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CAND_COOLDOWN COMMAND dsd-neo_test_p25_sm_cand_cooldown)
+
+# P25 SM tag ring buffer semantics
+add_executable(dsd-neo_test_p25_sm_tags_ring protocol/p25/test_p25_sm_tags_ring.c)
+target_include_directories(dsd-neo_test_p25_sm_tags_ring PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_sm_tags_ring PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_SM_TAGS_RING COMMAND dsd-neo_test_p25_sm_tags_ring)
+
+# P25p2 audio jitter ring helpers
+add_executable(dsd-neo_test_p25_p2_audio_ring protocol/p25/test_p25_p2_audio_ring.c)
+target_include_directories(dsd-neo_test_p25_p2_audio_ring PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_audio_ring PRIVATE dsd-neo_core)
+add_test(NAME P25_P2_AUDIO_RING COMMAND dsd-neo_test_p25_p2_audio_ring)
 
 # P25 retune backoff respects TDMA slot (same RF)
 add_executable(dsd-neo_test_p25_retune_backoff_slot protocol/p25/test_p25_retune_backoff_slot.c)
