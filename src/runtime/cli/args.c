@@ -761,19 +761,49 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 opts->mbe_out_file[1023] = '\0';
                 LOG_NOTICE("Writing MBE+ processed audio to file %s\n", opts->mbe_out_file);
                 break;
-            case 'g':
-                strncpy(opts->mbe_out_fileR, optarg, 1023);
-                opts->mbe_out_fileR[1023] = '\0';
-                LOG_NOTICE("Writing MBE+ processed audio Slot 2 to file %s\n", opts->mbe_out_fileR);
+            case 'g': {
+                /* Digital output gain (matches legacy main.c semantics).
+                   0 = auto gain; >0 fixes gain in the 0..50 range. */
+                float g = (float)atof(optarg);
+                if (g < 0.0f) {
+                    /* Historical behavior: negative disables manual gain without changing autogain. */
+                    LOG_NOTICE("Disabling audio out gain setting\n");
+                    opts->audio_gain = g;
+                    opts->audio_gainR = g;
+                } else if (g == 0.0f) {
+                    opts->audio_gain = 0.0f;
+                    opts->audio_gainR = 0.0f;
+                    LOG_NOTICE("Enabling audio out auto-gain\n");
+                } else {
+                    if (g > 50.0f) {
+                        g = 50.0f;
+                    }
+                    opts->audio_gain = g;
+                    opts->audio_gainR = g;
+                    state->aout_gain = g;
+                    state->aout_gainR = g;
+                    LOG_NOTICE("Setting audio out gain to %.1f\n", g);
+                }
                 break;
-            case 'n':
-                if (optarg[0] == 'm') {
+            }
+            case 'n': {
+                /* Dual-purpose: -nm enables DMR mono; otherwise treat as analog gain 0..100. */
+                if (optarg[0] == 'm' && optarg[1] == '\0') {
                     opts->dmr_mono = 1;
                     LOG_NOTICE("DMR Mono (1997 method) enabled\n");
                 } else {
-                    opts->dmr_mono = 0;
+                    float ga = (float)atof(optarg);
+                    if (ga < 0.0f) {
+                        ga = 0.0f;
+                    } else if (ga > 100.0f) {
+                        ga = 100.0f;
+                    }
+                    opts->audio_gainA = ga;
+                    LOG_NOTICE("Analog Audio Out Gain set to %.1f;\n", ga);
+                    /* 0.0 means auto; analog_gain/agsm will derive the effective coefficient. */
                 }
                 break;
+            }
             case 'w':
                 strncpy(opts->wav_out_file, optarg, 1023);
                 opts->wav_out_file[1023] = '\0';
@@ -1105,6 +1135,33 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     opts->pulse_digi_out_channels = 2;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR");
                     LOG_NOTICE("Decoding only DMR frames.\n");
+                } else if (optarg[0] == 'r') {
+                    /* Legacy -fr alias: DMR BS/MS simplex with mono audio.
+                       Mirrors -fs but prefers mono output for users who relied
+                       on the older DMR mono switch behavior. */
+                    opts->frame_dstar = 0;
+                    opts->frame_x2tdma = 0;
+                    opts->frame_p25p1 = 0;
+                    opts->frame_p25p2 = 0;
+                    opts->inverted_p2 = 0;
+                    opts->frame_nxdn48 = 0;
+                    opts->frame_nxdn96 = 0;
+                    opts->frame_dmr = 1;
+                    opts->frame_dpmr = 0;
+                    opts->frame_provoice = 0;
+                    opts->frame_ysf = 0;
+                    opts->frame_m17 = 0;
+                    opts->mod_c4fm = 1;
+                    opts->mod_qpsk = 0;
+                    opts->mod_gfsk = 0;
+                    state->rf_mod = 0;
+                    opts->dmr_stereo = 0;
+                    state->dmr_stereo = 0;
+                    opts->dmr_mono = 1;
+                    opts->pulse_digi_rate_out = 8000;
+                    opts->pulse_digi_out_channels = 1;
+                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");
+                    LOG_NOTICE("Decoding DMR (legacy -fr mono mode).\n");
                 } else if (optarg[0] == 'i') {
                     opts->frame_dstar = 0;
                     opts->frame_x2tdma = 0;

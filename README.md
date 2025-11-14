@@ -236,6 +236,10 @@ cmake --build build/dev-release --target uninstall
 
 - See the friendly CLI guide: [docs/cli.md](docs/cli.md)
   - Or run `dsd-neo -h` for quick usage in your terminal.
+  - Digital/analog output gain: `-g <float>` (digital; `0` = auto, `1` ≈ 2%, `50` = 100%) and `-n <float>` (analog 0–100%).
+  - DMR mono helpers:
+    - Modern form: `-fs -nm` (DMR BS/MS simplex + mono audio).
+    - Legacy alias: `-fr` (kept as a shorthand for the same DMR‑mono profile).
 
 ## Tests and Examples
 

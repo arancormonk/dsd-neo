@@ -8,7 +8,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000]`
 - Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000]`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
-- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 1|2|3`, `-z 1|2`, `-y`, `-v 0xF`
+- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 1|2|3`, `-z 1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
@@ -96,6 +96,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
+- `-nm` Enable legacy DMR mono audio path (equivalent to `-fs` plus mono)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <1|2|3>` TDMA voice synthesis on slot 1, slot 2, or both (default 3)
 - `-z <1|2>` TDMA slot preference for `/dev/dsp` output
