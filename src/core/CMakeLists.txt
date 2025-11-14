@@ -4,6 +4,9 @@ target_sources(dsd-neo_core PRIVATE
   audio/dsd_audio.c
   audio/dsd_audio2.c
   audio/dsd_audio_gate.c
+  audio/gain.c
+  audio/mix.c
+  audio/convert.c
   audio/dsd_upsample.c
   vocoder/dsd_mbe.c
   vocoder/dsd_mbe2.c

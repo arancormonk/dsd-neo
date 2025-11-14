@@ -11,6 +11,7 @@
  * 2023-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
 #include <math.h>
 
@@ -86,7 +87,7 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     //will play silence while this runs if no voice present
 
     int i;
-    uint8_t encL, encR;
+    int encL, encR;
     float stereo_samp1[320]; //8k 2-channel stereo interleave mix
     float stereo_samp2[320]; //8k 2-channel stereo interleave mix
     float stereo_samp3[320]; //8k 2-channel stereo interleave mix
@@ -123,57 +124,11 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         encR = 1;
     }
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    snprintf(modeL, sizeof modeL, "%s", "");
-    char modeR[8];
-    snprintf(modeR, sizeof modeR, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
     unsigned long TGR = (unsigned long)state->lasttgR;
 
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        snprintf(modeL, sizeof modeL, "%s", "B");
-        snprintf(modeR, sizeof modeR, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-        if (state->group_array[gi].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
-            modeR[sizeof(modeR) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-    if (strcmp(modeR, "B") == 0) {
-        encR = 1;
-    }
-
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
-        encL = 1;
-    }
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGR) {
-        encR = 1;
-    }
-    //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
-        encL = 0;
-    }
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGR) {
-        encR = 0;
-    }
+    // Apply whitelist/TG-hold gating shared with other mixers.
+    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     //run autogain on the f_ buffers
     agf(opts, state, state->f_l4[0], 0);
@@ -183,33 +138,10 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     agf(opts, state, state->f_l4[2], 0);
     agf(opts, state, state->f_r4[2], 1);
 
-    //interleave left and right channels from the temp (float) buffer with makeshift 'volume' decimation
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp1[i * 2 + 0] = state->f_l4[0][i];
-        }
-        if (!encR) {
-            stereo_samp1[i * 2 + 1] = state->f_r4[0][i];
-        }
-    }
-
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp2[i * 2 + 0] = state->f_l4[1][i];
-        }
-        if (!encR) {
-            stereo_samp2[i * 2 + 1] = state->f_r4[1][i];
-        }
-    }
-
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp3[i * 2 + 0] = state->f_l4[2][i];
-        }
-        if (!encR) {
-            stereo_samp3[i * 2 + 1] = state->f_r4[2][i];
-        }
-    }
+    //interleave left and right channels from the temp (float) buffer
+    audio_mix_interleave_stereo_f32(state->f_l4[0], state->f_r4[0], 160, encL, encR, stereo_samp1);
+    audio_mix_interleave_stereo_f32(state->f_l4[1], state->f_r4[1], 160, encL, encR, stereo_samp2);
+    audio_mix_interleave_stereo_f32(state->f_l4[2], state->f_r4[2], 160, encL, encR, stereo_samp3);
 
     //at this point, if both channels are still flagged as enc, then we can skip all playback/writing functions
     if (encL && encR) {
@@ -240,22 +172,11 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
             memset(mono1, 0, sizeof(mono1));
             memset(mono2, 0, sizeof(mono2));
             memset(mono3, 0, sizeof(mono3));
-            for (i = 0; i < 160; i++) {
-                int l_on0 = !encL;
-                int r_on0 = !encR;
-                mono1[i] = (l_on0 && !r_on0)   ? state->f_l4[0][i]
-                           : (!l_on0 && r_on0) ? state->f_r4[0][i]
-                           : (l_on0 && r_on0)  ? 0.5f * (state->f_l4[0][i] + state->f_r4[0][i])
-                                               : 0.0f;
-                mono2[i] = (l_on0 && !r_on0)   ? state->f_l4[1][i]
-                           : (!l_on0 && r_on0) ? state->f_r4[1][i]
-                           : (l_on0 && r_on0)  ? 0.5f * (state->f_l4[1][i] + state->f_r4[1][i])
-                                               : 0.0f;
-                mono3[i] = (l_on0 && !r_on0)   ? state->f_l4[2][i]
-                           : (!l_on0 && r_on0) ? state->f_r4[2][i]
-                           : (l_on0 && r_on0)  ? 0.5f * (state->f_l4[2][i] + state->f_r4[2][i])
-                                               : 0.0f;
-            }
+            int l_on = !encL;
+            int r_on = !encR;
+            audio_mix_mono_from_slots_f32(state->f_l4[0], state->f_r4[0], 160, l_on, r_on, mono1);
+            audio_mix_mono_from_slots_f32(state->f_l4[1], state->f_r4[1], 160, l_on, r_on, mono2);
+            audio_mix_mono_from_slots_f32(state->f_l4[2], state->f_r4[2], 160, l_on, r_on, mono3);
             if (opts->audio_out_type == 0) { // Pulse mono
                 pa_simple_write(opts->pulse_digi_dev_out, mono1, (size_t)160u * sizeof(float), NULL);
                 pa_simple_write(opts->pulse_digi_dev_out, mono2, (size_t)160u * sizeof(float), NULL);
@@ -364,57 +285,11 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         encR = 1;
     }
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    snprintf(modeL, sizeof modeL, "%s", "");
-    char modeR[8];
-    snprintf(modeR, sizeof modeR, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
     unsigned long TGR = (unsigned long)state->lasttgR;
 
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        snprintf(modeL, sizeof modeL, "%s", "B");
-        snprintf(modeR, sizeof modeR, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-        if (state->group_array[gi].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
-            modeR[sizeof(modeR) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-    if (strcmp(modeR, "B") == 0) {
-        encR = 1;
-    }
-
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
-        encL = 1;
-    }
-    if (state->tg_hold != 0 && state->tg_hold != TGR) {
-        encR = 1;
-    }
-    //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
-        encL = 0;
-    }
-    if (state->tg_hold != 0 && state->tg_hold == TGR) {
-        encR = 0;
-    }
+    // Apply whitelist/TG-hold gating shared with other mixers.
+    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     memset(stereo_samp1, 0.0f, sizeof(stereo_samp1));
     memset(stereo_samp2, 0.0f, sizeof(stereo_samp2));
@@ -439,38 +314,19 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    for (i = 0; i < 160; i++) {
-        if (!encL && l_ok[0]) {
-            stereo_samp1[i * 2 + 0] = lf[0][i];
-        }
-        if (!encR && r_ok[0]) {
-            stereo_samp1[i * 2 + 1] = rf[0][i];
-        }
-    }
-    for (i = 0; i < 160; i++) {
-        if (!encL && l_ok[1]) {
-            stereo_samp2[i * 2 + 0] = lf[1][i];
-        }
-        if (!encR && r_ok[1]) {
-            stereo_samp2[i * 2 + 1] = rf[1][i];
-        }
-    }
-    for (i = 0; i < 160; i++) {
-        if (!encL && l_ok[2]) {
-            stereo_samp3[i * 2 + 0] = lf[2][i];
-        }
-        if (!encR && r_ok[2]) {
-            stereo_samp3[i * 2 + 1] = rf[2][i];
-        }
-    }
-    for (i = 0; i < 160; i++) {
-        if (!encL && l_ok[3]) {
-            stereo_samp4[i * 2 + 0] = lf[3][i];
-        }
-        if (!encR && r_ok[3]) {
-            stereo_samp4[i * 2 + 1] = rf[3][i];
-        }
-    }
+    int encL0 = (encL || !l_ok[0]) ? 1 : 0;
+    int encR0 = (encR || !r_ok[0]) ? 1 : 0;
+    int encL1 = (encL || !l_ok[1]) ? 1 : 0;
+    int encR1 = (encR || !r_ok[1]) ? 1 : 0;
+    int encL2 = (encL || !l_ok[2]) ? 1 : 0;
+    int encR2 = (encR || !r_ok[2]) ? 1 : 0;
+    int encL3 = (encL || !l_ok[3]) ? 1 : 0;
+    int encR3 = (encR || !r_ok[3]) ? 1 : 0;
+
+    audio_mix_interleave_stereo_f32(lf[0], rf[0], 160, encL0, encR0, stereo_samp1);
+    audio_mix_interleave_stereo_f32(lf[1], rf[1], 160, encL1, encR1, stereo_samp2);
+    audio_mix_interleave_stereo_f32(lf[2], rf[2], 160, encL2, encR2, stereo_samp3);
+    audio_mix_interleave_stereo_f32(lf[3], rf[3], 160, encL3, encR3, stereo_samp4);
 
     // If exactly one slot is active (the other enc-muted), duplicate the
     // active slot onto both channels so users with stereo sinks hear it.
@@ -503,33 +359,18 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
         memset(mono2, 0, sizeof(mono2));
         memset(mono3, 0, sizeof(mono3));
         memset(mono4, 0, sizeof(mono4));
-        for (i = 0; i < 160; i++) {
-            // choose R if only R active, L if only L active, else average
-            int l_on0 = (!encL && l_ok[0]);
-            int r_on0 = (!encR && r_ok[0]);
-            int l_on1 = (!encL && l_ok[1]);
-            int r_on1 = (!encR && r_ok[1]);
-            int l_on2 = (!encL && l_ok[2]);
-            int r_on2 = (!encR && r_ok[2]);
-            int l_on3 = (!encL && l_ok[3]);
-            int r_on3 = (!encR && r_ok[3]);
-            mono1[i] = (l_on0 && !r_on0)   ? lf[0][i]
-                       : (!l_on0 && r_on0) ? rf[0][i]
-                       : (l_on0 && r_on0)  ? 0.5f * (lf[0][i] + rf[0][i])
-                                           : 0.0f;
-            mono2[i] = (l_on1 && !r_on1)   ? lf[1][i]
-                       : (!l_on1 && r_on1) ? rf[1][i]
-                       : (l_on1 && r_on1)  ? 0.5f * (lf[1][i] + rf[1][i])
-                                           : 0.0f;
-            mono3[i] = (l_on2 && !r_on2)   ? lf[2][i]
-                       : (!l_on2 && r_on2) ? rf[2][i]
-                       : (l_on2 && r_on2)  ? 0.5f * (lf[2][i] + rf[2][i])
-                                           : 0.0f;
-            mono4[i] = (l_on3 && !r_on3)   ? lf[3][i]
-                       : (!l_on3 && r_on3) ? rf[3][i]
-                       : (l_on3 && r_on3)  ? 0.5f * (lf[3][i] + rf[3][i])
-                                           : 0.0f;
-        }
+        int l_on0 = (!encL && l_ok[0]);
+        int r_on0 = (!encR && r_ok[0]);
+        int l_on1 = (!encL && l_ok[1]);
+        int r_on1 = (!encR && r_ok[1]);
+        int l_on2 = (!encL && l_ok[2]);
+        int r_on2 = (!encR && r_ok[2]);
+        int l_on3 = (!encL && l_ok[3]);
+        int r_on3 = (!encR && r_ok[3]);
+        audio_mix_mono_from_slots_f32(lf[0], rf[0], 160, l_on0, r_on0, mono1);
+        audio_mix_mono_from_slots_f32(lf[1], rf[1], 160, l_on1, r_on1, mono2);
+        audio_mix_mono_from_slots_f32(lf[2], rf[2], 160, l_on2, r_on2, mono3);
+        audio_mix_mono_from_slots_f32(lf[3], rf[3], 160, l_on3, r_on3, mono4);
         if (opts->audio_out == 1 && opts->audio_out_type == 0) { // Pulse Audio mono
             pa_simple_write(opts->pulse_digi_dev_out, mono1, (size_t)160u * sizeof(float), NULL);
             pa_simple_write(opts->pulse_digi_dev_out, mono2, (size_t)160u * sizeof(float), NULL);
@@ -667,39 +508,8 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         encL = 1;
     }
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    sprintf(modeL, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
-
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            break;
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
-        encL = 1;
-    }
-    //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
-        encL = 0;
-    }
+    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
 
     //run autogain on the f_ buffers
     agf(opts, state, state->f_l, 0);
@@ -710,16 +520,8 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     }
 
     //interleave left and right channels from the temp (float) buffer with makeshift 'volume' decimation
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp1[i * 2 + 0] = state->f_l[i] * 0.5f;
-        }
-
-        //test loading right side with same
-        if (!encL) {
-            stereo_samp1[i * 2 + 1] = state->f_l[i] * 0.5f;
-        }
-    }
+    audio_mono_to_stereo_f32(state->f_l, stereo_samp1, 160);
+    audio_apply_gain_f32(stereo_samp1, 320, 0.5f);
 
     if (opts->audio_out == 1) {
         if (opts->audio_out_type == 0) { //Pulse Audio
@@ -803,42 +605,12 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    sprintf(modeL, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
     if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
         TGL = (unsigned long)state->nxdn_last_tg;
     }
 
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            break;
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
-        encL = 1;
-    }
-    //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
-        encL = 0;
-    }
+    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
 
     if (encL == 1) {
         goto vfm_end;
@@ -1086,39 +858,9 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         encL = 1;
     }
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    sprintf(modeL, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
 
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            break;
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != (uint32_t)TGL) {
-        encL = 1;
-    }
-    //likewise, override and unmute if TG hold matches TG
-    if (state->tg_hold != 0 && state->tg_hold == (uint32_t)TGL) {
-        encL = 0;
-    }
+    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
 
     //test hpf
     if (opts->use_hpf_d == 1) {
@@ -1126,16 +868,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     }
 
     //interleave left and right channels from the short storage area
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp1[i * 2 + 0] = state->s_l[i] / 1;
-        }
-
-        //testing double left and right channel
-        if (!encL) {
-            stereo_samp1[i * 2 + 1] = state->s_l[i] / 1;
-        }
-    }
+    audio_mono_to_stereo_s16(state->s_l, stereo_samp1, 160);
 
     //at this point, if still flagged as enc, then we can skip all playback/writing functions
     if (encL) {
@@ -1196,7 +929,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     //will play silence while this runs if no voice present
 
     int i;
-    uint8_t encL, encR;
+    int encL, encR;
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     short stereo_samp2[320]; //8k 2-channel stereo interleave mix
     short stereo_samp3[320]; //8k 2-channel stereo interleave mix
@@ -1255,42 +988,10 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     // if (opts->slot1_on == 0) encL = 1;
     // if (opts->slot2_on == 0) encR = 1;
 
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    sprintf(modeL, "%s", "");
-    char modeR[8];
-    sprintf(modeR, "%s", "");
-
     unsigned long TGL = (unsigned long)state->lasttg;
     unsigned long TGR = (unsigned long)state->lasttgR;
 
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-        sprintf(modeR, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-        if (state->group_array[gi].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
-            modeR[sizeof(modeR) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-    if (strcmp(modeR, "B") == 0) {
-        encR = 1;
-    }
+    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     //check to see if we need to enable slot and toggle slot preference here
     //this method will always favor slot 2 (this is a patch anyways, so....meh)
@@ -1425,43 +1126,19 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     // }
 
     //interleave left and right channels from the short storage area
-    for (i = 0; i < 160; i++) {
+    {
 #ifdef DMR_STEREO_OUTPUT
+        // Under DMR_STEREO_OUTPUT the per-slot buffers are already zeroed
+        // for muted slots, so always mix both channels.
+        int mix_encL = 0;
+        int mix_encR = 0;
 #else
-        if (!encL)
+        int mix_encL = encL;
+        int mix_encR = encR;
 #endif
-        stereo_samp1[i * 2 + 0] = state->s_l4[0][i];
-#ifdef DMR_STEREO_OUTPUT
-#else
-        if (!encR)
-#endif
-        stereo_samp1[i * 2 + 1] = state->s_r4[0][i];
-    }
-
-    for (i = 0; i < 160; i++) {
-#ifdef DMR_STEREO_OUTPUT
-#else
-        if (!encL)
-#endif
-        stereo_samp2[i * 2 + 0] = state->s_l4[1][i];
-#ifdef DMR_STEREO_OUTPUT
-#else
-        if (!encR)
-#endif
-        stereo_samp2[i * 2 + 1] = state->s_r4[1][i];
-    }
-
-    for (i = 0; i < 160; i++) {
-#ifdef DMR_STEREO_OUTPUT
-#else
-        if (!encL)
-#endif
-        stereo_samp3[i * 2 + 0] = state->s_l4[2][i];
-#ifdef DMR_STEREO_OUTPUT
-#else
-        if (!encR)
-#endif
-        stereo_samp3[i * 2 + 1] = state->s_r4[2][i];
+        audio_mix_interleave_stereo_s16(state->s_l4[0], state->s_r4[0], 160, mix_encL, mix_encR, stereo_samp1);
+        audio_mix_interleave_stereo_s16(state->s_l4[1], state->s_r4[1], 160, mix_encL, mix_encR, stereo_samp2);
+        audio_mix_interleave_stereo_s16(state->s_l4[2], state->s_r4[2], 160, mix_encL, mix_encR, stereo_samp3);
     }
 
     if (opts->audio_out == 1 && opts->audio_out_type == 0) //Pulse Audio
@@ -1527,7 +1204,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     //will play silence while this runs if no voice present
 
     int i;
-    uint8_t encL, encR;
+    int encL, encR;
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     short stereo_samp2[320]; //8k 2-channel stereo interleave mix
     short stereo_samp3[320]; //8k 2-channel stereo interleave mix
@@ -1635,41 +1312,10 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     }
 
     //interleave left and right channels from the short storage area
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp1[i * 2 + 0] = state->s_l4[0][i];
-        }
-        if (!encR) {
-            stereo_samp1[i * 2 + 1] = state->s_r4[0][i];
-        }
-    }
-
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp2[i * 2 + 0] = state->s_l4[1][i];
-        }
-        if (!encR) {
-            stereo_samp2[i * 2 + 1] = state->s_r4[1][i];
-        }
-    }
-
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp3[i * 2 + 0] = state->s_l4[2][i];
-        }
-        if (!encR) {
-            stereo_samp3[i * 2 + 1] = state->s_r4[2][i];
-        }
-    }
-
-    for (i = 0; i < 160; i++) {
-        if (!encL) {
-            stereo_samp4[i * 2 + 0] = state->s_l4[3][i];
-        }
-        if (!encR) {
-            stereo_samp4[i * 2 + 1] = state->s_r4[3][i];
-        }
-    }
+    audio_mix_interleave_stereo_s16(state->s_l4[0], state->s_r4[0], 160, encL, encR, stereo_samp1);
+    audio_mix_interleave_stereo_s16(state->s_l4[1], state->s_r4[1], 160, encL, encR, stereo_samp2);
+    audio_mix_interleave_stereo_s16(state->s_l4[2], state->s_r4[2], 160, encL, encR, stereo_samp3);
+    audio_mix_interleave_stereo_s16(state->s_l4[3], state->s_r4[3], 160, encL, encR, stereo_samp4);
 
     // If exactly one slot is active (the other enc-muted), duplicate the
     // active slot onto both channels so users with stereo sinks hear it.
@@ -1867,7 +1513,7 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     //exact implementation to be determined
 
     int i, j;
-    uint8_t encL, encR;
+    int encL, encR;
 
     short stereo_sf[18][320]; //8k 2-channel stereo interleave mix for full superframe
     // memset (stereo_sf, 1, 18*sizeof(short)); //I don't think 18*sizeof(short) was large enough, should probably be 18*320*sizeof(short)
@@ -1876,61 +1522,15 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     short empty[320];
     memset(empty, 0, sizeof(empty));
 
-    // Per-slot audio gating (P25p2): take precedence over SVC enc bits
-    // If audio is allowed for a slot, force unmute for that slot; otherwise mute it.
-    if (state->p25_p2_audio_allowed[0]) {
-        encL = 0;
-    } else {
-        encL = 1;
-    }
-    if (state->p25_p2_audio_allowed[1]) {
-        encR = 0;
-    } else {
-        encR = 1;
-    }
-    if (!state->p25_p2_audio_allowed[0]) {
-        encL = 1;
-    }
-    if (!state->p25_p2_audio_allowed[1]) {
-        encR = 1;
-    }
-
-    //WIP: Mute if on B list (or not W list)
-    char modeL[8];
-    sprintf(modeL, "%s", "");
-    char modeR[8];
-    sprintf(modeR, "%s", "");
+    // Per-slot audio gating (P25p2): start from per-slot allowed flags,
+    // then apply whitelist/TG-hold rules shared with other mixers.
+    encL = state->p25_p2_audio_allowed[0] ? 0 : 1;
+    encR = state->p25_p2_audio_allowed[1] ? 0 : 1;
 
     unsigned long TGL = (unsigned long)state->lasttg;
     unsigned long TGR = (unsigned long)state->lasttgR;
 
-    //if we are using allow/whitelist mode, then write 'B' to mode for block
-    //comparison below will look for an 'A' to write to mode if it is allowed
-    if (opts->trunk_use_allow_list == 1) {
-        sprintf(modeL, "%s", "B");
-        sprintf(modeR, "%s", "B");
-    }
-
-    for (unsigned int gi = 0; gi < state->group_tally; gi++) {
-        if (state->group_array[gi].groupNumber == TGL) {
-            strncpy(modeL, state->group_array[gi].groupMode, sizeof(modeL) - 1);
-            modeL[sizeof(modeL) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-        if (state->group_array[gi].groupNumber == TGR) {
-            strncpy(modeR, state->group_array[gi].groupMode, sizeof(modeR) - 1);
-            modeR[sizeof(modeR) - 1] = '\0';
-            // break; //need to keep going to check other potential slot group
-        }
-    }
-
-    //flag either left or right as 'enc' to mute if B
-    if (strcmp(modeL, "B") == 0) {
-        encL = 1;
-    }
-    if (strcmp(modeR, "B") == 0) {
-        encR = 1;
-    }
+    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     //check to see if we need to enable slot and toggle slot preference here
     //this method will always favor slot 2 (this is a patch anyways, so....meh)
@@ -1970,25 +1570,14 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     //   opts->slot_preference = 2;
     // }
 
-    //if TG Hold in place, mute anything but that TG #132
-    if (state->tg_hold != 0 && state->tg_hold != TGL) {
-        encL = 1;
-    }
-    if (state->tg_hold != 0 && state->tg_hold != TGR) {
-        encR = 1;
-    }
-
-    //likewise, override and unmute if TG hold matches TG (and turn on slot and set preference)
+    // TG hold still drives slot preference hints for UI.
     if (state->tg_hold != 0 && state->tg_hold == TGL) {
-        encL = 0;
         opts->slot1_on = 1;
         opts->slot_preference = 0;
     } else if (state->tg_hold != 0 && state->tg_hold == TGR) {
-        encR = 0;
         opts->slot2_on = 1;
         opts->slot_preference = 1;
-    } else //otherwise, reset slot preference to either or (both slots enabled)
-    {
+    } else {
         opts->slot_preference = 2;
     }
 
@@ -2051,18 +1640,16 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
 
     //interleave left and right channels from the short storage area
     for (j = 0; j < 18; j++) {
-        for (i = 0; i < 160; i++) {
 #ifdef P2_STEREO_OUTPUT
+        // Under P2_STEREO_OUTPUT, the per-slot buffers are already zeroed for
+        // muted slots, so always mix both channels.
+        int mix_encL = 0;
+        int mix_encR = 0;
 #else
-            if (!encL)
+        int mix_encL = encL;
+        int mix_encR = encR;
 #endif
-            stereo_sf[j][i * 2 + 0] = state->s_l4[j][i];
-#ifdef P2_STEREO_OUTPUT
-#else
-            if (!encR)
-#endif
-            stereo_sf[j][i * 2 + 1] = state->s_r4[j][i];
-        }
+        audio_mix_interleave_stereo_s16(state->s_l4[j], state->s_r4[j], 160, mix_encL, mix_encR, stereo_sf[j]);
     }
 
     if (opts->audio_out == 1) {
@@ -2156,176 +1743,6 @@ soft_tonef(float samp[160], int n, int ID, int AD) {
         samp[i] /= 8000.0f;
         samp[i] *= gain;
         n++;
-    }
-}
-
-//older version, does better at normalizing audio, but also sounds 'flatter' and 'muddier'
-//probably too much compression and adjustments on the samples (tones have a slight tremolo effect)
-//Remus, enable this one and disable the one above if you prefer
-void
-agf(dsd_opts* opts, dsd_state* state, float samp[160], int slot) {
-    int i, j, run;
-    run = 1;
-    float empty[160];
-    memset(empty, 0.0f, sizeof(empty));
-
-    float mmax = 0.90f;
-    float mmin = -0.90f;
-    float aavg = 0.0f; //average of the absolute value
-    float df;          //decimation value
-    df = 3277.0f;      //test value
-
-    //trying things
-    float gain = 1.0f;
-
-    //test increasing gain on DMR EP samples with degraded AMBE samples
-    if (state->payload_algid == 0x21 || state->payload_algidR == 0x21) {
-        gain = 1.75f;
-    }
-
-    if (opts->audio_gain != 0) {
-        gain = opts->audio_gain / 25.0f;
-    }
-
-    // Determine whether or not to run gain on 'empty' floating samples
-    if (dsd_is_all_zero_f(samp, 160)) {
-        run = 0;
-    }
-    if (run == 0) {
-        goto AGF_END;
-    }
-
-    for (j = 0; j < 8; j++) {
-
-        if (slot == 0) {
-            df = 384.0f * (50.0f - state->aout_gain);
-        }
-        if (slot == 1) {
-            df = 384.0f * (50.0f - state->aout_gainR);
-        }
-
-        for (i = 0; i < 20; i++) {
-
-            samp[(j * 20) + i] = samp[(j * 20) + i] / df;
-
-            // samp[(j*20)+i] *= gain;
-            // aavg += fabsf(samp[i]);
-
-            //simple clipping
-            if (samp[(j * 20) + i] > mmax) {
-                samp[(j * 20) + i] = mmax;
-            }
-            if (samp[(j * 20) + i] < mmin) {
-                samp[(j * 20) + i] = mmin;
-            }
-
-            aavg += fabsf(samp[i]);
-
-            samp[(j * 20) + i] *= gain * 0.8f;
-
-        } //i loop
-
-        aavg /= 20.0f; //average of the 20 samples
-
-        //debug
-        // fprintf (stderr, "\nS%d - DF = %f AAVG = %f", slot, df, aavg);
-
-        if (slot == 0) {
-            if (aavg < 0.075f && state->aout_gain < 46.0f) {
-                state->aout_gain += 0.5f;
-            }
-            if (aavg >= 0.075f && state->aout_gain > 1.0f) {
-                state->aout_gain -= 0.5f;
-            }
-        }
-
-        if (slot == 1) {
-            if (aavg < 0.075f && state->aout_gainR < 46.0f) {
-                state->aout_gainR += 0.5f;
-            }
-            if (aavg >= 0.075f && state->aout_gainR > 1.0f) {
-                state->aout_gainR -= 0.5f;
-            }
-        }
-
-        aavg = 0.0f; //reset
-
-    } //j loop
-
-AGF_END:; //do nothing
-}
-
-//automatic gain short mono for analog audio and some digital mono (WIP)
-void
-agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
-    int i;
-
-    UNUSED(opts);
-
-    //NOTE: This seems to be doing better now that I got it worked out properly
-    //This may produce a mild buzz sound though on the low end
-
-    // float avg = 0.0f;    //average of 20 samples (unused)
-    float coeff = 0.0f;  //gain coeffiecient
-    float max = 0.0f;    //the highest sample value
-    float nom = 4800.0f; //nominator value for 48k
-    float samp[960];
-    memset(samp, 0.0f, 960 * sizeof(float));
-
-    //assign internal float from short input
-    for (i = 0; i < len; i++) {
-        samp[i] = (float)input[i];
-    }
-
-    for (i = 0; i < len; i++) {
-        if (fabsf(samp[i]) > max) {
-            max = fabsf(samp[i]);
-        }
-    }
-
-    /* average not used; remove to avoid dead store */
-
-    coeff = fabsf(nom / max);
-
-    //keep coefficient with tolerable range when silence to prevent crackle/buzz
-    if (coeff > 3.0f) {
-        coeff = 3.0f;
-    }
-
-    //apply the coefficient to bring the max value to our desired maximum value
-    for (i = 0; i < 20; i++) {
-        samp[i] *= coeff;
-    }
-
-    //debug
-    // fprintf (stderr, "\n M: %f; C: %f; A: %f; ", max, coeff, avg);
-
-    // debug
-    // for (i = 0; i < len; i++)
-    // {
-    //   fprintf (stderr, " in: %d", input[i]);
-    //   fprintf (stderr, " out: %f", samp[i]);
-    // }
-
-    //return new smaple values post agc
-    for (i = 0; i < len; i++) {
-        input[i] = (short)samp[i];
-    }
-
-    state->aout_gainA = coeff; //store for internal use
-}
-
-//until analog agc is fixed, going to use a manual gain control on this
-void
-analog_gain(dsd_opts* opts, dsd_state* state, short* input, int len) {
-
-    int i;
-    UNUSED(state);
-
-    float gain = (opts->audio_gainA / 100.0f) * 5.0f; //scale 0x - 5x
-
-    for (i = 0; i < len; i++) {
-        input[i] *= gain;
     }
 }
 

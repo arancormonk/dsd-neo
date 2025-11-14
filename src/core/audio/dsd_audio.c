@@ -19,6 +19,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/log.h>

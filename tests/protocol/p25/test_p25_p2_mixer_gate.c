@@ -16,8 +16,7 @@
 #include <dsd-neo/core/dsd.h>
 #undef main
 
-// Mixer helper under test (declared in dsd_audio2.c)
-int dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR);
+#include <dsd-neo/core/audio.h>
 
 static int
 expect_eq(const char* tag, int got, int want) {
