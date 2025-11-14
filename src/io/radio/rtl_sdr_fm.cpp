@@ -2008,6 +2008,21 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
+    /* Choose demodulator baseband rate separately from DSP-BW so that digital
+       paths (P25, DMR, NXDN, etc.) can keep a narrow, mode-friendly bandwidth
+       even when the capture/DSP-BW is wider (e.g., 24 kHz). This avoids
+       degrading symbol SNR when users widen DSP-BW for capture convenience. */
+    int demod_base_rate_hz = rtl_dsp_bw_hz;
+    {
+        int digital_voice_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1
+                                  || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1
+                                  || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_provoice == 1);
+        if (digital_voice_mode && demod_base_rate_hz > 12000) {
+            demod_base_rate_hz = 12000;
+            LOG_INFO("DSP: clamping digital demod baseband to %d Hz (DSP-BW=%d Hz).\n", demod_base_rate_hz,
+                     rtl_dsp_bw_hz);
+        }
+    }
     /* Apply CLI volume multiplier (1..3), default to 1 if out of range */
     {
         int vm = opts->rtl_volume_multiplier;
@@ -2018,7 +2033,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     dongle_init(&dongle);
-    rtl_demod_init_for_mode(&demod, &output, opts, rtl_dsp_bw_hz);
+    rtl_demod_init_for_mode(&demod, &output, opts, demod_base_rate_hz);
     output_init(&output);
     if (!output.buffer) {
         LOG_ERROR("Output ring buffer allocation failed.\n");
