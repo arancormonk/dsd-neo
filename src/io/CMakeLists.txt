@@ -5,6 +5,8 @@ if(RTLSDR_FOUND)
   add_library(dsd-neo_io_radio)
   target_sources(dsd-neo_io_radio PRIVATE
     radio/rtl_device.cpp
+    radio/rtl_demod_config.cpp
+    radio/rtl_metrics.cpp
     radio/rtl_stream.cpp
     radio/rtl_stream_c.cpp
     radio/rtl_sdr_fm.cpp

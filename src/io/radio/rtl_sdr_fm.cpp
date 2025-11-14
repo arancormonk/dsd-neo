@@ -25,7 +25,9 @@
 #include <dsd-neo/dsp/polar_disc.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_control.h>
 #include <dsd-neo/runtime/config.h>
@@ -39,7 +41,6 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
-#include <rtl-sdr.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -62,9 +63,6 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 #ifdef __cplusplus
 }
 #endif
-
-/* Forward decl: refresh TED SPS on rate change */
-static void maybe_refresh_ted_sps_after_rate_change(const dsd_opts* opts);
 
 /* Forward declaration for eye ring append used in demod loop */
 static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
@@ -148,14 +146,14 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 #define DSD_NEO_RESTRICT
 #endif
 
-/* Debug/compat toggles via env */
-static int combine_rotate_enabled = 1;      /* DSD_NEO_COMBINE_ROT (1 default) */
-static int upsample_fixedpoint_enabled = 1; /* DSD_NEO_UPSAMPLE_FP (1 default) */
+/* Debug/compat toggles via env (implemented in rtl_demod_config.cpp). */
+extern int combine_rotate_enabled;      /* DSD_NEO_COMBINE_ROT (1 default) */
+extern int upsample_fixedpoint_enabled; /* DSD_NEO_UPSAMPLE_FP (1 default) */
 
-/* Runtime flag (default enabled). Set DSD_NEO_HB_DECIM=0 to use legacy decimator */
-int use_halfband_decimator = 1;
-/* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases */
-static int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
+/* Runtime flag (default enabled). Set DSD_NEO_HB_DECIM=0 to use legacy decimator. */
+extern int use_halfband_decimator;
+/* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
+extern int disable_fs4_shift; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
 
 // UDP control handle
 static struct udp_control* g_udp_ctrl = NULL;
@@ -168,7 +166,6 @@ uint16_t port;
 struct dongle_state {
     int exit_flag;
     pthread_t thread;
-    rtlsdr_dev_t* dev;
     int dev_index;
     uint32_t freq;
     uint32_t rate;
@@ -465,18 +462,18 @@ demod_reset_on_retune(struct demod_state* s) {
  * Use atomics to avoid data races and stale reads. Relaxed ordering is
  * sufficient because we only need value coherence, not synchronization. */
 #include <atomic>
-static std::atomic<double> g_snr_c4fm_db{-100.0};
-static std::atomic<double> g_snr_qpsk_db{-100.0};
-static std::atomic<double> g_snr_gfsk_db{-100.0};
-/* Supervisory tuner autogain gate (0/1), controlled via env/UI */
-static std::atomic<int> g_tuner_autogain_on{0};
+std::atomic<double> g_snr_c4fm_db{-100.0};
+std::atomic<double> g_snr_qpsk_db{-100.0};
+std::atomic<double> g_snr_gfsk_db{-100.0};
+/* Supervisory tuner autogain gate owned by rtl_metrics.cpp */
+extern std::atomic<int> g_tuner_autogain_on;
 /* Track recency and source of SNR updates: src 1=direct (symbols), 2=fallback (eye/constellation) */
-static std::atomic<long long> g_snr_c4fm_last_ms{0};
-static std::atomic<int> g_snr_c4fm_src{0};
-static std::atomic<long long> g_snr_qpsk_last_ms{0};
-static std::atomic<int> g_snr_qpsk_src{0};
-static std::atomic<long long> g_snr_gfsk_last_ms{0};
-static std::atomic<int> g_snr_gfsk_src{0};
+std::atomic<long long> g_snr_c4fm_last_ms{0};
+std::atomic<int> g_snr_c4fm_src{0};
+std::atomic<long long> g_snr_qpsk_last_ms{0};
+std::atomic<int> g_snr_qpsk_src{0};
+std::atomic<long long> g_snr_gfsk_last_ms{0};
+std::atomic<int> g_snr_gfsk_src{0};
 
 /* Fwd decl: eye-based C4FM SNR fallback */
 extern "C" double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
@@ -485,14 +482,15 @@ extern "C" double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 extern "C" double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
 extern "C" int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
-/* Blanker and tuner autogain runtime get/set */
+/* Blanker and tuner autogain runtime get/set (implemented in rtl_sdr_fm.cpp) */
 extern "C" int dsd_rtl_stream_get_blanker(int* out_thr, int* out_win);
 extern "C" void dsd_rtl_stream_set_blanker(int enable, int thr, int win);
 extern "C" int dsd_rtl_stream_get_tuner_autogain(void);
 extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
 
-/* Forward decl: spectrum updater used in demod thread */
-static void update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz);
+/* Spectrum updater used in demod thread (implemented in rtl_metrics.cpp). */
+extern "C" void rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved,
+                                                    int out_rate_hz);
 
 static void*
 demod_thread_fn(void* arg) {
@@ -812,7 +810,7 @@ demod_thread_fn(void* arg) {
         /* Capture I-channel for eye diagram */
         eye_ring_append_i_chan(d->lowpassed, d->lp_len);
         /* Update spectrum snapshot from post-filter complex baseband */
-        update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
+        rtl_metrics_update_spectrum_from_iq(d->lowpassed, d->lp_len, d->rate_out);
 
         /* Estimate SNR per modulation using post-filter samples */
         static int c4fm_missed = 0; /* counts loops without C4FM SNR update */
@@ -1304,124 +1302,10 @@ apply_capture_settings(uint32_t center_freq_hz) {
                  demod.rate_out);
     }
     /* Ensure TED SPS reflects the current effective sampling rate unless explicitly overridden. */
-    maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
 }
 
-/**
- * @brief Recompute resampler configuration if demod output rate changed.
- * Updates output rate accordingly. Runs on controller thread.
- */
-static void
-maybe_update_resampler_after_rate_change(void) {
-    if (demod.resamp_target_hz <= 0) {
-        demod.resamp_enabled = 0;
-        output.rate = demod.rate_out;
-        return;
-    }
-    int target = demod.resamp_target_hz;
-    int inRate = demod.rate_out > 0 ? demod.rate_out : rtl_dsp_bw_hz;
-    int g = gcd_int(inRate, target);
-    int L = target / g;
-    int M = inRate / g;
-    if (L < 1) {
-        L = 1;
-    }
-    if (M < 1) {
-        M = 1;
-    }
-    int scale = (M > 0) ? ((L + M - 1) / M) : 1;
-
-    if (scale > 8) {
-        if (demod.resamp_enabled) {
-            /* Disable and free on out-of-bounds ratio */
-            if (demod.resamp_taps) {
-                dsd_neo_aligned_free(demod.resamp_taps);
-                demod.resamp_taps = NULL;
-            }
-            if (demod.resamp_hist) {
-                dsd_neo_aligned_free(demod.resamp_hist);
-                demod.resamp_hist = NULL;
-            }
-        }
-        demod.resamp_enabled = 0;
-        output.rate = demod.rate_out;
-        LOG_WARNING("Resampler ratio too large on retune (L=%d,M=%d). Disabled.\n", L, M);
-        return;
-    }
-
-    /* Re-design only if params changed or buffers not allocated */
-    if (!demod.resamp_enabled || demod.resamp_L != L || demod.resamp_M != M || demod.resamp_taps == NULL
-        || demod.resamp_hist == NULL) {
-        if (demod.resamp_taps) {
-            dsd_neo_aligned_free(demod.resamp_taps);
-            demod.resamp_taps = NULL;
-        }
-        if (demod.resamp_hist) {
-            dsd_neo_aligned_free(demod.resamp_hist);
-            demod.resamp_hist = NULL;
-        }
-        resamp_design(&demod, L, M);
-        demod.resamp_L = L;
-        demod.resamp_M = M;
-        demod.resamp_enabled = 1;
-        LOG_INFO("Resampler reconfigured: %d -> %d Hz (L=%d,M=%d).\n", inRate, target, L, M);
-    }
-    output.rate = target;
-    /* Re-derive TED SPS in case the effective output rate changed. */
-    maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
-}
-
-/*
- * Derive a sensible default TED SPS from the current effective output rate.
- *
- * This keeps the timing loop aligned when users change the RTL bandwidth
- * (e.g., 12 kHz -> 24 kHz) or when the resampler target/output rate changes.
- * If DSD_NEO_TED_SPS is explicitly set, we do not override it. When a
- * resampler is active, we prefer its target rate; otherwise we fall back to
- * the demod output rate already computed for the current capture settings.
- */
-static void
-maybe_refresh_ted_sps_after_rate_change(const dsd_opts* opts) {
-    (void)opts;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    /* Honor explicit TED_SPS; only auto-derive when not set by user. */
-    int env_sps_set = (cfg && cfg->ted_sps_is_set) ? 1 : 0;
-    if (env_sps_set) {
-        return;
-    }
-    /* Only apply when TED is in use or forced on digital paths. */
-    if (!demod.ted_enabled && !demod.ted_force) {
-        return;
-    }
-    /* Choose the current complex sample rate seen by the timing/discriminator path. */
-    int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
-                                             : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
-    if (Fs_cx <= 0) {
-        Fs_cx = 48000; /* conservative default */
-    }
-    int sps = 0;
-    /* Map by active digital mode when available; fall back to generic 4800 sym/s. */
-    if (opts && opts->frame_p25p2 == 1) {
-        /* 6000 sym/s */
-        sps = (Fs_cx + 3000) / 6000;
-    } else if (opts && opts->frame_p25p1 == 1) {
-        /* 4800 sym/s */
-        sps = (Fs_cx + 2400) / 4800;
-    } else if (opts && opts->frame_nxdn48 == 1) {
-        /* 2400 sym/s */
-        sps = (Fs_cx + 1200) / 2400;
-    } else {
-        /* Generic digital default (4800 sym/s) */
-        sps = (Fs_cx + 2400) / 4800;
-    }
-    if (sps < 2) {
-        sps = 2;
-    }
-    if (sps > 64) {
-        sps = 64;
-    }
-    demod.ted_sps = sps;
-}
+/* Resampler and TED SPS helpers are implemented in rtl_demod_config.cpp. */
 
 /**
  * @brief Controller worker: scans/hops through configured center frequencies.
@@ -1517,8 +1401,8 @@ controller_thread_fn(void* arg) {
             uint32_t tgt = s->manual_retune_freq;
             s->manual_retune_pending.store(0);
             apply_capture_settings((uint32_t)tgt);
-            maybe_update_resampler_after_rate_change();
-            maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
+            rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
+            rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
             /* Reset demod/FLL/TED and clear any stale buffers on retune */
             demod_reset_on_retune(&demod);
             input_ring_clear(&input_ring);
@@ -1543,8 +1427,8 @@ controller_thread_fn(void* arg) {
         }
         s->freq_now = (s->freq_now + 1) % s->freq_len;
         apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
-        maybe_update_resampler_after_rate_change();
-        maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
+        rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
+        rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
         /* Reset demod/FLL/TED and clear any stale buffers on hop */
         demod_reset_on_retune(&demod);
         input_ring_clear(&input_ring);
@@ -1900,399 +1784,22 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     return 10.0 * log10(sig_var / noise_var) - kEvmSNRNoiseBiasDb;
 }
 
-/* ---------------- Spectrum capture (lightweight FFT over recent I/Q) ---------------- */
-static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
-static float g_spec_db[kSpecMaxN];
-static std::atomic<int> g_spec_rate_hz{0};
-static std::atomic<int> g_spec_ready{0};
-static std::atomic<int> g_spec_N{256}; /* default N */
-/* Carrier diagnostics (updated alongside spectrum) */
-static std::atomic<double> g_cfo_nco_hz{0.0};
-static std::atomic<double> g_resid_cfo_spec_hz{0.0};
-static std::atomic<int> g_carrier_lock{0};
-static std::atomic<int> g_nco_q15{0};
-static std::atomic<int> g_demod_rate_hz{0};
-static std::atomic<int> g_costas_err_avg_q14{0};
+/* Auto-PPM status (spectrum-based) is implemented in rtl_metrics.cpp. */
+extern std::atomic<int> g_auto_ppm_enabled;
+extern std::atomic<int> g_auto_ppm_user_en;
+extern std::atomic<int> g_auto_ppm_locked;
+extern std::atomic<int> g_auto_ppm_training;
+extern std::atomic<int> g_auto_ppm_lock_ppm;
+extern std::atomic<double> g_auto_ppm_lock_snr_db;
+extern std::atomic<double> g_auto_ppm_lock_df_hz;
+extern std::atomic<double> g_auto_ppm_snr_db;
+extern std::atomic<double> g_auto_ppm_df_hz;
+extern std::atomic<double> g_auto_ppm_est_ppm;
+extern std::atomic<int> g_auto_ppm_last_dir;
+extern std::atomic<int> g_auto_ppm_cooldown;
 
-/* Auto-PPM status (spectrum-based) */
-static std::atomic<int> g_auto_ppm_enabled{0};
-/* User override for auto-PPM: -1 = follow env/opts; 0 = force off; 1 = force on */
-static std::atomic<int> g_auto_ppm_user_en{-1};
-static std::atomic<int> g_auto_ppm_locked{0};
-static std::atomic<int> g_auto_ppm_training{0};
-static std::atomic<int> g_auto_ppm_lock_ppm{0};
-static std::atomic<double> g_auto_ppm_lock_snr_db{-100.0};
-static std::atomic<double> g_auto_ppm_lock_df_hz{0.0};
-static std::atomic<double> g_auto_ppm_snr_db{-100.0};
-static std::atomic<double> g_auto_ppm_df_hz{0.0};
-static std::atomic<double> g_auto_ppm_est_ppm{0.0};
-static std::atomic<int> g_auto_ppm_last_dir{0};
-static std::atomic<int> g_auto_ppm_cooldown{0};
-
-static inline void
-fft_rad2(float* xr, float* xi, int N) {
-    /* In-place radix-2 Cooley-Tukey FFT (iterative). N must be power of two. */
-    /* Bit-reversal permutation */
-    int j = 0;
-    for (int i = 1; i < N; i++) {
-        int bit = N >> 1;
-        for (; j & bit; bit >>= 1) {
-            j &= ~bit;
-        }
-        j |= bit;
-        if (i < j) {
-            float tr = xr[i];
-            float ti = xi[i];
-            xr[i] = xr[j];
-            xi[i] = xi[j];
-            xr[j] = tr;
-            xi[j] = ti;
-        }
-    }
-    for (int len = 2; len <= N; len <<= 1) {
-        float ang = -2.0f * (float)M_PI / (float)len;
-        float wlen_r = cosf(ang);
-        float wlen_i = sinf(ang);
-        for (int i = 0; i < N; i += len) {
-            float wr = 1.0f, wi = 0.0f;
-            int half = len >> 1;
-            for (int k = 0; k < half; k++) {
-                int j0 = i + k;
-                int j1 = j0 + half;
-                float ur = xr[j0], ui = xi[j0];
-                float vr = xr[j1] * wr - xi[j1] * wi;
-                float vi = xr[j1] * wi + xi[j1] * wr;
-                xr[j0] = ur + vr;
-                xi[j0] = ui + vi;
-                xr[j1] = ur - vr;
-                xi[j1] = ui - vi;
-                float nwr = wr * wlen_r - wi * wlen_i;
-                wi = wr * wlen_i + wi * wlen_r;
-                wr = nwr;
-            }
-        }
-    }
-}
-
-static void
-update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz) {
-    if (!iq_interleaved || len_interleaved < 2) {
-        return;
-    }
-    const int pairs = len_interleaved >> 1;
-    /* Use current FFT size; clamp to bounds */
-    int N = g_spec_N.load(std::memory_order_relaxed);
-    if (N < 64) {
-        N = 64;
-    }
-    if (N > kSpecMaxN) {
-        N = kSpecMaxN;
-    }
-    /* Prepare last N complex samples (I/Q) with DC removal and Hann window */
-    static float xr[kSpecMaxN];
-    static float xi[kSpecMaxN];
-    int take = (pairs >= N) ? N : pairs;
-    int start = (pairs - take);
-    /* Compute mean I/Q over the slice to reduce DC spur at bin center */
-    double sumI = 0.0, sumQ = 0.0;
-    for (int n = 0; n < take; n++) {
-        int idx = start + n;
-        int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
-        int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
-        sumI += (double)I;
-        sumQ += (double)Q;
-    }
-    float meanI = (take > 0) ? (float)(sumI / (double)take) : 0.0f;
-    float meanQ = (take > 0) ? (float)(sumQ / (double)take) : 0.0f;
-    for (int n = 0; n < N; n++) {
-        xr[n] = 0.0f;
-        xi[n] = 0.0f;
-    }
-    for (int n = 0; n < take; n++) {
-        float w = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(N - 1)));
-        int idx = start + n;
-        int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
-        int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
-        xr[n] = w * ((float)I - meanI);
-        xi[n] = w * ((float)Q - meanQ);
-    }
-    fft_rad2(xr, xi, N);
-    /* Magnitude-squared and center-DC reordering */
-    const float eps = 1e-12f;
-    for (int k = 0; k < N; k++) {
-        /* Use arithmetic wrap instead of bitwise to avoid artifacts if N ever
-           deviates from power-of-two. With our API N is still clamped to pow2 */
-        int kk = k + (N >> 1);
-        if (kk >= N) {
-            kk -= N;
-        }
-        float re = xr[kk];
-        float im = xi[kk];
-        float mag2 = re * re + im * im;
-        float db = 10.0f * log10f(mag2 + eps);
-        /* Smooth to reduce flicker */
-        float prev = g_spec_db[k];
-        if (g_spec_ready.load(std::memory_order_relaxed) == 0) {
-            g_spec_db[k] = db;
-        } else {
-            g_spec_db[k] = 0.8f * prev + 0.2f * db;
-        }
-    }
-    g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
-    g_spec_ready.store(1, std::memory_order_release);
-
-    /* Compute residual CFO from spectrum peak around DC using quadratic interp. */
-    int i_max = 0;
-    float p_max = -1e30f;
-    for (int k = 0; k < N; k++) {
-        float v = g_spec_db[k];
-        if (v > p_max) {
-            p_max = v;
-            i_max = k;
-        }
-    }
-    double df_spec_hz = 0.0;
-    if (N >= 3 && i_max > 0 && i_max + 1 < N) {
-        double p1 = g_spec_db[i_max - 1];
-        double p2 = g_spec_db[i_max + 0];
-        double p3 = g_spec_db[i_max + 1];
-        double denom = (p1 - 2.0 * p2 + p3);
-        double delta = 0.0; /* -0.5..+0.5 bin */
-        if (fabs(denom) > 1e-9) {
-            delta = 0.5 * (p1 - p3) / denom;
-            if (delta < -0.5) {
-                delta = -0.5;
-            }
-            if (delta > +0.5) {
-                delta = +0.5;
-            }
-        }
-        double center = (double)(N / 2);
-        double k_off = ((double)i_max + delta) - center; /* signed bins from DC */
-        df_spec_hz = (out_rate_hz > 0) ? (k_off * (double)out_rate_hz / (double)N) : 0.0;
-    }
-    g_resid_cfo_spec_hz.store(df_spec_hz, std::memory_order_relaxed);
-
-    /* NCO CFO from Costas/FLL (Q15 cycles/sample scaled by Fs) */
-    double cfo_hz = 0.0;
-    if (out_rate_hz > 0) {
-        int fq = demod.fll_freq_q15; /* shared with Costas */
-        cfo_hz = ((double)fq * (double)out_rate_hz) / 32768.0;
-    }
-    g_cfo_nco_hz.store(cfo_hz, std::memory_order_relaxed);
-    g_nco_q15.store(demod.fll_freq_q15, std::memory_order_relaxed);
-    g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
-    g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
-
-    /* Simple lock heuristic for CQPSK: small residual df and reasonable SNR */
-    int locked = 0;
-    if (demod.cqpsk_enable) {
-        double snr = g_snr_qpsk_db.load(std::memory_order_relaxed);
-        double thr_df = 120.0; /* Hz */
-        if (fabs(df_spec_hz) < thr_df && snr > 8.0) {
-            locked = 1;
-        }
-    }
-    g_carrier_lock.store(locked, std::memory_order_relaxed);
-}
-
-/* ---------------- Runtime getters/setters: Blanker and Tuner Autogain ---------------- */
-extern "C" int
-dsd_rtl_stream_get_blanker(int* out_thr, int* out_win) {
-    if (out_thr) {
-        *out_thr = demod.blanker_thr;
-    }
-    if (out_win) {
-        *out_win = demod.blanker_win;
-    }
-    return demod.blanker_enable ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_blanker(int enable, int thr, int win) {
-    if (enable >= 0) {
-        demod.blanker_enable = enable ? 1 : 0;
-    }
-    if (thr >= 0) {
-        if (thr < 0) {
-            thr = 0;
-        }
-        if (thr > 60000) {
-            thr = 60000;
-        }
-        demod.blanker_thr = thr;
-    }
-    if (win >= 0) {
-        if (win < 0) {
-            win = 0;
-        }
-        if (win > 16) {
-            win = 16;
-        }
-        demod.blanker_win = win;
-    }
-}
-
-extern "C" int
-dsd_rtl_stream_get_tuner_autogain(void) {
-    return g_tuner_autogain_on.load(std::memory_order_relaxed) ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_tuner_autogain(int onoff) {
-    g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
-}
-
-extern "C" int
-dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
-    if (!out_db || max_bins <= 0) {
-        return 0;
-    }
-    if (g_spec_ready.load(std::memory_order_acquire) == 0) {
-        return 0;
-    }
-    int N = g_spec_N.load(std::memory_order_relaxed);
-    if (N < 64) {
-        N = 64;
-    }
-    if (N > kSpecMaxN) {
-        N = kSpecMaxN;
-    }
-    int n = (max_bins < N) ? max_bins : N;
-    for (int i = 0; i < n; i++) {
-        out_db[i] = g_spec_db[i];
-    }
-    if (out_rate) {
-        *out_rate = g_spec_rate_hz.load(std::memory_order_relaxed);
-    }
-    return n;
-}
-
-extern "C" int
-dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
-                                   int* cooldown, int* locked) {
-    if (enabled) {
-        *enabled = g_auto_ppm_enabled.load(std::memory_order_relaxed);
-    }
-    if (snr_db) {
-        *snr_db = g_auto_ppm_snr_db.load(std::memory_order_relaxed);
-    }
-    if (df_hz) {
-        *df_hz = g_auto_ppm_df_hz.load(std::memory_order_relaxed);
-    }
-    if (est_ppm) {
-        *est_ppm = g_auto_ppm_est_ppm.load(std::memory_order_relaxed);
-    }
-    if (last_dir) {
-        *last_dir = g_auto_ppm_last_dir.load(std::memory_order_relaxed);
-    }
-    if (cooldown) {
-        *cooldown = g_auto_ppm_cooldown.load(std::memory_order_relaxed);
-    }
-    if (locked) {
-        *locked = g_auto_ppm_locked.load(std::memory_order_relaxed);
-    }
-    return 0;
-}
-
-extern "C" int
-dsd_rtl_stream_auto_ppm_training_active(void) {
-    return g_auto_ppm_training.load(std::memory_order_relaxed) ? 1 : 0;
-}
-
-extern "C" int
-dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
-    if (ppm) {
-        *ppm = g_auto_ppm_lock_ppm.load(std::memory_order_relaxed);
-    }
-    if (snr_db) {
-        *snr_db = g_auto_ppm_lock_snr_db.load(std::memory_order_relaxed);
-    }
-    if (df_hz) {
-        *df_hz = g_auto_ppm_lock_df_hz.load(std::memory_order_relaxed);
-    }
-    return 0;
-}
-
-extern "C" int
-dsd_rtl_stream_spectrum_set_size(int n) {
-    /* clamp to 64..1024 and to nearest power of two */
-    if (n < 64) {
-        n = 64;
-    }
-    if (n > kSpecMaxN) {
-        n = kSpecMaxN;
-    }
-    /* round to power of two */
-    int p = 64;
-    while (p < n) {
-        p <<= 1;
-    }
-    if (p > kSpecMaxN) {
-        p = kSpecMaxN;
-    }
-    g_spec_N.store(p, std::memory_order_relaxed);
-    return p;
-}
-
-extern "C" int
-dsd_rtl_stream_spectrum_get_size(void) {
-    int N = g_spec_N.load(std::memory_order_relaxed);
-    if (N < 64) {
-        N = 64;
-    }
-    if (N > kSpecMaxN) {
-        N = kSpecMaxN;
-    }
-    return N;
-}
-
-/* ---------------- SNR export (smoothed) ---------------- */
-extern "C" double
-rtl_stream_get_snr_c4fm(void) {
-    return g_snr_c4fm_db.load(std::memory_order_relaxed);
-}
-
-extern "C" double
-rtl_stream_get_snr_cqpsk(void) {
-    return g_snr_qpsk_db.load(std::memory_order_relaxed);
-}
-
-extern "C" double
-rtl_stream_get_snr_gfsk(void) {
-    return g_snr_gfsk_db.load(std::memory_order_relaxed);
-}
-
-/* Carrier diagnostics exports */
-extern "C" double
-dsd_rtl_stream_get_cfo_hz(void) {
-    return g_cfo_nco_hz.load(std::memory_order_relaxed);
-}
-
-extern "C" double
-dsd_rtl_stream_get_residual_cfo_hz(void) {
-    return g_resid_cfo_spec_hz.load(std::memory_order_relaxed);
-}
-
-extern "C" int
-dsd_rtl_stream_get_carrier_lock(void) {
-    return g_carrier_lock.load(std::memory_order_relaxed) ? 1 : 0;
-}
-
-extern "C" int
-dsd_rtl_stream_get_nco_q15(void) {
-    return g_nco_q15.load(std::memory_order_relaxed);
-}
-
-extern "C" int
-dsd_rtl_stream_get_demod_rate_hz(void) {
-    return g_demod_rate_hz.load(std::memory_order_relaxed);
-}
-
-extern "C" int
-dsd_rtl_stream_get_costas_err_q14(void) {
-    return g_costas_err_avg_q14.load(std::memory_order_relaxed);
-}
+/* Spectrum, carrier diagnostics, blanker, tuner autogain, and auto-PPM metrics
+ * exports are implemented in rtl_metrics.cpp. */
 
 /**
  * @brief Initialize dongle (RTL-SDR source) state with default parameters.
@@ -2309,6 +1816,7 @@ dongle_init(struct dongle_state* s) {
     s->demod_target = &demod;
 }
 
+#if 0  /* Legacy demod init/cleanup (superseded by rtl_demod_config.cpp) */
 typedef enum { DEMOD_DIGITAL = 0, DEMOD_ANALOG = 1, DEMOD_RO2 = 2 } DemodMode;
 
 typedef struct {
@@ -2556,6 +2064,7 @@ demod_cleanup(struct demod_state* s) {
         s->post_polydecim_hist = NULL;
     }
 }
+#endif /* legacy demod init/cleanup */
 
 /**
  * @brief Initialize output ring buffer and synchronization primitives.
@@ -2652,6 +2161,7 @@ rtlsdr_sighandler(void) {
     rtl_device_stop_async(rtl_device_handle);
 }
 
+#if 0 /* Legacy demod configuration helper (superseded by rtl_demod_config_from_env_and_opts in rtl_demod_config.cpp) */
 /**
  * @brief Apply runtime configuration flags and set up optional resampler/FLL/TED.
  *
@@ -2821,7 +2331,9 @@ configure_from_env_and_opts(dsd_opts* opts) {
     demod.fm_cma_guard_accepts = 0;
     demod.fm_cma_guard_rejects = 0;
 }
+#endif /* legacy demod configuration helper */
 
+#if 0  /* Legacy mode defaults (superseded by rtl_demod_select_defaults_for_mode in rtl_demod_config.cpp) */
 /**
  * @brief Apply sensible defaults for digital vs analog modes when env not set.
  *
@@ -2902,6 +2414,7 @@ select_defaults_for_mode(dsd_opts* opts) {
         }
     }
 }
+#endif /* legacy mode defaults */
 
 /**
  * @brief Seed initial device index, center frequency, gain and UDP port.
@@ -3010,17 +2523,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     dongle_init(&dongle);
-    {
-        DemodInitParams params = {0};
-        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1) {
-            demod_init_mode(&demod, DEMOD_RO2, &params);
-        } else if (opts->analog_only == 1 || opts->m17encoder == 1) {
-            params.deemph_default = 1;
-            demod_init_mode(&demod, DEMOD_ANALOG, &params);
-        } else {
-            demod_init_mode(&demod, DEMOD_DIGITAL, &params);
-        }
-    }
+    rtl_demod_init_for_mode(&demod, &output, opts, rtl_dsp_bw_hz);
     output_init(&output);
     if (!output.buffer) {
         LOG_ERROR("Output ring buffer allocation failed.\n");
@@ -3046,8 +2549,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     controller_init(&controller);
 
     /* Read optional environment flags (centralized) */
-    configure_from_env_and_opts(opts);
-    select_defaults_for_mode(opts);
+    rtl_demod_config_from_env_and_opts(&demod, opts);
+    rtl_demod_select_defaults_for_mode(&demod, opts, &output);
 
     /* Reapply preserved DSP toggles when Manual Override is active. */
     if (persist.use) {
@@ -3364,7 +2867,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     /* With demod.rate_out known and resampler configured, refresh TED SPS unless overridden. */
-    maybe_refresh_ted_sps_after_rate_change(g_stream ? g_stream->opts : NULL);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
 
     /* Reset endpoint before we start reading from it (mandatory) */
     rtl_device_reset_buffer(rtl_device_handle);
@@ -3552,7 +3055,7 @@ dsd_rtl_stream_close(void) {
     safe_cond_signal(&output.ready, &output.ready_m);
     pthread_join(controller.thread, NULL);
 
-    demod_cleanup(&demod);
+    rtl_demod_cleanup(&demod);
     output_cleanup(&output);
     controller_cleanup(&controller);
 
@@ -3602,7 +3105,7 @@ dsd_rtl_stream_soft_stop(void) {
     safe_cond_signal(&output.ready, &output.ready_m);
     pthread_join(controller.thread, NULL);
 
-    demod_cleanup(&demod);
+    rtl_demod_cleanup(&demod);
     output_cleanup(&output);
     controller_cleanup(&controller);
 
@@ -3701,21 +3204,13 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             g_auto_ppm_cooldown.store(cooldown, std::memory_order_relaxed);
             break;
         }
-        /* Snapshot current spectrum */
-        int N = g_spec_N.load(std::memory_order_relaxed);
-        if (N < 64 || N > kSpecMaxN) {
+        /* Snapshot current spectrum via helper */
+        static float spec_copy[1024];
+        int rate = 0;
+        int N = dsd_rtl_stream_spectrum_get(spec_copy, (int)(sizeof(spec_copy) / sizeof(spec_copy[0])), &rate);
+        if (N <= 0 || rate <= 0) {
+            g_auto_ppm_last_dir.store(0, std::memory_order_relaxed);
             break;
-        }
-        int rate = g_spec_rate_hz.load(std::memory_order_relaxed);
-        if (rate <= 0) {
-            break;
-        }
-        if (g_spec_ready.load(std::memory_order_acquire) == 0) {
-            break;
-        }
-        static float spec_copy[kSpecMaxN];
-        for (int i = 0; i < N; i++) {
-            spec_copy[i] = g_spec_db[i];
         }
         /* Find strongest bin near DC primarily: widen search to +/- N/4 of center
            to tolerate larger initial frequency errors. */
@@ -3741,7 +3236,7 @@ dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state
             }
         }
         /* Estimate noise floor via median of bins excluding +-2 around peak */
-        static float tmp[kSpecMaxN];
+        static float tmp[1024];
         int m = 0;
         for (int i = i_lo; i < i_hi; i++) {
             if (i >= i_max - 2 && i <= i_max + 2) {
@@ -4672,25 +4167,6 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
         *ted_enable = demod.ted_enabled ? 1 : 0;
     }
     return 0;
-}
-
-/* ---- Auto-PPM runtime control (UI/CLI) ---- */
-extern "C" void
-dsd_rtl_stream_set_auto_ppm(int onoff) {
-    g_auto_ppm_user_en.store(onoff ? 1 : 0, std::memory_order_relaxed);
-}
-
-extern "C" int
-dsd_rtl_stream_get_auto_ppm(void) {
-    int u = g_auto_ppm_user_en.load(std::memory_order_relaxed);
-    if (u == 0) {
-        return 0;
-    }
-    if (u == 1) {
-        return 1;
-    }
-    /* Fallback to last enabled value */
-    return g_auto_ppm_enabled.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 /* Configure RRC matched filter parameters. Any arg <0 leaves it unchanged. */

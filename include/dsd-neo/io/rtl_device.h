@@ -16,7 +16,6 @@
 
 #include <dsd-neo/runtime/input_ring.h>
 #include <pthread.h>
-#include <rtl-sdr.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
