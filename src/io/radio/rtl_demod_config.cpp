@@ -18,6 +18,7 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
+#include <dsd-neo/dsp/polar_disc.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/config.h>
@@ -195,6 +196,23 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
         s->deemph = (p && p->deemph_default) ? 1 : 0;
         s->rate_out2 = rtl_dsp_bw_hz;
     }
+
+    /* Configure discriminator and helper modules now that mode/custom_atan are known. */
+    if (s->custom_atan == 2) {
+        atan_lut_init();
+    }
+    s->discriminator = (s->custom_atan == 0)   ? &polar_discriminant
+                       : (s->custom_atan == 1) ? &polar_disc_fast
+                                               : &polar_disc_lut;
+    /* Initialize minimal worker pool (env-gated via DSD_NEO_MT). */
+    demod_mt_init(s);
+
+    /* Generic IQ balance defaults (image suppression); mode-aware guards in DSP pipeline. */
+    s->iqbal_enable = 1;
+    s->iqbal_thr_q15 = 655; /* ~0.02 */
+    s->iqbal_alpha_ema_r_q15 = 0;
+    s->iqbal_alpha_ema_i_q15 = 0;
+    s->iqbal_alpha_ema_a_q15 = 6553; /* ~0.2 */
 }
 
 } // namespace
