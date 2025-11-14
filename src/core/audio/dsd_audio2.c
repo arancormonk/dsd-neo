@@ -473,7 +473,6 @@ END_FS4:
 void
 playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 
-    int i;
     int encL;
     float stereo_samp1[320]; //8k 2-channel stereo interleave mix
 
@@ -824,7 +823,6 @@ MS_ENDR:
 void
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
 
-    int i;
     int encL;
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     memset(stereo_samp1, 0, sizeof(stereo_samp1));
@@ -928,7 +926,6 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     //it doesn't matter if both slots have voice, or if one does, the slot without voice
     //will play silence while this runs if no voice present
 
-    int i;
     int encL, encR;
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     short stereo_samp2[320]; //8k 2-channel stereo interleave mix
@@ -1512,7 +1509,7 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     //NOTE: This will run once every superframe during a sacch field
     //exact implementation to be determined
 
-    int i, j;
+    int j;
     int encL, encR;
 
     short stereo_sf[18][320]; //8k 2-channel stereo interleave mix for full superframe
