@@ -362,7 +362,10 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
         return; /* only for RTL input */
     }
     static unsigned int last_rate = 0;
-    unsigned int Fs = rtl_stream_output_rate(NULL);
+    unsigned int Fs = 0;
+    if (g_rtl_ctx) {
+        Fs = rtl_stream_output_rate(g_rtl_ctx);
+    }
     if (Fs == 0 || Fs == last_rate) {
         return;
     }

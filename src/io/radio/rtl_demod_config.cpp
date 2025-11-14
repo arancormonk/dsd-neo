@@ -423,8 +423,14 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
         if (!env_ted_sps_set) {
-            int Fs_cx = (demod->resamp_target_hz > 0) ? demod->resamp_target_hz
-                                                      : (demod->rate_out > 0 ? demod->rate_out : (int)output->rate);
+            int Fs_cx = 0;
+            if (demod->resamp_enabled && demod->resamp_target_hz > 0) {
+                Fs_cx = demod->resamp_target_hz;
+            } else if (demod->rate_out > 0) {
+                Fs_cx = demod->rate_out;
+            } else {
+                Fs_cx = (int)output->rate;
+            }
             if (Fs_cx <= 0) {
                 Fs_cx = 48000; /* safe default */
             }
@@ -489,7 +495,7 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     }
     int scale = (M > 0) ? ((L + M - 1) / M) : 1;
 
-    if (scale > 8) {
+    if (scale > 12) {
         if (demod->resamp_enabled) {
             /* Disable and free on out-of-bounds ratio */
             if (demod->resamp_taps) {
@@ -539,8 +545,14 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         return; /* user explicitly set; do not override */
     }
 
-    int Fs_cx = (demod->resamp_target_hz > 0) ? demod->resamp_target_hz
-                                              : (demod->rate_out > 0 ? demod->rate_out : (int)output->rate);
+    int Fs_cx = 0;
+    if (demod->resamp_enabled && demod->resamp_target_hz > 0) {
+        Fs_cx = demod->resamp_target_hz;
+    } else if (demod->rate_out > 0) {
+        Fs_cx = demod->rate_out;
+    } else {
+        Fs_cx = (int)output->rate;
+    }
     if (Fs_cx <= 0) {
         Fs_cx = 48000;
     }

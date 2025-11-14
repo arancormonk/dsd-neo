@@ -2349,7 +2349,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             M = 1;
         }
         int scale = (M > 0) ? ((L + M - 1) / M) : 1;
-        if (scale > 8) {
+        if (scale > 12) {
             LOG_WARNING("Resampler ratio too large (L=%d,M=%d). Disabling resampler.\n", L, M);
             demod.resamp_enabled = 0;
         } else {
@@ -3502,8 +3502,14 @@ dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delt
 
     /* Auto-set TED SPS for P25 Phase 2 (≈6000 sym/s). */
     if (demod.ted_enabled) {
-        int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
-                                                 : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
+        int Fs_cx = 0;
+        if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
+            Fs_cx = demod.resamp_target_hz;
+        } else if (demod.rate_out > 0) {
+            Fs_cx = demod.rate_out;
+        } else {
+            Fs_cx = (int)output.rate;
+        }
         if (Fs_cx <= 0) {
             Fs_cx = 48000;
         }
@@ -3538,8 +3544,14 @@ extern "C" void
 rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
     /* Auto-set TED SPS for P25 Phase 1 (≈4800 sym/s). */
     if (demod.ted_enabled) {
-        int Fs_cx = (demod.resamp_target_hz > 0) ? demod.resamp_target_hz
-                                                 : (demod.rate_out > 0 ? demod.rate_out : (int)output.rate);
+        int Fs_cx = 0;
+        if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
+            Fs_cx = demod.resamp_target_hz;
+        } else if (demod.rate_out > 0) {
+            Fs_cx = demod.rate_out;
+        } else {
+            Fs_cx = (int)output.rate;
+        }
         if (Fs_cx <= 0) {
             Fs_cx = 48000;
         }
