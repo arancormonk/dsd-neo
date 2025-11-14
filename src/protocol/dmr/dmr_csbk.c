@@ -19,6 +19,8 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
+#include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -291,33 +293,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 long int freq = 0;
 
                 //all of these messages share the same format (thankfully)
-                if (csbk_o == 48) {
-                    fprintf(stderr, " Private Voice Channel Grant (PV_GRANT)");
-                }
-                if (csbk_o == 49) {
-                    fprintf(stderr, " Talkgroup Voice Channel Grant (TV_GRANT)");
-                }
-                if (csbk_o == 50) {
-                    fprintf(stderr,
-                            " Broadcast Voice Channel Grant (BTV_GRANT)"); //listed as private in the appendix (error?)
-                }
-                if (csbk_o == 51) {
-                    fprintf(stderr, " Private Data Channel Grant: Single Item (PD_GRANT)");
-                }
-                if (csbk_o == 52) {
-                    fprintf(stderr, " Talkgroup Data Channel Grant: Single Item (TD_GRANT)");
-                }
-                if (csbk_o == 53) {
-                    fprintf(stderr, " Duplex Private Voice Channel Grant (PV_GRANT_DX)");
-                }
-                if (csbk_o == 54) {
-                    fprintf(stderr, " Duplex Private Data Channel Grant (PD_GRANT_DX)");
-                }
-                if (csbk_o == 55) {
-                    fprintf(stderr, " Private Data Channel Grant: Multi Item (PD_GRANT)");
-                }
-                if (csbk_o == 56 && state->synctype != 33) { //when not MS Data Sync (shares same OPcode as BS_DWN_ACT)
-                    fprintf(stderr, " Talkgroup Data Channel Grant: Multi Item (TD_GRANT)");
+                if (!(csbk_o == 56 && state->synctype == 33)) {
+                    fprintf(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
                 }
 
                 //Logical Physical Channel Number
@@ -573,13 +550,14 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                         dsd_append(state->call_string[1], sizeof state->call_string[1], "            ");
                                     }
                                 }
-                                // Centralized tune via DMR SM
-                                if (csbk_o == 49) {
-                                    dmr_sm_on_group_grant(opts, state, /*freq_hz*/ freq, /*lpcn*/ lpchannum, target,
-                                                          source);
-                                } else {
-                                    dmr_sm_on_indiv_grant(opts, state, /*freq_hz*/ freq, /*lpcn*/ lpchannum, target,
-                                                          source);
+                                // Centralized tune via DMR SM using parsed CSBK result
+                                struct dmr_csbk_result res;
+                                if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) == 0) {
+                                    res.freq_hz = freq;
+                                    res.lpcn = lpchannum;
+                                    res.target = target;
+                                    res.source = source;
+                                    dmr_csbk_handle(&res, opts, state);
                                 }
                             }
                         }

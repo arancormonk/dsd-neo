@@ -4,22 +4,11 @@
  */
 
 /*
- * Minimal P25 MAC helpers exposed for tests and diagnostics.
+ * Backwards-compatible include for P25 Phase 2 MAC helpers.
+ *
+ * New code should prefer including p25p2_mac_tables.h directly.
  */
 
 #pragma once
 
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Returns the MAC message length for a given opcode with vendor overrides.
-// Length semantics match the internal table: number of octets following the
-// opcode byte (i.e., includes MFID and payload, excludes the opcode itself).
-int p25p2_mac_len_for(uint8_t mfid, uint8_t opcode);
-
-#ifdef __cplusplus
-}
-#endif
+#include <dsd-neo/protocol/p25/p25p2_mac_tables.h>

@@ -13,6 +13,8 @@
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/protocol/m17/m17_tables.h>
 #include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -21,26 +23,6 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
-
-//try to find a fancy lfsr or calculation for this and not an array if possible
-uint8_t m17_scramble[369] = {
-    1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0,
-    0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1,
-    0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0,
-    0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1,
-    0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,
-    1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0,
-    1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0,
-    1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1,
-    0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1,
-    0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1};
-
-char b40[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.";
-
-uint8_t p1[62] = {1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0,
-                  1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1};
-
-uint8_t p3[62] = {1, 1, 1, 1, 1, 1, 1, 0};
 
 //from M17_Implementations / libM17 -- sp5wwp -- should have just looked here to begin with
 //this setup looks very similar to the OP25 variant of crc16, but with a few differences (uses packed bytes)
@@ -122,70 +104,63 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
 
 void
 M17decodeLSF(dsd_state* state) {
-    int i;
-
-    unsigned long long int lsf_dst = (unsigned long long int)ConvertBitIntoBytes(&state->m17_lsf[0], 48);
-    unsigned long long int lsf_src = (unsigned long long int)ConvertBitIntoBytes(&state->m17_lsf[48], 48);
-    uint16_t lsf_type = (uint16_t)ConvertBitIntoBytes(&state->m17_lsf[96], 16);
-
-    //this is the way the manual/code expects you to read these bits
-    // uint8_t lsf_ps = (lsf_type >> 0) & 0x1;
-    uint8_t lsf_dt = (lsf_type >> 1) & 0x3;
-    uint8_t lsf_et = (lsf_type >> 3) & 0x3;
-    uint8_t lsf_es = (lsf_type >> 5) & 0x3;
-    uint8_t lsf_cn = (lsf_type >> 7) & 0xF;
-    uint8_t lsf_rs = (lsf_type >> 11) & 0x1F;
+    struct m17_lsf_result res;
+    if (m17_parse_lsf(state->m17_lsf, sizeof(state->m17_lsf), &res) != 0) {
+        LOG_WARN("M17: failed to parse LSF\n");
+        return;
+    }
 
     //store this so we can reference it for playing voice and/or decoding data, dst/src etc
-    state->m17_str_dt = lsf_dt;
-    state->m17_dst = lsf_dst;
-    state->m17_src = lsf_src;
-    state->m17_can = lsf_cn;
+    state->m17_str_dt = res.dt;
+    state->m17_dst = res.dst;
+    state->m17_src = res.src;
+    state->m17_can = res.cn;
 
-    fprintf(stderr, "\n");
+    /* Preserve legacy log formatting while routing through LOG_* macros. */
+    LOG_INFO("\n");
 
     //packet or stream
     // if (lsf_ps == 0) fprintf (stderr, " P-");
     // if (lsf_ps == 1) fprintf (stderr, " S-");
 
-    fprintf(stderr, " CAN: %d", lsf_cn);
-    M17decodeCSD(state, lsf_dst, lsf_src);
+    LOG_INFO(" CAN: %d", res.cn);
+    M17decodeCSD(state, res.dst, res.src);
 
-    if (lsf_dt == 0) {
-        fprintf(stderr, " Reserved");
+    if (res.dt == 0) {
+        LOG_INFO(" Reserved");
     }
-    if (lsf_dt == 1) {
-        fprintf(stderr, " Data");
+    if (res.dt == 1) {
+        LOG_INFO(" Data");
     }
-    if (lsf_dt == 2) {
-        fprintf(stderr, " Voice (3200bps)");
+    if (res.dt == 2) {
+        LOG_INFO(" Voice (3200bps)");
     }
-    if (lsf_dt == 3) {
-        fprintf(stderr, " Voice (1600bps)");
-    }
-
-    if (lsf_rs != 0) {
-        fprintf(stderr, " RS: %02X", lsf_rs);
-    }
-    fprintf(stderr, "\n");
-    if (lsf_et != 0) {
-        fprintf(stderr, " ENC:");
-    }
-    if (lsf_et == 2) {
-        fprintf(stderr, " AES-CTR");
-    }
-    if (lsf_et == 1) {
-        fprintf(stderr, " Scrambler - %d", lsf_es);
+    if (res.dt == 3) {
+        LOG_INFO(" Voice (1600bps)");
     }
 
-    state->m17_enc = lsf_et;
-    state->m17_enc_st = lsf_es;
+    if (res.rs != 0) {
+        LOG_INFO(" RS: %02X", res.rs);
+    }
+    LOG_INFO("\n");
+    if (res.et != 0) {
+        LOG_INFO(" ENC:");
+    }
+    if (res.et == 2) {
+        LOG_INFO(" AES-CTR");
+    }
+    if (res.et == 1) {
+        LOG_INFO(" Scrambler - %d", res.es);
+    }
 
-    if (lsf_rs != 0) {
-        if (lsf_rs == 0x10) {
-            fprintf(stderr, " OTAKD Data Packet;");
-        } else if (lsf_rs == 0x11) {
-            fprintf(stderr, " OTAKD Embedded LSF;\n");
+    state->m17_enc = res.et;
+    state->m17_enc_st = res.es;
+
+    if (res.rs != 0) {
+        if (res.rs == 0x10) {
+            LOG_INFO(" OTAKD Data Packet;");
+        } else if (res.rs == 0x11) {
+            LOG_INFO(" OTAKD Embedded LSF;\n");
             goto LSF_END;
         }
     }
@@ -201,24 +176,20 @@ M17decodeLSF(dsd_state* state) {
     // fprintf (stderr, "TSN: %ld; TSI: %ld; DIF: %ld;", tsn, tsi, dif);
 
     //pack meta bits into 14 bytes
-    for (i = 0; i < 14; i++) {
-        state->m17_meta[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[((size_t)i * 8) + 112], 8);
-    }
-
-    //using meta_sum in case some byte fields, particularly meta[0], are zero
-    uint32_t meta_sum = 0;
-    for (i = 0; i < 14; i++) {
-        meta_sum += state->m17_meta[i];
+    if (res.has_meta != 0U) {
+        memcpy(state->m17_meta, res.meta, sizeof(res.meta));
+    } else {
+        memset(state->m17_meta, 0, sizeof(state->m17_meta));
     }
 
     //Decode Meta Data when not ENC (if meta field is populated with something)
-    if (lsf_et == 0 && meta_sum != 0) {
+    if (res.et == 0 && res.has_meta != 0U) {
         uint8_t meta[15];
-        meta[0] = lsf_es + 0x80; //add identifier for pkt decoder
-        for (i = 0; i < 14; i++) {
+        meta[0] = (uint8_t)(res.es + 0x80U); //add identifier for pkt decoder
+        for (int i = 0; i < 14; i++) {
             meta[i + 1] = state->m17_meta[i];
         }
-        fprintf(stderr, "\n ");
+        LOG_INFO("\n ");
         //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
         decodeM17PKT(NULL, state, meta, 15); //decode META
     }
@@ -227,10 +198,10 @@ M17decodeLSF(dsd_state* state) {
     // if (lsf_et == 0 && meta_sum == 0)
     //   fprintf (stderr, " Meta Null; ");
 
-    if (lsf_et == 2) {
-        fprintf(stderr, " IV: ");
-        for (i = 0; i < 16; i++) {
-            fprintf(stderr, "%02X", state->m17_meta[i]);
+    if (res.et == 2) {
+        LOG_INFO(" IV: ");
+        for (int i = 0; i < 16; i++) {
+            LOG_INFO("%02X", state->m17_meta[i]);
         }
     }
 

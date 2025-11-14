@@ -422,6 +422,14 @@ target_link_libraries(dsd-neo_test_p25_trunk_sm_fuzz PRIVATE dsd-neo_proto_p25 d
 add_test(NAME P25_TRUNK_SM_FUZZ COMMAND dsd-neo_test_p25_trunk_sm_fuzz)
 
 # DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
+# M17 protocol tests
+add_executable(dsd-neo_test_m17_lsf_parse
+  protocol/m17/test_m17_lsf_parse.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_parse.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_tables.c)
+target_include_directories(dsd-neo_test_m17_lsf_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME M17_LSF_PARSE COMMAND dsd-neo_test_m17_lsf_parse)
+
 add_executable(dsd-neo_test_dmr_t3_sm_clamp
   protocol/dmr/test_dmr_t3_sm_clamp.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
@@ -445,7 +453,9 @@ add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 add_executable(dsd-neo_test_dmr_t3_cmove
   protocol/dmr/test_dmr_t3_cmove.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c)
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c)
 target_include_directories(dsd-neo_test_dmr_t3_cmove PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 target_link_libraries(dsd-neo_test_dmr_t3_cmove PRIVATE m)
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
@@ -454,7 +464,9 @@ add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 add_executable(dsd-neo_test_dmr_t3_force_release
   protocol/dmr/test_dmr_t3_force_release.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c)
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c)
 target_include_directories(dsd-neo_test_dmr_t3_force_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 target_link_libraries(dsd-neo_test_dmr_t3_force_release PRIVATE m)
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
@@ -463,7 +475,9 @@ add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 add_executable(dsd-neo_test_dmr_t3_move_release
   protocol/dmr/test_dmr_t3_move_release.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
-  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c)
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c)
 target_include_directories(dsd-neo_test_dmr_t3_move_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 target_link_libraries(dsd-neo_test_dmr_t3_move_release PRIVATE m)
 add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)

@@ -23,14 +23,9 @@
 // Forward prototype for bounded append helper (definition later)
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
-// Expose a small query helper for tests and diagnostics.
+// Expose MAC helpers for tests and diagnostics.
 #include <dsd-neo/protocol/p25/p25_mac.h>
-
-// Base length lookup with a few observed vendor overrides when the table yields zero.
-static inline int
-mac_len_for(uint8_t mfid, uint8_t opcode) {
-    return p25p2_mac_len_for(mfid, opcode);
-}
+#include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
@@ -66,6 +61,19 @@ p25p2_emit_mac_json_if_enabled(dsd_state* state, int xch_type, uint8_t mfid, uin
             (long)ts, xch, (unsigned)mfid, (unsigned)opcode, slot, slot + 1, len_b, len_c, sum);
 }
 
+/* Centralized helper for MAC-based group grants; currently a thin wrapper
+ * over the Tier II/III trunking state machine so future refactors can
+ * route per-opcode behavior through a single surface. */
+static void
+p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
+                 int group, int source) {
+    (void)res;
+    if (!opts || !state) {
+        return;
+    }
+    p25_sm_on_group_grant(opts, state, channel, svc_bits, group, source);
+}
+
 //MAC PDU 3-bit Opcodes BBAC (8.4.1) p 123:
 //0 - reserved //1 - Mac PTT //2 - Mac End PTT //3 - Mac Idle //4 - Mac Active
 //5 - reserved //6 - Mac Hangtime //7 - reserved //Mac PTT BBAC p80
@@ -80,47 +88,14 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
     //b values - 0 = Unique TDMA Message,  1 Phase 1 OSP/ISP abbreviated
     // 2 = Manufacturer Message, 3 Phase 1 OSP/ISP extended/explicit
 
-    int len_a = 0;
-    int len_b = mac_len_for((uint8_t)MAC[2], (uint8_t)MAC[1]);
-    int len_c = 0;
-
-    // Compute per-channel capacity for message-carrying octets (excludes opcode byte itself).
-    // Empirically: SACCH allows up to 19, FACCH up to 16 (matches existing checks below).
-    const int capacity = (type == 1) ? 19 : 16;
-
-    // If table/override gives no guidance, try deriving from MCO when header is present.
-    // MCO represents message-carrying octets including the opcode; our len excludes the opcode.
-    if (len_b == 0 || len_b > capacity) {
-        // Heuristic: when coming from SACCH/FACCH, MAC[1]'s low 6 bits carry MCO.
-        // For bridged MBT (P1 alt/unc) callers, MAC[0] is typically 0 and there is no header → skip MCO.
-        int mco = (int)(MAC[1] & 0x3F);
-        if ((MAC[0] != 0 || type == 1) && mco > 0) {
-            int guess = mco - 1; // subtract opcode byte to match table semantics
-            if (guess > capacity) {
-                guess = capacity;
-            }
-            if (guess < 0) {
-                guess = 0;
-            }
-            len_b = guess;
-        }
+    struct p25p2_mac_result mac_res;
+    if (p25p2_mac_parse(type, MAC, &mac_res) != 0) {
+        return;
     }
 
-    //sanity check
-    if (len_b < 19 && type == 1) {
-        len_c = mac_len_for((uint8_t)MAC[3 + len_a], (uint8_t)MAC[1 + len_b]);
-    }
-    if (len_b < 16 && type == 0) {
-        len_c = mac_len_for((uint8_t)MAC[3 + len_a], (uint8_t)MAC[1 + len_b]);
-    }
-
-    // If the second message length is unknown, fill with remaining capacity as a last resort.
-    if ((type == 1 && len_b < 19 && len_c == 0) || (type == 0 && len_b < 16 && len_c == 0)) {
-        int remain = capacity - len_b;
-        if (remain > 0) {
-            len_c = remain;
-        }
-    }
+    int len_a = mac_res.len_a;
+    int len_b = mac_res.len_b;
+    int len_c = mac_res.len_c;
 
     int slot = 9;
     if (type == 1) //0 for F, 1 for S
@@ -272,7 +247,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         && !p25_patch_sg_key_is_clear(state, sgroup)) {
                         goto SKIPCALL;
                     }
-                    p25_sm_on_group_grant(opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
+                    p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
                 }
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
@@ -343,7 +318,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         && !p25_patch_sg_key_is_clear(state, sgroup)) {
                         goto SKIPCALL;
                     }
-                    p25_sm_on_group_grant(opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
+                    p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0);
                 }
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
@@ -455,7 +430,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                             && !p25_patch_sg_key_is_clear(state, tunable_group)) {
                             goto SKIPCALL;
                         }
-                        p25_sm_on_group_grant(opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
+                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
                         j = 8; //break loop
                     }
                 }
@@ -567,7 +542,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
-                    p25_sm_on_group_grant(opts, state, channel, svc, group, source);
+                    p25p2_mac_handle(&mac_res, opts, state, channel, svc, group, source);
                 }
             }
             // Minimal SM: emit GRANT
@@ -977,7 +952,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                     if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
                         int svc_bits = (j == 0) ? svc1 : svc2;
-                        p25_sm_on_group_grant(opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
+                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
                     }
                 }
                 // Minimal SM: emit GRANT
@@ -1191,7 +1166,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                     if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
                         int svc_bits = (j == 0) ? so1 : ((j == 1) ? so2 : so3);
-                        p25_sm_on_group_grant(opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
+                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
                         j = 8; //break loop after tuning one candidate
                     }
                 }
@@ -1293,7 +1268,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 //tune if tuning available (centralized)
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                     if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && tunable_freq != 0) {
-                        p25_sm_on_group_grant(opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
+                        p25p2_mac_handle(&mac_res, opts, state, tunable_chan, /*svc_bits*/ 0, tunable_group, /*src*/ 0);
                         j = 8; //break loop after first tune
                     }
                 }
@@ -1401,7 +1376,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //tune if tuning available (centralized)
             if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0) && (strcmp(mode, "B") != 0)) {
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
-                    p25_sm_on_group_grant(opts, state, channelt, svc, group, /*src*/ 0);
+                    p25p2_mac_handle(&mac_res, opts, state, channelt, svc, group, /*src*/ 0);
                 }
             }
             if (opts->p25_trunk == 0) {
