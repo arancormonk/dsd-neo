@@ -1831,7 +1831,7 @@ full_demod(struct demod_state* d) {
      * Branch early by mode to simplify ordering.
      *
      * CQPSK (QPSK-like):
-     *   DC block (optional) -> Matched Filter (RRC/MF) -> Costas -> CQPSK EQ
+     *   DC block (optional) -> Matched Filter (RRC/MF) -> Gardner TED (optional) -> Costas -> CQPSK EQ
      *
      * FM/C4FM and others:
      *   DC block -> AGC/limiter (when allowed) -> FM CMA/smoother -> FLL (if enabled)
@@ -1880,13 +1880,18 @@ full_demod(struct demod_state* d) {
         }
         /* Optional complex DC removal */
         iq_dc_block(d);
-        /* CQPSK matched filter before carrier recovery */
+        /* CQPSK matched filter before timing/carrier recovery */
         if (d->cqpsk_mf_enable) {
             if (d->cqpsk_rrc_enable) {
                 mf_rrc_complex_interleaved(d);
             } else {
                 mf5_complex_interleaved(d);
             }
+        }
+        /* Lightweight timing error correction before Costas/EQ for CQPSK paths.
+           Reuse the same FM guard to keep TED off for pure analog FM. */
+        if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+            gardner_timing_adjust(d);
         }
         /* Carrier recovery (always run Costas for CQPSK),
            but skip during unit tests that use raw_demod. */
@@ -2037,9 +2042,10 @@ full_demod(struct demod_state* d) {
             }
         }
     }
-    /* CQPSK MF and EQ handled earlier in the CQPSK branch */
-    /* Lightweight timing error correction (optional, avoid for analog FM demod) */
-    if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+    /* CQPSK MF/EQ handled earlier in the CQPSK branch.
+       Apply Gardner TED here only for non-CQPSK paths (e.g., C4FM) and avoid
+       analog FM unless explicitly forced. */
+    if (d->ted_enabled && !d->cqpsk_enable && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
     }
     /* Power squelch (sqrt-free): compare pair power mean (I^2+Q^2) against a threshold.
