@@ -591,6 +591,11 @@ target_include_directories(dsd-neo_test_dsp_cqpsk_eq_awgn PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_dsp_cqpsk_eq_awgn PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CQPSK_EQ_AWGN COMMAND dsd-neo_test_dsp_cqpsk_eq_awgn)
 
+add_executable(dsd-neo_test_dsp_cqpsk_pipeline dsp/test_dsp_cqpsk_pipeline.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_pipeline PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_pipeline PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_PIPELINE COMMAND dsd-neo_test_dsp_cqpsk_pipeline)
+
 add_executable(dsd-neo_test_dsp_cqpsk_path dsp/test_dsp_cqpsk_path.cpp)
 target_include_directories(dsd-neo_test_dsp_cqpsk_path PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_cqpsk_path PRIVATE dsd-neo_dsp)
