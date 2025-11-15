@@ -519,6 +519,13 @@ target_include_directories(dsd-neo_test_dsp_ted PRIVATE ${PROJECT_SOURCE_DIR}/in
 target_link_libraries(dsd-neo_test_dsp_ted PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_TED COMMAND dsd-neo_test_dsp_ted)
 
+if(RTLSDR_FOUND)
+add_executable(dsd-neo_test_dsp_rtl_cqpsk_init dsp/test_dsp_rtl_cqpsk_init.cpp)
+target_include_directories(dsd-neo_test_dsp_rtl_cqpsk_init PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_rtl_cqpsk_init PRIVATE dsd-neo_dsp dsd-neo_io_radio ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME DSP_RTL_CQPSK_INIT COMMAND dsd-neo_test_dsp_rtl_cqpsk_init)
+endif()
+
 add_executable(dsd-neo_test_dsp_simd_widen dsp/test_dsp_simd_widen.cpp)
 target_include_directories(dsd-neo_test_dsp_simd_widen PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_simd_widen PRIVATE dsd-neo_dsp)
