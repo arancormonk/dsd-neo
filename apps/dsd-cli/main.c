@@ -2252,6 +2252,9 @@ usage() {
     printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");
     printf("      --p25-grant-voice-timeout <s>  P25: Max seconds from grant to voice before returning\n");
     printf("      --p25-retune-backoff <s>  P25: Block immediate re-tune to same VC for N seconds after return\n");
+    printf("      --p25-mac-hold <s>     P25: Seconds to keep MAC activity eligible for audio after last MAC\n");
+    printf("      --p25-ring-hold <s>    P25: Ring gate window for slot audio activity\n");
+    printf("      --p25-cc-grace <s>     P25: CC hunt grace window before treating CC as lost\n");
     printf("      --p25-force-release-extra <s>  P25: Safety-net extra seconds beyond hangtime\n");
     printf("      --p25-force-release-margin <s> P25: Safety-net hard margin seconds beyond extra\n");
     printf("      --p25-p1-err-hold-pct <pct>   P25p1: IMBE error %% threshold to extend hang\n");

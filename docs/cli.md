@@ -73,6 +73,9 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--p25-min-follow-dwell <s>` minimum follow dwell after first voice
 - `--p25-grant-voice-timeout <s>` max seconds from grant to voice before returning
 - `--p25-retune-backoff <s>` block immediate re‑tune to same VC for N seconds after return
+- `--p25-mac-hold <s>` keep MAC activity eligible for audio for this many seconds after the last MAC
+- `--p25-ring-hold <s>` ring gate window (seconds) used when deciding whether a slot still has recent audio activity
+- `--p25-cc-grace <s>` CC hunt grace window; delay hunting for a new control channel by this many seconds after loss
 - `--p25-force-release-extra <s>` safety‑net extra seconds beyond hangtime
 - `--p25-force-release-margin <s>` safety‑net hard margin seconds beyond extra
 - `--p25-p1-err-hold-pct <pct>` P25p1 IMBE error percentage threshold to extend hang

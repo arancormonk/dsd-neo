@@ -757,9 +757,12 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 LOG_NOTICE("Raw audio WAV output: %s\n", opts->wav_out_file_raw);
                 break;
             case 'c':
-                strncpy(opts->mbe_out_file, optarg, 1023);
-                opts->mbe_out_file[1023] = '\0';
-                LOG_NOTICE("Writing MBE+ processed audio to file %s\n", opts->mbe_out_file);
+                // Symbol capture (dibit) output file
+                strncpy(opts->symbol_out_file, optarg, sizeof opts->symbol_out_file - 1);
+                opts->symbol_out_file[sizeof opts->symbol_out_file - 1] = '\0';
+                opts->symbol_out_file_is_auto = 0;
+                openSymbolOutFile(opts, state);
+                LOG_NOTICE("Saving symbol capture to %s\n", opts->symbol_out_file);
                 break;
             case 'g': {
                 /* Digital output gain (matches legacy main.c semantics).
@@ -1062,6 +1065,102 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     LOG_NOTICE("Setting symbol rate to 9600 / second\n");
                     LOG_NOTICE("Decoding EDACS Extended Addressing w/ ESK and ProVoice frames.\n");
                     LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
+                    opts->rtl_dsp_bw_khz = 24;
+                } else if (optarg[0] == 'e') {
+                    if (optarg[1] != 0) {
+                        char abits[2] = {optarg[1], 0};
+                        char fbits[2] = {optarg[2], 0};
+                        char sbits[2] = {optarg[3], 0};
+                        state->edacs_a_bits = atoi(&abits[0]);
+                        state->edacs_f_bits = atoi(&fbits[0]);
+                        state->edacs_s_bits = atoi(&sbits[0]);
+                    }
+                    opts->frame_dstar = 0;
+                    opts->frame_x2tdma = 0;
+                    opts->frame_p25p1 = 0;
+                    opts->frame_p25p2 = 0;
+                    opts->frame_nxdn48 = 0;
+                    opts->frame_nxdn96 = 0;
+                    opts->frame_dmr = 0;
+                    opts->frame_dpmr = 0;
+                    opts->frame_provoice = 1;
+                    state->ea_mode = 1;
+                    state->esk_mask = 0;
+                    opts->frame_ysf = 0;
+                    opts->frame_m17 = 0;
+                    state->samplesPerSymbol = 5;
+                    state->symbolCenter = 2;
+                    opts->mod_c4fm = 0;
+                    opts->mod_qpsk = 0;
+                    opts->mod_gfsk = 1;
+                    state->rf_mod = 2;
+                    opts->pulse_digi_rate_out = 8000;
+                    opts->pulse_digi_out_channels = 1;
+                    opts->dmr_stereo = 0;
+                    opts->dmr_mono = 0;
+                    state->dmr_stereo = 0;
+                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
+                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
+                    LOG_NOTICE("Decoding EDACS EA/ProVoice frames.\n");
+                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
+                    if (optarg[1] != 0) {
+                        if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {
+                            LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");
+                            state->edacs_a_bits = 4;
+                            state->edacs_f_bits = 4;
+                            state->edacs_s_bits = 3;
+                        }
+                        LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,
+                                   state->edacs_s_bits);
+                    }
+                    opts->rtl_dsp_bw_khz = 24;
+                } else if (optarg[0] == 'E') {
+                    if (optarg[1] != 0) {
+                        char abits[2] = {optarg[1], 0};
+                        char fbits[2] = {optarg[2], 0};
+                        char sbits[2] = {optarg[3], 0};
+                        state->edacs_a_bits = atoi(&abits[0]);
+                        state->edacs_f_bits = atoi(&fbits[0]);
+                        state->edacs_s_bits = atoi(&sbits[0]);
+                    }
+                    opts->frame_dstar = 0;
+                    opts->frame_x2tdma = 0;
+                    opts->frame_p25p1 = 0;
+                    opts->frame_p25p2 = 0;
+                    opts->frame_nxdn48 = 0;
+                    opts->frame_nxdn96 = 0;
+                    opts->frame_dmr = 0;
+                    opts->frame_dpmr = 0;
+                    opts->frame_provoice = 1;
+                    state->ea_mode = 1;
+                    state->esk_mask = 0xA0;
+                    opts->frame_ysf = 0;
+                    opts->frame_m17 = 0;
+                    state->samplesPerSymbol = 5;
+                    state->symbolCenter = 2;
+                    opts->mod_c4fm = 0;
+                    opts->mod_qpsk = 0;
+                    opts->mod_gfsk = 1;
+                    state->rf_mod = 2;
+                    opts->pulse_digi_rate_out = 8000;
+                    opts->pulse_digi_out_channels = 1;
+                    opts->dmr_stereo = 0;
+                    opts->dmr_mono = 0;
+                    state->dmr_stereo = 0;
+                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
+                    LOG_NOTICE("Setting symbol rate to 9600 / second\n");
+                    LOG_NOTICE("Decoding EDACS EA/ProVoice w/ ESK frames.\n");
+                    LOG_NOTICE("EDACS Analog Voice Channels are Experimental.\n");
+                    if (optarg[1] != 0) {
+                        if ((state->edacs_a_bits + state->edacs_f_bits + state->edacs_s_bits) != 11) {
+                            LOG_NOTICE("Invalid AFS Configuration: Reverting to Default.\n");
+                            state->edacs_a_bits = 4;
+                            state->edacs_f_bits = 4;
+                            state->edacs_s_bits = 3;
+                        }
+                        LOG_NOTICE("AFS Setup in %d:%d:%d configuration.\n", state->edacs_a_bits, state->edacs_f_bits,
+                                   state->edacs_s_bits);
+                    }
                     opts->rtl_dsp_bw_khz = 24;
                 } else if (optarg[0] == '1') {
                     opts->frame_dstar = 0;
