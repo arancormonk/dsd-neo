@@ -217,9 +217,6 @@ processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     char type[7];
     char temp[8];
     char tempa[8];
-    char chungus[80];
-    UNUSED(chungus);
-    memset(chungus, 0, sizeof(chungus));
     memset(temp, 0, sizeof(temp));
     memset(tempa, 0, sizeof(tempa));
     memset(type, 0, sizeof(type));

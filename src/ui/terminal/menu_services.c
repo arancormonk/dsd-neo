@@ -72,21 +72,27 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
     if (!opts || !filename || !*filename) {
         return -1;
     }
-    struct stat sb;
-    if (stat(filename, &sb) != 0) {
+    opts->symbolfile = fopen(filename, "r");
+    if (!opts->symbolfile) {
         LOG_ERROR("Error, couldn't open %s\n", filename);
         return -1;
     }
-    if (S_ISREG(sb.st_mode)) {
-        opts->symbolfile = fopen(filename, "r");
-        if (!opts->symbolfile) {
-            return -1;
-        }
-        snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
-        opts->audio_in_type = 4; // symbol capture bin
-        return 0;
+    struct stat sb;
+    if (fstat(fileno(opts->symbolfile), &sb) != 0) {
+        LOG_ERROR("Error, couldn't stat %s\n", filename);
+        fclose(opts->symbolfile);
+        opts->symbolfile = NULL;
+        return -1;
     }
-    return -1;
+    if (!S_ISREG(sb.st_mode)) {
+        LOG_ERROR("Error, %s is not a regular file\n", filename);
+        fclose(opts->symbolfile);
+        opts->symbolfile = NULL;
+        return -1;
+    }
+    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
+    opts->audio_in_type = 4; // symbol capture bin
+    return 0;
 }
 
 int
@@ -95,20 +101,26 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return -1;
     }
-    struct stat sb;
-    if (stat(opts->audio_in_dev, &sb) != 0) {
+    opts->symbolfile = fopen(opts->audio_in_dev, "r");
+    if (!opts->symbolfile) {
         LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
         return -1;
     }
-    if (S_ISREG(sb.st_mode)) {
-        opts->symbolfile = fopen(opts->audio_in_dev, "r");
-        if (!opts->symbolfile) {
-            return -1;
-        }
-        opts->audio_in_type = 4; // symbol capture bin
-        return 0;
+    struct stat sb;
+    if (fstat(fileno(opts->symbolfile), &sb) != 0) {
+        LOG_ERROR("Error, couldn't stat %s\n", opts->audio_in_dev);
+        fclose(opts->symbolfile);
+        opts->symbolfile = NULL;
+        return -1;
     }
-    return -1;
+    if (!S_ISREG(sb.st_mode)) {
+        LOG_ERROR("Error, %s is not a regular file\n", opts->audio_in_dev);
+        fclose(opts->symbolfile);
+        opts->symbolfile = NULL;
+        return -1;
+    }
+    opts->audio_in_type = 4; // symbol capture bin
+    return 0;
 }
 
 void
