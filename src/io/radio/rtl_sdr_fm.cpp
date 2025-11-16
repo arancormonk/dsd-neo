@@ -2011,16 +2011,27 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* Choose demodulator baseband rate separately from DSP-BW so that digital
        paths (P25, DMR, NXDN, etc.) can keep a narrow, mode-friendly bandwidth
        even when the capture/DSP-BW is wider (e.g., 24 kHz). This avoids
-       degrading symbol SNR when users widen DSP-BW for capture convenience. */
+       degrading symbol SNR when users widen DSP-BW for capture convenience.
+       For narrow 6.25 kHz channels (e.g., NXDN48/dPMR/D-STAR), prefer an
+       8 kHz-class complex baseband; for 12.5 kHz-class channels (P25, DMR,
+       NXDN96, M17, ProVoice) prefer 12 kHz. User-selected DSP-BW narrower
+       than these per-mode targets is honored. */
     int demod_base_rate_hz = rtl_dsp_bw_hz;
     {
         int digital_voice_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1
                                   || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1
                                   || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_provoice == 1);
-        if (digital_voice_mode && demod_base_rate_hz > 12000) {
-            demod_base_rate_hz = 12000;
-            LOG_INFO("DSP: clamping digital demod baseband to %d Hz (DSP-BW=%d Hz).\n", demod_base_rate_hz,
-                     rtl_dsp_bw_hz);
+        if (digital_voice_mode) {
+            int target_hz = 12000;
+            /* Narrow 6.25 kHz-class channels: NXDN48, dPMR, D-STAR. */
+            if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+                target_hz = 8000;
+            }
+            if (demod_base_rate_hz > target_hz) {
+                demod_base_rate_hz = target_hz;
+                LOG_INFO("DSP: clamping digital demod baseband to %d Hz (DSP-BW=%d Hz).\n", demod_base_rate_hz,
+                         rtl_dsp_bw_hz);
+            }
         }
     }
     /* Apply CLI volume multiplier (1..3), default to 1 if out of range */
