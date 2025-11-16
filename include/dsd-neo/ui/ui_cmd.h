@@ -212,11 +212,12 @@ enum UiCmdId {
     UI_CMD_M17_USER_DATA_SET = 651, // payload: char s[] (<=49 chars)
 
     // DSP runtime (rtl_stream_*)
-    UI_CMD_DSP_OP = 700, // payload: UiDspPayload (see ui_dsp_cmd.h)
+    UI_CMD_DSP_OP = 700,      // payload: UiDspPayload (see ui_dsp_cmd.h)
+    UI_CMD_CONFIG_APPLY = 710 // payload: dsdneoUserConfig (see runtime/config.h)
 };
 
 struct UiCmd {
     int id;
     size_t n; // payload length
-    uint8_t data[1024];
+    uint8_t data[4096];
 };

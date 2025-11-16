@@ -381,6 +381,21 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (strcmp(argv[i], "--enc-follow") == 0) {
             continue;
         }
+        if (strcmp(argv[i], "--config") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--no-config") == 0) {
+            continue;
+        }
+        if (strcmp(argv[i], "--print-config") == 0) {
+            continue;
+        }
+        if (strcmp(argv[i], "--interactive-setup") == 0) {
+            continue;
+        }
         if (strcmp(argv[i], "--p25-auto-adapt") == 0) {
             continue;
         }
@@ -589,6 +604,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 opts->scanner_mode = 1;
                 opts->p25_trunk = 0;
                 opts->trunk_enable = 0;
+                opts->trunk_cli_seen = 1;
                 break;
             case 'k':
                 strncpy(opts->key_in_file, optarg, 1023);
@@ -720,6 +736,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 /* Enable trunking features; protocol-agnostic alias kept in sync */
                 opts->p25_trunk = 1;
                 opts->trunk_enable = 1;
+                opts->trunk_cli_seen = 1;
                 break;
             case 'U':
                 // Enable rigctl/TCP and set port
@@ -846,6 +863,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             }
             case 'f':
+                // Any -f* preset should stop pure analog-monitor mode unless explicitly selecting it.
+                opts->analog_only = 0;
+                opts->monitor_input_audio = 0;
                 if (optarg[0] == 'a') {
                     opts->frame_dstar = 1;
                     opts->frame_x2tdma = 1;

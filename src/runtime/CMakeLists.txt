@@ -3,6 +3,7 @@ add_library(dsd-neo_runtime)
 
 target_sources(dsd-neo_runtime PRIVATE
   config.cpp
+  config_user.cpp
   log.cpp
   mem.cpp
   ring.cpp

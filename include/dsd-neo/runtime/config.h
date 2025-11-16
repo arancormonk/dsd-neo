@@ -21,6 +21,10 @@ extern "C" {
 /* Ensure dsd_opts type is visible to prototypes below */
 #include <dsd-neo/core/opts_fwd.h>
 
+/* Forward-declare decoder state for user-config helpers */
+#include <dsd-neo/core/state_fwd.h>
+#include <stdio.h>
+
 /*
  * Runtime configuration (environment variables)
  *
@@ -315,6 +319,108 @@ int dsd_neo_get_c4fm_clk(void);
 /* Toggle C4FM clock assist while synced (0/1) */
 void dsd_neo_set_c4fm_clk_sync(int enable);
 int dsd_neo_get_c4fm_clk_sync(void);
+
+/*
+ * User configuration (INI file)
+ *
+ * Represents persisted user preferences loaded from or written to an INI-style
+ * configuration file. This is a narrow subset of dsd_opts/dsd_state focusing
+ * on stable, user-facing knobs (input, output, decode mode, trunking).
+ */
+
+typedef enum {
+    DSDCFG_INPUT_UNSET = 0,
+    DSDCFG_INPUT_PULSE,
+    DSDCFG_INPUT_RTL,
+    DSDCFG_INPUT_RTLTCP,
+    DSDCFG_INPUT_FILE,
+    DSDCFG_INPUT_TCP,
+    DSDCFG_INPUT_UDP
+} dsdneoUserInputSource;
+
+typedef enum { DSDCFG_OUTPUT_UNSET = 0, DSDCFG_OUTPUT_PULSE, DSDCFG_OUTPUT_NULL } dsdneoUserOutputBackend;
+
+typedef enum {
+    DSDCFG_MODE_UNSET = 0,
+    DSDCFG_MODE_AUTO,
+    DSDCFG_MODE_P25P1,
+    DSDCFG_MODE_P25P2,
+    DSDCFG_MODE_DMR,
+    DSDCFG_MODE_NXDN48,
+    DSDCFG_MODE_NXDN96,
+    DSDCFG_MODE_X2TDMA,
+    DSDCFG_MODE_YSF,
+    DSDCFG_MODE_DSTAR,
+    DSDCFG_MODE_EDACS_PV,
+    DSDCFG_MODE_DPMR,
+    DSDCFG_MODE_M17,
+    DSDCFG_MODE_TDMA,
+    DSDCFG_MODE_ANALOG
+} dsdneoUserDecodeMode;
+
+typedef struct dsdneoUserConfig {
+    int version; /* schema version, currently 1 */
+
+    /* [input] */
+    int has_input;
+    dsdneoUserInputSource input_source;
+    char pulse_input[256];
+    int rtl_device;
+    char rtl_freq[64];
+    int rtl_gain;
+    int rtl_ppm;
+    int rtl_bw_khz;
+    int rtl_sql;
+    int rtl_volume;
+    char rtltcp_host[128];
+    int rtltcp_port;
+    char file_path[1024];
+    int file_sample_rate;
+    char tcp_host[128];
+    int tcp_port;
+    char udp_addr[64];
+    int udp_port;
+
+    /* [output] */
+    int has_output;
+    dsdneoUserOutputBackend output_backend;
+    char pulse_output[256];
+    int ncurses_ui; /* bool */
+
+    /* [mode] */
+    int has_mode;
+    dsdneoUserDecodeMode decode_mode;
+
+    /* [trunking] */
+    int has_trunking;
+    int trunk_enabled;
+    char trunk_chan_csv[1024];
+    char trunk_group_csv[1024];
+    int trunk_use_allow_list;
+} dsdneoUserConfig;
+
+/* Resolve platform-specific default config path (no I/O). Returns a pointer to
+ * an internal static buffer, or NULL when no reasonable default can be
+ * determined. */
+const char* dsd_user_config_default_path(void);
+
+/* Load config from a given path into cfg.
+ * Returns 0 on success, non-zero on error (missing/unreadable file or parse
+ * error). On error, cfg is zeroed. */
+int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
+
+/* Atomically write cfg to the given path (for interactive save).
+ * Returns 0 on success, non-zero on error. */
+int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
+
+/* Apply config-derived defaults to opts/state before env + CLI precedence. */
+void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/* Snapshot current opts/state into a user config (for save/print). */
+void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
+
+/* Render a user config as INI to the given stream (stdout/stderr/file). */
+void dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream);
 
 #ifdef __cplusplus
 }

@@ -253,6 +253,8 @@ struct dsd_opts {
     uint8_t trunk_tune_private_calls;
     uint8_t trunk_tune_data_calls;
     uint8_t trunk_tune_enc_calls;
+    /* Flag set when any CLI explicitly enables or disables trunking (e.g., -T, -Y). */
+    uint8_t trunk_cli_seen;
     uint8_t p25_lcw_retune;
     uint8_t p25_prefer_candidates;
     uint8_t use_dsp_output;

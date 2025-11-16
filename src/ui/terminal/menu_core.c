@@ -103,6 +103,7 @@ static void act_scan_toggle(void* v);
 static void act_lcw_toggle(void* v);
 static void act_p25_auto_adapt(void* v);
 static void act_p25_enc_lockout(void* v);
+static void act_config_load(void* v);
 static void act_setmod_bw(void* v);
 static void act_import_chan(void* v);
 static void act_import_group(void* v);
@@ -124,6 +125,8 @@ static void act_tyt_ep(void* v);
 static void act_ken_scr(void* v);
 static void act_anytone_bp(void* v);
 static void act_xor_ks(void* v);
+static void act_config_save_default(void* v);
+static void act_config_save_as(void* v);
 // Prototypes for DSP C4FM clock assist controls defined later
 static const char* lbl_c4fm_clk(void* v, char* b, size_t n);
 static void act_c4fm_clk_cycle(void* v);
@@ -517,6 +520,80 @@ cb_keys_hex(void* v, const char* p) {
         ui_post_cmd(UI_CMD_IMPORT_KEYS_HEX, p, strlen(p) + 1);
         ui_statusf("Import keys (HEX) requested");
     }
+}
+
+// Config save helpers
+static void
+cb_config_load(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (!path || !*path) {
+        ui_statusf("Config load canceled");
+        return;
+    }
+
+    dsdneoUserConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        ui_statusf("Failed to load config from %s", path);
+        return;
+    }
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_statusf("Config loaded from %s", path);
+}
+
+static void
+cb_config_save_as(void* v, const char* path) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    if (!path || !*path) {
+        ui_statusf("Config save canceled");
+        return;
+    }
+    dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+        ui_statusf("Config saved to %s", path);
+    } else {
+        ui_statusf("Failed to save config to %s", path);
+    }
+}
+
+static void
+act_config_save_default(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c) {
+        return;
+    }
+    const char* path = dsd_user_config_default_path();
+    if (!path || !*path) {
+        ui_statusf("No default config path; nothing saved");
+        return;
+    }
+    dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+        ui_statusf("Config saved to %s", path);
+    } else {
+        ui_statusf("Failed to save config to %s", path);
+    }
+}
+
+static void
+act_config_save_as(void* v) {
+    const char* def = dsd_user_config_default_path();
+    ui_prompt_open_string_async("Save config to path", (def && *def) ? def : "", 512, cb_config_save_as, v);
+}
+
+static void
+act_config_load(void* v) {
+    const char* def = dsd_user_config_default_path();
+    ui_prompt_open_string_async("Load config from path", (def && *def) ? def : "", 512, cb_config_load, v);
 }
 
 // Small typed setters
@@ -2005,6 +2082,15 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     ui_menu_get_main_items(&items, &n, &g_ctx_overlay);
     if (!items || n == 0) {
         return;
+    }
+    // If no default config exists yet, provide a small hint so users starting
+    // from CLI arguments discover the Config menu for saving defaults.
+    const char* cfg_path = dsd_user_config_default_path();
+    if (cfg_path && *cfg_path) {
+        struct stat st;
+        if (stat(cfg_path, &st) != 0) {
+            ui_statusf("No default config; use Config menu to save to %s", cfg_path);
+        }
     }
     g_overlay_open = 1;
     g_depth = 1;
@@ -6088,6 +6174,22 @@ static const NcMenuItem ENV_EDITOR_ITEMS[] = {
      .help = "Edit any DSD_NEO_* environment variable.",
      .on_select = act_env_editor},
 };
+
+const NcMenuItem CONFIG_MENU_ITEMS[] = {
+    {.id = "cfg.save_default",
+     .label = "Save Config (Default)",
+     .help = "Save current settings to the default config path.",
+     .on_select = act_config_save_default},
+    {.id = "cfg.load",
+     .label = "Load Config...",
+     .help = "Load settings from a config file into this session.",
+     .on_select = act_config_load},
+    {.id = "cfg.save_as",
+     .label = "Save Config As...",
+     .help = "Choose a path and save current settings.",
+     .on_select = act_config_save_as},
+};
+const size_t CONFIG_MENU_ITEMS_LEN = sizeof CONFIG_MENU_ITEMS / sizeof CONFIG_MENU_ITEMS[0];
 
 const NcMenuItem ADV_MENU_ITEMS[] = {
     {.id = "p25_follow",

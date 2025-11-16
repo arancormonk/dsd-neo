@@ -63,6 +63,10 @@ static uint32_t s_last_rtl_freq = 0;
 #endif
 static int s_last_ted_sps = 0;
 
+// Config autosave state: when enabled, snapshot opts/state to this path.
+static int s_user_config_save_enabled = 0;
+static char s_user_config_save_path[1024];
+
 // Forward declaration for env-triggered LCN calculator
 int run_t3_lcn_calc_from_csv(const char* path);
 
@@ -115,6 +119,34 @@ prompt_yes_no(const char* q, int def_yes) {
         return 0;
     }
     return def_yes;
+}
+
+static void
+autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (!s_user_config_save_enabled) {
+        return;
+    }
+
+    const char* path = NULL;
+    if (s_user_config_save_path[0] != '\0') {
+        path = s_user_config_save_path;
+    } else {
+        path = dsd_user_config_default_path();
+        if (!path || !*path) {
+            return;
+        }
+    }
+
+    dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(opts, state, &cfg);
+    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+        LOG_DEBUG("Autosaved configuration to %s\n", path);
+    } else {
+        LOG_WARNING("Failed to save configuration to %s\n", path);
+    }
 }
 
 static int
@@ -704,6 +736,9 @@ bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     if (want_ncurses) {
         opts->use_ncurses_terminal = 1;
     }
+
+    // Automatically save this interactive setup as the current configuration.
+    autosave_user_config(opts, state);
 
     LOG_NOTICE("Interactive setup complete.\n");
 }
@@ -1550,6 +1585,7 @@ initOpts(dsd_opts* opts) {
     opts->trunk_hangtime = 2;
 
     opts->scanner_mode = 0; //0 disabled, 1 is enabled
+    opts->trunk_cli_seen = 0;
 
     //reverse mute
     opts->reverse_mute = 0;
@@ -2815,6 +2851,9 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
         closeMbeOutFileR(opts, state);
     }
 
+    // Persist the final effective configuration for the next run, if enabled.
+    autosave_user_config(opts, state);
+
     LOG_NOTICE("\n");
     LOG_NOTICE("Total audio errors: %i\n", state->debug_audio_errors);
     LOG_NOTICE("Total header errors: %i\n", state->debug_header_errors);
@@ -2873,6 +2912,65 @@ main(int argc, char** argv) {
 
     exitflag = 0;
 
+    // Optional: user configuration file (INI) -----------------------------
+    int disable_config_cli = 0;
+    int force_bootstrap_cli = 0;
+    int print_config_cli = 0;
+    const char* config_path_cli = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--no-config") == 0) {
+            disable_config_cli = 1;
+        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            config_path_cli = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "--interactive-setup") == 0) {
+            force_bootstrap_cli = 1;
+        } else if (strcmp(argv[i], "--print-config") == 0) {
+            print_config_cli = 1;
+        }
+    }
+
+    int disable_config_env = is_truthy_env(getenv("DSD_NEO_NO_CONFIG"));
+    const char* config_env = getenv("DSD_NEO_CONFIG");
+
+    int user_cfg_loaded = 0;
+    dsdneoUserConfig user_cfg;
+    user_cfg.version = 0;
+
+    /* CLI should override environment: if the user provides an explicit
+     * --config PATH, honor it even when DSD_NEO_NO_CONFIG is set. The env
+     * disable flag only applies when no CLI path is given. */
+    if (!disable_config_cli && (config_path_cli || !disable_config_env)) {
+        const char* cfg_path = NULL;
+        if (config_path_cli && *config_path_cli) {
+            cfg_path = config_path_cli;
+        } else if (config_env && *config_env) {
+            cfg_path = config_env;
+        } else {
+            cfg_path = dsd_user_config_default_path();
+        }
+
+        if (cfg_path && *cfg_path) {
+            // Remember the path so we can autosave the effective config later.
+            s_user_config_save_enabled = 1;
+            snprintf(s_user_config_save_path, sizeof s_user_config_save_path, "%s", cfg_path);
+            s_user_config_save_path[sizeof s_user_config_save_path - 1] = '\0';
+
+            if (dsd_user_config_load(cfg_path, &user_cfg) == 0) {
+                dsd_apply_user_config_to_opts(&user_cfg, &opts, &state);
+                user_cfg_loaded = 1;
+                LOG_NOTICE("Loaded user config from %s\n", cfg_path);
+            } else if (config_path_cli || config_env) {
+                LOG_WARNING("Failed to load config file from %s; proceeding without config.\n", cfg_path);
+            }
+        }
+    } else {
+        // Config loading was explicitly disabled; do not autosave either.
+        s_user_config_save_enabled = 0;
+        s_user_config_save_path[0] = '\0';
+    }
+
     // Phase 1: long-option and env parsing moved into runtime CLI helper
     {
         int oneshot_rc = 0;
@@ -2884,6 +2982,51 @@ main(int argc, char** argv) {
         }
         // Keep original argc for UI bootstrap heuristics; use argc_effective
         // only when iterating argv for file playback (-r).
+    }
+
+    // If a user config enabled trunking but this process was started with
+    // any CLI arguments and none of them explicitly enabled/disabled trunk
+    // (via -T / -Y), fall back to the built-in default of trunking disabled
+    // for this run. This keeps CLI-driven sessions from inheriting trunk
+    // enable solely from the config file.
+    if (argc > 1 && user_cfg_loaded && !opts.trunk_cli_seen) {
+        opts.p25_trunk = 0;
+        opts.trunk_enable = 0;
+    }
+
+    // If a user config specified a non-48kHz file/RAW input and the CLI did
+    // not override its sample rate, apply the corresponding symbol timing
+    // scaling after all CLI/env parsing so that mode presets are adjusted
+    // correctly. This mirrors legacy "-s" behavior without requiring users
+    // to manage option ordering manually when using the config file.
+    if (user_cfg_loaded && user_cfg.has_input && user_cfg.input_source == DSDCFG_INPUT_FILE
+        && user_cfg.file_sample_rate > 0 && user_cfg.file_sample_rate != 48000 && opts.wav_decimator != 0
+        && user_cfg.file_path[0] != '\0' && strcmp(opts.audio_in_dev, user_cfg.file_path) == 0
+        && opts.wav_sample_rate == user_cfg.file_sample_rate) {
+        opts.wav_interpolator = opts.wav_sample_rate / opts.wav_decimator;
+        state.samplesPerSymbol = state.samplesPerSymbol * opts.wav_interpolator;
+        state.symbolCenter = state.symbolCenter * opts.wav_interpolator;
+    }
+
+    if (print_config_cli) {
+        dsdneoUserConfig eff;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &eff);
+        dsd_user_config_render_ini(&eff, stdout);
+        return 0;
+    }
+
+    // On first run with CLI args but no existing config file, automatically
+    // snapshot the current settings to the default configuration path so
+    // subsequent runs without arguments can reuse this setup.
+    if (!user_cfg_loaded && !disable_config_cli && !disable_config_env && argc > 1 && isatty(STDIN_FILENO)
+        && isatty(STDOUT_FILENO)) {
+        const char* def_path = dsd_user_config_default_path();
+        if (def_path && *def_path) {
+            struct stat st;
+            if (stat(def_path, &st) != 0) {
+                autosave_user_config(&opts, &state);
+            }
+        }
     }
 
     // Print banner only if not a one-shot action
@@ -2904,8 +3047,13 @@ main(int argc, char** argv) {
     // All long-option parsing, environment mapping, and the DMR TIII LCN
     // calculator one-shot flow are now handled inside dsd_parse_args().
 
-    // If user provided no CLI args, offer an interactive bootstrap
-    if (argc <= 1) {
+    // If user requested it explicitly, or if there are no CLI args and no
+    // user config, offer interactive bootstrap. The CLI flag overrides
+    // any env-based skip (DSD_NEO_NO_BOOTSTRAP).
+    if (force_bootstrap_cli || (argc <= 1 && !user_cfg_loaded)) {
+        if (force_bootstrap_cli) {
+            unsetenv("DSD_NEO_NO_BOOTSTRAP");
+        }
         bootstrap_interactive(&opts, &state);
     }
 
