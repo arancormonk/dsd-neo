@@ -269,12 +269,12 @@ main(void) {
         fll_state_t st;
         fll_init_state(&st);
         fll_update_error(&cfg, &st, iq, 2 * N);
-        if (st.freq_q15 > 2048) {
-            fprintf(stderr, "FLL clamp: freq exceeded 2048 (%d)\n", st.freq_q15);
+        if (st.freq_q15 > 4096) {
+            fprintf(stderr, "FLL clamp: freq exceeded 4096 (%d)\n", st.freq_q15);
             return 1;
         }
-        if (st.int_q15 > 2048) {
-            fprintf(stderr, "FLL clamp: integrator exceeded 2048 (%d)\n", st.int_q15);
+        if (st.int_q15 > 4096) {
+            fprintf(stderr, "FLL clamp: integrator exceeded 4096 (%d)\n", st.int_q15);
             return 1;
         }
     }
@@ -517,7 +517,7 @@ main(void) {
             fprintf(stderr, "FLL AWGN adj: expected positive freq\n");
             return 1;
         }
-        if (st.freq_q15 < -2048 || st.freq_q15 > 2048) {
+        if (st.freq_q15 < -4096 || st.freq_q15 > 4096) {
             fprintf(stderr, "FLL AWGN adj: freq out of clamp (%d)\n", st.freq_q15);
             return 1;
         }
@@ -572,7 +572,7 @@ main(void) {
             fprintf(stderr, "FLL AWGN QPSK: expected positive freq\n");
             return 1;
         }
-        if (st.freq_q15 < -2048 || st.freq_q15 > 2048) {
+        if (st.freq_q15 < -4096 || st.freq_q15 > 4096) {
             fprintf(stderr, "FLL AWGN QPSK: freq out of clamp (%d)\n", st.freq_q15);
             return 1;
         }

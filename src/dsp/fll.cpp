@@ -227,8 +227,14 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
 
     int32_t err = err_acc / count; /* Q14 */
 
-    /* Pre-apply small integrator leakage each update (even in deadband). */
-    const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
+    /* Pre-apply small integrator leakage each update (even in deadband).
+     *
+     * Absolute clamp on integrator/frequency in Q15. Historically this was
+     * 2048 (~±3 kHz @48k). To give digital paths (e.g., CQPSK at 12 kHz) more
+     * pull-in range while remaining conservative for analog FM, use a slightly
+     * higher bound.
+     */
+    const int32_t F_CLAMP = 4096; /* ~±6 kHz @48k, ~±1.5 kHz @12k */
     int32_t i_base = state->int_q15 - (state->int_q15 >> kFllIntLeakShift);
     i_base = clamp_i(i_base, -F_CLAMP, F_CLAMP);
 
@@ -310,8 +316,10 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
 
     int32_t err = err_acc / count; /* Q14 */
 
-    /* Pre-apply small integrator leakage each update (even in deadband). */
-    const int32_t F_CLAMP = 2048; /* allow up to ~±3 kHz @48k */
+    /* Pre-apply small integrator leakage each update (even in deadband).
+     * See comment in fll_update_error for rationale and scale.
+     */
+    const int32_t F_CLAMP = 4096;
     int32_t i_base = state->int_q15 - (state->int_q15 >> kFllIntLeakShift);
     i_base = clamp_i(i_base, -F_CLAMP, F_CLAMP);
 

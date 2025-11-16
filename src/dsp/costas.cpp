@@ -104,9 +104,13 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         return;
     }
 
-    /* Defaults if not preconfigured */
-    int alpha_q15 = (d->fll_alpha_q15 > 0) ? d->fll_alpha_q15 : 100; /* reuse FLL defaults if present */
-    int beta_q15 = (d->fll_beta_q15 > 0) ? d->fll_beta_q15 : 10;
+    /* Defaults if not preconfigured.
+     * The default alpha/beta values are chosen to be more aggressive than the
+     * FLL defaults to ensure the Costas loop can pull in larger frequency
+     * offsets typical of SDRs. A wider loop bandwidth is necessary for
+     * robust carrier acquisition. */
+    int alpha_q15 = (d->fll_alpha_q15 > 0) ? d->fll_alpha_q15 : 400; /* reuse FLL defaults if present */
+    int beta_q15 = (d->fll_beta_q15 > 0) ? d->fll_beta_q15 : 40;
     int deadband_q14 = (d->fll_deadband_q14 > 0) ? d->fll_deadband_q14 : 32;
     int slew_max_q15 = (d->fll_slew_max_q15 > 0) ? d->fll_slew_max_q15 : 64;
 

@@ -1841,6 +1841,14 @@ full_demod(struct demod_state* d) {
            When enabled, we run a symbol-spaced FLL before Costas to
            quickly pull-in residual CFO, then stop once 'locked'. */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && !d->cqpsk_acq_fll_locked && d->ted_sps >= 2) {
+            /* Sync from demod_state into modular FLL state so that any
+               external tweaks to fll_freq_q15/phase (e.g., spectrum-assisted
+               correction) are honored by the CQPSK acquisition loop. */
+            d->fll_state.freq_q15 = d->fll_freq_q15;
+            d->fll_state.phase_q15 = d->fll_phase_q15;
+            d->fll_state.prev_r = d->fll_prev_r;
+            d->fll_state.prev_j = d->fll_prev_j;
+
             /* Build FLL config from current demod state */
             fll_config_t cfg;
             cfg.enabled = 1;

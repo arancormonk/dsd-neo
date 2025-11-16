@@ -307,10 +307,19 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_enable = 1;
     }
 
-    /* Optional: acquisition-only FLL for CQPSK (pre-Costas) */
+    /* Optional: acquisition-only FLL for CQPSK (pre-Costas).
+       When DSD_NEO_CQPSK_ACQ_FLL is unset, enable this helper by default
+       for known CQPSK digital modes (e.g., P25 Phase 2) so the Costas loop
+       starts closer to baseband. */
     demod->cqpsk_acq_fll_enable = 0;
-    if (const char* af = getenv("DSD_NEO_CQPSK_ACQ_FLL")) {
+    const char* af = getenv("DSD_NEO_CQPSK_ACQ_FLL");
+    if (af) {
         if (*af == '1' || *af == 'y' || *af == 'Y' || *af == 't' || *af == 'T') {
+            demod->cqpsk_acq_fll_enable = 1;
+        }
+    } else {
+        /* No explicit env override: default on for P25 Phase 2. */
+        if (opts->frame_p25p2 == 1) {
             demod->cqpsk_acq_fll_enable = 1;
         }
     }
@@ -413,8 +422,11 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     }
 
     int env_ted_set = cfg->ted_is_set;
+    int env_fll_set = cfg->fll_is_set;
     int env_fll_alpha_set = cfg->fll_alpha_is_set;
     int env_fll_beta_set = cfg->fll_beta_is_set;
+    int env_fll_deadband_set = cfg->fll_deadband_is_set;
+    int env_fll_slew_set = cfg->fll_slew_is_set;
     int env_ted_sps_set = cfg->ted_sps_is_set;
     int env_ted_gain_set = cfg->ted_gain_is_set;
     /* Treat all digital voice modes as digital for FLL/TED defaults */
@@ -422,6 +434,10 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
+        /* Default FLL ON for digital modes when no explicit env override. */
+        if (!env_fll_set) {
+            demod->fll_enabled = 1;
+        }
         if (!env_ted_sps_set) {
             int Fs_cx = 0;
             /* TED operates on complex baseband at demod->rate_out.
@@ -452,13 +468,24 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
         if (!env_ted_gain_set) {
             demod->ted_gain_q20 = 64;
         }
+        /* Digital defaults: slightly stronger, lower-deadband FLL for CQPSK/FM. */
         if (!env_fll_alpha_set) {
-            demod->fll_alpha_q15 = 50;
+            demod->fll_alpha_q15 = 150;
         }
         if (!env_fll_beta_set) {
-            demod->fll_beta_q15 = 5;
+            demod->fll_beta_q15 = 15;
+        }
+        if (!env_fll_deadband_set) {
+            demod->fll_deadband_q14 = 32;
+        }
+        if (!env_fll_slew_set) {
+            demod->fll_slew_max_q15 = 128;
         }
     } else {
+        /* For analog-like modes, keep FLL off by default unless explicitly enabled. */
+        if (!env_fll_set) {
+            demod->fll_enabled = 0;
+        }
         if (!env_ted_set) {
             demod->ted_enabled = 0;
         }
