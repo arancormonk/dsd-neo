@@ -596,6 +596,12 @@ target_include_directories(dsd-neo_test_dsp_cqpsk_pipeline PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_dsp_cqpsk_pipeline PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CQPSK_PIPELINE COMMAND dsd-neo_test_dsp_cqpsk_pipeline)
 
+add_executable(dsd-neo_test_dsp_cqpsk_bits dsp/test_dsp_cqpsk_bits.cpp
+               ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c)
+target_include_directories(dsd-neo_test_dsp_cqpsk_bits PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_bits PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_BITS COMMAND dsd-neo_test_dsp_cqpsk_bits)
+
 add_executable(dsd-neo_test_dsp_cqpsk_path dsp/test_dsp_cqpsk_path.cpp)
 target_include_directories(dsd-neo_test_dsp_cqpsk_path PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_cqpsk_path PRIVATE dsd-neo_dsp)
