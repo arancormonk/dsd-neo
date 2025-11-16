@@ -801,19 +801,8 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                 FILE* pFile; //file pointer
                 pFile = fopen(opts->lrrp_out_file, "a");
                 if (pFile != NULL) {
-                    //write current date/time if not present in LRRP data
-                    if (!year) {
-                        fprintf(pFile, "%s\t",
-                                datestr); //current date, only add this IF no included timestamp in LRRP data?
-                    }
-                    if (!year) {
-                        fprintf(pFile, "%s\t",
-                                timestr); //current timestamp, only add this IF no included timestamp in LRRP data?
-                    }
-                    if (year) {
-                        fprintf(pFile, "%04d/%02d/%02d\t%02d:%02d:%02d\t", year, month, day, hour, minute,
-                                second); //add timestamp from decoded audio if available
-                    }
+                    //LRRP file timestamps always use system time for consistency
+                    fprintf(pFile, "%s\t%s\t", datestr, timestr);
 
                     //write data header source if not available in lrrp data
                     if (!source) {
@@ -1050,16 +1039,8 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
             FILE* pFile; //file pointer
             pFile = fopen(opts->lrrp_out_file, "a");
             if (pFile != NULL) {
-                //write current date/time if not present in LOCN data
-                if (!time) {
-                    fprintf(pFile, "%s\t", datestr);
-                }
-                if (!time) {
-                    fprintf(pFile, "%s\t", timestr);
-                }
-                if (time) {
-                    fprintf(pFile, "20%02X/%02X/%02X\t%02X:%02X:%02X\t", year, month, day, hour, minute, second);
-                }
+                //LOCN LRRP timestamps always use system time for consistency
+                fprintf(pFile, "%s\t%s\t", datestr, timestr);
 
                 //write data header source from data header
                 fprintf(pFile, "%08lld\t", state->dmr_lrrp_source[state->currentslot]);

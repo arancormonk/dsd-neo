@@ -5,7 +5,8 @@
 
 /*
  * Validate LRRP date handling: when decoded date/time is within range, the
- * LRRP writer should use the decoded timestamp (not system fallback).
+ * decoded timestamp should be printed on stderr, but the LRRP file itself
+ * should always use the host system time for consistency.
  */
 
 #include <errno.h>
@@ -179,7 +180,7 @@ main(void) {
     rc |= expect_has_substr(ebuf, " Time: 2024.12.01 23:59:58", "stderr has decoded Time");
     free(ebuf);
 
-    // Verify LRRP output starts with decoded timestamp, not system fallback
+    // Verify LRRP output uses system time (not the decoded LRRP timestamp)
     FILE* of = fopen(outtmpl, "rb");
     if (!of) {
         return 104;
@@ -198,8 +199,8 @@ main(void) {
     }
     fread(obuf, 1, posz, of);
     fclose(of);
-    rc |= expect_has_substr(obuf, "2024/12/01\t23:59:58\t", "LRRP uses decoded timestamp");
-    rc |= expect_no_substr(obuf, "1999/01/02\t11:22:33\t", "LRRP not using system fallback");
+    rc |= expect_has_substr(obuf, "1999/01/02\t11:22:33\t", "LRRP uses system timestamp");
+    rc |= expect_no_substr(obuf, "2024/12/01\t23:59:58\t", "LRRP not using decoded timestamp in file");
     free(obuf);
 
     remove(outtmpl);
