@@ -632,6 +632,11 @@ target_include_directories(dsd-neo_test_dsp_cqpsk_path_sps PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_dsp_cqpsk_path_sps PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_CQPSK_PATH_SPS COMMAND dsd-neo_test_dsp_cqpsk_path_sps)
 
+add_executable(dsd-neo_test_dsp_cqpsk_12k_sps3 dsp/test_dsp_cqpsk_12k_sps3.cpp)
+target_include_directories(dsd-neo_test_dsp_cqpsk_12k_sps3 PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_cqpsk_12k_sps3 PRIVATE dsd-neo_dsp)
+add_test(NAME DSP_CQPSK_12K_SPS3 COMMAND dsd-neo_test_dsp_cqpsk_12k_sps3)
+
 add_executable(dsd-neo_test_dsp_cqpsk_path_dqpsk dsp/test_dsp_cqpsk_path_dqpsk.cpp)
 target_include_directories(dsd-neo_test_dsp_cqpsk_path_dqpsk PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_cqpsk_path_dqpsk PRIVATE dsd-neo_dsp)

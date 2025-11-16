@@ -49,7 +49,7 @@ main(void) {
     if (!check_case(0, 5, 4)) {
         return 1;
     }
-    if (!check_case(13, 5, 4)) {
+    if (!check_case(32, 5, 4)) {
         return 1;
     }
 

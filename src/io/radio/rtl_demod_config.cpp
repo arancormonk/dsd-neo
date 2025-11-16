@@ -424,9 +424,9 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     if (digital_mode) {
         if (!env_ted_sps_set) {
             int Fs_cx = 0;
-            if (demod->resamp_enabled && demod->resamp_target_hz > 0) {
-                Fs_cx = demod->resamp_target_hz;
-            } else if (demod->rate_out > 0) {
+            /* TED operates on complex baseband at demod->rate_out.
+               Prefer that rate even when an audio resampler is enabled. */
+            if (demod->rate_out > 0) {
                 Fs_cx = demod->rate_out;
             } else {
                 Fs_cx = (int)output->rate;
@@ -546,9 +546,9 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     }
 
     int Fs_cx = 0;
-    if (demod->resamp_enabled && demod->resamp_target_hz > 0) {
-        Fs_cx = demod->resamp_target_hz;
-    } else if (demod->rate_out > 0) {
+    /* TED always sees complex baseband at demod->rate_out; compute SPS in that domain,
+       independent of any post-demod audio resampling. */
+    if (demod->rate_out > 0) {
         Fs_cx = demod->rate_out;
     } else {
         Fs_cx = (int)output->rate;

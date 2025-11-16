@@ -580,8 +580,12 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     if (mod != 2) {
         ui_print_kv_line("FLL", "[%s]", fll ? "On" : "Off");
     }
-    if (mod == 0) {
-        ui_print_kv_line("TED", "[%s]", ted ? "On" : "Off");
+    /* Show TED status and basic timing metrics for C4FM and CQPSK paths. */
+    if (mod != 2) {
+        int ted_sps = rtl_stream_get_ted_sps();
+        int ted_gain = rtl_stream_get_ted_gain();
+        int ted_bias = rtl_stream_ted_bias(NULL);
+        ui_print_kv_line("TED", "[%s] sps:%d g:%d bias:%d", ted ? "On" : "Off", ted_sps, ted_gain, ted_bias);
     }
     if (mod == 1 || cq) {
         ui_print_kv_line("CQPSK Path", "[%s]", cq ? "On" : "Off");
@@ -634,7 +638,14 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         int nco_q15 = rtl_stream_get_nco_q15();
         int Fs = rtl_stream_get_demod_rate_hz();
         ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  Residual=%+0.1f Hz  %s", cfo, rcf, clk ? "Locked" : "Acq");
-        ui_print_kv_line("Costas/NCO", "Err=%d(Q14)  NCO(q15)=%d  Fs=%d Hz", e14, nco_q15, Fs);
+        /* Convert average Costas error from Q14 (pi == 1<<14) into degrees
+         * for easier interpretation. */
+        double e_deg = 0.0;
+        if (e14 != 0) {
+            double e_abs = (double)((e14 >= 0) ? e14 : -e14);
+            e_deg = (e_abs * 180.0) / 16384.0; /* 1<<14 */
+        }
+        ui_print_kv_line("Costas/NCO", "Err=%d(Q14,~%0.1f°)  NCO(q15)=%d  Fs=%d Hz", e14, e_deg, nco_q15, Fs);
 #else
         ui_print_kv_line("Carrier", "(RTL disabled)");
 #endif

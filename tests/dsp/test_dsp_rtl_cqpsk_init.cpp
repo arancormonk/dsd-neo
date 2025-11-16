@@ -80,14 +80,17 @@ main(void) {
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, demod_base_rate_hz);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, &opts, &output);
 
-    /* For P25P2 at a nominal 48 kHz complex rate we expect SPS ≈ Fs/6000 ≈ 8. */
-    if (demod.ted_sps < 4 || demod.ted_sps > 12) {
-        fprintf(stderr, "DEM: ted_sps=%d out of expected range [4,12]\n", demod.ted_sps);
+    /* For P25P2 we derive TED SPS from the complex baseband rate
+       (demod.rate_out), not the audio resampler. With a 12 kHz baseband
+       and 6000 sym/s CQPSK this should land near 2 samples/symbol. */
+    if (demod.ted_sps < 2 || demod.ted_sps > 4) {
+        fprintf(stderr, "DEM: ted_sps=%d out of expected range [2,4]\n", demod.ted_sps);
         return 1;
     }
 
-    /* Compute the expected SPS using the same rounding rule as the config helper. */
-    int Fs_cx = 48000;
+    /* Compute the expected SPS using the same rounding rule as the config helper,
+       based on the complex baseband rate. */
+    int Fs_cx = demod.rate_out;
     int expected_sps = (Fs_cx + 3000) / 6000;
     if (expected_sps < 2) {
         expected_sps = 2;

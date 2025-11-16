@@ -143,7 +143,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     // P25 CC hunting and all tuner control are owned by the P25 SM now.
 
-    /* Respect user-locked demod selection from CLI (-mc/-mg/-mq/-m2). */
+    /* Respect user-locked demod selection from CLI (-mc/-mg/-mq/-m2).
+     * For QPSK/CQPSK locks, also configure a sane CQPSK DSP chain so
+     * that P25 LSM-style signals work out-of-the-box without env hacks. */
     {
         if (opts->mod_cli_lock) {
             int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
@@ -154,13 +156,37 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 int cq = 0, f = 0, t = 0;
                 rtl_stream_dsp_get(&cq, &f, &t);
                 if (forced == 1) {
+                    /* Entering / staying in QPSK/CQPSK path under explicit CLI lock.
+                     * - Ensure CQPSK path is enabled.
+                     * - Force TED/FLL on so timing/carrier loops are active.
+                     * - On first entry into CQPSK, configure a conservative
+                     *   equalizer + RRC MF tuned for P25 CQPSK. */
                     if (!cq) {
                         rtl_stream_toggle_iq_balance(0);
                         rtl_stream_toggle_cqpsk(1);
+                        /* Use current TED SPS (when available) to pick a
+                         * symbol-aligned update stride; fall back to 6 on
+                         * unknown/degenerate values. */
+                        int ted_sps = rtl_stream_get_ted_sps();
+                        int stride = (ted_sps >= 2 && ted_sps <= 16) ? ted_sps : 6;
+                        /* Enable a small DFE for P25-style CQPSK paths to
+                         * better handle post-cursor ISI, but keep it off for
+                         * generic QPSK modes. */
+                        int dfe_en = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? 1 : 0;
+                        int dfe_taps = dfe_en ? 2 : 0;
+                        /* LMS=On, 5 taps, mu=2, stride≈SPS, optional DFE,
+                         * RRC MF enabled, CMA warmup ~1/4s at 4800 sym/s. */
+                        rtl_stream_cqpsk_set(1, 5, 2, stride, 0, dfe_en, dfe_taps, 1, 1200);
+                        /* Default CQPSK matched filter to modest RRC (α=0.25,
+                         * span≈6 symbols) so CQPSK MF does not require
+                         * environment variables for common P25 LSM use. */
+                        rtl_stream_cqpsk_set_rrc(1, 25, 6);
+                    }
+                    if (!f) {
                         rtl_stream_toggle_fll(1);
+                    }
+                    if (!t) {
                         rtl_stream_toggle_ted(1);
-                        /* Conservative CQPSK defaults */
-                        rtl_stream_cqpsk_set(1, 5, 2, 6, 0, 0, 0, 1, 1200);
                     }
                 } else {
                     if (cq) {

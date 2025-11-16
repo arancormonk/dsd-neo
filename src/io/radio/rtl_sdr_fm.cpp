@@ -3515,12 +3515,12 @@ dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delt
     (void)sacch_err_delta; /* currently unused */
     (void)voice_err_delta; /* currently unused */
 
-    /* Auto-set TED SPS for P25 Phase 2 (≈6000 sym/s). */
+    /* Auto-set TED SPS for P25 Phase 2 (≈6000 sym/s) based on complex baseband rate. */
     if (demod.ted_enabled) {
         int Fs_cx = 0;
-        if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
-            Fs_cx = demod.resamp_target_hz;
-        } else if (demod.rate_out > 0) {
+        /* TED operates on demod.rate_out; prefer that even when an audio
+           resampler is enabled. */
+        if (demod.rate_out > 0) {
             Fs_cx = demod.rate_out;
         } else {
             Fs_cx = (int)output.rate;
@@ -3557,12 +3557,12 @@ rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, in
 
 extern "C" void
 rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
-    /* Auto-set TED SPS for P25 Phase 1 (≈4800 sym/s). */
+    /* Auto-set TED SPS for P25 Phase 1 (≈4800 sym/s) based on complex baseband rate. */
     if (demod.ted_enabled) {
         int Fs_cx = 0;
-        if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
-            Fs_cx = demod.resamp_target_hz;
-        } else if (demod.rate_out > 0) {
+        /* TED operates on demod.rate_out; prefer that even when an audio
+           resampler is enabled. */
+        if (demod.rate_out > 0) {
             Fs_cx = demod.rate_out;
         } else {
             Fs_cx = (int)output.rate;

@@ -30,8 +30,9 @@ cqpsk_init(struct demod_state* s) {
     /* Configure from demod_state first (CLI/runtime), then allow env to override if set */
     if (s) {
         s->cqpsk_eq.lms_enable = (s->cqpsk_lms_enable != 0);
-        /* If samples-per-symbol is known, pick a small odd tap count relative to it (cap at MAX). */
-        if (s->ted_sps >= 4 && s->ted_sps <= 12) {
+        /* If samples-per-symbol is known, pick a small odd tap count relative to it (cap at MAX)
+           and align the EQ symbol stride with the TED SPS so decisions occur once per nominal symbol. */
+        if (s->ted_sps >= 2 && s->ted_sps <= 16) {
             int taps = 5;
             if (s->ted_sps >= 8) {
                 taps = 7;
