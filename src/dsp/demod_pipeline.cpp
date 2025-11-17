@@ -1917,8 +1917,46 @@ full_demod(struct demod_state* d) {
         iq_dc_block(d);
         /* Light heuristic: auto-enable FM CMA on constant-envelope paths when
            envelope ripple suggests short-delay multipath and no other amplitude
-           correction is engaged yet. One-shot enable, no auto-disable. */
+           correction is engaged yet. One-shot enable, no auto-disable.
+           Guard on apparent carrier presence using either the power squelch
+           gate from the previous block or a minimum instantaneous envelope
+           level to avoid triggering on pure noise. */
         if (!d->fm_cma_enable && !d->fm_agc_enable && !d->fm_limiter_enable && d->lowpassed && d->lp_len >= 64) {
+            int carrier_like = d->squelch_gate_open ? 1 : 0;
+            if (!carrier_like) {
+                /* Approximate carrier presence via RMS(|z|) over a decimated subset. */
+                const int pairs = d->lp_len >> 1;
+                if (pairs > 0) {
+                    int stride = (pairs > 2048) ? (pairs / 2048) : 1;
+                    if (stride < 1) {
+                        stride = 1;
+                    }
+                    int64_t acc = 0;
+                    int count = 0;
+                    const int16_t* iq = d->lowpassed;
+                    for (int n = 0; n < pairs; n += stride) {
+                        int32_t I = iq[(size_t)(n << 1) + 0];
+                        int32_t Q = iq[(size_t)(n << 1) + 1];
+                        acc += (int64_t)I * I + (int64_t)Q * Q;
+                        count++;
+                        if (count >= 2048) {
+                            break;
+                        }
+                    }
+                    if (count > 0) {
+                        double mean_r2 = (double)acc / (double)count;
+                        double rms = sqrt(mean_r2);
+                        /* Require a modest RMS floor to treat this as a carrier-like block. */
+                        if (rms >= 1500.0) {
+                            carrier_like = 1;
+                        }
+                    }
+                }
+            }
+            if (!carrier_like) {
+                /* Skip auto-enable when we likely do not have a carrier. */
+                goto FM_CMA_SKIP_AUTO_ENABLE;
+            }
             /* Sample envelope magnitude using |I|+|Q| on a decimated stride */
             const int pairs = d->lp_len >> 1;
             int stride = (pairs > 1024) ? (pairs / 1024) : 1;
@@ -1959,6 +1997,7 @@ full_demod(struct demod_state* d) {
                 }
             }
         }
+    FM_CMA_SKIP_AUTO_ENABLE:
         /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping".
            When CMA (>=5 taps or pure complex gain) is active, skip both.
            Otherwise prefer AGC if enabled; fall back to limiter if AGC is off. */

@@ -164,6 +164,12 @@ struct demod_state {
     int fll_prev_r;
     int fll_prev_j;
 
+    /* CQPSK Costas loop tuning (separate from FLL) */
+    int costas_alpha_q15;    /* proportional gain (Q15); default 400 when <=0 */
+    int costas_beta_q15;     /* integral gain (Q15); default 40 when <=0 */
+    int costas_deadband_q14; /* ignore small phase errors |err| <= deadband (Q14); default 32 when <=0 */
+    int costas_slew_max_q15; /* max |delta freq| per update (Q15); default 64 when <=0 */
+
     /* Timing error detector (Gardner) */
     int ted_enabled;
     int ted_force;    /* allow forcing TED even for FM/C4FM paths */

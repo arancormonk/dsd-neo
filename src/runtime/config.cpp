@@ -111,6 +111,22 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.fll_deadband_q14 = c.fll_deadband_is_set ? atoi(fdb) : 45;
     c.fll_slew_max_q15 = c.fll_slew_is_set ? atoi(fsl) : 64;
 
+    /* CQPSK Costas loop (carrier recovery).
+       When unset, use internal defaults more aggressive than the FLL:
+       alpha≈400, beta≈40, deadband≈32, slew≈64. */
+    const char* ca = getenv("DSD_NEO_COSTAS_ALPHA");
+    const char* cb = getenv("DSD_NEO_COSTAS_BETA");
+    c.costas_alpha_is_set = env_is_set(ca);
+    c.costas_beta_is_set = env_is_set(cb);
+    c.costas_alpha_q15 = c.costas_alpha_is_set ? atoi(ca) : 400;
+    c.costas_beta_q15 = c.costas_beta_is_set ? atoi(cb) : 40;
+    const char* cdb = getenv("DSD_NEO_COSTAS_DEADBAND");
+    const char* csl = getenv("DSD_NEO_COSTAS_SLEW");
+    c.costas_deadband_is_set = env_is_set(cdb);
+    c.costas_slew_is_set = env_is_set(csl);
+    c.costas_deadband_q14 = c.costas_deadband_is_set ? atoi(cdb) : 32;
+    c.costas_slew_max_q15 = c.costas_slew_is_set ? atoi(csl) : 64;
+
     /* TED */
     const char* ted = getenv("DSD_NEO_TED");
     const char* tg = getenv("DSD_NEO_TED_GAIN");

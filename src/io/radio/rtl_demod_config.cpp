@@ -290,6 +290,11 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->fll_freq_q15 = 0;
     demod->fll_phase_q15 = 0;
     demod->fll_prev_r = demod->fll_prev_j = 0;
+    /* Costas loop tuning (independent of FLL envs). Defaults are more aggressive. */
+    demod->costas_alpha_q15 = cfg->costas_alpha_is_set ? cfg->costas_alpha_q15 : 400;
+    demod->costas_beta_q15 = cfg->costas_beta_is_set ? cfg->costas_beta_q15 : 40;
+    demod->costas_deadband_q14 = cfg->costas_deadband_is_set ? cfg->costas_deadband_q14 : 32;
+    demod->costas_slew_max_q15 = cfg->costas_slew_is_set ? cfg->costas_slew_max_q15 : 64;
     demod->costas_err_avg_q14 = 0;
     demod->costas_e4_prev_q14 = 0;
     demod->costas_e4_prev_set = 0;

@@ -186,6 +186,16 @@ typedef struct dsdneoRuntimeConfig {
     int fll_slew_is_set;
     int fll_slew_max_q15;
 
+    /* CQPSK Costas loop (carrier recovery) */
+    int costas_alpha_is_set;
+    int costas_alpha_q15;
+    int costas_beta_is_set;
+    int costas_beta_q15;
+    int costas_deadband_is_set;
+    int costas_deadband_q14;
+    int costas_slew_is_set;
+    int costas_slew_max_q15;
+
     /* Gardner TED */
     int ted_is_set;
     int ted_enable;

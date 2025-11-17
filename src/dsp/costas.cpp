@@ -108,11 +108,15 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
      * The default alpha/beta values are chosen to be more aggressive than the
      * FLL defaults to ensure the Costas loop can pull in larger frequency
      * offsets typical of SDRs. A wider loop bandwidth is necessary for
-     * robust carrier acquisition. */
-    int alpha_q15 = (d->fll_alpha_q15 > 0) ? d->fll_alpha_q15 : 400; /* reuse FLL defaults if present */
-    int beta_q15 = (d->fll_beta_q15 > 0) ? d->fll_beta_q15 : 40;
-    int deadband_q14 = (d->fll_deadband_q14 > 0) ? d->fll_deadband_q14 : 32;
-    int slew_max_q15 = (d->fll_slew_max_q15 > 0) ? d->fll_slew_max_q15 : 64;
+     * robust carrier acquisition.
+     *
+     * Costas tuning is independent of the FLL env knobs: use
+     * demod_state->costas_alpha_q15/beta_q15 when set, otherwise fall back
+     * to internal defaults (400/40). */
+    int alpha_q15 = (d->costas_alpha_q15 > 0) ? d->costas_alpha_q15 : 400;
+    int beta_q15 = (d->costas_beta_q15 > 0) ? d->costas_beta_q15 : 40;
+    int deadband_q14 = (d->costas_deadband_q14 > 0) ? d->costas_deadband_q14 : 32;
+    int slew_max_q15 = (d->costas_slew_max_q15 > 0) ? d->costas_slew_max_q15 : 64;
 
     int phase = d->fll_phase_q15; /* reuse FLL storage for NCO phase/freq to avoid expanding state */
     int freq = d->fll_freq_q15;

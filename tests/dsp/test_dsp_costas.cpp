@@ -108,6 +108,11 @@ main(void) {
         s->fll_alpha_q15 = 150;   /* explicit gains to avoid defaults ambiguity */
         s->fll_beta_q15 = 50;
         s->fll_slew_max_q15 = 32767;
+        /* Mirror FLL tuning into Costas-specific fields for this test context. */
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
         cqpsk_costas_mix_and_update(s);
@@ -154,6 +159,10 @@ main(void) {
         s->fll_alpha_q15 = 1000; /* moderate gains */
         s->fll_beta_q15 = 800;
         s->fll_slew_max_q15 = 32767; /* unlimited per-sample */
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
         cqpsk_costas_mix_and_update(s);
@@ -185,6 +194,10 @@ main(void) {
         s->fll_alpha_q15 = 2000;
         s->fll_beta_q15 = 2000;
         s->fll_slew_max_q15 = 32767;
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
         cqpsk_costas_mix_and_update(s);
@@ -216,6 +229,10 @@ main(void) {
         s->fll_alpha_q15 = 12000; /* big gains to force clamp */
         s->fll_beta_q15 = 12000;
         s->fll_slew_max_q15 = 64; /* tight clamp */
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = 2;
         cqpsk_costas_mix_and_update(s);
@@ -245,6 +262,10 @@ main(void) {
         s->fll_alpha_q15 = 16000;
         s->fll_beta_q15 = 16000;
         s->fll_slew_max_q15 = 2000; /* large per-sample step */
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
         cqpsk_costas_mix_and_update(s);
@@ -277,6 +298,10 @@ main(void) {
         s->fll_alpha_q15 = 1;
         s->fll_beta_q15 = 1;
         s->fll_slew_max_q15 = 32767;
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
         cqpsk_costas_mix_and_update(s);
@@ -306,6 +331,10 @@ main(void) {
         s->fll_alpha_q15 = 1;
         s->fll_beta_q15 = 1;
         s->fll_slew_max_q15 = 32767;
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = 2;
         cqpsk_costas_mix_and_update(s);
@@ -333,6 +362,10 @@ main(void) {
         s->fll_alpha_q15 = 1;
         s->fll_beta_q15 = 1;
         s->fll_slew_max_q15 = 32767;
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = 3; /* 1 pair + stray I */
         cqpsk_costas_mix_and_update(s);
@@ -490,6 +523,10 @@ main(void) {
         s->fll_alpha_q15 = 1200; /* a bit stronger to average noise */
         s->fll_beta_q15 = 900;
         s->fll_slew_max_q15 = 32767;
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
         cqpsk_costas_mix_and_update(s);
@@ -523,6 +560,10 @@ main(void) {
         s->fll_alpha_q15 = 700;
         s->fll_beta_q15 = 600;
         s->fll_slew_max_q15 = 32767;
+        s->costas_alpha_q15 = s->fll_alpha_q15;
+        s->costas_beta_q15 = s->fll_beta_q15;
+        s->costas_deadband_q14 = s->fll_deadband_q14;
+        s->costas_slew_max_q15 = s->fll_slew_max_q15;
         s->lowpassed = buf;
         s->lp_len = pairs * 2;
 
