@@ -449,6 +449,7 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
 #if !defined(_WIN32)
     int fd = fileno(fp);
     if (fd >= 0) {
+        (void)fchmod(fd, 0600);
         (void)fsync(fd);
     }
 #endif
@@ -465,8 +466,6 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
         (void)remove(tmp);
         return -1;
     }
-
-    chmod(path, 0600);
 #endif
 
     return 0;
