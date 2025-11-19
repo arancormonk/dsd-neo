@@ -61,7 +61,6 @@ static int s_last_rigctl_bw = -12345;
 #ifdef USE_RTLSDR
 static uint32_t s_last_rtl_freq = 0;
 #endif
-static int s_last_ted_sps = 0;
 
 // Config autosave state: when enabled, snapshot opts/state to this path.
 static int s_user_config_save_enabled = 0;
@@ -935,12 +934,6 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 {
                     state->samplesPerSymbol = 10;
                     state->symbolCenter = 4;
-#ifdef USE_RTLSDR
-                    if (s_last_ted_sps != 10) {
-                        rtl_stream_set_ted_sps(10);
-                        s_last_ted_sps = 10;
-                    }
-#endif
                     //re-enable both slots
                     opts->slot1_on = 1;
                     opts->slot2_on = 1;
@@ -949,12 +942,6 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 else if (state->p25_cc_is_tdma == 1) {
                     state->samplesPerSymbol = 8;
                     state->symbolCenter = 3;
-#ifdef USE_RTLSDR
-                    if (s_last_ted_sps != 8) {
-                        rtl_stream_set_ted_sps(8);
-                        s_last_ted_sps = 8;
-                    }
-#endif
                     //re-enable both slots (in case of late entry voice, MAC_SIGNAL can turn them back off)
                     opts->slot1_on = 1;
                     opts->slot2_on = 1;

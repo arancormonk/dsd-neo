@@ -639,20 +639,12 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (state->p25_cc_is_tdma == 0) {
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;
-        // keep TED SPS consistent with symbol rate (internal cache avoids repeats)
-#ifdef USE_RTLSDR
-        rtl_stream_set_ted_sps(10);
-#endif
     }
 
     //if P25p1 Data Revert on P25p2 TDMA CC, flip symbolrate
     if (state->p25_cc_is_tdma == 1) {
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
-        // keep TED SPS consistent with symbol rate (internal cache avoids repeats)
-#ifdef USE_RTLSDR
-        rtl_stream_set_ted_sps(8);
-#endif
     }
 
     // fprintf (stderr, "\n User Activated Return to CC; \n ");

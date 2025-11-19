@@ -386,6 +386,13 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         }
         demod->cqpsk_rrc_span_syms = v;
     }
+    /* When CQPSK is enabled for P25 Phase 2 and no explicit MF/RRC env
+       overrides are present, default to a modest matched filter + RRC
+       combination to improve LSM ISI robustness. */
+    if (opts->frame_p25p2 == 1 && !mf && !rrc) {
+        demod->cqpsk_mf_enable = 1;
+        demod->cqpsk_rrc_enable = 1;
+    }
 
     /* FM/C4FM amplitude AGC (pre-discriminator): default OFF for all modes.
        Users can enable via env `DSD_NEO_FM_AGC=1` or the UI toggle. */
@@ -442,6 +449,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+    int p25_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
     if (digital_mode) {
         /* For digital modes, honor explicit FLL env when provided; otherwise
            default FLL ON. This guarantees DSD_NEO_FLL=0 truly disables FLL
@@ -450,6 +458,10 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             demod->fll_enabled = env_fll_enable ? 1 : 0;
         } else {
             demod->fll_enabled = 1;
+        }
+        /* Default TED ON for P25 modes when not explicitly configured via env. */
+        if (p25_mode && !env_ted_set) {
+            demod->ted_enabled = 1;
         }
         if (!env_ted_sps_set) {
             int Fs_cx = 0;
@@ -479,7 +491,13 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             demod->ted_sps = sps;
         }
         if (!env_ted_gain_set) {
-            demod->ted_gain_q20 = 64;
+            int base_gain = 64;
+            /* For P25 at low SPS (e.g., 12 kHz / 4800 or 6000 sym/s),
+               use a slightly stronger default Gardner gain. */
+            if (p25_mode && demod->ted_sps > 0 && demod->ted_sps <= 4) {
+                base_gain = 96;
+            }
+            demod->ted_gain_q20 = base_gain;
         }
         /* Digital defaults: slightly stronger, lower-deadband FLL for CQPSK/FM. */
         if (!env_fll_alpha_set) {
