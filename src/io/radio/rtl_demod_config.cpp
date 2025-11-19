@@ -210,8 +210,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Initialize minimal worker pool (env-gated via DSD_NEO_MT). */
     demod_mt_init(s);
 
-    /* Generic IQ balance defaults (image suppression); mode-aware guards in DSP pipeline. */
-    s->iqbal_enable = 1;
+    /* Generic IQ balance defaults (image suppression); mode-aware guards in DSP pipeline.
+       Start disabled so the UI/DSP menu fully controls this DSP block. */
+    s->iqbal_enable = 0;
     s->iqbal_thr_q15 = 655; /* ~0.02 */
     s->iqbal_alpha_ema_r_q15 = 0;
     s->iqbal_alpha_ema_i_q15 = 0;
@@ -316,18 +317,11 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     }
 
     /* Optional: acquisition-only FLL for CQPSK (pre-Costas).
-       When DSD_NEO_CQPSK_ACQ_FLL is unset, enable this helper by default
-       for known CQPSK digital modes (e.g., P25 Phase 2) so the Costas loop
-       starts closer to baseband. */
+       Default OFF; may be enabled explicitly via env/UI. */
     demod->cqpsk_acq_fll_enable = 0;
     const char* af = getenv("DSD_NEO_CQPSK_ACQ_FLL");
     if (af) {
         if (*af == '1' || *af == 'y' || *af == 'Y' || *af == 't' || *af == 'T') {
-            demod->cqpsk_acq_fll_enable = 1;
-        }
-    } else {
-        /* No explicit env override: default on for P25 Phase 2. */
-        if (opts->frame_p25p2 == 1) {
             demod->cqpsk_acq_fll_enable = 1;
         }
     }
@@ -386,13 +380,8 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         }
         demod->cqpsk_rrc_span_syms = v;
     }
-    /* When CQPSK is enabled for P25 Phase 2 and no explicit MF/RRC env
-       overrides are present, default to a modest matched filter + RRC
-       combination to improve LSM ISI robustness. */
-    if (opts->frame_p25p2 == 1 && !mf && !rrc) {
-        demod->cqpsk_mf_enable = 1;
-        demod->cqpsk_rrc_enable = 1;
-    }
+    /* When CQPSK is enabled for P25 Phase 2 we keep MF/RRC disabled by default.
+       Users may enable these helpers explicitly via env or the DSP menu. */
 
     /* FM/C4FM amplitude AGC (pre-discriminator): default OFF for all modes.
        Users can enable via env `DSD_NEO_FM_AGC=1` or the UI toggle. */
@@ -436,9 +425,6 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
         return;
     }
 
-    int env_ted_set = cfg->ted_is_set;
-    int env_fll_set = cfg->fll_is_set;
-    int env_fll_enable = cfg->fll_enable;
     int env_fll_alpha_set = cfg->fll_alpha_is_set;
     int env_fll_beta_set = cfg->fll_beta_is_set;
     int env_fll_deadband_set = cfg->fll_deadband_is_set;
@@ -451,18 +437,9 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     int p25_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
     if (digital_mode) {
-        /* For digital modes, honor explicit FLL env when provided; otherwise
-           default FLL ON. This guarantees DSD_NEO_FLL=0 truly disables FLL
-           regardless of prior state or mode-specific defaults. */
-        if (env_fll_set) {
-            demod->fll_enabled = env_fll_enable ? 1 : 0;
-        } else {
-            demod->fll_enabled = 1;
-        }
-        /* Default TED ON for P25 modes when not explicitly configured via env. */
-        if (p25_mode && !env_ted_set) {
-            demod->ted_enabled = 1;
-        }
+        /* For digital modes, never auto-enable FLL/TED.
+           Leave on/off decisions to env/CLI/UI, but still derive sane defaults
+           for TED/FLL parameters when not explicitly provided. */
         if (!env_ted_sps_set) {
             int Fs_cx = 0;
             /* TED operates on complex baseband at demod->rate_out.
@@ -513,16 +490,8 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             demod->fll_slew_max_q15 = 128;
         }
     } else {
-        /* For analog-like modes, keep FLL off by default unless explicitly
-           enabled via env. */
-        if (env_fll_set) {
-            demod->fll_enabled = env_fll_enable ? 1 : 0;
-        } else {
-            demod->fll_enabled = 0;
-        }
-        if (!env_ted_set) {
-            demod->ted_enabled = 0;
-        }
+        /* For analog-like modes, also avoid auto-enabling FLL/TED.
+           Respect any explicit env/CLI/UI decisions, but do not change gates. */
         if (!env_fll_alpha_set) {
             demod->fll_alpha_q15 = 50;
         }

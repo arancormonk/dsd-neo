@@ -539,7 +539,8 @@ demod_thread_fn(void* arg) {
         }
         if (!ag_initialized) {
             const char* ag = getenv("DSD_NEO_TUNER_AUTOGAIN");
-            if (ag && (*ag != '\0') && (*ag != '0') && (*ag != 'f') && (*ag != 'F') && (*ag != 'n') && (*ag != 'N')) {
+            // Default OFF. Enable only if explicitly '1', 't', 'y'.
+            if (ag && (*ag == '1' || *ag == 't' || *ag == 'T' || *ag == 'y' || *ag == 'Y')) {
                 g_tuner_autogain_on.store(1, std::memory_order_relaxed);
             }
             /* Optional env overrides for probe behavior */
@@ -2107,9 +2108,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
        supervisory tuner autogain unless explicitly disabled via env. This starts
         in device auto-gain and promotes to nearby manual values when needed. */
     if (opts && opts->rtl_gain_value <= 0) {
+        // Supervisory auto gain DISABLED by default (user request).
+        // Only enable if explicitly requested via env DSD_NEO_TUNER_AUTOGAIN=1.
         const char* ag = getenv("DSD_NEO_TUNER_AUTOGAIN");
-        int env_off = (ag && (*ag == '0' || *ag == 'f' || *ag == 'F' || *ag == 'n' || *ag == 'N')) ? 1 : 0;
-        if (!env_off) {
+        int env_on = (ag && (*ag == '1' || *ag == 't' || *ag == 'T' || *ag == 'y' || *ag == 'Y')) ? 1 : 0;
+        if (env_on) {
             g_tuner_autogain_on.store(1, std::memory_order_relaxed);
         }
     }

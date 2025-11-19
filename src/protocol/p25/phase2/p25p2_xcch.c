@@ -623,7 +623,14 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             // If both logical channels are idle, return to CC — but respect a
             // short post-tune grace so we don't bounce on quick follow-ups when
             // early MAC_PTT/ACTIVE PDUs were missed.
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+                // Check Slot 1 activity (other slot)
+                // We only care if the other slot has permitted audio or queued frames.
+                // Do NOT rely on recent MAC activity timer alone, as that can hold
+                // the channel open after a call ends (MAC_END clears allowed, but
+                // timer remains active).
+                int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
+
                 double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
                 if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
                     vc_grace = state->p25_adapt_vc_grace_s;
@@ -639,7 +646,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 time_t now2 = time(NULL);
                 double dt_since_tune =
                     (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-                if (dt_since_tune >= vc_grace) {
+
+                // Return if opposite slot is inactive and grace period passed
+                if (!r_active && dt_since_tune >= vc_grace) {
                     state->p25_sm_force_release = 1;
                     p25_sm_on_release(opts, state);
                 }
@@ -694,7 +703,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             // If both logical channels are idle, return to CC — but respect a
             // short post-tune grace so we don't bounce on quick follow-ups when
             // early MAC_PTT/ACTIVE PDUs were missed.
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->dmrburstL == 24 && state->dmrburstR == 24) {
+            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+                // Check Slot 0 activity (other slot)
+                // Ignore MAC hold timer; check only audio gate and ring.
+                int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
+
                 double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
                 if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
                     vc_grace = state->p25_adapt_vc_grace_s;
@@ -710,7 +723,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 time_t now2 = time(NULL);
                 double dt_since_tune =
                     (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-                if (dt_since_tune >= vc_grace) {
+
+                // Return if opposite slot is inactive and grace period passed
+                if (!l_active && dt_since_tune >= vc_grace) {
                     state->p25_sm_force_release = 1;
                     p25_sm_on_release(opts, state);
                 }
@@ -780,8 +795,39 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         state->p25_p2_audio_allowed[slot] = 0;
         // Clear Packet/Data flag for this slot on IDLE
         state->p25_call_is_packet[slot] = 0;
-        // Do not force release here; allow the SM tick to handle return to CC
-        // based on per-slot audio gates, jitter state, and hangtime.
+
+        // If both logical channels are idle, return to CC — but respect a
+        // short post-tune grace.
+        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+            int other_slot = (slot ^ 1) & 1;
+            // Check activity on other slot
+            // Only consider explicit audio gates or ring content. Ignore stale
+            // MAC_ACTIVE timers to allow prompt return on end of call.
+            int other_active =
+                state->p25_p2_audio_allowed[other_slot] || (state->p25_p2_audio_ring_count[other_slot] > 0);
+
+            double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+            if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
+                vc_grace = state->p25_adapt_vc_grace_s;
+            } else {
+                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+                if (s && s[0] != '\0') {
+                    double v = atof(s);
+                    if (v >= 0.0 && v < 10.0) {
+                        vc_grace = v;
+                    }
+                }
+            }
+            time_t now2 = time(NULL);
+            double dt_since_tune =
+                (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
+
+            // Return if opposite slot is inactive and grace period passed
+            if (!other_active && dt_since_tune >= vc_grace) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            }
+        }
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim

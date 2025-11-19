@@ -152,63 +152,45 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             state->rf_mod = forced;
 #ifdef USE_RTLSDR
             /* Align RTL DSP path with forced demod. */
-            do {
-                int cq = 0, f = 0, t = 0;
-                rtl_stream_dsp_get(&cq, &f, &t);
-                if (forced == 1) {
-                    /* Entering / staying in QPSK/CQPSK path under explicit CLI lock.
-                     * - Ensure CQPSK path is enabled.
-                     * - Force TED/FLL on so timing/carrier loops are active.
-                     * - On first entry into CQPSK, configure a conservative
-                     *   equalizer + RRC MF tuned for P25 CQPSK. */
-                    if (!cq) {
-                        rtl_stream_toggle_iq_balance(0);
-                        rtl_stream_toggle_cqpsk(1);
-                        /* Use current TED SPS (when available) to pick a
-                         * symbol-aligned update stride; fall back to 6 on
-                         * unknown/degenerate values. */
-                        int ted_sps = rtl_stream_get_ted_sps();
-                        int stride = (ted_sps >= 2 && ted_sps <= 16) ? ted_sps : 6;
-                        /* Enable a small DFE for P25-style CQPSK paths to
-                         * better handle post-cursor ISI, but keep it off for
-                         * generic QPSK modes. */
-                        int dfe_en = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? 1 : 0;
-                        int dfe_taps = dfe_en ? 2 : 0;
-                        /* LMS=On, 5 taps, mu=2, stride≈SPS, optional DFE,
-                         * RRC MF enabled, CMA warmup ~1/4s at 4800 sym/s. */
-                        rtl_stream_cqpsk_set(1, 5, 2, stride, 0, dfe_en, dfe_taps, 1, 1200);
-                        /* Default CQPSK matched filter to modest RRC (α=0.25,
-                         * span≈6 symbols) so CQPSK MF does not require
-                         * environment variables for common P25 LSM use. */
-                        rtl_stream_cqpsk_set_rrc(1, 25, 6);
-                    }
-                    if (!f) {
-                        /* Only force FLL on if not explicitly disabled by user */
-                        const char* fll_env = getenv("DSD_NEO_FLL");
-                        if (!fll_env || fll_env[0] != '0') {
-                            rtl_stream_toggle_fll(1);
-                        }
-                    }
-                    if (!t) {
-                        /* Only force TED on if not explicitly disabled by user */
-                        const char* ted_env = getenv("DSD_NEO_TED");
-                        if (!ted_env || ted_env[0] != '0') {
-                            rtl_stream_toggle_ted(1);
-                        }
-                    }
-                } else {
-                    if (cq) {
-                        rtl_stream_toggle_iq_balance(1);
-                        rtl_stream_toggle_cqpsk(0);
-                        /* Only force-disable FLL/TED when locking to GFSK/FSK.
-                           For C4FM lock, preserve user-configured FLL/TED. */
-                        if (forced == 2) {
-                            rtl_stream_toggle_fll(0);
-                            rtl_stream_toggle_ted(0);
-                        }
-                    }
-                }
-            } while (0);
+            // Automatic DSP configuration DISABLED by user request.
+            // DSP blocks (FLL, TED, CQPSK, IQ Bal, etc) must be manually enabled via menu/CLI.
+            // do {
+            //     int cq = 0, f = 0, t = 0;
+            //     rtl_stream_dsp_get(&cq, &f, &t);
+            //     if (forced == 1) {
+            //         if (!cq) {
+            //             rtl_stream_toggle_iq_balance(0);
+            //             rtl_stream_toggle_cqpsk(1);
+            //             int ted_sps = rtl_stream_get_ted_sps();
+            //             int stride = (ted_sps >= 2 && ted_sps <= 16) ? ted_sps : 6;
+            //             int dfe_en = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? 1 : 0;
+            //             int dfe_taps = dfe_en ? 2 : 0;
+            //             rtl_stream_cqpsk_set(1, 5, 2, stride, 0, dfe_en, dfe_taps, 1, 1200);
+            //             rtl_stream_cqpsk_set_rrc(1, 25, 6);
+            //         }
+            //         if (!f) {
+            //             const char* fll_env = getenv("DSD_NEO_FLL");
+            //             if (!fll_env || fll_env[0] != '0') {
+            //                 rtl_stream_toggle_fll(1);
+            //             }
+            //         }
+            //         if (!t) {
+            //             const char* ted_env = getenv("DSD_NEO_TED");
+            //             if (!ted_env || ted_env[0] != '0') {
+            //                 rtl_stream_toggle_ted(1);
+            //             }
+            //         }
+            //     } else {
+            //         if (cq) {
+            //             rtl_stream_toggle_iq_balance(1);
+            //             rtl_stream_toggle_cqpsk(0);
+            //             if (forced == 2) {
+            //                 rtl_stream_toggle_fll(0);
+            //                 rtl_stream_toggle_ted(0);
+            //             }
+            //         }
+            //     }
+            // } while (0);
 #endif
         }
     }
@@ -691,17 +673,18 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
              * distort 2-level/FSK symbol envelopes and elevate early audio errors under marginal SNR.
              * Also force FLL/TED off for FSK paths — but only when we are actually on the FSK/GFSK path. */
 #ifdef USE_RTLSDR
-            if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)
-                && state->rf_mod == 2) { /* 2 = GFSK/FSK family */
-                extern void rtl_stream_set_fm_agc(int onoff);
-                extern void rtl_stream_set_fm_limiter(int onoff);
-                extern void rtl_stream_toggle_fll(int onoff);
-                extern void rtl_stream_toggle_ted(int onoff);
-                rtl_stream_set_fm_agc(0);
-                rtl_stream_set_fm_limiter(0);
-                rtl_stream_toggle_fll(0);
-                rtl_stream_toggle_ted(0);
-            }
+            // Automatic DSP toggling disabled by user request.
+            // if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)
+            //     && state->rf_mod == 2) { /* 2 = GFSK/FSK family */
+            //     extern void rtl_stream_set_fm_agc(int onoff);
+            //     extern void rtl_stream_set_fm_limiter(int onoff);
+            //     extern void rtl_stream_toggle_fll(int onoff);
+            //     extern void rtl_stream_toggle_ted(int onoff);
+            //     rtl_stream_set_fm_agc(0);
+            //     rtl_stream_set_fm_limiter(0);
+            //     rtl_stream_toggle_fll(0);
+            //     rtl_stream_toggle_ted(0);
+            // }
 #endif
             if (opts->frame_x2tdma == 1) {
                 if ((strcmp(synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
