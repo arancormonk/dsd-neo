@@ -65,6 +65,23 @@ costas_rot_invert_enabled() {
     return enabled;
 }
 
+/* Optional 8th-order Costas loop for pi/4 DQPSK / 8PSK robustness.
+   Default to enabled (1) for CQPSK paths to avoid 4th-order loop fighting the pi/4 rotation. */
+static inline int
+costas_8th_order_enabled() {
+    static int inited = 0;
+    static int enabled = 0;
+    if (!inited) {
+        const char* v = getenv("DSD_NEO_CQPSK_COSTAS_8");
+        enabled = 1; /* Default ON */
+        if (v && (*v == '0' || *v == 'n' || *v == 'N' || *v == 'f' || *v == 'F')) {
+            enabled = 0;
+        }
+        inited = 1;
+    }
+    return enabled;
+}
+
 void
 cqpsk_costas_mix_and_update(struct demod_state* d) {
     if (!d || !d->lowpassed || d->lp_len < 2) {
@@ -95,6 +112,7 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
     int N = d->lp_len;
 
     const int invert = costas_rot_invert_enabled();
+    const int use_8th = costas_8th_order_enabled();
     const char* dbg = getenv("DSD_NEO_DBG_COSTAS");
     int dbg_once = (dbg && dbg[0] == '1') ? 1 : 0;
     int64_t err_abs_acc = 0;
@@ -129,24 +147,47 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         /* z^4 = (a^2 - b^2) + j*(2ab) */
         int64_t re4 = a * a - b * b;
         int64_t im4 = (a + a) * b;
-        /* Phase error ~ arg(z^4)/4. Unwrap arg(z^4) against last value for continuity. */
-        int e4_now = dsd_neo_fast_atan2(im4, re4); /* Q14 in [-pi..pi] */
+
+        int err_q14;
+        int e_now;
+
+        if (use_8th) {
+            /* 8th-power phase detector for pi/4 QPSK / 8PSK.
+               z^8 = (z^4)^2. Scale down re4/im4 to avoid overflow when squaring. */
+            int64_t re4_s = re4 >> 30;
+            int64_t im4_s = im4 >> 30;
+            int64_t re8 = re4_s * re4_s - im4_s * im4_s;
+            int64_t im8 = 2 * re4_s * im4_s;
+            e_now = dsd_neo_fast_atan2(im8, re8); /* Q14 in [-pi..pi] */
+        } else {
+            /* 4th-power phase detector for QPSK */
+            e_now = dsd_neo_fast_atan2(im4, re4); /* Q14 in [-pi..pi] */
+        }
+
+        /* Unwrap phase error against last value for continuity. */
         if (d->costas_e4_prev_set) {
-            int diff = e4_now - d->costas_e4_prev_q14;
+            int diff = e_now - d->costas_e4_prev_q14;
             const int TWO_PI_Q14 = (1 << 15);
             if (diff > (1 << 14)) {
-                e4_now -= TWO_PI_Q14;
+                e_now -= TWO_PI_Q14;
             } else if (diff < -(1 << 14)) {
-                e4_now += TWO_PI_Q14;
+                e_now += TWO_PI_Q14;
             }
         }
-        d->costas_e4_prev_q14 = e4_now;
+        d->costas_e4_prev_q14 = e_now;
         d->costas_e4_prev_set = 1;
-        int err_q14 = (e4_now >> 2);
+
+        if (use_8th) {
+            err_q14 = (e_now >> 3); /* Divide by 8 */
+        } else {
+            err_q14 = (e_now >> 2); /* Divide by 4 */
+        }
+
         if (dbg_once) {
-            fprintf(stderr,
-                    "DBG_COSTAS: i=%d xr=%d xj=%d c=%d s=%d yr=%d yj=%d re4=%lld im4=%lld e4=%d err=%d ph=%d fq=%d\n",
-                    i, xr, xj, c, s, (int)yr, (int)yj, (long long)re4, (long long)im4, e4_now, err_q14, phase, freq);
+            fprintf(
+                stderr,
+                "DBG_COSTAS: i=%d xr=%d xj=%d c=%d s=%d yr=%d yj=%d re4=%lld im4=%lld e_now=%d err=%d ph=%d fq=%d\n", i,
+                xr, xj, c, s, (int)yr, (int)yj, (long long)re4, (long long)im4, e_now, err_q14, phase, freq);
         }
         /* Accumulate absolute error for diagnostics */
         int ea = (err_q14 >= 0) ? err_q14 : -err_q14;

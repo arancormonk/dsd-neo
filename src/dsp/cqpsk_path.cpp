@@ -233,10 +233,14 @@ cqpsk_init(struct demod_state* s) {
     }
     s->cqpsk_eq_initialized = 1;
 
-    /* DQPSK decision mode (env: DSD_NEO_CQPSK_DQPSK=1) */
+    /* DQPSK decision mode (env: DSD_NEO_CQPSK_DQPSK=0 to disable)
+       Default to enabled for CQPSK/LSM paths as they use pi/4 DQPSK. */
+    s->cqpsk_eq.dqpsk_decision = 1;
     const char* dq = getenv("DSD_NEO_CQPSK_DQPSK");
-    if (dq && (*dq == '1' || *dq == 'y' || *dq == 'Y' || *dq == 't' || *dq == 'T')) {
-        s->cqpsk_eq.dqpsk_decision = 1;
+    if (dq) {
+        if (*dq == '0' || *dq == 'n' || *dq == 'N' || *dq == 'f' || *dq == 'F') {
+            s->cqpsk_eq.dqpsk_decision = 0;
+        }
     }
 }
 
