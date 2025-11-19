@@ -54,6 +54,10 @@ cqpsk_init(struct demod_state* s) {
             s->cqpsk_eq.num_taps = taps;
             /* Use SPS as DFE symbol gating stride */
             s->cqpsk_eq.sym_stride = s->ted_sps;
+            /* When no explicit stride is requested, align LMS update cadence to the symbol rate. */
+            if (s->cqpsk_update_stride <= 0) {
+                s->cqpsk_eq.update_stride = s->ted_sps;
+            }
         }
         if (s->cqpsk_mu_q15 > 0) {
             s->cqpsk_eq.mu_q15 = (int16_t)s->cqpsk_mu_q15;
@@ -263,6 +267,17 @@ cqpsk_process_block(struct demod_state* s) {
     if (!s->cqpsk_eq_initialized) {
         cqpsk_init(s);
     }
+    /* Refresh symbol-stride alignment if TED SPS changed after init. */
+    if (s->ted_sps >= 2 && s->ted_sps <= 64) {
+        int new_stride = s->ted_sps;
+        if (s->cqpsk_eq.sym_stride != new_stride) {
+            s->cqpsk_eq.sym_stride = new_stride;
+            /* If stride was auto-derived (no explicit user override), keep LMS cadence in sync. */
+            if (s->cqpsk_update_stride <= 0) {
+                s->cqpsk_eq.update_stride = new_stride;
+            }
+        }
+    }
     if (!s->lowpassed || s->lp_len < 2) {
         return;
     }
@@ -414,6 +429,13 @@ cqpsk_runtime_set_params(int lms_enable, int taps, int mu_q15, int update_stride
         if (prev && !eq->wl_enable) {
             /* Reset WL taps on disable */
             cqpsk_eq_reset_wl(eq);
+            /* Also reset WL adaptation state so FFE resumes adapting immediately. */
+            eq->adapt_mode = 0;
+            eq->adapt_hold = 0;
+            eq->wl_improp_ema_q15 = 0;
+            eq->wl_x2_re_ema = 0;
+            eq->wl_x2_im_ema = 0;
+            eq->wl_p2_ema = 0;
         }
     }
     if (dfe_enable >= 0) {
