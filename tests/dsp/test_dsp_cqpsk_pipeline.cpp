@@ -6,20 +6,21 @@
 /*
  * End-to-end CQPSK pipeline smoke test.
  *
- * Drives full_demod() with a small synthetic CQPSK-like waveform and asserts
- * that, when cqpsk_enable=1, the pipeline produces an I-channel symbol stream
- * via qpsk_i_demod instead of the FM discriminator path.
+ * Drives full_demod() with small synthetic CQPSK-like waveforms and asserts
+ * that, when cqpsk_enable=1, the pipeline produces a real-valued symbol
+ * stream derived from differential QPSK phase (arg(z_n * conj(z_{n-1})))
+ * instead of the FM discriminator path.
  *
  * The test configures the demod_state so that:
  *  - Decimation reduces to a no-op low_pass() (downsample=1).
- *  - DC block, matched filter, FLL, TED, IQ balance, and squelch are disabled.
+ *  - DC block, AGC/limiter, FLL, TED, IQ balance, and squelch are disabled.
  *  - CQPSK equalizer runs in its default identity configuration.
- *  - Costas is skipped by setting mode_demod=&raw_demod (as allowed by the
- *    pipeline guard for unit tests).
+ *  - Costas is optionally skipped by setting mode_demod=&raw_demod (as
+ *    allowed by the pipeline guard for unit tests).
  *
  * Under these conditions the CQPSK branch effectively reduces to:
- *   low_pass -> cqpsk_process_block (identity EQ) -> qpsk_i_demod,
- * so the output should be the I component of the input complex baseband.
+ *   low_pass -> cqpsk_process_block (identity EQ) -> qpsk_differential_demod,
+ * so the output represents per-sample phase deltas in Q14 units.
  */
 
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -132,19 +133,23 @@ run_identity_variant(void) {
     /* Run full pipeline. */
     full_demod(s);
 
-    /* For CQPSK, qpsk_i_demod should produce one real symbol per complex sample. */
+    /* For CQPSK, the differential demodulator should produce
+       one real symbol (phase delta) per complex sample. */
     if (s->result_len != pairs) {
         fprintf(stderr, "CQPSK_PIPELINE_IDENTITY: result_len=%d want=%d\n", s->result_len, pairs);
         free(s);
         return 1;
     }
 
-    /* Expected I-channel symbols (one per complex input sample). */
+    /* Expected phase deltas for the 45,135,225,315 degree sequence.
+       The first symbol sees zero rotation (prev == current), so its
+       delta is 0. Subsequent symbols advance by +90 degrees each,
+       giving pi/2 in Q14, i.e., 1<<13 == 8192. */
     int16_t expect[pairs];
-    expect[0] = amp;
-    expect[1] = -amp;
-    expect[2] = -amp;
-    expect[3] = amp;
+    expect[0] = 0;
+    expect[1] = 1 << 13;
+    expect[2] = 1 << 13;
+    expect[3] = 1 << 13;
 
     if (!arrays_equal_i16(s->result, expect, pairs)) {
         fprintf(stderr, "CQPSK_PIPELINE_IDENTITY: I-channel mismatch\n");
@@ -201,7 +206,7 @@ run_rrc_costas_variant(void) {
     init_cqpsk_common(s_ref, base_iq, pairs, sps);
     init_cqpsk_common(s_rrc, base_iq, pairs, sps);
 
-    /* Reference: CQPSK branch without MF/Costas (raw passthrough I-channel). */
+    /* Reference: CQPSK branch without MF/Costas (raw differential phase). */
     s_ref->cqpsk_mf_enable = 0;
     s_ref->ted_sps = sps;
     s_ref->mode_demod = &raw_demod;

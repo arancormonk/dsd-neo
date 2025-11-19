@@ -8,45 +8,15 @@
  *
  * Second-order loop using 4th-power phase detector for QPSK.
  * Rotates baseband by NCO (high-quality sin/cos) and updates freq/phase.
-*/
+ */
 
 #include <cstdio>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/math_utils.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
-
-/* Fast atan2 approximation (64-bit inputs), returns Q14 where pi == 1<<14 */
-static inline int
-fast_atan2_64(int64_t y, int64_t x) {
-    /* Returns Q14 where pi == 1<<14. Use overflow-safe algebra. */
-    const int pi4 = (1 << 12);
-    const int pi34 = 3 * (1 << 12);
-    if (x == 0 && y == 0) {
-        return 0;
-    }
-    long double yabs = (y < 0) ? (long double)(-y) : (long double)y;
-    if (x >= 0) {
-        long double denom = (long double)x + yabs;
-        if (denom == 0.0L) {
-            return 0;
-        }
-        /* angle = pi/4 * (2*|y|)/(x+|y|) */
-        long double t = ((2.0L * yabs) / denom) * (long double)pi4;
-        int angle = (int)llrint(t);
-        return (y < 0) ? -angle : angle;
-    } else {
-        long double denom = yabs - (long double)x; /* strictly > 0 for x<0 */
-        if (denom == 0.0L) {
-            return (y < 0) ? -pi34 : pi34;
-        }
-        /* angle = 3pi/4 - pi/4 * (x+|y|)/( |y|-x ) */
-        long double t = (long double)pi34 - ((long double)pi4 * (((long double)x + yabs) / denom));
-        int angle = (int)llrint(t);
-        return (y < 0) ? -angle : angle;
-    }
-}
 
 /* High-quality trig path: Q15 cos/sin from Q15 phase (2*pi == 1<<15) */
 static inline void
@@ -160,7 +130,7 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         int64_t re4 = a * a - b * b;
         int64_t im4 = (a + a) * b;
         /* Phase error ~ arg(z^4)/4. Unwrap arg(z^4) against last value for continuity. */
-        int e4_now = fast_atan2_64(im4, re4); /* Q14 in [-pi..pi] */
+        int e4_now = dsd_neo_fast_atan2(im4, re4); /* Q14 in [-pi..pi] */
         if (d->costas_e4_prev_set) {
             int diff = e4_now - d->costas_e4_prev_q14;
             const int TWO_PI_Q14 = (1 << 15);

@@ -76,3 +76,44 @@ dsd_neo_sinc(double x) {
     const double kPiLocal = 3.14159265358979323846;
     return sin(kPiLocal * x) / (kPiLocal * x);
 }
+
+/**
+ * @brief Fast atan2 approximation for 64-bit inputs (Q14 output).
+ *
+ * Matches the Costas-loop detector implementation: uses a simple
+ * piecewise-linear approximation expressed in long double to keep
+ * precision and dynamic range. The returned angle is scaled such that
+ * pi corresponds to 1<<14.
+ *
+ * @param y Imaginary component (numerator).
+ * @param x Real component (denominator).
+ * @return Approximate angle in Q14, where pi == 1<<14.
+ */
+static inline int
+dsd_neo_fast_atan2(int64_t y, int64_t x) {
+    const int pi4 = (1 << 12);
+    const int pi34 = 3 * (1 << 12);
+    if (x == 0 && y == 0) {
+        return 0;
+    }
+    long double yabs = (y < 0) ? (long double)(-y) : (long double)y;
+    if (x >= 0) {
+        long double denom = (long double)x + yabs;
+        if (denom == 0.0L) {
+            return 0;
+        }
+        /* angle = pi/4 * (2*|y|)/(x+|y|) */
+        long double t = ((2.0L * yabs) / denom) * (long double)pi4;
+        int angle = (int)llrint(t);
+        return (y < 0) ? -angle : angle;
+    } else {
+        long double denom = yabs - (long double)x; /* strictly > 0 for x<0 */
+        if (denom == 0.0L) {
+            return (y < 0) ? -pi34 : pi34;
+        }
+        /* angle = 3pi/4 - pi/4 * (x+|y|)/( |y|-x ) */
+        long double t = (long double)pi34 - ((long double)pi4 * (((long double)x + yabs) / denom));
+        int angle = (int)llrint(t);
+        return (y < 0) ? -angle : angle;
+    }
+}

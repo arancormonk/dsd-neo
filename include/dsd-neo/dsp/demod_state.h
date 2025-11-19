@@ -200,6 +200,10 @@ struct demod_state {
     int cqpsk_rrc_alpha_q15; /* RRC roll-off (Q15) */
     int cqpsk_rrc_span_syms; /* half-span in symbols on each side */
 
+    /* CQPSK differential demodulator history (phase continuity across blocks) */
+    int cqpsk_diff_prev_r;
+    int cqpsk_diff_prev_j;
+
     /* Generic mode-aware IQ balance (image suppression) */
     int iqbal_enable;          /* 0/1 gate */
     int iqbal_thr_q15;         /* |alpha| threshold in Q15 for enable */

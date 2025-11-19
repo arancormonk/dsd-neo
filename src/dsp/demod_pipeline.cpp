@@ -686,6 +686,59 @@ qpsk_i_demod(struct demod_state* fm) {
 }
 
 /**
+ * @brief Differential QPSK demodulator for CQPSK/LSM paths.
+ *
+ * Computes the phase difference between consecutive complex samples using:
+ *   delta_n = arg(z_n * conj(z_{n-1}))
+ *
+ * Phase is returned in Q14 units where pi == 1<<14. The differential history
+ * is maintained across blocks via cqpsk_diff_prev_r/j in demod_state.
+ *
+ * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase deltas to result).
+ */
+void
+qpsk_differential_demod(struct demod_state* fm) {
+    if (!fm || !fm->lowpassed || fm->lp_len < 2) {
+        if (fm) {
+            fm->result_len = 0;
+        }
+        return;
+    }
+
+    const int pairs = fm->lp_len >> 1; /* complex samples */
+    const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+
+    int prev_r = fm->cqpsk_diff_prev_r;
+    int prev_j = fm->cqpsk_diff_prev_j;
+
+    /* Initialize history on first use with the first sample to keep the
+       first phase delta well-defined (zero rotation). */
+    if (prev_r == 0 && prev_j == 0) {
+        prev_r = iq[0];
+        prev_j = iq[1];
+    }
+
+    for (int n = 0; n < pairs; n++) {
+        int cr = iq[(size_t)(n << 1) + 0];
+        int cj = iq[(size_t)(n << 1) + 1];
+
+        int64_t mr = (int64_t)cr * (int64_t)prev_r + (int64_t)cj * (int64_t)prev_j; /* Re{z_n * conj(z_{n-1})} */
+        int64_t mj = (int64_t)cj * (int64_t)prev_r - (int64_t)cr * (int64_t)prev_j; /* Im{z_n * conj(z_{n-1})} */
+
+        int phase_q14 = dsd_neo_fast_atan2(mj, mr);
+        out[n] = (int16_t)phase_q14;
+
+        prev_r = cr;
+        prev_j = cj;
+    }
+
+    fm->cqpsk_diff_prev_r = prev_r;
+    fm->cqpsk_diff_prev_j = prev_j;
+    fm->result_len = pairs;
+}
+
+/**
  * @brief Apply post-demod deemphasis IIR filter with Q15 coefficient.
  *
  * @param fm Demodulator state (reads/writes result, updates deemph_avg).
@@ -2158,12 +2211,12 @@ full_demod(struct demod_state* d) {
         }
     }
     /*
-     * For CQPSK, produce a single real stream from I-channel to feed the
-     * symbol sampler, instead of FM discriminating. For other paths, use the
-     * configured demodulator.
+     * For CQPSK, produce a single real stream of differential phase symbols
+     * (arg(z_n * conj(z_{n-1}))) to feed the legacy symbol sampler instead of
+     * FM discriminating. For other paths, use the configured demodulator.
      */
     if (d->cqpsk_enable) {
-        qpsk_i_demod(d);
+        qpsk_differential_demod(d);
     } else {
         d->mode_demod(d); /* lowpassed -> result */
     }

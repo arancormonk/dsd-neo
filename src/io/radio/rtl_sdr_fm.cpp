@@ -3636,10 +3636,12 @@ rtl_stream_toggle_cqpsk(int onoff) {
     demod.cqpsk_enable = onoff ? 1 : 0;
     /* Reset EQ state when toggling path to avoid stale filters */
     cqpsk_reset_all();
-    /* Switch demod output: for CQPSK use I-channel stream; otherwise FM discriminator */
+    /* Switch demod output selector and reset CQPSK differential history. */
     if (demod.cqpsk_enable) {
         extern void qpsk_i_demod(struct demod_state*);
         demod.mode_demod = &qpsk_i_demod;
+        demod.cqpsk_diff_prev_r = 0;
+        demod.cqpsk_diff_prev_j = 0;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
