@@ -29,12 +29,13 @@ cqpsk_init(struct demod_state* s) {
     cqpsk_eq_init(&s->cqpsk_eq);
     /* Configure from demod_state first (CLI/runtime), then allow env to override if set */
     if (s) {
-        /* Default to LMS enabled for CQPSK path as it is required for LSM/simulcast handling.
-         * This matches the "sane" defaults applied in the RTL-SDR path. */
-        s->cqpsk_eq.lms_enable = 1;
-        if (s->cqpsk_lms_enable != 0) {
-            /* Allow explicit override if we ever support disabling it via state */
-            s->cqpsk_eq.lms_enable = (s->cqpsk_lms_enable > 0);
+        /* Respect explicit CQPSK LMS enable from demod_state.
+         * Leave the equalizer's default (LMS off) when unset so non‑LMS
+         * CQPSK paths and unit tests keep an identity EQ by default. */
+        if (s->cqpsk_lms_enable > 0) {
+            s->cqpsk_eq.lms_enable = 1;
+        } else if (s->cqpsk_lms_enable < 0) {
+            s->cqpsk_eq.lms_enable = 0;
         }
 
         /* If samples-per-symbol is known, pick a small odd tap count relative to it (cap at MAX)
@@ -62,11 +63,6 @@ cqpsk_init(struct demod_state* s) {
         }
         if (s->cqpsk_update_stride > 0) {
             s->cqpsk_eq.update_stride = s->cqpsk_update_stride;
-        }
-
-        /* Default CMA warmup for stability if not specified */
-        if (s->cqpsk_eq.cma_warmup <= 0) {
-            s->cqpsk_eq.cma_warmup = 1200;
         }
     }
     /* Optional env overrides for quick experiments */
