@@ -113,5 +113,16 @@ main(void) {
         return 1;
     }
 
+    /* Ensure CQPSK differential history is cleared on demod re-init. */
+    demod.cqpsk_diff_prev_r = 123;
+    demod.cqpsk_diff_prev_j = -456;
+    rtl_demod_cleanup(&demod);
+    rtl_demod_init_for_mode(&demod, &output, &opts, demod_base_rate_hz);
+    if (demod.cqpsk_diff_prev_r != 0 || demod.cqpsk_diff_prev_j != 0) {
+        fprintf(stderr, "DEM: cqpsk_diff_prev not reset on re-init (%d,%d)\n", demod.cqpsk_diff_prev_r,
+                demod.cqpsk_diff_prev_j);
+        return 1;
+    }
+
     return 0;
 }

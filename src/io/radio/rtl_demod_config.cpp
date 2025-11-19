@@ -174,6 +174,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->cqpsk_acq_fll_enable = 0;
     s->cqpsk_acq_fll_locked = 0;
     s->cqpsk_acq_quiet_runs = 0;
+    /* CQPSK differential history */
+    s->cqpsk_diff_prev_r = 0;
+    s->cqpsk_diff_prev_j = 0;
 
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {

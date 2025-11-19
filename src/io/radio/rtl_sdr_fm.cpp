@@ -413,6 +413,9 @@ demod_reset_on_retune(struct demod_state* s) {
     s->fll_phase_q15 = 0;
     s->fll_prev_r = 0;
     s->fll_prev_j = 0;
+    /* CQPSK differential history */
+    s->cqpsk_diff_prev_r = 0;
+    s->cqpsk_diff_prev_j = 0;
     s->costas_err_avg_q14 = 0;
     s->costas_e4_prev_q14 = 0;
     s->costas_e4_prev_set = 0;
