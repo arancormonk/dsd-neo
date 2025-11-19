@@ -2021,13 +2021,18 @@ dsd_rtl_stream_open(dsd_opts* opts) {
        than these per-mode targets is honored. */
     int demod_base_rate_hz = rtl_dsp_bw_hz;
     {
-        int digital_voice_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1
-                                  || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1
-                                  || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_provoice == 1);
+        int digital_voice_mode =
+            (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
+             || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1
+             || opts->frame_provoice == 1 || opts->frame_ysf == 1 || opts->frame_x2tdma == 1);
         if (digital_voice_mode) {
             int target_hz = 12000;
-            /* Narrow 6.25 kHz-class channels: NXDN48, dPMR, D-STAR. */
-            if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+            /* Narrow 6.25 kHz-class channels: NXDN48, dPMR, D-STAR.
+             * Only clamp to 8 kHz if NO wide modes are enabled. */
+            int wide_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1
+                             || opts->frame_nxdn96 == 1 || opts->frame_m17 == 1 || opts->frame_provoice == 1
+                             || opts->frame_ysf == 1 || opts->frame_x2tdma == 1);
+            if (!wide_mode && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1)) {
                 target_hz = 8000;
             }
             if (demod_base_rate_hz > target_hz) {
