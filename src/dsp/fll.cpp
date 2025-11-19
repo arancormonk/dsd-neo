@@ -203,7 +203,7 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
     int beta = config->beta_q15;   /* Q15 */
     int prev_r = state->prev_r;
     int prev_j = state->prev_j;
-    int32_t err_acc = 0;
+    int64_t err_acc = 0; /* use wide accumulator to avoid overflow on large blocks */
     int count = 0;
 
     for (int i = 0; i + 1 < N; i += 2) {
@@ -225,7 +225,7 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
         return;
     }
 
-    int32_t err = err_acc / count; /* Q14 */
+    int32_t err = (int32_t)(err_acc / count); /* Q14 */
 
     /* Pre-apply small integrator leakage each update (even in deadband).
      *
@@ -296,7 +296,7 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
     /* Convert sps in complex samples to element stride in the interleaved array */
     int stride_elems = (sps >= 2) ? (sps << 1) : 2; /* >= 4 elements, else fallback to 2 */
 
-    int32_t err_acc = 0;
+    int64_t err_acc = 0; /* wide accumulator to prevent overflow at high SPS/block sizes */
     int count = 0;
 
     /* Start at the first index that has a valid s[k - sps] */
@@ -314,7 +314,7 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
         return;
     }
 
-    int32_t err = err_acc / count; /* Q14 */
+    int32_t err = (int32_t)(err_acc / count); /* Q14 */
 
     /* Pre-apply small integrator leakage each update (even in deadband).
      * See comment in fll_update_error for rationale and scale.

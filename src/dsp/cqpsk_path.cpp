@@ -441,6 +441,10 @@ cqpsk_runtime_set_params(int lms_enable, int taps, int mu_q15, int update_stride
     if (dfe_enable >= 0) {
         int newd = dfe_enable ? 1 : 0;
         eq->dfe_enable = newd;
+        if (newd && eq->dfe_taps == 0) {
+            /* Safe default when enabling DFE without an explicit tap count */
+            eq->dfe_taps = 2;
+        }
         if (newd && !prev_dfe) {
             /* Safe-enable: clear DFE taps and decision history */
             cqpsk_eq_reset_dfe(eq);
