@@ -1894,6 +1894,7 @@ full_demod(struct demod_state* d) {
            When enabled, we run a symbol-spaced FLL before Costas to
            quickly pull-in residual CFO, then stop once 'locked'. */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && !d->cqpsk_acq_fll_locked && d->ted_sps >= 2) {
+            int acq_updated = 0;
             /* Sync from demod_state into modular FLL state so that any
                external tweaks to fll_freq_q15/phase (e.g., spectrum-assisted
                correction) are honored by the CQPSK acquisition loop. */
@@ -1930,6 +1931,7 @@ full_demod(struct demod_state* d) {
 
                     /* Calculate error on rotated data, updating REAL state (freq/int) */
                     fll_update_error_qpsk(&cfg, &d->fll_state, temp_buf, d->lp_len, d->ted_sps);
+                    acq_updated = 1;
                 }
             }
             /* Do NOT apply rotation to d->lowpassed here; Costas loop downstream handles the NCO rotation
@@ -1942,19 +1944,23 @@ full_demod(struct demod_state* d) {
             d->fll_prev_j = d->fll_state.prev_j;
 
             /* Simple lock detector: when |freq| stays small for several blocks, stop acquisition FLL */
-            int fmag = d->fll_state.freq_q15;
-            if (fmag < 0) {
-                fmag = -fmag;
-            }
-            const int kLockFreqThr = 64; /* small residual */
-            const int kLockBlocks = 6;   /* consecutive blocks */
-            if (fmag <= kLockFreqThr) {
-                d->cqpsk_acq_quiet_runs++;
+            if (acq_updated) {
+                int fmag = d->fll_state.freq_q15;
+                if (fmag < 0) {
+                    fmag = -fmag;
+                }
+                const int kLockFreqThr = 64; /* small residual */
+                const int kLockBlocks = 6;   /* consecutive blocks */
+                if (fmag <= kLockFreqThr) {
+                    d->cqpsk_acq_quiet_runs++;
+                } else {
+                    d->cqpsk_acq_quiet_runs = 0;
+                }
+                if (d->cqpsk_acq_quiet_runs >= kLockBlocks) {
+                    d->cqpsk_acq_fll_locked = 1;
+                }
             } else {
                 d->cqpsk_acq_quiet_runs = 0;
-            }
-            if (d->cqpsk_acq_quiet_runs >= kLockBlocks) {
-                d->cqpsk_acq_fll_locked = 1;
             }
         }
         /* Optional complex DC removal */
@@ -2151,7 +2157,12 @@ full_demod(struct demod_state* d) {
      * FM discriminating. For other paths, use the configured demodulator.
      */
     if (d->cqpsk_enable) {
-        qpsk_differential_demod(d);
+        /* Respect CQPSK I-channel selector; otherwise default to differential demod. */
+        if (d->mode_demod == &qpsk_i_demod) {
+            d->mode_demod(d);
+        } else {
+            qpsk_differential_demod(d);
+        }
     } else {
         d->mode_demod(d); /* lowpassed -> result */
     }

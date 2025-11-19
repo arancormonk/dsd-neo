@@ -369,8 +369,26 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
         if (st->cma_warmup > 0) {
             int64_t yI_q14 = accI_q14;
             int64_t yQ_q14 = accQ_q14;
-            int64_t mag2_q28 = yI_q14 * yI_q14 + yQ_q14 * yQ_q14; /* Q28 */
+            /* Avoid overflow when squaring large outputs: scale down until |y| fits a safe bound,
+               and scale the CMA target accordingly so the update remains proportional. */
+            int scale = 0;
+            const int kMaxMagBits = 30; /* keep |y| < 2^30 before squaring (>> 8 gives plenty of headroom) */
+            while (scale < 8) {
+                int64_t ayI = (yI_q14 >= 0) ? yI_q14 : -yI_q14;
+                int64_t ayQ = (yQ_q14 >= 0) ? yQ_q14 : -yQ_q14;
+                if (ayI <= (1LL << kMaxMagBits) && ayQ <= (1LL << kMaxMagBits)) {
+                    break;
+                }
+                yI_q14 >>= 1;
+                yQ_q14 >>= 1;
+                scale++;
+            }
+            int64_t mag2_q28 = yI_q14 * yI_q14 + yQ_q14 * yQ_q14; /* Q(28 - 2*scale) */
             int64_t R_q28 = (int64_t)1 << 28;                     /* target modulus^2 */
+            R_q28 >>= (scale * 2);
+            if (R_q28 < 1) {
+                R_q28 = 1;
+            }
             int64_t diff_q28 = mag2_q28 - R_q28;
             /* Update FFE taps using CMA gradient */
             for (int k = 0, j = h; k < T; k++) {
