@@ -29,7 +29,14 @@ cqpsk_init(struct demod_state* s) {
     cqpsk_eq_init(&s->cqpsk_eq);
     /* Configure from demod_state first (CLI/runtime), then allow env to override if set */
     if (s) {
-        s->cqpsk_eq.lms_enable = (s->cqpsk_lms_enable != 0);
+        /* Default to LMS enabled for CQPSK path as it is required for LSM/simulcast handling.
+         * This matches the "sane" defaults applied in the RTL-SDR path. */
+        s->cqpsk_eq.lms_enable = 1;
+        if (s->cqpsk_lms_enable != 0) {
+            /* Allow explicit override if we ever support disabling it via state */
+            s->cqpsk_eq.lms_enable = (s->cqpsk_lms_enable > 0);
+        }
+
         /* If samples-per-symbol is known, pick a small odd tap count relative to it (cap at MAX)
            and align the EQ symbol stride with the TED SPS so decisions occur once per nominal symbol. */
         if (s->ted_sps >= 2 && s->ted_sps <= 16) {
@@ -49,9 +56,17 @@ cqpsk_init(struct demod_state* s) {
         }
         if (s->cqpsk_mu_q15 > 0) {
             s->cqpsk_eq.mu_q15 = (int16_t)s->cqpsk_mu_q15;
+        } else {
+            /* Default to slightly faster adaptation than the conservative eq_init default (1) */
+            s->cqpsk_eq.mu_q15 = 2;
         }
         if (s->cqpsk_update_stride > 0) {
             s->cqpsk_eq.update_stride = s->cqpsk_update_stride;
+        }
+
+        /* Default CMA warmup for stability if not specified */
+        if (s->cqpsk_eq.cma_warmup <= 0) {
+            s->cqpsk_eq.cma_warmup = 1200;
         }
     }
     /* Optional env overrides for quick experiments */
