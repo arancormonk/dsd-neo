@@ -1901,6 +1901,10 @@ full_demod(struct demod_state* d) {
             d->fll_state.phase_q15 = d->fll_phase_q15;
             d->fll_state.prev_r = d->fll_prev_r;
             d->fll_state.prev_j = d->fll_prev_j;
+            /* CRITICAL: Sync integrator to current frequency to prevent FLL from fighting
+               Costas loop updates. This ensures FLL applies incremental corrections
+               rather than pulling back to its own stale internal state. */
+            d->fll_state.int_q15 = d->fll_freq_q15;
 
             /* Build FLL config from current demod state */
             fll_config_t cfg;
@@ -1912,11 +1916,24 @@ full_demod(struct demod_state* d) {
 
             /* Update only when we likely have a carrier; use the squelch gate as proxy. */
             if (d->squelch_gate_open) {
-                fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
+                /* Use d->result as temporary buffer for FLL rotation to avoid double-rotation
+                   with Costas loop. Copy lowpassed to result, rotate result, then calculate error. */
+                int16_t* temp_buf = d->result;
+                if (d->lp_len <= MAXIMUM_BUF_LENGTH) {
+                    memcpy(temp_buf, d->lowpassed, (size_t)d->lp_len * sizeof(int16_t));
+
+                    /* Create temp state to track phase during rotation without affecting persistent state */
+                    fll_state_t temp_state = d->fll_state;
+
+                    /* Apply rotation to temp buffer */
+                    fll_mix_and_update(&cfg, &temp_state, temp_buf, d->lp_len);
+
+                    /* Calculate error on rotated data, updating REAL state (freq/int) */
+                    fll_update_error_qpsk(&cfg, &d->fll_state, temp_buf, d->lp_len, d->ted_sps);
+                }
             }
-            /* Do NOT apply rotation here; Costas loop downstream handles the NCO rotation
+            /* Do NOT apply rotation to d->lowpassed here; Costas loop downstream handles the NCO rotation
                using the shared fll_phase/freq state. Applying it here would double-rotate. */
-            /* fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len); */
 
             /* Sync back minimal state */
             d->fll_freq_q15 = d->fll_state.freq_q15;

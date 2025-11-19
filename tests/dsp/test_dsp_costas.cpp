@@ -88,6 +88,10 @@ alloc_state(void) {
 
 int
 main(void) {
+    /* Force 4th-order loop for these tests to ensure deterministic QPSK behavior
+       (default might be 8th-order for robustness, which treats 45deg as lock). */
+    setenv("DSD_NEO_CQPSK_COSTAS_8", "0", 1);
+
     /* Test 1: No-op rotation with zero freq/phase on axis-aligned QPSK */
     {
         const int pairs = 4;

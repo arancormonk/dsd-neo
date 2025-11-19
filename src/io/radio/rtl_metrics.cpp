@@ -217,14 +217,24 @@ rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_inter
      * nudge the FLL NCO toward zero residual. This acts as a slow outer loop
      * around the symbol-domain FLL/Costas, improving pull-in when residual
      * CFO is outside their comfort zone.
+     *
+     * To avoid loop fighting and NCO oscillation when the inner Costas/FLL
+     * combination is already close to lock, we:
+     *   - Require the CQPSK acquisition FLL (when enabled) to report locked.
+     *   - Ignore very small residuals near DC.
+     *   - Use a conservative outer-loop gain.
      */
     if (demod.cqpsk_enable && demod.fll_enabled && out_rate_hz > 0) {
         double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
         double abs_df = fabs(df_spec_hz);
-        /* Gate: allow assist even at modest SNR, but ignore wildly off estimates. */
-        if (snr_qpsk > -3.0 && abs_df < 2500.0) {
+        int acq_ok = (!demod.cqpsk_acq_fll_enable) || demod.cqpsk_acq_fll_locked;
+        /* Gate: require reasonable SNR, acquisition FLL lock (when used),
+         * and ignore both wildly off and tiny residual estimates. */
+        const double k_df_min = 150.0; /* Hz: ignore residuals below ~150 Hz to reduce jitter */
+        const double k_df_max = 2500.0;
+        if (acq_ok && snr_qpsk > -3.0 && abs_df > k_df_min && abs_df < k_df_max) {
             /* Outer-loop gain: fraction of residual per update. */
-            const double k_outer = 0.15;
+            const double k_outer = 0.05;
             /* Residual is after NCO; increase NCO CFO toward signal CFO:
              * freq_new = freq_old + k * residual * (32768/Fs).
              */

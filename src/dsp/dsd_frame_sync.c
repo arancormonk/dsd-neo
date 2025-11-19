@@ -183,10 +183,18 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         rtl_stream_cqpsk_set_rrc(1, 25, 6);
                     }
                     if (!f) {
-                        rtl_stream_toggle_fll(1);
+                        /* Only force FLL on if not explicitly disabled by user */
+                        const char* fll_env = getenv("DSD_NEO_FLL");
+                        if (!fll_env || fll_env[0] != '0') {
+                            rtl_stream_toggle_fll(1);
+                        }
                     }
                     if (!t) {
-                        rtl_stream_toggle_ted(1);
+                        /* Only force TED on if not explicitly disabled by user */
+                        const char* ted_env = getenv("DSD_NEO_TED");
+                        if (!ted_env || ted_env[0] != '0') {
+                            rtl_stream_toggle_ted(1);
+                        }
                     }
                 } else {
                     if (cq) {

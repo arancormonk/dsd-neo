@@ -203,15 +203,17 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         /* PI update on frequency (Q15 domain) */
         int32_t p = ((int64_t)alpha_q15 * err_q14) >> 14;   /* -> Q15 */
         int32_t iacc = ((int64_t)beta_q15 * err_q14) >> 14; /* -> Q15 */
-        int32_t df = p + iacc;
+
+        /* Apply integral term to frequency (slew limited) */
+        int32_t df = iacc;
         if (df > slew_max_q15) {
             df = slew_max_q15;
         }
         if (df < -slew_max_q15) {
             df = -slew_max_q15;
         }
-        /* Apply correction with standard sign (phase += freq, freq += df) */
         freq += (int)df;
+
         /* Clamp NCO frequency */
         const int F_CLAMP = 4096; /* allow wider than FLL; ~±6 kHz @48k */
         if (freq > F_CLAMP) {
@@ -221,8 +223,8 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
             freq = -F_CLAMP;
         }
 
-        /* Advance phase */
-        phase += freq;
+        /* Advance phase: current_phase + frequency + proportional_error */
+        phase += freq + p;
     }
 
     d->fll_phase_q15 = phase & 0x7FFF;

@@ -431,6 +431,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
 
     int env_ted_set = cfg->ted_is_set;
     int env_fll_set = cfg->fll_is_set;
+    int env_fll_enable = cfg->fll_enable;
     int env_fll_alpha_set = cfg->fll_alpha_is_set;
     int env_fll_beta_set = cfg->fll_beta_is_set;
     int env_fll_deadband_set = cfg->fll_deadband_is_set;
@@ -442,8 +443,12 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
-        /* Default FLL ON for digital modes when no explicit env override. */
-        if (!env_fll_set) {
+        /* For digital modes, honor explicit FLL env when provided; otherwise
+           default FLL ON. This guarantees DSD_NEO_FLL=0 truly disables FLL
+           regardless of prior state or mode-specific defaults. */
+        if (env_fll_set) {
+            demod->fll_enabled = env_fll_enable ? 1 : 0;
+        } else {
             demod->fll_enabled = 1;
         }
         if (!env_ted_sps_set) {
@@ -490,8 +495,11 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             demod->fll_slew_max_q15 = 128;
         }
     } else {
-        /* For analog-like modes, keep FLL off by default unless explicitly enabled. */
-        if (!env_fll_set) {
+        /* For analog-like modes, keep FLL off by default unless explicitly
+           enabled via env. */
+        if (env_fll_set) {
+            demod->fll_enabled = env_fll_enable ? 1 : 0;
+        } else {
             demod->fll_enabled = 0;
         }
         if (!env_ted_set) {
