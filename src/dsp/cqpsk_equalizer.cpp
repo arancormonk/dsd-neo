@@ -199,12 +199,22 @@ cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st) {
     st->update_count = 0;
     st->err_ema_q14 = 0;
     st->sym_count = 0;
-    st->cma_warmup = 0;
+    /* Preserve CMA warmup budget; do not force to zero so a reset does not skip pre-training.
+       Only clamp negatives to zero to avoid underflow. */
+    if (st->cma_warmup < 0) {
+        st->cma_warmup = 0;
+    }
     /* Clear symbol ring validity; next appends will repopulate */
     st->sym_len = 0;
     st->wl_x2_re_ema = 0;
     st->wl_x2_im_ema = 0;
     st->wl_p2_ema = 0;
+    st->wl_improp_ema_q15 = 0;
+    st->adapt_mode = 0;
+    st->adapt_hold = 0;
+    st->have_last_sym = 0;
+    st->last_y_i_q14 = 0;
+    st->last_y_q_q14 = 0;
 }
 
 void

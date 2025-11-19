@@ -7,8 +7,7 @@
  * Bit-level CQPSK → legacy dibit integration test.
  *
  * This test exercises the numeric path:
- *   synthetic scalar I symbols -> cqpsk_process_block (identity EQ)
- *   -> qpsk_i_demod -> digitize()
+ *   synthetic scalar I symbols -> cqpsk_process_block (identity EQ) -> digitize()
  *
  * It verifies that, for ideal four-level symbols corresponding to the
  * P25 Phase 2 (+) path (synctype=35, rf_mod=1), the recovered dibits
@@ -185,9 +184,12 @@ main(void) {
     demod_state demod;
     init_demod_for_cqpsk(&demod, iq, nsym);
 
-    /* CQPSK equalizer (identity) then I-channel demodulator. */
+    /* CQPSK equalizer (identity) then copy I-channel symbols. */
     cqpsk_process_block(&demod);
-    qpsk_i_demod(&demod);
+    demod.result_len = nsym;
+    for (int k = 0; k < nsym; k++) {
+        demod.result[k] = demod.lowpassed[(size_t)(k << 1)];
+    }
 
     int errors = 0;
 

@@ -670,21 +670,6 @@ raw_demod(struct demod_state* fm) {
  * through CQPSK processing (matched filter, Costas, equalizer). Produces a
  * single real stream (I only) to feed the legacy symbol sampler path.
  */
-void
-qpsk_i_demod(struct demod_state* fm) {
-    if (!fm || !fm->lowpassed || fm->lp_len < 2) {
-        fm->result_len = 0;
-        return;
-    }
-    const int pairs = fm->lp_len >> 1; /* complex samples */
-    int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
-    for (int n = 0; n < pairs; n++) {
-        out[n] = iq[(size_t)(n << 1) + 0]; /* I component */
-    }
-    fm->result_len = pairs;
-}
-
 /**
  * @brief Differential QPSK demodulator for CQPSK/LSM paths.
  *
@@ -2157,12 +2142,7 @@ full_demod(struct demod_state* d) {
      * FM discriminating. For other paths, use the configured demodulator.
      */
     if (d->cqpsk_enable) {
-        /* Respect CQPSK I-channel selector; otherwise default to differential demod. */
-        if (d->mode_demod == &qpsk_i_demod) {
-            d->mode_demod(d);
-        } else {
-            qpsk_differential_demod(d);
-        }
+        qpsk_differential_demod(d);
     } else {
         d->mode_demod(d); /* lowpassed -> result */
     }

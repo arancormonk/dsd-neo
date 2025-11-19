@@ -10,7 +10,7 @@
  *   - Fs = 12 kHz complex baseband
  *   - TED enabled with ted_sps = 3
  *   - CQPSK matched filter (RRC) enabled
- *   - mode_demod = qpsk_i_demod (CQPSK path)
+ *   - mode_demod = qpsk_differential_demod (CQPSK path)
  *
  * a single call to full_demod() will:
  *   - Initialize the CQPSK equalizer with taps derived from SPS
@@ -85,7 +85,7 @@ main(void) {
 
     /* Use CQPSK demodulator so TED runs (mode_demod != &dsd_fm_demod)
        and Costas is active (mode_demod != &raw_demod). */
-    s->mode_demod = &qpsk_i_demod;
+    s->mode_demod = &qpsk_differential_demod;
 
     /* Ensure CQPSK EQ will be initialized on first block. */
     s->cqpsk_eq_initialized = 0;

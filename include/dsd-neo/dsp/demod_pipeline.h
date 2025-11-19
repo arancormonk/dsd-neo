@@ -87,15 +87,6 @@ void dsd_fm_demod(struct demod_state* fm);
 void raw_demod(struct demod_state* fm);
 
 /**
- * QPSK-to-real helper demodulator: extracts I-channel from complex baseband
- * after CQPSK processing (Costas/EQ) and writes a single real stream for
- * symbol timing/decoding. Used by tests and legacy paths.
- *
- * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes I to result).
- */
-void qpsk_i_demod(struct demod_state* fm);
-
-/**
  * Differential QPSK demodulator for CQPSK/LSM.
  *
  * Computes the phase difference between consecutive complex samples
