@@ -1914,8 +1914,9 @@ full_demod(struct demod_state* d) {
             if (d->squelch_gate_open) {
                 fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
             }
-            /* Always apply current rotation to help the MF/Costas stage */
-            fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
+            /* Do NOT apply rotation here; Costas loop downstream handles the NCO rotation
+               using the shared fll_phase/freq state. Applying it here would double-rotate. */
+            /* fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len); */
 
             /* Sync back minimal state */
             d->fll_freq_q15 = d->fll_state.freq_q15;
