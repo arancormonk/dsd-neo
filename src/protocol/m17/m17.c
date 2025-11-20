@@ -1513,10 +1513,6 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     opts->frame_m17 = 1;
     state->m17encoder_tx = 1;
 
-    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
-        ncursesOpen(opts, state);
-    }
-
     //if using the ncurses terminal, disable TX on startup until user toggles it with the '\' key, if not vox enabled
     if (opts->use_ncurses_terminal == 1 && state->m17encoder_tx == 1 && state->m17_vox == 0) {
         state->m17encoder_tx = 0;
@@ -2754,11 +2750,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
         //refresh ncurses printer, if enabled
         if (opts->use_ncurses_terminal == 1) {
-            if (opts->ui_async) {
-                ui_publish_both_and_redraw(opts, state);
-            } else {
-                ncursesPrinter(opts, state);
-            }
+            ui_publish_both_and_redraw(opts, state);
         }
 
         //slot 1
@@ -3891,9 +3883,6 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
     //Tweaks and Enable Ncurses Terminal
     opts->dmr_stereo = 0;
     opts->audio_in_type = 9; //NULL
-    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
-        ncursesOpen(opts, state);
-    }
 
     //NOTE: This Internal Handling is non-blocking and keeps the connection alive
     //in the event of the other end opening and closing often (exit and restart)
@@ -4245,11 +4234,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
         //refresh ncurses printer, if enabled
         if (opts->use_ncurses_terminal == 1) {
-            if (opts->ui_async) {
-                ui_publish_both_and_redraw(opts, state);
-            } else {
-                ncursesPrinter(opts, state);
-            }
+            ui_publish_both_and_redraw(opts, state);
         }
 
         //slot 1

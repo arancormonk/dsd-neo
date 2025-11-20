@@ -3035,9 +3035,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return;
     }
-    /* When async UI is enabled, demod path must not touch ncurses.
-       Allow calls only from the UI thread context; otherwise post a redraw and return. */
-    if (opts->ui_async && !ui_is_thread_context()) {
+    /* Demod path must not touch ncurses. Allow calls only from the UI thread
+       context; otherwise publish snapshots and request a redraw. */
+    if (!ui_is_thread_context()) {
         // Publish snapshots for the UI thread to consume and request a redraw
         ui_publish_both_and_redraw(opts, state);
         return;

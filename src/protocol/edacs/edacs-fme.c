@@ -599,11 +599,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         //Update Ncurses Terminal
         if (opts->use_ncurses_terminal == 1) {
-            if (opts->ui_async) {
-                ui_publish_both_and_redraw(opts, state);
-            } else {
-                ncursesPrinter(opts, state);
-            }
+            ui_publish_both_and_redraw(opts, state);
         }
 
         //write to wav file if opened

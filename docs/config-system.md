@@ -364,7 +364,7 @@ The high-level startup sequence (simplified) becomes:
    - `dsd_parse_args(argc, argv, &opts, &state, &new_argc, &oneshot_rc);`
      - Handles long and short options.
      - Applies env mapping for CLI-related behavior (e.g.
-       `DSD_NEO_P25_AUTO_ADAPT`, `DSD_NEO_UI_ASYNC`).
+       `DSD_NEO_P25_AUTO_ADAPT`).
 6. **Run or handle one-shot**
    - If `dsd_parse_args()` returns `DSD_PARSE_ONE_SHOT`, exit with
      `oneshot_rc`.
@@ -499,6 +499,8 @@ Tests will live under `tests/runtime` (or a similar area) and should cover:
 
 When running with the ncurses UI enabled (`[output] ncurses_ui = true` or `-N` /
 `--ncurses-ui`), the top-level **Config** menu exposes runtime config helpers:
+The ncurses UI always runs on its own thread; the legacy synchronous renderer
+has been removed.
 
 - `Save Config (Default)`
   - Snapshots the current `dsd_opts`/`dsd_state` into a `dsdneoUserConfig` and

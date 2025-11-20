@@ -277,20 +277,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
     }
 
-    // UI async toggle via environment (centralized here)
-    // Default is set in initOpts(); allow override with DSD_NEO_UI_ASYNC.
-    // Accept truthy to enable, and common falsy prefixes to disable.
-    {
-        const char* e_ui = getenv("DSD_NEO_UI_ASYNC");
-        if (e_ui && *e_ui) {
-            if (truthy_env(e_ui)) {
-                opts->ui_async = 1;
-            } else if (e_ui[0] == '0' || e_ui[0] == 'n' || e_ui[0] == 'N' || e_ui[0] == 'f' || e_ui[0] == 'F') {
-                opts->ui_async = 0;
-            }
-        }
-    }
-
     // Apply input volume and warn threshold
     if (input_vol_cli) {
         int mv = atoi(input_vol_cli);

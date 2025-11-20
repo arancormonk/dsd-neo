@@ -1485,7 +1485,6 @@ initOpts(dsd_opts* opts) {
     snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->use_ncurses_terminal = 0;
-    opts->ui_async = 1; // default ON; can disable via env DSD_NEO_UI_ASYNC=0
     opts->ncurses_compact = 0;
     opts->ncurses_history = 1;
 #ifdef LIMAZULUTWEAKS
@@ -2627,10 +2626,6 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     }
 #endif
 
-    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
-        ncursesOpen(opts, state);
-    }
-
     if (opts->audio_in_type == 0) {
         openPulseInput(opts);
     }
@@ -2741,14 +2736,9 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
     // Signal that everything should shutdown.
     exitflag = 1;
 
-    // Stop async UI thread if running
-    if (opts->ui_async) {
+    // Stop UI thread if the ncurses UI was in use.
+    if (opts->use_ncurses_terminal == 1) {
         ui_stop();
-    }
-
-    // Close ncurses if legacy path owned it. UI thread already closed on ui_stop().
-    if (opts->use_ncurses_terminal == 1 && !opts->ui_async) {
-        ncursesClose();
     }
 
 #ifdef USE_CODEC2
@@ -3791,8 +3781,8 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
-        // Start async UI thread when enabled so ncursesPrinter updates are rendered
-        if (opts.ui_async) {
+        // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
+        if (opts.use_ncurses_terminal == 1) {
             (void)ui_start(&opts, &state);
         }
         //All input and output now opened and handled correctly, so let's not break things by tweaking
@@ -3805,8 +3795,8 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
-        // Start async UI thread when enabled so ncursesPrinter updates are rendered
-        if (opts.ui_async) {
+        // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
+        if (opts.use_ncurses_terminal == 1) {
             (void)ui_start(&opts, &state);
         }
         encodeM17BRT(&opts, &state);
@@ -3821,8 +3811,8 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
-        // Start async UI thread when enabled so ncursesPrinter updates are rendered
-        if (opts.ui_async) {
+        // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
+        if (opts.use_ncurses_terminal == 1) {
             (void)ui_start(&opts, &state);
         }
         encodeM17PKT(&opts, &state);
@@ -3834,16 +3824,16 @@ main(int argc, char** argv) {
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
         }
-        // Start async UI thread when enabled so ncursesPrinter updates are rendered
-        if (opts.ui_async) {
+        // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
+        if (opts.use_ncurses_terminal == 1) {
             (void)ui_start(&opts, &state);
         }
         processM17IPF(&opts, &state);
     }
 
     else {
-        // Start async UI thread before entering main decode loop when enabled
-        if (opts.ui_async) {
+        // Start UI thread before entering main decode loop when enabled
+        if (opts.use_ncurses_terminal == 1) {
             (void)ui_start(&opts, &state);
         }
         liveScanner(&opts, &state);

@@ -26,9 +26,8 @@ int ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz);
 /* Drain queued UI commands (demod/decoder consumer). */
 int ui_drain_cmds(dsd_opts* opts, dsd_state* state);
 
-/* True when executing in the UI thread context. Used to allow legacy
- * ncurses drawing helpers from the UI thread while preventing curses calls
- * from demod/decoder threads when async UI is enabled. */
+/* True when executing in the UI thread context. Use this to ensure ncurses
+ * calls stay on the UI thread while decoder threads only publish snapshots. */
 int ui_is_thread_context(void);
 
 /* Publish both opts and state snapshots and optionally request a redraw.

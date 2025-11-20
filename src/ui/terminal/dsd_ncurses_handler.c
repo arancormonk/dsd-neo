@@ -11,15 +11,11 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
-#include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <ncurses.h>
-#include <unistd.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -39,1426 +35,167 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         return 1; // consume all keys while menu overlay is active
     }
 
-    // When async UI is ON, convert actions to queued commands and avoid direct mutations.
-    // All keys are consumed in this branch; no legacy handlers run.
-    if (opts->ui_async) {
-        switch (c) {
-            case DSD_KEY_ESC: {
-                // Drain any pending escape sequence bytes without spinning.
-                int ch2;
-                while ((ch2 = getch()) != ERR) {
-                    (void)ch2;
-                }
-                return 1;
+    switch (c) {
+        case DSD_KEY_ESC: {
+            // Drain any pending escape sequence bytes without spinning.
+            int ch2;
+            while ((ch2 = getch()) != ERR) {
+                (void)ch2;
             }
-            case DSD_KEY_MUTE_LOWER:
-            case DSD_KEY_MUTE_UPPER: ui_post_cmd(UI_CMD_TOGGLE_MUTE, NULL, 0); return 1;
-            case DSD_KEY_COMPACT: ui_post_cmd(UI_CMD_TOGGLE_COMPACT, NULL, 0); return 1;
-            case DSD_KEY_HISTORY: ui_post_cmd(UI_CMD_HISTORY_CYCLE, NULL, 0); return 1;
-            case DSD_KEY_SLOT1_TOGGLE: ui_post_cmd(UI_CMD_SLOT1_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_SLOT2_TOGGLE: ui_post_cmd(UI_CMD_SLOT2_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_SLOT_PREF: ui_post_cmd(UI_CMD_SLOT_PREF_CYCLE, NULL, 0); return 1;
-            case DSD_KEY_GAIN_PLUS: {
-                int32_t d = +1;
-                ui_post_cmd(UI_CMD_GAIN_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_GAIN_MINUS: {
-                int32_t d = -1;
-                ui_post_cmd(UI_CMD_GAIN_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_TRUNK_TOGGLE: ui_post_cmd(UI_CMD_TRUNK_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_SCANNER_TOGGLE: ui_post_cmd(UI_CMD_SCANNER_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_PAYLOAD_TOGGLE: ui_post_cmd(UI_CMD_PAYLOAD_TOGGLE, NULL, 0); return 1;
+            return 1;
+        }
+        case DSD_KEY_MUTE_LOWER:
+        case DSD_KEY_MUTE_UPPER: ui_post_cmd(UI_CMD_TOGGLE_MUTE, NULL, 0); return 1;
+        case DSD_KEY_COMPACT: ui_post_cmd(UI_CMD_TOGGLE_COMPACT, NULL, 0); return 1;
+        case DSD_KEY_HISTORY: ui_post_cmd(UI_CMD_HISTORY_CYCLE, NULL, 0); return 1;
+        case DSD_KEY_SLOT1_TOGGLE: ui_post_cmd(UI_CMD_SLOT1_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_SLOT2_TOGGLE: ui_post_cmd(UI_CMD_SLOT2_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_SLOT_PREF: ui_post_cmd(UI_CMD_SLOT_PREF_CYCLE, NULL, 0); return 1;
+        case DSD_KEY_GAIN_PLUS: {
+            int32_t d = +1;
+            ui_post_cmd(UI_CMD_GAIN_DELTA, &d, sizeof d);
+            return 1;
+        }
+        case DSD_KEY_GAIN_MINUS: {
+            int32_t d = -1;
+            ui_post_cmd(UI_CMD_GAIN_DELTA, &d, sizeof d);
+            return 1;
+        }
+        case DSD_KEY_TRUNK_TOGGLE: ui_post_cmd(UI_CMD_TRUNK_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_SCANNER_TOGGLE: ui_post_cmd(UI_CMD_SCANNER_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_PAYLOAD_TOGGLE: ui_post_cmd(UI_CMD_PAYLOAD_TOGGLE, NULL, 0); return 1;
 
-            case DSD_KEY_TOGGLE_P25GA: ui_post_cmd(UI_CMD_P25_GA_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_TG_HOLD1: {
-                uint8_t s = 0;
-                ui_post_cmd(UI_CMD_TG_HOLD_TOGGLE, &s, sizeof s);
-                return 1;
-            }
-            case DSD_KEY_TG_HOLD2: {
-                uint8_t s = 1;
-                ui_post_cmd(UI_CMD_TG_HOLD_TOGGLE, &s, sizeof s);
-                return 1;
-            }
+        case DSD_KEY_TOGGLE_P25GA: ui_post_cmd(UI_CMD_P25_GA_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_TG_HOLD1: {
+            uint8_t s = 0;
+            ui_post_cmd(UI_CMD_TG_HOLD_TOGGLE, &s, sizeof s);
+            return 1;
+        }
+        case DSD_KEY_TG_HOLD2: {
+            uint8_t s = 1;
+            ui_post_cmd(UI_CMD_TG_HOLD_TOGGLE, &s, sizeof s);
+            return 1;
+        }
 
-            case DSD_KEY_AGAIN_PLUS: {
-                int32_t d = +1;
-                ui_post_cmd(UI_CMD_AGAIN_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_AGAIN_MINUS: {
-                int32_t d = -1;
-                ui_post_cmd(UI_CMD_AGAIN_DELTA, &d, sizeof d);
-                return 1;
-            }
+        case DSD_KEY_AGAIN_PLUS: {
+            int32_t d = +1;
+            ui_post_cmd(UI_CMD_AGAIN_DELTA, &d, sizeof d);
+            return 1;
+        }
+        case DSD_KEY_AGAIN_MINUS: {
+            int32_t d = -1;
+            ui_post_cmd(UI_CMD_AGAIN_DELTA, &d, sizeof d);
+            return 1;
+        }
 
-            case DSD_KEY_CONST_VIEW_LOWER:
-            case DSD_KEY_CONST_VIEW_UPPER: ui_post_cmd(UI_CMD_CONST_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_CONST_NORM: ui_post_cmd(UI_CMD_CONST_NORM_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_CONST_GATE_DEC: {
-                float d = -0.02f;
-                ui_post_cmd(UI_CMD_CONST_GATE_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_CONST_GATE_INC: {
-                float d = +0.02f;
-                ui_post_cmd(UI_CMD_CONST_GATE_DELTA, &d, sizeof d);
-                return 1;
-            }
+        case DSD_KEY_CONST_VIEW_LOWER:
+        case DSD_KEY_CONST_VIEW_UPPER: ui_post_cmd(UI_CMD_CONST_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_CONST_NORM: ui_post_cmd(UI_CMD_CONST_NORM_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_CONST_GATE_DEC: {
+            float d = -0.02f;
+            ui_post_cmd(UI_CMD_CONST_GATE_DELTA, &d, sizeof d);
+            return 1;
+        }
+        case DSD_KEY_CONST_GATE_INC: {
+            float d = +0.02f;
+            ui_post_cmd(UI_CMD_CONST_GATE_DELTA, &d, sizeof d);
+            return 1;
+        }
 
-            case DSD_KEY_EYE_VIEW: ui_post_cmd(UI_CMD_EYE_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_EYE_UNICODE: ui_post_cmd(UI_CMD_EYE_UNICODE_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_EYE_COLOR: ui_post_cmd(UI_CMD_EYE_COLOR_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_FSK_HIST: ui_post_cmd(UI_CMD_FSK_HIST_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_SPECTRUM: ui_post_cmd(UI_CMD_SPECTRUM_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_EYE_VIEW: ui_post_cmd(UI_CMD_EYE_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_EYE_UNICODE: ui_post_cmd(UI_CMD_EYE_UNICODE_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_EYE_COLOR: ui_post_cmd(UI_CMD_EYE_COLOR_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_FSK_HIST: ui_post_cmd(UI_CMD_FSK_HIST_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_SPECTRUM: ui_post_cmd(UI_CMD_SPECTRUM_TOGGLE, NULL, 0); return 1;
 #ifdef USE_RTLSDR
-            case DSD_KEY_SPEC_DEC: {
-                int32_t d = -(rtl_stream_spectrum_get_size() / 2);
-                ui_post_cmd(UI_CMD_SPEC_SIZE_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_SPEC_INC: {
-                int32_t d = +(rtl_stream_spectrum_get_size());
-                ui_post_cmd(UI_CMD_SPEC_SIZE_DELTA, &d, sizeof d);
-                return 1;
-            }
+        case DSD_KEY_SPEC_DEC: {
+            int32_t d = -(rtl_stream_spectrum_get_size() / 2);
+            ui_post_cmd(UI_CMD_SPEC_SIZE_DELTA, &d, sizeof d);
+            return 1;
+        }
+        case DSD_KEY_SPEC_INC: {
+            int32_t d = +(rtl_stream_spectrum_get_size());
+            ui_post_cmd(UI_CMD_SPEC_SIZE_DELTA, &d, sizeof d);
+            return 1;
+        }
 #endif
 
-            case DSD_KEY_EH_NEXT: ui_post_cmd(UI_CMD_EH_NEXT, NULL, 0); return 1;
-            case DSD_KEY_EH_PREV: ui_post_cmd(UI_CMD_EH_PREV, NULL, 0); return 1;
-            case DSD_KEY_EH_TOGGLE: {
-                if (opts->m17encoder == 1) {
-                    ui_post_cmd(UI_CMD_M17_TX_TOGGLE, NULL, 0);
-                } else {
-                    ui_post_cmd(UI_CMD_EH_TOGGLE_SLOT, NULL, 0);
-                }
-                return 1;
-            }
-
-            case DSD_KEY_RTL_VOL_CYCLE: ui_post_cmd(UI_CMD_INPUT_VOL_CYCLE, NULL, 0); return 1;
-            case DSD_KEY_LPF_TOGGLE: ui_post_cmd(UI_CMD_LPF_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_HPF_TOGGLE: ui_post_cmd(UI_CMD_HPF_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_PBF_TOGGLE: ui_post_cmd(UI_CMD_PBF_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_HPF_DIG_TOGGLE: ui_post_cmd(UI_CMD_HPF_D_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_AGGR_SYNC: ui_post_cmd(UI_CMD_AGGR_SYNC_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_CALL_ALERT: ui_post_cmd(UI_CMD_CALL_ALERT_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_INVERT: ui_post_cmd(UI_CMD_INVERT_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_MOD_TOGGLE: ui_post_cmd(UI_CMD_MOD_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_MOD_P2: ui_post_cmd(UI_CMD_MOD_P2_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_DMR_RESET: ui_post_cmd(UI_CMD_DMR_RESET, NULL, 0); return 1;
-            case DSD_KEY_PPM_UP: {
-                int32_t d = +1;
-                ui_post_cmd(UI_CMD_PPM_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_PPM_DOWN: {
-                int32_t d = -1;
-                ui_post_cmd(UI_CMD_PPM_DELTA, &d, sizeof d);
-                return 1;
-            }
-            case DSD_KEY_TRUNK_WLIST: ui_post_cmd(UI_CMD_TRUNK_WLIST_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_TRUNK_PRIV: ui_post_cmd(UI_CMD_TRUNK_PRIV_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_TRUNK_DATA: ui_post_cmd(UI_CMD_TRUNK_DATA_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_TRUNK_ENC: ui_post_cmd(UI_CMD_TRUNK_ENC_TOGGLE, NULL, 0); return 1;
-            case 'g': ui_post_cmd(UI_CMD_TRUNK_GROUP_TOGGLE, NULL, 0); return 1;
-            case 'A': ui_post_cmd(UI_CMD_PROVOICE_ESK_TOGGLE, NULL, 0); return 1;
-            case 'S': ui_post_cmd(UI_CMD_PROVOICE_MODE_TOGGLE, NULL, 0); return 1;
-
-            // Heavy actions: TCP/rigctl connect, capture/playback, retune, scan
-            case DSD_KEY_TCP_AUDIO: ui_post_cmd(UI_CMD_TCP_CONNECT_AUDIO, NULL, 0); return 1;
-            case DSD_KEY_RIGCTL_CONN: ui_post_cmd(UI_CMD_RIGCTL_CONNECT, NULL, 0); return 1;
-            case DSD_KEY_RETURN_CC: ui_post_cmd(UI_CMD_RETURN_CC, NULL, 0); return 1;
-            case DSD_KEY_CHANNEL_CYCLE: ui_post_cmd(UI_CMD_CHANNEL_CYCLE, NULL, 0); return 1;
-            case DSD_KEY_SYMCAP_SAVE: ui_post_cmd(UI_CMD_SYMCAP_SAVE, NULL, 0); return 1;
-            case DSD_KEY_SYMCAP_STOP: ui_post_cmd(UI_CMD_SYMCAP_STOP, NULL, 0); return 1;
-            case DSD_KEY_REPLAY_LAST: ui_post_cmd(UI_CMD_REPLAY_LAST, NULL, 0); return 1;
-            case DSD_KEY_WAV_START: ui_post_cmd(UI_CMD_WAV_START, NULL, 0); return 1;
-            case DSD_KEY_WAV_STOP: ui_post_cmd(UI_CMD_WAV_STOP, NULL, 0); return 1;
-            case DSD_KEY_STOP_PLAYBACK: ui_post_cmd(UI_CMD_STOP_PLAYBACK, NULL, 0); return 1;
-
-            case DSD_KEY_QUIT: ui_post_cmd(UI_CMD_QUIT, NULL, 0); return 1;
-            case DSD_KEY_FORCE_PRIV: ui_post_cmd(UI_CMD_FORCE_PRIV_TOGGLE, NULL, 0); return 1;
-            case DSD_KEY_FORCE_RC4: ui_post_cmd(UI_CMD_FORCE_RC4_TOGGLE, NULL, 0); return 1;
-            case '!': {
-                uint8_t s = 0;
-                ui_post_cmd(UI_CMD_LOCKOUT_SLOT, &s, sizeof s);
-                return 1;
-            }
-            case '@': {
-                uint8_t s = 1;
-                ui_post_cmd(UI_CMD_LOCKOUT_SLOT, &s, sizeof s);
-                return 1;
-            }
-            case DSD_KEY_SIM_NOCAR: ui_post_cmd(UI_CMD_SIM_NOCAR, NULL, 0); return 1;
-            case DSD_KEY_ENTER:
-            case '\r':
-            case KEY_ENTER:
-                if (opts->m17encoder == 0) {
-                    // Open nonblocking menu overlay from the UI thread
-                    ui_menu_open_async(opts, state);
-                }
-                return 1;
-            default:
-                // Consume unknown keys in async mode to avoid legacy mutations.
-                return 1;
-        }
-        // If we handled a known key above, we already returned. For anything
-        // else in async mode, consume the key and do not fall through.
-        return 1;
-    }
-
-    if (c == DSD_KEY_TOGGLE_P25GA) //'T' key, toggle P25 Group Affiliation section
-    {
-        opts->show_p25_group_affiliations = opts->show_p25_group_affiliations ? 0 : 1;
-        if (state) {
-            snprintf(state->ui_msg, sizeof state->ui_msg, "P25 Group Affiliation: %s",
-                     opts->show_p25_group_affiliations ? "On" : "Off");
-            state->ui_msg_expire = time(NULL) + 3;
-        }
-    }
-
-    struct stat st_wav = {0};
-
-    // //debug char value
-    // if (c != -1)
-    //   fprintf (stderr, "\n User Input: %i / %c ;;", c, c);
-
-    // Handle ESC in legacy mode as well by draining any pending bytes.
-    if (c == DSD_KEY_ESC) {
-        int ch;
-        while ((ch = getch()) != ERR) {
-            (void)ch;
-        }
-        return 1;
-    }
-
-    //keyboard shortcuts - handle Enter across terminals (LF, CR, or KEY_ENTER)
-    // In async UI, this is handled in the UI thread above via ui_menu_open_async.
-    if (!opts->ui_async && (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER)) //Return / Enter key, open menu
-    {
-        if (opts->m17encoder == 0) { //don't allow menu if using M17 encoder
-            ncursesMenu(opts, state);
-        }
-    }
-
-    //use k and l keys to test tg hold toggles on slots 1 and slots 2
-    if (c == DSD_KEY_TG_HOLD1) //'k' key, hold tg on slot 1 for trunking purposes, or toggle clear
-    {
-        if (state->tg_hold == 0) {
-            state->tg_hold = state->lasttg;
-        } else {
-            state->tg_hold = 0;
-        }
-
-        if ((opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) && (state->tg_hold == 0)) {
-            state->tg_hold = state->nxdn_last_tg;
-        }
-
-        else if (opts->frame_provoice == 1 && state->ea_mode == 0) {
-            state->tg_hold = state->lastsrc;
-        }
-    }
-
-    if (c == DSD_KEY_TG_HOLD2) //'l' key, hold tg on slot 2 for trunking purposes, or toggle clear
-    {
-        if (state->tg_hold == 0) {
-            state->tg_hold = state->lasttgR;
-        } else {
-            state->tg_hold = 0;
-        }
-    }
-
-    //toggling when 48k/1 OSS still has some lag -- needed to clear out the buffer when switching
-    if (c == DSD_KEY_SLOT1_TOGGLE) // '1' key, toggle slot1 on
-    {
-        //switching, but want to control each seperately plz
-        if (opts->slot1_on == 1) {
-            opts->slot1_on = 0;
-            if (opts->slot_preference == 0) {
-                opts->slot_preference = 2;
-            }
-            // opts->slot_preference = 1; //slot 2
-            //clear any previously buffered audio
-            state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
-            state->audio_out_buf_p = state->audio_out_buf + 100;
-            memset(state->audio_out_float_buf, 0, 100 * sizeof(float));
-            memset(state->audio_out_buf, 0, 100 * sizeof(short));
-            state->audio_out_idx2 = 0;
-            state->audio_out_idx = 0;
-        } else if (opts->slot1_on == 0) {
-            opts->slot1_on = 1;
-            if (opts->audio_out_type == 5) //OSS 48k/1
-            {
-                opts->slot_preference = 0; //slot 1
-                                           // opts->slot2_on = 0; //turn off slot 2
-            }
-        }
-    }
-
-    if (c == DSD_KEY_SLOT2_TOGGLE) // '2' key, toggle slot2 on
-    {
-        //switching, but want to control each seperately plz
-        if (opts->slot2_on == 1) {
-            opts->slot2_on = 0;
-            opts->slot_preference = 0; //slot 1
-            //clear any previously buffered audio
-            state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
-            state->audio_out_buf_pR = state->audio_out_bufR + 100;
-            memset(state->audio_out_float_bufR, 0, 100 * sizeof(float));
-            memset(state->audio_out_bufR, 0, 100 * sizeof(short));
-            state->audio_out_idx2R = 0;
-            state->audio_out_idxR = 0;
-        } else if (opts->slot2_on == 0) {
-            opts->slot2_on = 1;
-            if (opts->audio_out_type == 5) //OSS 48k/1
-            {
-                opts->slot_preference = 1; //slot 2
-                                           // opts->slot1_on = 0; //turn off slot 1
-            }
-        }
-    }
-
-    // if (c == 51) //'3' key, toggle slot preference on 48k/1
-    // {
-    //   if (opts->slot_preference == 1) opts->slot_preference = 0;
-    //   else opts->slot_preference = 1;
-    // }
-
-    if (c == DSD_KEY_SLOT_PREF) //'3' key, cycle slot preference
-    {
-        if (opts->slot_preference == 0 || opts->slot_preference == 1) {
-            opts->slot_preference++;
-        } else {
-            opts->slot_preference = 0;
-        }
-    }
-
-    if (c == DSD_KEY_GAIN_PLUS) //+ key, increment audio_gain
-    {
-
-        if (opts->audio_gain < 50) {
-            opts->audio_gain++;
-        }
-
-        state->aout_gain = opts->audio_gain;
-        state->aout_gainR = opts->audio_gain;
-
-        opts->audio_gainR = opts->audio_gain;
-    }
-
-    if (c == DSD_KEY_GAIN_MINUS) //- key, decrement audio_gain
-    {
-
-        if (opts->audio_gain > 0) {
-            opts->audio_gain--;
-        }
-
-        state->aout_gain = opts->audio_gain;
-        state->aout_gainR = opts->audio_gain;
-
-        //reset to default on 0 for auto
-        if (opts->audio_gain == 0) {
-            state->aout_gain = 25;
-            state->aout_gainR = 25;
-        }
-
-        opts->audio_gainR = opts->audio_gain;
-    }
-
-    if (c == DSD_KEY_AGAIN_PLUS) // * key, increment audio_gainA
-    {
-        if (opts->audio_gainA < 100) {
-            opts->audio_gainA++;
-        }
-    }
-
-    if (c == DSD_KEY_AGAIN_MINUS) // / key, decrement audio_gainA
-    {
-        if (opts->audio_gainA > 0) {
-            opts->audio_gainA--;
-        }
-    }
-
-    if (c == DSD_KEY_PAYLOAD_TOGGLE) //'z' key, toggle payload to console
-    {
-        if (opts->payload == 1) {
-            opts->payload = 0;
-        } else {
-            opts->payload = 1;
-        }
-    }
-
-    if (c == DSD_KEY_CONST_VIEW_LOWER || c == DSD_KEY_CONST_VIEW_UPPER) //'o' or 'O' key, toggle constellation view
-    {
-        if (opts->audio_in_type == 3) {
-            if (opts->constellation == 1) {
-                opts->constellation = 0;
+        case DSD_KEY_EH_NEXT: ui_post_cmd(UI_CMD_EH_NEXT, NULL, 0); return 1;
+        case DSD_KEY_EH_PREV: ui_post_cmd(UI_CMD_EH_PREV, NULL, 0); return 1;
+        case DSD_KEY_EH_TOGGLE: {
+            if (opts->m17encoder == 1) {
+                ui_post_cmd(UI_CMD_M17_TX_TOGGLE, NULL, 0);
             } else {
-                opts->constellation = 1;
+                ui_post_cmd(UI_CMD_EH_TOGGLE_SLOT, NULL, 0);
             }
+            return 1;
         }
-    }
 
-    // normalization: use lowercase 'n' only to avoid conflict with 'N' PBF filter
-    if (c == DSD_KEY_CONST_NORM) //'n' key, toggle constellation normalization
-    {
-        if (opts->audio_in_type == 3 && opts->constellation == 1) {
-            opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+        case DSD_KEY_RTL_VOL_CYCLE: ui_post_cmd(UI_CMD_INPUT_VOL_CYCLE, NULL, 0); return 1;
+        case DSD_KEY_LPF_TOGGLE: ui_post_cmd(UI_CMD_LPF_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_HPF_TOGGLE: ui_post_cmd(UI_CMD_HPF_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_PBF_TOGGLE: ui_post_cmd(UI_CMD_PBF_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_HPF_DIG_TOGGLE: ui_post_cmd(UI_CMD_HPF_D_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_AGGR_SYNC: ui_post_cmd(UI_CMD_AGGR_SYNC_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_CALL_ALERT: ui_post_cmd(UI_CMD_CALL_ALERT_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_INVERT: ui_post_cmd(UI_CMD_INVERT_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_MOD_TOGGLE: ui_post_cmd(UI_CMD_MOD_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_MOD_P2: ui_post_cmd(UI_CMD_MOD_P2_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_DMR_RESET: ui_post_cmd(UI_CMD_DMR_RESET, NULL, 0); return 1;
+        case DSD_KEY_PPM_UP: {
+            int32_t d = +1;
+            ui_post_cmd(UI_CMD_PPM_DELTA, &d, sizeof d);
+            return 1;
         }
-    }
+        case DSD_KEY_PPM_DOWN: {
+            int32_t d = -1;
+            ui_post_cmd(UI_CMD_PPM_DELTA, &d, sizeof d);
+            return 1;
+        }
+        case DSD_KEY_TRUNK_WLIST: ui_post_cmd(UI_CMD_TRUNK_WLIST_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_TRUNK_PRIV: ui_post_cmd(UI_CMD_TRUNK_PRIV_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_TRUNK_DATA: ui_post_cmd(UI_CMD_TRUNK_DATA_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_TRUNK_ENC: ui_post_cmd(UI_CMD_TRUNK_ENC_TOGGLE, NULL, 0); return 1;
+        case 'g': ui_post_cmd(UI_CMD_TRUNK_GROUP_TOGGLE, NULL, 0); return 1;
+        case 'A': ui_post_cmd(UI_CMD_PROVOICE_ESK_TOGGLE, NULL, 0); return 1;
+        case 'S': ui_post_cmd(UI_CMD_PROVOICE_MODE_TOGGLE, NULL, 0); return 1;
 
-    if (c == DSD_KEY_CONST_GATE_DEC) //'<' key, decrease constellation gate
-    {
-        if (opts->audio_in_type == 3 && opts->constellation == 1) {
-            float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
-            *g -= 0.02f;
-            if (*g < 0.0f) {
-                *g = 0.0f;
+        // Heavy actions: TCP/rigctl connect, capture/playback, retune, scan
+        case DSD_KEY_TCP_AUDIO: ui_post_cmd(UI_CMD_TCP_CONNECT_AUDIO, NULL, 0); return 1;
+        case DSD_KEY_RIGCTL_CONN: ui_post_cmd(UI_CMD_RIGCTL_CONNECT, NULL, 0); return 1;
+        case DSD_KEY_RETURN_CC: ui_post_cmd(UI_CMD_RETURN_CC, NULL, 0); return 1;
+        case DSD_KEY_CHANNEL_CYCLE: ui_post_cmd(UI_CMD_CHANNEL_CYCLE, NULL, 0); return 1;
+        case DSD_KEY_SYMCAP_SAVE: ui_post_cmd(UI_CMD_SYMCAP_SAVE, NULL, 0); return 1;
+        case DSD_KEY_SYMCAP_STOP: ui_post_cmd(UI_CMD_SYMCAP_STOP, NULL, 0); return 1;
+        case DSD_KEY_REPLAY_LAST: ui_post_cmd(UI_CMD_REPLAY_LAST, NULL, 0); return 1;
+        case DSD_KEY_WAV_START: ui_post_cmd(UI_CMD_WAV_START, NULL, 0); return 1;
+        case DSD_KEY_WAV_STOP: ui_post_cmd(UI_CMD_WAV_STOP, NULL, 0); return 1;
+        case DSD_KEY_STOP_PLAYBACK: ui_post_cmd(UI_CMD_STOP_PLAYBACK, NULL, 0); return 1;
+
+        case DSD_KEY_QUIT: ui_post_cmd(UI_CMD_QUIT, NULL, 0); return 1;
+        case DSD_KEY_FORCE_PRIV: ui_post_cmd(UI_CMD_FORCE_PRIV_TOGGLE, NULL, 0); return 1;
+        case DSD_KEY_FORCE_RC4: ui_post_cmd(UI_CMD_FORCE_RC4_TOGGLE, NULL, 0); return 1;
+        case '!': {
+            uint8_t s = 0;
+            ui_post_cmd(UI_CMD_LOCKOUT_SLOT, &s, sizeof s);
+            return 1;
+        }
+        case '@': {
+            uint8_t s = 1;
+            ui_post_cmd(UI_CMD_LOCKOUT_SLOT, &s, sizeof s);
+            return 1;
+        }
+        case DSD_KEY_SIM_NOCAR: ui_post_cmd(UI_CMD_SIM_NOCAR, NULL, 0); return 1;
+        case DSD_KEY_ENTER:
+        case '\r':
+        case KEY_ENTER:
+            if (opts->m17encoder == 0) {
+                // Open nonblocking menu overlay from the UI thread
+                ui_menu_open_async(opts, state);
             }
-        }
+            return 1;
+        default:
+            // Consume unknown keys to avoid legacy mutations.
+            return 1;
     }
-
-    if (c == DSD_KEY_CONST_GATE_INC) //'>' key, increase constellation gate
-    {
-        if (opts->audio_in_type == 3 && opts->constellation == 1) {
-            float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
-            *g += 0.02f;
-            if (*g > 0.90f) {
-                *g = 0.90f;
-            }
-        }
-    }
-
-    if (c == DSD_KEY_COMPACT) //'c' key, toggle compact mode
-    {
-        if (opts->ncurses_compact == 1) {
-            opts->ncurses_compact = 0;
-        } else {
-            opts->ncurses_compact = 1;
-        }
-    }
-
-    if (c == DSD_KEY_MUTE_LOWER || c == DSD_KEY_MUTE_UPPER) //'x' or 'X' key, toggle audio mute
-    {
-        opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
-        /* On unmute, refresh the audio sink to prevent potential blocking
-           if the backend was idle/suspended for a long time. */
-        if (opts->audio_out == 1) {
-            if (opts->audio_out_type == 0) { // Pulse
-                closePulseOutput(opts);
-                openPulseOutput(opts);
-            } else if (opts->audio_out_type == 2 || opts->audio_out_type == 5) { // OSS
-                if (opts->audio_out_fd >= 0) {
-                    close(opts->audio_out_fd);
-                    opts->audio_out_fd = -1;
-                }
-                openOSSOutput(opts);
-            }
-        }
-        if (state) {
-            if (opts->audio_out == 0) {
-                snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: Muted");
-            } else {
-                snprintf(state->ui_msg, sizeof state->ui_msg, "%s", "Output: On");
-            }
-            state->ui_msg_expire = time(NULL) + 3; // show ~3 seconds
-        }
-    }
-
-    if (c == DSD_KEY_EYE_VIEW) //'E' key, toggle eye view
-    {
-        if (opts->audio_in_type == 3) {
-            opts->eye_view = opts->eye_view ? 0 : 1;
-        }
-    }
-
-    if (c == DSD_KEY_FSK_HIST) //'K' key, toggle FSK histogram view
-    {
-        if (opts->audio_in_type == 3) {
-            opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
-        }
-    }
-
-    // spectrum: move to lowercase 'f' (FFT) to avoid 's' conflicts
-    if (c == DSD_KEY_SPECTRUM) //'f' key, toggle spectrum analyzer view
-    {
-        if (opts->audio_in_type == 3) {
-            opts->spectrum_view = opts->spectrum_view ? 0 : 1;
-        }
-    }
-
-#ifdef USE_RTLSDR
-    if (c == DSD_KEY_SPEC_DEC) //',' key, decrease FFT size
-    {
-        if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
-            int n = rtl_stream_spectrum_get_size();
-            if (n > 64) {
-                (void)rtl_stream_spectrum_set_size(n / 2);
-            }
-        }
-    }
-    if (c == DSD_KEY_SPEC_INC) //'.' key, increase FFT size
-    {
-        if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
-            int n = rtl_stream_spectrum_get_size();
-            if (n < 1024) {
-                (void)rtl_stream_spectrum_set_size(n * 2);
-            }
-        }
-    }
-#endif
-
-    if (c == DSD_KEY_EYE_UNICODE) //'U' key, toggle Unicode blocks in eye view
-    {
-        if (opts->audio_in_type == 3 && opts->eye_view == 1) {
-            opts->eye_unicode = opts->eye_unicode ? 0 : 1;
-        }
-    }
-
-    // eye color: move to 'L' to avoid conflict with trunk 'Return to CC' (also 'C')
-    if (c == DSD_KEY_EYE_COLOR) //'L' key, toggle colorized eye view
-    {
-        if (opts->audio_in_type == 3 && opts->eye_view == 1) {
-            opts->eye_color = opts->eye_color ? 0 : 1;
-        }
-    }
-
-    if (c == DSD_KEY_TRUNK_TOGGLE) //'t' key, toggle trunking
-    {
-        if (opts->p25_trunk == 1) {
-            opts->p25_trunk = 0;
-            opts->trunk_enable = 0;
-        } else {
-            opts->p25_trunk = 1;
-            opts->trunk_enable = 1;
-        }
-    }
-
-    if (c == DSD_KEY_SCANNER_TOGGLE) //'y' key, toggle scanner mode
-    {
-        if (opts->scanner_mode == 1) {
-            opts->scanner_mode = 0;
-        } else {
-            opts->scanner_mode = 1;
-        }
-        opts->p25_trunk = 0; //turn off trunking mode
-        opts->trunk_enable = 0;
-    }
-
-    if (c == DSD_KEY_CALL_ALERT) //'a' key, toggle call alert beep
-    {
-        if (opts->call_alert == 1) {
-            opts->call_alert = 0;
-        } else {
-            opts->call_alert = 1;
-        }
-    }
-
-    if (c == DSD_KEY_HISTORY) //'h' key, cycle history off, short, long
-    {
-        opts->ncurses_history++;
-        opts->ncurses_history %= 3;
-    }
-
-    // Compile-time conflict guards for commonly-confused keys
-    _Static_assert(DSD_KEY_SPECTRUM != DSD_KEY_STOP_PLAYBACK, "UI key conflict: spectrum vs stop playback");
-    _Static_assert(DSD_KEY_EYE_COLOR != 'C', "UI key conflict: eye color vs Return-to-CC");
-    _Static_assert(DSD_KEY_CONST_NORM != 'N', "UI key conflict: normalization vs PBF");
-
-    if (c == DSD_KEY_QUIT) //'q' key, quit
-    {
-        exitflag = 1;
-    }
-
-    if (c == DSD_KEY_FORCE_PRIV) // '4' key, toggle force privacy key over fid and svc (dmr)
-    {
-        if (state->M == 1 || state->M == 0x21) {
-            state->M = 0;
-        } else {
-            state->M = 1;
-        }
-    }
-
-    if (c == DSD_KEY_FORCE_RC4) // '6' key, toggle force rc4 key over missing pi header/late entry
-    {
-        if (state->M == 1 || state->M == 0x21) {
-            state->M = 0;
-        } else {
-            state->M = 0x21;
-        }
-    }
-
-    if (c == DSD_KEY_INVERT) //'i' key, toggle signal inversion on inverted types
-    {
-        //Set all signal for inversion or uninversion
-        if (opts->inverted_dmr == 0) {
-            opts->inverted_dmr = 1;
-            opts->inverted_dpmr = 1;
-            opts->inverted_x2tdma = 1;
-            opts->inverted_ysf = 1;
-            opts->inverted_m17 = 1;
-        } else {
-            opts->inverted_dmr = 0;
-            opts->inverted_dpmr = 0;
-            opts->inverted_x2tdma = 0;
-            opts->inverted_ysf = 0;
-            opts->inverted_m17 = 0;
-        }
-    }
-
-    if (c == DSD_KEY_MOD_TOGGLE) //'m' key, toggle qpsk/c4fm - everything but phase 2
-    {
-        if (state->rf_mod == 0) {
-            opts->mod_c4fm = 0;
-            opts->mod_qpsk = 1;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 1;
-            state->samplesPerSymbol = 10;
-            state->symbolCenter = 4;
-        } else {
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            state->samplesPerSymbol = 10;
-            state->symbolCenter = 4;
-        }
-    }
-
-    if (c == DSD_KEY_MOD_P2) //'M' key, toggle qpsk - phase 2 6000 sps
-    {
-        if (state->rf_mod == 0) {
-            opts->mod_c4fm = 0;
-            opts->mod_qpsk = 1;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 1;
-            state->samplesPerSymbol = 8;
-            state->symbolCenter = 3;
-        } else {
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            state->samplesPerSymbol = 8;
-            state->symbolCenter = 3;
-        }
-    }
-
-    if (c == DSD_KEY_SYMCAP_SAVE) //'R', save symbol capture bin with date/time string as name
-    {
-        //for filenames (no colons, etc)
-        char timestr[7];
-        char datestr[9];
-        getTime_buf(timestr);
-        getDate_buf(datestr);
-        snprintf(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
-        openSymbolOutFile(opts, state);
-
-        //add a system event to echo in the event history
-        state->event_history_s[0].Event_History_Items[0].color_pair = 4;
-        char event_str[2000];
-        memset(event_str, 0, sizeof(event_str));
-        snprintf(event_str, sizeof event_str, "DSD-neo Dibit Capture File Started: %s;", opts->symbol_out_file);
-        watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
-        state->lastsrc = 0; //this could wipe a call src if they hit 'R' while call in slot 1 in progress
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
-
-        // stack buffers; no free needed
-        opts->symbol_out_file_creation_time = time(NULL);
-        opts->symbol_out_file_is_auto = 1;
-    }
-
-    if (c == DSD_KEY_SYMCAP_STOP) //'r' key, stop capturing symbol capture bin file
-    {
-        if (opts->symbol_out_f) {
-            closeSymbolOutFile(opts, state);
-            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opts->symbol_out_file);
-
-            //add a system event to echo in the event history
-            state->event_history_s[0].Event_History_Items[0].color_pair = 4;
-            char event_str[2000];
-            memset(event_str, 0, sizeof(event_str));
-            snprintf(event_str, sizeof event_str, "DSD-neo Dibit Capture File  Closed: %s;", opts->symbol_out_file);
-            watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
-            state->lastsrc = 0; //this could wipe a call src if they hit 'R' while call in slot 1 in progress
-            watchdog_event_history(opts, state, 0);
-            watchdog_event_current(opts, state, 0);
-        }
-        opts->symbol_out_file_is_auto = 0;
-    }
-
-#ifdef __CYGWIN__
-//do nothing
-#else
-    if (c == DSD_KEY_REPLAY_LAST) //'space bar' replay last bin file (rework to do wav files too?)
-    {
-        struct stat stat_buf;
-        if (stat(opts->audio_in_dev, &stat_buf) != 0) {
-            LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
-            goto SKIPR;
-        }
-        if (S_ISREG(stat_buf.st_mode)) {
-            opts->symbolfile = fopen(opts->audio_in_dev, "r");
-            opts->audio_in_type = 4; //symbol capture bin files
-        }
-    SKIPR:; //do nothing
-    }
-#endif
-
-    if (c == DSD_KEY_WAV_START) //'P' key - start per call wav files //TODO: Fix
-    {
-        char wav_file_directory[1024];
-        snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-        wav_file_directory[1023] = '\0';
-        if (stat(wav_file_directory, &st_wav) == -1) {
-            LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
-            LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
-            mkdir(wav_file_directory, 0700);
-        }
-        LOG_NOTICE("\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
-        srand(time(
-            NULL)); //seed random for filenames (so two filenames aren't the exact same datetime string on initailization)
-        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-        opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
-        opts->dmr_stereo_wav = 1;
-    }
-
-    if (c == DSD_KEY_WAV_STOP) //'p' key - stop all per call wav files //TODO: Fix
-    {
-        //TODO: Add Closing of RAW files as well?
-        opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir,
-                                                    &state->event_history_s[0]);
-        opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir,
-                                                     &state->event_history_s[1]);
-        opts->wav_out_file[0] = 0; //Bugfix for decoded wav file display after disabling
-        opts->wav_out_fileR[0] = 0;
-        opts->dmr_stereo_wav = 0;
-    }
-
-//
-#ifdef __CYGWIN__ //this might be okay on Aero as well, will need to look into and/or test
-//
-#else
-    if (c == DSD_KEY_STOP_PLAYBACK) //'s' key, stop playing wav or symbol in files
-    {
-        if (opts->symbolfile != NULL) {
-            if (opts->audio_in_type == 4) {
-                fclose(opts->symbolfile);
-            }
-        }
-
-        if (opts->audio_in_type == 2) //wav input file
-        {
-            sf_close(opts->audio_in_file);
-        }
-
-        if (opts->audio_out_type == 0) {
-            opts->audio_in_type = 0;
-            openPulseInput(opts);
-        } else {
-            opts->audio_in_type = 5; //exitflag = 1;
-        }
-    }
-#endif
-
-    //makes buzzing sound when locked out in new audio config and short, probably something to do with processaudio running or not running
-    if (state->lasttg != 0 && opts->frame_provoice != 1
-        && c == 33) //SHIFT+'1' key (exclamation point), lockout slot 1 or conventional tg from tuning/playback during session
-    {
-        state->group_array[state->group_tally].groupNumber = state->lasttg;
-        snprintf(state->group_array[state->group_tally].groupMode,
-                 sizeof state->group_array[state->group_tally].groupMode, "%s", "B");
-        snprintf(state->group_array[state->group_tally].groupName,
-                 sizeof state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
-        state->group_tally++;
-
-        snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
-                 sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
-                 "Target: %d; has been locked out; User Lock Out.", state->lasttg);
-        watchdog_event_current(opts, state, 0);
-        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
-
-        //if we have an opened group file, let's write a group lock out into it to make it permanent
-        if (opts->group_in_file[0] != 0) //file is available
-        {
-            FILE* pFile; //file pointer
-            //open file by name that is supplied in the ncurses terminal, or cli
-            pFile = fopen(opts->group_in_file, "a");
-            if (pFile != NULL) {
-                fprintf(pFile, "%d,B,LOCKOUT,%02X\n", state->lasttg, state->payload_algid);
-                fclose(pFile);
-            }
-        }
-
-        //extra safeguards due to sync issues with NXDN
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-
-        memset(state->active_channel, 0, sizeof(state->active_channel));
-
-        //reset dmr blocks
-        dmr_reset_blocks(opts, state);
-
-        //zero out additional items
-        state->lasttg = 0;
-        state->lasttgR = 0;
-        state->lastsrc = 0;
-        state->lastsrcR = 0;
-        state->payload_algid = 0;
-        state->payload_algidR = 0;
-        state->payload_keyid = 0;
-        state->payload_keyidR = 0;
-        state->payload_mi = 0;
-        state->payload_miR = 0;
-        state->payload_miP = 0;
-        state->payload_miN = 0;
-        opts->p25_is_tuned = 0;
-        opts->trunk_is_tuned = 0;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-
-        //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
-        //RIGCTL
-        if (opts->p25_trunk == 1 && opts->use_rigctl == 1) {
-            //drop all items (failsafe)
-            noCarrier(opts, state);
-            if (opts->setmod_bw != 0) {
-                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-            }
-            {
-                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                SetFreq(opts->rigctl_sockfd, f);
-                state->trunk_cc_freq = f;
-            }
-        }
-
-//rtl
-#ifdef USE_RTLSDR
-        if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
-            //drop all items (failsafe)
-            noCarrier(opts, state);
-            if (g_rtl_ctx) {
-                {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
-                    state->trunk_cc_freq = f;
-                }
-            }
-        }
-#endif
-
-        state->last_cc_sync_time = time(NULL);
-
-        //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-        if (state->p25_cc_is_tdma == 0) {
-            state->samplesPerSymbol = 10;
-            state->symbolCenter = 4;
-        }
-    }
-
-    if (state->lasttgR != 0 && opts->frame_provoice != 1
-        && c == 64) //SHIFT+'2' key (@ at sign), lockout slot 2 tdma tgR from tuning/playback during session
-    {
-        state->group_array[state->group_tally].groupNumber = state->lasttgR;
-        snprintf(state->group_array[state->group_tally].groupMode,
-                 sizeof state->group_array[state->group_tally].groupMode, "%s", "B");
-        snprintf(state->group_array[state->group_tally].groupName,
-                 sizeof state->group_array[state->group_tally].groupName, "%s", "LOCKOUT");
-        state->group_tally++;
-
-        snprintf(state->event_history_s[1].Event_History_Items[0].internal_str,
-                 sizeof state->event_history_s[1].Event_History_Items[0].internal_str,
-                 "Target: %d; has been locked out; User Lock Out.", state->lasttgR);
-        watchdog_event_current(opts, state, 1);
-        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
-
-        //if we have an opened group file, let's write a group lock out into it to make it permanent
-        if (opts->group_in_file[0] != 0) //file is available
-        {
-            FILE* pFile; //file pointer
-            //open file by name that is supplied in the ncurses terminal, or cli
-            pFile = fopen(opts->group_in_file, "a");
-            if (pFile != NULL) {
-                fprintf(pFile, "%d,B,LOCKOUT,%02X\n", state->lasttgR, state->payload_algidR);
-                fclose(pFile);
-            }
-        }
-
-        //extra safeguards due to sync issues with NXDN
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-
-        memset(state->active_channel, 0, sizeof(state->active_channel));
-
-        //reset dmr blocks
-        dmr_reset_blocks(opts, state);
-
-        //zero out additional items
-        state->lasttg = 0;
-        state->lasttgR = 0;
-        state->lastsrc = 0;
-        state->lastsrcR = 0;
-        state->payload_algid = 0;
-        state->payload_algidR = 0;
-        state->payload_keyid = 0;
-        state->payload_keyidR = 0;
-        state->payload_mi = 0;
-        state->payload_miR = 0;
-        state->payload_miP = 0;
-        state->payload_miN = 0;
-        opts->p25_is_tuned = 0;
-        opts->trunk_is_tuned = 0;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-
-        //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
-        //RIGCTL
-        if (opts->p25_trunk == 1 && opts->use_rigctl == 1) {
-            //drop all items (failsafe)
-            noCarrier(opts, state);
-            if (opts->setmod_bw != 0) {
-                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-            }
-            {
-                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                SetFreq(opts->rigctl_sockfd, f);
-                state->trunk_cc_freq = f;
-            }
-        }
-
-//rtl
-#ifdef USE_RTLSDR
-        if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
-            //drop all items (failsafe)
-            noCarrier(opts, state);
-            if (g_rtl_ctx) {
-                {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
-                    state->trunk_cc_freq = f;
-                }
-            }
-        }
-#endif
-
-        state->last_cc_sync_time = time(NULL);
-
-        //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-        if (state->p25_cc_is_tdma == 0) {
-            state->samplesPerSymbol = 10;
-            state->symbolCenter = 4;
-        }
-    }
-
-    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_WLIST) //'w' key, toggle white list/black list mode
-    {
-        if (opts->trunk_use_allow_list == 1) {
-            opts->trunk_use_allow_list = 0;
-        } else {
-            opts->trunk_use_allow_list = 1;
-        }
-    }
-
-    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_PRIV) //'u' key, toggle tune private calls
-    {
-        if (opts->trunk_tune_private_calls == 1) {
-            opts->trunk_tune_private_calls = 0;
-        } else {
-            opts->trunk_tune_private_calls = 1;
-        }
-    }
-
-    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_DATA) //'d' key, toggle tune data calls
-    {
-        if (opts->trunk_tune_data_calls == 1) {
-            opts->trunk_tune_data_calls = 0;
-        } else {
-            opts->trunk_tune_data_calls = 1;
-        }
-    }
-
-    if (opts->p25_trunk == 1 && c == DSD_KEY_TRUNK_ENC) //'e' key, toggle tune enc calls (P25 only on certain grants)
-    {
-        if (opts->trunk_tune_enc_calls == 1) {
-            // Enable ENC lockout (do not globally flush both rings; only gate encrypted slot(s) immediately)
-            opts->trunk_tune_enc_calls = 0;
-            // Check current per-slot encryption status and gate only those slots lacking keys
-            // Slot 0
-            {
-                int alg = state->payload_algid;
-                int have_key = 0;
-                if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0) {
-                    have_key = 1;
-                }
-                if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1) {
-                    have_key = 1;
-                }
-                if (alg != 0 && alg != 0x80 && have_key == 0) {
-                    state->p25_p2_audio_allowed[0] = 0;
-                    p25_p2_audio_ring_reset(state, 0);
-                }
-            }
-            // Slot 1
-            {
-                int alg = state->payload_algidR;
-                int have_key = 0;
-                if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0) {
-                    have_key = 1;
-                }
-                if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1) {
-                    have_key = 1;
-                }
-                if (alg != 0 && alg != 0x80 && have_key == 0) {
-                    state->p25_p2_audio_allowed[1] = 0;
-                    p25_p2_audio_ring_reset(state, 1);
-                }
-            }
-        } else {
-            // Disable ENC lockout
-            opts->trunk_tune_enc_calls = 1;
-            // Scrub any groups previously marked as ENC LO so they can be tracked again
-            // Mode "DE" is used as an ENC-lockout mark; restore to normal "D".
-            for (unsigned int i = 0; i < state->group_tally; i++) {
-                // Scrub P25/NXDN ENC LO marks
-                if (strcmp(state->group_array[i].groupMode, "DE") == 0) {
-                    sprintf(state->group_array[i].groupMode, "%s", "D");
-                }
-                // Scrub DMR ENC LO marks (only those created by ENC lockout; avoid manual LOCKOUT entries)
-                if (strcmp(state->group_array[i].groupName, "ENC LO") == 0
-                    && strcmp(state->group_array[i].groupMode, "B") == 0) {
-                    sprintf(state->group_array[i].groupMode, "%s", "D");
-                }
-                if (strcmp(state->group_array[i].groupName, "ENC LO") == 0) {
-                    sprintf(state->group_array[i].groupName, "%s", "");
-                }
-            }
-        }
-    }
-
-    if (opts->p25_trunk == 1 && c == 103) //'g' key, toggle tune group calls
-    {
-        if (opts->trunk_tune_group_calls == 1) {
-            opts->trunk_tune_group_calls = 0;
-        } else {
-            opts->trunk_tune_group_calls = 1;
-        }
-    }
-
-    if (c == DSD_KEY_AGGR_SYNC) //'F' key - toggle agressive sync/crc failure/ras
-    {
-        if (opts->aggressive_framesync == 0) {
-            opts->aggressive_framesync = 1;
-        } else {
-            opts->aggressive_framesync = 0;
-        }
-    }
-
-    if (c == DSD_KEY_DMR_RESET) //'D' key - Reset DMR Site Parms/Call Strings, etc.
-    {
-        //dmr trunking/ncurses stuff
-        state->dmr_rest_channel = -1; //init on -1
-        state->dmr_mfid = -1;         //
-
-        //dmr mfid branding and site parms
-        snprintf(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "");
-        snprintf(state->dmr_branding, sizeof state->dmr_branding, "%s", "");
-        snprintf(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "");
-
-        //DMR Location Area - DMRLA B***S***
-        opts->dmr_dmrla_is_set = 0;
-        opts->dmr_dmrla_n = 0;
-
-        //reset NXDN info
-        state->nxdn_location_site_code = 0;
-        state->nxdn_location_sys_code = 0;
-        snprintf(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
-
-        state->nxdn_last_ran = -1; //0
-        state->nxdn_ran = 0;       //0
-
-        state->nxdn_rcn = 0;
-        state->nxdn_base_freq = 0;
-        state->nxdn_step = 0;
-        state->nxdn_bw = 0;
-    }
-
-    //Debug/Troubleshooting Option
-    if (c == DSD_KEY_SIM_NOCAR) //'Z' key - Simulate NoCarrier/No VC/CC sync to zero out more stuff (capital Z)
-    {
-        // opts->p25_is_tuned = 0;
-        state->last_cc_sync_time = 0;
-        state->last_vc_sync_time = 0;
-        state->last_vc_sync_time_m = 0.0;
-        noCarrier(opts, state);
-    }
-
-    if (c == DSD_KEY_EH_NEXT) //']' key - increment event history indexer
-    {
-        state->eh_index++;
-    }
-
-    if (c == DSD_KEY_EH_PREV) //'[' key - decrement event history indexer
-    {
-        state->eh_index--;
-    }
-
-    // Avoid conflict with M17 encoder toggle which also uses '\\'
-    if (opts->m17encoder == 1 && c == DSD_KEY_EH_TOGGLE) {
-        c = -1; // consume so event-slot toggle below does not fire
-    }
-
-    if (c == DSD_KEY_EH_TOGGLE) //'\' key - toggle events for slot displayed, and reset eh_index
-    {
-        state->eh_slot ^= 1;
-        state->eh_index = 0;
-    }
-
-    //attempt retry to TCP Audio server
-    if (c
-        == 56) // '8' key, try audio in type 8 (TCP Audio Server connection) using defaults OR whatever the user last specified
-    {
-
-        opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
-        if (opts->tcp_sockfd != 0) {
-            //reset audio input stream
-            opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-            opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-            opts->audio_in_file_info->channels = 1;
-            opts->audio_in_file_info->seekable = 0;
-            opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-            opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
-
-            if (opts->tcp_file_in == NULL) {
-                LOG_ERROR("Error, couldn't Connect to TCP with libsndfile: %s\n", sf_strerror(NULL));
-            } else {
-                //close pulse input if it is currently open
-                if (opts->audio_in_type == 0) {
-                    closePulseInput(opts);
-                }
-                LOG_INFO("TCP Socket Connected Successfully.\n");
-                opts->audio_in_type = 8;
-            }
-        } else {
-            LOG_ERROR("TCP Socket Connection Error.\n");
-        }
-    }
-
-    if (c == DSD_KEY_RIGCTL_CONN) //'9' key, try rigctl connection with default values
-    {
-        //use same or last specified host for TCP audio sink for connection
-        memcpy(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
-        opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
-        if (opts->rigctl_sockfd != 0) {
-            opts->use_rigctl = 1;
-        } else {
-            opts->use_rigctl = 0;
-        }
-    }
-
-    //if trunking and user wants to just go back to the control channel and skip this call
-    if (opts->p25_trunk == 1 && (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0)
-        && c == DSD_KEY_RETURN_CC) //Capital C key - Return to CC
-    {
-
-        //extra safeguards due to sync issues with NXDN
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-
-        memset(state->active_channel, 0, sizeof(state->active_channel));
-
-        //reset dmr blocks
-        dmr_reset_blocks(opts, state);
-
-        //zero out additional items
-        state->lasttg = 0;
-        state->lasttgR = 0;
-        state->lastsrc = 0;
-        state->lastsrcR = 0;
-        state->payload_algid = 0;
-        state->payload_algidR = 0;
-        state->payload_keyid = 0;
-        state->payload_keyidR = 0;
-        state->payload_mi = 0;
-        state->payload_miR = 0;
-        state->payload_miP = 0;
-        state->payload_miN = 0;
-        opts->p25_is_tuned = 0;
-        opts->trunk_is_tuned = 0;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-
-        //tune back to the control channel -- NOTE: Doesn't work correctly on EDACS Analog Voice
-        //RIGCTL
-        if (opts->p25_trunk == 1 && opts->use_rigctl == 1) {
-            if (opts->setmod_bw != 0) {
-                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-            }
-            {
-                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                SetFreq(opts->rigctl_sockfd, f);
-            }
-        }
-
-//rtl
-#ifdef USE_RTLSDR
-        if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
-            if (g_rtl_ctx) {
-                {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
-                }
-            }
-        }
-#endif
-
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-
-        //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-        if (state->p25_cc_is_tdma == 0) {
-            state->samplesPerSymbol = 10;
-            state->symbolCenter = 4;
-        }
-
-        //if P25p1 Data Revert on P25p2 TDMA CC, flip symbolrate
-        if (state->p25_cc_is_tdma == 1) {
-            state->samplesPerSymbol = 8;
-            state->symbolCenter = 3;
-        }
-
-        fprintf(stderr, "\n User Activated Return to CC; \n ");
-    }
-
-    //if trunking or scanning, manually cycle forward through channels loaded (can be run without trunking or scanning enabled)
-    if ((opts->use_rigctl == 1 || opts->audio_in_type == 3)
-        && c == DSD_KEY_CHANNEL_CYCLE) //Capital L key - Cycle Channels Forward / P25 CC candidates
-    {
-
-        //extra safeguards due to sync issues with NXDN
-        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-
-        memset(state->active_channel, 0, sizeof(state->active_channel));
-
-        //reset dmr blocks
-        dmr_reset_blocks(opts, state);
-
-        //zero out additional items
-        state->lasttg = 0;
-        state->lasttgR = 0;
-        state->lastsrc = 0;
-        state->lastsrcR = 0;
-        state->payload_algid = 0;
-        state->payload_algidR = 0;
-        state->payload_keyid = 0;
-        state->payload_keyidR = 0;
-        state->payload_mi = 0;
-        state->payload_miR = 0;
-        state->payload_miP = 0;
-        state->payload_miN = 0;
-        opts->p25_is_tuned = 0;
-        opts->trunk_is_tuned = 0;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-
-        // Optionally try P25 CC candidates before LCN scan
-        if (opts->p25_prefer_candidates == 1) {
-            long cand = 0;
-            if (p25_sm_next_cc_candidate(state, &cand)) {
-                //rigctl
-                if (opts->use_rigctl == 1) {
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
-                    SetFreq(opts->rigctl_sockfd, cand);
-                }
-                //rtl
-                if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                    if (g_rtl_ctx) {
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)cand);
-                    }
-#endif
-                }
-                fprintf(stderr, "\n User Activated Candidate Cycle;  Tuning to Candidate: %.06lf MHz\n",
-                        (double)cand / 1000000);
-                state->last_cc_sync_time = time(NULL);
-                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                return 1;
-            }
-        }
-
-        //just copy and pasted the cycle logic for CC/signal hunting on no sync
-        if (state->lcn_freq_roll
-            >= state->lcn_freq_count) //fixed this to skip the extra wait out at the end of the list
-        {
-            state->lcn_freq_roll = 0; //reset to zero
-        }
-
-        //roll an extra value up if the current is the same as what's already loaded -- faster hunting on Cap+, etc
-        if (state->lcn_freq_roll != 0) {
-            if (state->trunk_lcn_freq[state->lcn_freq_roll - 1] == state->trunk_lcn_freq[state->lcn_freq_roll]) {
-                state->lcn_freq_roll++;
-                //check roll again if greater than expected, then go back to zero
-                if (state->lcn_freq_roll >= state->lcn_freq_count) {
-                    state->lcn_freq_roll = 0; //reset to zero
-                }
-            }
-        }
-
-        //check that we have a non zero value first, then tune next frequency
-        if (state->trunk_lcn_freq[state->lcn_freq_roll] != 0) {
-            //rigctl
-            if (opts->use_rigctl == 1) {
-                if (opts->setmod_bw != 0) {
-                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                }
-                SetFreq(opts->rigctl_sockfd, state->trunk_lcn_freq[state->lcn_freq_roll]);
-            }
-            //rtl
-            if (opts->audio_in_type == 3) {
-#ifdef USE_RTLSDR
-                if (g_rtl_ctx) {
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
-                }
-#endif
-            }
-
-            fprintf(stderr, "\n User Activated Channel Cycle;");
-            fprintf(stderr, "  Tuning to Frequency: %.06lf MHz\n",
-                    (double)state->trunk_lcn_freq[state->lcn_freq_roll] / 1000000);
-        }
-        state->lcn_freq_roll++;
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-
-        //may need to test to see if we want to do the conditional below or not for symbol rate flipping
-
-        //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
-        if (state->p25_cc_is_tdma == 0) {
-            state->samplesPerSymbol = 10;
-            state->symbolCenter = 4;
-        }
-
-        //if P25p1 Data Revert on P25p2 TDMA CC, flip symbolrate
-        if (state->p25_cc_is_tdma == 1) {
-            state->samplesPerSymbol = 8;
-            state->symbolCenter = 3;
-        }
-    }
-
-    if (c == DSD_KEY_RTL_VOL_CYCLE) //'v' key: cycle volume multiplier
-    {
-        if (opts->audio_in_type == 3) {
-            // RTL input volume multiplier
-            if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
-                opts->rtl_volume_multiplier++;
-            } else {
-                opts->rtl_volume_multiplier = 1;
-            }
-            snprintf(state->ui_msg, sizeof state->ui_msg, "RTL Volume: %dX", opts->rtl_volume_multiplier);
-            state->ui_msg_expire = time(NULL) + 2;
-        } else {
-            // Non-RTL input volume multiplier (Pulse/WAV/OSS/TCP/UDP)
-            if (opts->input_volume_multiplier == 1 || opts->input_volume_multiplier == 2) {
-                opts->input_volume_multiplier++;
-            } else {
-                opts->input_volume_multiplier = 1;
-            }
-            snprintf(state->ui_msg, sizeof state->ui_msg, "Input Volume: %dX", opts->input_volume_multiplier);
-            state->ui_msg_expire = time(NULL) + 2;
-        }
-    }
-
-    if (c == DSD_KEY_LPF_TOGGLE) // 'V' Key, toggle LPF
-    {
-        if (opts->use_lpf == 0) {
-            opts->use_lpf = 1;
-        } else {
-            opts->use_lpf = 0;
-        }
-    }
-
-    if (c == DSD_KEY_HPF_TOGGLE) // 'B' Key, toggle HPF
-    {
-        if (opts->use_hpf == 0) {
-            opts->use_hpf = 1;
-        } else {
-            opts->use_hpf = 0;
-        }
-    }
-
-    if (c == DSD_KEY_PBF_TOGGLE) // 'N' Key, toggle PBF
-    {
-        if (opts->use_pbf == 0) {
-            opts->use_pbf = 1;
-        } else {
-            opts->use_pbf = 0;
-        }
-    }
-
-    if (c == DSD_KEY_HPF_DIG_TOGGLE) // 'H' Key, toggle HPF on digital
-    {
-        if (opts->use_hpf_d == 0) {
-            opts->use_hpf_d = 1;
-        } else {
-            opts->use_hpf_d = 0;
-        }
-    }
-
-    if (opts->m17encoder == 1 && c == DSD_KEY_EH_TOGGLE) //'\' key - toggle M17 encoder Encode + TX
-    {
-        if (state->m17encoder_tx == 0) {
-            state->m17encoder_tx = 1;
-        } else {
-            state->m17encoder_tx = 0;
-        }
-
-        //flag on the EOT marker to send last frame after toggling encoder to zero
-        if (state->m17encoder_tx == 0) {
-            state->m17encoder_eot = 1;
-        }
-    }
-
-    if (opts->frame_provoice == 1 && c == 'A') //'A' Key, toggle ESK mask 0xA0
-    {
-        if (state->esk_mask == 0) {
-            state->esk_mask = 0xA0;
-        } else {
-            state->esk_mask = 0;
-        }
-    }
-
-    if (opts->frame_provoice == 1 && c == 'S') //'S' Key, toggle STD or EA mode and reset
-    {
-        state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
-
-        //reset -- test to make sure these don't do weird things when reset
-        state->edacs_site_id = 0;
-        state->edacs_lcn_count = 0;
-        state->edacs_cc_lcn = 0;
-        state->edacs_vc_lcn = 0;
-        state->edacs_tuned_lcn = -1;
-        state->edacs_vc_call_type = 0;
-        state->p25_cc_freq = 0;
-        state->trunk_cc_freq = 0;
-        opts->p25_is_tuned = 0;
-        state->lasttg = 0;
-        state->lastsrc = 0;
-    }
-
-    //RTL PPM Manual Adjustment
-    if (c == DSD_KEY_PPM_UP) {
-        opts->rtlsdr_ppm_error++;
-    }
-
-    if (c == DSD_KEY_PPM_DOWN) {
-        opts->rtlsdr_ppm_error--;
-    }
-
-    return 0;
-
-} //end ncursesPrinter
+}

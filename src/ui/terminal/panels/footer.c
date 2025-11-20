@@ -40,11 +40,8 @@ ui_panel_footer_status_render(dsd_opts* opts, dsd_state* state) {
         attr_set(saved_attrs, saved_pair, NULL);
 #endif
     } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
-        // Clear stale message. In async mode, post a command so the canonical state is updated;
-        // also clear the snapshot to avoid repeated posts/draws before the command is applied.
-        if (opts->ui_async) {
-            ui_post_cmd(UI_CMD_UI_MSG_CLEAR, NULL, 0);
-        }
+        // Clear stale message and sync canonical state via command queue
+        ui_post_cmd(UI_CMD_UI_MSG_CLEAR, NULL, 0);
         state->ui_msg[0] = '\0';
     }
 }

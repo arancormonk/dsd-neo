@@ -673,11 +673,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
         //since we are in a while loop, run ncursesPrinter here.
         if (opts->use_ncurses_terminal == 1) {
-            if (opts->ui_async) {
-                ui_publish_both_and_redraw(opts, state);
-            } else {
-                ncursesPrinter(opts, state);
-            }
+            ui_publish_both_and_redraw(opts, state);
         }
 
         //slot 1

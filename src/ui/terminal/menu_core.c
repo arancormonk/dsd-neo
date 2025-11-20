@@ -4669,26 +4669,16 @@ act_crc_relax(void* v) {
 
 static void
 act_trunk_toggle(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (c && c->opts && c->opts->ui_async) {
-        ui_post_cmd(UI_CMD_TRUNK_TOGGLE, NULL, 0);
-        ui_statusf("Trunking toggle requested...");
-    } else {
-        /* Safe even if c is NULL; service guards NULL opts. */
-        svc_toggle_trunking(c ? c->opts : NULL);
-    }
+    (void)v;
+    ui_post_cmd(UI_CMD_TRUNK_TOGGLE, NULL, 0);
+    ui_statusf("Trunking toggle requested...");
 }
 
 static void
 act_scan_toggle(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    if (c && c->opts && c->opts->ui_async) {
-        ui_post_cmd(UI_CMD_SCANNER_TOGGLE, NULL, 0);
-        ui_statusf("Scanner toggle requested...");
-    } else {
-        /* Safe even if c is NULL; service guards NULL opts. */
-        svc_toggle_scanner(c ? c->opts : NULL);
-    }
+    (void)v;
+    ui_post_cmd(UI_CMD_SCANNER_TOGGLE, NULL, 0);
+    ui_statusf("Scanner toggle requested...");
 }
 
 static void
