@@ -567,28 +567,55 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     int rrc_en = 0, rrc_a = 0, rrc_s = 0;
     rtl_stream_cqpsk_get_rrc(&rrc_en, &rrc_a, &rrc_s);
     int iqb = rtl_stream_get_iq_balance();
+    int dqpsk = 0;
+    rtl_stream_cqpsk_get_dqpsk(&dqpsk);
+    int dc_k = 0;
+    int dc_on = rtl_stream_get_iq_dc(&dc_k);
+    int blank_thr = 0, blank_win = 0;
+    int blank_on = rtl_stream_get_blanker(&blank_thr, &blank_win);
+    int ted_force = rtl_stream_get_ted_force();
+    int clk_mode = rtl_stream_get_c4fm_clk();
+    int clk_sync = rtl_stream_get_c4fm_clk_sync();
+    int dd_taps = 0, dd_mu = 0;
+    int dd_on = rtl_stream_get_c4fm_dd_eq();
+    rtl_stream_get_c4fm_dd_eq_params(&dd_taps, &dd_mu);
+    int agc_tgt = 0, agc_min = 0, agc_up = 0, agc_down = 0;
+    int agc_on = rtl_stream_get_fm_agc();
+    rtl_stream_get_fm_agc_params(&agc_tgt, &agc_min, &agc_up, &agc_down);
+    int lim_on = rtl_stream_get_fm_limiter();
+    int cma_taps = 0, cma_mu = 0, cma_warm = 0;
+    int cma_on = rtl_stream_get_fm_cma();
+    rtl_stream_get_fm_cma_params(&cma_taps, &cma_mu, &cma_warm);
+    int cma_strength = rtl_stream_get_fm_cma_strength();
+    int cma_freeze = 0, cma_acc = 0, cma_rej = 0;
+    rtl_stream_get_fm_cma_guard(&cma_freeze, &cma_acc, &cma_rej);
 
     ui_print_header("DSP");
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
     /* Determine current modulation for capability-aware display: 0=C4FM, 1=CQPSK, 2=GFSK */
     int mod = (state ? state->rf_mod : (cq ? 1 : 0));
+    const char* modlab = "C4FM";
+    if (mod == 1) {
+        modlab = "CQPSK";
+    } else if (mod == 2) {
+        modlab = "GFSK";
+    }
 
-    /* Per-line organization */
-    if (mod != 1) {
-        ui_print_kv_line("IQ BAL", "[%s]", iqb ? "On" : "Off");
-    }
-    if (mod != 2) {
-        ui_print_kv_line("FLL", "[%s]", fll ? "On" : "Off");
-    }
-    /* Show TED status and basic timing metrics for C4FM and CQPSK paths. */
-    if (mod != 2) {
+    /* Front-end helpers and path selection */
+    ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d  Blanker:%s thr:%d win:%d", iqb ? "On" : "Off",
+                     dc_on ? "On" : "Off", dc_k, blank_on ? "On" : "Off", blank_thr, blank_win);
+    ui_print_kv_line("Path", "Mod:%s  CQ:%s  DQ:%s", modlab, cq ? "On" : "Off", dqpsk ? "On" : "Off");
+    ui_print_kv_line("FLL", "[%s]", fll ? "On" : "Off");
+    /* Show TED status and basic timing metrics regardless of modulation so forced TED is visible. */
+    {
         int ted_sps = rtl_stream_get_ted_sps();
         int ted_gain = rtl_stream_get_ted_gain();
         int ted_bias = rtl_stream_ted_bias(NULL);
-        ui_print_kv_line("TED", "[%s] sps:%d g:%d bias:%d", ted ? "On" : "Off", ted_sps, ted_gain, ted_bias);
+        ui_print_kv_line("TED", "[%s] sps:%d g:%d bias:%d%s", ted ? "On" : "Off", ted_sps, ted_gain, ted_bias,
+                         ted_force ? " force" : "");
     }
-    if (mod == 1 || cq) {
-        ui_print_kv_line("CQPSK Path", "[%s]", cq ? "On" : "Off");
+    if (mod == 1 || cq || dqpsk) {
+        ui_print_kv_line("CQPSK Path", "[%s] DQ:%s", cq ? "On" : "Off", dqpsk ? "On" : "Off");
     }
 
     if (cq) {
@@ -651,19 +678,25 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #endif
     }
 
-    if (mod == 0) {
-        int dd = 0, dd_taps = 0, dd_mu = 0;
-        int agc_on = 0, lim_on = 0, cma_on = 0;
-        int clk_mode = 0;
-        dd = rtl_stream_get_c4fm_dd_eq();
-        rtl_stream_get_c4fm_dd_eq_params(&dd_taps, &dd_mu);
-        agc_on = rtl_stream_get_fm_agc();
-        lim_on = rtl_stream_get_fm_limiter();
-        cma_on = rtl_stream_get_fm_cma();
-        clk_mode = rtl_stream_get_c4fm_clk();
+    if (mod == 0 || dd_on || clk_mode != 0) {
         const char* clk = (clk_mode == 1) ? "EL" : (clk_mode == 2) ? "MM" : "Off";
-        ui_print_kv_line("C4FM", "DD:%s CMA:%s AGC:%s LIM:%s CLK:%s", dd ? "On" : "Off", cma_on ? "On" : "Off",
-                         agc_on ? "On" : "Off", lim_on ? "On" : "Off", clk);
+        ui_print_kv_line("C4FM", "DD:%s taps:%d mu:%d  CLK:%s%s", dd_on ? "On" : "Off", dd_taps, dd_mu, clk,
+                         (clk_mode && clk_sync) ? " (sync)" : "");
+    }
+    if (mod != 1 || agc_on || lim_on) {
+        ui_print_kv_line("FM AGC", "[%s] tgt:%d min:%d up:%d dn:%d | LIM:%s", agc_on ? "On" : "Off", agc_tgt, agc_min,
+                         agc_up, agc_down, lim_on ? "On" : "Off");
+    }
+    if (mod != 1 || cma_on) {
+        const char* sname = (cma_strength == 2) ? "Strong" : (cma_strength == 1) ? "Medium" : "Light";
+        char guard[48];
+        if (cma_freeze > 0) {
+            snprintf(guard, sizeof guard, "hold:%d", cma_freeze);
+        } else {
+            snprintf(guard, sizeof guard, "A/R %d/%d", cma_acc, cma_rej);
+        }
+        ui_print_kv_line("FM CMA", "[%s] taps:%d mu:%d str:%s warm:%d %s", cma_on ? "On" : "Off", cma_taps, cma_mu,
+                         sname, cma_warm, guard);
     }
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));
