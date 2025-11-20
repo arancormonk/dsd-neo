@@ -3565,13 +3565,39 @@ dsp_cq_on(void* v) {
 static int
 ui_current_mod(const void* v) {
     const UiCtx* c = (const UiCtx*)v;
-    if (c && c->state) {
-        return c->state->rf_mod;
+    int mod = -1;
+
+    // Honor CLI-locked demod selection when present
+    if (c && c->opts && c->opts->mod_cli_lock) {
+        if (c->opts->mod_qpsk) {
+            mod = 1;
+        } else if (c->opts->mod_gfsk) {
+            mod = 2;
+        } else {
+            mod = 0;
+        }
     }
-    // Fallback: infer from CQPSK enable flag if state missing
+
+    // Prefer live state when available (any valid rf_mod)
+    if (mod < 0 && c && c->state) {
+        int rf = c->state->rf_mod;
+        if (rf >= 0 && rf <= 2) {
+            mod = rf;
+        }
+    }
+
+    // Snap to the active DSP path: CQPSK toggle always means QPSK path
     int cq = 0;
     rtl_stream_dsp_get(&cq, NULL, NULL);
-    return cq ? 1 : 0;
+    if (cq) {
+        mod = 1;
+    }
+
+    // Fallback: default to FM/C4FM family (or GFSK when hinted)
+    if (mod < 0) {
+        mod = 0;
+    }
+    return mod;
 }
 
 static bool
@@ -3590,20 +3616,26 @@ is_mod_gfsk(void* v) {
 }
 
 static bool
+is_mod_fm(void* v) {
+    int m = ui_current_mod(v);
+    return m == 0 || m == 2;
+}
+
+static bool
 is_not_qpsk(void* v) {
     return !is_mod_qpsk(v);
 }
 
-// Policy: FLL allowed on C4FM and CQPSK, hidden on GFSK (FSK family)
+// Policy: FLL allowed on FM/FSK and CQPSK paths
 static bool
 is_fll_allowed(void* v) {
-    return is_mod_c4fm(v) || is_mod_qpsk(v);
+    return is_mod_qpsk(v) || is_mod_fm(v);
 }
 
-// Policy: TED controls are relevant for FM/C4FM family path
+// Policy: TED controls are relevant for CQPSK and FM/FSK family paths
 static bool
 is_ted_allowed(void* v) {
-    return is_mod_c4fm(v);
+    return is_mod_qpsk(v) || is_mod_fm(v);
 }
 
 static bool
@@ -5605,8 +5637,8 @@ static const NcMenuItem DSP_PATH_ITEMS[] = {
     {.id = "ted_force",
      .label = "TED Force",
      .label_fn = lbl_ted_force,
-     .help = "Force TED even for FM/C4FM paths.",
-     .is_enabled = is_ted_allowed,
+     .help = "Force TED even for FM/C4FM/GFSK paths.",
+     .is_enabled = is_mod_fm,
      .on_select = act_ted_force_toggle},
     {.id = "c4fm_clk",
      .label = "C4FM Clock Assist",
@@ -5759,54 +5791,54 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .label = "FM CMA Equalizer",
      .label_fn = lbl_fm_cma,
      .help = "Toggle pre-discriminator CMA equalizer.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_toggle_fm_cma},
     {.id = "cma_taps",
      .label = "CMA Taps (1/3/5/7/9)",
      .label_fn = lbl_fm_cma_taps,
      .help = "Cycle CMA taps.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_fm_cma_taps_cycle},
     {.id = "cma_mu",
      .label = "CMA mu (status)",
      .label_fn = lbl_fm_cma_mu,
      .help = "Step size (Q15).",
-     .is_enabled = is_mod_c4fm},
+     .is_enabled = is_mod_fm},
     {.id = "cma_mu+",
      .label = "CMA mu +1",
      .help = "Increase mu.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_fm_cma_mu_up},
     {.id = "cma_mu-",
      .label = "CMA mu -1",
      .help = "Decrease mu.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_fm_cma_mu_dn},
     {.id = "cma_s",
      .label = "CMA Strength",
      .label_fn = lbl_fm_cma_strength,
      .help = "Cycle strength L/M/S.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_fm_cma_strength_cycle},
     {.id = "cma_guard",
      .label = "CMA Adaptive (status)",
      .label_fn = lbl_fm_cma_guard,
      .help = "Adapting/hold with accept/reject counts.",
-     .is_enabled = is_mod_c4fm},
+     .is_enabled = is_mod_fm},
     {.id = "cma_warm",
      .label = "CMA Warmup (status)",
      .label_fn = lbl_fm_cma_warm,
      .help = "Samples to hold before adapting (0=continuous).",
-     .is_enabled = is_mod_c4fm},
+     .is_enabled = is_mod_fm},
     {.id = "cma_warm+",
      .label = "Warmup +5k",
      .help = "Increase warmup.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_fm_cma_warm_up},
     {.id = "cma_warm-",
      .label = "Warmup -5k",
      .help = "Decrease warmup.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_fm_cma_warm_dn},
 };
 
@@ -5842,43 +5874,43 @@ static const NcMenuItem DSP_AGC_ITEMS[] = {
      .label = "FM AGC",
      .label_fn = lbl_fm_agc,
      .help = "Toggle pre-discriminator FM AGC.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_toggle_fm_agc},
 
     {.id = "fm_lim",
      .label = "FM Limiter",
      .label_fn = lbl_fm_limiter,
      .help = "Toggle constant-envelope limiter.",
-     .is_enabled = is_mod_c4fm,
+     .is_enabled = is_mod_fm,
      .on_select = act_toggle_fm_limiter},
     {.id = "fm_tgt",
      .label = "AGC Target (status)",
      .label_fn = lbl_fm_agc_target,
      .help = "Target RMS amplitude (int16).",
-     .is_enabled = is_mod_c4fm},
-    {.id = "fm_tgt+", .label = "AGC Target +500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_target_up},
-    {.id = "fm_tgt-", .label = "AGC Target -500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_target_dn},
+     .is_enabled = is_mod_fm},
+    {.id = "fm_tgt+", .label = "AGC Target +500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_target_up},
+    {.id = "fm_tgt-", .label = "AGC Target -500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_target_dn},
     {.id = "fm_min",
      .label = "AGC Min (status)",
      .label_fn = lbl_fm_agc_min,
      .help = "Min RMS to engage AGC.",
-     .is_enabled = is_mod_c4fm},
-    {.id = "fm_min+", .label = "AGC Min +500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_min_up},
-    {.id = "fm_min-", .label = "AGC Min -500", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_min_dn},
+     .is_enabled = is_mod_fm},
+    {.id = "fm_min+", .label = "AGC Min +500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_min_up},
+    {.id = "fm_min-", .label = "AGC Min -500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_min_dn},
     {.id = "fm_au",
      .label = "AGC Alpha Up (status)",
      .label_fn = lbl_fm_agc_alpha_up,
      .help = "Smoothing when gain increases (Q15).",
-     .is_enabled = is_mod_c4fm},
-    {.id = "fm_au+", .label = "Alpha Up +1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_up_up},
-    {.id = "fm_au-", .label = "Alpha Up -1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_up_dn},
+     .is_enabled = is_mod_fm},
+    {.id = "fm_au+", .label = "Alpha Up +1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_up_up},
+    {.id = "fm_au-", .label = "Alpha Up -1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_up_dn},
     {.id = "fm_ad",
      .label = "AGC Alpha Down (status)",
      .label_fn = lbl_fm_agc_alpha_down,
      .help = "Smoothing when gain decreases (Q15).",
-     .is_enabled = is_mod_c4fm},
-    {.id = "fm_ad+", .label = "Alpha Down +1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_down_up},
-    {.id = "fm_ad-", .label = "Alpha Down -1024", .is_enabled = is_mod_c4fm, .on_select = act_fm_agc_alpha_down_dn},
+     .is_enabled = is_mod_fm},
+    {.id = "fm_ad+", .label = "Alpha Down +1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_down_up},
+    {.id = "fm_ad-", .label = "Alpha Down -1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_down_dn},
 };
 
 static bool
