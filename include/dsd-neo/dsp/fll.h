@@ -36,6 +36,10 @@ typedef struct {
     int prev_r;
     int prev_j;
     int int_q15; /* PI integrator state (Q15), bounded for anti-windup */
+    /* Small history of trailing complex samples for symbol-spaced updates. */
+    int prev_hist_r[64];
+    int prev_hist_j[64];
+    int prev_hist_len; /* number of valid samples in prev_hist_* (0..64) */
 } fll_state_t;
 
 /**

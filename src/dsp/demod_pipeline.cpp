@@ -1681,6 +1681,12 @@ mf_rrc_complex_interleaved(struct demod_state* d) {
     if (taps_len > 257) {
         taps_len = 257;
     }
+    if ((taps_len & 1) == 0) {
+        taps_len += 1; /* enforce odd length for symmetry */
+        if (taps_len > 257) {
+            taps_len = 257;
+        }
+    }
     static int last_sps = 0;
     static int last_span = 0;
     static int last_alpha_q15 = 0;
@@ -1883,14 +1889,17 @@ full_demod(struct demod_state* d) {
             /* Sync from demod_state into modular FLL state so that any
                external tweaks to fll_freq_q15/phase (e.g., spectrum-assisted
                correction) are honored by the CQPSK acquisition loop. */
+            int prev_freq = d->fll_state.freq_q15;
             d->fll_state.freq_q15 = d->fll_freq_q15;
             d->fll_state.phase_q15 = d->fll_phase_q15;
             d->fll_state.prev_r = d->fll_prev_r;
             d->fll_state.prev_j = d->fll_prev_j;
-            /* CRITICAL: Sync integrator to current frequency to prevent FLL from fighting
-               Costas loop updates. This ensures FLL applies incremental corrections
-               rather than pulling back to its own stale internal state. */
-            d->fll_state.int_q15 = d->fll_freq_q15;
+            /* If the shared freq was externally adjusted (e.g., Costas), realign the
+               integrator to that new setpoint so the acquisition loop does not pull
+               back toward a stale integral state. Preserve the integrator otherwise. */
+            if (prev_freq != d->fll_freq_q15) {
+                d->fll_state.int_q15 = d->fll_freq_q15;
+            }
 
             /* Build FLL config from current demod state */
             fll_config_t cfg;
@@ -1916,6 +1925,8 @@ full_demod(struct demod_state* d) {
 
                     /* Calculate error on rotated data, updating REAL state (freq/int) */
                     fll_update_error_qpsk(&cfg, &d->fll_state, temp_buf, d->lp_len, d->ted_sps);
+                    /* Preserve phase continuity for the next block's history samples. */
+                    d->fll_state.phase_q15 = temp_state.phase_q15;
                     acq_updated = 1;
                 }
             }

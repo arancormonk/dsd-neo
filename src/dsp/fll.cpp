@@ -145,6 +145,11 @@ fll_init_state(fll_state_t* state) {
     state->prev_r = 0;
     state->prev_j = 0;
     state->int_q15 = 0;
+    state->prev_hist_len = 0;
+    for (int i = 0; i < 64; i++) {
+        state->prev_hist_r[i] = 0;
+        state->prev_hist_j[i] = 0;
+    }
 }
 
 /**
@@ -293,11 +298,35 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
     if (N < 4) {
         return;
     }
+    if (sps < 0) {
+        sps = 0;
+    }
+    if (sps > 64) {
+        sps = 64;
+    }
     /* Convert sps in complex samples to element stride in the interleaved array */
     int stride_elems = (sps >= 2) ? (sps << 1) : 2; /* >= 4 elements, else fallback to 2 */
 
     int64_t err_acc = 0; /* wide accumulator to prevent overflow at high SPS/block sizes */
     int count = 0;
+    const int pairs = N >> 1;
+
+    /* Use trailing history from the previous block to form the first few symbol-spaced
+       errors so the estimator spans block boundaries. History length is clamped to
+       min(sps,64) at the end of each call. */
+    int hist_len = state->prev_hist_len;
+    if (sps >= 2 && hist_len == sps) {
+        int limit = (pairs < sps) ? pairs : sps;
+        for (int n = 0; n < limit; n++) {
+            int r = x[(size_t)(n << 1)];
+            int j = x[(size_t)(n << 1) + 1];
+            int br = state->prev_hist_r[n];
+            int bj = state->prev_hist_j[n];
+            int e = polar_disc_fast(r, j, br, bj); /* Q14 */
+            err_acc += e;
+            count++;
+        }
+    }
 
     /* Start at the first index that has a valid s[k - sps] */
     for (int i = stride_elems; i + 1 < N; i += 2) {
@@ -324,26 +353,49 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
     i_base = clamp_i(i_base, -F_CLAMP, F_CLAMP);
 
     /* Deadband to avoid audible low-frequency sweeps or chattering.
-       Keep leaked integrator so it slowly returns toward zero. */
+       Keep leaked integrator so it slowly returns toward zero. Also refresh
+       history even when we skip the PI update to preserve cross-block
+       continuity. */
     if (err < config->deadband_q14 && err > -config->deadband_q14) {
         state->int_q15 = (int)i_base;
-        return;
+    } else {
+        /* True PI (symbol-spaced detector): u = Kp*e + I; slew limit delta(u) */
+        int32_t p = ((int64_t)config->alpha_q15 * err) >> 14;     /* -> Q15 */
+        int32_t i_term = ((int64_t)config->beta_q15 * err) >> 14; /* -> Q15 */
+
+        int32_t i_next = i_base + i_term;
+        i_next = clamp_i(i_next, -F_CLAMP, F_CLAMP);
+
+        int32_t u = p + i_next;           /* Q15 */
+        int32_t df = u - state->freq_q15; /* desired delta */
+        df = clamp_i(df, -config->slew_max_q15, config->slew_max_q15);
+        int32_t f_new = state->freq_q15 + df;
+        f_new = clamp_i(f_new, -F_CLAMP, F_CLAMP);
+
+        state->freq_q15 = (int)f_new;
+        state->int_q15 = (int)i_next;
     }
 
-    /* True PI (symbol-spaced detector): u = Kp*e + I; slew limit delta(u) */
-
-    int32_t p = ((int64_t)config->alpha_q15 * err) >> 14;     /* -> Q15 */
-    int32_t i_term = ((int64_t)config->beta_q15 * err) >> 14; /* -> Q15 */
-
-    int32_t i_next = i_base + i_term;
-    i_next = clamp_i(i_next, -F_CLAMP, F_CLAMP);
-
-    int32_t u = p + i_next;           /* Q15 */
-    int32_t df = u - state->freq_q15; /* desired delta */
-    df = clamp_i(df, -config->slew_max_q15, config->slew_max_q15);
-    int32_t f_new = state->freq_q15 + df;
-    f_new = clamp_i(f_new, -F_CLAMP, F_CLAMP);
-
-    state->freq_q15 = (int)f_new;
-    state->int_q15 = (int)i_next;
+    /* Capture trailing samples for cross-block continuity (store oldest->newest). */
+    int store = sps;
+    if (store > pairs) {
+        store = pairs;
+    }
+    if (store > 64) {
+        store = 64;
+    }
+    if (store > 0) {
+        int start_pair = pairs - store;
+        for (int n = 0; n < store; n++) {
+            int idx = start_pair + n;
+            state->prev_hist_r[n] = x[(size_t)(idx << 1)];
+            state->prev_hist_j[n] = x[(size_t)(idx << 1) + 1];
+        }
+    }
+    state->prev_hist_len = store;
+    /* Preserve last sample for adjacent-sample fallback callers. */
+    if (pairs > 0) {
+        state->prev_r = x[(size_t)((pairs - 1) << 1)];
+        state->prev_j = x[(size_t)(((pairs - 1) << 1) + 1)];
+    }
 }
