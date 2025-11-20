@@ -1110,9 +1110,20 @@ fm_constant_envelope_limiter(struct demod_state* d) {
    Off by default; enable via demod->fm_cma_enable. */
 static inline void
 fm_cma_equalize(struct demod_state* d) {
-    if (!d || !d->fm_cma_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
+    /* Track enable transitions to re-arm warmup when the block is toggled. */
+    static struct demod_state* prev_state = NULL;
+    static int prev_enabled = 0;
+    if (!d) {
         return;
     }
+    int want_enable = d->fm_cma_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2;
+    int reenabled = (d == prev_state) ? (!prev_enabled && want_enable) : want_enable;
+    prev_state = d;
+    prev_enabled = want_enable ? 1 : 0;
+    if (!want_enable) {
+        return;
+    }
+    (void)reenabled;
     /* Optional symmetric 3-tap linear-phase smoother to mitigate short-delay multipath
        without phase distortion. Coeffs ~ [1,6,1]/8. */
     if (d->fm_cma_taps == 3) {
@@ -1200,26 +1211,32 @@ fm_cma_equalize(struct demod_state* d) {
         if (mu_q15 > 64) {
             mu_q15 = 64;
         }
-        if (mu_q15 != d->fm_cma5_prev_mu || d->fm_cma5_prev_strength != s || d->fm_cma5_prev_taps != taps) {
-            d->fm_cma5_prev_mu = mu_q15;
-            d->fm_cma5_prev_strength = s;
-            d->fm_cma5_prev_taps = taps;
-        }
-        int reset_guard = 0;
         int warm_cfg = d->fm_cma_warmup; /* <=0: continuous */
-        if (warm_cfg != d->fm_cma5_prev_warm_cfg) {
-            /* On warmup reconfiguration, reset taps to identity and restart guard.
-               This avoids stale equalizer states carrying across mode/site changes. */
-            d->fm_cma5_prev_warm_cfg = warm_cfg;
-            if (warm_cfg <= 0) {
-                d->fm_cma5_warm_rem = 1000000000; /* effectively continuous */
-            } else {
-                d->fm_cma5_warm_rem = warm_cfg;
-            }
+        int reset_guard = 0;
+        int warm_cfg_prev = d->fm_cma5_prev_warm_cfg;
+
+        /* Re-arm adaptation when params change or the block is re-enabled. */
+        int params_changed =
+            (mu_q15 != d->fm_cma5_prev_mu) || (d->fm_cma5_prev_strength != s) || (d->fm_cma5_prev_taps != taps)
+            || (warm_cfg != warm_cfg_prev);
+        if (params_changed || reenabled) {
+            /* Reset tap memory and warmup budget */
             d->fm_cma5_taps_q15[0] = 32767; /* identity */
             d->fm_cma5_taps_q15[1] = d->fm_cma5_taps_q15[2] = d->fm_cma5_taps_q15[3] = d->fm_cma5_taps_q15[4] = 0;
+            d->fm_cma5_warm_rem = (warm_cfg <= 0) ? 1000000000 : warm_cfg;
+            /* Reset guard bookkeeping so adaptation can proceed again */
+            d->fm_cma_guard_inited = 0;
+            d->fm_cma_guard_reject_streak = 0;
+            d->fm_cma_guard_mu_scale = 1.0;
+            d->fm_cma_guard_freeze = 0;
+            d->fm_cma_guard_accepts = 0;
+            d->fm_cma_guard_rejects = 0;
             reset_guard = 1;
         }
+        d->fm_cma5_prev_mu = mu_q15;
+        d->fm_cma5_prev_strength = s;
+        d->fm_cma5_prev_taps = taps;
+        d->fm_cma5_prev_warm_cfg = warm_cfg;
 
         /* Compute reference envelope target R^2 from input block */
         double acc_r2 = 0.0;

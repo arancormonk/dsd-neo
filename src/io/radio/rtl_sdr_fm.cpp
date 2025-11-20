@@ -919,7 +919,8 @@ demod_thread_fn(void* arg) {
             }
             bool c4fm_updated = false;
             bool gfsk_updated = false;
-            if (sps >= 6 && sps <= 12) {
+            /* Include low-SPS FSK paths (e.g., 5 sps ProVoice/EDACS) in the SNR estimator. */
+            if (sps >= 4 && sps <= 12) {
                 /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
                 enum { MAXS = 8192 };
 
