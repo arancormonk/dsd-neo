@@ -188,6 +188,7 @@ cmake --build build/dev-release --target uninstall
 ## Runtime Tuning (Environment/CLI)
 
 - Auto‑PPM (RTL‑SDR only): spectrum‑based drift correction with training/lock.
+
   - CLI: `--auto-ppm`, `--auto-ppm-snr <dB>` (default 6).
   - Env: `DSD_NEO_AUTO_PPM=1`, `DSD_NEO_AUTO_PPM_SNR_DB=<dB>`,
     `DSD_NEO_AUTO_PPM_PWR_DB=<dB>` (absolute peak gate, default −80),
@@ -197,25 +198,31 @@ cmake --build build/dev-release --target uninstall
   - Behavior: estimates df via parabolic peak interpolation near DC; applies ±1 ppm steps with throttling, direction self‑calibration (SNR/|df| improvement), and locks after short stability.
 
 - Resampler (polyphase L/M):
+
   - Env: `DSD_NEO_RESAMP=48000` (default) or `off/0` to disable; sets demod/output target rate and L/M design.
 
 - FLL/TED controls:
+
   - Env: `DSD_NEO_FLL=1`, `DSD_NEO_FLL_ALPHA/BETA/DEADBAND/SLEW` (Q15/Q14 gains),
     `DSD_NEO_TED=1`, `DSD_NEO_TED_SPS=<int>`, `DSD_NEO_TED_GAIN=<Q20>`, `DSD_NEO_TED_FORCE=1`.
 
 - FM/C4FM stabilization:
+
   - Env: `DSD_NEO_FM_AGC=1` (default off), `DSD_NEO_FM_AGC_TARGET/MIN/ALPHA_UP/ALPHA_DOWN`,
     `DSD_NEO_FM_LIMITER=1` (constant‑envelope limiter),
     `DSD_NEO_IQ_DC_BLOCK=1`, `DSD_NEO_IQ_DC_SHIFT=<k>`.
 
 - Digital SNR squelch:
+
   - Env: `DSD_NEO_SNR_SQL_DB=<dB>` — skips expensive sync when estimated SNR below threshold for relevant modes.
 
 - Capture/retune behavior:
+
   - Env: `DSD_NEO_DISABLE_FS4_SHIFT=1` (disable +fs/4 capture shift when offset tuning is off),
     `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1`, `DSD_NEO_RETUNE_DRAIN_MS=<ms>`.
 
 - Rig control defaults:
+
   - TCP rigctl default port 4532 (SDR++). CLI: `-U <port>`, bandwidth `-B <Hz>`.
 
 - RTL‑TCP networking:
@@ -281,3 +288,4 @@ cmake --build build/dev-release --target uninstall
 - Project license: GPL‑3.0‑or‑later (see `LICENSE`).
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).
 - Third-party notices live in `THIRD_PARTY.md` (ezpwd LGPL text: `src/third_party/ezpwd/lesser.txt`).
+- Source files carry SPDX identifiers reflecting their license.

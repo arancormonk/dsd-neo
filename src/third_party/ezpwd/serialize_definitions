@@ -1,4 +1,4 @@
-
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The encoder/decoder tables for all ezpwd::serialize::... base<N> codecs
 //
