@@ -934,17 +934,6 @@ struct dsd_state {
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
-
-    // --- P25 adaptive follower (per-site timing) ---
-    // Current adapted parameters (seconds). Zero means unset/disabled.
-    double p25_adapt_vc_grace_s;         // post-tune grace before allowing VC→CC release
-    double p25_adapt_grant_voice_to_s;   // wait window for PTT/ACTIVE/voice after grant
-    double p25_adapt_min_follow_dwell_s; // min dwell once following starts
-    double p25_adapt_retune_backoff_s;   // ignore re-grants to same VC/slot after early return
-    // Simple EMA for observed grant→voice delay to steer the above.
-    double p25_adapt_ema_g2v_s;
-    int p25_adapt_have_g2v;         // 1 once EMA seeded
-    int p25_adapt_updated_for_tune; // 1 after we adapted for the current tune
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)

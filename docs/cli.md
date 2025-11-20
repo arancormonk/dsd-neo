@@ -65,8 +65,6 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-O` List PulseAudio input sources and output sinks
 - `-j` P25: enable LCW explicit retune (format 0x44)
 - `-^` P25: prefer CC candidates during control channel hunt
- - `--p25-auto-adapt` enable per‑site adaptive follower timing (default On)
- - `--no-p25-auto-adapt` disable adaptive follower timing (CLI override)
 
 ### P25 Follower (Advanced)
 - `--p25-vc-grace <s>` seconds after VC tune before eligible to return to CC

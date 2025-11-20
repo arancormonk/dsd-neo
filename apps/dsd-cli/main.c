@@ -1491,7 +1491,6 @@ initOpts(dsd_opts* opts) {
     opts->ncurses_compact = 1;
 #endif
     opts->payload = 0;
-    opts->p25_auto_adapt = 1; // adaptive P25 follower enabled by default
     opts->inverted_dpmr = 0;
     opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
@@ -2240,15 +2239,6 @@ initState(dsd_state* state) {
     state->ui_msg[0] = '\0';
     state->ui_msg_expire = 0;
 
-    // Initialize P25 adaptive follower fields
-    state->p25_adapt_vc_grace_s = 0.0;
-    state->p25_adapt_grant_voice_to_s = 0.0;
-    state->p25_adapt_min_follow_dwell_s = 0.0;
-    state->p25_adapt_retune_backoff_s = 0.0;
-    state->p25_adapt_ema_g2v_s = 0.0;
-    state->p25_adapt_have_g2v = 0;
-    state->p25_adapt_updated_for_tune = 0;
-
 } //init_state
 
 void
@@ -2265,8 +2255,6 @@ usage() {
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("  -j            Enable P25 LCW explicit retune (format 0x44)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
-    printf("      --p25-auto-adapt       Ensure per-site adaptive follower timing is enabled (beta; default On)\n");
-    printf("      --no-p25-auto-adapt    Disable per-site adaptive follower timing (CLI override)\n");
     printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
     printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");
     printf("      --p25-grant-voice-timeout <s>  P25: Max seconds from grant to voice before returning\n");

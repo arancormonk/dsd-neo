@@ -364,7 +364,7 @@ The high-level startup sequence (simplified) becomes:
    - `dsd_parse_args(argc, argv, &opts, &state, &new_argc, &oneshot_rc);`
      - Handles long and short options.
      - Applies env mapping for CLI-related behavior (e.g.
-       `DSD_NEO_P25_AUTO_ADAPT`).
+       `DSD_NEO_TCP_AUTOTUNE`).
 6. **Run or handle one-shot**
    - If `dsd_parse_args()` returns `DSD_PARSE_ONE_SHOT`, exit with
      `oneshot_rc`.

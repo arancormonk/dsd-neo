@@ -221,8 +221,6 @@ p25_tune_to_vc(dsd_opts* opts, dsd_state* state, long freq, int channel) {
         state->p25_p2_audio_allowed[0] = 0;
         state->p25_p2_audio_allowed[1] = 0;
         p25_p2_audio_ring_reset(state, -1);
-        // Clear per-tune adaptive flag so first voice can seed EMA
-        state->p25_adapt_updated_for_tune = 0;
         // Clear any stale encryption context so early ENC checks on MAC_ACTIVE
         // do not inherit ALG/KID/MI from a prior call before MAC_PTT arrives.
         state->payload_algid = 0;
@@ -812,11 +810,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // Small startup grace window after a VC tune to avoid bouncing back to
         // CC before MAC_PTT/ACTIVE and audio arrive. Override via
         // DSD_NEO_P25_VC_GRACE (seconds).
-        double vc_grace = state->p25_cfg_vc_grace_s;
-        // Prefer adapted value when enabled
-        if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
-            vc_grace = state->p25_adapt_vc_grace_s;
-        }
+        double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
         int is_p2_vc = (state->p25_p2_active_slot != -1);
         // Update high-level SM mode exposure (ARMED vs FOLLOW) while tuned
         if (opts->p25_is_tuned == 1) {
@@ -1292,18 +1286,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         int l_act = state->p25_p2_audio_allowed[0] || l_ring || l_recent;
         int r_act = state->p25_p2_audio_allowed[1] || r_ring || r_recent;
         int idle = (l_act == 0 && r_act == 0);
-        double vc_grace2 = 1.5;
-        if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
-            vc_grace2 = state->p25_adapt_vc_grace_s;
-        } else {
-            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    vc_grace2 = v;
-                }
-            }
-        }
+        double vc_grace2 = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
         if (cur_is_p2 && idle && dt_v >= opts->trunk_hangtime && dt_tune >= vc_grace2) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;

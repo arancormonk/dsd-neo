@@ -111,7 +111,6 @@ enum UiCmdId {
     // Misc toggles moved to demod thread
     UI_CMD_CRC_RELAX_TOGGLE = 420,
     UI_CMD_LCW_RETUNE_TOGGLE = 421,
-    UI_CMD_P25_AUTO_ADAPT_TOGGLE = 422,
     UI_CMD_P25_CC_CAND_TOGGLE = 423,
     UI_CMD_REVERSE_MUTE_TOGGLE = 424,
     UI_CMD_DMR_LE_TOGGLE = 425,

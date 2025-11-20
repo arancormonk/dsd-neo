@@ -751,12 +751,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_P25_AUTO_ADAPT_TOGGLE: {
-            if (opts) {
-                svc_toggle_p25_auto_adapt(opts);
-            }
-            break;
-        }
         case UI_CMD_P25_CC_CAND_TOGGLE: {
             if (opts) {
                 opts->p25_prefer_candidates = opts->p25_prefer_candidates ? 0 : 1;

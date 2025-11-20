@@ -472,47 +472,6 @@ process_4V(dsd_opts* opts, dsd_state* state) {
             state->last_vc_sync_time_m = nowm;
         }
     }
-    // P25 auto-adapt: seed grant→voice EMA on first voice after tune and
-    // reconfigure minimal follower dwell/timeout/backoff.
-    if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_updated_for_tune == 0) {
-        double dt = (state->p25_last_vc_tune_time_m > 0.0)
-                        ? (double)(dsd_time_now_monotonic_s() - state->p25_last_vc_tune_time_m)
-                        : -1.0;
-        if (dt >= 0.0 && dt < 8.0) {
-            double alpha = 0.3; // EMA smoothing
-            if (state->p25_adapt_have_g2v == 0) {
-                state->p25_adapt_ema_g2v_s = dt;
-                state->p25_adapt_have_g2v = 1;
-            } else {
-                state->p25_adapt_ema_g2v_s = alpha * dt + (1.0 - alpha) * state->p25_adapt_ema_g2v_s;
-            }
-            // Derive adapted parameters within safe bounds
-            double g2v = state->p25_adapt_ema_g2v_s;
-            double vcg = g2v + 0.4; // small safety margin
-            if (vcg < 1.0) {
-                vcg = 1.0;
-            }
-            if (vcg > 3.0) {
-                vcg = 3.0;
-            }
-            double gvt = g2v + 1.0;
-            if (gvt < 2.0) {
-                gvt = 2.0;
-            }
-            if (gvt > 6.0) {
-                gvt = 6.0;
-            }
-            double dwell = 0.7; // keep default dwell for stability
-            double backoff = 1.0;
-            state->p25_adapt_vc_grace_s = vcg;
-            state->p25_adapt_grant_voice_to_s = gvt;
-            state->p25_adapt_min_follow_dwell_s = dwell;
-            state->p25_adapt_retune_backoff_s = backoff;
-            // Reconfigure minimal follower with new values
-            dsd_p25p2_min_configure_ex(dsd_p25p2_min_get(), opts->trunk_hangtime, vcg, dwell, gvt, backoff);
-            state->p25_adapt_updated_for_tune = 1;
-        }
-    }
     for (int x = 0; x < 72; x++) {
         int ww = *w;
         if (ww == 0) {
@@ -970,51 +929,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
         dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
     }
-    // Mark recent voice on this path as well (seed auto-adapt below).
-    {
-        time_t now = time(NULL);
-        double nowm = dsd_time_now_monotonic_s();
-        if (state) {
-            state->last_vc_sync_time = now;
-            state->last_vc_sync_time_m = nowm;
-        }
-        if (opts && opts->p25_auto_adapt == 1 && state && state->p25_adapt_updated_for_tune == 0) {
-            double dt = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
-            if (dt >= 0.0 && dt < 8.0) {
-                double alpha = 0.3;
-                if (state->p25_adapt_have_g2v == 0) {
-                    state->p25_adapt_ema_g2v_s = dt;
-                    state->p25_adapt_have_g2v = 1;
-                } else {
-                    state->p25_adapt_ema_g2v_s = alpha * dt + (1.0 - alpha) * state->p25_adapt_ema_g2v_s;
-                }
-                double g2v = state->p25_adapt_ema_g2v_s;
-                double vcg = g2v + 0.4;
-                if (vcg < 1.0) {
-                    vcg = 1.0;
-                }
-                if (vcg > 3.0) {
-                    vcg = 3.0;
-                }
-                double gvt = g2v + 1.0;
-                if (gvt < 2.0) {
-                    gvt = 2.0;
-                }
-                if (gvt > 6.0) {
-                    gvt = 6.0;
-                }
-                double dwell = 0.7;
-                double backoff = 1.0;
-                state->p25_adapt_vc_grace_s = vcg;
-                state->p25_adapt_grant_voice_to_s = gvt;
-                state->p25_adapt_min_follow_dwell_s = dwell;
-                state->p25_adapt_retune_backoff_s = backoff;
-                dsd_p25p2_min_configure_ex(dsd_p25p2_min_get(), opts->trunk_hangtime, vcg, dwell, gvt, backoff);
-                state->p25_adapt_updated_for_tune = 1;
-            }
-        }
-    }
-    // Mark recent voice for this decode path as well.
+    // Mark recent voice on this path as well.
     {
         time_t now = time(NULL);
         double nowm = dsd_time_now_monotonic_s();

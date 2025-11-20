@@ -19,17 +19,6 @@
 // Local helpers --------------------------------------------------------------
 static void dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state);
 
-static int
-truthy_env(const char* v) {
-    if (!v || !*v) {
-        return 0;
-    }
-    if (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T') {
-        return 1;
-    }
-    return 0;
-}
-
 void
 dsd_cli_usage(void) {
     // Delegate to original full help in apps/dsd-cli/main.c to maintain parity
@@ -69,18 +58,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
             opts->rtltcp_autotune = 1;
             setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-auto-adapt") == 0) {
-            opts->p25_auto_adapt = 1;
-            setenv("DSD_NEO_P25_AUTO_ADAPT", "1", 1);
-            LOG_NOTICE("P25: Auto-Adapt enabled (CLI).\n");
-            continue;
-        }
-        if (strcmp(argv[i], "--no-p25-auto-adapt") == 0) {
-            opts->p25_auto_adapt = 0;
-            setenv("DSD_NEO_P25_AUTO_ADAPT", "0", 1);
-            LOG_NOTICE("P25: Auto-Adapt disabled (CLI).\n");
             continue;
         }
         if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {
@@ -268,15 +245,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
     free(calc_csv_env);
 
-    // P25 Auto-Adapt via environment (if not set by CLI)
-    if (!opts->p25_auto_adapt) {
-        const char* eaa = getenv("DSD_NEO_P25_AUTO_ADAPT");
-        if (truthy_env(eaa)) {
-            opts->p25_auto_adapt = 1;
-            LOG_NOTICE("P25: Auto-Adapt enabled (env).\n");
-        }
-    }
-
     // Apply input volume and warn threshold
     if (input_vol_cli) {
         int mv = atoi(input_vol_cli);
@@ -380,12 +348,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             continue;
         }
         if (strcmp(argv[i], "--interactive-setup") == 0) {
-            continue;
-        }
-        if (strcmp(argv[i], "--p25-auto-adapt") == 0) {
-            continue;
-        }
-        if (strcmp(argv[i], "--no-p25-auto-adapt") == 0) {
             continue;
         }
         if (strcmp(argv[i], "--p25-vc-grace") == 0) {

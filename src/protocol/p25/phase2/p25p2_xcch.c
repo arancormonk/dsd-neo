@@ -631,18 +631,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 // timer remains active).
                 int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
 
-                double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-                if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
-                    vc_grace = state->p25_adapt_vc_grace_s;
-                } else {
-                    const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                    if (s && s[0] != '\0') {
-                        double v = atof(s);
-                        if (v >= 0.0 && v < 10.0) {
-                            vc_grace = v;
-                        }
-                    }
-                }
+                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
                 time_t now2 = time(NULL);
                 double dt_since_tune =
                     (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
@@ -708,18 +697,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 // Ignore MAC hold timer; check only audio gate and ring.
                 int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
 
-                double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-                if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
-                    vc_grace = state->p25_adapt_vc_grace_s;
-                } else {
-                    const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                    if (s && s[0] != '\0') {
-                        double v = atof(s);
-                        if (v >= 0.0 && v < 10.0) {
-                            vc_grace = v;
-                        }
-                    }
-                }
+                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
                 time_t now2 = time(NULL);
                 double dt_since_tune =
                     (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
@@ -806,18 +784,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             int other_active =
                 state->p25_p2_audio_allowed[other_slot] || (state->p25_p2_audio_ring_count[other_slot] > 0);
 
-            double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-            if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
-                vc_grace = state->p25_adapt_vc_grace_s;
-            } else {
-                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        vc_grace = v;
-                    }
-                }
-            }
+            double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
             time_t now2 = time(NULL);
             double dt_since_tune =
                 (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
@@ -1390,26 +1357,12 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // short follow-up calls where early MAC PDUs were missed.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
             double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-            if (opts->p25_auto_adapt == 1 && state->p25_adapt_vc_grace_s > 0.0) {
-                vc_grace = state->p25_adapt_vc_grace_s;
-            } else {
-                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        vc_grace = v;
-                    }
-                }
-            }
             double mac_hold = 3.0; // seconds
-            {
-                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        mac_hold = v;
-                    }
-                }
+            if (state->p25_cfg_vc_grace_s > 0.0) {
+                vc_grace = state->p25_cfg_vc_grace_s;
+            }
+            if (state->p25_cfg_mac_hold_s > 0.0) {
+                mac_hold = state->p25_cfg_mac_hold_s;
             }
             time_t now2 = time(NULL);
             int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)

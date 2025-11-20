@@ -165,8 +165,6 @@ struct dsd_opts {
     uint8_t show_channels;               //show Channels section (0=hidden)
     uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
     uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
-    // P25 adaptive follower (per-site timing)
-    uint8_t p25_auto_adapt; // 1 enables dynamic grant/voice grace tuning
     // P25 SM unified follower configuration (CLI-mirrored; env fallback retained)
     // Values <= 0 mean "unset" and will defer to environment or defaults.
     double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return

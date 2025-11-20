@@ -101,7 +101,6 @@ static void act_crc_relax(void* v);
 static void act_trunk_toggle(void* v);
 static void act_scan_toggle(void* v);
 static void act_lcw_toggle(void* v);
-static void act_p25_auto_adapt(void* v);
 static void act_p25_enc_lockout(void* v);
 static void act_config_load(void* v);
 static void act_setmod_bw(void* v);
@@ -3452,13 +3451,6 @@ lbl_lcw(void* v, char* b, size_t n) {
 }
 
 static const char*
-lbl_p25_auto_adapt(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    snprintf(b, n, "P25 Auto-Adapt (beta) [%s]", (c && c->opts && c->opts->p25_auto_adapt) ? "On" : "Off");
-    return b;
-}
-
-static const char*
 lbl_allow(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Allow/White List [%s]", c->opts->trunk_use_allow_list ? "Active" : "Inactive");
@@ -4688,12 +4680,6 @@ act_lcw_toggle(void* v) {
 }
 
 static void
-act_p25_auto_adapt(void* v) {
-    (void)v;
-    ui_post_cmd(UI_CMD_P25_AUTO_ADAPT_TOGGLE, NULL, 0);
-}
-
-static void
 act_setmod_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_int_async("Setmod BW (Hz)", c->opts->setmod_bw, cb_setmod_bw, c);
@@ -5292,11 +5278,6 @@ static const NcMenuItem TRUNK_P25_ITEMS[] = {
      .label_fn = lbl_p25_enc_lockout,
      .help = "Do not tune encrypted calls when On.",
      .on_select = act_p25_enc_lockout},
-    {.id = "p25_auto_adapt",
-     .label = "P25 Auto-Adapt (beta)",
-     .label_fn = lbl_p25_auto_adapt,
-     .help = "Enable/disable per-site adaptive follower timing.",
-     .on_select = act_p25_auto_adapt},
     {.id = "p2params",
      .label = "Set P25 Phase 2 Parameters",
      .help = "Set WACN/SYSID/NAC manually.",
