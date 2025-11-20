@@ -736,9 +736,6 @@ bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         opts->use_ncurses_terminal = 1;
     }
 
-    // Automatically save this interactive setup as the current configuration.
-    autosave_user_config(opts, state);
-
     LOG_NOTICE("Interactive setup complete.\n");
 }
 
@@ -2925,6 +2922,10 @@ main(int argc, char** argv) {
     dsdneoUserConfig user_cfg;
     user_cfg.version = 0;
 
+    // Default to no autosave unless a config is actually in play for this run.
+    s_user_config_save_enabled = 0;
+    s_user_config_save_path[0] = '\0';
+
     /* CLI should override environment: if the user provides an explicit
      * --config PATH, honor it even when DSD_NEO_NO_CONFIG is set. The env
      * disable flag only applies when no CLI path is given. */
@@ -3000,20 +3001,6 @@ main(int argc, char** argv) {
         dsd_snapshot_opts_to_user_config(&opts, &state, &eff);
         dsd_user_config_render_ini(&eff, stdout);
         return 0;
-    }
-
-    // On first run with CLI args but no existing config file, automatically
-    // snapshot the current settings to the default configuration path so
-    // subsequent runs without arguments can reuse this setup.
-    if (!user_cfg_loaded && !disable_config_cli && !disable_config_env && argc > 1 && isatty(STDIN_FILENO)
-        && isatty(STDOUT_FILENO)) {
-        const char* def_path = dsd_user_config_default_path();
-        if (def_path && *def_path) {
-            struct stat st;
-            if (stat(def_path, &st) != 0) {
-                autosave_user_config(&opts, &state);
-            }
-        }
     }
 
     // Print banner only if not a one-shot action

@@ -1216,9 +1216,8 @@ fm_cma_equalize(struct demod_state* d) {
         int warm_cfg_prev = d->fm_cma5_prev_warm_cfg;
 
         /* Re-arm adaptation when params change or the block is re-enabled. */
-        int params_changed =
-            (mu_q15 != d->fm_cma5_prev_mu) || (d->fm_cma5_prev_strength != s) || (d->fm_cma5_prev_taps != taps)
-            || (warm_cfg != warm_cfg_prev);
+        int params_changed = (mu_q15 != d->fm_cma5_prev_mu) || (d->fm_cma5_prev_strength != s)
+                             || (d->fm_cma5_prev_taps != taps) || (warm_cfg != warm_cfg_prev);
         if (params_changed || reenabled) {
             /* Reset tap memory and warmup budget */
             d->fm_cma5_taps_q15[0] = 32767; /* identity */
