@@ -109,6 +109,11 @@ resetState(dsd_state* state) {
         state->c4fm_dd_eq_w_q15[i] = (i == 0) ? 32768 : 0;
         state->c4fm_dd_eq_x_hist[i] = 0;
     }
+    /* Reset C4FM clock assist state to avoid stale nudges across runs */
+    state->c4fm_clk_prev_dec = 0;
+    state->c4fm_clk_run_dir = 0;
+    state->c4fm_clk_run_len = 0;
+    state->c4fm_clk_cooldown = 0;
 
     state->numflips = 0;
     state->lastsynctype = -1;

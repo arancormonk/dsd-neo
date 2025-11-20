@@ -184,12 +184,14 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
     if (mode <= 0) {
         return;
     }
-    /* Only on RTL pipeline and when not yet synchronized to avoid perturbing
-       decoders during steady state. */
+    /* Only on RTL pipeline; synced use is gated by runtime toggle to avoid
+       perturbing steady-state decoders unless explicitly allowed. */
     if (opts->audio_in_type != 3) {
         return;
     }
-    if (have_sync != 0) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int allow_when_synced = (cfg && cfg->c4fm_clk_sync_is_set) ? (cfg->c4fm_clk_sync != 0) : 0;
+    if (have_sync != 0 && !allow_when_synced) {
         return;
     }
     if (state->rf_mod != 0) {
@@ -215,8 +217,9 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
             state->c4fm_clk_prev_dec = a_k;
             return; /* need one step of history */
         }
-        /* e ≈ y_mid * (a_k - a_{k-1}) */
-        e = (long long)mid * (long long)(a_k - a_prev);
+        /* Use data-aided early/late difference to gate direction on symbol polarity */
+        long long diff = (long long)late - (long long)early;
+        e = diff * (long long)a_k;
         state->c4fm_clk_prev_dec = a_k;
     } else {
         return;
