@@ -276,6 +276,12 @@ cqpsk_process_block(struct demod_state* s) {
             if (s->cqpsk_update_stride <= 0) {
                 s->cqpsk_eq.update_stride = new_stride;
             }
+            /* Re-align symbol-gated state to the new stride to avoid mis-timed DQPSK/DFE updates. */
+            s->cqpsk_eq.sym_count = 0;
+            s->cqpsk_eq.have_last_sym = 0;
+            s->cqpsk_eq.last_y_i_q14 = 0;
+            s->cqpsk_eq.last_y_q_q14 = 0;
+            cqpsk_eq_reset_dfe(&s->cqpsk_eq);
         }
     }
     if (!s->lowpassed || s->lp_len < 2) {

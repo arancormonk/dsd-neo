@@ -1881,9 +1881,23 @@ full_demod(struct demod_state* d) {
      *   DC block -> AGC/limiter (when allowed) -> FM CMA/smoother -> FLL (if enabled)
      */
     if (d->cqpsk_enable) {
+        /* Optional complex DC removal */
+        iq_dc_block(d);
+        /* CQPSK matched filter before timing/carrier recovery */
+        if (d->cqpsk_mf_enable) {
+            if (d->cqpsk_rrc_enable) {
+                mf_rrc_complex_interleaved(d);
+            } else {
+                mf5_complex_interleaved(d);
+            }
+        }
+        /* Lightweight timing error correction before Costas/EQ for CQPSK paths.
+           Reuse the same FM guard to keep TED off for pure analog FM. */
+        if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+            gardner_timing_adjust(d);
+        }
         /* Optional acquisition-only FLL for CQPSK (pre-Costas).
-           When enabled, we run a symbol-spaced FLL before Costas to
-           quickly pull-in residual CFO, then stop once 'locked'. */
+           Run after DC/MF/TED so the symbol-spaced detector sees shaped, DC-free samples. */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && !d->cqpsk_acq_fll_locked && d->ted_sps >= 2) {
             int acq_updated = 0;
             /* Sync from demod_state into modular FLL state so that any
@@ -1958,21 +1972,6 @@ full_demod(struct demod_state* d) {
             } else {
                 d->cqpsk_acq_quiet_runs = 0;
             }
-        }
-        /* Optional complex DC removal */
-        iq_dc_block(d);
-        /* CQPSK matched filter before timing/carrier recovery */
-        if (d->cqpsk_mf_enable) {
-            if (d->cqpsk_rrc_enable) {
-                mf_rrc_complex_interleaved(d);
-            } else {
-                mf5_complex_interleaved(d);
-            }
-        }
-        /* Lightweight timing error correction before Costas/EQ for CQPSK paths.
-           Reuse the same FM guard to keep TED off for pure analog FM. */
-        if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
-            gardner_timing_adjust(d);
         }
         /* Carrier recovery (always run Costas for CQPSK),
            but skip during unit tests that use raw_demod. */
@@ -2219,7 +2218,8 @@ full_demod(struct demod_state* d) {
             dc_block_filter(d);
         }
     }
-    if (d->rate_out2 > 0) {
+    /* Skip post-demod audio decimator for CQPSK symbol streams. */
+    if (!d->cqpsk_enable && d->rate_out2 > 0) {
         low_pass_real(d);
         //arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
     }
