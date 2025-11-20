@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Strong wrapper definitions for the P25 trunking state machine API.
  * These forward to implementation symbols in p25_trunk_sm.c.

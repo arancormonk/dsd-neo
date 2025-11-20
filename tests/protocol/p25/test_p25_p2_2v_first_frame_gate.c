@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Validate P25 Phase 2 2V first-subframe gating: when per-slot audio is not
  * allowed (e.g., due to encryption lockout), the first AMBE subframe should

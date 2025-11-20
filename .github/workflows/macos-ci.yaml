@@ -217,6 +217,10 @@ jobs:
           cp -f packaging/macos/README-macos.txt "$STAGE/" || true
           cp -f packaging/macos/dsd-neo.sh "$STAGE/" || true
           chmod +x "$STAGE/dsd-neo.sh" || true
+          # Bundle license/notice files
+          DOCDIR="$STAGE/share/doc/dsd-neo"
+          mkdir -p "$DOCDIR"
+          cp -f LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt "$DOCDIR/" || true
 
           # Helper: collect dylib deps of a file and copy non-system libs into $STAGE/lib
           collect_deps() {

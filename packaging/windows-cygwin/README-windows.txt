@@ -41,7 +41,7 @@ Notes
 
 Licensing
 This distribution includes third-party components under their respective
-licenses. dsd-neo is GPL-2.0-or-later. Cygwin runtime and libraries are
+licenses. dsd-neo is GPL-3.0-or-later. Cygwin runtime and libraries are
 licensed per their packages. For source and license details, visit:
 - dsd-neo:      https://github.com/arancormonk/dsd-neo
 - mbelib-neo:   https://github.com/arancormonk/mbelib-neo

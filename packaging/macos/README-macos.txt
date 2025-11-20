@@ -35,6 +35,6 @@ Examples
 
 Licensing
 This distribution includes third-party components under their respective
-licenses. dsd-neo is GPL-2.0-or-later. For source and license details, visit:
+licenses. dsd-neo is GPL-3.0-or-later. For source and license details, visit:
 - dsd-neo:    https://github.com/arancormonk/dsd-neo
 - mbelib-neo: https://github.com/arancormonk/mbelib-neo

@@ -1,38 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
-*
-* This code is taken largely from on1arf's GMSK code. Original copyright below:
-*
-*
-* Copyright (C) 2011 by Kristoff Bonne, ON1ARF
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License as published by
-* the Free Software Foundation; version 2 of the License.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*
-*/
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
 
-#include <dsd-neo/core/descramble.h>
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 
-// #include "fcs.h" //error:  multiple definition of `calc_fcs'; CMakeFiles/DSD-neo.dir/src/dstar.c.o:dstar.c:(.text+0x0): first defined here
-
 void
-dstar_header_decode(dsd_state* state, int radioheaderbuffer[660]) {
-    int radioheaderbuffer2[660];
+dstar_header_decode(dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_CODED_BITS]) {
+    int radioheaderbuffer2[DSD_DSTAR_HEADER_CODED_BITS];
     char radioheader[41];
     int octetcount, bitcount, loop;
     unsigned char bit2octet[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
 
-    scramble(radioheaderbuffer, radioheaderbuffer2);
-    deinterleave(radioheaderbuffer2, radioheaderbuffer);
-    FECdecoder(radioheaderbuffer, radioheaderbuffer2);
+    dstar_scramble_header_bits(radioheaderbuffer, radioheaderbuffer2, DSD_DSTAR_HEADER_CODED_BITS);
+    dstar_deinterleave_header_bits(radioheaderbuffer2, radioheaderbuffer, DSD_DSTAR_HEADER_CODED_BITS);
+    dstar_header_viterbi_decode(radioheaderbuffer, DSD_DSTAR_HEADER_CODED_BITS, radioheaderbuffer2,
+                                DSD_DSTAR_HEADER_INFO_BITS);
     memset(radioheader, 0, 41);
 
     // note we receive 330 bits, but we only use 328 of them (41 octets)

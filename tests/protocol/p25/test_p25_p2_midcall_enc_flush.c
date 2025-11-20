@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Verify mid-call ENC transition on one slot flushes that slot's jitter
  * ring and does not affect the clear slot, and only releases to CC when

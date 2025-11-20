@@ -208,6 +208,9 @@ jobs:
           STAGE="dist/dsd-neo-cygwin"
           mkdir -p "$STAGE/bin" "$STAGE/etc"
           cp -f "$EXE" "$STAGE/bin/"
+          DOCDIR="$STAGE/share/doc/dsd-neo"
+          mkdir -p "$DOCDIR"
+          cp -f LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt "$DOCDIR/" || true
 
           : "${DEPS_PREFIX:?DEPS_PREFIX not set}"
 

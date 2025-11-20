@@ -11,9 +11,10 @@
 .DS_Store
 Thumbs.db
 
-# Ignore all markdown files in root directory except README.md
+# Ignore all markdown files in root directory with exceptions
 /*.md
 !/README.md
+!/THIRD_PARTY.md
 
 # GDB files
 *.gdb

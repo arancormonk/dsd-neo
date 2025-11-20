@@ -278,5 +278,6 @@ cmake --build build/dev-release --target uninstall
 
 ## License
 
-- Project license: GPL‑2.0‑or‑later (see `LICENSE`).
+- Project license: GPL‑3.0‑or‑later (see `LICENSE`).
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).
+- Third-party notices live in `THIRD_PARTY.md` (ezpwd LGPL text: `src/third_party/ezpwd/lesser.txt`).

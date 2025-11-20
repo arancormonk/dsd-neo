@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Validate P25p2 VPDU SVC encrypted gating flushes only the encrypted slot
  * and preserves the clear slot, and triggers release only if the other slot

@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: ISC
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
-#include <dsd-neo/fec/fcs.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
+#include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 
 //simplified DSTAR
 void
@@ -154,7 +158,7 @@ processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd) {
 
     //works on header format -- may not work on others
     uint16_t crc_ext = (hd_bytes[39] << 8) + hd_bytes[40];
-    uint16_t crc_cmp = calc_fcs(hd_bytes, 39);
+    uint16_t crc_cmp = dstar_crc16(hd_bytes, 39);
 
     char str1[9];
     char str2[9];

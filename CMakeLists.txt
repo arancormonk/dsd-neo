@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(dsd-neo)
 include(CTest) # provides BUILD_TESTING and enables tests when on
 enable_testing()
+include(GNUInstallDirs)
 
 # Prefer modern list operations to update module path
 list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
@@ -193,6 +194,10 @@ configure_file(
 
 add_custom_target(uninstall
     COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
+
+# Install license/notice files with binaries
+install(FILES LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt
+    DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 add_subdirectory(src/core)
 add_subdirectory(src/dsp)

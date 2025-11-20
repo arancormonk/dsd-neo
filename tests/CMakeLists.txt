@@ -4,6 +4,11 @@ target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
 
 add_test(NAME AES_OFB COMMAND dsd-neo_test_aes_ofb)
 
+add_executable(dsd-neo_test_dstar_header_utils protocol/dstar/test_dstar_header_utils.c)
+target_include_directories(dsd-neo_test_dstar_header_utils PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dstar_header_utils PRIVATE dsd-neo_proto_dstar)
+add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
+
 add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)

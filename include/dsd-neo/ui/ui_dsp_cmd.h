@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* UI DSP runtime command opcodes for UI_CMD_DSP_OP payloads. */
 #pragma once
 

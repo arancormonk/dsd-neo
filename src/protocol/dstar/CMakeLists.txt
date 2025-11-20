@@ -3,6 +3,7 @@ add_library(dsd-neo_proto_dstar)
 target_sources(dsd-neo_proto_dstar PRIVATE
   dstar.c
   dstar_header.c
+  dstar_header_utils.c
 )
 
 target_include_directories(dsd-neo_proto_dstar
