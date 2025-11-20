@@ -1,86 +1,213 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
+ * Copyright 2006,2010-2012 Free Software Foundation, Inc.
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
- * QPSK Costas loop (carrier recovery) implementation.
+ * Costas loop carrier recovery (GNU Radio port).
  *
- * Second-order loop using 4th-power phase detector for QPSK.
- * Rotates baseband by NCO (high-quality sin/cos) and updates freq/phase.
+ * Port of GNU Radio's costas_loop_cc implementation. The default loop bandwidth
+ * is reduced (2*pi/800 rad/sample) to match the narrower DSP bandwidth run by
+ * dsd-neo compared to typical GNU Radio flows.
  */
 
-#include <cstdio>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/math_utils.h>
-#include <math.h>
-#include <stdint.h>
-#include <stdlib.h>
 
-/* High-quality trig path: Q15 cos/sin from Q15 phase (2*pi == 1<<15) */
+#include <cmath>
+#include <complex>
+#include <cstdint>
+
+namespace {
+
+constexpr float kTwoPi = 6.28318530717958647692f;
+constexpr float kQ15ToRad = kTwoPi / 32768.0f;
+constexpr float kRadToQ15 = 32768.0f / kTwoPi;
+
+/* LUT copied from GNU Radio blocks/control_loop.h */
+static const float kTanhLut[256] = {
+    -0.96402758, -0.96290241, -0.96174273, -0.96054753, -0.95931576, -0.95804636, -0.95673822, -0.95539023, -0.95400122,
+    -0.95257001, -0.95109539, -0.9495761,  -0.94801087, -0.94639839, -0.94473732, -0.94302627, -0.94126385, -0.93944862,
+    -0.93757908, -0.93565374, -0.93367104, -0.93162941, -0.92952723, -0.92736284, -0.92513456, -0.92284066, -0.92047938,
+    -0.91804891, -0.91554743, -0.91297305, -0.91032388, -0.90759795, -0.9047933,  -0.90190789, -0.89893968, -0.89588656,
+    -0.89274642, -0.88951709, -0.88619637, -0.88278203, -0.87927182, -0.87566342, -0.87195453, -0.86814278, -0.86422579,
+    -0.86020115, -0.85606642, -0.85181914, -0.84745683, -0.84297699, -0.83837709, -0.83365461, -0.82880699, -0.82383167,
+    -0.81872609, -0.81348767, -0.80811385, -0.80260204, -0.7969497,  -0.79115425, -0.78521317, -0.77912392, -0.772884,
+    -0.76649093, -0.75994227, -0.75323562, -0.74636859, -0.73933889, -0.73214422, -0.7247824,  -0.71725127, -0.70954876,
+    -0.70167287, -0.6936217,  -0.68539341, -0.67698629, -0.66839871, -0.65962916, -0.65067625, -0.64153871, -0.6322154,
+    -0.62270534, -0.61300768, -0.60312171, -0.59304692, -0.58278295, -0.57232959, -0.56168685, -0.55085493, -0.53983419,
+    -0.52862523, -0.51722883, -0.50564601, -0.49387799, -0.48192623, -0.46979241, -0.45747844, -0.44498647, -0.4323189,
+    -0.41947836, -0.40646773, -0.39329014, -0.37994896, -0.36644782, -0.35279057, -0.33898135, -0.32502449, -0.31092459,
+    -0.2966865,  -0.28231527, -0.26781621, -0.25319481, -0.23845682, -0.22360817, -0.208655,   -0.19360362, -0.17846056,
+    -0.16323249, -0.14792623, -0.13254879, -0.11710727, -0.10160892, -0.08606109, -0.07047123, -0.05484686, -0.0391956,
+    -0.02352507, -0.00784298, 0.00784298,  0.02352507,  0.0391956,   0.05484686,  0.07047123,  0.08606109,  0.10160892,
+    0.11710727,  0.13254879,  0.14792623,  0.16323249,  0.17846056,  0.19360362,  0.208655,    0.22360817,  0.23845682,
+    0.25319481,  0.26781621,  0.28231527,  0.2966865,   0.31092459,  0.32502449,  0.33898135,  0.35279057,  0.36644782,
+    0.37994896,  0.39329014,  0.40646773,  0.41947836,  0.4323189,   0.44498647,  0.45747844,  0.46979241,  0.48192623,
+    0.49387799,  0.50564601,  0.51722883,  0.52862523,  0.53983419,  0.55085493,  0.56168685,  0.57232959,  0.58278295,
+    0.59304692,  0.60312171,  0.61300768,  0.62270534,  0.6322154,   0.64153871,  0.65067625,  0.65962916,  0.66839871,
+    0.67698629,  0.68539341,  0.6936217,   0.70167287,  0.70954876,  0.71725127,  0.7247824,   0.73214422,  0.73933889,
+    0.74636859,  0.75323562,  0.75994227,  0.76649093,  0.772884,    0.77912392,  0.78521317,  0.79115425,  0.7969497,
+    0.80260204,  0.80811385,  0.81348767,  0.81872609,  0.82383167,  0.82880699,  0.83365461,  0.83837709,  0.84297699,
+    0.84745683,  0.85181914,  0.85606642,  0.86020115,  0.86422579,  0.86814278,  0.87195453,  0.87566342,  0.87927182,
+    0.88278203,  0.88619637,  0.88951709,  0.89274642,  0.89588656,  0.89893968,  0.90190789,  0.9047933,   0.90759795,
+    0.91032388,  0.91297305,  0.91554743,  0.91804891,  0.92047938,  0.92284066,  0.92513456,  0.92736284,  0.92952723,
+    0.93162941,  0.93367104,  0.93565374,  0.93757908,  0.93944862,  0.94126385,  0.94302627,  0.94473732,  0.94639839,
+    0.94801087,  0.9495761,   0.95109539,  0.95257001,  0.95400122,  0.95539023,  0.95673822,  0.95804636,  0.95931576,
+    0.96054753,  0.96174273,  0.96290241,  0.96402758};
+
+static inline float
+tanhf_lut(float x) {
+    if (x > 2.0f) {
+        return 1.0f;
+    }
+    if (x <= -2.0f) {
+        return -1.0f;
+    }
+    int index = 128 + static_cast<int>(64.0f * x);
+    return kTanhLut[index];
+}
+
+static inline float
+branchless_clip(float x, float clip) {
+    return 0.5f * (std::abs(x + clip) - std::abs(x - clip));
+}
+
+static inline int16_t
+clamp_to_i16(float v) {
+    long s = lrintf(v);
+    if (s > 32767) {
+        s = 32767;
+    } else if (s < -32768) {
+        s = -32768;
+    }
+    return static_cast<int16_t>(s);
+}
+
+static void
+update_gains(dsd_costas_loop_state_t* c) {
+    float bw = c->loop_bw;
+    if (bw < 0.0f) {
+        bw = 0.0f;
+    }
+    const float denom = 1.0f + 2.0f * c->damping * bw + bw * bw;
+    c->alpha = (4.0f * c->damping * bw) / denom;
+    c->beta = (4.0f * bw * bw) / denom;
+}
+
 static inline void
-sin_cos_q15_from_phase_trig(int phase_q15, int16_t* c_out, int16_t* s_out) {
-    const double kQ15ToRad = (2.0 * M_PI) / 32768.0;
-    int p = phase_q15 & 0x7FFF;
-    double th = (double)p * kQ15ToRad;
-    double cd = cos(th);
-    double sd = sin(th);
-    long ci = lrint(cd * 32767.0);
-    long si = lrint(sd * 32767.0);
-    if (ci > 32767) {
-        ci = 32767;
-    }
-    if (ci < -32767) {
-        ci = -32767;
-    }
-    if (si > 32767) {
-        si = 32767;
-    }
-    if (si < -32767) {
-        si = -32767;
-    }
-    *c_out = (int16_t)ci;
-    *s_out = (int16_t)si;
+advance_loop(dsd_costas_loop_state_t* c, float err) {
+    c->freq += c->beta * err;
+    c->phase += c->freq + c->alpha * err;
 }
 
-/* Clamp helper */
-static inline int
-clamp_i(int v, int lo, int hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
+static inline void
+phase_wrap(dsd_costas_loop_state_t* c) {
+    while (c->phase > kTwoPi) {
+        c->phase -= kTwoPi;
+    }
+    while (c->phase < -kTwoPi) {
+        c->phase += kTwoPi;
+    }
 }
 
-/* Optional runtime inversion of Costas rotation sign for debugging.
-   Enable via DSD_NEO_CQPSK_ROT_INVERT=1 to flip e^{-jphi} <-> e^{+jphi}.
-   Defaults to normal e^{-jphi}. */
-static inline int
-costas_rot_invert_enabled() {
-    static int inited = 0;
-    static int enabled = 0;
-    if (!inited) {
-        const char* v = getenv("DSD_NEO_CQPSK_ROT_INVERT");
-        enabled = (v && (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T')) ? 1 : 0;
-        inited = 1;
+static inline void
+frequency_limit(dsd_costas_loop_state_t* c) {
+    if (c->freq > c->max_freq) {
+        c->freq = c->max_freq;
+    } else if (c->freq < c->min_freq) {
+        c->freq = c->min_freq;
     }
-    return enabled;
 }
 
-/* Optional 8th-order Costas loop for pi/4 DQPSK / 8PSK robustness.
-   Default to enabled (1) for CQPSK paths to avoid 4th-order loop fighting the pi/4 rotation. */
-static inline int
-costas_8th_order_enabled() {
-    static int inited = 0;
-    static int enabled = 0;
-    if (!inited) {
-        const char* v = getenv("DSD_NEO_CQPSK_COSTAS_8");
-        enabled = 1; /* Default ON */
-        if (v && (*v == '0' || *v == 'n' || *v == 'N' || *v == 'f' || *v == 'F')) {
-            enabled = 0;
-        }
-        inited = 1;
+static inline float
+phase_detector_8(const std::complex<float>& sample) {
+    const float K = (std::sqrt(2.0f) - 1.0f);
+    if (fabsf(sample.real()) >= fabsf(sample.imag())) {
+        return ((sample.real() > 0.0f ? 1.0f : -1.0f) * sample.imag()
+                - (sample.imag() > 0.0f ? 1.0f : -1.0f) * sample.real() * K);
     }
-    return enabled;
+    return ((sample.real() > 0.0f ? 1.0f : -1.0f) * sample.imag() * K
+            - (sample.imag() > 0.0f ? 1.0f : -1.0f) * sample.real());
 }
+
+static inline float
+phase_detector_4(const std::complex<float>& sample) {
+    return ((sample.real() > 0.0f ? 1.0f : -1.0f) * sample.imag()
+            - (sample.imag() > 0.0f ? 1.0f : -1.0f) * sample.real());
+}
+
+static inline float
+phase_detector_2(const std::complex<float>& sample) {
+    return sample.real() * sample.imag();
+}
+
+static inline float
+phase_detector_snr_8(const std::complex<float>& sample, float noise) {
+    const float K = (std::sqrt(2.0f) - 1.0f);
+    const float snr = std::norm(sample) / noise;
+    if (fabsf(sample.real()) >= fabsf(sample.imag())) {
+        return (tanhf_lut(snr * sample.real()) * sample.imag()) - (tanhf_lut(snr * sample.imag()) * sample.real() * K);
+    }
+    return (tanhf_lut(snr * sample.real()) * sample.imag() * K) - (tanhf_lut(snr * sample.imag()) * sample.real());
+}
+
+static inline float
+phase_detector_snr_4(const std::complex<float>& sample, float noise) {
+    const float snr = std::norm(sample) / noise;
+    return (tanhf_lut(snr * sample.real()) * sample.imag()) - (tanhf_lut(snr * sample.imag()) * sample.real());
+}
+
+static inline float
+phase_detector_snr_2(const std::complex<float>& sample, float noise) {
+    const float snr = std::norm(sample) / noise;
+    return tanhf_lut(snr * sample.real()) * sample.imag();
+}
+
+static float
+detect_error(const std::complex<float>& sample, const dsd_costas_loop_state_t* c) {
+    switch (c->order) {
+        case 2: return c->use_snr ? phase_detector_snr_2(sample, c->noise) : phase_detector_2(sample);
+        case 8: return c->use_snr ? phase_detector_snr_8(sample, c->noise) : phase_detector_8(sample);
+        case 4:
+        default: return c->use_snr ? phase_detector_snr_4(sample, c->noise) : phase_detector_4(sample);
+    }
+}
+
+static void
+prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
+    if (c->loop_bw <= 0.0f) {
+        c->loop_bw = dsd_neo_costas_default_loop_bw();
+    }
+    if (c->damping <= 0.0f) {
+        c->damping = dsd_neo_costas_default_damping();
+    }
+    if (c->max_freq == 0.0f && c->min_freq == 0.0f) {
+        c->max_freq = 1.0f;
+        c->min_freq = -1.0f;
+    }
+    if (c->max_freq < c->min_freq) {
+        float tmp = c->max_freq;
+        c->max_freq = c->min_freq;
+        c->min_freq = tmp;
+    }
+    if (c->order != 2 && c->order != 4 && c->order != 8) {
+        c->order = 4;
+    }
+    if (c->noise <= 0.0f) {
+        c->noise = 1.0f;
+    }
+    update_gains(c);
+
+    if (!c->initialized && d) {
+        c->phase = static_cast<float>(d->fll_phase_q15) * kQ15ToRad;
+        c->freq = static_cast<float>(d->fll_freq_q15) * kQ15ToRad;
+        c->initialized = 1;
+    }
+}
+
+} // namespace
 
 void
 cqpsk_costas_mix_and_update(struct demod_state* d) {
@@ -91,153 +218,47 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         return;
     }
 
-    /* Defaults if not preconfigured.
-     * The default alpha/beta values are chosen to be more aggressive than the
-     * FLL defaults to ensure the Costas loop can pull in larger frequency
-     * offsets typical of SDRs. A wider loop bandwidth is necessary for
-     * robust carrier acquisition.
-     *
-     * Costas tuning is independent of the FLL env knobs: use
-     * demod_state->costas_alpha_q15/beta_q15 when set, otherwise fall back
-     * to internal defaults (400/40). */
-    int alpha_q15 = (d->costas_alpha_q15 > 0) ? d->costas_alpha_q15 : 400;
-    int beta_q15 = (d->costas_beta_q15 > 0) ? d->costas_beta_q15 : 40;
-    int deadband_q14 = (d->costas_deadband_q14 > 0) ? d->costas_deadband_q14 : 32;
-    int slew_max_q15 = (d->costas_slew_max_q15 > 0) ? d->costas_slew_max_q15 : 64;
+    dsd_costas_loop_state_t* c = &d->costas_state;
+    prepare_costas(c, d);
 
-    int phase = d->fll_phase_q15; /* reuse FLL storage for NCO phase/freq to avoid expanding state */
-    int freq = d->fll_freq_q15;
+    int pairs = d->lp_len >> 1;
+    int16_t* iq = d->lowpassed;
+    float err_acc = 0.0f;
 
-    int16_t* x = d->lowpassed;
-    int N = d->lp_len;
+    for (int i = 0; i < pairs; i++) {
+        std::complex<float> s(static_cast<float>(iq[(i << 1) + 0]), static_cast<float>(iq[(i << 1) + 1]));
+        std::complex<float> nco = std::polar(1.0f, -c->phase);
+        std::complex<float> y = s * nco;
 
-    const int invert = costas_rot_invert_enabled();
-    const int use_8th = costas_8th_order_enabled();
-    const char* dbg = getenv("DSD_NEO_DBG_COSTAS");
-    int dbg_once = (dbg && dbg[0] == '1') ? 1 : 0;
-    int64_t err_abs_acc = 0;
-    int err_count = 0;
-    for (int i = 0; i + 1 < N; i += 2) {
-        int16_t c, s;
-        sin_cos_q15_from_phase_trig(phase, &c, &s);
+        iq[(i << 1) + 0] = clamp_to_i16(y.real());
+        iq[(i << 1) + 1] = clamp_to_i16(y.imag());
 
-        int xr = x[i];
-        int xj = x[i + 1];
-        /* Rotate input by current NCO. Default is e^{-jphi}. When
-           DSD_NEO_CQPSK_ROT_INVERT=1, flip to e^{+jphi} to aid diagnosis. */
-        int32_t yr, yj;
-        if (!invert) {
-            /* y = x * e^{-jphi} */
-            yr = ((int32_t)xr * c + (int32_t)xj * s) >> 15;
-            yj = ((int32_t)xj * c - (int32_t)xr * s) >> 15;
-        } else {
-            /* y = x * e^{+jphi} */
-            yr = ((int32_t)xr * c - (int32_t)xj * s) >> 15;
-            yj = ((int32_t)xr * s + (int32_t)xj * c) >> 15;
-        }
-        x[i] = (int16_t)clamp_i(yr, -32768, 32767);
-        x[i + 1] = (int16_t)clamp_i(yj, -32768, 32767);
+        float err = detect_error(y, c);
+        err = branchless_clip(err, 1.0f);
+        c->error = err;
+        err_acc += fabsf(err);
 
-        /* 4th-power phase detector for QPSK */
-        int64_t r = yr;
-        int64_t j = yj;
-        /* z^2 = (r^2 - j^2) + j*(2*r*j) */
-        int64_t a = r * r - j * j;
-        int64_t b = (r + r) * j;
-        /* z^4 = (a^2 - b^2) + j*(2ab) */
-        int64_t re4 = a * a - b * b;
-        int64_t im4 = (a + a) * b;
-
-        int err_q14;
-        int e_now;
-
-        if (use_8th) {
-            /* 8th-power phase detector for pi/4 QPSK / 8PSK.
-               z^8 = (z^4)^2. Scale down re4/im4 to avoid overflow when squaring. */
-            int64_t re4_s = re4 >> 30;
-            int64_t im4_s = im4 >> 30;
-            int64_t re8 = re4_s * re4_s - im4_s * im4_s;
-            int64_t im8 = 2 * re4_s * im4_s;
-            e_now = dsd_neo_fast_atan2(im8, re8); /* Q14 in [-pi..pi] */
-        } else {
-            /* 4th-power phase detector for QPSK */
-            e_now = dsd_neo_fast_atan2(im4, re4); /* Q14 in [-pi..pi] */
-        }
-
-        /* Unwrap phase error against last value for continuity. */
-        if (d->costas_e4_prev_set) {
-            int diff = e_now - d->costas_e4_prev_q14;
-            const int TWO_PI_Q14 = (1 << 15);
-            if (diff > (1 << 14)) {
-                e_now -= TWO_PI_Q14;
-            } else if (diff < -(1 << 14)) {
-                e_now += TWO_PI_Q14;
-            }
-        }
-        d->costas_e4_prev_q14 = e_now;
-        d->costas_e4_prev_set = 1;
-
-        if (use_8th) {
-            err_q14 = (e_now >> 3); /* Divide by 8 */
-        } else {
-            err_q14 = (e_now >> 2); /* Divide by 4 */
-        }
-
-        if (dbg_once) {
-            fprintf(
-                stderr,
-                "DBG_COSTAS: i=%d xr=%d xj=%d c=%d s=%d yr=%d yj=%d re4=%lld im4=%lld e_now=%d err=%d ph=%d fq=%d\n", i,
-                xr, xj, c, s, (int)yr, (int)yj, (long long)re4, (long long)im4, e_now, err_q14, phase, freq);
-        }
-        /* Accumulate absolute error for diagnostics */
-        int ea = (err_q14 >= 0) ? err_q14 : -err_q14;
-        err_abs_acc += ea;
-        err_count++;
-
-        /* Deadband */
-        if (err_q14 < deadband_q14 && err_q14 > -deadband_q14) {
-            phase += freq; /* still advance NCO */
-            continue;
-        }
-
-        /* PI update on frequency (Q15 domain) */
-        int32_t p = ((int64_t)alpha_q15 * err_q14) >> 14;   /* -> Q15 */
-        int32_t iacc = ((int64_t)beta_q15 * err_q14) >> 14; /* -> Q15 */
-
-        /* Apply integral term to frequency (slew limited) */
-        int32_t df = iacc;
-        if (df > slew_max_q15) {
-            df = slew_max_q15;
-        }
-        if (df < -slew_max_q15) {
-            df = -slew_max_q15;
-        }
-        freq += (int)df;
-
-        /* Clamp NCO frequency */
-        const int F_CLAMP = 4096; /* allow wider than FLL; ~±6 kHz @48k */
-        if (freq > F_CLAMP) {
-            freq = F_CLAMP;
-        }
-        if (freq < -F_CLAMP) {
-            freq = -F_CLAMP;
-        }
-
-        /* Advance phase: current_phase + frequency + proportional_error */
-        phase += freq + p;
+        advance_loop(c, err);
+        phase_wrap(c);
+        frequency_limit(c);
     }
 
-    d->fll_phase_q15 = phase & 0x7FFF;
-    d->fll_freq_q15 = freq;
-    if (err_count > 0) {
-        int avg = (int)(err_abs_acc / err_count);
-        if (avg < 0) {
-            avg = 0;
+    int freq_q15 = static_cast<int>(lrintf(c->freq * kRadToQ15));
+    int phase_q15 = static_cast<int>(lrintf(c->phase * kRadToQ15)) & 0x7FFF;
+    d->fll_freq_q15 = freq_q15;
+    d->fll_phase_q15 = phase_q15;
+
+    if (pairs > 0) {
+        float avg_err = err_acc / static_cast<float>(pairs);
+        int avg_q14 = static_cast<int>(lrintf(avg_err * 16384.0f));
+        if (avg_q14 < 0) {
+            avg_q14 = 0;
         }
-        d->costas_err_avg_q14 = avg;
-    }
-    if (dbg_once) {
-        fprintf(stderr, "DBG_COSTAS: final freq=%d phase=%d avg|err|=%d\n", d->fll_freq_q15, d->fll_phase_q15,
-                d->costas_err_avg_q14);
+        if (avg_q14 > 32767) {
+            avg_q14 = 32767;
+        }
+        d->costas_err_avg_q14 = avg_q14;
+    } else {
+        d->costas_err_avg_q14 = 0;
     }
 }

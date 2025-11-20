@@ -13,6 +13,8 @@
 
 #include <dsd-neo/io/rtl_demod_config.h>
 
+#include <math.h>
+
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -294,14 +296,22 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->fll_freq_q15 = 0;
     demod->fll_phase_q15 = 0;
     demod->fll_prev_r = demod->fll_prev_j = 0;
-    /* Costas loop tuning (independent of FLL envs). Defaults are more aggressive. */
-    demod->costas_alpha_q15 = cfg->costas_alpha_is_set ? cfg->costas_alpha_q15 : 400;
-    demod->costas_beta_q15 = cfg->costas_beta_is_set ? cfg->costas_beta_q15 : 40;
-    demod->costas_deadband_q14 = cfg->costas_deadband_is_set ? cfg->costas_deadband_q14 : 32;
-    demod->costas_slew_max_q15 = cfg->costas_slew_is_set ? cfg->costas_slew_max_q15 : 64;
+    /* Costas loop state (GNU Radio control loop derivative) */
+    dsd_costas_loop_state_t* cl = &demod->costas_state;
+    cl->phase = 0.0f;
+    cl->freq = 0.0f;
+    cl->max_freq = 1.0f;
+    cl->min_freq = -1.0f;
+    cl->loop_bw = cfg->costas_bw_is_set ? (float)cfg->costas_loop_bw : dsd_neo_costas_default_loop_bw();
+    cl->damping = cfg->costas_damping_is_set ? (float)cfg->costas_damping : dsd_neo_costas_default_damping();
+    cl->alpha = 0.0f;
+    cl->beta = 0.0f;
+    cl->error = 0.0f;
+    cl->noise = cfg->costas_noise_db_is_set ? (float)pow(10.0, cfg->costas_noise_db / 10.0) : 1.0f;
+    cl->order = cfg->costas_order_is_set ? cfg->costas_order : 4;
+    cl->use_snr = cfg->costas_use_snr_is_set ? cfg->costas_use_snr : 0;
+    cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
-    demod->costas_e4_prev_q14 = 0;
-    demod->costas_e4_prev_set = 0;
 
     demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : 0;
     demod->ted_gain_q20 = cfg->ted_gain_is_set ? cfg->ted_gain_q20 : 64;

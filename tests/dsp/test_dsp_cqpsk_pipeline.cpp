@@ -240,13 +240,13 @@ run_rrc_costas_variant(void) {
     }
 
     /* Costas loop should have run for the RRC variant only. */
-    if (s_ref->costas_e4_prev_set != 0) {
+    if (s_ref->costas_state.initialized) {
         fprintf(stderr, "CQPSK_PIPELINE_RRC: Costas state updated for reference path\n");
         free(s_ref);
         free(s_rrc);
         return 1;
     }
-    if (s_rrc->costas_e4_prev_set == 0) {
+    if (!s_rrc->costas_state.initialized) {
         fprintf(stderr, "CQPSK_PIPELINE_RRC: Costas state not updated for RRC path\n");
         free(s_ref);
         free(s_rrc);

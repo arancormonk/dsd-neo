@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,21 +112,22 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.fll_deadband_q14 = c.fll_deadband_is_set ? atoi(fdb) : 45;
     c.fll_slew_max_q15 = c.fll_slew_is_set ? atoi(fsl) : 64;
 
-    /* CQPSK Costas loop (carrier recovery).
-       When unset, use internal defaults more aggressive than the FLL:
-       alpha≈400, beta≈40, deadband≈32, slew≈64. */
-    const char* ca = getenv("DSD_NEO_COSTAS_ALPHA");
-    const char* cb = getenv("DSD_NEO_COSTAS_BETA");
-    c.costas_alpha_is_set = env_is_set(ca);
-    c.costas_beta_is_set = env_is_set(cb);
-    c.costas_alpha_q15 = c.costas_alpha_is_set ? atoi(ca) : 400;
-    c.costas_beta_q15 = c.costas_beta_is_set ? atoi(cb) : 40;
-    const char* cdb = getenv("DSD_NEO_COSTAS_DEADBAND");
-    const char* csl = getenv("DSD_NEO_COSTAS_SLEW");
-    c.costas_deadband_is_set = env_is_set(cdb);
-    c.costas_slew_is_set = env_is_set(csl);
-    c.costas_deadband_q14 = c.costas_deadband_is_set ? atoi(cdb) : 32;
-    c.costas_slew_max_q15 = c.costas_slew_is_set ? atoi(csl) : 64;
+    /* CQPSK Costas loop (carrier recovery) using GNU Radio control loop */
+    const char* cbw = getenv("DSD_NEO_COSTAS_BW");
+    const char* cdp = getenv("DSD_NEO_COSTAS_DAMPING");
+    const char* cor = getenv("DSD_NEO_COSTAS_ORDER");
+    const char* csnr = getenv("DSD_NEO_COSTAS_USE_SNR");
+    const char* cndb = getenv("DSD_NEO_COSTAS_NOISE_DB");
+    c.costas_bw_is_set = env_is_set(cbw);
+    c.costas_damping_is_set = env_is_set(cdp);
+    c.costas_order_is_set = env_is_set(cor);
+    c.costas_use_snr_is_set = env_is_set(csnr);
+    c.costas_noise_db_is_set = env_is_set(cndb);
+    c.costas_loop_bw = c.costas_bw_is_set ? atof(cbw) : dsd_neo_costas_default_loop_bw();
+    c.costas_damping = c.costas_damping_is_set ? atof(cdp) : dsd_neo_costas_default_damping();
+    c.costas_order = c.costas_order_is_set ? atoi(cor) : 4;
+    c.costas_use_snr = (c.costas_use_snr_is_set && csnr[0] == '1') ? 1 : 0;
+    c.costas_noise_db = c.costas_noise_db_is_set ? atof(cndb) : 0.0;
 
     /* TED */
     const char* ted = getenv("DSD_NEO_TED");

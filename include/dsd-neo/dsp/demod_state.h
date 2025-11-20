@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/ted.h>
@@ -165,10 +166,7 @@ struct demod_state {
     int fll_prev_j;
 
     /* CQPSK Costas loop tuning (separate from FLL) */
-    int costas_alpha_q15;    /* proportional gain (Q15); default 400 when <=0 */
-    int costas_beta_q15;     /* integral gain (Q15); default 40 when <=0 */
-    int costas_deadband_q14; /* ignore small phase errors |err| <= deadband (Q14); default 32 when <=0 */
-    int costas_slew_max_q15; /* max |delta freq| per update (Q15); default 64 when <=0 */
+    dsd_costas_loop_state_t costas_state;
 
     /* Timing error detector (Gardner) */
     int ted_enabled;
@@ -289,7 +287,5 @@ struct demod_state {
     int cqpsk_acq_quiet_runs; /* consecutive quiet blocks for lock */
 
     /* Costas diagnostics (updated per block) */
-    int costas_err_avg_q14; /* average |err| from 4th-power detector (Q14, pi=1<<14) */
-    int costas_e4_prev_q14; /* last unwrapped 4*phase (Q14) for continuity */
-    int costas_e4_prev_set; /* 0/1 flag */
+    int costas_err_avg_q14; /* average |err| scaled to Q14 for UI/metrics */
 };

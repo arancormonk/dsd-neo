@@ -15,7 +15,7 @@
  * a single call to full_demod() will:
  *   - Initialize the CQPSK equalizer with taps derived from SPS
  *     (5 taps for SPS=3) and sym_stride == ted_sps.
- *   - Run the Costas loop (costas_e4_prev_set becomes 1).
+ *   - Run the Costas loop (costas_state.initialized becomes 1).
  *   - Advance the TED fractional phase accumulator (mu_q20 changes).
  *
  * This is an end-to-end wiring sanity check rather than a convergence test.
@@ -112,8 +112,8 @@ main(void) {
     }
 
     /* Costas loop should have touched its internal state. */
-    if (s->costas_e4_prev_set == 0) {
-        fprintf(stderr, "CQPSK_12K_SPS3: Costas state not updated (costas_e4_prev_set=0)\n");
+    if (!s->costas_state.initialized) {
+        fprintf(stderr, "CQPSK_12K_SPS3: Costas state not updated (initialized=0)\n");
         rc = 1;
     }
 

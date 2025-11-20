@@ -417,8 +417,12 @@ demod_reset_on_retune(struct demod_state* s) {
     s->cqpsk_diff_prev_r = 0;
     s->cqpsk_diff_prev_j = 0;
     s->costas_err_avg_q14 = 0;
-    s->costas_e4_prev_q14 = 0;
-    s->costas_e4_prev_set = 0;
+    s->costas_state.phase = 0.0f;
+    s->costas_state.freq = 0.0f;
+    s->costas_state.alpha = 0.0f;
+    s->costas_state.beta = 0.0f;
+    s->costas_state.error = 0.0f;
+    s->costas_state.initialized = 0;
     /* TED */
     ted_init_state(&s->ted_state);
     s->ted_mu_q20 = 0;
