@@ -296,7 +296,21 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
             }
             idx--;
         }
-        /* Decision feedback subtraction (align scales: Q14*Q14 -> Q28, shift to Q14) */
+
+        /* Determine approximate symbol tick for DFE decisions/updates */
+        int sym_stride = (st->sym_stride > 0) ? st->sym_stride : st->update_stride;
+        if (sym_stride <= 0) {
+            sym_stride = 4;
+        }
+        st->sym_count++;
+        int sym_tick = 0;
+        if (st->sym_count >= sym_stride) {
+            st->sym_count = 0;
+            sym_tick = 1;
+        }
+
+        /* Decision feedback subtraction (align scales: Q14*Q14 -> Q28, shift to Q14).
+           Apply continuously; decisions are only refreshed on symbol ticks. */
         if (st->dfe_enable && st->dfe_taps > 0) {
             for (int k = 0; k < st->dfe_taps && k < 4; k++) {
                 int16_t br = st->b_i[k];
@@ -314,18 +328,6 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
         int32_t yQ = (int32_t)((accQ_q14 + (1 << 13)) >> 14);
         in_out[i] = sat16_i32(yI);
         in_out[i + 1] = sat16_i32(yQ);
-
-        /* Determine approximate symbol tick for DFE decisions/updates */
-        int sym_stride = (st->sym_stride > 0) ? st->sym_stride : st->update_stride;
-        if (sym_stride <= 0) {
-            sym_stride = 4;
-        }
-        st->sym_count++;
-        int sym_tick = 0;
-        if (st->sym_count >= sym_stride) {
-            st->sym_count = 0;
-            sym_tick = 1;
-        }
 
         /* Build desired symbol decision 'd' (use sym_tick for DQPSK mode).
            Use constant-amplitude slicer target to stabilize DD updates. */

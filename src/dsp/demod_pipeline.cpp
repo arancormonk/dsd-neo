@@ -1939,7 +1939,8 @@ full_demod(struct demod_state* d) {
 
                     /* Calculate error on rotated data, updating REAL state (freq/int) */
                     fll_update_error_qpsk(&cfg, &d->fll_state, temp_buf, d->lp_len, d->ted_sps);
-                    /* Preserve phase continuity for the next block's history samples. */
+                    /* Preserve NCO phase continuity for downstream Costas by mirroring the
+                       phase advance that occurred while rotating the temp buffer. */
                     d->fll_state.phase_q15 = temp_state.phase_q15;
                     acq_updated = 1;
                 }
