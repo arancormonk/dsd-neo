@@ -233,12 +233,22 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         iq[(i << 1) + 0] = clamp_to_i16(y.real());
         iq[(i << 1) + 1] = clamp_to_i16(y.imag());
 
-        float err = detect_error(y, c);
-        err = branchless_clip(err, 1.0f);
-        c->error = err;
-        err_acc += fabsf(err);
+        float err_raw = detect_error(y, c);
+        float err_loop = branchless_clip(err_raw, 1.0f);
 
-        advance_loop(c, err);
+        /* Diagnostic: normalize the raw detector output (pre-clipping) by magnitude. */
+        float mag_r = fabsf(y.real());
+        float mag_i = fabsf(y.imag());
+        float mag = (mag_i > mag_r) ? mag_i : mag_r;
+        float err_diag_raw = err_raw;
+        if (mag > 1.0f) {
+            err_diag_raw /= mag;
+        }
+        float err_diag = branchless_clip(err_diag_raw, 1.0f);
+        c->error = err_diag;
+        err_acc += fabsf(err_diag);
+
+        advance_loop(c, err_loop);
         phase_wrap(c);
         frequency_limit(c);
     }
