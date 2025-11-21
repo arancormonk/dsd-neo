@@ -2017,37 +2017,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
-    /* Choose demodulator baseband rate separately from DSP-BW so that digital
-       paths (P25, DMR, NXDN, etc.) can keep a narrow, mode-friendly bandwidth
-       even when the capture/DSP-BW is wider (e.g., 24 kHz). This avoids
-       degrading symbol SNR when users widen DSP-BW for capture convenience.
-       For narrow 6.25 kHz channels (e.g., NXDN48/dPMR/D-STAR), prefer an
-       8 kHz-class complex baseband; for 12.5 kHz-class channels (P25, DMR,
-       NXDN96, M17, ProVoice) prefer 12 kHz. User-selected DSP-BW narrower
-       than these per-mode targets is honored. */
+    /* Honor the user-requested DSP bandwidth directly for the demodulator base rate so
+       half-band decimators/resampler scale with the CLI argument (4/6/8/12/16/24 kHz). */
     int demod_base_rate_hz = rtl_dsp_bw_hz;
-    {
-        int digital_voice_mode =
-            (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
-             || opts->frame_nxdn96 == 1 || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1
-             || opts->frame_provoice == 1 || opts->frame_ysf == 1 || opts->frame_x2tdma == 1);
-        if (digital_voice_mode) {
-            int target_hz = 12000;
-            /* Narrow 6.25 kHz-class channels: NXDN48, dPMR, D-STAR.
-             * Only clamp to 8 kHz if NO wide modes are enabled. */
-            int wide_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1
-                             || opts->frame_nxdn96 == 1 || opts->frame_m17 == 1 || opts->frame_provoice == 1
-                             || opts->frame_ysf == 1 || opts->frame_x2tdma == 1);
-            if (!wide_mode && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1)) {
-                target_hz = 8000;
-            }
-            if (demod_base_rate_hz > target_hz) {
-                demod_base_rate_hz = target_hz;
-                LOG_INFO("DSP: clamping digital demod baseband to %d Hz (DSP-BW=%d Hz).\n", demod_base_rate_hz,
-                         rtl_dsp_bw_hz);
-            }
-        }
-    }
     /* Apply CLI volume multiplier (1..3), default to 1 if out of range */
     {
         int vm = opts->rtl_volume_multiplier;
@@ -2404,7 +2376,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
 
     /* With demod.rate_out known and resampler configured, refresh TED SPS unless overridden. */
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
 
     /* Reset endpoint before we start reading from it (mandatory) */
     rtl_device_reset_buffer(rtl_device_handle);
@@ -3166,8 +3138,8 @@ dsd_rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
         sps = 2;
     }
-    if (sps > 32) {
-        sps = 32;
+    if (sps > 64) {
+        sps = 64;
     }
     demod.ted_sps = sps;
 }

@@ -4090,7 +4090,7 @@ static void
 act_ted_sps_up(void* v) {
     UNUSED(v);
     int sps = rtl_stream_get_ted_sps();
-    if (sps < 32) {
+    if (sps < 64) {
         sps++;
     }
     UiDspPayload p = {.op = UI_DSP_OP_TED_SPS_SET, .a = sps};

@@ -462,18 +462,25 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             if (Fs_cx <= 0) {
                 Fs_cx = 48000; /* safe default */
             }
-            int sps = 0;
-            if (opts->frame_p25p2 == 1) {
-                sps = (Fs_cx + 3000) / 6000; /* round(Fs/6000) */
-            } else if (opts->frame_p25p1 == 1) {
-                sps = (Fs_cx + 2400) / 4800; /* round(Fs/4800) */
-            } else if (opts->frame_nxdn48 == 1) {
-                sps = (Fs_cx + 1200) / 2400; /* round(Fs/2400) */
-            } else {
-                sps = (Fs_cx + 2400) / 4800; /* generic 4800 sym/s */
+            /* Choose symbol rate by mode; keep explicit branches for narrow paths. */
+            int sym_rate = 4800; /* generic 4.8 ksps */
+            if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
+                sym_rate = 6000;
+            } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
+                sym_rate = 2400;
+            } else if (opts->frame_p25p1 == 1 || opts->frame_provoice == 1) {
+                sym_rate = 4800;
             }
+            if (Fs_cx < (sym_rate * 2)) {
+                LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
+                            sym_rate);
+            }
+            int sps = (Fs_cx + (sym_rate / 2)) / sym_rate; /* round(Fs/sym_rate) */
             if (sps < 2) {
                 sps = 2;
+            }
+            if (sps > 64) {
+                sps = 64;
             }
             demod->ted_sps = sps;
         }
@@ -597,12 +604,19 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         Fs_cx = 48000;
     }
     int sps = 0;
-    if (opts && opts->frame_p25p2 == 1) {
-        sps = (Fs_cx + 3000) / 6000;
-    } else if (opts && opts->frame_p25p1 == 1) {
-        sps = (Fs_cx + 2400) / 4800;
-    } else if (opts && opts->frame_nxdn48 == 1) {
-        sps = (Fs_cx + 1200) / 2400;
+    if (opts) {
+        int sym_rate = 4800;
+        if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
+            sym_rate = 6000;
+        } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
+            sym_rate = 2400;
+        } else if (opts->frame_p25p1 == 1 || opts->frame_provoice == 1) {
+            sym_rate = 4800;
+        }
+        if (Fs_cx < (sym_rate * 2)) {
+            LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx, sym_rate);
+        }
+        sps = (Fs_cx + (sym_rate / 2)) / sym_rate;
     } else {
         sps = (Fs_cx + 2400) / 4800;
     }
