@@ -1,6 +1,6 @@
 # DSD-neo Configuration System (Design)
 
-This document describes the proposed configuration file system for `dsd-neo`.
+This document describes the configuration file system implemented in `dsd-neo`.
 It is intended for developers and contributors; user-focused docs can be
 derived from this.
 
@@ -94,7 +94,7 @@ If the file cannot be read or parsed from an explicit path:
 ### Default Path
 
 If neither `--config` nor `DSD_NEO_CONFIG` is set, we look for a default
-per-user config. Proposed behavior:
+per-user config. Behavior:
 
 - On Unix-like systems:
   - If `$XDG_CONFIG_HOME` is set:
@@ -247,7 +247,7 @@ Notes:
 
 ## Parser and Serializer APIs
 
-New functions (proposed; names may be refined during implementation):
+Key functions (all shipped in the current tree):
 
 ```c
 /* Resolve the platform-specific default path (no I/O). */

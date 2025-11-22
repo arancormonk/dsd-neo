@@ -3,13 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * Core decoder state structure (dsd_state) and closely related
- * helper types used across protocols and UI.
+/**
+ * @file
+ * @brief Core decoder state structure (`dsd_state`) and helper types.
  *
- * This header hosts the full dsd_state definition so modules that
- * need state fields can include it directly instead of pulling in
- * the full dsd.h umbrella.
+ * Hosts the full `dsd_state` definition so modules needing state fields
+ * can include it directly instead of pulling in the full `dsd.h` umbrella.
  */
 
 #pragma once

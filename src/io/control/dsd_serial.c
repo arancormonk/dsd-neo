@@ -3,6 +3,15 @@
 #include <dsd-neo/runtime/log.h>
 #include <termios.h>
 
+/**
+ * @brief Open and configure the outbound serial port used for radio control.
+ *
+ * Applies baud rate and 8N1 framing and stores the resulting file descriptor
+ * in `opts->serial_fd`. Exits the process on failure to open the port.
+ *
+ * @param opts Decoder options containing serial configuration.
+ * @param state Decoder state (unused).
+ */
 void
 openSerial(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
@@ -50,6 +59,15 @@ openSerial(dsd_opts* opts, dsd_state* state) {
     tcsetattr(opts->serial_fd, TCSANOW, &tty);
 }
 
+/**
+ * @brief Resume scanning on the attached serial-controlled receiver.
+ *
+ * Issues the device-specific command sequence when the serial FD is valid and
+ * resets TDMA link counters in the decoder state.
+ *
+ * @param opts Decoder options containing serial FD.
+ * @param state Decoder state to update.
+ */
 void
 resumeScan(dsd_opts* opts, dsd_state* state) {
 

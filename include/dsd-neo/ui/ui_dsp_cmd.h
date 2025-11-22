@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* UI DSP runtime command opcodes for UI_CMD_DSP_OP payloads. */
+/**
+ * @file
+ * @brief UI DSP runtime command opcodes for `UI_CMD_DSP_OP` payloads.
+ */
 #pragma once
 
+/** DSP control opcodes understood by the demod thread. */
 enum UiDspOp {
     UI_DSP_OP_TOGGLE_CQ = 2,
     UI_DSP_OP_TOGGLE_FLL = 3,
@@ -48,6 +52,9 @@ enum UiDspOp {
     UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA = 43, // a: delta (+/-)
 };
 
+/**
+ * @brief Payload wrapper for DSP opcodes (fields interpreted per opcode).
+ */
 typedef struct {
     int op;
     int a;

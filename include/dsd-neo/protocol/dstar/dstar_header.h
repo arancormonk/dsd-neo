@@ -10,6 +10,12 @@
 
 struct dsd_state;
 
+/**
+ * @file
+ * @brief D-STAR header decode interface.
+ */
+
+/** @brief Decode a coded D-STAR header into state fields. */
 void dstar_header_decode(struct dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_CODED_BITS]);
 
 #endif /* DSD_NEO_PROTOCOL_DSTAR_HEADER_H */

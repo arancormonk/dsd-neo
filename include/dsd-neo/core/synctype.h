@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief Human-readable sync type strings for decoder telemetry.
+ */
 #ifndef SYNCTYPE_H
 #define SYNCTYPE_H
 

@@ -3,11 +3,11 @@
 #define REEDSOLOMON_HPP_b1405fdab6374ba2a4e65e8d45ec3d80
 
 /**
- * Code taken and adapted from www.eccpage.com/rs.c
- * Credit goes to Mr Simon Rockliff.
+ * @file
+ * @brief Reed-Solomon encoder/decoder used across multiple protocols.
  *
- * Tried before with the implementation from ITPP library but couldn't make it produce the same outputs
- * expected from the P25 transmissions that I have tested. This implementation does work.
+ * Code taken and adapted from www.eccpage.com/rs.c (credit: Simon Rockliff).
+ * Chosen because it matches P25 expectations where other implementations did not.
  */
 
 /* This program is an encoder/decoder for Reed-Solomon codes. Encoding is in

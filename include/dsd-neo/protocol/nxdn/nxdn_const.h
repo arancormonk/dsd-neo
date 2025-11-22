@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+/**
+ * @file
+ * @brief NXDN protocol constants and lookup tables.
+ */
 #include <stdint.h>
 // Portions Below from Osmocom OP25
 // NXDN Encoder (C) Copyright 2019 Max H. Parke KA1RBI

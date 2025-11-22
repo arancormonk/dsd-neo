@@ -7,8 +7,9 @@
 
 #include <stdint.h>
 
-/*
- * Decision-directed CQPSK equalizer interface (fractionally-spaced, NLMS).
+/**
+ * @file
+ * @brief Decision-directed CQPSK equalizer interface (fractionally-spaced NLMS).
  *
  * Lightweight, fixed-point implementation intended to mitigate moderate ISI
  * on P25 CQPSK paths. Uses a short feed-forward FIR with complex taps
@@ -97,32 +98,39 @@ typedef struct cqpsk_eq_state_s {
     int sym_len;  /* number of valid pairs currently stored (0..CQPSK_EQ_SYM_MAX) */
 } cqpsk_eq_state_t;
 
-/* Initialize equalizer state with identity response. */
+/** @brief Initialize equalizer state with identity response. */
 void cqpsk_eq_init(cqpsk_eq_state_t* st);
 
-/* Reset only runtime history/counters; keep taps/flags. */
+/** @brief Reset only runtime history/counters; keep taps/flags. */
 void cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st);
 
-/* Reset DFE branch taps and decision history to zero (safe enable). */
+/** @brief Reset DFE branch taps and decision history to zero (safe enable). */
 void cqpsk_eq_reset_dfe(cqpsk_eq_state_t* st);
 
-/* Reset WL (conjugate) branch taps to zero. */
+/** @brief Reset WL (conjugate) branch taps to zero. */
 void cqpsk_eq_reset_wl(cqpsk_eq_state_t* st);
 
-/* Full reset: taps to identity, WL/DFE cleared, histories/counters cleared. */
+/** @brief Full reset: taps to identity, WL/DFE cleared, histories/counters cleared. */
 void cqpsk_eq_reset_all(cqpsk_eq_state_t* st);
 
-/*
- * Apply equalizer to interleaved I/Q samples in-place.
- * in_out: pointer to interleaved I/Q samples
- * len:    number of elements in interleaved array (must be even)
+/**
+ * @brief Apply equalizer to interleaved I/Q samples in-place.
+ *
+ * @param st     Equalizer state.
+ * @param in_out Pointer to interleaved I/Q samples.
+ * @param len    Number of interleaved elements (must be even).
  */
 void cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len);
 
-/*
- * Retrieve recent equalized symbol outputs captured at symbol ticks.
- * Copies up to max_pairs complex samples (interleaved I,Q in Q0 int16) into out_xy.
- * Returns the number of pairs copied (0 if unavailable).
+/**
+ * @brief Retrieve recent equalized symbol outputs captured at symbol ticks.
+ *
+ * Copies up to `max_pairs` complex samples (interleaved I/Q in Q0 int16) into out_xy.
+ *
+ * @param st Equalizer state.
+ * @param out_xy Destination for interleaved I/Q pairs.
+ * @param max_pairs Maximum number of pairs to copy.
+ * @return Number of pairs copied (0 if unavailable).
  */
 int cqpsk_eq_get_symbols(const cqpsk_eq_state_t* st, int16_t* out_xy, int max_pairs);
 

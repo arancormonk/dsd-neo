@@ -3,12 +3,11 @@
 #define GOLAY24_HPP_7a68240afda9406facf81fcad3851111
 
 /**
- * Based on the work of Mr Hank Wallace.
+ * @file
+ * @brief (23,12) Golay FEC encoder/decoder utilities.
  *
- * Code adapted from http://www.aqdi.com/golay.htm
- *
- * Tried before with the implementation from ITPP library but couldn't make it produce the same outputs
- * expected from the P25 transmissions that I have tested. This implementation does work.
+ * Based on the work of Mr Hank Wallace. Adapted from http://www.aqdi.com/golay.htm
+ * because it matches expected P25 outputs where ITPP did not.
  */
 
 #include <assert.h>

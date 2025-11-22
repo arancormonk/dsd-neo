@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief P25 Phase 1 HDU validation helpers.
+ */
 #ifndef P25P1_CHECK_HDU_H_f5f079faf2d64cf5831e1da1ab83b9ba
 #define P25P1_CHECK_HDU_H_f5f079faf2d64cf5831e1da1ab83b9ba
 

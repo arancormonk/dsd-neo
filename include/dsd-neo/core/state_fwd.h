@@ -3,10 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * Forward declaration of core decoder state type.
- * Provides an incomplete dsd_state type for headers that only
- * need pointers/references without pulling in the full dsd.h.
+/**
+ * @file
+ * @brief Forward declaration of core decoder state type (`dsd_state`).
+ *
+ * Provides an incomplete type for headers that only need pointers/
+ * references without pulling in the full `dsd.h`.
  */
 
 #pragma once

@@ -3,8 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-// Centralized ncurses UI hotkeys to avoid conflicts and keep hints in sync.
-// Only keys actively used in the ncurses visual aids and related toggles are defined here.
+/**
+ * @file
+ * @brief Centralized ncurses UI hotkeys to avoid conflicts and keep hints in sync.
+ *
+ * Only keys actively used in the ncurses visual aids and related toggles are defined here.
+ */
 
 #ifndef DSD_NEO_UI_KEYMAP_H
 #define DSD_NEO_UI_KEYMAP_H

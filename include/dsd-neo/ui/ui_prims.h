@@ -3,12 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * UI primitives for ncurses-based terminal frontend
- * - Window helpers (new/destroy)
- * - Transient status message utilities
- * - Simple drawing helpers (headers, rules, borders)
- * - Gamma LUT mapping for density visualization
+/**
+ * @file
+ * @brief UI primitives for the ncurses-based terminal frontend.
+ *
+ * Window helpers, transient status utilities, lightweight drawing helpers,
+ * and a gamma LUT for density visualizations.
  */
 
 #pragma once
@@ -23,25 +23,30 @@ typedef struct _win_st WINDOW;
 extern "C" {
 #endif
 
-// Window helpers
+/** @brief Create a boxed ncurses window with keypad + nonblocking input. */
 WINDOW* ui_make_window(int h, int w, int y, int x);
+/** @brief Destroy a window and null the caller's pointer. */
 void ui_destroy_window(WINDOW** win);
 
-// Transient status footer (small one-line messages)
+/** @brief Set a transient status/footer message (printf-style). */
 void ui_statusf(const char* fmt, ...);
-// Returns 1 and copies current status to buf when not expired at 'now'.
+/** @brief Copy active status into buf when not expired at `now`; returns 1 if copied. */
 int ui_status_peek(char* buf, size_t n, time_t now);
-// Clear status when expired at 'now'. No-op if still active.
+/** @brief Clear status when expired at `now` (no-op if still active). */
 void ui_status_clear_if_expired(time_t now);
 
-// Simple drawing helpers (operate on stdscr or given WINDOW when applicable)
-void ui_print_hr(void);                  // horizontal rule to end of line
-void ui_print_header(const char* title); // section header "--Title-----"
-void ui_print_lborder(void);             // left border in primary color
-void ui_print_lborder_green(void);       // left border in active/green color
-short ui_iden_color_pair(int iden);      // map IDEN nibble -> color pair (21..28)
+/** @brief Draw a horizontal rule to end of line on stdscr. */
+void ui_print_hr(void);
+/** @brief Draw a section header prefixing the given title. */
+void ui_print_header(const char* title);
+/** @brief Draw a left border using the primary color. */
+void ui_print_lborder(void);
+/** @brief Draw a left border using the active/green color. */
+void ui_print_lborder_green(void);
+/** @brief Map IDEN nibble to color pair (21..28) for trunking displays. */
+short ui_iden_color_pair(int iden);
 
-// Gamma LUT mapping for [0,1] -> [0,1] brightness (sqrt gamma)
+/** @brief Map [0,1] -> [0,1] brightness using sqrt gamma LUT. */
 double ui_gamma_map01(double f);
 
 #ifdef __cplusplus

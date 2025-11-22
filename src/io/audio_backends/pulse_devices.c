@@ -14,8 +14,15 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/runtime/log.h>
 
-// This callback gets called when our context changes state.  We really only
-// care about when it's ready or if it has failed
+/**
+ * @brief PulseAudio context state callback used during device enumeration.
+ *
+ * Updates the `pa_ready` flag in userdata to 1 when the context is ready or to
+ * 2 when the context has failed/terminated.
+ *
+ * @param c PulseAudio context.
+ * @param userdata Pointer to an int readiness flag updated in place.
+ */
 void
 pa_state_cb(pa_context* c, void* userdata) {
     pa_context_state_t state;
@@ -35,9 +42,16 @@ pa_state_cb(pa_context* c, void* userdata) {
     }
 }
 
-// pa_mainloop will call this function when it's ready to tell us about a sink.
-// Since we're not threading, there's no need for mutexes on the devicelist
-// structure
+/**
+ * @brief PulseAudio sink enumeration callback.
+ *
+ * Copies sink information into the next free slot of the provided device list.
+ *
+ * @param c PulseAudio context (unused).
+ * @param l Sink info payload.
+ * @param eol Positive when enumeration is complete.
+ * @param userdata Pointer to `pa_devicelist_t` array to populate.
+ */
 void
 pa_sinklist_cb(pa_context* c, const pa_sink_info* l, int eol, void* userdata) {
     pa_devicelist_t* pa_devicelist = userdata;
@@ -69,7 +83,16 @@ pa_sinklist_cb(pa_context* c, const pa_sink_info* l, int eol, void* userdata) {
     }
 }
 
-// See above.  This callback is pretty much identical to the previous
+/**
+ * @brief PulseAudio source enumeration callback.
+ *
+ * Mirrors `pa_sinklist_cb` but for input devices.
+ *
+ * @param c PulseAudio context (unused).
+ * @param l Source info payload.
+ * @param eol Positive when enumeration is complete.
+ * @param userdata Pointer to `pa_devicelist_t` array to populate.
+ */
 void
 pa_sourcelist_cb(pa_context* c, const pa_source_info* l, int eol, void* userdata) {
     pa_devicelist_t* pa_devicelist = userdata;
@@ -94,6 +117,16 @@ pa_sourcelist_cb(pa_context* c, const pa_source_info* l, int eol, void* userdata
     }
 }
 
+/**
+ * @brief Enumerate PulseAudio sink/source devices into caller-provided arrays.
+ *
+ * Populates up to 16 entries in each list and returns 0 on success. On error,
+ * the arrays are zeroed and a negative code is returned.
+ *
+ * @param input  [out] Input device list (size 16).
+ * @param output [out] Output device list (size 16).
+ * @return 0 on success, -1 on failure.
+ */
 int
 pa_get_devicelist(pa_devicelist_t* input, pa_devicelist_t* output) {
     // Define our pulse audio loop and connection variables
@@ -193,6 +226,14 @@ pa_get_devicelist(pa_devicelist_t* input, pa_devicelist_t* output) {
     }
 }
 
+/**
+ * @brief Print enumerated PulseAudio devices to stdout/stderr.
+ *
+ * Uses `pa_get_devicelist` to gather sinks and sources, then writes a human
+ * readable list to stdout.
+ *
+ * @return 0 on success, 1 on enumeration error.
+ */
 int
 pulse_list() {
 

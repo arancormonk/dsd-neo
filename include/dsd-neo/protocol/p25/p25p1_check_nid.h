@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief P25 Phase 1 NID validation helpers.
+ */
 #ifndef P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 #define P25P1_CHECK_NID_H_3af071e917ea43fdb51326e2cbfbde0a
 

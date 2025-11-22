@@ -8,6 +8,12 @@
 #include <windows.h>
 #endif
 
+/**
+ * @brief Enumerate and print PortAudio devices.
+ *
+ * Prints version info plus all known input/output devices, marking defaults.
+ * When PortAudio is unavailable, emits a stub message instead.
+ */
 void
 printPortAudioDevices() {
     int i, numDevices, defaultDisplayed;
@@ -88,6 +94,7 @@ error:
 
 #else
 
+/** @brief Stub printer when PortAudio support is not compiled in. */
 void
 printPortAudioDevices() {
     fprintf(stderr, "PortAudio not supported in this build of dsd\n");

@@ -3,12 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * Core decoder options structure (dsd_opts).
+/**
+ * @file
+ * @brief Core decoder options structure (`dsd_opts`).
  *
- * This header hosts the full dsd_opts definition so modules that need
- * configuration fields can include it directly instead of pulling in
- * the full dsd.h umbrella.
+ * Hosts the full `dsd_opts` definition so modules that need configuration
+ * fields can include it directly instead of pulling in the full `dsd.h`
+ * umbrella.
  */
 
 #pragma once

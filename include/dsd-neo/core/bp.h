@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief Bit permutation lookup table used by legacy vocoder helpers.
+ */
 #ifndef BP_H
 #define BP_H
 

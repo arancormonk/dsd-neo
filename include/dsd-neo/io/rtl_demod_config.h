@@ -3,14 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * RTL-SDR demodulation configuration helpers.
+/**
+ * @file
+ * @brief RTL-SDR demodulation configuration helpers.
  *
  * Provides a small surface for configuring the demodulation state and
  * related runtime DSP settings used by the RTL-SDR stream pipeline.
- *
- * This header intentionally exposes only pointer types so that callers
- * do not need full struct definitions.
+ * Exposes only pointer types so callers avoid heavy struct includes.
  */
 
 #pragma once

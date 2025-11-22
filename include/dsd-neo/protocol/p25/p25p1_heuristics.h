@@ -2,6 +2,13 @@
 #ifndef P25P1_HEURISTICS_H_030dd3530b7546abbb56f8dd1e66a2f6
 #define P25P1_HEURISTICS_H_030dd3530b7546abbb56f8dd1e66a2f6
 
+#include <stddef.h>
+
+/**
+ * @file
+ * @brief Symbol/statistics heuristics for P25 Phase 1 decoding.
+ */
+
 #define HEURISTICS_SIZE 200
 
 typedef struct {

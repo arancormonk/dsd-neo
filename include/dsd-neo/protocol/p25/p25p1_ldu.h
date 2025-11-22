@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief P25 Phase 1 Logical Data Unit helpers.
+ */
 #ifndef P25P1_LDU_H_a3c417fcb7804991b0e6d828066bd133
 #define P25P1_LDU_H_a3c417fcb7804991b0e6d828066bd133
 

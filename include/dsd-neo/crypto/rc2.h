@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief Retevis RC2/RC4/MD2 composite cipher helpers.
+ */
 #ifndef RETEVIS_AP
 #define RETEVIS_AP
 
@@ -37,8 +41,11 @@ typedef struct {
 } CryptoContext;
 
 /* Public API */
+/** @brief Derive cipher keys from provided seed bytes. */
 void create_keys_rc2(CryptoContext* ctx, unsigned char key1[], size_t size1);
+/** @brief Encrypt a 49-bit frame using the composite cipher suite. */
 void encryption_rc2(CryptoContext* ctx, uint8_t s1[49]);
+/** @brief Decrypt a 49-bit frame using the composite cipher suite. */
 void decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]);
 
 #endif

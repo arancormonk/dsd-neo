@@ -38,9 +38,14 @@
 #define SAVED_FREQ_MAX 1000
 #define TAG_MAX        100
 
-//
-// error - wrapper for perror
-//
+/**
+ * @brief perror wrapper that exits the process after logging the message.
+ *
+ * Intended for fatal socket/setup failures where graceful continuation is not
+ * possible.
+ *
+ * @param msg Message passed to perror.
+ */
 void
 error(char* msg) {
     perror(msg);
@@ -51,9 +56,16 @@ struct sockaddr_in address;
 struct sockaddr_in addressA;
 struct sockaddr_in addressM17;
 
-//
-// Connect
-//
+/**
+ * @brief Establish a TCP RIGCTL connection to the given host/port.
+ *
+ * Resolves the hostname, opens a TCP socket, and applies a short receive
+ * timeout so control I/O cannot wedge the application.
+ *
+ * @param hostname Target host (IPv4/hostname).
+ * @param portno Target port number.
+ * @return Socket FD on success; 0 on resolution/connection failure.
+ */
 int
 Connect(char* hostname, int portno) {
     int sockfd;
@@ -111,9 +123,15 @@ Connect(char* hostname, int portno) {
     return sockfd;
 }
 
-//
-// Send
-//
+/**
+ * @brief Send a null-terminated RIGCTL command.
+ *
+ * Writes the buffer contents and treats short writes as errors.
+ *
+ * @param sockfd Connected socket FD.
+ * @param buf Command buffer (null-terminated).
+ * @return true on success; false on error.
+ */
 bool
 Send(int sockfd, char* buf) {
     int n;
@@ -126,9 +144,16 @@ Send(int sockfd, char* buf) {
     return true;
 }
 
-//
-// Recv
-//
+/**
+ * @brief Receive a RIGCTL response into the provided buffer.
+ *
+ * Reads up to BUFSIZE bytes; on timeout/error, zeroes the buffer and returns
+ * false.
+ *
+ * @param sockfd Connected socket FD.
+ * @param buf Buffer to fill (must be at least BUFSIZE+1 bytes).
+ * @return true on success; false on timeout/error.
+ */
 bool
 Recv(int sockfd, char* buf) {
     int n;
@@ -145,9 +170,14 @@ Recv(int sockfd, char* buf) {
     return true;
 }
 
-//
-// GQRX Protocol
-//
+/**
+ * @brief Query current tuned frequency via RIGCTL.
+ *
+ * Issues the "f" command and parses the returned frequency in Hz.
+ *
+ * @param sockfd Connected RIGCTL socket.
+ * @return Current frequency in Hz; 0 on error/unknown.
+ */
 long int
 GetCurrentFreq(int sockfd) {
     long int freq = 0;
@@ -168,6 +198,15 @@ GetCurrentFreq(int sockfd) {
     return freq;
 }
 
+/**
+ * @brief Set center frequency on the connected RIGCTL peer.
+ *
+ * Caches the last request per socket to avoid redundant I/O.
+ *
+ * @param sockfd Connected RIGCTL socket.
+ * @param freq Desired frequency in Hz.
+ * @return true on success; false on failure.
+ */
 bool
 SetFreq(int sockfd, long int freq) {
     static int s_last_sockfd = -1;
@@ -190,6 +229,16 @@ SetFreq(int sockfd, long int freq) {
     return true;
 }
 
+/**
+ * @brief Set modulation/bandwidth on the RIGCTL peer.
+ *
+ * Sends both the SDR++-specific "NFM" token and the generic "FM" token as a
+ * fallback. Requests are cached to skip redundant updates.
+ *
+ * @param sockfd Connected RIGCTL socket.
+ * @param bandwidth Target bandwidth in Hz.
+ * @return true on success; false on failure.
+ */
 bool
 SetModulation(int sockfd, int bandwidth) {
     static int s_last_sockfd = -1;
@@ -222,6 +271,16 @@ SetModulation(int sockfd, int bandwidth) {
     return true;
 }
 
+/**
+ * @brief Read current signal level from the peer.
+ *
+ * Issues the "l" command and parses the reported dB level with one decimal
+ * place of precision.
+ *
+ * @param sockfd Connected RIGCTL socket.
+ * @param dB [out] Parsed signal level.
+ * @return true on success; false on error or zero reading.
+ */
 bool
 GetSignalLevel(int sockfd, double* dB) {
     char buf[BUFSIZE];
@@ -242,6 +301,12 @@ GetSignalLevel(int sockfd, double* dB) {
     return true;
 }
 
+/**
+ * @brief Query squelch level in dB from the peer.
+ * @param sockfd Connected RIGCTL socket.
+ * @param dB [out] Parsed squelch level.
+ * @return true on success; false on error.
+ */
 bool
 GetSquelchLevel(int sockfd, double* dB) {
     char buf[BUFSIZE];
@@ -259,6 +324,12 @@ GetSquelchLevel(int sockfd, double* dB) {
     return true;
 }
 
+/**
+ * @brief Set squelch level on the peer in dB.
+ * @param sockfd Connected RIGCTL socket.
+ * @param dB Desired squelch level.
+ * @return true on success; false on failure.
+ */
 bool
 SetSquelchLevel(int sockfd, double dB) {
     char buf[BUFSIZE];
@@ -278,6 +349,17 @@ SetSquelchLevel(int sockfd, double dB) {
 // GetSignalLevelEx
 // Get a bunch of sample with some delay and calculate the mean value
 //
+/**
+ * @brief Average multiple signal level samples with a short delay between reads.
+ *
+ * Intended to smooth noisy signal reports when deciding on squelch or tuning
+ * actions.
+ *
+ * @param sockfd Connected RIGCTL socket.
+ * @param dB [out] Averaged signal level.
+ * @param n_samp Number of samples to average.
+ * @return true when sampling completed (errors are tolerated in the average).
+ */
 bool
 GetSignalLevelEx(int sockfd, double* dB, int n_samp) {
     double temp_level;
@@ -296,6 +378,15 @@ GetSignalLevelEx(int sockfd, double* dB, int n_samp) {
 }
 
 //shoe in UDP input connection here...still having issues that I don't know how to resolve
+/**
+ * @brief Bind a UDP socket to receive PCM input on the given port.
+ *
+ * Uses a very short receive timeout so reads do not block the application.
+ *
+ * @param hostname Ignored (reserved for future use).
+ * @param portno UDP port to bind.
+ * @return Socket FD on success; exits the process on fatal errors.
+ */
 int
 UDPBind(char* hostname, int portno) {
     UNUSED(hostname);
@@ -333,6 +424,16 @@ UDPBind(char* hostname, int portno) {
 }
 
 //going to leave this function available, even if completely switched over to rtl_dev_tune now, may be useful in the future
+/**
+ * @brief Tune RTL devices via legacy UDP command flow.
+ *
+ * Writes a 5-byte tuning command to the configured RTL UDP port on localhost.
+ * Caches the last frequency to avoid redundant transmissions.
+ *
+ * @param opts Decoder options (supplies UDP port and caches freq).
+ * @param state Decoder state (unused).
+ * @param frequency Desired center frequency in Hz.
+ */
 void
 rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     UNUSED(state);
@@ -369,6 +470,16 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     s_last_udp_freq = frequency;
 }
 
+/**
+ * @brief Send raw audio/data over the primary UDP output socket.
+ *
+ * Emits diagnostic messages when send errors or underflows occur.
+ *
+ * @param opts Decoder options containing socket handle and target.
+ * @param state Decoder state (unused).
+ * @param nsam Number of bytes to send.
+ * @param data Pointer to payload.
+ */
 void
 udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
@@ -398,6 +509,15 @@ udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     }
 }
 
+/**
+ * @brief Receive data on the M17 UDP socket.
+ *
+ * Reads up to 1000 bytes into the provided buffer and returns the byte count.
+ *
+ * @param opts Decoder options containing the socket.
+ * @param data [out] Buffer to populate.
+ * @return Number of bytes received or negative on error.
+ */
 int
 m17_socket_receiver(dsd_opts* opts, void* data) {
     ssize_t err = 0;
@@ -412,6 +532,16 @@ m17_socket_receiver(dsd_opts* opts, void* data) {
 }
 
 //Analog UDP port on +2 of normal open socket
+/**
+ * @brief Send audio/data over the analog UDP blaster socket.
+ *
+ * Uses the secondary socket bound at `udp_portno + 2` for analog payloads.
+ *
+ * @param opts Decoder options containing socket handle and target.
+ * @param state Decoder state (unused).
+ * @param nsam Number of bytes to send.
+ * @param data Pointer to payload.
+ */
 void
 udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
@@ -433,6 +563,17 @@ udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     }
 }
 
+/**
+ * @brief Send audio/data over the M17 UDP output socket.
+ *
+ * Returns the byte count sent by `sendto`.
+ *
+ * @param opts Decoder options containing socket handle and target.
+ * @param state Decoder state (unused).
+ * @param nsam Number of bytes to send.
+ * @param data Pointer to payload.
+ * @return Bytes sent or negative on error.
+ */
 int
 m17_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
@@ -447,6 +588,15 @@ m17_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     return (err);
 }
 
+/**
+ * @brief Configure the primary UDP output socket destination.
+ *
+ * Opens the socket, enables broadcast, and resolves the target hostname/port.
+ *
+ * @param opts Decoder options containing target hostname/port.
+ * @param state Decoder state (unused).
+ * @return 0 on success; negative error code on failure.
+ */
 int
 udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
@@ -484,6 +634,15 @@ udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/**
+ * @brief Configure the analog UDP output socket destination.
+ *
+ * Uses `udp_portno + 2` for the analog path.
+ *
+ * @param opts Decoder options containing target hostname/port.
+ * @param state Decoder state (unused).
+ * @return 0 on success; negative error code on failure.
+ */
 int
 udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
@@ -521,6 +680,15 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/**
+ * @brief Configure the M17 UDP socket destination.
+ *
+ * Opens the socket, enables broadcast, and resolves the M17 hostname/port.
+ *
+ * @param opts Decoder options containing M17 host/port.
+ * @param state Decoder state (unused).
+ * @return 0 on success; negative error code on failure.
+ */
 int
 udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
@@ -558,6 +726,15 @@ udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/**
+ * @brief Return to the P25 control channel, draining audio and resetting state.
+ *
+ * Handles both rigctl- and RTL-backed pipelines and refreshes internal timers,
+ * last-tuned frequencies, and channel tracking metadata.
+ *
+ * @param opts Decoder options (tuning targets and sockets).
+ * @param state Decoder state to reset.
+ */
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
@@ -650,6 +827,16 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // fprintf (stderr, "\n User Activated Return to CC; \n ");
 }
 
+/**
+ * @brief Tune to a specific voice/control channel and mark the trunking state.
+ *
+ * Drains queued audio, tunes via rigctl or RTL stream, and updates timers and
+ * bookkeeping fields so the SM can track the new voice channel.
+ *
+ * @param opts Decoder options with tuning configuration.
+ * @param state Decoder state to update.
+ * @param freq Target frequency in Hz.
+ */
 void
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
@@ -688,6 +875,16 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 
 // Tune to a Control Channel candidate frequency without marking as voice tuned.
 // Intended for use by the P25 state machine during CC hunting.
+/**
+ * @brief Tune to a P25 control channel candidate without marking as tuned.
+ *
+ * Avoids setting voice-tuned flags and only updates CC tracking metadata so
+ * the state machine can continue its hunt.
+ *
+ * @param opts Decoder options with tuning configuration.
+ * @param state Decoder state to update.
+ * @param freq Target control channel frequency in Hz.
+ */
 void
 trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {

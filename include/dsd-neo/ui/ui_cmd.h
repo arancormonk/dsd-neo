@@ -3,8 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * UI → Demod command queue API and command IDs.
+/**
+ * @file
+ * @brief UI → Demod command queue API and command IDs.
  */
 
 #pragma once
@@ -12,8 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Keep this header lightweight; consumers include it to build commands
-
+/** Command identifiers used by the async UI command queue. */
 enum UiCmdId {
     UI_CMD_TOGGLE_MUTE = 1,
     UI_CMD_TOGGLE_COMPACT = 2,
@@ -215,6 +215,9 @@ enum UiCmdId {
     UI_CMD_CONFIG_APPLY = 710 // payload: dsdneoUserConfig (see runtime/config.h)
 };
 
+/**
+ * @brief Command payload envelope for the UI command queue.
+ */
 struct UiCmd {
     int id;
     size_t n; // payload length

@@ -3,12 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * Core compile-time constants and small helper macros shared across DSD-neo.
+/**
+ * @file
+ * @brief Core compile-time constants and lightweight helper macros.
  *
- * This header is intentionally lightweight so that modules needing only
- * basic constants (sample rates, boolean-like flags, UNUSED helpers) do
- * not have to include the full dsd.h umbrella.
+ * Provides common sample-rate constants and portable boolean/UNUSED helpers
+ * without pulling in the heavier `dsd.h` umbrella.
  */
 
 #pragma once

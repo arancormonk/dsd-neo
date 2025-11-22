@@ -3,10 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * Forward declaration of core decoder options type.
- * Provides an incomplete dsd_opts type for headers that only
- * need pointers/references without pulling in the full dsd.h.
+/**
+ * @file
+ * @brief Forward declaration of core decoder options type (`dsd_opts`).
+ *
+ * Provides an incomplete type for headers that only need pointers/
+ * references without pulling in the full `dsd.h`.
  */
 
 #pragma once

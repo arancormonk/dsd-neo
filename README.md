@@ -228,7 +228,7 @@ cmake --build build/dev-release --target uninstall
 - RTL‑TCP networking:
   - Env: `DSD_NEO_TCP_PREBUF_MS=<ms>` — prebuffer before starting demod (default 1000, clamp 5–1000).
   - Behavior: when using RTL‑TCP, the input ring auto‑resizes so that the
-    requested prebuffer fits within ~50%% of the ring (to leave headroom),
+    requested prebuffer fits within ~50% of the ring (to leave headroom),
     yielding an effective prebuffer close to the requested duration at the
     active sample rate.
   - Env: `DSD_NEO_TCP_RCVBUF=<bytes>` — OS socket receive buffer (default ~4 MiB, OS‑capped).
@@ -239,6 +239,16 @@ cmake --build build/dev-release --target uninstall
   - Behavior: TCP keepalive is enabled; if the link drops, the client auto‑reconnects and reapplies tuner settings.
   - On reconnect, advanced driver options (direct sampling, offset tuning, testmode, xtal, IF gains) are replayed.
 
+- Additional runtime controls (environment):
+
+  - Deemphasis/post‑filters: `DSD_NEO_DEEMPH=off|50|75|nfm`, `DSD_NEO_AUDIO_LPF=<Hz>`.
+  - C4FM helpers and Costas tuning: `DSD_NEO_C4FM_CLK=el|mm`, `DSD_NEO_C4FM_CLK_SYNC=1`,
+    `DSD_NEO_COSTAS_BW/DAMPING/ORDER/USE_SNR/NOISE_DB`.
+  - Experimental equalizers/blanker: `DSD_NEO_C4FM_DD_EQ=1` (`DSD_NEO_C4FM_DD_EQ_TAPS/MU`),
+    `DSD_NEO_FM_CMA=1` (`DSD_NEO_FM_CMA_TAPS/MU/WARMUP/STRENGTH`),
+    `DSD_NEO_BLANKER_ON/THR/WIN`, `DSD_NEO_CHANNEL_LPF=1`.
+  - Misc: `DSD_NEO_MT=1` enables the light worker pool; `DSD_NEO_PDU_JSON=1` emits P25 MAC/VPDU JSON to stdout.
+
 ## Using The CLI
 
 - See the friendly CLI guide: [docs/cli.md](docs/cli.md)
@@ -247,6 +257,15 @@ cmake --build build/dev-release --target uninstall
   - DMR mono helpers:
     - Modern form: `-fs -nm` (DMR BS/MS simplex + mono audio).
     - Legacy alias: `-fr` (kept as a shorthand for the same DMR‑mono profile).
+
+## Configuration
+
+- INI‑style user config is implemented for stable defaults (input/output/mode/trunking); see `docs/config-system.md`.
+- Default path: `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`. Override with `--config <path>` or `DSD_NEO_CONFIG`.
+- Disable config loading with `--no-config` or `DSD_NEO_NO_CONFIG`.
+- `--interactive-setup` forces the bootstrap wizard even when a config exists; `--print-config` dumps the effective config as INI.
+- When a config path is known, the final settings are autosaved on exit. A no‑arg run uses the config if present; otherwise it
+  falls back to the interactive setup (unless disabled).
 
 ## Tests and Examples
 

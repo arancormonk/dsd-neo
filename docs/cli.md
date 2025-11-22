@@ -26,7 +26,17 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 
-Tip: Running with no arguments starts an interactive setup. Set `DSD_NEO_NO_BOOTSTRAP=1` to skip it.
+Tip: If no config exists, running with no arguments starts the interactive setup (respects `DSD_NEO_NO_BOOTSTRAP`). When a
+config file is present and enabled, a no-arg run reuses it; use `--interactive-setup` to force the wizard.
+
+## Configuration Files
+
+- Default path: `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`. Override with `--config <path>` or
+  `DSD_NEO_CONFIG=<path>`.
+- Disable config loading with `--no-config` or `DSD_NEO_NO_CONFIG=1`.
+- `--interactive-setup` runs the wizard even when a config exists.
+- `--print-config` prints the effective config as INI after all env/CLI overrides.
+- When a config path is known, the final settings are autosaved on exit. See `docs/config-system.md` for details.
 
 ## Inputs (`-i`)
 

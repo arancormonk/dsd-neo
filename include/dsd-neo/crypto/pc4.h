@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief TYT/Anytone PC4 cipher context and public helpers.
+ */
 #include <stddef.h>
 #include <stdint.h>
 
@@ -45,10 +49,15 @@ typedef struct {
 extern PC4Context ctx;
 
 /* Public API */
+/** @brief Derive PC4 key material from provided seed. */
 void create_keys(PC4Context* ctx, unsigned char key1[], size_t size1);
+/** @brief Encrypt the current context buffer using PC4. */
 void pc4encrypt(PC4Context* ctx);
+/** @brief Decrypt the current context buffer using PC4. */
 void pc4decrypt(PC4Context* ctx);
+/** @brief Convert binary bits to hexadecimal representation. */
 void binhex(PC4Context* ctx, short* z, int length);
+/** @brief Convert hexadecimal representation to binary bits. */
 void hexbin(PC4Context* ctx, short* q, uint8_t w, uint8_t hex);
 static __attribute__((unused)) void u64_to_bytes_be(uint64_t val, unsigned char* out);
 

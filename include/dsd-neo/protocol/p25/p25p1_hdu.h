@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: ISC
+/**
+ * @file
+ * @brief P25 Phase 1 Header Data Unit helpers.
+ */
 // Ensure core types are visible for prototypes below
 #ifndef P25P1_HDU_H_9f95c3a5072842e8aaf94444e1452d20
 #define P25P1_HDU_H_9f95c3a5072842e8aaf94444e1452d20

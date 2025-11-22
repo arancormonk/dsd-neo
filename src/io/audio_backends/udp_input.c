@@ -21,6 +21,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
 
+/** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {
     int16_t* buf;
     size_t cap; // in samples
@@ -30,6 +31,7 @@ typedef struct udp_input_ring {
     pthread_cond_t cv;
 } udp_input_ring;
 
+/** @brief UDP input backend state shared across the reader thread and callers. */
 typedef struct udp_input_ctx {
     int sockfd;
     int running;
@@ -38,6 +40,11 @@ typedef struct udp_input_ctx {
     int sample_rate;
 } udp_input_ctx;
 
+/**
+ * @brief Initialize the sample ring with the requested capacity.
+ * @param r Ring to initialize.
+ * @param cap_samples Capacity in samples (allocates backing buffer).
+ */
 static void
 ring_init(udp_input_ring* r, size_t cap_samples) {
     r->buf = (int16_t*)malloc(cap_samples * sizeof(int16_t));
@@ -47,6 +54,10 @@ ring_init(udp_input_ring* r, size_t cap_samples) {
     pthread_cond_init(&r->cv, NULL);
 }
 
+/**
+ * @brief Destroy the ring buffer and free resources.
+ * @param r Ring to destroy.
+ */
 static void
 ring_destroy(udp_input_ring* r) {
     if (r->buf) {
@@ -58,16 +69,34 @@ ring_destroy(udp_input_ring* r) {
     pthread_cond_destroy(&r->cv);
 }
 
+/**
+ * @brief Return number of samples currently buffered.
+ * @param r Ring to query.
+ */
 static size_t
 ring_used(const udp_input_ring* r) {
     return (r->head + r->cap - r->tail) % r->cap;
 }
 
+/**
+ * @brief Return remaining free slots in the ring.
+ * @param r Ring to query.
+ */
 static size_t
 ring_free_space(const udp_input_ring* r) {
     return r->cap - 1 - ring_used(r);
 }
 
+/**
+ * @brief Write as many samples as will fit into the ring.
+ *
+ * Drops trailing samples when the ring is full.
+ *
+ * @param r Ring to write into.
+ * @param data Source samples.
+ * @param count Number of samples to attempt to write.
+ * @return Number of samples actually written.
+ */
 static size_t
 ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
     size_t w = 0;
@@ -78,6 +107,12 @@ ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
     return w;
 }
 
+/**
+ * @brief Blocking read of one sample with exitflag handling.
+ * @param r Ring to read from.
+ * @param out [out] Destination for the sample.
+ * @return 1 on success, 0 on shutdown/exit request.
+ */
 static __attribute__((unused)) int
 ring_read_block(udp_input_ring* r, int16_t* out) {
     pthread_mutex_lock(&r->m);
@@ -102,6 +137,7 @@ ring_read_block(udp_input_ring* r, int16_t* out) {
     return 1;
 }
 
+/** @brief Wake any thread blocked on the ring condition variable. */
 static void
 ring_signal(udp_input_ring* r) {
     pthread_mutex_lock(&r->m);
@@ -109,6 +145,12 @@ ring_signal(udp_input_ring* r) {
     pthread_mutex_unlock(&r->m);
 }
 
+/**
+ * @brief Non-blocking attempt to read one sample.
+ * @param r Ring to read from.
+ * @param out [out] Destination for the sample.
+ * @return 1 when a sample was read; 0 when the ring was empty.
+ */
 static int
 ring_try_read(udp_input_ring* r, int16_t* out) {
     int ok = 0;
@@ -122,6 +164,15 @@ ring_try_read(udp_input_ring* r, int16_t* out) {
     return ok;
 }
 
+/**
+ * @brief Background UDP receive thread that widens PCM16LE datagrams.
+ *
+ * Receives UDP datagrams, converts to int16 samples, and pushes them into the
+ * ring while tracking drop statistics on overflow.
+ *
+ * @param arg Pointer to owning `dsd_opts`.
+ * @return NULL on exit.
+ */
 static void*
 udp_rx_thread(void* arg) {
     dsd_opts* opts = (dsd_opts*)arg;
@@ -173,6 +224,18 @@ udp_rx_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * @brief Start UDP input thread and ring.
+ *
+ * Creates the UDP socket, configures timeouts/buffers, spawns the reader
+ * thread, and installs the context into `opts->udp_in_ctx`.
+ *
+ * @param opts Decoder options receiving backend context and counters.
+ * @param bindaddr Address to bind (IPv4/IPv6 string).
+ * @param port UDP port number.
+ * @param samplerate Expected sample rate (Hz) used for ring sizing.
+ * @return 0 on success; negative on error.
+ */
 int
 udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) {
     if (!opts) {
@@ -257,6 +320,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     return 0;
 }
 
+/**
+ * @brief Stop UDP input backend and reclaim resources.
+ * @param opts Decoder options containing the UDP context.
+ */
 void
 udp_input_stop(dsd_opts* opts) {
     if (!opts || !opts->udp_in_ctx) {
@@ -278,6 +345,15 @@ udp_input_stop(dsd_opts* opts) {
     opts->udp_in_sockfd = 0;
 }
 
+/**
+ * @brief Try to read a single sample from the UDP ring.
+ *
+ * Non-blocking; returns 0 when the ring is empty.
+ *
+ * @param opts Decoder options containing UDP context.
+ * @param out [out] Receives one sample when available.
+ * @return 1 on success, 0 when no sample is ready.
+ */
 int
 udp_input_read_sample(dsd_opts* opts, int16_t* out) {
     if (!opts || !opts->udp_in_ctx || !out) {

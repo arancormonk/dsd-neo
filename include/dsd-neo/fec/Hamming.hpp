@@ -9,6 +9,12 @@
 #include <iostream>
 
 /**
+ * @file
+ * @brief Hamming (10,6,3) FEC helper classes.
+ *
+ * Holds data and encoder/decoder helpers for the Hamming_10_6_3 codes.
+ */
+/**
  * \brief Holds data for the Hamming_10_6_3 class. See next.
  */
 class Hamming_10_6_3_data {
