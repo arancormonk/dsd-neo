@@ -92,24 +92,69 @@ typedef struct {
     time_t t_last_return;
 } dsd_p25p2_min_sm;
 
-// Initialize with defaults: hangtime 1.0s, vc_grace 1.5s. Callbacks are NULL.
+/**
+ * @brief Initialize the minimal P25P2 state machine with defaults.
+ *
+ * hangtime defaults to 1.0s and vc_grace to 1.5s; callbacks start as NULL.
+ *
+ * @param sm State-machine instance to initialize.
+ */
 void dsd_p25p2_min_init(dsd_p25p2_min_sm* sm);
 
-// Set callbacks (any may be NULL)
+/**
+ * @brief Set state-machine callbacks; any callback may be NULL.
+ *
+ * @param sm State-machine instance.
+ * @param tune_cb Callback invoked to tune to a voice channel.
+ * @param ret_cb Callback invoked to return to the control channel.
+ * @param state_cb Callback invoked on state transitions.
+ */
 void dsd_p25p2_min_set_callbacks(dsd_p25p2_min_sm* sm, dsd_p25p2_min_on_tune_vc_cb tune_cb,
                                  dsd_p25p2_min_on_return_cc_cb ret_cb, dsd_p25p2_min_on_state_change_cb state_cb);
 
-// Override timing parameters (pass negative to keep existing)
+/**
+ * @brief Override core timing parameters (pass negative to keep existing).
+ *
+ * @param sm State-machine instance.
+ * @param hangtime_s Hang time in seconds (negative to keep existing).
+ * @param vc_grace_s Grace window after tuning before eligible for release (negative to keep existing).
+ */
 void dsd_p25p2_min_configure(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace_s);
 
-// Extended configuration: set all timing knobs at once (pass negative to keep existing).
+/**
+ * @brief Extended configuration for all timing parameters (pass negative to keep existing).
+ *
+ * @param sm State-machine instance.
+ * @param hangtime_s Hang time in seconds (negative to keep existing).
+ * @param vc_grace_s Grace window after tuning before eligible for release (negative to keep existing).
+ * @param min_follow_dwell_s Minimum dwell after first voice burst (negative to keep existing).
+ * @param grant_voice_timeout_s Timeout from grant to active voice before returning (negative to keep existing).
+ * @param retune_backoff_s Backoff before retuning to the same frequency (negative to keep existing).
+ */
 void dsd_p25p2_min_configure_ex(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace_s, double min_follow_dwell_s,
                                 double grant_voice_timeout_s, double retune_backoff_s);
 
-// Feed an event into the SM. Uses self-contained clocks; does not write global timers.
+/**
+ * @brief Feed an event into the state machine (uses self-contained clocks).
+ *
+ * Does not modify global timers; intended to be driven by decoder callbacks.
+ *
+ * @param sm State-machine instance.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param ev Event to handle.
+ */
 void dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state, const dsd_p25p2_min_evt* ev);
 
-// Periodic heartbeat (e.g., 10 Hz or 1 Hz). Enforces hang→return transitions.
+/**
+ * @brief Periodic heartbeat enforcing hang-to-return transitions.
+ *
+ * Call at a regular cadence (e.g., 10 Hz or 1 Hz).
+ *
+ * @param sm State-machine instance.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
 void dsd_p25p2_min_tick(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state);
 
 // Helper: current state query
@@ -118,9 +163,14 @@ dsd_p25p2_min_get_state(const dsd_p25p2_min_sm* sm) {
     return sm ? sm->state : DSD_P25P2_MIN_IDLE;
 }
 
-// Global singleton accessor used when wiring into existing paths.
-// Returns a process-global instance initialized with default callbacks
-// (tune VC/return CC via rigctl/RTL helpers).
+/**
+ * @brief Access the process-global minimal P25P2 state-machine instance.
+ *
+ * Returns a singleton initialized with default callbacks (tune VC/return CC
+ * via rigctl/RTL helpers).
+ *
+ * @return Pointer to the global state-machine instance.
+ */
 dsd_p25p2_min_sm* dsd_p25p2_min_get(void);
 
 #ifdef __cplusplus

@@ -3,8 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * RTL-SDR demodulation configuration helpers.
+/**
+ * @file
+ * @brief RTL-SDR demodulation configuration helpers.
  *
  * Centralizes initialization and configuration of the demodulation state
  * used by the RTL-SDR stream pipeline, including mode selection, env/opts
@@ -243,6 +244,18 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
 
 } // namespace
 
+/**
+ * @brief Initialize the demodulator for the requested mode and attach output ring.
+ *
+ * Chooses RO2/digital/analog initialization based on @p opts flags, seeds mode
+ * defaults, primes the worker pool, and wires up the output ring target.
+ * Returns immediately when inputs are NULL.
+ *
+ * @param demod         Demodulator state to initialize.
+ * @param output        Output ring target for demodulated audio.
+ * @param opts          Decoder options to derive mode/config flags.
+ * @param rtl_dsp_bw_hz Baseband bandwidth in Hz for initial rate defaults.
+ */
 void
 rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, const dsd_opts* opts,
                         int rtl_dsp_bw_hz) {
@@ -261,6 +274,17 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
     }
 }
 
+/**
+ * @brief Apply environment/runtime overrides to the demodulator state.
+ *
+ * Mirrors CLI/env-driven configuration into the demodulator, covering DSP
+ * toggles (HB vs legacy decimator, FS/4 shift, combine-rotate), resampler
+ * targets, FLL/TED tuning, CQPSK path enable, blanker/AGC/CMA knobs, and
+ * IQ balance defaults. Early-exits on NULL inputs.
+ *
+ * @param demod Demodulator state to configure.
+ * @param opts  Decoder options used for runtime flags.
+ */
 void
 rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     if (!demod || !opts) {
@@ -474,6 +498,17 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->channel_lpf_profile = channel_lpf_profile;
 }
 
+/**
+ * @brief Apply sane defaults for digital vs analog demodulation when unset.
+ *
+ * Populates TED/FLL defaults, TED SPS, channel/audio filter profiles, and
+ * analog deemphasis based on the selected mode when the user has not
+ * overridden settings via env/CLI. Relies on @p output for effective rate.
+ *
+ * @param demod  Demodulator state to update.
+ * @param opts   Decoder options (mode flags).
+ * @param output Output ring used to infer sample rate.
+ */
 void
 rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, const struct output_state* output) {
     if (!demod || !opts || !output) {
@@ -567,6 +602,17 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     }
 }
 
+/**
+ * @brief Recompute resampler design after rate changes.
+ *
+ * Updates the resampler taps/ratios based on the current demod/output rates
+ * and the requested target, falling back to @p rtl_dsp_bw_hz when needed.
+ * Also updates output.rate to reflect the new sink rate.
+ *
+ * @param demod         Demodulator state (contains resampler config).
+ * @param output        Output ring state to refresh.
+ * @param rtl_dsp_bw_hz DSP baseband bandwidth in Hz when rate_out is unset.
+ */
 void
 rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, struct output_state* output,
                                                    int rtl_dsp_bw_hz) {
@@ -629,6 +675,16 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     output->rate = target;
 }
 
+/**
+ * @brief Refresh TED SPS after capture/output rate changes.
+ *
+ * When TED SPS is not explicitly forced via runtime configuration, recompute
+ * the nominal samples-per-symbol from the current output rate and mode.
+ *
+ * @param demod  Demodulator state.
+ * @param opts   Decoder options (mode flags).
+ * @param output Output ring (for sink rate).
+ */
 void
 rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, const dsd_opts* opts,
                                                   const struct output_state* output) {
@@ -678,6 +734,15 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     demod->ted_sps = sps;
 }
 
+/**
+ * @brief Release resources allocated by demod_init_mode/config helpers.
+ *
+ * Tears down resampler/filter buffers, worker pools, and any dynamically
+ * allocated state within the demodulator instance. Safe on partially
+ * initialized structures.
+ *
+ * @param demod Demodulator state to clean up.
+ */
 void
 rtl_demod_cleanup(struct demod_state* demod) {
     if (!demod) {

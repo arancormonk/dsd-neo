@@ -22,14 +22,31 @@
 extern "C" {
 #endif
 
-/* Try to run one tick if not already in progress. Safe to call often. */
+/**
+ * @brief Attempt to run one P25 state-machine tick when idle.
+ *
+ * Safe to call frequently; a tick is skipped when one is already in progress.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
 void p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 
-/* Start/stop background 1 Hz watchdog thread (no-op if already started). */
+/**
+ * @brief Start the background 1 Hz watchdog thread.
+ *
+ * No-op if already started.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
 void p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
+/** @brief Stop the background watchdog thread (safe to call when stopped). */
 void p25_sm_watchdog_stop(void);
 
-/* Returns 1 while a P25 SM tick is executing on the current thread. */
+/**
+ * @brief Return 1 while a P25 SM tick is executing on the current thread.
+ */
 int p25_sm_in_tick(void);
 
 #ifdef __cplusplus

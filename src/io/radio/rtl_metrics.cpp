@@ -3,8 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * RTL-SDR metrics and auto-PPM helpers.
+/**
+ * @file
+ * @brief RTL-SDR metrics, spectrum diagnostics, and auto-PPM helpers.
  *
  * Houses spectrum/SNR-based auto-PPM supervision state, spectrum and
  * carrier diagnostics, and the public query/toggle helpers used by
@@ -59,6 +60,16 @@ std::atomic<int> g_auto_ppm_last_dir{0};
 std::atomic<int> g_auto_ppm_cooldown{0};
 
 /* Internal FFT helper (radix-2, in-place). */
+/**
+ * @brief In-place radix-2 FFT used for spectrum snapshots.
+ *
+ * Operates on separate real and imaginary arrays containing N points,
+ * performing bit-reversal and iterative butterflies.
+ *
+ * @param xr Real component buffer (modified in-place).
+ * @param xi Imaginary component buffer (modified in-place).
+ * @param N  Transform length (power of two).
+ */
 static inline void
 fft_rad2(float* xr, float* xi, int N) {
     int j = 0;
@@ -104,6 +115,17 @@ fft_rad2(float* xr, float* xi, int N) {
     }
 }
 
+/**
+ * @brief Update spectrum, CFO, and SNR exports from an interleaved I/Q block.
+ *
+ * Copies the most recent samples into a windowed buffer, performs an FFT,
+ * smooths the power spectrum, and updates residual CFO and Costas/FLL exports.
+ * Also nudges the CQPSK outer loop when appropriate.
+ *
+ * @param iq_interleaved Interleaved int16_t I/Q samples.
+ * @param len_interleaved Number of int16_t elements in `iq_interleaved`.
+ * @param out_rate_hz Output sample rate used for CFO scaling.
+ */
 void
 rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz) {
     if (!iq_interleaved || len_interleaved < 2) {
@@ -285,6 +307,17 @@ rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_inter
 }
 
 /* Spectrum and carrier diagnostics query helpers. */
+/**
+ * @brief Copy the smoothed spectrum into the caller's buffer.
+ *
+ * Returns the number of bins copied (clamped to both the configured FFT size
+ * and `max_bins`). Optionally returns the current sample rate used for the FFT.
+ *
+ * @param out_db   [out] Destination buffer for power values in dB.
+ * @param max_bins Maximum bins to copy.
+ * @param out_rate [out] Optional sample rate in Hz.
+ * @return Number of bins copied (0 if not ready or on invalid input).
+ */
 extern "C" int
 dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (!out_db || max_bins <= 0) {
@@ -310,6 +343,15 @@ dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     return n;
 }
 
+/**
+ * @brief Configure the FFT size used for spectrum exports.
+ *
+ * The size is clamped to [64, kSpecMaxN] and rounded up to the next power of
+ * two for the radix-2 implementation.
+ *
+ * @param n Requested FFT length (bins).
+ * @return Actual FFT length selected.
+ */
 extern "C" int
 dsd_rtl_stream_spectrum_set_size(int n) {
     if (n < 64) {
@@ -329,6 +371,10 @@ dsd_rtl_stream_spectrum_set_size(int n) {
     return p;
 }
 
+/**
+ * @brief Get the current FFT size used for spectrum exports.
+ * @return FFT length in bins.
+ */
 extern "C" int
 dsd_rtl_stream_spectrum_get_size(void) {
     int N = g_spec_N.load(std::memory_order_relaxed);
@@ -341,53 +387,69 @@ dsd_rtl_stream_spectrum_get_size(void) {
     return N;
 }
 
+/** @brief Return the current NCO CFO estimate in Hz derived from Costas/FLL. */
 extern "C" double
 dsd_rtl_stream_get_cfo_hz(void) {
     return g_cfo_nco_hz.load(std::memory_order_relaxed);
 }
 
+/** @brief Return the residual CFO estimate in Hz derived from the spectrum peak. */
 extern "C" double
 dsd_rtl_stream_get_residual_cfo_hz(void) {
     return g_resid_cfo_spec_hz.load(std::memory_order_relaxed);
 }
 
+/** @brief Return 1 when the CQPSK carrier lock heuristic is satisfied. */
 extern "C" int
 dsd_rtl_stream_get_carrier_lock(void) {
     return g_carrier_lock.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
+/** @brief Get the current FLL/Costas NCO frequency in Q15 cycles/sample. */
 extern "C" int
 dsd_rtl_stream_get_nco_q15(void) {
     return g_nco_q15.load(std::memory_order_relaxed);
 }
 
+/** @brief Get the demodulator sample rate (Hz) used for CFO scaling. */
 extern "C" int
 dsd_rtl_stream_get_demod_rate_hz(void) {
     return g_demod_rate_hz.load(std::memory_order_relaxed);
 }
 
+/** @brief Get the smoothed Costas error term (Q14). */
 extern "C" int
 dsd_rtl_stream_get_costas_err_q14(void) {
     return g_costas_err_avg_q14.load(std::memory_order_relaxed);
 }
 
 /* Smoothed SNR exports (for UI and protocol code). */
+/** @brief Get the smoothed C4FM SNR estimate in dB (negative when unavailable). */
 extern "C" double
 rtl_stream_get_snr_c4fm(void) {
     return g_snr_c4fm_db.load(std::memory_order_relaxed);
 }
 
+/** @brief Get the smoothed CQPSK SNR estimate in dB (negative when unavailable). */
 extern "C" double
 rtl_stream_get_snr_cqpsk(void) {
     return g_snr_qpsk_db.load(std::memory_order_relaxed);
 }
 
+/** @brief Get the smoothed GFSK SNR estimate in dB (negative when unavailable). */
 extern "C" double
 rtl_stream_get_snr_gfsk(void) {
     return g_snr_gfsk_db.load(std::memory_order_relaxed);
 }
 
 /* Blanker and tuner autogain runtime control */
+/**
+ * @brief Read the current impulse blanker settings.
+ *
+ * @param out_thr [out] Threshold magnitude (may be NULL).
+ * @param out_win [out] Window length in samples (may be NULL).
+ * @return 1 if enabled, 0 if disabled.
+ */
 extern "C" int
 dsd_rtl_stream_get_blanker(int* out_thr, int* out_win) {
     if (out_thr) {
@@ -399,6 +461,16 @@ dsd_rtl_stream_get_blanker(int* out_thr, int* out_win) {
     return demod.blanker_enable ? 1 : 0;
 }
 
+/**
+ * @brief Enable/disable the impulse blanker and update its parameters.
+ *
+ * Negative values leave a parameter unchanged; values are clamped to sane
+ * ranges internally.
+ *
+ * @param enable Non-zero to enable, zero to disable, negative to leave as-is.
+ * @param thr    Threshold magnitude (non-negative).
+ * @param win    Window length in samples (non-negative).
+ */
 extern "C" void
 dsd_rtl_stream_set_blanker(int enable, int thr, int win) {
     if (enable >= 0) {
@@ -424,16 +496,33 @@ dsd_rtl_stream_set_blanker(int enable, int thr, int win) {
     }
 }
 
+/** @brief Return the supervisory tuner auto-gain flag (1=enabled). */
 extern "C" int
 dsd_rtl_stream_get_tuner_autogain(void) {
     return g_tuner_autogain_on.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
+/** @brief Enable or disable supervisory tuner auto-gain (atomic flag). */
 extern "C" void
 dsd_rtl_stream_set_tuner_autogain(int onoff) {
     g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 
+/**
+ * @brief Snapshot auto-PPM supervision status.
+ *
+ * Fills out the optional output parameters with the latest SNR, frequency
+ * offset, estimate, direction, cooldown, and lock status.
+ *
+ * @param enabled  [out] Whether auto-PPM is currently enabled.
+ * @param snr_db   [out] Current SNR estimate in dB.
+ * @param df_hz    [out] Current frequency offset estimate in Hz.
+ * @param est_ppm  [out] Current PPM estimate applied.
+ * @param last_dir [out] Most recent adjustment direction (-1/0/1).
+ * @param cooldown [out] Remaining cooldown ticks before next adjustment.
+ * @param locked   [out] Whether a stable PPM lock is latched.
+ * @return 0 always (snapshot only).
+ */
 int
 dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
                                    int* cooldown, int* locked) {
@@ -461,11 +550,20 @@ dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, 
     return 0;
 }
 
+/** @brief Return 1 if the spectrum-based auto-PPM training window is active. */
 int
 dsd_rtl_stream_auto_ppm_training_active(void) {
     return g_auto_ppm_training.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
+/**
+ * @brief Retrieve the last locked auto-PPM correction and supporting metrics.
+ *
+ * @param ppm    [out] Locked PPM value.
+ * @param snr_db [out] SNR at lock time in dB.
+ * @param df_hz  [out] Residual frequency offset at lock time in Hz.
+ * @return 0 always (snapshot only).
+ */
 int
 dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
     if (ppm) {
@@ -480,11 +578,19 @@ dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
     return 0;
 }
 
+/**
+ * @brief Force-enable or disable auto-PPM (user override).
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void
 dsd_rtl_stream_set_auto_ppm(int onoff) {
     g_auto_ppm_user_en.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 
+/**
+ * @brief Get the effective auto-PPM enable flag after user overrides.
+ * @return 1 when enabled, 0 when disabled.
+ */
 int
 dsd_rtl_stream_get_auto_ppm(void) {
     int u = g_auto_ppm_user_en.load(std::memory_order_relaxed);

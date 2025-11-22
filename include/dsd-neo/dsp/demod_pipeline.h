@@ -75,8 +75,8 @@ void generic_fir(int16_t* data, int length, int* fir, int16_t* hist);
  * Uses the active discriminator configured in fm->discriminator.
  *
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
+ * @note Renamed to avoid collision with codec2's fm_demod symbol on Windows.
  */
-/* Renamed to avoid collision with codec2's fm_demod symbol on Windows */
 void dsd_fm_demod(struct demod_state* fm);
 
 /**

@@ -27,6 +27,12 @@ extern "C" {
  * (data and parity). Returns 1 if the codeword is valid after optional single-
  * bit correction, or 0 if uncorrectable (e.g., multi-bit errors).
  */
+/**
+ * @brief Validate and optionally correct a P25p1 Low Speed Data (16,8) codeword.
+ *
+ * @param bits16 Pointer to 16 entries (0/1) representing the codeword (MSB-first).
+ * @return 1 if valid after optional single-bit correction; 0 if uncorrectable.
+ */
 int p25_lsd_fec_16x8(uint8_t* bits16);
 
 #ifdef __cplusplus

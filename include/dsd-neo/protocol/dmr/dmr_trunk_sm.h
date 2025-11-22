@@ -21,23 +21,73 @@
 extern "C" {
 #endif
 
-// Initialize any internal DMR trunking state (noop for now)
+/**
+ * @brief Initialize DMR trunking state (currently a no-op placeholder).
+ *
+ * Kept for symmetry with the P25 state machine entry points.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
 void dmr_sm_init(dsd_opts* opts, dsd_state* state);
 
-// Handle group voice grants. Prefer freq_hz when provided; otherwise resolve from LPCN.
+/**
+ * @brief Handle a group voice grant.
+ *
+ * Prefers an explicit `freq_hz` when provided; otherwise resolves the voice
+ * channel from the LPCN using channel tables or defaults.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param freq_hz Voice channel frequency in Hz (0 to resolve from LPCN).
+ * @param lpcn Logical channel number from the PDU.
+ * @param tg Talkgroup ID.
+ * @param src Source RID.
+ */
 void dmr_sm_on_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src);
 
-// Handle individual (unit-to-unit/telephone) voice grants. Prefer freq_hz when provided; otherwise resolve from LPCN.
+/**
+ * @brief Handle an individual (unit-to-unit or telephone) voice grant.
+ *
+ * Prefers an explicit `freq_hz` when provided; otherwise resolves the voice
+ * channel from the LPCN using channel tables or defaults.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param freq_hz Voice channel frequency in Hz (0 to resolve from LPCN).
+ * @param lpcn Logical channel number from the PDU.
+ * @param dst Destination RID.
+ * @param src Source RID.
+ */
 void dmr_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int dst, int src);
 
-// Explicit end/release (e.g., P_CLEAR) — will consider hang time and opposite slot activity in future iterations.
+/**
+ * @brief Handle an explicit end/release message (e.g., P_CLEAR).
+ *
+ * Hang time and opposite slot activity may be considered by future iterations.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
 void dmr_sm_on_release(dsd_opts* opts, dsd_state* state);
 
-// Optional neighbor/alternate CC update hook (frequencies in Hz)
+/**
+ * @brief Update neighbor/alternate control channel list (optional).
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param freqs Array of candidate CC frequencies in Hz.
+ * @param count Number of entries in `freqs`.
+ */
 void dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
 
-// Fetch next candidate CC frequency discovered from DMR neighbor/status PDUs.
-// Returns 1 and writes to out_freq if available; returns 0 otherwise.
+/**
+ * @brief Fetch the next candidate CC frequency discovered from DMR PDUs.
+ *
+ * @param state Decoder state holding candidate list.
+ * @param out_freq [out] Receives the candidate CC in Hz when available.
+ * @return 1 and writes out_freq when available; 0 when none pending.
+ */
 int dmr_sm_next_cc_candidate(dsd_state* state, long* out_freq);
 
 #ifdef __cplusplus

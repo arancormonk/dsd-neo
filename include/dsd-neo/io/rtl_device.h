@@ -46,6 +46,7 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  * @param port Remote TCP port (e.g., 1234).
  * @param input_ring Pointer to input ring for incoming I/Q data.
  * @param combine_rotate_enabled Whether to use combined rotate+widen when offset tuning is disabled.
+ * @param autotune_enabled Enable rtl_tcp adaptive buffering/autotune at startup (1=on, 0=off).
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
@@ -154,6 +155,9 @@ int rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on);
 /**
  * @brief Backward-compatible helper to enable offset tuning (equivalent to calling
  * rtl_device_set_offset_tuning_enabled(dev, 1)).
+ *
+ * @param dev RTL-SDR device handle.
+ * @return 0 on success; negative on failure.
  */
 int rtl_device_set_offset_tuning(struct rtl_device* dev);
 
@@ -200,7 +204,7 @@ int rtl_device_stop_async(struct rtl_device* dev);
  * @param dev RTL-SDR device handle.
  * @param bytes Number of input bytes to overwrite with 0x7F (mute).
  */
-void rtl_device_mute(struct rtl_device* dev, int samples);
+void rtl_device_mute(struct rtl_device* dev, int bytes);
 
 /**
  * @brief Enable or disable the RTL-SDR bias tee.
@@ -223,12 +227,29 @@ int rtl_device_set_bias_tee(struct rtl_device* dev, int on);
  * This is a non-invasive probe based on tuner type heuristics (e.g., upstream
  * librtlsdr disables offset tuning for R820T/R828D). Actual enablement is still
  * attempted later in the normal initialization sequence.
+ *
+ * @param dev RTL-SDR device handle.
  */
 void rtl_device_print_offset_capability(struct rtl_device* dev);
 
-/* RTL-TCP networking: enable/disable adaptive buffering at runtime.
- * No-ops for USB backend. Returns 0 on success. */
+/**
+ * @brief Enable or disable rtl_tcp adaptive buffering at runtime.
+ *
+ * No-op for the USB backend. Updates are applied immediately for rtl_tcp.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param onoff Non-zero to enable autotune; zero to disable.
+ * @return 0 on success; negative on error.
+ */
 int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
+/**
+ * @brief Query the rtl_tcp adaptive buffering enable flag.
+ *
+ * Returns 0 when not applicable (USB backend or null handle).
+ *
+ * @param dev RTL-SDR device handle.
+ * @return 1 if autotune is enabled; 0 otherwise.
+ */
 int rtl_device_get_tcp_autotune(struct rtl_device* dev);
 
 /**
@@ -236,6 +257,11 @@ int rtl_device_get_tcp_autotune(struct rtl_device* dev);
  *
  * Pass 0 to leave either value unchanged at the driver default.
  * Applies to USB via librtlsdr and to rtl_tcp via protocol commands 0x0B/0x0C.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param rtl_xtal_hz RTL crystal frequency in Hz (0 to leave unchanged).
+ * @param tuner_xtal_hz Tuner crystal frequency in Hz (0 to leave unchanged).
+ * @return 0 on success; negative on failure.
  */
 int rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tuner_xtal_hz);
 
@@ -243,6 +269,10 @@ int rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint3
  * @brief Enable or disable librtlsdr test mode (ramp signal instead of I/Q samples).
  *
  * Applies to USB (rtlsdr_set_testmode) and rtl_tcp (protocol cmd 0x07).
+ *
+ * @param dev RTL-SDR device handle.
+ * @param on Non-zero to enable test mode; zero to disable.
+ * @return 0 on success; negative on failure.
  */
 int rtl_device_set_testmode(struct rtl_device* dev, int on);
 
@@ -251,6 +281,11 @@ int rtl_device_set_testmode(struct rtl_device* dev, int on);
  *
  * Stage index and gain units follow librtlsdr: gain in tenths of a dB.
  * Applies to USB (rtlsdr_set_tuner_if_gain) and rtl_tcp (protocol cmd 0x06).
+ *
+ * @param dev RTL-SDR device handle.
+ * @param stage IF stage index (0-based).
+ * @param gain_tenth_db Gain in tenths of a dB.
+ * @return 0 on success; negative on failure.
  */
 int rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db);
 

@@ -21,8 +21,16 @@
 extern "C" {
 #endif
 
-// Record a short status tag and optionally log a concise line to stderr when
-// verbose > 1. Tags are also pushed into a small ring buffer for UI display.
+/**
+ * @brief Record a short status tag and optionally log a concise line.
+ *
+ * When verbosity > 1, logs the tag to stderr. Tags are also pushed into a
+ * small ring buffer for UI display.
+ *
+ * @param opts Decoder options (controls verbosity).
+ * @param state Decoder state carrying UI history.
+ * @param tag Short tag string to record.
+ */
 void p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag);
 
 #ifdef __cplusplus

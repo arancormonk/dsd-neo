@@ -1670,17 +1670,17 @@ rtl_device_stop_async(struct rtl_device* dev) {
 }
 
 /**
- * @brief Mute the device for a specified number of samples.
+ * @brief Mute the incoming raw input stream for a specified number of bytes.
  *
  * @param dev RTL-SDR device handle.
- * @param samples Number of samples to mute.
+ * @param bytes Number of input bytes to replace with 0x7F.
  */
 void
-rtl_device_mute(struct rtl_device* dev, int samples) {
+rtl_device_mute(struct rtl_device* dev, int bytes) {
     if (!dev) {
         return;
     }
-    dev->mute.store(samples);
+    dev->mute.store(bytes);
 }
 
 int

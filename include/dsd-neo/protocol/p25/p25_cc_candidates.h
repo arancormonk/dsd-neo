@@ -23,15 +23,43 @@
 extern "C" {
 #endif
 
-// Build a per-system cache path (returns 1 on success)
+/**
+ * @brief Build a per-system cache path for CC candidates.
+ *
+ * @param state Decoder state containing system identifiers.
+ * @param out Destination buffer for the path.
+ * @param out_len Capacity of the destination buffer.
+ * @return 1 on success; 0 on error.
+ */
 int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
 
-// Load/persist candidate CC list (best-effort)
+/**
+ * @brief Attempt to load a persisted candidate CC list (best-effort).
+ *
+ * @param opts Decoder options (used for logging/context).
+ * @param state Decoder state to populate.
+ */
 void p25_cc_try_load_cache(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Persist the current candidate CC list (best-effort).
+ *
+ * @param opts Decoder options (used for logging/context).
+ * @param state Decoder state containing candidates.
+ */
 void p25_cc_persist_cache(dsd_opts* opts, dsd_state* state);
 
-// Neighbor tracking (up to 32 entries)
+/**
+ * @brief Add a neighbor control channel candidate (Hz) to the in-memory list.
+ *
+ * @param state Decoder state containing neighbor list.
+ * @param freq_hz Candidate control channel frequency in Hz.
+ */
 void p25_nb_add(dsd_state* state, long freq_hz);
+/**
+ * @brief Age/expire neighbor control channel candidates (call periodically).
+ *
+ * @param state Decoder state containing neighbor list.
+ */
 void p25_nb_tick(dsd_state* state);
 
 #ifdef __cplusplus

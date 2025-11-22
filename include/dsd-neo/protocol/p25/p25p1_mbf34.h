@@ -27,6 +27,13 @@ extern "C" {
  * wiring and unit test scaffolding and is intended to be replaced by a
  * spec‑accurate implementation.
  */
+/**
+ * @brief Decode a P25 Phase 1 Confirmed Data MBF (3/4) block.
+ *
+ * @param dibits 98 input dibits (already deinterleaved at the symbol boundary).
+ * @param out [out] Decoded 18-byte payload.
+ * @return 0 on success; negative on failure (stub implementation).
+ */
 int p25_mbf34_decode(const uint8_t dibits[98], uint8_t out[18]);
 
 #ifdef __cplusplus

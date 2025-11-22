@@ -49,7 +49,14 @@ class RtlSdrOrchestrator {
      * @return 0 on success.
      */
     int stop();
-    // Soft-stop without setting global exit flags (used for UI restarts)
+    /**
+     * @brief Soft-stop without setting global exit flags (used for UI restarts).
+     *
+     * Leaves process-level exit flags untouched so the UI can restart streams
+     * without tearing down the entire application state.
+     *
+     * @return 0 on success.
+     */
     int soft_stop();
 
     /**

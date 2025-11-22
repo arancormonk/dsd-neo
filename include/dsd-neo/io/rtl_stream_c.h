@@ -46,6 +46,15 @@ int rtl_stream_start(RtlSdrContext* ctx);
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_stop(RtlSdrContext* ctx);
+/**
+ * @brief Gracefully stop the stream without asserting global exit flags.
+ *
+ * Mirrors rtl_stream_stop() but avoids toggling global shutdown state so the
+ * UI can reconfigure and restart streaming without terminating the process.
+ *
+ * @param ctx Stream context created by rtl_stream_create().
+ * @return 0 on success; otherwise <0 on error.
+ */
 int rtl_stream_soft_stop(RtlSdrContext* ctx);
 /**
  * @brief Destroy the stream context and free all associated resources.
@@ -117,8 +126,15 @@ int rtl_stream_set_bias_tee(int on);
  * the RTL stream/device is not available.
  */
 int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
-/* RTL-TCP adaptive networking (0/1) */
+/**
+ * @brief Return whether rtl_tcp adaptive buffering/autotune is enabled.
+ * @return 1 when enabled; 0 when disabled; negative on error.
+ */
 int rtl_stream_get_rtltcp_autotune(void);
+/**
+ * @brief Enable or disable rtl_tcp adaptive buffering/autotune logic.
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_set_rtltcp_autotune(int onoff);
 
 /**
@@ -130,20 +146,53 @@ void rtl_stream_set_rtltcp_autotune(int onoff);
  * @return Residual value (coarse units, signed integer).
  */
 int rtl_stream_ted_bias(const RtlSdrContext* ctx);
-/** Get current TED SPS setting. */
+
+/**
+ * @brief Get the configured Gardner TED samples-per-symbol.
+ *
+ * @return Nominal SPS (>=2); 0 when unavailable.
+ */
 int rtl_stream_get_ted_sps(void);
-/** Set small TED gain (Q20). Typical 32..256 (default ~64). */
+
+/**
+ * @brief Set the Gardner TED small gain term (Q20).
+ *
+ * @param gain_q20 Gain value in Q20 fixed-point; typical 32..256 (default ~64).
+ */
 void rtl_stream_set_ted_gain(int gain_q20);
-/** Get current TED gain (Q20). */
+
+/**
+ * @brief Get the current Gardner TED gain (Q20).
+ *
+ * @return Gain value in Q20 fixed-point.
+ */
 int rtl_stream_get_ted_gain(void);
-/** Force TED even for FM/C4FM paths (0/1). */
+
+/**
+ * @brief Force-enable the TED even for FM/C4FM paths (0/1).
+ *
+ * @param onoff Non-zero to force enable; zero to follow mode defaults.
+ */
 void rtl_stream_set_ted_force(int onoff);
-/** Get TED force flag (0/1). */
+
+/**
+ * @brief Return the TED force flag (0/1).
+ *
+ * @return 1 when forced on; 0 otherwise.
+ */
 int rtl_stream_get_ted_force(void);
 
-/* Eye diagram (timing) support for FSK/C4FM.
- * Copies up to max_samples real I-channel samples of the decimated complex baseband
- * and returns the number of samples. Also returns current nominal SPS via out_sps (may be 0 if unknown).
+/**
+ * @brief Capture a snapshot of the eye diagram buffer (timing helper).
+ *
+ * Copies up to `max_samples` real I-channel samples from the decimated complex
+ * baseband into `out` and returns the number of samples copied. Also writes
+ * the current nominal SPS into out_sps when available.
+ *
+ * @param out Destination buffer for I-channel samples (must not be NULL).
+ * @param max_samples Maximum number of samples to copy.
+ * @param out_sps [out] Receives nominal samples-per-symbol (may be NULL).
+ * @return Number of samples written; 0 if unavailable.
  */
 int rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
 
@@ -153,9 +202,19 @@ int rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
  * Computed on the demod thread for digital modes using I-channel samples near
  * symbol centers and a 4-level clustering heuristic for C4FM/FSK.
  * Returns a negative value when unavailable.
+ *
+ * @return SNR in dB, or negative when unavailable.
  */
 double rtl_stream_get_snr_c4fm(void);
+/**
+ * @brief Get smoothed CQPSK/LSM demod SNR estimate in dB.
+ * @return SNR in dB, or negative when unavailable.
+ */
 double rtl_stream_get_snr_cqpsk(void);
+/**
+ * @brief Get smoothed GFSK demod SNR estimate in dB.
+ * @return SNR in dB, or negative when unavailable.
+ */
 double rtl_stream_get_snr_gfsk(void);
 
 /**
@@ -184,103 +243,283 @@ double rtl_stream_estimate_snr_qpsk_const(void);
  */
 double rtl_stream_estimate_snr_gfsk_eye(void);
 
-/* Impulse blanker (pre-decimation) runtime control */
+/**
+ * @brief Get the current impulse blanker configuration.
+ *
+ * @param out_thr [out] Threshold value; may be NULL.
+ * @param out_win [out] Window length; may be NULL.
+ * @return 0 on success; otherwise <0 on error.
+ */
 int rtl_stream_get_blanker(int* out_thr, int* out_win);
+/**
+ * @brief Enable/disable the impulse blanker and set parameters.
+ *
+ * @param enable Non-zero to enable; zero to disable.
+ * @param thr Threshold applied to magnitude.
+ * @param win Window length in samples.
+ */
 void rtl_stream_set_blanker(int enable, int thr, int win);
 
-/* Supervisory tuner autogain runtime control (0/1) */
+/**
+ * @brief Get supervisory tuner auto-gain enable flag.
+ * @return 1 when auto-gain supervisor is enabled; 0 when disabled.
+ */
 int rtl_stream_get_tuner_autogain(void);
+/**
+ * @brief Enable or disable supervisory tuner auto-gain.
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_set_tuner_autogain(int onoff);
 
-/* C4FM DD equalizer (symbol-domain) runtime control */
+/**
+ * @brief Toggle the decision-directed C4FM equalizer.
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_set_c4fm_dd_eq(int onoff);
+/**
+ * @brief Return current enable state of the decision-directed C4FM equalizer.
+ * @return 1 when enabled; 0 when disabled.
+ */
 int rtl_stream_get_c4fm_dd_eq(void);
+/**
+ * @brief Set C4FM DD equalizer parameters (pass negative to keep unchanged).
+ * @param taps Number of taps; negative to leave unchanged.
+ * @param mu_q15 Step size in Q15; negative to leave unchanged.
+ */
 void rtl_stream_set_c4fm_dd_eq_params(int taps, int mu_q15);
+/**
+ * @brief Retrieve current C4FM DD equalizer parameters.
+ * @param taps [out] Number of taps; may be NULL.
+ * @param mu_q15 [out] Step size in Q15; may be NULL.
+ */
 void rtl_stream_get_c4fm_dd_eq_params(int* taps, int* mu_q15);
 
-/* C4FM clock assist (0=off, 1=EL, 2=MM) */
+/**
+ * @brief Set the C4FM clock assist mode.
+ * @param mode 0=disabled, 1=Early-Late, 2=Mueller-Muller; values outside range clamp to 0.
+ */
 void rtl_stream_set_c4fm_clk(int mode);
+/**
+ * @brief Get the current C4FM clock assist mode.
+ * @return 0 (off), 1 (EL), or 2 (MM).
+ */
 int rtl_stream_get_c4fm_clk(void);
-/* C4FM clock assist while synced (0/1) */
+/**
+ * @brief Enable/disable C4FM clock assist while synchronized.
+ * @param enable Non-zero to enable; zero to disable.
+ */
 void rtl_stream_set_c4fm_clk_sync(int enable);
+/**
+ * @brief Get C4FM clock-assist-while-sync flag.
+ * @return 1 when enabled; 0 when disabled.
+ */
 int rtl_stream_get_c4fm_clk_sync(void);
 
 /**
  * @brief Get spectrum-based auto PPM status and last measurements.
  *
- * Returns current enable flag and the latest measurement snapshot used by
- * the spectrum-based auto-PPM routine: SNR in dB, estimated frequency
- * offset in Hz, estimated PPM error relative to tuned center, last applied
- * step direction (-1,0,+1), and cooldown countdown (loops).
- * Any pointer may be NULL. Returns 0 on success.
+ * @param enabled [out] Current enable flag (0/1); may be NULL.
+ * @param snr_db [out] Latest SNR estimate in dB; may be NULL.
+ * @param df_hz [out] Latest residual frequency offset in Hz; may be NULL.
+ * @param est_ppm [out] Estimated PPM error relative to center; may be NULL.
+ * @param last_dir [out] Last applied step direction (-1,0,+1); may be NULL.
+ * @param cooldown [out] Remaining cooldown iterations before next step; may be NULL.
+ * @param locked [out] 1 if locked; 0 if training/idle; may be NULL.
+ * @return 0 on success; negative on error or when unavailable.
  */
 int rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
                                    int* cooldown, int* locked);
-/** Return 1 if auto-PPM training is active (enabled, not locked, in training window). */
+
+/**
+ * @brief Return 1 when spectrum-based auto-PPM training window is active.
+ *
+ * @return 1 when enabled, not locked, and currently training; 0 otherwise.
+ */
 int rtl_stream_auto_ppm_training_active(void);
-/** Get locked auto-PPM value and lock-time SNR/df snapshot, if available. */
+
+/**
+ * @brief Get locked auto-PPM value and lock-time snapshot, if available.
+ *
+ * @param ppm [out] Locked PPM value; may be NULL.
+ * @param snr_db [out] SNR at lock time in dB; may be NULL.
+ * @param df_hz [out] Residual frequency offset at lock time in Hz; may be NULL.
+ * @return 0 on success; negative when unavailable.
+ */
 int rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz);
-/** Runtime toggle for auto-PPM (0/1). */
+/**
+ * @brief Runtime toggle for auto-PPM (0/1).
+ *
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_set_auto_ppm(int onoff);
+/**
+ * @brief Return the current runtime auto-PPM toggle value (0/1).
+ *
+ * @return 1 when auto-PPM is enabled; 0 when disabled.
+ */
 int rtl_stream_get_auto_ppm(void);
 
 /* Runtime DSP adjustments and feedback hooks */
 /**
  * @brief Set CQPSK path parameters at runtime; pass -1 to leave any field unchanged.
+ *
+ * @param lms_enable Non-zero to enable LMS equalizer; zero to disable.
+ * @param taps Number of LMS taps (>=0).
+ * @param mu_q15 LMS step size in Q15.
+ * @param update_stride Symbols between adaptation updates.
+ * @param wl_enable Non-zero to enable widely-linear branch; zero to disable.
+ * @param dfe_enable Non-zero to enable decision-feedback branch; zero to disable.
+ * @param dfe_taps Number of decision-feedback taps (>=0).
+ * @param mf_enable Non-zero to enable matched filter; zero to disable.
+ * @param cma_warmup_samples Number of samples to keep CMA warmup active (>=0).
  */
 void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
                           int dfe_taps, int mf_enable, int cma_warmup_samples);
 /**
  * @brief Get CQPSK path parameters snapshot; returns 0 on success.
+ *
+ * Any pointer may be NULL.
+ *
+ * @param lms_enable [out] LMS enable flag.
+ * @param taps [out] Number of taps.
+ * @param mu_q15 [out] LMS step size in Q15.
+ * @param update_stride [out] Symbols between adaptation updates.
+ * @param wl_enable [out] Widely-linear enable flag.
+ * @param dfe_enable [out] Decision-feedback enable flag.
+ * @param dfe_taps [out] Number of DFE taps.
+ * @param mf_enable [out] Matched filter enable flag.
+ * @param cma_warmup_remaining [out] Remaining CMA warmup samples.
+ * @return 0 on success; negative on error.
  */
 int rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
                          int* dfe_taps, int* mf_enable, int* cma_warmup_remaining);
 /**
  * @brief Configure RRC matched filter (pass -1 to leave field unchanged).
- * enable: 0/1, alpha_percent: 1..100, span_syms: 3..16.
+ *
+ * @param enable Non-zero to enable; zero to disable.
+ * @param alpha_percent Roll-off (alpha*100) in [1,100]; negative to leave unchanged.
+ * @param span_syms Span in symbols (3..16); negative to leave unchanged.
  */
 void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
 /**
  * @brief Toggle DQPSK-aware decision mode (0=off, 1=on).
+ *
+ * @param onoff Non-zero to enable; zero to disable.
  */
 void rtl_stream_cqpsk_set_dqpsk(int onoff);
-/** Get current RRC params; returns 0 on success. */
+
+/**
+ * @brief Get current RRC parameters; returns 0 on success.
+ *
+ * Any pointer may be NULL.
+ *
+ * @param enable [out] Enable flag.
+ * @param alpha_percent [out] Roll-off (alpha*100).
+ * @param span_syms [out] Span in symbols.
+ * @return 0 on success; negative on error.
+ */
 int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
-/** Get DQPSK decision mode; returns 0 on success. */
+
+/**
+ * @brief Get DQPSK decision mode; returns 0 on success.
+ *
+ * @param onoff [out] Receives 1 when enabled; 0 when disabled.
+ * @return 0 on success; negative on error.
+ */
 int rtl_stream_cqpsk_get_dqpsk(int* onoff);
-/** Get CQPSK EQ debug snapshot; returns 0 on success. */
+
+/**
+ * @brief Get CQPSK EQ debug snapshot; returns 0 on success.
+ *
+ * Any pointer may be NULL.
+ *
+ * @param updates [out] Total adaptation updates applied.
+ * @param adapt_mode [out] Current adaptation mode selector.
+ * @param c0_i [out] Main tap real part (Q15).
+ * @param c0_q [out] Main tap imaginary part (Q15).
+ * @param taps [out] Total tap count.
+ * @param isi_ratio_q15 [out] ISI/desired power ratio (Q15).
+ * @param wl_improp_q15 [out] Widely-linear impropriety metric (Q15).
+ * @param cma_warmup [out] Remaining CMA warmup samples.
+ * @param mu_q15 [out] Current step size (Q15).
+ * @param sym_stride [out] Symbols between updates.
+ * @param dfe_taps [out] Decision-feedback tap count.
+ * @param err_ema_q14 [out] Error EMA magnitude (Q14).
+ * @return 0 on success; negative on error.
+ */
 int rtl_stream_cqpsk_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
                                int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
                                int* err_ema_q14);
-/* CQPSK acquisition-only pre-Costas FLL (0/1) */
+/**
+ * @brief Get CQPSK acquisition-only pre-Costas FLL enable flag (0/1).
+ *
+ * @return 1 when enabled; 0 when disabled.
+ */
 int rtl_stream_get_cqpsk_acq_fll(void);
+/**
+ * @brief Enable or disable the CQPSK acquisition-only pre-Costas FLL.
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_set_cqpsk_acq_fll(int onoff);
-/** Get CQPSK acquisition FLL lock status (1 locked, 0 not locked). */
+
+/**
+ * @brief Get CQPSK acquisition FLL lock status.
+ *
+ * @return 1 when locked; 0 when not locked or unavailable.
+ */
 int rtl_stream_get_cqpsk_acq_fll_locked(void);
 
-/** Toggle generic IQ balance prefilter (mode-aware image cancel). */
+/**
+ * @brief Toggle generic IQ balance prefilter (mode-aware image cancel).
+ *
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_toggle_iq_balance(int onoff);
 /** Get generic IQ balance prefilter state; returns 1 if enabled. */
 int rtl_stream_get_iq_balance(void);
 /**
  * @brief Provide P25P1 FEC OK/ERR deltas to drive BER-adaptive tuning.
  * Call with positive deltas (not totals). No-ops when RTL stream inactive.
+ *
+ * @param fec_ok_delta Incremental count of successful FEC codewords.
+ * @param fec_err_delta Incremental count of failed FEC codewords.
  */
 void rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta);
 
 /* Coarse DSP feature toggles and snapshot */
-/** Toggle CQPSK path pre-processing on/off (0=off, nonzero=on). */
+/**
+ * @brief Toggle CQPSK path pre-processing on/off (0=off, nonzero=on).
+ *
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_toggle_cqpsk(int onoff);
-/** Toggle FLL on/off (0=off, nonzero=on). */
+/**
+ * @brief Toggle FLL on/off (0=off, nonzero=on).
+ *
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_toggle_fll(int onoff);
-/** Toggle TED on/off (0=off, nonzero=on). */
+/**
+ * @brief Toggle TED on/off (0=off, nonzero=on).
+ *
+ * @param onoff Non-zero to enable; zero to disable.
+ */
 void rtl_stream_toggle_ted(int onoff);
-/** Get current coarse DSP feature flags; any pointer may be NULL. Returns 0 on success. */
+/**
+ * @brief Get current coarse DSP feature flags; any pointer may be NULL.
+ *
+ * @param cqpsk_enable [out] CQPSK enable flag.
+ * @param fll_enable [out] FLL enable flag.
+ * @param ted_enable [out] TED enable flag.
+ * @return 0 on success; negative on error.
+ */
 int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
 
 /**
  * @brief Set or disable the resampler target rate (applied on controller thread).
  * Pass 0 to disable the resampler; otherwise, pass desired Hz (e.g., 48000).
+ *
+ * @param target_hz Desired output sample rate in Hz (0 disables the resampler).
  */
 void rtl_stream_set_resampler_target(int target_hz);
 
@@ -290,6 +529,8 @@ void rtl_stream_set_resampler_target(int target_hz);
  * Useful to align the complex DSP pipeline with protocol-layer symbol timing
  * (e.g., 10 for P25 Phase 1 at 48 kHz, 8 for P25 Phase 2 at 48 kHz).
  * Values < 2 are clamped to 2; large values are clamped to a safe range.
+ *
+ * @param sps Nominal samples-per-symbol target.
  */
 void rtl_stream_set_ted_sps(int sps);
 
@@ -298,14 +539,26 @@ void rtl_stream_set_ted_sps(int sps);
  *
  * Pass positive deltas (not totals). Slot is 0 or 1. Any delta may be 0 when
  * not applicable. No-ops when RTL stream inactive.
+ *
+ * @param slot Slot index (0 or 1).
+ * @param facch_ok_delta Incremental FACCH success count.
+ * @param facch_err_delta Incremental FACCH error count.
+ * @param sacch_ok_delta Incremental SACCH success count.
+ * @param sacch_err_delta Incremental SACCH error count.
+ * @param voice_err_delta Incremental voice error count.
  */
 void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                  int sacch_err_delta, int voice_err_delta);
 
-/*
- * Constellation capture (recent, decimated complex samples after DSP).
- * Copies up to max_points I/Q pairs into out_xy as interleaved int16 [I0,Q0,I1,Q1,...].
- * Returns the number of pairs copied (0 if unavailable).
+/**
+ * @brief Capture a snapshot of recent constellation points after DSP.
+ *
+ * Copies up to `max_points` I/Q pairs into `out_xy` as interleaved int16
+ * [I0,Q0,I1,Q1,...]. Returns the number of pairs copied (0 if unavailable).
+ *
+ * @param out_xy Destination buffer for interleaved I/Q pairs (must not be NULL).
+ * @param max_points Maximum number of pairs to write.
+ * @return Number of pairs written; 0 if unavailable.
  */
 int rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 
@@ -324,9 +577,14 @@ int rtl_stream_constellation_get(int16_t* out_xy, int max_points);
  */
 int rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
 
-/** Set desired spectrum FFT size (power-of-two, clamped to allowed range). */
+/**
+ * @brief Set desired spectrum FFT size (power-of-two, clamped to allowed range).
+ *
+ * @param n Requested FFT size (power of two within supported bounds).
+ * @return 0 on success; negative on error.
+ */
 int rtl_stream_spectrum_set_size(int n);
-/** Get current spectrum FFT size. */
+/** @brief Get current spectrum FFT size. */
 int rtl_stream_spectrum_get_size(void);
 
 /* Carrier/Costas diagnostics */
@@ -349,12 +607,26 @@ int rtl_stream_get_fm_agc(void);
 /** Enable/disable FM AGC (0 off, nonzero on). */
 void rtl_stream_set_fm_agc(int onoff);
 /**
- * Get FM AGC parameters (any pointer may be NULL).
+ * @brief Get FM AGC parameters (any pointer may be NULL).
+ *
  * target_rms/min_rms are int16-domain magnitudes (~1000..20000).
  * alpha_up/down are Q15 smoothing factors (0..32768).
+ *
+ * @param target_rms [out] Target RMS magnitude.
+ * @param min_rms [out] Minimum RMS to engage AGC.
+ * @param alpha_up_q15 [out] Q15 smoothing when gain increases.
+ * @param alpha_down_q15 [out] Q15 smoothing when gain decreases.
  */
 void rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15);
-/** Set FM AGC parameters; pass negative to leave a field unchanged. */
+
+/**
+ * @brief Set FM AGC parameters; pass negative to leave a field unchanged.
+ *
+ * @param target_rms Target RMS magnitude (int16-domain); negative to keep existing.
+ * @param min_rms Minimum RMS threshold; negative to keep existing.
+ * @param alpha_up_q15 Q15 smoothing when gain increases; negative to keep existing.
+ * @param alpha_down_q15 Q15 smoothing when gain decreases; negative to keep existing.
+ */
 void rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15);
 
 /** Get FM constant-envelope limiter state (1 on, 0 off). */
@@ -363,11 +635,20 @@ int rtl_stream_get_fm_limiter(void);
 void rtl_stream_set_fm_limiter(int onoff);
 
 /**
- * Get complex I/Q DC blocker state and shift k (any pointer may be NULL).
- * Returns 1 if enabled, 0 otherwise; writes current k to out_shift_k if not NULL.
+ * @brief Get complex I/Q DC blocker state and shift k.
+ *
+ * Any pointer may be NULL.
+ *
+ * @param out_shift_k [out] Current shift exponent k; may be NULL.
+ * @return 1 if enabled; 0 otherwise.
  */
 int rtl_stream_get_iq_dc(int* out_shift_k);
-/** Set DC blocker enable (0/1) and/or shift k (>=6..<=15). Pass shift_k<0 to keep unchanged. */
+/**
+ * @brief Set DC blocker enable (0/1) and/or shift k (>=6..<=15).
+ *
+ * @param enable Non-zero to enable; zero to disable.
+ * @param shift_k Shift exponent k; pass negative to leave unchanged.
+ */
 void rtl_stream_set_iq_dc(int enable, int shift_k);
 
 /* FM/FSK blind CMA equalizer (pre-discriminator) */
@@ -375,16 +656,47 @@ void rtl_stream_set_iq_dc(int enable, int shift_k);
 int rtl_stream_get_fm_cma(void);
 /** Enable/disable FM CMA equalizer (0 off, nonzero on). */
 void rtl_stream_set_fm_cma(int onoff);
-/** Get FM CMA parameters (any pointer may be NULL). */
+/**
+ * @brief Get FM CMA parameters (any pointer may be NULL).
+ *
+ * @param taps [out] Number of CMA taps.
+ * @param mu_q15 [out] Step size in Q15.
+ * @param warmup_samples [out] Remaining warmup samples.
+ */
 void rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup_samples);
-/** Set FM CMA parameters; pass negative to leave a field unchanged. */
+/**
+ * @brief Set FM CMA parameters; pass negative to leave a field unchanged.
+ *
+ * @param taps Number of CMA taps; negative to keep existing.
+ * @param mu_q15 Step size in Q15; negative to keep existing.
+ * @param warmup_samples Warmup samples; negative to keep existing.
+ */
 void rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup_samples);
-/** Get/Set FM CMA strength (0=Light,1=Medium,2=Strong). */
+/**
+ * @brief Get FM CMA strength (0=Light,1=Medium,2=Strong).
+ *
+ * @return Strength selector (0=Light,1=Medium,2=Strong).
+ */
 int rtl_stream_get_fm_cma_strength(void);
+/**
+ * @brief Set FM CMA strength (0=Light,1=Medium,2=Strong).
+ *
+ * @param strength Strength selector (0..2).
+ */
 void rtl_stream_set_fm_cma_strength(int strength);
+
+/**
+ * @brief Retrieve adaptive guard status for the 5-tap CMA equalizer.
+ *
+ * Provides remaining freeze duration and accept/reject counters for the
+ * guard mechanism. Any pointer may be NULL.
+ *
+ * @param freeze_blocks [out] Remaining blocks before unfreezing updates.
+ * @param accepts [out] Number of accepted updates.
+ * @param rejects [out] Number of rejected updates.
+ */
+void rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects);
 
 #ifdef __cplusplus
 }
 #endif
-/* Retrieve adaptive guard status for 5-tap CMA (freeze remaining, accepts, rejects). */
-void rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects);

@@ -336,14 +336,43 @@ void dsd_neo_config_init(const dsd_opts* opts);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 /* Runtime updaters for DD equalizer (UI control) */
+/**
+ * @brief Update runtime C4FM decision-directed equalizer settings.
+ *
+ * Pass -1 to leave any field unchanged. Values are clamped to safe ranges.
+ *
+ * @param enable 0/1 to disable/enable; -1 to leave unchanged.
+ * @param taps Number of taps (odd, 3..9) or -1 to leave unchanged.
+ * @param mu_q15 Step size in Q15 (1..64) or -1 to leave unchanged.
+ */
 void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
+/**
+ * @brief Retrieve current C4FM decision-directed equalizer settings.
+ *
+ * @param enable [out] Current enable flag; may be NULL.
+ * @param taps [out] Current number of taps; may be NULL.
+ * @param mu_q15 [out] Current step size in Q15; may be NULL.
+ * Any pointer may be NULL.
+ */
 void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
 
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM) */
+/**
+ * @brief Set the C4FM clock-assist mode (0=off, 1=EL, 2=MM). Values outside range clamp to 0.
+ *
+ * @param mode Clock-assist mode (0..2).
+ */
 void dsd_neo_set_c4fm_clk(int mode);
+/** @brief Get the C4FM clock-assist mode (0=off, 1=EL, 2=MM). */
 int dsd_neo_get_c4fm_clk(void);
 /* Toggle C4FM clock assist while synced (0/1) */
+/**
+ * @brief Enable or disable C4FM clock assist while synchronized (0/1).
+ *
+ * @param enable Non-zero to enable; zero to disable.
+ */
 void dsd_neo_set_c4fm_clk_sync(int enable);
+/** @brief Return C4FM clock-assist-while-sync flag (0/1). */
 int dsd_neo_get_c4fm_clk_sync(void);
 
 /*
@@ -425,27 +454,60 @@ typedef struct dsdneoUserConfig {
     int trunk_use_allow_list;
 } dsdneoUserConfig;
 
-/* Resolve platform-specific default config path (no I/O). Returns a pointer to
- * an internal static buffer, or NULL when no reasonable default can be
- * determined. */
+/**
+ * @brief Resolve the platform-specific default config path (no I/O).
+ *
+ * Returns a pointer to an internal static buffer, or NULL when no reasonable
+ * default can be determined.
+ *
+ * @return Pointer to default path string or NULL when unavailable.
+ */
 const char* dsd_user_config_default_path(void);
 
-/* Load config from a given path into cfg.
- * Returns 0 on success, non-zero on error (missing/unreadable file or parse
- * error). On error, cfg is zeroed. */
+/**
+ * @brief Load a user config from the given path.
+ *
+ * On error (missing/unreadable file or parse error), cfg is zeroed.
+ *
+ * @param path Path to the INI file.
+ * @param cfg [out] Destination user config.
+ * @return 0 on success; non-zero on error.
+ */
 int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
 
-/* Atomically write cfg to the given path (for interactive save).
- * Returns 0 on success, non-zero on error. */
+/**
+ * @brief Atomically write cfg to the given path (for interactive save).
+ *
+ * @param path Destination path for the INI file.
+ * @param cfg User config to persist.
+ * @return 0 on success; non-zero on error.
+ */
 int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 
-/* Apply config-derived defaults to opts/state before env + CLI precedence. */
+/**
+ * @brief Apply config-derived defaults to opts/state before env + CLI precedence.
+ *
+ * @param cfg User config to apply.
+ * @param opts Decoder options to mutate.
+ * @param state Decoder state to mutate.
+ */
 void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
 
-/* Snapshot current opts/state into a user config (for save/print). */
+/**
+ * @brief Snapshot current opts/state into a user config (for save/print).
+ *
+ * @param opts Decoder options to read.
+ * @param state Decoder state to read.
+ * @param cfg [out] Destination user config snapshot.
+ */
 void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg);
 
-/* Render a user config as INI to the given stream (stdout/stderr/file). */
+/**
+ * @brief Render a user config as INI to the given stream (stdout/stderr/file).
+ *
+ * @param cfg User config to render.
+ * @param stream Output stream (stdout/stderr/file).
+ */
 void dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream);
 
 #ifdef __cplusplus
