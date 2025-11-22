@@ -12,6 +12,7 @@
 */
 
 #include <dsd-neo/dsp/fll.h>
+#include <dsd-neo/dsp/math_utils.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -71,66 +72,6 @@ static inline void
 multiply64(int ar, int aj, int br, int bj, int64_t* cr, int64_t* cj) {
     *cr = (int64_t)ar * (int64_t)br - (int64_t)aj * (int64_t)bj;
     *cj = (int64_t)aj * (int64_t)br + (int64_t)ar * (int64_t)bj;
-}
-
-/**
- * @brief Fast atan2 approximation for 64-bit inputs.
- *
- * Uses a piecewise linear approximation stable across quadrants.
- *
- * @param y Imaginary component.
- * @param x Real component.
- * @return Approximate angle in Q14 where pi = 1<<14.
- */
-static int
-fast_atan2_64(int64_t y, int64_t x) {
-    int angle;
-    int pi4 = (1 << 12), pi34 = 3 * (1 << 12); /* note: pi = 1<<14 */
-    int64_t yabs;
-    if (x == 0 && y == 0) {
-        return 0;
-    }
-    yabs = (y < 0) ? -y : y;
-
-    if (x >= 0) {
-        /* Use stable form: pi/4 - pi/4 * (x - |y|) / (x + |y|) */
-        int64_t denom = x + yabs; /* only zero when x==0 && y==0 handled above */
-        if (denom == 0) {
-            angle = 0;
-        } else {
-            angle = (int)(pi4 - ((int64_t)pi4 * (x - yabs)) / denom);
-        }
-    } else {
-        /* Use stable form: 3pi/4 - pi/4 * (x + |y|) / (|y| - x) */
-        int64_t denom = yabs - x; /* strictly > 0 for x < 0 */
-        if (denom == 0) {
-            angle = pi34; /* rare tie case; pick quadrant boundary */
-        } else {
-            angle = (int)(pi34 - ((int64_t)pi4 * (x + yabs)) / denom);
-        }
-    }
-    if (y < 0) {
-        return -angle;
-    }
-    return angle;
-}
-
-/**
- * @brief Polar discriminator using fast atan2 approximation.
- *
- * Computes the phase difference between two complex samples.
- *
- * @param ar Real of current sample.
- * @param aj Imag of current sample.
- * @param br Real of previous sample.
- * @param bj Imag of previous sample.
- * @return Phase error in Q14 (pi = 1<<14).
- */
-static int
-polar_disc_fast(int ar, int aj, int br, int bj) {
-    int64_t cr, cj;
-    multiply64(ar, aj, br, -bj, &cr, &cj);
-    return fast_atan2_64(cj, cr);
 }
 
 /**
@@ -215,7 +156,10 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
         int r = x[i];
         int j = x[i + 1];
         if (i > 0 || (prev_r != 0 || prev_j != 0)) {
-            int e = polar_disc_fast(r, j, prev_r, prev_j); /* Q14 */
+            /* z_n * conj(z_{n-1}) phase delta (Q14) */
+            int64_t re = (int64_t)r * (int64_t)prev_r + (int64_t)j * (int64_t)prev_j;
+            int64_t im = (int64_t)j * (int64_t)prev_r - (int64_t)r * (int64_t)prev_j;
+            int e = dsd_neo_fast_atan2(im, re);
             err_acc += e;
             count++;
         }
@@ -322,7 +266,9 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
             int j = x[(size_t)(n << 1) + 1];
             int br = state->prev_hist_r[n];
             int bj = state->prev_hist_j[n];
-            int e = polar_disc_fast(r, j, br, bj); /* Q14 */
+            int64_t re = (int64_t)r * (int64_t)br + (int64_t)j * (int64_t)bj;
+            int64_t im = (int64_t)j * (int64_t)br - (int64_t)r * (int64_t)bj;
+            int e = dsd_neo_fast_atan2(im, re); /* Q14 */
             err_acc += e;
             count++;
         }
@@ -334,7 +280,9 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int1
         int j = x[i + 1];
         int br = x[i - stride_elems];
         int bj = x[i - stride_elems + 1];
-        int e = polar_disc_fast(r, j, br, bj); /* Q14 */
+        int64_t re = (int64_t)r * (int64_t)br + (int64_t)j * (int64_t)bj;
+        int64_t im = (int64_t)j * (int64_t)br - (int64_t)r * (int64_t)bj;
+        int e = dsd_neo_fast_atan2(im, re); /* Q14 */
         err_acc += e;
         count++;
     }

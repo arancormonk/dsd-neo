@@ -36,6 +36,8 @@ typedef struct cqpsk_eq_state_s {
     int16_t c_q[CQPSK_EQ_MAX_TAPS];
     int num_taps;        /* odd number of taps in use (1..CQPSK_EQ_MAX_TAPS) */
     int16_t max_abs_q14; /* clamp for coefficient magnitude */
+    /* Running magnitude estimate for slicer targets (Q14), smoothed per symbol tick. */
+    int32_t slicer_mag_q14;
     /* Circular buffer of recent complex input samples */
     int16_t x_i[CQPSK_EQ_MAX_TAPS];
     int16_t x_q[CQPSK_EQ_MAX_TAPS];

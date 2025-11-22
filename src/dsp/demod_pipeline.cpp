@@ -79,6 +79,32 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 
 /* HB_TAPS and hb_q15_taps provided by dsp/halfband.h */
 
+/* Fixed channel low-pass for high-rate (24 kHz) mode.
+ *
+ * Profile 0 (wide/analog): ~8 kHz cutoff @ 24 kHz Fs.
+ *   Designed as Blackman-windowed sinc, 63 taps; passband ripple ~0 dB through 6 kHz,
+ *   ~-6 dB at 8 kHz, stopband < -65 dB by 9 kHz.
+ *
+ * Profile 1 (digital-narrow): ~5 kHz cutoff @ 24 kHz Fs.
+ *   Designed as Blackman-windowed sinc, 63 taps; passband ~0 dB through ~3.6 kHz,
+ *   ~-3 dB at 4.8 kHz, stopband < -60 dB by 6 kHz; tailored for 4.8 ksps 4FSK/CQPSK. */
+static const int kChannelLpfTaps = 63;
+static const int kChannelLpfHistLen = kChannelLpfTaps - 1;
+static const int16_t channel_lpf_wide_q15[kChannelLpfTaps] = {
+    0,    0, -1,   3,    0, -9,    14,   0, -28,   39,   0,     -68,  88,    0, -142, 178,   0, -271, 330,  0, -486,
+    586,  0, -859, 1047, 0, -1625, 2111, 0, -4441, 8995, 21845, 8995, -4441, 0, 2111, -1625, 0, 1047, -859, 0, 586,
+    -486, 0, 330,  -271, 0, 178,   -142, 0, 88,    -68,  0,     39,   -28,   0, 14,   -9,    0, 3,    -1,   0, 0,
+};
+
+/* Digital-narrow profile taps (fc≈5 kHz @ 24 kHz, 63 taps, Q15). Designed as
+   Blackman-windowed sinc and normalized to unity DC gain. */
+static const int16_t channel_lpf_digital_q15[kChannelLpfTaps] = {
+    0,     0,    0,     -3,    -4,  5,    15,   0,    -31,  -22,  42,  68,    -26,   -130, -43,   178,
+    180,   -156, -368,  0,     542, 339,  -579, -859, 313,  1492, 486, -2111, -2367, 2564, 10033, 13654,
+    10033, 2564, -2367, -2111, 486, 1492, 313,  -859, -579, 339,  542, 0,     -368,  -156, 180,   178,
+    -43,   -130, -26,   68,    42,  -22,  -31,  0,    15,   5,    -4,  -3,    0,     0,    0,
+};
+
 /* ---------------- Post-demod audio polyphase decimator (M > 2) -------------- */
 /*
  * Lightweight 1/M polyphase decimator for audio. Designs a windowed-sinc
@@ -212,6 +238,97 @@ audio_polydecim_process(struct demod_state* d, const int16_t* in, int in_len, in
     d->post_polydecim_hist_head = head;
     d->post_polydecim_phase = phase;
     return out_len;
+}
+
+/* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
+static void
+channel_lpf_apply(struct demod_state* d) {
+    if (!d || !d->channel_lpf_enable || d->lp_len < 2) {
+        return;
+    }
+    const int taps_len = kChannelLpfTaps;
+    const int hist_len = kChannelLpfHistLen;
+    const int center = (taps_len - 1) >> 1;
+    const int N = d->lp_len >> 1; /* complex samples */
+    if (hist_len > d->channel_lpf_hist_len) {
+        d->channel_lpf_hist_len = hist_len;
+    }
+    const int16_t* taps = (d->channel_lpf_profile == 1) ? channel_lpf_digital_q15 : channel_lpf_wide_q15;
+    const int16_t* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
+    int16_t* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    int16_t* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
+    int16_t* hq = assume_aligned_ptr(d->channel_lpf_hist_q, DSD_NEO_ALIGN);
+    int16_t lastI = (N > 0) ? in[(size_t)((N - 1) << 1)] : 0;
+    int16_t lastQ = (N > 0) ? in[(size_t)(((N - 1) << 1) + 1)] : 0;
+
+    for (int n = 0; n < N; n++) {
+        int center_idx = hist_len + n; /* index into combined hist+current stream */
+        auto get_iq = [&](int src_idx, int16_t& xi, int16_t& xq) {
+            if (src_idx < hist_len) {
+                xi = hi[src_idx];
+                xq = hq[src_idx];
+            } else {
+                int rel = src_idx - hist_len;
+                if (rel < N) {
+                    xi = in[(size_t)(rel << 1)];
+                    xq = in[(size_t)(rel << 1) + 1];
+                } else {
+                    xi = lastI;
+                    xq = lastQ;
+                }
+            }
+        };
+        int64_t accI = 0;
+        int64_t accQ = 0;
+        /* center tap */
+        {
+            int16_t ci, cq;
+            get_iq(center_idx, ci, cq);
+            int16_t cc = taps[center];
+            accI += (int32_t)cc * (int32_t)ci;
+            accQ += (int32_t)cc * (int32_t)cq;
+        }
+        /* symmetric pairs */
+        for (int k = 0; k < center; k++) {
+            int16_t ce = taps[k];
+            if (ce == 0) {
+                continue;
+            }
+            int dists = center - k;
+            int16_t xmI, xmQ, xpI, xpQ;
+            get_iq(center_idx - dists, xmI, xmQ);
+            get_iq(center_idx + dists, xpI, xpQ);
+            accI += (int32_t)ce * (int32_t)(xmI + xpI);
+            accQ += (int32_t)ce * (int32_t)(xmQ + xpQ);
+        }
+        accI += (1 << 14);
+        accQ += (1 << 14);
+        out[(size_t)(n << 1)] = sat16((int32_t)(accI >> 15));
+        out[(size_t)(n << 1) + 1] = sat16((int32_t)(accQ >> 15));
+    }
+
+    /* Update history with the last (hist_len) complex samples of this block */
+    if (hist_len > 0) {
+        if (N >= hist_len) {
+            for (int k = 0; k < hist_len; k++) {
+                int rel = N - hist_len + k;
+                hi[k] = in[(size_t)(rel << 1)];
+                hq[k] = in[(size_t)(rel << 1) + 1];
+            }
+        } else {
+            int need = hist_len - N;
+            if (need > 0) {
+                memmove(hi, hi + (hist_len - need), (size_t)need * sizeof(int16_t));
+                memmove(hq, hq + (hist_len - need), (size_t)need * sizeof(int16_t));
+            }
+            for (int k = 0; k < N; k++) {
+                hi[need + k] = in[(size_t)(k << 1)];
+                hq[need + k] = in[(size_t)(k << 1) + 1];
+            }
+        }
+    }
+    d->lowpassed = out;
+    d->lp_len = N << 1;
 }
 
 /* ---------------- Impulse blanker (optional, pre-decimation) ---------------- */
@@ -625,28 +742,41 @@ generic_fir(int16_t* data, int length, int* fir, int16_t* hist) {
  */
 void
 dsd_fm_demod(struct demod_state* fm) {
-    int i, pcm;
-    int16_t* lp = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
-    int16_t* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    /* Use selected discriminator from the very first sample */
-    pcm = fm->discriminator(lp[0], lp[1], fm->pre_r, fm->pre_j);
-    /* Remove known NCO injection from FLL rotation (demod sees -dphi per sample).
-	   Scale Q15 (2*pi==1<<15) to Q14 (pi==1<<14) by >>1. */
-    if (fm->fll_enabled) {
-        pcm += (fm->fll_freq_q15 >> 1);
+    const int pairs = fm->lp_len >> 1; /* complex samples */
+    if (pairs <= 0) {
+        fm->result_len = 0;
+        return;
     }
-    res[0] = (int16_t)pcm;
-    DSD_NEO_IVDEP
-    for (i = 2; i < (fm->lp_len - 1); i += 2) {
-        pcm = fm->discriminator(lp[i], lp[i + 1], lp[i - 2], lp[i - 1]);
+
+    const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+
+    int prev_r = fm->pre_r;
+    int prev_j = fm->pre_j;
+    /* Seed history on first use to keep the first phase delta well-defined. */
+    if (prev_r == 0 && prev_j == 0) {
+        prev_r = iq[0];
+        prev_j = iq[1];
+    }
+
+    for (int n = 0; n < pairs; n++) {
+        int cr = iq[(size_t)(n << 1) + 0];
+        int cj = iq[(size_t)(n << 1) + 1];
+        /* z_n * conj(z_{n-1}) => phase delta; amplitude cancels inside atan2 */
+        int64_t re = (int64_t)cr * (int64_t)prev_r + (int64_t)cj * (int64_t)prev_j;
+        int64_t im = (int64_t)cj * (int64_t)prev_r - (int64_t)cr * (int64_t)prev_j;
+        int angle_q14 = dsd_neo_fast_atan2(im, re);
         if (fm->fll_enabled) {
-            pcm += (fm->fll_freq_q15 >> 1);
+            angle_q14 += (fm->fll_freq_q15 >> 1);
         }
-        res[i / 2] = (int16_t)pcm;
+        out[n] = sat16(angle_q14);
+        prev_r = cr;
+        prev_j = cj;
     }
-    fm->pre_r = lp[fm->lp_len - 2];
-    fm->pre_j = lp[fm->lp_len - 1];
-    fm->result_len = fm->lp_len / 2;
+
+    fm->pre_r = prev_r;
+    fm->pre_j = prev_j;
+    fm->result_len = pairs;
 }
 
 /**
@@ -1887,6 +2017,8 @@ full_demod(struct demod_state* d) {
     } else {
         low_pass(d);
     }
+    /* Bound channel noise when running at higher Fs (24 kHz default) */
+    channel_lpf_apply(d);
     /*
      * Branch early by mode to simplify ordering.
      *

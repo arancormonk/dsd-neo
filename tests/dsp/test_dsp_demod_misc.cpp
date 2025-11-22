@@ -169,12 +169,12 @@ main(void) {
         }
     }
 
-    // dsd_fm_demod: fake discriminator + FLL offset
+    // dsd_fm_demod: differential phase + FLL offset
     {
-        int16_t iq[6] = {10, 20, 30, 40, 50, 60};
+        /* Three complex samples rotating +90 deg each step. */
+        int16_t iq[6] = {100, 0, 0, 100, -100, 0};
         s->lowpassed = iq;
         s->lp_len = 6; // 3 complex samples
-        s->discriminator = &fake_disc;
         s->fll_enabled = 1;
         s->fll_freq_q15 = 100; // contributes +50 in Q14 domain
         s->pre_r = 0;
@@ -185,9 +185,10 @@ main(void) {
             free(s);
             return 1;
         }
+        int expect[3] = {50, 8242, 8242}; // first sample seeds history; then 90deg deltas + FLL bias
         for (int i = 0; i < s->result_len; i++) {
-            if (s->result[i] != 173) { // 123 + 50
-                fprintf(stderr, "dsd_fm_demod: result[%d]=%d want 173\n", i, s->result[i]);
+            if (s->result[i] != expect[i]) {
+                fprintf(stderr, "dsd_fm_demod: result[%d]=%d want %d\n", i, s->result[i], expect[i]);
                 free(s);
                 return 1;
             }

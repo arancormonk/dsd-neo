@@ -65,6 +65,7 @@ cqpsk_eq_init(cqpsk_eq_state_t* st) {
     st->c_i[0] = (int16_t)(1 << 14);
     st->c_q[0] = 0;
     st->max_abs_q14 = (int16_t)(1 << 14);
+    st->slicer_mag_q14 = (int32_t)(1 << 14);
     st->head = -1; /* will increment to 0 on first sample */
     st->lms_enable = 0;
     st->mu_q15 = 1;        /* very small default step */
@@ -204,6 +205,7 @@ cqpsk_eq_reset_runtime(cqpsk_eq_state_t* st) {
     if (st->cma_warmup < 0) {
         st->cma_warmup = 0;
     }
+    st->slicer_mag_q14 = (int32_t)((st->max_abs_q14 > 0) ? st->max_abs_q14 : (1 << 14));
     /* Clear symbol ring validity; next appends will repopulate */
     st->sym_len = 0;
     st->wl_x2_re_ema = 0;
@@ -242,6 +244,7 @@ cqpsk_eq_reset_all(cqpsk_eq_state_t* st) {
     }
     st->c_i[0] = (int16_t)(1 << 14);
     st->c_q[0] = 0;
+    st->slicer_mag_q14 = (int32_t)((st->max_abs_q14 > 0) ? st->max_abs_q14 : (1 << 14));
     cqpsk_eq_reset_dfe(st);
     cqpsk_eq_reset_runtime(st);
 }
@@ -332,8 +335,14 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
         /* Build desired symbol decision 'd' (use sym_tick for DQPSK mode).
            Use constant-amplitude slicer target to stabilize DD updates. */
         int32_t di, dq;
+        /* Adapt slicer amplitude toward recent |y| to avoid decision collapse on low-level inputs. */
+        int32_t maxA = (st->max_abs_q14 > 0) ? st->max_abs_q14 : (1 << 14);
+        int32_t minA = 1 << 8;
+        int32_t A = st->slicer_mag_q14;
+        if (A < minA || A > maxA) {
+            A = maxA;
+        }
         {
-            const int32_t A = (st->max_abs_q14 > 0) ? st->max_abs_q14 : (1 << 14);
 
             if (st->dqpsk_decision && st->have_last_sym && sym_tick) {
                 /* Differential decision: z = y * conj(y_prev) in Q14 */
@@ -795,6 +804,24 @@ cqpsk_eq_process_block(cqpsk_eq_state_t* st, int16_t* in_out, int len) {
 
         /* Update last symbol output at symbol ticks */
         if (sym_tick) {
+            /* Refresh slicer amplitude EMA using current |y| to track low-level inputs. */
+            int64_t ai = (accI_q14 >= 0) ? accI_q14 : -accI_q14;
+            int64_t aq = (accQ_q14 >= 0) ? accQ_q14 : -accQ_q14;
+            int64_t mag64 = (ai > aq) ? ai : aq;
+            int32_t mag = (mag64 > 0x7fffffffLL) ? 0x7fffffff : (int32_t)mag64;
+            if (mag < minA) {
+                mag = minA;
+            }
+            if (mag > maxA) {
+                mag = maxA;
+            }
+            int32_t ema = st->slicer_mag_q14;
+            if (ema <= 0) {
+                ema = maxA;
+            }
+            ema += (mag - ema) >> 3; /* alpha = 1/8 */
+            st->slicer_mag_q14 = ema;
+
             st->last_y_i_q14 = (int32_t)accI_q14;
             st->last_y_q_q14 = (int32_t)accQ_q14;
             st->have_last_sym = 1;

@@ -144,6 +144,13 @@ struct demod_state {
     int16_t hb_hist_i[10][HB_TAPS_MAX - 1];
     int16_t hb_hist_q[10][HB_TAPS_MAX - 1];
 
+    /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs */
+    int channel_lpf_enable; /* gate */
+    int channel_lpf_hist_len;
+    int channel_lpf_profile;        /* 0=wide/analog, 1=digital-narrow */
+    int16_t channel_lpf_hist_i[64]; /* sized for up to 63-tap symmetric FIR (tap-1) */
+    int16_t channel_lpf_hist_q[64];
+
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
     int resamp_target_hz;      /* desired output sample rate */

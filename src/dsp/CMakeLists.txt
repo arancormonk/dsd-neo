@@ -8,7 +8,6 @@ target_sources(dsd-neo_dsp PRIVATE
   costas.cpp
   resampler.cpp
   halfband.cpp
-  polar_disc.cpp
   fll.cpp
   ted.cpp
   simd_widen.cpp

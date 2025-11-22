@@ -373,6 +373,8 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
         return;
     }
     last_rate = Fs;
+    /* Refresh audio filters to match the new output rate. */
+    init_audio_filters(state, (int)Fs);
     if (Fs == 48000) {
         return; /* canonical, keep existing SPS */
     }
@@ -417,6 +419,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     short sample;
     int i, sum, symbol, count;
     ssize_t result;
+    const unsigned int analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
 
     sum = 0;
     count = 0;
@@ -751,17 +754,39 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             //   state->analog_sample_counter = 0;
             // } //This is the root cause of issue listed above, will evaluate further at a later time for a more elegant solution, or determine if anything is negatively impacted by removing this
 
+            /* Collect ~20 ms of audio based on current output Fs (defaults to 48 kHz; ~960 samples). */
+            unsigned int analog_block = analog_out_cap;
+            if (opts->audio_in_type == 3) {
+#ifdef USE_RTLSDR
+                unsigned int Fs = 0;
+                if (g_rtl_ctx) {
+                    Fs = rtl_stream_output_rate(g_rtl_ctx);
+                }
+                if (Fs > 0) {
+                    analog_block = (unsigned int)(((uint64_t)Fs * 20 + 999) / 1000); /* ~20 ms */
+                    if (analog_block < 320) {
+                        analog_block = 320; /* floor to ~6.7 ms */
+                    } else if (analog_block > 4000) {
+                        analog_block = 4000; /* cap to ~83 ms */
+                    }
+                }
+#endif
+            }
+            if (analog_block > analog_out_cap) {
+                analog_block = analog_out_cap; /* never exceed buffer capacity */
+            }
+
             //sanity check to prevent an overflow
-            if (state->analog_sample_counter > 959) {
-                state->analog_sample_counter = 959;
+            if ((unsigned int)state->analog_sample_counter >= analog_block) {
+                state->analog_sample_counter = (int)analog_block - 1;
             }
 
             state->analog_out[state->analog_sample_counter++] = sample;
 
-            if (state->analog_sample_counter == 960) {
+            if ((unsigned int)state->analog_sample_counter == analog_block) {
                 //measure input power for non-RTL inputs
                 if (opts->audio_in_type != 3) {
-                    opts->rtl_pwr = raw_pwr(state->analog_out, 960, 1);
+                    opts->rtl_pwr = raw_pwr(state->analog_out, (int)analog_block, 1);
                     // Optional: warn on persistently low input level
                     if (opts->input_warn_db < 0.0) {
                         double db = pwr_to_dB(opts->rtl_pwr);
@@ -780,33 +805,33 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 //raw wav file saving -- only write when not NXDN, dPMR, or M17 due to noise that can cause tons of false positives when no sync
                 if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0
                     && opts->frame_dpmr == 0 && opts->frame_m17 == 0) {
-                    sf_write_short(opts->wav_out_raw, state->analog_out, 960);
+                    sf_write_short(opts->wav_out_raw, state->analog_out, analog_block);
                     sf_write_sync(opts->wav_out_raw);
                 }
 
                 //low pass filter
                 if (opts->use_lpf == 1) {
-                    lpf(state, state->analog_out, 960);
+                    lpf(state, state->analog_out, (int)analog_block);
                 }
 
                 //high pass filter
                 if (opts->use_hpf == 1) {
-                    hpf(state, state->analog_out, 960);
+                    hpf(state, state->analog_out, (int)analog_block);
                 }
 
                 //pass band filter
                 if (opts->use_pbf == 1) {
-                    pbf(state, state->analog_out, 960);
+                    pbf(state, state->analog_out, (int)analog_block);
                 }
 
                 //manual gain control
                 if (opts->audio_gainA > 0.0f) {
-                    analog_gain(opts, state, state->analog_out, 960);
+                    analog_gain(opts, state, state->analog_out, (int)analog_block);
                 }
 
                 //automatic gain control
                 else {
-                    agsm(opts, state, state->analog_out, 960);
+                    agsm(opts, state, state->analog_out, (int)analog_block);
                 }
 
                 //Running PWR after filtering does remove the analog spike from the PWR value
@@ -816,14 +841,14 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
                 //seems to be working now, but PWR values are lower on actual analog signal than on no signal but noise
                 if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
-                    && opts->audio_out == 1) //added carrier check here in lieu of disabling it above
-                {
+                    && opts->audio_out == 1) { //added carrier check here in lieu of disabling it above
+                    size_t bytes = (size_t)analog_block * sizeof(short);
                     if (opts->audio_out_type == 0) {
-                        pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, (size_t)960u * sizeof(short), NULL);
+                        pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, bytes, NULL);
                     }
 
                     if (opts->audio_out_type == 8) {
-                        udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), state->analog_out);
+                        udp_socket_blasterA(opts, state, bytes, state->analog_out);
                     }
 
                     //NOTE: Worked okay earlier in Cygwin, so should be fine -- can only operate at 48k1, else slow mode lag
@@ -831,7 +856,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     //This one will only operate when OSS 48k1 (when both input and output are OSS audio)
                     if (opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000
                         && opts->pulse_digi_out_channels == 1) {
-                        write(opts->audio_out_fd, state->analog_out, (size_t)960u * sizeof(short));
+                        write(opts->audio_out_fd, state->analog_out, bytes);
                     }
 
                     //STDOUT, but only when operating at 48k1 (no go just yet)
@@ -873,16 +898,17 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
         if (have_sync == 1) {
             //sanity check to prevent an overflow
-            if (state->analog_sample_counter > 959) {
-                state->analog_sample_counter = 959;
+            int analog_max_index = (int)analog_out_cap - 1;
+            if (state->analog_sample_counter > analog_max_index) {
+                state->analog_sample_counter = analog_max_index;
             }
 
             state->analog_out[state->analog_sample_counter++] = sample;
 
-            if (state->analog_sample_counter == 960) {
+            if ((unsigned int)state->analog_sample_counter == analog_out_cap) {
                 //raw wav file saving -- file size on this blimps pretty fast 1 min ~= 6 MB;  1 hour ~= 360 MB;
                 if (opts->wav_out_raw != NULL) {
-                    sf_write_short(opts->wav_out_raw, state->analog_out, 960);
+                    sf_write_short(opts->wav_out_raw, state->analog_out, analog_out_cap);
                     sf_write_sync(opts->wav_out_raw);
                 }
 

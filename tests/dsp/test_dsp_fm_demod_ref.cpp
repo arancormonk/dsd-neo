@@ -3,13 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit test: dsd_fm_demod + polar_discriminant returns constant for constant dphi. */
+/* Unit test: dsd_fm_demod (phase-diff path) returns constant for constant dphi. */
 
 #include <cmath>
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/polar_disc.h>
+#include <dsd-neo/dsp/math_utils.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -39,21 +39,28 @@ main(void) {
 
     s->lowpassed = iq;
     s->lp_len = N * 2;
-    s->discriminator = &polar_discriminant;
     s->fll_enabled = 0;
     s->pre_r = 0;
     s->pre_j = 0;
 
     dsd_fm_demod(s);
 
-    // Expected Q14 value: q = dphi/pi * 2^14 = f/Fs * 2^15
-    int q_expect = (int)lrint((f_dev / Fs) * 32768.0);
+    // Expected steady-state phase delta based on first two samples
+    int16_t r0 = iq[0], j0 = iq[1], r1 = iq[2], j1 = iq[3];
+    int64_t re = (int64_t)r1 * (int64_t)r0 + (int64_t)j1 * (int64_t)j0;
+    int64_t im = (int64_t)j1 * (int64_t)r0 - (int64_t)r1 * (int64_t)j0;
+    int q_expect = dsd_neo_fast_atan2(im, re);
     if (s->result_len != N) {
         fprintf(stderr, "FM demod ref: result_len=%d want %d\n", s->result_len, N);
         free(s);
         return 1;
     }
-    // Ignore the very first sample; check steady-state
+    // First sample seeds history; steady-state starts at index 1
+    if (s->result[0] != 0) {
+        fprintf(stderr, "FM demod ref: result[0]=%d want 0\n", s->result[0]);
+        free(s);
+        return 1;
+    }
     for (int i = 1; i < s->result_len; i++) {
         int v = s->result[i];
         int d = v - q_expect;

@@ -509,11 +509,6 @@ target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DI
 target_link_libraries(dsd-neo_test_dsp_halfband PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_HALFBAND COMMAND dsd-neo_test_dsp_halfband)
 
-add_executable(dsd-neo_test_dsp_polar_disc dsp/test_dsp_polar_disc.cpp)
-target_include_directories(dsd-neo_test_dsp_polar_disc PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_polar_disc PRIVATE dsd-neo_dsp)
-add_test(NAME DSP_POLAR_DISC COMMAND dsd-neo_test_dsp_polar_disc)
-
 add_executable(dsd-neo_test_dsp_resampler dsp/test_dsp_resampler.cpp)
 target_include_directories(dsd-neo_test_dsp_resampler PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_resampler PRIVATE dsd-neo_dsp)

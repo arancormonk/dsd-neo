@@ -126,6 +126,14 @@ extern "C" {
  *     Values: 1 enable, 0 disable. Default: off.
  * - DSD_NEO_IQ_DC_SHIFT
  *     k in the above relation (10..14 typical, larger=k -> slower). Default: 11.
+ *
+ * Channel complex low-pass (RTL baseband)
+ * - DSD_NEO_CHANNEL_LPF
+ *     Optional complex low-pass on the RTL DSP baseband after half-band/CIC
+ *     decimation. Intended to narrow out-of-channel noise when running at
+ *     higher baseband rates (e.g., 24 kHz). By default this is enabled only
+ *     for analog-like modes at >=20 kHz and disabled for digital voice modes.
+ *     Values: 0 to force off; non-zero to force on regardless of mode.
  * Frontend tuning behavior
  * - DSD_NEO_DISABLE_FS4_SHIFT
  *     Disable +fs/4 capture frequency shift when offset_tuning is off. Useful for trunking where exact
@@ -298,6 +306,12 @@ typedef struct dsdneoRuntimeConfig {
     int blanker_thr;
     int blanker_win_is_set;
     int blanker_win;
+
+    /* RTL channel complex low-pass (post-HB, complex baseband).
+       Allows narrowing noise when running the RTL DSP baseband at higher
+       sample rates (e.g., 24 kHz) without forcing it on for all modes. */
+    int channel_lpf_is_set; /* env seen */
+    int channel_lpf_enable; /* 0=off, 1=on */
 }
 
 dsdneoRuntimeConfig;

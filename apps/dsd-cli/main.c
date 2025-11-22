@@ -149,6 +149,42 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
+analog_filter_rate_hz(const dsd_opts* opts) {
+    if (!opts) {
+        return 48000;
+    }
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == 3 && g_rtl_ctx) {
+        uint32_t Fs = rtl_stream_output_rate(g_rtl_ctx);
+        if (Fs > 0) {
+            return (int)Fs;
+        }
+    }
+#endif
+    switch (opts->audio_in_type) {
+        case 0:
+        case 5:
+            if (opts->pulse_digi_rate_in > 0) {
+                return opts->pulse_digi_rate_in;
+            }
+            break;
+        case 1:
+        case 2:
+        case 6:
+        case 8:
+            if (opts->wav_sample_rate > 0) {
+                return opts->wav_sample_rate;
+            }
+            break;
+        default: break;
+    }
+    if (opts->pulse_raw_rate_out > 0) {
+        return opts->pulse_raw_rate_out;
+    }
+    return 48000;
+}
+
+static int
 prompt_int(const char* q, int def_val, int min_val, int max_val) {
     char buf[64];
     fprintf(stderr, "%s [%d]: ", q, def_val);
@@ -1456,7 +1492,7 @@ initOpts(dsd_opts* opts) {
     opts->input_volume_multiplier = 1;
     opts->rtl_udp_port =
         0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
-    opts->rtl_dsp_bw_khz = 12;  // DSP baseband kHz (4,6,8,12,16,24). Not tuner IF BW.
+    opts->rtl_dsp_bw_khz = 24;  // DSP baseband kHz (4,6,8,12,16,24). Not tuner IF BW.
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
@@ -2364,7 +2400,7 @@ usage() {
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M) \n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
-    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 12). Allowed: 4,6,8,12,16,24.\n");
+    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 24). Allowed: 4,6,8,12,16,24.\n");
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
@@ -2867,8 +2903,7 @@ main(int argc, char** argv) {
     initOpts(&opts);
     initState(&state);
     dsd_bootstrap_enable_ftz_daz_if_enabled();
-    init_audio_filters(&state); //audio filters
-    init_rrc_filter_memory();   //initialize input filtering
+    init_rrc_filter_memory(); //initialize input filtering
     InitAllFecFunction();
     CNXDNConvolution_init();
 
@@ -3007,6 +3042,13 @@ main(int argc, char** argv) {
             unsetenv("DSD_NEO_NO_BOOTSTRAP");
         }
         bootstrap_interactive(&opts, &state);
+    }
+
+    /* Rebuild audio filters after CLI/config/bootstrap may have changed the output rate.
+       Base coefficients on the analog monitor sample rate so cutoffs stay correct. */
+    {
+        int filter_rate = analog_filter_rate_hz(&opts);
+        init_audio_filters(&state, filter_rate);
     }
 
     /* long-option normalization handled inside dsd_parse_args */

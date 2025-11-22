@@ -301,6 +301,12 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.blanker_win_is_set = env_is_set(bl_win);
     c.blanker_win = c.blanker_win_is_set ? atoi(bl_win) : 2;
 
+    /* Channel complex low-pass on RTL baseband (post-HB).
+       Default: off for digital voice modes at 24 kHz; may be enabled via env. */
+    const char* clpf = getenv("DSD_NEO_CHANNEL_LPF");
+    c.channel_lpf_is_set = env_is_set(clpf);
+    c.channel_lpf_enable = c.channel_lpf_is_set ? atoi(clpf) : 0;
+
     g_config = c;
     g_config_inited = 1;
 }

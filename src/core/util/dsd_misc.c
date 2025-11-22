@@ -453,17 +453,36 @@ NOTCHFilter_Update(NOTCHFilter* filter, float vin) {
     return (filter->vout[0]);
 }
 
+static float
+clamp_cutoff(float hz, float sample_rate_hz, float frac_nyq) {
+    if (hz < 0.0f) {
+        return 0.0f;
+    }
+    float nyq = 0.5f * sample_rate_hz;
+    float max_hz = nyq * frac_nyq;
+    if (max_hz <= 0.0f) {
+        return hz;
+    }
+    return (hz > max_hz) ? max_hz : hz;
+}
+
 void
-init_audio_filters(dsd_state* state) {
+init_audio_filters(dsd_state* state, int sample_rate_hz) {
+    float analog_Fs = (sample_rate_hz > 0) ? (float)sample_rate_hz : 48000.0f;
+    float analog_Ts = 1.0f / analog_Fs;
+    const float digital_Fs = 8000.0f;
+    const float digital_Ts = 1.0f / digital_Fs;
+
     //still not sure if this is even correct or not, but 48k sounds good now
-    LPFilter_Init(&state->RCFilter, 960, (float)1 / (float)48000);
-    HPFilter_Init(&state->HRCFilter, 960, (float)1 / (float)48000);
+    LPFilter_Init(&state->RCFilter, 960.0f, analog_Ts);
+    HPFilter_Init(&state->HRCFilter, 960.0f, analog_Ts);
 
     //left and right variants for stereo output testing on digital voice samples
-    LPFilter_Init(&state->RCFilterL, 960, (float)1 / (float)16000);
-    HPFilter_Init(&state->HRCFilterL, 960, (float)1 / (float)16000);
-    LPFilter_Init(&state->RCFilterR, 960, (float)1 / (float)16000);
-    HPFilter_Init(&state->HRCFilterR, 960, (float)1 / (float)16000);
+    //Digital voice path runs on 8 kHz frames; keep these filters keyed to that rate.
+    LPFilter_Init(&state->RCFilterL, 960.0f, digital_Ts);
+    HPFilter_Init(&state->HRCFilterL, 960.0f, digital_Ts);
+    LPFilter_Init(&state->RCFilterR, 960.0f, digital_Ts);
+    HPFilter_Init(&state->HRCFilterR, 960.0f, digital_Ts);
 
     //PBFilter_Init(PBFilter *filter, float HPF_cutoffFreqHz, float LPF_cutoffFreqHz, float sampleTimeS);
     //NOTCHFilter_Init(NOTCHFilter *filter, float centerFreqHz, float notchWidthHz, float sampleTimeS);
@@ -472,8 +491,12 @@ init_audio_filters(dsd_state* state) {
     //testing just using the PBFilter by itself and see how it does without the hpf used
 
     //passband filter working (seems to be), notch filter unsure which values to use, doesn't have any appreciable affect when used as is
-    PBFilter_Init(&state->PBF, 8000, 12000, (float)1 / (float)1536000); //RTL Sampling at 1536000 S/s.
-    NOTCHFilter_Init(&state->NF, 1000, 4000, (float)1 / (float)1536000);
+    float hpf_cut = clamp_cutoff(8000.0f, analog_Fs, 0.9f);
+    float lpf_cut = clamp_cutoff(12000.0f, analog_Fs, 0.9f);
+    PBFilter_Init(&state->PBF, hpf_cut, lpf_cut, analog_Ts);
+    float notch_center = clamp_cutoff(1000.0f, analog_Fs, 0.9f);
+    float notch_width = clamp_cutoff(4000.0f, analog_Fs, 0.9f);
+    NOTCHFilter_Init(&state->NF, notch_center, notch_width, analog_Ts);
 }
 
 //FUNCTIONS for handing use of above filters

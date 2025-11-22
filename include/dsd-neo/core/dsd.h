@@ -692,7 +692,14 @@ long int raw_pwr(short* samples, int len, int step);
 double pwr_to_dB(long int mean_power);
 /* Convert dB to mean power (RMS^2 on int16 samples). */
 long int dB_to_pwr(double dB);
-void init_audio_filters(dsd_state* state);
+/**
+ * @brief Initialize or refresh audio-domain filters with the current sample rate.
+ *
+ * @param state Decoder state owning the filter instances.
+ * @param sample_rate_hz Analog monitor sample rate in Hz; if <=0 defaults to 48000 Hz.
+ *        Digital voice filters are initialized at 8000 Hz.
+ */
+void init_audio_filters(dsd_state* state, int sample_rate_hz);
 void lpf(dsd_state* state, short* input, int len);
 void hpf(dsd_state* state, short* input, int len);
 void pbf(dsd_state* state, short* input, int len);

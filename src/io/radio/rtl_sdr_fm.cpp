@@ -22,7 +22,6 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
-#include <dsd-neo/dsp/polar_disc.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_demod_config.h>
@@ -451,6 +450,13 @@ demod_reset_on_retune(struct demod_state* s) {
     s->post_polydecim_phase = 0;
     if (s->post_polydecim_hist && s->post_polydecim_K > 0) {
         memset(s->post_polydecim_hist, 0, (size_t)s->post_polydecim_K * sizeof(int16_t));
+    }
+    /* Channel LPF history */
+    s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
+    s->channel_lpf_profile = 0;
+    for (int k = 0; k < 64; k++) {
+        s->channel_lpf_hist_i[k] = 0;
+        s->channel_lpf_hist_q[k] = 0;
     }
 }
 
@@ -2574,9 +2580,6 @@ dsd_rtl_stream_close(void) {
         input_ring.buffer = NULL;
     }
 
-    /* free LUT memory if allocated */
-    atan_lut_free();
-
     rtl_device_destroy(rtl_device_handle);
     rtl_device_handle = NULL;
 
@@ -2622,7 +2625,6 @@ dsd_rtl_stream_soft_stop(void) {
         dsd_neo_aligned_free(input_ring.buffer);
         input_ring.buffer = NULL;
     }
-    atan_lut_free();
     rtl_device_destroy(rtl_device_handle);
     rtl_device_handle = NULL;
     return 0;

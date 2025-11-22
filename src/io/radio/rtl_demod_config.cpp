@@ -20,7 +20,6 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
-#include <dsd-neo/dsp/polar_disc.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/config.h>
@@ -31,6 +30,7 @@
 #include <dsd-neo/runtime/worker_pool.h>
 
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,7 +66,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->comp_fir_size = 0;
     s->prev_index = 0;
     s->post_downsample = 1;
-    s->custom_atan = 2;
+    s->custom_atan = 0;
     s->deemph = 0;
     s->rate_out2 = -1;
     s->mode_demod = &dsd_fm_demod;
@@ -74,6 +74,14 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->prev_lpr_index = 0;
     s->deemph_a = 0;
     s->deemph_avg = 0;
+    /* Channel LPF (post-HB) */
+    s->channel_lpf_enable = 0;    /* configured later by env/mode helper */
+    s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
+    s->channel_lpf_profile = 0;   /* 0=wide/analog, 1=digital-narrow */
+    for (int k = 0; k < 64; k++) {
+        s->channel_lpf_hist_i[k] = 0;
+        s->channel_lpf_hist_q[k] = 0;
+    }
     /* Audio LPF defaults */
     s->audio_lpf_enable = 0;
     s->audio_lpf_alpha = 0;
@@ -115,9 +123,26 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     ted_init_state(&s->ted_state);
     /* Squelch estimator init */
     s->squelch_running_power = 0;
-    s->squelch_decim_stride = 16;
+    {
+        /* Keep squelch timing roughly constant in seconds across rate changes.
+           Baseline: 12 kHz -> stride 16, window 2048 (~170 ms). */
+        const int base_fs = 12000;
+        int stride = (s->rate_in > 0) ? (int)((int64_t)s->rate_in * 16 / base_fs) : 16;
+        if (stride < 4) {
+            stride = 4;
+        } else if (stride > 256) {
+            stride = 256;
+        }
+        s->squelch_decim_stride = stride;
+        int window = (s->rate_in > 0) ? (int)((int64_t)s->rate_in * 2048 / base_fs) : 2048;
+        if (window < 256) {
+            window = 256;
+        } else if (window > 32768) {
+            window = 32768;
+        }
+        s->squelch_window = window;
+    }
     s->squelch_decim_phase = 0;
-    s->squelch_window = 2048;
     /* Squelch soft gate defaults */
     s->squelch_gate_open = 1;
     s->squelch_env_q15 = 32768;
@@ -184,31 +209,26 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     if (mode == DEMOD_ANALOG) {
         s->downsample_passes = 1;
         s->comp_fir_size = 9;
-        s->custom_atan = 1;
+        s->custom_atan = 0;
         s->deemph = 1;
         s->rate_out2 = rtl_dsp_bw_hz;
     } else if (mode == DEMOD_RO2) {
         s->downsample_passes = 0;
         s->comp_fir_size = 0;
-        s->custom_atan = 2;
+        s->custom_atan = 0;
         s->deemph = (p && p->deemph_default) ? 1 : 0;
         s->rate_out2 = rtl_dsp_bw_hz;
     } else {
         /* Digital default */
         s->downsample_passes = 0;
         s->comp_fir_size = 0;
-        s->custom_atan = 2;
+        s->custom_atan = 0;
         s->deemph = (p && p->deemph_default) ? 1 : 0;
         s->rate_out2 = rtl_dsp_bw_hz;
     }
 
-    /* Configure discriminator and helper modules now that mode/custom_atan are known. */
-    if (s->custom_atan == 2) {
-        atan_lut_init();
-    }
-    s->discriminator = (s->custom_atan == 0)   ? &polar_discriminant
-                       : (s->custom_atan == 1) ? &polar_disc_fast
-                                               : &polar_disc_lut;
+    /* Legacy discriminator path removed; keep placeholders NULL. */
+    s->discriminator = NULL;
     /* Initialize minimal worker pool (env-gated via DSD_NEO_MT). */
     demod_mt_init(s);
 
@@ -423,6 +443,35 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->fm_cma_guard_freeze = 0;
     demod->fm_cma_guard_accepts = 0;
     demod->fm_cma_guard_rejects = 0;
+
+    /* Channel complex low-pass (post-HB, complex baseband).
+       Default policy (Fs~=24 kHz RTL DSP baseband):
+         - For analog-like modes, enable a wide channel LPF to narrow
+           out-of-channel noise while preserving audio bandwidth.
+         - For digital voice modes (P25/DMR/NXDN/etc.), enable a narrower
+           digital-specific LPF tuned for ~4.8 ksps symbols to improve SNR.
+       Env override:
+         - DSD_NEO_CHANNEL_LPF=0 forces off (all modes).
+         - DSD_NEO_CHANNEL_LPF!=0 forces on (all modes, wide profile). */
+    int channel_lpf = 0;
+    int channel_lpf_profile = 0; /* 0=wide/analog, 1=digital-narrow */
+    if (cfg->channel_lpf_is_set) {
+        /* Env forces on/off; when forced on, use wide profile to avoid
+           surprising very narrow channels. */
+        channel_lpf = (cfg->channel_lpf_enable != 0);
+        channel_lpf_profile = 0;
+    } else {
+        int high_fs = (demod->rate_in >= 20000); /* currently 24 kHz DSP baseband */
+        int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
+                            || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
+                            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+        if (high_fs) {
+            channel_lpf = 1;
+            channel_lpf_profile = digital_mode ? 1 : 0;
+        }
+    }
+    demod->channel_lpf_enable = channel_lpf ? 1 : 0;
+    demod->channel_lpf_profile = channel_lpf_profile;
 }
 
 void
