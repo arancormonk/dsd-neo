@@ -359,40 +359,20 @@ void rtl_stream_set_auto_ppm(int onoff);
  */
 int rtl_stream_get_auto_ppm(void);
 
-/* Runtime DSP adjustments and feedback hooks */
 /**
- * @brief Set CQPSK path parameters at runtime; pass -1 to leave any field unchanged.
+ * @brief Runtime CQPSK matched filter toggle.
  *
- * @param lms_enable Non-zero to enable LMS equalizer; zero to disable.
- * @param taps Number of LMS taps (>=0).
- * @param mu_q15 LMS step size in Q15.
- * @param update_stride Symbols between adaptation updates.
- * @param wl_enable Non-zero to enable widely-linear branch; zero to disable.
- * @param dfe_enable Non-zero to enable decision-feedback branch; zero to disable.
- * @param dfe_taps Number of decision-feedback taps (>=0).
- * @param mf_enable Non-zero to enable matched filter; zero to disable.
- * @param cma_warmup_samples Number of samples to keep CMA warmup active (>=0).
+ * @param mf_enable Non-zero to enable matched filter; zero to disable; -1 to leave unchanged.
  */
-void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
-                          int dfe_taps, int mf_enable, int cma_warmup_samples);
+void rtl_stream_cqpsk_set(int mf_enable);
 /**
- * @brief Get CQPSK path parameters snapshot; returns 0 on success.
+ * @brief Get CQPSK matched filter state; returns 0 on success.
  *
- * Any pointer may be NULL.
- *
- * @param lms_enable [out] LMS enable flag.
- * @param taps [out] Number of taps.
- * @param mu_q15 [out] LMS step size in Q15.
- * @param update_stride [out] Symbols between adaptation updates.
- * @param wl_enable [out] Widely-linear enable flag.
- * @param dfe_enable [out] Decision-feedback enable flag.
- * @param dfe_taps [out] Number of DFE taps.
  * @param mf_enable [out] Matched filter enable flag.
- * @param cma_warmup_remaining [out] Remaining CMA warmup samples.
  * @return 0 on success; negative on error.
  */
-int rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
-                         int* dfe_taps, int* mf_enable, int* cma_warmup_remaining);
+int rtl_stream_cqpsk_get(int* mf_enable);
+
 /**
  * @brief Configure RRC matched filter (pass -1 to leave field unchanged).
  *
@@ -401,13 +381,6 @@ int rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_st
  * @param span_syms Span in symbols (3..16); negative to leave unchanged.
  */
 void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
-/**
- * @brief Toggle DQPSK-aware decision mode (0=off, 1=on).
- *
- * @param onoff Non-zero to enable; zero to disable.
- */
-void rtl_stream_cqpsk_set_dqpsk(int onoff);
-
 /**
  * @brief Get current RRC parameters; returns 0 on success.
  *
@@ -420,36 +393,6 @@ void rtl_stream_cqpsk_set_dqpsk(int onoff);
  */
 int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 
-/**
- * @brief Get DQPSK decision mode; returns 0 on success.
- *
- * @param onoff [out] Receives 1 when enabled; 0 when disabled.
- * @return 0 on success; negative on error.
- */
-int rtl_stream_cqpsk_get_dqpsk(int* onoff);
-
-/**
- * @brief Get CQPSK EQ debug snapshot; returns 0 on success.
- *
- * Any pointer may be NULL.
- *
- * @param updates [out] Total adaptation updates applied.
- * @param adapt_mode [out] Current adaptation mode selector.
- * @param c0_i [out] Main tap real part (Q15).
- * @param c0_q [out] Main tap imaginary part (Q15).
- * @param taps [out] Total tap count.
- * @param isi_ratio_q15 [out] ISI/desired power ratio (Q15).
- * @param wl_improp_q15 [out] Widely-linear impropriety metric (Q15).
- * @param cma_warmup [out] Remaining CMA warmup samples.
- * @param mu_q15 [out] Current step size (Q15).
- * @param sym_stride [out] Symbols between updates.
- * @param dfe_taps [out] Decision-feedback tap count.
- * @param err_ema_q14 [out] Error EMA magnitude (Q14).
- * @return 0 on success; negative on error.
- */
-int rtl_stream_cqpsk_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
-                               int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
-                               int* err_ema_q14);
 /**
  * @brief Get CQPSK acquisition-only pre-Costas FLL enable flag (0/1).
  *

@@ -165,8 +165,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             //             int stride = (ted_sps >= 2 && ted_sps <= 16) ? ted_sps : 6;
             //             int dfe_en = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? 1 : 0;
             //             int dfe_taps = dfe_en ? 2 : 0;
-            //             rtl_stream_cqpsk_set(1, 5, 2, stride, 0, dfe_en, dfe_taps, 1, 1200);
-            //             rtl_stream_cqpsk_set_rrc(1, 25, 6);
             //         }
             //         if (!f) {
             //             const char* fll_env = getenv("DSD_NEO_FLL");

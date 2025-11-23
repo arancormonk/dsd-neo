@@ -16,8 +16,6 @@
 #include <atomic>
 #include <chrono>
 #include <dsd-neo/core/dsd.h>
-#include <dsd-neo/dsp/cqpsk_equalizer.h>
-#include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
@@ -843,90 +841,8 @@ demod_thread_fn(void* arg) {
             if (win > mid) {
                 win = mid;
             }
-            /* QPSK/CQPSK: EVM-based SNR from equalizer symbol outputs */
+            /* QPSK/CQPSK: use constellation snapshot estimator instead */
             bool qpsk_updated = false;
-            if (d->cqpsk_enable) {
-                enum { MAXP = 2048 };
-
-                static int16_t syms[(size_t)MAXP * 2];
-                int n = cqpsk_eq_get_symbols(&demod.cqpsk_eq, syms, MAXP);
-                if (n > 32) {
-                    /* Use per-axis normalization to avoid bias from I/Q gain imbalance.
-                       Estimate target amplitudes from mean absolute I and Q. */
-                    double sum_abs_i = 0.0, sum_abs_q = 0.0;
-                    for (int i = 0; i < n; i++) {
-                        double I = (double)syms[(size_t)(i << 1) + 0];
-                        double Q = (double)syms[(size_t)(i << 1) + 1];
-                        sum_abs_i += fabs(I);
-                        sum_abs_q += fabs(Q);
-                    }
-                    double aI = sum_abs_i / (double)n;
-                    double aQ = sum_abs_q / (double)n;
-                    /* Guard small values */
-                    if (aI < 1e-9) {
-                        aI = 1e-9;
-                    }
-                    if (aQ < 1e-9) {
-                        aQ = 1e-9;
-                    }
-                    /* Evaluate both axis-aligned and 45°-diagonal target sets; choose best. */
-                    double e2_axis = 0.0;
-                    for (int i = 0; i < n; i++) {
-                        double I = (double)syms[(size_t)(i << 1) + 0];
-                        double Q = (double)syms[(size_t)(i << 1) + 1];
-                        double ti = (I >= 0.0) ? aI : -aI;
-                        double tq = (Q >= 0.0) ? aQ : -aQ;
-                        double ei = I - ti;
-                        double eq = Q - tq;
-                        e2_axis += ei * ei + eq * eq;
-                    }
-                    double t2_axis = (double)n * (aI * aI + aQ * aQ);
-                    double aD = 0.5 * (aI + aQ); /* diagonal amplitude */
-                    if (aD < 1e-9) {
-                        aD = 1e-9;
-                    }
-                    double e2_diag = 0.0;
-                    for (int i = 0; i < n; i++) {
-                        double I = (double)syms[(size_t)(i << 1) + 0];
-                        double Q = (double)syms[(size_t)(i << 1) + 1];
-                        double ti = (I >= 0.0) ? aD : -aD;
-                        double tq = (Q >= 0.0) ? aD : -aD;
-                        double ei = I - ti;
-                        double eq = Q - tq;
-                        e2_diag += ei * ei + eq * eq;
-                    }
-                    double t2_diag = (double)n * (2.0 * aD * aD);
-                    double snr = -100.0;
-                    if (t2_axis > 1e-9 && e2_axis > 0.0) {
-                        double ratio = (e2_axis <= 1e-12) ? 1e12 : (t2_axis / e2_axis);
-                        snr = 10.0 * log10(ratio);
-                    }
-                    if (t2_diag > 1e-9 && e2_diag > 0.0) {
-                        double ratio_d = (e2_diag <= 1e-12) ? 1e12 : (t2_diag / e2_diag);
-                        double snr_d = 10.0 * log10(ratio_d);
-                        if (snr_d > snr) {
-                            snr = snr_d;
-                        }
-                    }
-                    if (snr > -99.0) {
-                        snr -= kEvmSNRNoiseBiasDb;
-                        static double ema = -100.0;
-                        if (ema < -50.0) {
-                            ema = snr;
-                        } else {
-                            /* Make SNR meter snappier: 60% old, 40% new */
-                            ema = 0.6 * ema + 0.4 * snr;
-                        }
-                        g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
-                        g_snr_qpsk_src.store(1, std::memory_order_relaxed);
-                        auto now = std::chrono::steady_clock::now();
-                        long long ms =
-                            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                        g_snr_qpsk_last_ms.store(ms, std::memory_order_relaxed);
-                        qpsk_updated = true;
-                    }
-                }
-            }
             bool c4fm_updated = false;
             bool gfsk_updated = false;
             /* Include low-SPS FSK paths (e.g., 5 sps ProVoice/EDACS) in the SNR estimator. */
@@ -3464,47 +3380,9 @@ clampi(int v, int lo, int hi) {
     return v;
 }
 
-/* ---------------- CQPSK ISI-based auto-EQ (simulcast helper) ---------------- */
-static inline double
-isi_index_from_eq() {
-    /* Compute ISI severity from CQPSK equalizer taps: ratio of off-center energy
-       (FFE side-taps + DFE taps) to total energy (center + off-center).
-       Returns [0,1]. Low values (<=~0.01) indicate little ISI; higher implies stronger ISI. */
-    const cqpsk_eq_state_t* eq = &demod.cqpsk_eq;
-    int T = eq->num_taps;
-    if (T <= 0) {
-        return 0.0;
-    }
-    /* Center energy from c[0] */
-    const int c0i = eq->c_i[0];
-    const int c0q = eq->c_q[0];
-    double e_center = (double)c0i * (double)c0i + (double)c0q * (double)c0q;
-    /* FFE side-tap energy */
-    double e_side = 0.0;
-    for (int k = 1; k < T; k++) {
-        const int ci = eq->c_i[k];
-        const int cq = eq->c_q[k];
-        e_side += (double)ci * (double)ci + (double)cq * (double)cq;
-    }
-    /* DFE branch energy (post-cursor mitigation) */
-    if (eq->dfe_taps > 0) {
-        const int Nt = (eq->dfe_taps > 4) ? 4 : eq->dfe_taps;
-        for (int k = 0; k < Nt; k++) {
-            const int bi = eq->b_i[k];
-            const int bq = eq->b_q[k];
-            e_side += (double)bi * (double)bi + (double)bq * (double)bq;
-        }
-    }
-    double e_tot = e_center + e_side;
-    if (e_tot <= 1e-12) {
-        return 0.0;
-    }
-    return e_side / e_tot;
-}
-
-/* Forward declaration for CQPSK runtime setter used by runtime helpers */
-extern "C" void rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable,
-                                     int dfe_enable, int dfe_taps, int mf_enable, int cma_warmup_samples);
+/* Forward declarations for CQPSK runtime helpers used by wrapper layer */
+extern "C" void dsd_rtl_stream_cqpsk_set(int mf_enable);
+extern "C" int dsd_rtl_stream_cqpsk_get(int* mf_enable);
 
 /**
  * @brief P25 Phase 2 error callbacks for runtime helpers.
@@ -3546,20 +3424,6 @@ dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delt
     }
 }
 
-/* Master toggle to gate automatic DSP assistance (BER-based eq tweaks, etc.) */
-
-extern "C" void
-rtl_stream_cqpsk_set(int lms_enable, int taps, int mu_q15, int update_stride, int wl_enable, int dfe_enable,
-                     int dfe_taps, int mf_enable, int cma_warmup_samples) {
-    /* Apply matched-filter toggle directly on demod state */
-    if (mf_enable >= 0) {
-        demod.cqpsk_mf_enable = mf_enable ? 1 : 0;
-    }
-    /* Forward the rest to CQPSK path */
-    cqpsk_runtime_set_params(lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps,
-                             cma_warmup_samples);
-}
-
 extern "C" void
 rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
     /* Auto-set TED SPS for P25 Phase 1 (≈4800 sym/s) based on complex baseband rate. */
@@ -3590,29 +3454,6 @@ rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
     (void)fec_err_delta;
 }
 
-extern "C" int
-rtl_stream_cqpsk_get(int* lms_enable, int* taps, int* mu_q15, int* update_stride, int* wl_enable, int* dfe_enable,
-                     int* dfe_taps, int* mf_enable, int* cma_warmup_remaining) {
-    if (mf_enable) {
-        *mf_enable = demod.cqpsk_mf_enable ? 1 : 0;
-    }
-    return cqpsk_runtime_get_params(lms_enable, taps, mu_q15, update_stride, wl_enable, dfe_enable, dfe_taps,
-                                    cma_warmup_remaining);
-}
-
-/* CQPSK EQ debug snapshot (C shim) */
-extern "C" int cqpsk_runtime_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps,
-                                       int* isi_ratio_q15, int* wl_improp_q15, int* cma_warmup, int* mu_q15,
-                                       int* sym_stride, int* dfe_taps, int* err_ema_q14);
-
-extern "C" int
-dsd_rtl_stream_cqpsk_get_debug(int* updates, int* adapt_mode, int* c0_i, int* c0_q, int* taps, int* isi_ratio_q15,
-                               int* wl_improp_q15, int* cma_warmup, int* mu_q15, int* sym_stride, int* dfe_taps,
-                               int* err_ema_q14) {
-    return cqpsk_runtime_get_debug(updates, adapt_mode, c0_i, c0_q, taps, isi_ratio_q15, wl_improp_q15, cma_warmup,
-                                   mu_q15, sym_stride, dfe_taps, err_ema_q14);
-}
-
 /* Toggle generic IQ balance prefilter */
 extern "C" void
 dsd_rtl_stream_toggle_iq_balance(int onoff) {
@@ -3628,8 +3469,6 @@ dsd_rtl_stream_get_iq_balance(void) {
 extern "C" void
 rtl_stream_toggle_cqpsk(int onoff) {
     demod.cqpsk_enable = onoff ? 1 : 0;
-    /* Reset EQ state when toggling path to avoid stale filters */
-    cqpsk_reset_all();
     /* Switch demod output selector and reset CQPSK differential history. */
     if (demod.cqpsk_enable) {
         extern void qpsk_differential_demod(struct demod_state*);
@@ -3698,6 +3537,22 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
     return 0;
 }
 
+/* CQPSK runtime helper: matched filter only */
+extern "C" void
+dsd_rtl_stream_cqpsk_set(int mf_enable) {
+    if (mf_enable >= 0) {
+        demod.cqpsk_mf_enable = mf_enable ? 1 : 0;
+    }
+}
+
+extern "C" int
+dsd_rtl_stream_cqpsk_get(int* mf_enable) {
+    if (mf_enable) {
+        *mf_enable = demod.cqpsk_mf_enable ? 1 : 0;
+    }
+    return 0;
+}
+
 /* Configure RRC matched filter parameters. Any arg <0 leaves it unchanged. */
 extern "C" void
 dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms) {
@@ -3726,12 +3581,6 @@ dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms) {
     }
 }
 
-/* Toggle DQPSK decision mode in CQPSK path */
-extern "C" void
-dsd_rtl_stream_cqpsk_set_dqpsk(int onoff) {
-    cqpsk_runtime_set_dqpsk(onoff ? 1 : 0);
-}
-
 /* Get current RRC MF params */
 extern "C" int
 dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
@@ -3750,19 +3599,6 @@ dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
     }
     if (span_syms) {
         *span_syms = demod.cqpsk_rrc_span_syms;
-    }
-    return 0;
-}
-
-/* Get DQPSK decision mode */
-extern "C" int
-dsd_rtl_stream_cqpsk_get_dqpsk(int* onoff) {
-    int v = 0;
-    if (cqpsk_runtime_get_dqpsk(&v) != 0) {
-        return -1;
-    }
-    if (onoff) {
-        *onoff = v ? 1 : 0;
     }
     return 0;
 }

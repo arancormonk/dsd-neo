@@ -3604,22 +3604,6 @@ is_ted_allowed(void* v) {
     return is_mod_qpsk(v) || is_mod_fm(v);
 }
 
-static bool
-dsp_lms_on(void* v) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    return l != 0;
-}
-
-static bool
-dsp_dfe_on(void* v) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    return dfe != 0;
-}
-
 static const char*
 lbl_onoff_cq(void* v, char* b, size_t n) {
     UNUSED(v);
@@ -4170,75 +4154,10 @@ lbl_ted_bias(void* v, char* b, size_t n) {
 }
 
 static const char*
-lbl_onoff_lms(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "Toggle LMS [%s]", l ? "Active" : "Inactive");
-    return b;
-}
-
-// CQPSK LMS mu/stride helpers
-static const char*
-lbl_cqpsk_mu(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "LMS mu (Q15): %d", mu);
-    return b;
-}
-
-static void
-act_cqpsk_mu_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_MU_DELTA, .a = +1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_cqpsk_mu_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_MU_DELTA, .a = -1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
-lbl_cqpsk_stride(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "LMS Update Stride: %d sym", st);
-    return b;
-}
-
-static void
-act_cqpsk_stride_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA, .a = +1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_cqpsk_stride_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA, .a = -1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
-lbl_cqpsk_warm(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma_rem = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma_rem);
-    snprintf(b, n, "LMS Warmup (remaining): %d", cma_rem);
-    return b;
-}
-
-static const char*
 lbl_onoff_mf(void* v, char* b, size_t n) {
     UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
+    int mf = 0;
+    rtl_stream_cqpsk_get(&mf);
     snprintf(b, n, "Toggle Matched Filter [%s]", mf ? "Active" : "Inactive");
     return b;
 }
@@ -4288,24 +4207,6 @@ lbl_rrc_a_dn(void* v, char* b, size_t n) {
     return b;
 }
 
-static const char*
-lbl_onoff_wl(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "Toggle WL [%s]", wl ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
-lbl_onoff_dfe(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "Toggle DFE [%s]", dfe ? "Active" : "Inactive");
-    return b;
-}
-
 /* ---- CQPSK acquisition-only FLL (pre-Costas) ---- */
 static const char*
 lbl_cqpsk_acq_fll(void* v, char* b, size_t n) {
@@ -4326,33 +4227,6 @@ act_toggle_cqpsk_acq_fll(void* v) {
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
-static const char*
-lbl_dft_cycle(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, t = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &t, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "Cycle DFE taps: %d", dft);
-    return b;
-}
-
-static const char*
-lbl_eq_taps(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-    snprintf(b, n, "Set EQ taps 5/7 (now %d)", taps);
-    return b;
-}
-
-static const char*
-lbl_onoff_dqpsk(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0;
-    rtl_stream_cqpsk_get_dqpsk(&on);
-    snprintf(b, n, "Toggle DQPSK decision [%s]", on ? "Active" : "Inactive");
-    return b;
-}
-
 static void
 act_toggle_cq(void* v) {
     (void)v;
@@ -4371,13 +4245,6 @@ static void
 act_toggle_ted(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_TED};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_lms(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_LMS};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -4420,48 +4287,6 @@ static void
 act_rrc_s_dn(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_RRC_SPAN_DELTA, .a = -1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_cma(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_CMA_WARMUP};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_wl(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_WL};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_dfe(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_DFE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_cycle_dft(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CYCLE_DFT};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_taps_5_7(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TAPS_TOGGLE_5_7};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_dqpsk(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_DQPSK};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -5555,12 +5380,6 @@ static const NcMenuItem DSP_PATH_ITEMS[] = {
      .label_fn = lbl_onoff_cq,
      .help = "Enable/disable CQPSK path.",
      .on_select = act_toggle_cq},
-    {.id = "dqpsk",
-     .label = "DQPSK Decision",
-     .label_fn = lbl_onoff_dqpsk,
-     .help = "Toggle DQPSK decision stage.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_toggle_dqpsk},
     {.id = "fll",
      .label = "Toggle FLL",
      .label_fn = lbl_onoff_fll,
@@ -5636,76 +5455,6 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .help = "Pre-Costas matched filter; uses RRC when enabled, else 5-tap fallback.",
      .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_mf},
-    {.id = "lms",
-     .label = "LMS Equalizer",
-     .label_fn = lbl_onoff_lms,
-     .help = "Toggle LMS equalizer.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_toggle_lms},
-    {.id = "lms_mu",
-     .label = "LMS mu (status)",
-     .label_fn = lbl_cqpsk_mu,
-     .help = "Adaptation step (Q15).",
-     .is_enabled = is_mod_qpsk},
-    {.id = "lms_mu+",
-     .label = "LMS mu +1",
-     .help = "Increase LMS mu.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_cqpsk_mu_up},
-    {.id = "lms_mu-",
-     .label = "LMS mu -1",
-     .help = "Decrease LMS mu.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_cqpsk_mu_dn},
-    {.id = "lms_stride",
-     .label = "LMS Update Stride (status)",
-     .label_fn = lbl_cqpsk_stride,
-     .help = "Symbols between LMS updates.",
-     .is_enabled = is_mod_qpsk},
-    {.id = "lms_stride+",
-     .label = "Stride +1",
-     .help = "Increase update stride.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_cqpsk_stride_up},
-    {.id = "lms_stride-",
-     .label = "Stride -1",
-     .help = "Decrease update stride.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_cqpsk_stride_dn},
-    {.id = "lms_warm",
-     .label = "LMS Warmup (status)",
-     .label_fn = lbl_cqpsk_warm,
-     .help = "Remaining warmup samples (seed).",
-     .is_enabled = is_mod_qpsk},
-    {.id = "lms_seed",
-     .label = "Seed/Warmup (~1.5k)",
-     .help = "Run short CMA warmup to seed LMS.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_cma},
-    {.id = "wl",
-     .label = "WL Enhancement",
-     .label_fn = lbl_onoff_wl,
-     .help = "Toggle WL enhancement (CQPSK).",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_toggle_wl},
-    {.id = "dfe",
-     .label = "Decision-Feedback EQ",
-     .label_fn = lbl_onoff_dfe,
-     .help = "Toggle DFE (CQPSK).",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_toggle_dfe},
-    {.id = "dft",
-     .label = "Cycle DFE taps",
-     .label_fn = lbl_dft_cycle,
-     .help = "Cycle DFE tap count/mode.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_cycle_dft},
-    {.id = "eq_taps",
-     .label = "Set EQ taps 5/7",
-     .label_fn = lbl_eq_taps,
-     .help = "Toggle 5 vs 7 taps for EQ.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_taps_5_7},
     {.id = "c4fm_dd",
      .label = "C4FM DD Equalizer",
      .label_fn = lbl_c4fm_dd,
@@ -5939,7 +5688,7 @@ const NcMenuItem DSP_MENU_ITEMS[] = {
      .submenu_len = sizeof DSP_PATH_ITEMS / sizeof DSP_PATH_ITEMS[0]},
     {.id = "dsp.filters",
      .label = "Filtering & Equalizers...",
-     .help = "RRC/MF/LMS/DFE, C4FM DD EQ, FM CMA.",
+     .help = "RRC/MF, C4FM DD EQ, FM CMA.",
      .submenu = DSP_FILTER_ITEMS,
      .submenu_len = sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0],
      .is_enabled = dsp_filters_any},

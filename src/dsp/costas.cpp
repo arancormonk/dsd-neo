@@ -201,8 +201,14 @@ prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
     update_gains(c);
 
     if (!c->initialized && d) {
-        c->phase = static_cast<float>(d->fll_phase_q15) * kQ15ToRad;
-        c->freq = static_cast<float>(d->fll_freq_q15) * kQ15ToRad;
+        if (d->cqpsk_fll_rot_applied) {
+            /* FLL already rotated the block; start Costas from zero to avoid double rotation. */
+            c->phase = 0.0f;
+            c->freq = 0.0f;
+        } else {
+            c->phase = static_cast<float>(d->fll_phase_q15) * kQ15ToRad;
+            c->freq = static_cast<float>(d->fll_freq_q15) * kQ15ToRad;
+        }
         c->initialized = 1;
     }
 }

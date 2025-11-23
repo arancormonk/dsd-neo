@@ -2498,7 +2498,6 @@ usage() {
     printf("  -mg           Only GFSK optimizations (locks demod; no auto override)\n");
     printf("  -mq           Only QPSK optimizations (locks demod; no auto override)\n");
     printf("  -m2           P25p2 6000 sps QPSK (locks demod)\n");
-    printf("  -mL           Enable CQPSK LMS (experimental)\n");
     printf("  -F            Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");
     printf("                 Use this feature to allow MAC_SIGNAL even if CRC errors.\n");
     printf("  -F            Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");

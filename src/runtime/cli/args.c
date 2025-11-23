@@ -1394,18 +1394,6 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     state->symbolCenter = 3;
                     opts->mod_cli_lock = 1;
                     LOG_NOTICE("Enabling 6000 sps P25p2 QPSK.\n");
-                } else if (optarg[0] == 'L') {
-                    opts->cqpsk_lms = 1;
-                    opts->cqpsk_mu_q15 = 1;
-                    opts->cqpsk_stride = 4;
-                    /* Lock to the CQPSK/QPSK path so LSM signals stay on the correct demod. */
-                    opts->mod_c4fm = 0;
-                    opts->mod_qpsk = 1;
-                    opts->mod_gfsk = 0;
-                    opts->mod_cli_lock = 1;
-                    state->rf_mod = 1;
-                    setenv("DSD_NEO_CQPSK", "1", 1);
-                    LOG_NOTICE("Enabling CQPSK LMS (experimental) and locking to QPSK/CQPSK path.\n");
                 } else if (optarg[0] == '3') {
                     opts->mod_c4fm = 1;
                     opts->mod_qpsk = 0;

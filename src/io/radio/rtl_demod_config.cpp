@@ -136,6 +136,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->ted_gain_q20 = 0;
     s->ted_sps = 0;
     s->ted_mu_q20 = 0;
+    s->cqpsk_fll_rot_applied = 0;
     /* Initialize FLL and TED module states */
     fll_init_state(&s->fll_state);
     ted_init_state(&s->ted_state);
@@ -395,21 +396,6 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     }
     demod->cqpsk_acq_fll_locked = 0;
     demod->cqpsk_acq_quiet_runs = 0;
-
-    /* Map CLI runtime toggles for CQPSK LMS */
-    if (opts->cqpsk_lms != 0) {
-        demod->cqpsk_lms_enable = 1;
-    }
-    if (opts->cqpsk_mu_q15 > 0) {
-        demod->cqpsk_mu_q15 = opts->cqpsk_mu_q15;
-    } else if (demod->cqpsk_mu_q15 == 0) {
-        demod->cqpsk_mu_q15 = 1; /* tiny default */
-    }
-    if (opts->cqpsk_stride > 0) {
-        demod->cqpsk_update_stride = opts->cqpsk_stride;
-    } else if (demod->cqpsk_update_stride == 0) {
-        demod->cqpsk_update_stride = 4;
-    }
 
     /* Matched filter pre-EQ defaults to ON for CQPSK paths (P25p2/QPSK).
        Allow env to force on/off via DSD_NEO_CQPSK_MF=1/0. */

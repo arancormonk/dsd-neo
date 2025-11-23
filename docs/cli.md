@@ -144,7 +144,7 @@ Notes
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>` (bitmask for HPF/LPF/PBF)
 - Unvoiced speech quality: `-u <1–64>` (default 3)
-- Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps), `-mL` (CQPSK LMS + lock to QPSK/CQPSK path, experimental)
+- Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT)
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
 - DMR Tier III Location Area n‑bits: `-D <0–10>`

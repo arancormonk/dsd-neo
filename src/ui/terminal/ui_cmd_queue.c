@@ -1511,16 +1511,10 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_toggle_ted(t ? 0 : 1);
                     break;
                 }
-                case UI_DSP_OP_TOGGLE_LMS: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    rtl_stream_cqpsk_set(l ? 0 : 1, -1, -1, -1, -1, -1, -1, -1, -1);
-                    break;
-                }
                 case UI_DSP_OP_TOGGLE_MF: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, mf ? 0 : 1, -1);
+                    int mf = 0;
+                    rtl_stream_cqpsk_get(&mf);
+                    rtl_stream_cqpsk_set(mf ? 0 : 1);
                     break;
                 }
                 case UI_DSP_OP_TOGGLE_RRC: {
@@ -1553,42 +1547,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                         ns = 16;
                     }
                     rtl_stream_cqpsk_set_rrc(-1, -1, ns);
-                    break;
-                }
-                case UI_DSP_OP_CQPSK_CMA_WARMUP: {
-                    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, -1, -1, -1, 1500);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_WL: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    rtl_stream_cqpsk_set(-1, -1, -1, -1, wl ? 0 : 1, -1, -1, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_DFE: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, dfe ? 0 : 1, dft, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_CYCLE_DFT: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    int nd = (dft + 1) & 3;
-                    rtl_stream_cqpsk_set(-1, -1, -1, -1, -1, dfe, nd, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_TAPS_TOGGLE_5_7: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    int nt = (taps >= 7) ? 5 : 7;
-                    rtl_stream_cqpsk_set(-1, nt, -1, -1, -1, -1, -1, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_DQPSK: {
-                    int on = 0;
-                    rtl_stream_cqpsk_get_dqpsk(&on);
-                    rtl_stream_cqpsk_set_dqpsk(on ? 0 : 1);
                     break;
                 }
                 case UI_DSP_OP_TOGGLE_IQBAL: {
@@ -1829,32 +1787,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 case UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE: {
                     int on = rtl_stream_get_cqpsk_acq_fll();
                     rtl_stream_set_cqpsk_acq_fll(on ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_CQPSK_LMS_MU_DELTA: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    int nmu = mu + p.a;
-                    if (nmu < 1) {
-                        nmu = 1;
-                    }
-                    if (nmu > 64) {
-                        nmu = 64;
-                    }
-                    rtl_stream_cqpsk_set(-1, -1, nmu, -1, -1, -1, -1, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_CQPSK_LMS_STRIDE_DELTA: {
-                    int l = 0, taps = 0, mu = 0, st = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-                    rtl_stream_cqpsk_get(&l, &taps, &mu, &st, &wl, &dfe, &dft, &mf, &cma);
-                    int ns = st + p.a;
-                    if (ns < 1) {
-                        ns = 1;
-                    }
-                    if (ns > 16) {
-                        ns = 16;
-                    }
-                    rtl_stream_cqpsk_set(-1, -1, -1, ns, -1, -1, -1, -1, -1);
                     break;
                 }
                 default: break;

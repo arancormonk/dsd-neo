@@ -3,8 +3,6 @@ add_library(dsd-neo_dsp)
 
 target_sources(dsd-neo_dsp PRIVATE
   demod_pipeline.cpp
-  cqpsk_equalizer.cpp
-  cqpsk_path.cpp
   costas.cpp
   resampler.cpp
   halfband.cpp

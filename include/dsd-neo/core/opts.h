@@ -232,10 +232,6 @@ struct dsd_opts {
     int use_pbf;
     int use_hpf_d;
     int floating_point;
-    int cqpsk_lms;    // 0 off, 1 on
-    int cqpsk_mu_q15; // small step size (1..64)
-    int cqpsk_stride; // update stride (1..32)
-
     // Small flags and bytes
     uint8_t const_norm_mode;         //0=radial (percentile) norm, 1=unit-circle norm
     uint8_t symbol_out_file_is_auto; //if the user hit the R key

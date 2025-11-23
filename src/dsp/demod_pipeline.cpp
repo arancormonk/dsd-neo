@@ -12,8 +12,6 @@
  */
 
 #include <dsd-neo/dsp/costas.h>
-#include <dsd-neo/dsp/cqpsk_equalizer.h>
-#include <dsd-neo/dsp/cqpsk_path.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
@@ -797,8 +795,8 @@ raw_demod(struct demod_state* fm) {
  * @brief QPSK helper demodulator: copy I channel from interleaved complex baseband.
  *
  * Assumes fm->lowpassed holds interleaved I/Q samples that have already passed
- * through CQPSK processing (matched filter, Costas, equalizer). Produces a
- * single real stream (I only) to feed the legacy symbol sampler path.
+ * through CQPSK processing (matched filter, optional acquisition FLL/TED, Costas).
+ * Produces a single real stream (I only) to feed the legacy symbol sampler path.
  */
 /**
  * @brief Differential QPSK demodulator for CQPSK/LSM paths.
@@ -1055,7 +1053,7 @@ fll_mix_and_update(struct demod_state* d) {
  * Normalizes complex I/Q magnitude toward a target RMS to reduce amplitude
  * bounce from low-cost front-ends (e.g., RTL-SDR). Uses per-block RMS with a
  * smoothed gain (separate attack/decay alphas) to avoid pumping. Disabled for
- * CQPSK paths where constant-modulus EQ handles amplitude.
+ * CQPSK paths to leave constellation amplitude untouched.
  */
 static inline void
 fm_envelope_agc(struct demod_state* d) {
@@ -1236,7 +1234,7 @@ fm_constant_envelope_limiter(struct demod_state* d) {
 }
 
 /* Blind CMA equalizer for constant-envelope paths (FM/C4FM/GFSK).
-   Uses the CQPSK equalizer in CMA-only mode (no DD, no DFE/WL).
+   Includes optional symmetric smoothing and an adaptive FIR update.
    Off by default; enable via demod->fm_cma_enable. */
 static inline void
 fm_cma_equalize(struct demod_state* d) {
@@ -1702,59 +1700,9 @@ fm_cma_equalize(struct demod_state* d) {
         memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
         return;
     }
-    /* Initialize per-instance EQ state lazily; reconfigure on parameter changes. */
-    cqpsk_eq_state_t* eq = &d->fm_cma_eq;
-    int* inited = &d->fm_cma_eq_inited;
-    int* prev_taps = &d->fm_cma_prev_taps;
-    int* prev_mu = &d->fm_cma_prev_mu;
-    int* prev_warm = &d->fm_cma_prev_warm;
-
-    /* For FM/FSK, use a safe 1-tap CMA (complex gain only). Multi-tap CMA can
-       distort FM phase; when stronger mitigation desired, enable the symmetric
-       3-tap pre-smoother above (fm_cma_taps==3). */
-    int taps = 1;
-    int mu = d->fm_cma_mu_q15;
-    if (mu < 1) {
-        mu = 1;
-    }
-    if (mu > 64) {
-        mu = 64;
-    }
-    int warm = d->fm_cma_warmup; /* samples; <=0 means continuous */
-    if (!*inited) {
-        cqpsk_eq_init(eq);
-        *inited = 1;
-        *prev_taps = 0;
-        *prev_mu = 0;
-        *prev_warm = 0;
-    }
-    if (taps != *prev_taps || eq->num_taps != taps) {
-        eq->num_taps = taps;
-        cqpsk_eq_reset_all(eq);
-        *prev_taps = taps;
-    }
-    if (mu != *prev_mu) {
-        eq->cma_mu_q15 = (int16_t)mu;
-        *prev_mu = mu;
-    }
-    /* Disable DD LMS and all auxiliary branches for FM CMA */
-    eq->lms_enable = 0;
-    eq->dfe_enable = 0;
-    eq->wl_enable = 0;
-    eq->update_stride = 4;
-    eq->sym_stride = 4;
-    /* Continuous CMA when warm<=0: keep a very large warmup so it never runs out */
-    if (warm <= 0) {
-        if (eq->cma_warmup <= 0) {
-            eq->cma_warmup = 1000000000; /* ~"infinite" */
-        }
-    } else {
-        if (*prev_warm != warm || eq->cma_warmup <= 0) {
-            eq->cma_warmup = warm;
-            *prev_warm = warm;
-        }
-    }
-    cqpsk_eq_process_block(eq, d->lowpassed, d->lp_len);
+    /* If we reach here, fall back to a no-op (identity) when CMA is enabled but no FIR
+       mode was selected. */
+    (void)reenabled;
 }
 
 /* Small symmetric 5-tap matched-like FIR on interleaved I/Q (in-place via workbuf). */
@@ -2019,11 +1967,13 @@ full_demod(struct demod_state* d) {
     }
     /* Bound channel noise when running at higher Fs (24 kHz default) */
     channel_lpf_apply(d);
+    /* Reset per-block CQPSK rotation marker; set inside CQPSK branch when FLL applies rotation. */
+    d->cqpsk_fll_rot_applied = 0;
     /*
      * Branch early by mode to simplify ordering.
      *
      * CQPSK (QPSK-like):
-     *   DC block (optional) -> Matched Filter (RRC/MF) -> Gardner TED (optional) -> Costas -> CQPSK EQ
+     *   DC block (optional) -> Matched Filter (RRC/MF) -> FLL (optional) -> Gardner TED (optional) -> Costas -> diff QPSK
      *
      * FM/C4FM and others:
      *   DC block -> AGC/limiter (when allowed) -> FM CMA/smoother -> FLL (if enabled)
@@ -2039,13 +1989,8 @@ full_demod(struct demod_state* d) {
                 mf5_complex_interleaved(d);
             }
         }
-        /* Lightweight timing error correction before Costas/EQ for CQPSK paths.
-           Reuse the same FM guard to keep TED off for pure analog FM. */
-        if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
-            gardner_timing_adjust(d);
-        }
         /* Optional acquisition-only FLL for CQPSK (pre-Costas).
-           Run after DC/MF/TED so the symbol-spaced detector sees shaped, DC-free samples. */
+           Run after DC/MF so the symbol-spaced detector sees shaped, DC-free samples. */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && !d->cqpsk_acq_fll_locked && d->ted_sps >= 2) {
             int acq_updated = 0;
             /* Sync from demod_state into modular FLL state so that any
@@ -2072,29 +2017,14 @@ full_demod(struct demod_state* d) {
             cfg.slew_max_q15 = (d->fll_slew_max_q15 > 0) ? d->fll_slew_max_q15 : 64;
 
             /* Update only when we likely have a carrier; use the squelch gate as proxy. */
-            if (d->squelch_gate_open) {
-                /* Use d->result as temporary buffer for FLL rotation to avoid double-rotation
-                   with Costas loop. Copy lowpassed to result, rotate result, then calculate error. */
-                int16_t* temp_buf = d->result;
-                if (d->lp_len <= MAXIMUM_BUF_LENGTH) {
-                    memcpy(temp_buf, d->lowpassed, (size_t)d->lp_len * sizeof(int16_t));
-
-                    /* Create temp state to track phase during rotation without affecting persistent state */
-                    fll_state_t temp_state = d->fll_state;
-
-                    /* Apply rotation to temp buffer */
-                    fll_mix_and_update(&cfg, &temp_state, temp_buf, d->lp_len);
-
-                    /* Calculate error on rotated data, updating REAL state (freq/int) */
-                    fll_update_error_qpsk(&cfg, &d->fll_state, temp_buf, d->lp_len, d->ted_sps);
-                    /* Preserve NCO phase continuity for downstream Costas by mirroring the
-                       phase advance that occurred while rotating the temp buffer. */
-                    d->fll_state.phase_q15 = temp_state.phase_q15;
-                    acq_updated = 1;
-                }
+            if (d->squelch_gate_open && d->lp_len <= MAXIMUM_BUF_LENGTH) {
+                /* Calculate error on the shaped stream, then rotate it in-place so downstream
+                   timing/Costas see the same pre-corrected signal ordering as OP25. */
+                fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
+                fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
+                d->cqpsk_fll_rot_applied = 1;
+                acq_updated = 1;
             }
-            /* Do NOT apply rotation to d->lowpassed here; Costas loop downstream handles the NCO rotation
-               using the shared fll_phase/freq state. Applying it here would double-rotate. */
 
             /* Sync back minimal state */
             d->fll_freq_q15 = d->fll_state.freq_q15;
@@ -2122,13 +2052,16 @@ full_demod(struct demod_state* d) {
                 d->cqpsk_acq_quiet_runs = 0;
             }
         }
+        /* Lightweight timing error correction after FLL for CQPSK paths.
+           Reuse the same FM guard to keep TED off for pure analog FM. */
+        if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+            gardner_timing_adjust(d);
+        }
         /* Carrier recovery (always run Costas for CQPSK),
            but skip during unit tests that use raw_demod. */
         if (d->mode_demod != &raw_demod) {
             cqpsk_costas_mix_and_update(d);
         }
-        /* Lightweight decision-directed equalizer after rotation. */
-        cqpsk_process_block(d);
     } else {
         /* Baseband conditioning order (FM/C4FM):
            1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
@@ -2227,7 +2160,7 @@ full_demod(struct demod_state* d) {
             }
         }
     }
-    /* CQPSK MF/EQ handled earlier in the CQPSK branch.
+    /* CQPSK matched filtering handled earlier in the CQPSK branch.
        Apply Gardner TED here only for non-CQPSK paths (e.g., C4FM) and avoid
        analog FM unless explicitly forced. */
     if (d->ted_enabled && !d->cqpsk_enable && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {

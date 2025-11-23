@@ -18,7 +18,6 @@
 #include <stdint.h>
 
 #include <dsd-neo/dsp/costas.h>
-#include <dsd-neo/dsp/cqpsk_equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/ted.h>
 
@@ -197,9 +196,6 @@ struct demod_state {
 
     /* Experimental CQPSK pre-processing */
     int cqpsk_enable;
-    int cqpsk_lms_enable;    /* enable decision-directed LMS for CQPSK EQ */
-    int cqpsk_mu_q15;        /* step size (Q15), small (1..64) */
-    int cqpsk_update_stride; /* update every N complex samples */
     int cqpsk_mf_enable;     /* enable small matched filter pre-processing */
     int cqpsk_rrc_enable;    /* use RRC matched filter instead of 5-tap MF */
     int cqpsk_rrc_alpha_q15; /* RRC roll-off (Q15) */
@@ -265,13 +261,6 @@ struct demod_state {
     int fm_cma_guard_inited;
     int fm_cma_guard_reject_streak;
 
-    /* FM CMA (1-tap) per-instance equalizer state (CMA-only via CQPSK EQ core) */
-    int fm_cma_eq_inited;
-    int fm_cma_prev_mu;
-    int fm_cma_prev_taps;
-    int fm_cma_prev_warm;
-    cqpsk_eq_state_t fm_cma_eq;
-
     /* Optional impulse blanker (pre-decimation) */
     int blanker_enable; /* 0/1 gate; default off */
     int blanker_thr;    /* threshold in Q0 amplitude units (~|I|+|Q| above mean) */
@@ -284,14 +273,11 @@ struct demod_state {
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
 
-    /* CQPSK equalizer state (per-instance; replaces previous static singleton) */
-    int cqpsk_eq_initialized;
-    cqpsk_eq_state_t cqpsk_eq;
-
     /* CQPSK acquisition-only FLL helper (pre-Costas) */
-    int cqpsk_acq_fll_enable; /* 0/1: allow pre-Costas FLL pull-in */
-    int cqpsk_acq_fll_locked; /* 0/1: stop when locked */
-    int cqpsk_acq_quiet_runs; /* consecutive quiet blocks for lock */
+    int cqpsk_acq_fll_enable;  /* 0/1: allow pre-Costas FLL pull-in */
+    int cqpsk_acq_fll_locked;  /* 0/1: stop when locked */
+    int cqpsk_acq_quiet_runs;  /* consecutive quiet blocks for lock */
+    int cqpsk_fll_rot_applied; /* 0/1: cqpsk branch applied FLL rotation this block */
 
     /* Costas diagnostics (updated per block) */
     int costas_err_avg_q14; /* average |err| scaled to Q14 for UI/metrics */

@@ -547,7 +547,6 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 }
 
 static int lls = -1;
-static int s_prev_cqpsk_updates = -1; /* previous LMS update counter for delta display */
 
 /* Print a compact DSP status summary (which blocks are active). */
 static void
@@ -562,13 +561,11 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #endif
     int cq = 0, fll = 0, ted = 0;
     rtl_stream_dsp_get(&cq, &fll, &ted);
-    int lms = 0, taps = 0, mu = 0, stride = 0, wl = 0, dfe = 0, dft = 0, mf = 0, cma = 0;
-    rtl_stream_cqpsk_get(&lms, &taps, &mu, &stride, &wl, &dfe, &dft, &mf, &cma);
+    int mf = 0;
+    rtl_stream_cqpsk_get(&mf);
     int rrc_en = 0, rrc_a = 0, rrc_s = 0;
     rtl_stream_cqpsk_get_rrc(&rrc_en, &rrc_a, &rrc_s);
     int iqb = rtl_stream_get_iq_balance();
-    int dqpsk = 0;
-    rtl_stream_cqpsk_get_dqpsk(&dqpsk);
     int dc_k = 0;
     int dc_on = rtl_stream_get_iq_dc(&dc_k);
     int blank_thr = 0, blank_win = 0;
@@ -604,7 +601,7 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     /* Front-end helpers and path selection */
     ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d  Blanker:%s thr:%d win:%d", iqb ? "On" : "Off",
                      dc_on ? "On" : "Off", dc_k, blank_on ? "On" : "Off", blank_thr, blank_win);
-    ui_print_kv_line("Path", "Mod:%s  CQ:%s  DQ:%s", modlab, cq ? "On" : "Off", dqpsk ? "On" : "Off");
+    ui_print_kv_line("Path", "Mod:%s  CQ:%s", modlab, cq ? "On" : "Off");
     ui_print_kv_line("FLL", "[%s]", fll ? "On" : "Off");
     /* Show TED status and basic timing metrics regardless of modulation so forced TED is visible. */
     {
@@ -614,18 +611,16 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         ui_print_kv_line("TED", "[%s] sps:%d g:%d bias:%d%s", ted ? "On" : "Off", ted_sps, ted_gain, ted_bias,
                          ted_force ? " force" : "");
     }
-    if (mod == 1 || cq || dqpsk) {
-        ui_print_kv_line("CQPSK Path", "[%s] DQ:%s", cq ? "On" : "Off", dqpsk ? "On" : "Off");
+    if (mod == 1 || cq) {
+        ui_print_kv_line("CQPSK Path", "[%s]", cq ? "On" : "Off");
     }
 
     if (cq) {
         const char* mf_lab = mf ? (rrc_en ? "RRC" : "On") : "Off";
         if (rrc_en) {
-            ui_print_kv_line("CQPSK EQ", "LMS:%s WL:%s DFE:%s MF:%s  a:%d%% s:%d", lms ? "On" : "Off",
-                             wl ? "On" : "Off", dfe ? "On" : "Off", mf_lab, rrc_a, rrc_s);
+            ui_print_kv_line("CQPSK MF", "MF:%s  a:%d%% s:%d", mf_lab, rrc_a, rrc_s);
         } else {
-            ui_print_kv_line("CQPSK EQ", "LMS:%s WL:%s DFE:%s MF:%s", lms ? "On" : "Off", wl ? "On" : "Off",
-                             dfe ? "On" : "Off", mf_lab);
+            ui_print_kv_line("CQPSK MF", "MF:%s", mf_lab);
         }
         int acq = rtl_stream_get_cqpsk_acq_fll();
         int lck = 0;
@@ -634,22 +629,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         lck = rtl_stream_get_cqpsk_acq_fll_locked();
 #endif
         ui_print_kv_line("Acq FLL", "[%s]", acq ? (lck ? "On (Locked)" : "On (Acq)") : "Off");
-
-        /* Additional CQPSK LMS diagnostics */
-        int upd = 0, mode = 0, c0i = 0, c0q = 0, nt = 0, isi_q15 = 0, imp_q15 = 0, cma_rem = 0, mu_q15 = 0;
-        int sps = 0, dfe_t = 0, e_ema = 0;
-        if (rtl_stream_cqpsk_get_debug(&upd, &mode, &c0i, &c0q, &nt, &isi_q15, &imp_q15, &cma_rem, &mu_q15, &sps,
-                                       &dfe_t, &e_ema)
-            == 0) {
-            int du = (s_prev_cqpsk_updates < 0) ? 0 : (upd - s_prev_cqpsk_updates);
-            s_prev_cqpsk_updates = upd;
-            const char* mlab = (mode == 1) ? "WL" : "FFE";
-            int isi_pct = (isi_q15 * 100 + 16384) / 32768;
-            int imp_pct = (imp_q15 * 100 + 16384) / 32768;
-            ui_print_kv_line("CQPSK LMS", "upd:%d (+%d) mu:%d sps:%d mode:%s cma:%d dfe:%dt", upd, du, mu_q15, sps,
-                             mlab, cma_rem, dfe_t);
-            ui_print_kv_line("EQ/ISI", "c0=(%d,%d) ISI:%d%% WLimp:%d%% |e|:%d(Q14)", c0i, c0q, isi_pct, imp_pct, e_ema);
-        }
 
 #ifdef USE_RTLSDR
         extern double rtl_stream_get_cfo_hz(void);
