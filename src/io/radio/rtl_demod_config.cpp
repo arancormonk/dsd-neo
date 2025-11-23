@@ -45,6 +45,23 @@ int use_halfband_decimator = 1;
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
 
+/* Parse a simple boolean env value with a default.
+   Accepts 1/y/t (case-insensitive) for true, 0/n/f for false; falls back to default otherwise. */
+static int
+env_flag_default(const char* name, int default_value) {
+    const char* v = getenv(name);
+    if (!v) {
+        return default_value;
+    }
+    if (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T') {
+        return 1;
+    }
+    if (*v == '0' || *v == 'n' || *v == 'N' || *v == 'f' || *v == 'F') {
+        return 0;
+    }
+    return default_value;
+}
+
 namespace {
 
 enum DemodMode { DEMOD_DIGITAL = 0, DEMOD_ANALOG = 1, DEMOD_RO2 = 2 };
@@ -394,21 +411,17 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_update_stride = 4;
     }
 
-    /* Matched filter pre-EQ default Off; allow env to enable */
-    demod->cqpsk_mf_enable = 0;
-    const char* mf = getenv("DSD_NEO_CQPSK_MF");
-    if (mf && (*mf == '1' || *mf == 'y' || *mf == 'Y' || *mf == 't' || *mf == 'T')) {
-        demod->cqpsk_mf_enable = 1;
-    }
+    /* Matched filter pre-EQ defaults to ON for CQPSK paths (P25p2/QPSK).
+       Allow env to force on/off via DSD_NEO_CQPSK_MF=1/0. */
+    int default_cqpsk_mf = (opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    demod->cqpsk_mf_enable = env_flag_default("DSD_NEO_CQPSK_MF", default_cqpsk_mf);
 
-    /* Optional RRC matched filter configuration */
-    demod->cqpsk_rrc_enable = 0;
-    demod->cqpsk_rrc_alpha_q15 = (int)(0.25 * 32768.0); /* default 0.25 */
-    demod->cqpsk_rrc_span_syms = 6;                     /* default 6 symbols (total span ~12) */
-    const char* rrc = getenv("DSD_NEO_CQPSK_RRC");
-    if (rrc && (*rrc == '1' || *rrc == 'y' || *rrc == 'Y' || *rrc == 't' || *rrc == 'T')) {
-        demod->cqpsk_rrc_enable = 1;
-    }
+    /* Optional RRC matched filter configuration (defaults to spec roll-off). */
+    int default_rrc_enable = (opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    double default_rrc_alpha = 0.2; /* fixed spec roll-off */
+    demod->cqpsk_rrc_enable = env_flag_default("DSD_NEO_CQPSK_RRC", default_rrc_enable);
+    demod->cqpsk_rrc_alpha_q15 = (int)(default_rrc_alpha * 32768.0); /* roll-off default */
+    demod->cqpsk_rrc_span_syms = 6;                                  /* default 6 symbols (total span ~12) */
     const char* rrca = getenv("DSD_NEO_CQPSK_RRC_ALPHA");
     if (rrca) {
         int v = atoi(rrca);

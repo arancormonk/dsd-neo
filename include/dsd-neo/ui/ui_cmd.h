@@ -179,10 +179,6 @@ enum UiCmdId {
     // P25 helpers
     UI_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }
 
-    // RRC/DSP helpers
-    UI_CMD_P25_RRC_FIXED_TOGGLE = 600,
-    UI_CMD_P25P2_RRC_FIXED_TOGGLE = 601,
-
     // UI display toggles
     UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,
     UI_CMD_UI_SHOW_P25_METRICS_TOGGLE = 621,

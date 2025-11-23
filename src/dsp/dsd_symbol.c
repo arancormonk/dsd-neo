@@ -51,23 +51,29 @@ select_window_c4fm(const dsd_state* state, int* l_edge, int* r_edge, int freeze_
     *r_edge = r;
 }
 
-/* ---------------- C4FM fixed RRC(alpha=0.5, 11*sps+1 taps) ---------------- */
+/* ---------------- C4FM RRC (configurable alpha, 11*sps+1 taps) ---------------- */
 /*
  * Designs and applies a root-raised-cosine matched filter for the real C4FM path
- * with a fixed roll-off alpha=0.5 and taps length ntaps = 11*sps + 1.
+ * with configurable roll-off alpha and taps length ntaps = 11*sps + 1.
  * This matches common GNU Radio guidance (firdes.root_raised_cosine with ntaps=11*sps),
  * using an odd number of taps for symmetry.
  */
 static short
-c4fm_rrc_filter_alpha05_sample(short sample, int sps) {
-    const double alpha = 0.5;
+c4fm_rrc_filter_sample(short sample, int sps, double alpha) {
     if (sps <= 1) {
         return sample;
     }
+    if (alpha <= 0.0) {
+        return sample;
+    }
+    if (alpha > 1.0) {
+        alpha = 1.0;
+    }
 
-    /* Cache across calls; redesign on SPS change. */
+    /* Cache across calls; redesign on SPS or alpha change. */
     static int last_sps = 0;
-    static int taps_len = 0;
+    static int last_taps_len = 0;
+    static int last_alpha_milli = 0;
     static float taps[257];
     static float hist[257];
     static int head = -1;
@@ -80,12 +86,14 @@ c4fm_rrc_filter_alpha05_sample(short sample, int sps) {
     if (desired_len > 257) {
         desired_len = 257;
     }
+    int taps_len = desired_len;
+    int alpha_milli = (int)(alpha * 1000.0 + 0.5);
 
-    if (!ready || sps != last_sps || taps_len != desired_len) {
-        int mid = desired_len / 2;
+    if (!ready || sps != last_sps || taps_len != last_taps_len || alpha_milli != last_alpha_milli) {
+        int mid = taps_len / 2;
         double sum = 0.0;
         const double pi = 3.14159265358979323846;
-        for (int n = 0; n < desired_len; n++) {
+        for (int n = 0; n < taps_len; n++) {
             double tau = ((double)n - (double)mid) / (double)sps; /* t/T */
             double h;
             double four_a_tau = 4.0 * alpha * tau;
@@ -107,32 +115,33 @@ c4fm_rrc_filter_alpha05_sample(short sample, int sps) {
         if (fabs(sum) < 1e-18) {
             sum = 1.0;
         }
-        for (int n = 0; n < desired_len; n++) {
+        for (int n = 0; n < taps_len; n++) {
             taps[n] = (float)(taps[n] / sum);
         }
-        for (int i = 0; i < desired_len; i++) {
+        for (int i = 0; i < taps_len; i++) {
             hist[i] = 0.0f;
         }
         head = -1;
-        taps_len = desired_len;
+        last_taps_len = taps_len;
         last_sps = sps;
+        last_alpha_milli = alpha_milli;
         ready = 1;
     }
 
     /* Push sample */
     head++;
-    if (head >= taps_len) {
+    if (head >= last_taps_len) {
         head = 0;
     }
     hist[head] = (float)sample;
 
     /* Convolution */
     float acc = 0.0f;
-    int zeros = taps_len - 1;
+    int zeros = last_taps_len - 1;
     for (int i = 0; i <= zeros; i++) {
         int idx = head - (zeros - i);
         if (idx < 0) {
-            idx += taps_len;
+            idx += last_taps_len;
         }
         acc += taps[i] * hist[idx];
     }
@@ -933,8 +942,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
             // Apply matched filter to P25 Phase 1 (C4FM)
             else if (state->lastsynctype == 0 || state->lastsynctype == 1) {
-                // Fixed RRC(alpha=0.5) with ntaps = 11*sps + 1 (e.g., 111 at sps=10)
-                sample = c4fm_rrc_filter_alpha05_sample(sample, state->samplesPerSymbol);
+                // RRC matched filter with fixed roll-off alpha~0.2 per spec
+                sample = c4fm_rrc_filter_sample(sample, state->samplesPerSymbol, 0.2);
             }
 
             else if (state->lastsynctype == 20 || state->lastsynctype == 21 || state->lastsynctype == 22

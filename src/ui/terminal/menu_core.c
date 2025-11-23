@@ -2895,18 +2895,6 @@ lbl_input_volume(void* vctx, char* b, size_t n) {
 }
 
 static void
-io_toggle_p25_rrc(void* vctx) {
-    (void)vctx;
-    ui_post_cmd(UI_CMD_P25_RRC_FIXED_TOGGLE, NULL, 0);
-}
-
-static void
-io_toggle_p25p2_rrc(void* vctx) {
-    (void)vctx;
-    ui_post_cmd(UI_CMD_P25P2_RRC_FIXED_TOGGLE, NULL, 0);
-}
-
-static void
 inv_x2(void* v) {
     (void)v;
     ui_post_cmd(UI_CMD_INV_X2_TOGGLE, NULL, 0);
@@ -3383,20 +3371,6 @@ static const char*
 lbl_cosine(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     snprintf(b, n, "Toggle Cosine Filter [%s]", c->opts->use_cosine_filter ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
-lbl_p25_rrc(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    snprintf(b, n, "P25 C4FM RRC alpha=0.5 [%s]", c->opts->p25_c4fm_rrc_fixed ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
-lbl_p25p2_rrc(void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    snprintf(b, n, "P25p2 CQPSK RRC alpha=0.5 [%s]", c->opts->p25_p2_rrc_fixed ? "Active" : "Inactive");
     return b;
 }
 

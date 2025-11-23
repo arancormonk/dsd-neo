@@ -1300,19 +1300,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_P25_RRC_FIXED_TOGGLE: {
-            opts->p25_c4fm_rrc_fixed = opts->p25_c4fm_rrc_fixed ? 0 : 1;
-            break;
-        }
-        case UI_CMD_P25P2_RRC_FIXED_TOGGLE: {
-            opts->p25_p2_rrc_fixed = opts->p25_p2_rrc_fixed ? 0 : 1;
-#ifdef USE_RTLSDR
-            int alpha = opts->p25_p2_rrc_fixed ? 50 : 20;
-            rtl_stream_cqpsk_set_rrc(1, alpha, 0);
-#endif
-            break;
-        }
-
         case UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE: opts->show_dsp_panel = opts->show_dsp_panel ? 0 : 1; break;
         case UI_CMD_UI_SHOW_P25_METRICS_TOGGLE: opts->show_p25_metrics = opts->show_p25_metrics ? 0 : 1; break;
         case UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE: opts->show_p25_affiliations = opts->show_p25_affiliations ? 0 : 1; break;

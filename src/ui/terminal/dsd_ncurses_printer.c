@@ -2194,16 +2194,6 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                 lines++;
             }
         }
-
-        /* P1 C4FM matched filter mode (when cosine filter is enabled) */
-        if (opts) {
-            if (opts->use_cosine_filter) {
-                printw("| P1 C4FM RRC: alpha=0.5 (fixed)\n");
-            } else {
-                printw("| P1 C4FM RRC: Off\n");
-            }
-            lines++;
-        }
     }
 
     if (is_p25p2 || (is_p25p1 && opts && opts->p25_trunk == 1)) {
@@ -2238,21 +2228,6 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                 lines++;
             }
         }
-
-        /* P2 CQPSK RRC status */
-#ifdef USE_RTLSDR
-        if (opts) {
-            int enable = 0, alpha_pct = 0, span = 0;
-            if (rtl_stream_cqpsk_get_rrc(&enable, &alpha_pct, &span) == 0) {
-                if (enable) {
-                    printw("| P2 CQPSK RRC: alpha=0.5 (fixed)\n");
-                } else {
-                    printw("| P2 CQPSK RRC: Off\n");
-                }
-                lines++;
-            }
-        }
-#endif
 
         /* Condensed P25p2 RS summary line (only if any counters are non-zero) */
         if ((state->p25_p2_rs_facch_ok | state->p25_p2_rs_facch_err | state->p25_p2_rs_sacch_ok

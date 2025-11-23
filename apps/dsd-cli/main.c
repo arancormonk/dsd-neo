@@ -1477,10 +1477,6 @@ initOpts(dsd_opts* opts) {
     opts->m17decoderip = 0;
     opts->delay = 0;
     opts->use_cosine_filter = 1;
-    // Default P25p1 C4FM matched filter to fixed RRC(alpha=0.5)
-    opts->p25_c4fm_rrc_fixed = 1;
-    // Default P25p2 CQPSK to fixed RRC(alpha=0.5)
-    opts->p25_p2_rrc_fixed = 1;
     opts->unmute_encrypted_p25 = 0;
     //all RTL user options -- enabled AGC by default due to weak signal related issues
     opts->rtl_dev_index = 0;  //choose which device we want by index number

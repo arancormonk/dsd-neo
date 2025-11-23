@@ -111,8 +111,6 @@ struct dsd_opts {
     int m17decoderip;
     int delay;
     int use_cosine_filter;
-    int p25_c4fm_rrc_fixed; // 0: dynamic RRC(alpha≈0.2); 1: fixed RRC(alpha=0.5) for P25p1 C4FM
-    int p25_p2_rrc_fixed;   // 0: dynamic RRC(alpha≈0.2); 1: fixed RRC(alpha=0.5) for P25p2 CQPSK
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;
