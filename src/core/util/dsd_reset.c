@@ -96,19 +96,6 @@ resetState(dsd_state* state) {
     state->midx = 0;
     state->symbolcnt = 0;
 
-    /* Reset C4FM DD equalizer */
-    state->c4fm_dd_eq_enable = 0;
-    state->c4fm_dd_eq_taps = 3;
-    state->c4fm_dd_eq_mu_q15 = 2;
-    state->c4fm_dd_eq_have_last = 0;
-    state->c4fm_dd_eq_last_y = 0;
-    state->c4fm_dd_eq_last_target = 0;
-    state->c4fm_dd_eq_hist_len = 3;
-    state->c4fm_dd_eq_hist_pos = 0;
-    for (i = 0; i < 9; i++) {
-        state->c4fm_dd_eq_w_q15[i] = (i == 0) ? 32768 : 0;
-        state->c4fm_dd_eq_x_hist[i] = 0;
-    }
     /* Reset C4FM clock assist state to avoid stale nudges across runs */
     state->c4fm_clk_prev_dec = 0;
     state->c4fm_clk_run_dir = 0;

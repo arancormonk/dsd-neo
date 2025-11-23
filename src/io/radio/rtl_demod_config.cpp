@@ -283,7 +283,7 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
  *
  * Mirrors CLI/env-driven configuration into the demodulator, covering DSP
  * toggles (HB vs legacy decimator, FS/4 shift, combine-rotate), resampler
- * targets, FLL/TED tuning, CQPSK path enable, blanker/AGC knobs, and
+ * targets, FLL/TED tuning, CQPSK path enable, AGC knobs, and
  * IQ balance defaults. Early-exits on NULL inputs.
  *
  * @param demod Demodulator state to configure.
@@ -434,11 +434,6 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod->iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
     demod->iq_dc_avg_r = demod->iq_dc_avg_i = 0;
-
-    /* Impulse blanker (pre-decimation) */
-    demod->blanker_enable = cfg->blanker_is_set ? (cfg->blanker_enable != 0) : 0;
-    demod->blanker_thr = cfg->blanker_thr_is_set ? cfg->blanker_thr : 20000;
-    demod->blanker_win = cfg->blanker_win_is_set ? cfg->blanker_win : 2;
 
     /* Channel complex low-pass (post-HB, complex baseband).
        Default policy (Fs~=24 kHz RTL DSP baseband):

@@ -1590,37 +1590,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_ted_gain(g);
                     break;
                 }
-                case UI_DSP_OP_C4FM_DD_TOGGLE: {
-                    int on = rtl_stream_get_c4fm_dd_eq();
-                    rtl_stream_set_c4fm_dd_eq(on ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_C4FM_DD_TAPS_CYCLE: {
-                    int taps = 0, mu = 0;
-                    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
-                    int ntaps;
-                    switch (taps) {
-                        case 3: ntaps = 5; break;
-                        case 5: ntaps = 7; break;
-                        case 7: ntaps = 9; break;
-                        default: ntaps = 3;
-                    }
-                    rtl_stream_set_c4fm_dd_eq_params(ntaps, -1);
-                    break;
-                }
-                case UI_DSP_OP_C4FM_DD_MU_DELTA: {
-                    int taps = 0, mu = 0;
-                    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
-                    int nmu = mu + p.a;
-                    if (nmu < 1) {
-                        nmu = 1;
-                    }
-                    if (nmu > 20) {
-                        nmu = 20;
-                    }
-                    rtl_stream_set_c4fm_dd_eq_params(-1, nmu);
-                    break;
-                }
                 case UI_DSP_OP_C4FM_CLK_CYCLE: {
                     int mode = rtl_stream_get_c4fm_clk();
                     mode = (mode + 1) % 3;
@@ -1695,39 +1664,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_fm_agc_params(-1, -1, -1, nd);
                     break;
                 }
-                case UI_DSP_OP_BLANKER_TOGGLE: {
-                    int thr = 0, win = 0;
-                    int on = rtl_stream_get_blanker(&thr, &win);
-                    rtl_stream_set_blanker(on ? 0 : 1, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_BLANKER_THR_DELTA: {
-                    int thr = 0, win = 0;
-                    (void)rtl_stream_get_blanker(&thr, &win);
-                    int nt = thr + p.a;
-                    if (nt < 0) {
-                        nt = 0;
-                    }
-                    if (nt > 60000) {
-                        nt = 60000;
-                    }
-                    rtl_stream_set_blanker(-1, nt, -1);
-                    break;
-                }
-                case UI_DSP_OP_BLANKER_WIN_DELTA: {
-                    int thr = 0, win = 0;
-                    (void)rtl_stream_get_blanker(&thr, &win);
-                    int nw = win + p.a;
-                    if (nw < 0) {
-                        nw = 0;
-                    }
-                    if (nw > 16) {
-                        nw = 16;
-                    }
-                    rtl_stream_set_blanker(-1, -1, nw);
-                    break;
-                }
-
                 case UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE: {
                     int on = rtl_stream_get_tuner_autogain();
                     rtl_stream_set_tuner_autogain(on ? 0 : 1);

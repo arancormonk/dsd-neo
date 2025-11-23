@@ -262,28 +262,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.iq_dc_shift_is_set = env_is_set(dck);
     c.iq_dc_shift = c.iq_dc_shift_is_set ? atoi(dck) : 11;
 
-    /* C4FM DD equalizer (symbol-domain prototype) */
-    const char* dd = getenv("DSD_NEO_C4FM_DD_EQ");
-    const char* dd_t = getenv("DSD_NEO_C4FM_DD_EQ_TAPS");
-    const char* dd_m = getenv("DSD_NEO_C4FM_DD_EQ_MU");
-    c.c4fm_dd_eq_is_set = env_is_set(dd);
-    c.c4fm_dd_eq_enable = c.c4fm_dd_eq_is_set ? (atoi(dd) != 0) : 0;
-    c.c4fm_dd_eq_taps_is_set = env_is_set(dd_t);
-    c.c4fm_dd_eq_taps = c.c4fm_dd_eq_taps_is_set ? atoi(dd_t) : 3;
-    c.c4fm_dd_eq_mu_is_set = env_is_set(dd_m);
-    c.c4fm_dd_eq_mu_q15 = c.c4fm_dd_eq_mu_is_set ? atoi(dd_m) : 2;
-
-    /* Impulse blanker */
-    const char* bl_on = getenv("DSD_NEO_BLANKER_ON");
-    const char* bl_thr = getenv("DSD_NEO_BLANKER_THR");
-    const char* bl_win = getenv("DSD_NEO_BLANKER_WIN");
-    c.blanker_is_set = env_is_set(bl_on);
-    c.blanker_enable = c.blanker_is_set ? (atoi(bl_on) != 0) : 0; /* default off */
-    c.blanker_thr_is_set = env_is_set(bl_thr);
-    c.blanker_thr = c.blanker_thr_is_set ? atoi(bl_thr) : 20000;
-    c.blanker_win_is_set = env_is_set(bl_win);
-    c.blanker_win = c.blanker_win_is_set ? atoi(bl_win) : 2;
-
     /* Channel complex low-pass on RTL baseband (post-HB).
        Default: off for digital voice modes at 24 kHz; may be enabled via env. */
     const char* clpf = getenv("DSD_NEO_CHANNEL_LPF");
@@ -303,68 +281,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
     return g_config_inited ? &g_config : NULL;
-}
-
-void
-dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15) {
-    if (!g_config_inited) {
-        memset(&g_config, 0, sizeof(g_config));
-        g_config_inited = 1;
-    }
-    if (enable >= 0) {
-        g_config.c4fm_dd_eq_is_set = 1;
-        g_config.c4fm_dd_eq_enable = enable ? 1 : 0;
-    }
-    if (taps >= 0) {
-        int v = taps;
-        if (v < 3) {
-            v = 3;
-        }
-        if (v > 9) {
-            v = 9;
-        }
-        if ((v & 1) == 0) {
-            v++;
-        }
-        g_config.c4fm_dd_eq_taps_is_set = 1;
-        g_config.c4fm_dd_eq_taps = v;
-    }
-    if (mu_q15 >= 0) {
-        int v = mu_q15;
-        if (v < 1) {
-            v = 1;
-        }
-        if (v > 64) {
-            v = 64;
-        }
-        g_config.c4fm_dd_eq_mu_is_set = 1;
-        g_config.c4fm_dd_eq_mu_q15 = v;
-    }
-}
-
-void
-dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15) {
-    if (!g_config_inited) {
-        if (enable) {
-            *enable = 0;
-        }
-        if (taps) {
-            *taps = 3;
-        }
-        if (mu_q15) {
-            *mu_q15 = 2;
-        }
-        return;
-    }
-    if (enable) {
-        *enable = g_config.c4fm_dd_eq_enable ? 1 : 0;
-    }
-    if (taps) {
-        *taps = g_config.c4fm_dd_eq_taps_is_set ? g_config.c4fm_dd_eq_taps : 3;
-    }
-    if (mu_q15) {
-        *mu_q15 = g_config.c4fm_dd_eq_mu_is_set ? g_config.c4fm_dd_eq_mu_q15 : 2;
-    }
 }
 
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM). */

@@ -279,22 +279,6 @@ typedef struct dsdneoRuntimeConfig {
     int iq_dc_shift_is_set;
     int iq_dc_shift;
 
-    /* C4FM symbol-domain DD equalizer (prototype) */
-    int c4fm_dd_eq_is_set;
-    int c4fm_dd_eq_enable;
-    int c4fm_dd_eq_taps_is_set;
-    int c4fm_dd_eq_taps; /* odd: 3,5,7,9 */
-    int c4fm_dd_eq_mu_is_set;
-    int c4fm_dd_eq_mu_q15; /* 1..64 */
-
-    /* Impulse blanker (pre-decimation) */
-    int blanker_is_set; /* env seen */
-    int blanker_enable;
-    int blanker_thr_is_set;
-    int blanker_thr;
-    int blanker_win_is_set;
-    int blanker_win;
-
     /* RTL channel complex low-pass (post-HB, complex baseband).
        Allows narrowing noise when running the RTL DSP baseband at higher
        sample rates (e.g., 24 kHz) without forcing it on for all modes. */
@@ -322,27 +306,6 @@ void dsd_neo_config_init(const dsd_opts* opts);
  * @return Pointer to config or NULL.
  */
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
-
-/* Runtime updaters for DD equalizer (UI control) */
-/**
- * @brief Update runtime C4FM decision-directed equalizer settings.
- *
- * Pass -1 to leave any field unchanged. Values are clamped to safe ranges.
- *
- * @param enable 0/1 to disable/enable; -1 to leave unchanged.
- * @param taps Number of taps (odd, 3..9) or -1 to leave unchanged.
- * @param mu_q15 Step size in Q15 (1..64) or -1 to leave unchanged.
- */
-void dsd_neo_set_c4fm_dd_eq(int enable, int taps, int mu_q15);
-/**
- * @brief Retrieve current C4FM decision-directed equalizer settings.
- *
- * @param enable [out] Current enable flag; may be NULL.
- * @param taps [out] Current number of taps; may be NULL.
- * @param mu_q15 [out] Current step size in Q15; may be NULL.
- * Any pointer may be NULL.
- */
-void dsd_neo_get_c4fm_dd_eq(int* enable, int* taps, int* mu_q15);
 
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM) */
 /**

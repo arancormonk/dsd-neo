@@ -568,14 +568,9 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     int iqb = rtl_stream_get_iq_balance();
     int dc_k = 0;
     int dc_on = rtl_stream_get_iq_dc(&dc_k);
-    int blank_thr = 0, blank_win = 0;
-    int blank_on = rtl_stream_get_blanker(&blank_thr, &blank_win);
     int ted_force = rtl_stream_get_ted_force();
     int clk_mode = rtl_stream_get_c4fm_clk();
     int clk_sync = rtl_stream_get_c4fm_clk_sync();
-    int dd_taps = 0, dd_mu = 0;
-    int dd_on = rtl_stream_get_c4fm_dd_eq();
-    rtl_stream_get_c4fm_dd_eq_params(&dd_taps, &dd_mu);
     int agc_tgt = 0, agc_min = 0, agc_up = 0, agc_down = 0;
     int agc_on = rtl_stream_get_fm_agc();
     rtl_stream_get_fm_agc_params(&agc_tgt, &agc_min, &agc_up, &agc_down);
@@ -593,8 +588,7 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     }
 
     /* Front-end helpers and path selection */
-    ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d  Blanker:%s thr:%d win:%d", iqb ? "On" : "Off",
-                     dc_on ? "On" : "Off", dc_k, blank_on ? "On" : "Off", blank_thr, blank_win);
+    ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d", iqb ? "On" : "Off", dc_on ? "On" : "Off", dc_k);
     ui_print_kv_line("Path", "Mod:%s  CQ:%s", modlab, cq ? "On" : "Off");
     ui_print_kv_line("FLL", "[%s]", fll ? "On" : "Off");
     /* Show TED status and basic timing metrics regardless of modulation so forced TED is visible. */
@@ -651,10 +645,9 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #endif
     }
 
-    if (mod == 0 || dd_on || clk_mode != 0) {
+    if (mod == 0 || clk_mode != 0) {
         const char* clk = (clk_mode == 1) ? "EL" : (clk_mode == 2) ? "MM" : "Off";
-        ui_print_kv_line("C4FM", "DD:%s taps:%d mu:%d  CLK:%s%s", dd_on ? "On" : "Off", dd_taps, dd_mu, clk,
-                         (clk_mode && clk_sync) ? " (sync)" : "");
+        ui_print_kv_line("C4FM", "CLK:%s%s", clk, (clk_mode && clk_sync) ? " (sync)" : "");
     }
     if (mod != 1 || agc_on || lim_on) {
         ui_print_kv_line("FM AGC", "[%s] tgt:%d min:%d up:%d dn:%d | LIM:%s", agc_on ? "On" : "Off", agc_tgt, agc_min,

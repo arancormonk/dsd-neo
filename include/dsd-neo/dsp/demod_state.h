@@ -233,11 +233,6 @@ struct demod_state {
     int iq_dc_avg_r;        /* running DC estimate for I */
     int iq_dc_avg_i;        /* running DC estimate for Q */
 
-    /* Optional impulse blanker (pre-decimation) */
-    int blanker_enable; /* 0/1 gate; default off */
-    int blanker_thr;    /* threshold in Q0 amplitude units (~|I|+|Q| above mean) */
-    int blanker_win;    /* half-window in complex samples to zero around spike */
-
     /* Post-demod audio polyphase decimator (M>2) */
     int post_polydecim_enabled;   /* 0/1 gate for audio polyphase decimator */
     int post_polydecim_M;         /* integer decimation factor */

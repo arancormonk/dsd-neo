@@ -493,9 +493,7 @@ extern "C" double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 extern "C" double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
 extern "C" int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
-/* Blanker and tuner autogain runtime get/set (implemented in rtl_sdr_fm.cpp) */
-extern "C" int dsd_rtl_stream_get_blanker(int* out_thr, int* out_win);
-extern "C" void dsd_rtl_stream_set_blanker(int enable, int thr, int win);
+/* Tuner autogain runtime get/set (implemented in rtl_sdr_fm.cpp) */
 extern "C" int dsd_rtl_stream_get_tuner_autogain(void);
 extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
 
@@ -1733,7 +1731,7 @@ extern std::atomic<double> g_auto_ppm_est_ppm;
 extern std::atomic<int> g_auto_ppm_last_dir;
 extern std::atomic<int> g_auto_ppm_cooldown;
 
-/* Spectrum, carrier diagnostics, blanker, tuner autogain, and auto-PPM metrics
+/* Spectrum, carrier diagnostics, tuner autogain, and auto-PPM metrics
  * exports are implemented in rtl_metrics.cpp. */
 
 /**

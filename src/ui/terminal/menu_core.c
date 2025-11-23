@@ -131,17 +131,6 @@ static const char* lbl_c4fm_clk(void* v, char* b, size_t n);
 static void act_c4fm_clk_cycle(void* v);
 static const char* lbl_c4fm_clk_sync(void* v, char* b, size_t n);
 static void act_c4fm_clk_sync_toggle(void* v);
-#ifdef USE_RTLSDR
-/* Blanker UI helpers */
-static const char* lbl_blanker(void* v, char* b, size_t n);
-static const char* lbl_blanker_thr(void* v, char* b, size_t n);
-static const char* lbl_blanker_win(void* v, char* b, size_t n);
-static void act_toggle_blanker(void* v);
-static void act_blanker_thr_up(void* v);
-static void act_blanker_thr_dn(void* v);
-static void act_blanker_win_up(void* v);
-static void act_blanker_win_dn(void* v);
-#endif
 
 static void
 ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* ctx) {
@@ -3649,57 +3638,6 @@ lbl_fm_agc(void* v, char* b, size_t n) {
 }
 
 /* ---- C4FM DD Equalizer (symbol-domain) ---- */
-static const char*
-lbl_c4fm_dd(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_c4fm_dd_eq();
-    snprintf(b, n, "C4FM DD Equalizer [%s]", on ? "On" : "Off");
-    return b;
-}
-
-static void
-act_toggle_c4fm_dd(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
-lbl_c4fm_dd_params(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int taps = 0, mu = 0;
-    rtl_stream_get_c4fm_dd_eq_params(&taps, &mu);
-    if (taps <= 0) {
-        taps = 3;
-    }
-    if (mu <= 0) {
-        mu = 2;
-    }
-    snprintf(b, n, "DD Taps/Mu: %d / %d", taps, mu);
-    return b;
-}
-
-static void
-act_c4fm_dd_taps_cycle(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_TAPS_CYCLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_c4fm_dd_mu_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_MU_DELTA, .a = +1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_c4fm_dd_mu_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_C4FM_DD_MU_DELTA, .a = -1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
 /* ---- C4FM clock assist (EL/MM) ---- */
 static const char*
 lbl_c4fm_clk(void* v, char* b, size_t n) {
@@ -5321,32 +5259,6 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .help = "Pre-Costas matched filter; uses RRC when enabled, else 5-tap fallback.",
      .is_enabled = is_mod_qpsk,
      .on_select = act_toggle_mf},
-    {.id = "c4fm_dd",
-     .label = "C4FM DD Equalizer",
-     .label_fn = lbl_c4fm_dd,
-     .help = "Toggle symbol-domain decision-directed EQ.",
-     .is_enabled = is_mod_c4fm,
-     .on_select = act_toggle_c4fm_dd},
-    {.id = "c4fm_dd_params",
-     .label = "DD Taps/Mu (status)",
-     .label_fn = lbl_c4fm_dd_params,
-     .help = "Current DD EQ taps and mu.",
-     .is_enabled = is_mod_c4fm},
-    {.id = "c4fm_dd_taps",
-     .label = "DD Taps cycle",
-     .help = "Cycle DD EQ taps 3/5/7/9.",
-     .is_enabled = is_mod_c4fm,
-     .on_select = act_c4fm_dd_taps_cycle},
-    {.id = "c4fm_dd_mu+",
-     .label = "DD mu +1",
-     .help = "Increase DD mu.",
-     .is_enabled = is_mod_c4fm,
-     .on_select = act_c4fm_dd_mu_up},
-    {.id = "c4fm_dd_mu-",
-     .label = "DD mu -1",
-     .help = "Decrease DD mu.",
-     .is_enabled = is_mod_c4fm,
-     .on_select = act_c4fm_dd_mu_dn},
 };
 
 // Visible only when at least one filter/EQ item applies
@@ -5468,26 +5380,6 @@ dsp_ted_any(void* v) {
     return ui_submenu_has_visible(DSP_TED_ITEMS, sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0], v) ? true : false;
 }
 
-static const NcMenuItem DSP_BLANKER_ITEMS[] = {
-    {.id = "blanker",
-     .label = "Impulse Blanker",
-     .label_fn = lbl_blanker,
-     .help = "Toggle impulse blanker.",
-     .on_select = act_toggle_blanker},
-    {.id = "blanker_thr",
-     .label = "Blanker Thr (status)",
-     .label_fn = lbl_blanker_thr,
-     .help = "Set blanker threshold."},
-    {.id = "blanker_thr+", .label = "Blanker Thr +2k", .on_select = act_blanker_thr_up},
-    {.id = "blanker_thr-", .label = "Blanker Thr -2k", .on_select = act_blanker_thr_dn},
-    {.id = "blanker_win",
-     .label = "Blanker Win (status)",
-     .label_fn = lbl_blanker_win,
-     .help = "Set blanker window (samples)."},
-    {.id = "blanker_win+", .label = "Blanker Win +1", .on_select = act_blanker_win_up},
-    {.id = "blanker_win-", .label = "Blanker Win -1", .on_select = act_blanker_win_dn},
-};
-
 const NcMenuItem DSP_MENU_ITEMS[] = {
     {.id = "dsp.overview",
      .label = "Overview...",
@@ -5501,7 +5393,7 @@ const NcMenuItem DSP_MENU_ITEMS[] = {
      .submenu_len = sizeof DSP_PATH_ITEMS / sizeof DSP_PATH_ITEMS[0]},
     {.id = "dsp.filters",
      .label = "Filtering & Equalizers...",
-     .help = "RRC/MF, C4FM DD EQ.",
+     .help = "RRC/MF.",
      .submenu = DSP_FILTER_ITEMS,
      .submenu_len = sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0],
      .is_enabled = dsp_filters_any},
@@ -5522,11 +5414,6 @@ const NcMenuItem DSP_MENU_ITEMS[] = {
      .submenu = DSP_TED_ITEMS,
      .submenu_len = sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0],
      .is_enabled = dsp_ted_any},
-    {.id = "dsp.blanker",
-     .label = "Impulse Blanker...",
-     .help = "Impulse blanker threshold and window.",
-     .submenu = DSP_BLANKER_ITEMS,
-     .submenu_len = sizeof DSP_BLANKER_ITEMS / sizeof DSP_BLANKER_ITEMS[0]},
 };
 const size_t DSP_MENU_ITEMS_LEN = sizeof DSP_MENU_ITEMS / sizeof DSP_MENU_ITEMS[0];
 #endif
@@ -5760,68 +5647,3 @@ const NcMenuItem ADV_MENU_ITEMS[] = {
 const size_t ADV_MENU_ITEMS_LEN = sizeof ADV_MENU_ITEMS / sizeof ADV_MENU_ITEMS[0];
 
 // main menu items now provided by src/ui/terminal/menus/menu_defs.c
-
-/* Blanker UI handlers implementation */
-#ifdef USE_RTLSDR
-static const char*
-lbl_blanker(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int thr = 0, win = 0;
-    int on = rtl_stream_get_blanker(&thr, &win);
-    snprintf(b, n, "Impulse Blanker: %s", on ? "On" : "Off");
-    return b;
-}
-
-static const char*
-lbl_blanker_thr(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int thr = 0;
-    rtl_stream_get_blanker(&thr, NULL);
-    snprintf(b, n, "Blanker Thr: %d", thr);
-    return b;
-}
-
-static const char*
-lbl_blanker_win(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int win = 0;
-    rtl_stream_get_blanker(NULL, &win);
-    snprintf(b, n, "Blanker Win: %d", win);
-    return b;
-}
-
-static void
-act_toggle_blanker(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_blanker_thr_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_THR_DELTA, .a = +2000};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_blanker_thr_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_THR_DELTA, .a = -2000};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_blanker_win_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_WIN_DELTA, .a = +1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_blanker_win_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_BLANKER_WIN_DELTA, .a = -1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-#endif

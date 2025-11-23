@@ -329,91 +329,6 @@ channel_lpf_apply(struct demod_state* d) {
     d->lp_len = N << 1;
 }
 
-/* ---------------- Impulse blanker (optional, pre-decimation) ---------------- */
-static void
-impulse_blanker(struct demod_state* d) {
-    if (!d || !d->blanker_enable || !d->lowpassed || d->lp_len < 2) {
-        return;
-    }
-    const int16_t* in = d->lowpassed;
-    const int Npairs = d->lp_len >> 1; /* complex pairs */
-    if (Npairs <= 0) {
-        return;
-    }
-    /* Robust thresholding via median and MAD on |I|+|Q| (sampled) */
-    int stride = (Npairs > 2048) ? (Npairs / 2048) : 1;
-    int cap = (stride > 0) ? ((Npairs + stride - 1) / stride) : Npairs;
-    if (cap < 1) {
-        cap = 1;
-    }
-    if (cap > 4096) {
-        cap = 4096; /* safety bound */
-    }
-    std::vector<int> mags;
-    mags.reserve((size_t)cap);
-    for (int n = 0; n < Npairs; n += stride) {
-        int16_t I = in[(size_t)(n << 1) + 0];
-        int16_t Q = in[(size_t)(n << 1) + 1];
-        int aI = (I >= 0) ? I : -I;
-        int aQ = (Q >= 0) ? Q : -Q;
-        mags.push_back(aI + aQ);
-        if ((int)mags.size() >= cap) {
-            break;
-        }
-    }
-    int median = 0;
-    int mad = 0;
-    if (!mags.empty()) {
-        size_t mid = mags.size() / 2;
-        std::nth_element(mags.begin(), mags.begin() + mid, mags.end());
-        median = mags[mid];
-        for (size_t i = 0; i < mags.size(); i++) {
-            mags[i] = std::abs(mags[i] - median);
-        }
-        std::nth_element(mags.begin(), mags.begin() + mid, mags.end());
-        mad = mags[mid];
-    }
-    /* Convert MAD to sigma; default k=6 sigma unless explicit amplitude threshold provided */
-    int thr_abs;
-    if (d->blanker_thr > 0) {
-        thr_abs = d->blanker_thr;
-    } else {
-        double sigma = 1.4826 * (double)mad;
-        double k = 6.0;
-        thr_abs = (int)lrint(k * sigma);
-        if (thr_abs < 2000) {
-            /* guard: when MAD is tiny, avoid blanking everything */
-            thr_abs = 2000;
-        }
-    }
-    int baseline = median;
-    int win = (d->blanker_win > 0) ? d->blanker_win : 2; /* half-window in pairs */
-    /* Detect spikes and zero windows around them in-place */
-    int16_t* out = d->lowpassed;
-    for (int n = 0; n < Npairs; n++) {
-        int16_t I = out[(size_t)(n << 1) + 0];
-        int16_t Q = out[(size_t)(n << 1) + 1];
-        int aI = (I >= 0) ? I : -I;
-        int aQ = (Q >= 0) ? Q : -Q;
-        int mag = aI + aQ;
-        if (mag > baseline + thr_abs) {
-            int a = n - win;
-            if (a < 0) {
-                a = 0;
-            }
-            int b = n + win;
-            if (b >= Npairs) {
-                b = Npairs - 1;
-            }
-            for (int k = a; k <= b; k++) {
-                out[(size_t)(k << 1) + 0] = 0;
-                out[(size_t)(k << 1) + 1] = 0;
-            }
-            n = b; /* skip ahead */
-        }
-    }
-}
-
 /* CIC compensation filter tables */
 #define CIC_TABLE_MAX 10
 static const int cic_9_tables[][10] = {
@@ -1448,8 +1363,6 @@ gardner_timing_adjust(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     int i, ds_p;
-    /* Optional pre-decimation blanking of impulsive spikes */
-    impulse_blanker(d);
     ds_p = d->downsample_passes;
     if (ds_p) {
         /* Choose decimator: half-band cascade (default) or legacy path */

@@ -244,23 +244,6 @@ double rtl_stream_estimate_snr_qpsk_const(void);
 double rtl_stream_estimate_snr_gfsk_eye(void);
 
 /**
- * @brief Get the current impulse blanker configuration.
- *
- * @param out_thr [out] Threshold value; may be NULL.
- * @param out_win [out] Window length; may be NULL.
- * @return 0 on success; otherwise <0 on error.
- */
-int rtl_stream_get_blanker(int* out_thr, int* out_win);
-/**
- * @brief Enable/disable the impulse blanker and set parameters.
- *
- * @param enable Non-zero to enable; zero to disable.
- * @param thr Threshold applied to magnitude.
- * @param win Window length in samples.
- */
-void rtl_stream_set_blanker(int enable, int thr, int win);
-
-/**
  * @brief Get supervisory tuner auto-gain enable flag.
  * @return 1 when auto-gain supervisor is enabled; 0 when disabled.
  */
@@ -270,29 +253,6 @@ int rtl_stream_get_tuner_autogain(void);
  * @param onoff Non-zero to enable; zero to disable.
  */
 void rtl_stream_set_tuner_autogain(int onoff);
-
-/**
- * @brief Toggle the decision-directed C4FM equalizer.
- * @param onoff Non-zero to enable; zero to disable.
- */
-void rtl_stream_set_c4fm_dd_eq(int onoff);
-/**
- * @brief Return current enable state of the decision-directed C4FM equalizer.
- * @return 1 when enabled; 0 when disabled.
- */
-int rtl_stream_get_c4fm_dd_eq(void);
-/**
- * @brief Set C4FM DD equalizer parameters (pass negative to keep unchanged).
- * @param taps Number of taps; negative to leave unchanged.
- * @param mu_q15 Step size in Q15; negative to leave unchanged.
- */
-void rtl_stream_set_c4fm_dd_eq_params(int taps, int mu_q15);
-/**
- * @brief Retrieve current C4FM DD equalizer parameters.
- * @param taps [out] Number of taps; may be NULL.
- * @param mu_q15 [out] Step size in Q15; may be NULL.
- */
-void rtl_stream_get_c4fm_dd_eq_params(int* taps, int* mu_q15);
 
 /**
  * @brief Set the C4FM clock assist mode.

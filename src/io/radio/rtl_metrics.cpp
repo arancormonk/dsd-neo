@@ -442,60 +442,7 @@ rtl_stream_get_snr_gfsk(void) {
     return g_snr_gfsk_db.load(std::memory_order_relaxed);
 }
 
-/* Blanker and tuner autogain runtime control */
-/**
- * @brief Read the current impulse blanker settings.
- *
- * @param out_thr [out] Threshold magnitude (may be NULL).
- * @param out_win [out] Window length in samples (may be NULL).
- * @return 1 if enabled, 0 if disabled.
- */
-extern "C" int
-dsd_rtl_stream_get_blanker(int* out_thr, int* out_win) {
-    if (out_thr) {
-        *out_thr = demod.blanker_thr;
-    }
-    if (out_win) {
-        *out_win = demod.blanker_win;
-    }
-    return demod.blanker_enable ? 1 : 0;
-}
-
-/**
- * @brief Enable/disable the impulse blanker and update its parameters.
- *
- * Negative values leave a parameter unchanged; values are clamped to sane
- * ranges internally.
- *
- * @param enable Non-zero to enable, zero to disable, negative to leave as-is.
- * @param thr    Threshold magnitude (non-negative).
- * @param win    Window length in samples (non-negative).
- */
-extern "C" void
-dsd_rtl_stream_set_blanker(int enable, int thr, int win) {
-    if (enable >= 0) {
-        demod.blanker_enable = enable ? 1 : 0;
-    }
-    if (thr >= 0) {
-        if (thr < 0) {
-            thr = 0;
-        }
-        if (thr > 60000) {
-            thr = 60000;
-        }
-        demod.blanker_thr = thr;
-    }
-    if (win >= 0) {
-        if (win < 0) {
-            win = 0;
-        }
-        if (win > 16) {
-            win = 16;
-        }
-        demod.blanker_win = win;
-    }
-}
-
+/* Supervisory tuner autogain runtime control */
 /** @brief Return the supervisory tuner auto-gain flag (1=enabled). */
 extern "C" int
 dsd_rtl_stream_get_tuner_autogain(void) {
