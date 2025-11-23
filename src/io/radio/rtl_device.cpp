@@ -979,7 +979,9 @@ rtl_device_print_offset_capability(struct rtl_device* dev) {
         return;
     }
     if (dev->backend == 1) {
-        fprintf(stderr, "rtl_tcp: offset tuning capability is determined by the server; will attempt enable.\n");
+        fprintf(stderr,
+                "rtl_tcp: offset tuning capability is determined by the server; defaulting to disabled to match USB "
+                "fs/4/rotate path (override with DSD_NEO_RTL_OFFSET_TUNING=1).\n");
         return;
     }
     if (!dev->dev) {

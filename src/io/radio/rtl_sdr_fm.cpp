@@ -1352,6 +1352,10 @@ controller_thread_fn(void* arg) {
        Respect explicit env override when provided. */
     {
         int want = 1;
+        if (g_stream && g_stream->opts && g_stream->opts->rtltcp_enabled) {
+            /* rtl_tcp: keep fs/4 + combine-rotate path consistent with USB defaults */
+            want = 0;
+        }
         if (const char* ot = getenv("DSD_NEO_RTL_OFFSET_TUNING")) {
             want = (ot[0] != '0' && ot[0] != 'n' && ot[0] != 'N' && ot[0] != 'f' && ot[0] != 'F') ? 1 : 0;
         }

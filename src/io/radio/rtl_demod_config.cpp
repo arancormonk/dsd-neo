@@ -313,9 +313,6 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
 
     /* rtltcp-specific sane defaults unless explicitly overridden via env/config */
     if (opts->rtltcp_enabled) {
-        if (!cfg->combine_rot_is_set) {
-            combine_rotate_enabled = 0; /* DSD_NEO_COMBINE_ROT default off for rtltcp */
-        }
         /* For rtl_tcp, prefer consistency with USB: allow fs/4 shift fallback when offset tuning unavailable */
         if (!cfg->fs4_shift_disable_is_set) {
             disable_fs4_shift = 0;
