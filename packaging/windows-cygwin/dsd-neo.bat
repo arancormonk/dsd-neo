@@ -72,11 +72,11 @@ set "PULSE_MODDIR="
 set "PULSE_MODDIR_POSIX="
 for /d %%D in ("%ROOT%lib\\pulse-*") do (
   if exist "%%~fD\\modules" (
-    set "PULSE_MODDIR=%%~fD\\modules"
-    if exist "%BIN%\\cygpath.exe" (
-      for /f "usebackq delims=" %%P in (`"%BIN%\\cygpath.exe" -u "%%~fD\\modules"`) do set "PULSE_MODDIR_POSIX=%%P"
-    )
-    goto :found_moddir
+        set "PULSE_MODDIR=%%~fD\\modules"
+        if exist "%BIN%\\cygpath.exe" (
+            for /f "usebackq delims=" %%P in (`"%BIN%\\cygpath.exe" -u "%%~fD\\modules"`) do set "PULSE_MODDIR_POSIX=%%P"
+        )
+        goto :found_moddir
   )
 )
 :found_moddir
@@ -85,6 +85,12 @@ if defined PULSE_MODDIR_POSIX (
   set "PULSE_DL_PATH=%PULSE_MODDIR_POSIX%"
 ) else if defined PULSE_MODDIR (
   set "PULSE_DL_PATH=%PULSE_MODDIR%"
+)
+
+REM Compute POSIX path for PulseAudio config if available so -F works under Cygwin
+set "PULSE_CONFIG_POSIX="
+if exist "%ETC%\pulse\default.pa" if exist "%BIN%\cygpath.exe" (
+    for /f "usebackq delims=" %%P in (`"%BIN%\\cygpath.exe" -u "%ETC%\\pulse\\default.pa"`) do set "PULSE_CONFIG_POSIX=%%P"
 )
 
 REM Ensure POSIX shared memory path exists for PulseAudio/libpulse
@@ -97,9 +103,17 @@ if exist "%BIN%\pulseaudio.exe" (
   echo Starting PulseAudio...
   if exist "%ETC%\pulse\default.pa" (
     if defined PULSE_DL_PATH (
-      "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 --dl-search-path="%PULSE_DL_PATH%" -F "%ETC%\pulse\default.pa" >nul 2>nul
+      if defined PULSE_CONFIG_POSIX (
+        "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 --dl-search-path="%PULSE_DL_PATH%" -F "!PULSE_CONFIG_POSIX!" >nul 2>nul
+      ) else (
+        "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 --dl-search-path="%PULSE_DL_PATH%" -F "%ETC%\pulse\default.pa" >nul 2>nul
+      )
     ) else (
-      "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 -F "%ETC%\pulse\default.pa" >nul 2>nul
+      if defined PULSE_CONFIG_POSIX (
+        "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 -F "!PULSE_CONFIG_POSIX!" >nul 2>nul
+      ) else (
+        "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 -F "%ETC%\pulse\default.pa" >nul 2>nul
+      )
     )
   ) else (
     if defined PULSE_DL_PATH (

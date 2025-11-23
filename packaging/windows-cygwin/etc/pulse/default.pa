@@ -6,13 +6,16 @@
 load-module module-native-protocol-unix
 load-module module-native-protocol-tcp auth-anonymous=1 port=4713 listen=127.0.0.1
 
-### Device discovery (prefer WASAPI, fallback to waveout)
+### Device discovery:
+### - Prefer WASAPI when available.
+### - Also enable waveout when present (older Cygwin builds).
+### NOTE: Avoid nested .ifexists blocks; they are not supported in some
+### PulseAudio 17.x Cygwin builds and will cause the daemon to exit.
 .ifexists module-wasapi-device.so
 load-module module-wasapi-device
-.else
+.endif
 .ifexists module-waveout.so
 load-module module-waveout record=1 playback=1
-.endif
 .endif
 
 ### Restore/default devices and keep a fallback sink alive
