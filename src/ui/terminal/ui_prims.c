@@ -27,7 +27,13 @@ ui_make_window(int h, int w, int y, int x) {
         keypad(win, TRUE);
         wtimeout(win, 0); // non-blocking by default
         box(win, 0, 0);
+#ifdef __CYGWIN__
+        // Use double-buffered refresh on Cygwin
+        wnoutrefresh(win);
+        doupdate();
+#else
         wrefresh(win);
+#endif
     }
     return win;
 }

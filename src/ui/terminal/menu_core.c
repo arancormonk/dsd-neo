@@ -185,7 +185,13 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
     } else {
         ui_status_clear_if_expired(now);
     }
+#ifdef __CYGWIN__
+    // Use more efficient double-buffered refresh on Cygwin to reduce flicker
+    wnoutrefresh(menu_win);
+    doupdate();
+#else
     wrefresh(menu_win);
+#endif
 }
 
 // -------------------- Nonblocking overlay driver --------------------
@@ -2348,7 +2354,12 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
         mvwprintw(win, 1, 2, "%s", title);
         mvwprintw(win, 3, 2, "> %s", g_prompt.buf ? g_prompt.buf : "");
         mvwprintw(win, h - 2, 2, "Enter=OK  Esc/q=Cancel");
+#ifdef __CYGWIN__
+        wnoutrefresh(win);
+        doupdate();
+#else
         wrefresh(win);
+#endif
         return;
     }
     // Render Help overlay if active
@@ -2382,7 +2393,12 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
         mvwprintw(hw, 1, 2, "Help:");
         mvwprintw(hw, 3, 2, "%s", t);
         mvwprintw(hw, h - 2, 2, "Press any key to continue...");
+#ifdef __CYGWIN__
+        wnoutrefresh(hw);
+        doupdate();
+#else
         wrefresh(hw);
+#endif
         return;
     }
     // Render chooser if active
@@ -2446,7 +2462,12 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
             }
         }
         mvwprintw(win, h - 2, 2, "%s", footer);
+#ifdef __CYGWIN__
+        wnoutrefresh(win);
+        doupdate();
+#else
         wrefresh(win);
+#endif
         return;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];

@@ -57,7 +57,7 @@ ui_dbg_log(const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(g_ui_dbg, fmt, ap);
+    vfprintf(g_ui_dbg, fmt, ap); // NOLINT(clang-analyzer-valist.Uninitialized)
     va_end(ap);
 }
 
@@ -83,7 +83,13 @@ ui_thread_main(void* arg) {
 
     struct timespec ts;
     ts.tv_sec = 0;
+#ifdef __CYGWIN__
+    // Cygwin benefits from slightly longer sleep intervals to reduce CPU usage
+    // and prevent input processing race conditions
+    ts.tv_nsec = 20L * 1000L * 1000L; // ~20 ms sleep cadence on Cygwin
+#else
     ts.tv_nsec = 15L * 1000L * 1000L; // ~15 ms sleep cadence
+#endif
 
     // Initialize ncurses lifecycle in UI thread
     if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
@@ -92,7 +98,12 @@ ui_thread_main(void* arg) {
 
     struct timespec last_draw = {0, 0};
     clock_gettime(CLOCK_MONOTONIC, &last_draw);
+#ifdef __CYGWIN__
+    // Slower refresh rate on Cygwin to prevent flicker (12 FPS)
+    const long frame_ns = 83L * 1000L * 1000L;
+#else
     const long frame_ns = 66L * 1000L * 1000L; // ~15 FPS cap
+#endif
 
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays handled in the UI thread when curses is ready.
@@ -106,6 +117,10 @@ ui_thread_main(void* arg) {
                 set_escdelay(25);
                 keypad(stdscr, TRUE);
                 timeout(0);
+#ifdef __CYGWIN__
+                // Flush input buffer on Cygwin to prevent stuck keys
+                flushinp();
+#endif
                 g_ui_curses_cfg_done = 1;
             }
 

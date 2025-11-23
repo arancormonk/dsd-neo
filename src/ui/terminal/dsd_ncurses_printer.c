@@ -518,6 +518,13 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 
     noecho();
     cbreak();
+#ifdef __CYGWIN__
+    // Cygwin ncurses needs explicit input buffer flush to prevent key sticking
+    flushinp();
+    // Use raw() on Cygwin for more reliable input processing
+    raw();
+    noecho();
+#endif
 
     //initialize this
     memset(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
@@ -5450,7 +5457,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
     attroff(COLOR_PAIR(4)); //cyan for history
 
+#ifdef __CYGWIN__
+    // On Cygwin, use doupdate for more efficient and flicker-free rendering
+    wnoutrefresh(stdscr);
+    doupdate();
+#else
     refresh();
+#endif
 }
 
 void
