@@ -79,7 +79,6 @@ struct demod_state {
     void (*mode_demod)(struct demod_state*);
     struct output_state* output_target;
     double fm_agc_ema_rms;
-    double fm_cma_guard_mu_scale;
     int16_t* post_polydecim_taps; /* Q15 taps length K */
     int16_t* post_polydecim_hist; /* circular history length K */
     pthread_t mt_threads[2];
@@ -233,33 +232,6 @@ struct demod_state {
     int iq_dc_shift;        /* shift k for dc += (x-dc)>>k; typical 10..14 */
     int iq_dc_avg_r;        /* running DC estimate for I */
     int iq_dc_avg_i;        /* running DC estimate for Q */
-
-    /* Blind CMA equalizer for FM/FSK (pre-discriminator, constant-envelope)
-       Uses a short fractionally-spaced FIR with CMA-only adaptation to mitigate
-       fast AM ripple and short-delay multipath that drives SNR "breathing".
-       Off by default; enable via env DSD_NEO_FM_CMA=1. */
-    int fm_cma_enable;   /* 0/1 gate for CMA equalizer on non-QPSK paths */
-    int fm_cma_taps;     /* odd (3..11), default 5 */
-    int fm_cma_mu_q15;   /* CMA step (Q15), small (1..64), default 2 */
-    int fm_cma_warmup;   /* CMA warmup samples; <=0 means continuous (large). Default 20000 */
-    int fm_cma_strength; /* 0=Light ([1,4,1]/6), 1=Strong ([1,6,1]/8) */
-
-    /* Adaptive 5-tap guard (status only; updated by DSP pipeline) */
-    int fm_cma_guard_freeze;  /* remaining blocks held by stability guard */
-    int fm_cma_guard_accepts; /* total accepted tap updates */
-    int fm_cma_guard_rejects; /* total rejected tap updates */
-
-    /* FM CMA (>=5 taps) per-instance persistent state */
-    int fm_cma5_inited;
-    int fm_cma5_prev_mu;
-    int fm_cma5_prev_strength;
-    int fm_cma5_prev_taps;
-    int fm_cma5_prev_warm_cfg;
-    int fm_cma5_warm_rem;        /* remaining warmup samples; <=0 => continuous */
-    int16_t fm_cma5_taps_q15[5]; /* symmetric tap set: t0..t4 (Q15), use prefix subset by taps */
-    /* Guard state for CMA >=5 taps */
-    int fm_cma_guard_inited;
-    int fm_cma_guard_reject_streak;
 
     /* Optional impulse blanker (pre-decimation) */
     int blanker_enable; /* 0/1 gate; default off */

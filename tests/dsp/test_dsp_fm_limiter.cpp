@@ -59,7 +59,6 @@ main(void) {
     s->mode_demod = &raw_demod; // copy lowpassed -> result, then return
     s->fm_agc_enable = 0;       // isolate limiter behavior
     s->fm_limiter_enable = 1;
-    s->fm_cma_enable = 0;
     s->cqpsk_enable = 0;
     s->iqbal_enable = 0;
     s->squelch_level = 0;

@@ -53,7 +53,6 @@ main(void) {
     s->fm_agc_min_rms = 1000;
     s->fm_agc_gain_q15 = 32768; // start at 1.0
     s->fm_limiter_enable = 0;   // keep limiter off for this test
-    s->fm_cma_enable = 0;
     s->iqbal_enable = 0;
     s->fll_enabled = 0;
     s->ted_enabled = 0;

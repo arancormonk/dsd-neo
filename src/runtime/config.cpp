@@ -262,23 +262,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.iq_dc_shift_is_set = env_is_set(dck);
     c.iq_dc_shift = c.iq_dc_shift_is_set ? atoi(dck) : 11;
 
-    /* FM/FSK blind CMA equalizer (pre-discriminator) */
-    const char* fcma = getenv("DSD_NEO_FM_CMA");
-    const char* fcma_t = getenv("DSD_NEO_FM_CMA_TAPS");
-    const char* fcma_mu = getenv("DSD_NEO_FM_CMA_MU");
-    const char* fcma_w = getenv("DSD_NEO_FM_CMA_WARMUP");
-    const char* fcma_s = getenv("DSD_NEO_FM_CMA_STRENGTH");
-    c.fm_cma_is_set = env_is_set(fcma);
-    c.fm_cma_enable = c.fm_cma_is_set ? (atoi(fcma) != 0) : 0;
-    c.fm_cma_taps_is_set = env_is_set(fcma_t);
-    c.fm_cma_taps = c.fm_cma_taps_is_set ? atoi(fcma_t) : 1;
-    c.fm_cma_mu_is_set = env_is_set(fcma_mu);
-    c.fm_cma_mu_q15 = c.fm_cma_mu_is_set ? atoi(fcma_mu) : 2;
-    c.fm_cma_warmup_is_set = env_is_set(fcma_w);
-    c.fm_cma_warmup = c.fm_cma_warmup_is_set ? atoi(fcma_w) : 20000;
-    c.fm_cma_strength_is_set = env_is_set(fcma_s);
-    c.fm_cma_strength = c.fm_cma_strength_is_set ? atoi(fcma_s) : 1;
-
     /* C4FM DD equalizer (symbol-domain prototype) */
     const char* dd = getenv("DSD_NEO_C4FM_DD_EQ");
     const char* dd_t = getenv("DSD_NEO_C4FM_DD_EQ_TAPS");

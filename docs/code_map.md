@@ -36,7 +36,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - TED: `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`, `rtl_stream_set_ted_force`/`rtl_stream_get_ted_force`, residual via `rtl_stream_ted_bias`.
 - CQPSK path: matched filter toggle `rtl_stream_cqpsk_set`/`rtl_stream_cqpsk_get`, RRC `rtl_stream_cqpsk_set_rrc`/`rtl_stream_cqpsk_get_rrc`, acquisition FLL `rtl_stream_set_cqpsk_acq_fll`/`rtl_stream_get_cqpsk_acq_fll`.
 - C4FM helpers: Decision‑directed equalizer `rtl_stream_set_c4fm_dd_eq`/`rtl_stream_get_c4fm_dd_eq` and params, clock assist `rtl_stream_set_c4fm_clk`/`rtl_stream_get_c4fm_clk`, sync assist `rtl_stream_set_c4fm_clk_sync`/`rtl_stream_get_c4fm_clk_sync`.
-- FM/FSK conditioning: FM AGC get/set + params, FM limiter, I/Q DC blocker get/set, CMA equalizer get/set + params + strength, guard counters.
+- FM/FSK conditioning: FM AGC get/set + params, FM limiter, I/Q DC blocker get/set.
 - Spectral/diagnostics: constellation/eye/spectrum getters, spectrum FFT size set/get, SNR getters/estimates for C4FM/CQPSK/GFSK.
 - Front‑end assists: impulse blanker get/set, tuner autogain get/set, IQ balance toggle/get, resampler target set, auto‑PPM query/lock/toggle.
 

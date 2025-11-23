@@ -3648,15 +3648,6 @@ lbl_fm_agc(void* v, char* b, size_t n) {
     return b;
 }
 
-/* ---- FM CMA Equalizer (pre-discriminator) ---- */
-static const char*
-lbl_fm_cma(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_fm_cma();
-    snprintf(b, n, "FM CMA Equalizer [%s]", on ? "On" : "Off");
-    return b;
-}
-
 /* ---- C4FM DD Equalizer (symbol-domain) ---- */
 static const char*
 lbl_c4fm_dd(void* v, char* b, size_t n) {
@@ -3738,131 +3729,6 @@ static void
 act_c4fm_clk_sync_toggle(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_fm_cma(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
-lbl_fm_cma_taps(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int taps = 0;
-    rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
-    /* 1: complex gain (CMA), 3: fixed smoother, 5/7/9: adaptive symmetric FIR */
-    const char* desc;
-    if (taps <= 1) {
-        desc = "Complex gain (no multipath mitigation)";
-        taps = 1;
-    } else if (taps == 3) {
-        desc = "3-tap short-echo smoother";
-    } else if (taps == 5) {
-        desc = "5-tap adaptive symmetric FIR";
-    } else if (taps == 7) {
-        desc = "7-tap adaptive symmetric FIR";
-    } else {
-        desc = "9-tap adaptive symmetric FIR";
-        taps = 9;
-    }
-    snprintf(b, n, "CMA Taps (1/3/5/7/9): %d  —  %s", taps, desc);
-    return b;
-}
-
-static void
-act_fm_cma_taps_cycle(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_TAPS_CYCLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
-lbl_fm_cma_mu(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int mu = 0;
-    rtl_stream_get_fm_cma_params(NULL, &mu, NULL);
-    snprintf(b, n, "CMA mu (Q15, 1..64): %d", mu);
-    return b;
-}
-
-static const char*
-lbl_fm_cma_strength(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int s = rtl_stream_get_fm_cma_strength();
-    const char* name = (s == 2) ? "Strong" : (s == 1) ? "Medium" : "Light";
-    snprintf(b, n, "CMA Strength: %s", name);
-    return b;
-}
-
-/* Show adaptive 5-tap guard hint: adapting vs hold, and A/R counts */
-static const char*
-lbl_fm_cma_guard(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int enabled = rtl_stream_get_fm_cma();
-    int taps = 0, mu = 0, warm = 0;
-    rtl_stream_get_fm_cma_params(&taps, &mu, &warm);
-    if (!enabled || (taps != 5 && taps != 7 && taps != 9)) {
-        snprintf(b, n, "CMA Adaptive: (n/a)");
-        return b;
-    }
-    int freeze = 0, acc = 0, rej = 0;
-    rtl_stream_get_fm_cma_guard(&freeze, &acc, &rej);
-    if (freeze > 0) {
-        snprintf(b, n, "CMA Adaptive: hold %d  |  A/R %d/%d", freeze, acc, rej);
-    } else {
-        snprintf(b, n, "CMA Adaptive: adapting  |  A/R %d/%d", acc, rej);
-    }
-    return b;
-}
-
-static void
-act_fm_cma_strength_cycle(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_STRENGTH_CYCLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_fm_cma_mu_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_MU_DELTA, .a = +1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_fm_cma_mu_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_MU_DELTA, .a = -1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
-lbl_fm_cma_warm(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int warm = 0;
-    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
-    if (warm <= 0) {
-        snprintf(b, n, "CMA Warmup (samples): 0 (continuous)");
-    } else {
-        snprintf(b, n, "CMA Warmup (samples): %d", warm);
-    }
-    return b;
-}
-
-static void
-act_fm_cma_warm_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_WARM_DELTA, .a = +5000};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_fm_cma_warm_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_CMA_WARM_DELTA, .a = -5000};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -5481,59 +5347,6 @@ static const NcMenuItem DSP_FILTER_ITEMS[] = {
      .help = "Decrease DD mu.",
      .is_enabled = is_mod_c4fm,
      .on_select = act_c4fm_dd_mu_dn},
-    {.id = "cma",
-     .label = "FM CMA Equalizer",
-     .label_fn = lbl_fm_cma,
-     .help = "Toggle pre-discriminator CMA equalizer.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_toggle_fm_cma},
-    {.id = "cma_taps",
-     .label = "CMA Taps (1/3/5/7/9)",
-     .label_fn = lbl_fm_cma_taps,
-     .help = "Cycle CMA taps.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_fm_cma_taps_cycle},
-    {.id = "cma_mu",
-     .label = "CMA mu (status)",
-     .label_fn = lbl_fm_cma_mu,
-     .help = "Step size (Q15).",
-     .is_enabled = is_mod_fm},
-    {.id = "cma_mu+",
-     .label = "CMA mu +1",
-     .help = "Increase mu.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_fm_cma_mu_up},
-    {.id = "cma_mu-",
-     .label = "CMA mu -1",
-     .help = "Decrease mu.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_fm_cma_mu_dn},
-    {.id = "cma_s",
-     .label = "CMA Strength",
-     .label_fn = lbl_fm_cma_strength,
-     .help = "Cycle strength L/M/S.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_fm_cma_strength_cycle},
-    {.id = "cma_guard",
-     .label = "CMA Adaptive (status)",
-     .label_fn = lbl_fm_cma_guard,
-     .help = "Adapting/hold with accept/reject counts.",
-     .is_enabled = is_mod_fm},
-    {.id = "cma_warm",
-     .label = "CMA Warmup (status)",
-     .label_fn = lbl_fm_cma_warm,
-     .help = "Samples to hold before adapting (0=continuous).",
-     .is_enabled = is_mod_fm},
-    {.id = "cma_warm+",
-     .label = "Warmup +5k",
-     .help = "Increase warmup.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_fm_cma_warm_up},
-    {.id = "cma_warm-",
-     .label = "Warmup -5k",
-     .help = "Decrease warmup.",
-     .is_enabled = is_mod_fm,
-     .on_select = act_fm_cma_warm_dn},
 };
 
 // Visible only when at least one filter/EQ item applies
@@ -5688,7 +5501,7 @@ const NcMenuItem DSP_MENU_ITEMS[] = {
      .submenu_len = sizeof DSP_PATH_ITEMS / sizeof DSP_PATH_ITEMS[0]},
     {.id = "dsp.filters",
      .label = "Filtering & Equalizers...",
-     .help = "RRC/MF, C4FM DD EQ, FM CMA.",
+     .help = "RRC/MF, C4FM DD EQ.",
      .submenu = DSP_FILTER_ITEMS,
      .submenu_len = sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0],
      .is_enabled = dsp_filters_any},

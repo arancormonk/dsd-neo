@@ -1632,57 +1632,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
                     break;
                 }
-                case UI_DSP_OP_FM_CMA_TOGGLE: {
-                    int on = rtl_stream_get_fm_cma();
-                    rtl_stream_set_fm_cma(on ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_FM_CMA_TAPS_CYCLE: {
-                    int taps = 0;
-                    rtl_stream_get_fm_cma_params(&taps, NULL, NULL);
-                    int nt;
-                    switch (taps) {
-                        case 1: nt = 3; break;
-                        case 3: nt = 5; break;
-                        case 5: nt = 7; break;
-                        case 7: nt = 9; break;
-                        default: nt = 1;
-                    }
-                    rtl_stream_set_fm_cma_params(nt, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_FM_CMA_MU_DELTA: {
-                    int mu = 0;
-                    rtl_stream_get_fm_cma_params(NULL, &mu, NULL);
-                    int nmu = mu + p.a;
-                    if (nmu < 1) {
-                        nmu = 1;
-                    }
-                    if (nmu > 20) {
-                        nmu = 20;
-                    }
-                    rtl_stream_set_fm_cma_params(-1, nmu, -1);
-                    break;
-                }
-                case UI_DSP_OP_FM_CMA_STRENGTH_CYCLE: {
-                    int s = rtl_stream_get_fm_cma_strength();
-                    s = (s % 3) + 1;
-                    rtl_stream_set_fm_cma_strength(s);
-                    break;
-                }
-                case UI_DSP_OP_FM_CMA_WARM_DELTA: {
-                    int warm = 0;
-                    rtl_stream_get_fm_cma_params(NULL, NULL, &warm);
-                    int nw = warm + p.a;
-                    if (nw < 0) {
-                        nw = 0;
-                    }
-                    if (nw > 200000) {
-                        nw = 200000;
-                    }
-                    rtl_stream_set_fm_cma_params(-1, -1, nw);
-                    break;
-                }
                 case UI_DSP_OP_FM_AGC_TOGGLE: {
                     int on = rtl_stream_get_fm_agc();
                     rtl_stream_set_fm_agc(on ? 0 : 1);

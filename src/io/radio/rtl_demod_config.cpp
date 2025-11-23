@@ -193,20 +193,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->fm_agc_clip_run = 0;
     s->fm_agc_under_run = 0;
 
-    /* FM CMA (>=5 taps) persistent state */
-    s->fm_cma5_inited = 0;
-    s->fm_cma5_prev_mu = 0;
-    s->fm_cma5_prev_strength = 0;
-    s->fm_cma5_prev_taps = 0;
-    s->fm_cma5_prev_warm_cfg = 0;
-    s->fm_cma5_warm_rem = 0;
-    for (int k = 0; k < 5; k++) {
-        s->fm_cma5_taps_q15[k] = (k == 0) ? 32767 : 0;
-    }
-    s->fm_cma_guard_inited = 0;
-    s->fm_cma_guard_reject_streak = 0;
-    s->fm_cma_guard_mu_scale = 1.0;
-
     /* Experimental CQPSK path (off by default). Enable via env DSD_NEO_CQPSK=1 */
     s->cqpsk_enable = 0;
     const char* env_cqpsk = getenv("DSD_NEO_CQPSK");
@@ -297,7 +283,7 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
  *
  * Mirrors CLI/env-driven configuration into the demodulator, covering DSP
  * toggles (HB vs legacy decimator, FS/4 shift, combine-rotate), resampler
- * targets, FLL/TED tuning, CQPSK path enable, blanker/AGC/CMA knobs, and
+ * targets, FLL/TED tuning, CQPSK path enable, blanker/AGC knobs, and
  * IQ balance defaults. Early-exits on NULL inputs.
  *
  * @param demod Demodulator state to configure.
@@ -453,16 +439,6 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->blanker_enable = cfg->blanker_is_set ? (cfg->blanker_enable != 0) : 0;
     demod->blanker_thr = cfg->blanker_thr_is_set ? cfg->blanker_thr : 20000;
     demod->blanker_win = cfg->blanker_win_is_set ? cfg->blanker_win : 2;
-
-    /* FM/FSK CMA equalizer defaults (pre-discriminator) */
-    demod->fm_cma_enable = cfg->fm_cma_is_set ? (cfg->fm_cma_enable != 0) : 0;
-    demod->fm_cma_taps = cfg->fm_cma_taps_is_set ? cfg->fm_cma_taps : 1;
-    demod->fm_cma_mu_q15 = cfg->fm_cma_mu_is_set ? cfg->fm_cma_mu_q15 : 2;
-    demod->fm_cma_warmup = cfg->fm_cma_warmup_is_set ? cfg->fm_cma_warmup : 20000;
-    demod->fm_cma_strength = cfg->fm_cma_strength_is_set ? cfg->fm_cma_strength : 1;
-    demod->fm_cma_guard_freeze = 0;
-    demod->fm_cma_guard_accepts = 0;
-    demod->fm_cma_guard_rejects = 0;
 
     /* Channel complex low-pass (post-HB, complex baseband).
        Default policy (Fs~=24 kHz RTL DSP baseband):

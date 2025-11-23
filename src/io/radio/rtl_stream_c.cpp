@@ -443,13 +443,6 @@ extern "C" int dsd_rtl_stream_get_fm_limiter(void);
 extern "C" void dsd_rtl_stream_set_fm_limiter(int onoff);
 extern "C" int dsd_rtl_stream_get_iq_dc(int* out_shift_k);
 extern "C" void dsd_rtl_stream_set_iq_dc(int enable, int shift_k);
-extern "C" int dsd_rtl_stream_get_fm_cma(void);
-extern "C" void dsd_rtl_stream_set_fm_cma(int onoff);
-extern "C" void dsd_rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup);
-extern "C" void dsd_rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup);
-extern "C" int dsd_rtl_stream_get_fm_cma_strength(void);
-extern "C" void dsd_rtl_stream_set_fm_cma_strength(int strength);
-extern "C" void dsd_rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects);
 
 extern "C" int
 rtl_stream_get_fm_agc(void) {
@@ -489,42 +482,6 @@ rtl_stream_get_iq_dc(int* out_shift_k) {
 extern "C" void
 rtl_stream_set_iq_dc(int enable, int shift_k) {
     dsd_rtl_stream_set_iq_dc(enable, shift_k);
-}
-
-/* FM CMA wrappers */
-extern "C" int
-rtl_stream_get_fm_cma(void) {
-    return dsd_rtl_stream_get_fm_cma();
-}
-
-extern "C" void
-rtl_stream_set_fm_cma(int onoff) {
-    dsd_rtl_stream_set_fm_cma(onoff);
-}
-
-extern "C" void
-rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup_samples) {
-    dsd_rtl_stream_get_fm_cma_params(taps, mu_q15, warmup_samples);
-}
-
-extern "C" void
-rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup_samples) {
-    dsd_rtl_stream_set_fm_cma_params(taps, mu_q15, warmup_samples);
-}
-
-extern "C" int
-rtl_stream_get_fm_cma_strength(void) {
-    return dsd_rtl_stream_get_fm_cma_strength();
-}
-
-extern "C" void
-rtl_stream_set_fm_cma_strength(int strength) {
-    dsd_rtl_stream_set_fm_cma_strength(strength);
-}
-
-extern "C" void
-rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects) {
-    dsd_rtl_stream_get_fm_cma_guard(freeze_blocks, accepts, rejects);
 }
 
 extern "C" double

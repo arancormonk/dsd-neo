@@ -594,52 +594,6 @@ int rtl_stream_get_iq_dc(int* out_shift_k);
  */
 void rtl_stream_set_iq_dc(int enable, int shift_k);
 
-/* FM/FSK blind CMA equalizer (pre-discriminator) */
-/** Get FM CMA enable state (1 on, 0 off). */
-int rtl_stream_get_fm_cma(void);
-/** Enable/disable FM CMA equalizer (0 off, nonzero on). */
-void rtl_stream_set_fm_cma(int onoff);
-/**
- * @brief Get FM CMA parameters (any pointer may be NULL).
- *
- * @param taps [out] Number of CMA taps.
- * @param mu_q15 [out] Step size in Q15.
- * @param warmup_samples [out] Remaining warmup samples.
- */
-void rtl_stream_get_fm_cma_params(int* taps, int* mu_q15, int* warmup_samples);
-/**
- * @brief Set FM CMA parameters; pass negative to leave a field unchanged.
- *
- * @param taps Number of CMA taps; negative to keep existing.
- * @param mu_q15 Step size in Q15; negative to keep existing.
- * @param warmup_samples Warmup samples; negative to keep existing.
- */
-void rtl_stream_set_fm_cma_params(int taps, int mu_q15, int warmup_samples);
-/**
- * @brief Get FM CMA strength (0=Light,1=Medium,2=Strong).
- *
- * @return Strength selector (0=Light,1=Medium,2=Strong).
- */
-int rtl_stream_get_fm_cma_strength(void);
-/**
- * @brief Set FM CMA strength (0=Light,1=Medium,2=Strong).
- *
- * @param strength Strength selector (0..2).
- */
-void rtl_stream_set_fm_cma_strength(int strength);
-
-/**
- * @brief Retrieve adaptive guard status for the 5-tap CMA equalizer.
- *
- * Provides remaining freeze duration and accept/reject counters for the
- * guard mechanism. Any pointer may be NULL.
- *
- * @param freeze_blocks [out] Remaining blocks before unfreezing updates.
- * @param accepts [out] Number of accepted updates.
- * @param rejects [out] Number of rejected updates.
- */
-void rtl_stream_get_fm_cma_guard(int* freeze_blocks, int* accepts, int* rejects);
-
 #ifdef __cplusplus
 }
 #endif

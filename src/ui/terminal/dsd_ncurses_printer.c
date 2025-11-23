@@ -580,12 +580,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     int agc_on = rtl_stream_get_fm_agc();
     rtl_stream_get_fm_agc_params(&agc_tgt, &agc_min, &agc_up, &agc_down);
     int lim_on = rtl_stream_get_fm_limiter();
-    int cma_taps = 0, cma_mu = 0, cma_warm = 0;
-    int cma_on = rtl_stream_get_fm_cma();
-    rtl_stream_get_fm_cma_params(&cma_taps, &cma_mu, &cma_warm);
-    int cma_strength = rtl_stream_get_fm_cma_strength();
-    int cma_freeze = 0, cma_acc = 0, cma_rej = 0;
-    rtl_stream_get_fm_cma_guard(&cma_freeze, &cma_acc, &cma_rej);
 
     ui_print_header("DSP");
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
@@ -665,17 +659,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     if (mod != 1 || agc_on || lim_on) {
         ui_print_kv_line("FM AGC", "[%s] tgt:%d min:%d up:%d dn:%d | LIM:%s", agc_on ? "On" : "Off", agc_tgt, agc_min,
                          agc_up, agc_down, lim_on ? "On" : "Off");
-    }
-    if (mod != 1 || cma_on) {
-        const char* sname = (cma_strength == 2) ? "Strong" : (cma_strength == 1) ? "Medium" : "Light";
-        char guard[48];
-        if (cma_freeze > 0) {
-            snprintf(guard, sizeof guard, "hold:%d", cma_freeze);
-        } else {
-            snprintf(guard, sizeof guard, "A/R %d/%d", cma_acc, cma_rej);
-        }
-        ui_print_kv_line("FM CMA", "[%s] taps:%d mu:%d str:%s warm:%d %s", cma_on ? "On" : "Off", cma_taps, cma_mu,
-                         sname, cma_warm, guard);
     }
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));

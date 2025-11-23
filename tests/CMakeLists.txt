@@ -565,10 +565,6 @@ target_include_directories(dsd-neo_test_dsp_fm_agc_limit PRIVATE ${PROJECT_SOURC
 target_link_libraries(dsd-neo_test_dsp_fm_agc_limit PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_FM_AGC_LIMIT COMMAND dsd-neo_test_dsp_fm_agc_limit)
 
-add_executable(dsd-neo_test_dsp_fm_cma dsp/test_dsp_fm_cma.cpp)
-target_include_directories(dsd-neo_test_dsp_fm_cma PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_fm_cma PRIVATE dsd-neo_dsp)
-add_test(NAME DSP_FM_CMA COMMAND dsd-neo_test_dsp_fm_cma)
 
 add_executable(dsd-neo_test_dsp_mf5 dsp/test_dsp_mf5.cpp)
 target_include_directories(dsd-neo_test_dsp_mf5 PRIVATE ${PROJECT_SOURCE_DIR}/include)

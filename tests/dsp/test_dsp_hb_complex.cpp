@@ -44,7 +44,6 @@ main(void) {
     s->mode_demod = &raw_demod; // copy lowpassed -> result
     s->iq_dc_block_enable = 0;
     s->fm_agc_enable = 0;
-    s->fm_cma_enable = 0;
     s->iqbal_enable = 0;
     s->fll_enabled = 0;
     s->ted_enabled = 0;

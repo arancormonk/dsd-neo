@@ -51,7 +51,6 @@ main(void) {
     s->iq_dc_avg_r = (int)pre_I;
     s->iq_dc_avg_i = (int)pre_Q;
     s->fm_agc_enable = 0;
-    s->fm_cma_enable = 0;
     s->iqbal_enable = 0;
     s->fll_enabled = 0;
     s->ted_enabled = 0;

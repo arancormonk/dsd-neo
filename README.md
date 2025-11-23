@@ -78,7 +78,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - Expanded DSP controls (power users welcome)
 
   - Adaptive equalizer and decision‑feedback equalizer toggles with adjustable parameters.
-  - Matched filters with adjustable RRC parameters (alpha, span) and a CMA warmup assist.
+- Matched filters with adjustable RRC parameters (alpha, span).
   - Timing and carrier helpers: enable/disable TED and FLL, tweak TED rate/gain, and force TED when needed.
   - IQ balance prefilter and DQPSK decision mode for tough RF environments.
   - Sane DSP defaults per modulation/standard, with quick toggles for power users.
@@ -245,7 +245,6 @@ cmake --build build/dev-release --target uninstall
   - C4FM helpers and Costas tuning: `DSD_NEO_C4FM_CLK=el|mm`, `DSD_NEO_C4FM_CLK_SYNC=1`,
     `DSD_NEO_COSTAS_BW/DAMPING/ORDER/USE_SNR/NOISE_DB`.
   - Experimental equalizers/blanker: `DSD_NEO_C4FM_DD_EQ=1` (`DSD_NEO_C4FM_DD_EQ_TAPS/MU`),
-    `DSD_NEO_FM_CMA=1` (`DSD_NEO_FM_CMA_TAPS/MU/WARMUP/STRENGTH`),
     `DSD_NEO_BLANKER_ON/THR/WIN`, `DSD_NEO_CHANNEL_LPF=1`.
   - Misc: `DSD_NEO_MT=1` enables the light worker pool; `DSD_NEO_PDU_JSON=1` emits P25 MAC/VPDU JSON to stdout.
 

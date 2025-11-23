@@ -24,22 +24,17 @@ enum UiDspOp {
     UI_DSP_OP_C4FM_DD_MU_DELTA = 16, // a: delta (+/-)
     UI_DSP_OP_C4FM_CLK_CYCLE = 17,
     UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE = 18,
-    UI_DSP_OP_FM_CMA_TOGGLE = 19,
-    UI_DSP_OP_FM_CMA_TAPS_CYCLE = 20,
-    UI_DSP_OP_FM_CMA_MU_DELTA = 21, // a: delta (+/-)
-    UI_DSP_OP_FM_CMA_STRENGTH_CYCLE = 22,
-    UI_DSP_OP_FM_CMA_WARM_DELTA = 23, // a: delta (+/-)
-    UI_DSP_OP_FM_AGC_TOGGLE = 24,
-    UI_DSP_OP_FM_LIMITER_TOGGLE = 25,
-    UI_DSP_OP_FM_AGC_TARGET_DELTA = 26, // a: delta (+/-)
-    UI_DSP_OP_FM_AGC_MIN_DELTA = 27,    // a: delta (+/-)
-    UI_DSP_OP_FM_AGC_ATTACK_DELTA = 28, // a: delta (+/-)
-    UI_DSP_OP_FM_AGC_DECAY_DELTA = 29,  // a: delta (+/-)
-    UI_DSP_OP_BLANKER_TOGGLE = 30,
-    UI_DSP_OP_BLANKER_THR_DELTA = 31, // a: delta (+/-)
-    UI_DSP_OP_BLANKER_WIN_DELTA = 32, // a: delta (+/-)
-    UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE = 33,
-    UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE = 34,
+    UI_DSP_OP_FM_AGC_TOGGLE = 19,
+    UI_DSP_OP_FM_LIMITER_TOGGLE = 20,
+    UI_DSP_OP_FM_AGC_TARGET_DELTA = 21, // a: delta (+/-)
+    UI_DSP_OP_FM_AGC_MIN_DELTA = 22,    // a: delta (+/-)
+    UI_DSP_OP_FM_AGC_ATTACK_DELTA = 23, // a: delta (+/-)
+    UI_DSP_OP_FM_AGC_DECAY_DELTA = 24,  // a: delta (+/-)
+    UI_DSP_OP_BLANKER_TOGGLE = 25,
+    UI_DSP_OP_BLANKER_THR_DELTA = 26, // a: delta (+/-)
+    UI_DSP_OP_BLANKER_WIN_DELTA = 27, // a: delta (+/-)
+    UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE = 28,
+    UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE = 29,
 };
 
 /**
