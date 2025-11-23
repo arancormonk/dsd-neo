@@ -3052,7 +3052,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         c = getch(); // non-blocking (set once in ncursesOpen)
         if (c == KEY_RESIZE) {
             // Force a full redraw on next refresh to avoid artifacts
-            clearok(stdscr, TRUE);
+            if (ui_screen_size_changed(NULL, NULL)) {
+                resize_term(0, 0);
+                clearok(stdscr, TRUE);
+            }
             c = -1; // ignore as input
         }
     }

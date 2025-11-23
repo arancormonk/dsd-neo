@@ -27,6 +27,8 @@ extern "C" {
 WINDOW* ui_make_window(int h, int w, int y, int x);
 /** @brief Destroy a window and null the caller's pointer. */
 void ui_destroy_window(WINDOW** win);
+/** @brief Return 1 when the terminal size changed since last check (fills rows/cols when non-NULL). */
+int ui_screen_size_changed(int* rows, int* cols);
 
 /** @brief Set a transient status/footer message (printf-style). */
 void ui_statusf(const char* fmt, ...);

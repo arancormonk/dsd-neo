@@ -40,6 +40,31 @@ ui_destroy_window(WINDOW** win) {
     }
 }
 
+// Track last known terminal size so callers can ignore spurious KEY_RESIZE events.
+static int s_last_rows = -1;
+static int s_last_cols = -1;
+
+int
+ui_screen_size_changed(int* rows, int* cols) {
+    if (stdscr == NULL) {
+        return 0;
+    }
+    int r = 0, c = 0;
+    getmaxyx(stdscr, r, c);
+    if (rows) {
+        *rows = r;
+    }
+    if (cols) {
+        *cols = c;
+    }
+    if (r == s_last_rows && c == s_last_cols) {
+        return 0;
+    }
+    s_last_rows = r;
+    s_last_cols = c;
+    return 1;
+}
+
 // ---------------- Status message ----------------
 
 static char s_status_msg[256];

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
 // Minimal thread state.
@@ -76,6 +77,15 @@ ui_thread_main(void* arg) {
             int ch = ERR;
             if (osnap->audio_in_type != 1) { // Avoid getch when stdin is input
                 ch = getch();
+                if (ch == KEY_RESIZE) {
+                    if (ui_screen_size_changed(NULL, NULL)) {
+                        resize_term(0, 0);
+                        clearok(stdscr, TRUE);
+                        ui_request_redraw();
+                    } else {
+                        ch = ERR; // ignore resize spam when dimensions stay the same
+                    }
+                }
             }
 
             if (ui_menu_is_open()) {
@@ -85,10 +95,7 @@ ui_thread_main(void* arg) {
                 // Keep overlays updated each frame
                 ui_menu_tick(g_ui_opts, g_ui_state);
             } else {
-                if (ch == KEY_RESIZE) {
-                    clearok(stdscr, TRUE);
-                    ui_request_redraw();
-                } else if (ch != ERR) {
+                if (ch != ERR && ch != KEY_RESIZE) {
                     (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
                 }
             }
