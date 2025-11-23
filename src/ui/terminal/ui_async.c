@@ -161,7 +161,10 @@ ui_thread_main(void* arg) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             long dt_ns = (now.tv_sec - last_draw.tv_sec) * 1000000000L + (now.tv_nsec - last_draw.tv_nsec);
-            if (atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns) {
+            int should_draw = atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns;
+
+            // Only redraw main screen on frame tick to reduce flicker
+            if (should_draw && !ui_menu_is_open()) {
                 atomic_store(&g_ui_in_context, 1);
                 /* Draw using a state snapshot when available */
                 const dsd_state* snap = ui_get_latest_snapshot();
@@ -174,7 +177,7 @@ ui_thread_main(void* arg) {
                 last_draw = now;
             }
 
-            // Draw menu overlay on top of everything (every frame for responsiveness)
+            // Draw menu overlay (only when open; already uses double-buffering)
             if (ui_menu_is_open()) {
                 ui_menu_tick(g_ui_opts, g_ui_state);
             }

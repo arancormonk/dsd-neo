@@ -27,13 +27,8 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         return 1;
     }
 
-    // If the nonblocking menu overlay is open, route keys to it first.
-    if (ui_menu_is_open()) {
-        if (c != -1) {
-            ui_menu_handle_key(c, opts, state);
-        }
-        return 1; // consume all keys while menu overlay is active
-    }
+    // Menu overlay input routing is handled in ui_async.c, so this function
+    // only processes keys when the menu is NOT open.
 
     switch (c) {
         case DSD_KEY_ESC: {
