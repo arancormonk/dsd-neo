@@ -1459,10 +1459,8 @@ full_demod(struct demod_state* d) {
 
             /* Update only when we likely have a carrier; use the squelch gate as proxy. */
             if (d->squelch_gate_open && d->lp_len <= MAXIMUM_BUF_LENGTH) {
-                /* Calculate error on the shaped stream, then rotate it in-place so downstream
-                   timing/Costas see the same pre-corrected signal ordering as OP25. */
+                /* Band-edge FLL (OP25 settings): updates loop and rotates in-place. */
                 fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
-                fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
                 d->cqpsk_fll_rot_applied = 1;
                 acq_updated = 1;
             }

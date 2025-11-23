@@ -20,6 +20,8 @@
 extern "C" {
 #endif
 
+#define DSP_FLL_BE_MAX_TAPS 129 /* 2*sps+1 with sps<=64 -> 129 */
+
 /* FLL Configuration structure */
 typedef struct {
     int enabled;
@@ -40,6 +42,24 @@ typedef struct {
     int prev_hist_r[64];
     int prev_hist_j[64];
     int prev_hist_len; /* number of valid samples in prev_hist_* (0..64) */
+    /* Band-edge FLL (CQPSK) state */
+    float be_phase; /* radians */
+    float be_freq;  /* radians/sample */
+    float be_alpha;
+    float be_beta;
+    float be_max_freq;
+    float be_min_freq;
+    float be_loop_bw;
+    float be_sps;
+    float be_rolloff;
+    int be_taps_len;
+    int be_buf_idx;
+    float be_taps_lower_r[DSP_FLL_BE_MAX_TAPS];
+    float be_taps_lower_i[DSP_FLL_BE_MAX_TAPS];
+    float be_taps_upper_r[DSP_FLL_BE_MAX_TAPS];
+    float be_taps_upper_i[DSP_FLL_BE_MAX_TAPS];
+    float be_buf_r[DSP_FLL_BE_MAX_TAPS * 2];
+    float be_buf_i[DSP_FLL_BE_MAX_TAPS * 2];
 } fll_state_t;
 
 /**
@@ -76,13 +96,14 @@ void fll_mix_and_update(const fll_config_t* config, fll_state_t* state, int16_t*
 void fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N);
 
 /**
- * @brief Estimate frequency error for QPSK carriers using symbol-spaced phase
- *        differences, then update the FLL control (PI in Q15).
+ * @brief Band-edge FLL identical to GNU Radio's `fll_band_edge_cc`.
  *
- * Computes the angle of s[k] * conj(s[k - sps]) across the block and averages
- * the result to form a frequency error estimate that is robust to QPSK symbol
- * transitions. The integrator and proportional terms are applied to the NCO
- * frequency increment with slew limiting.
+ * Rotates the block in-place, runs the band-edge filters, and updates the
+ * internal control loop using OP25's default parameters:
+ *   - rolloff = 0.2
+ *   - filter_size = 2*sps+1
+ *   - loop bandwidth = 2*pi/sps/250
+ *   - freq limits = +/-2*pi*(2/sps)
  *
  * @param config FLL configuration (gains, deadband, slew limit).
  * @param state  FLL state (updates freq_q15 and may advance phase_q15).
@@ -90,7 +111,7 @@ void fll_update_error(const fll_config_t* config, fll_state_t* state, const int1
  * @param N      Length of buffer in elements (must be even).
  * @param sps    Nominal samples-per-symbol (complex samples per symbol).
  */
-void fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N, int sps);
+void fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x, int N, int sps);
 
 #ifdef __cplusplus
 }

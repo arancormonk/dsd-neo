@@ -206,7 +206,6 @@ main(void) {
             fprintf(stderr, "FLL deadband: freq changed unexpectedly\n");
             return 1;
         }
-        // With clamp=2048 and leak >>12, value may not change due to quantization
         if (st.int_q15 != 1000) {
             fprintf(stderr, "FLL deadband: integrator changed unexpectedly (%d)\n", st.int_q15);
             return 1;
@@ -269,12 +268,12 @@ main(void) {
         fll_state_t st;
         fll_init_state(&st);
         fll_update_error(&cfg, &st, iq, 2 * N);
-        if (st.freq_q15 > 4096) {
-            fprintf(stderr, "FLL clamp: freq exceeded 4096 (%d)\n", st.freq_q15);
+        if (st.freq_q15 > 4096 || st.freq_q15 < -4096) {
+            fprintf(stderr, "FLL clamp: freq exceeded clamp (%d)\n", st.freq_q15);
             return 1;
         }
-        if (st.int_q15 > 4096) {
-            fprintf(stderr, "FLL clamp: integrator exceeded 4096 (%d)\n", st.int_q15);
+        if (st.int_q15 > 4096 || st.int_q15 < -4096) {
+            fprintf(stderr, "FLL clamp: integrator exceeded clamp (%d)\n", st.int_q15);
             return 1;
         }
     }
@@ -308,87 +307,7 @@ main(void) {
         }
     }
 
-    // Test 7: QPSK symbol-spaced update tracks CFO sign with transitions
-    {
-        const int sps = 4;   // samples per symbol (complex)
-        const int syms = 16; // number of symbols
-        const int Npairs = sps * syms;
-        int16_t iq[2 * Npairs];
-        double r = 14000.0;
-        double dtheta = (2.0 * M_PI) / 180.0; // modest CFO per sample
-        // Deterministic QPSK phase pattern
-        // Balanced sequence to keep average symbol-phase difference near zero
-        double qpsk_ph[4] = {0.0, M_PI_2, 0.0, -M_PI_2};
-        for (int k = 0; k < Npairs; k++) {
-            int m = k / sps;
-            double sym = qpsk_ph[m % 4];
-            double th = k * dtheta + sym;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
-        }
-
-        fll_config_t cfg = {0};
-        cfg.enabled = 1;
-        cfg.alpha_q15 = 15000;
-        cfg.beta_q15 = 12000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 32767;
-
-        fll_state_t st;
-        fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-        if (st.freq_q15 <= 0) {
-            fprintf(stderr, "FLL QPSK: expected positive freq for +CFO\n");
-            return 1;
-        }
-
-        // Negative CFO
-        for (int k = 0; k < Npairs; k++) {
-            int m = k / sps;
-            double sym = qpsk_ph[m % 4];
-            double th = -k * dtheta + sym;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
-        }
-        fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-        if (st.freq_q15 >= 0) {
-            fprintf(stderr, "FLL QPSK: expected negative freq for -CFO\n");
-            return 1;
-        }
-    }
-
-    // Test 8: QPSK fallback (sps<2) behaves like adjacent-sample update in sign
-    {
-        const int N = 80;
-        int16_t iq[2 * N];
-        double r = 12000.0;
-        double dtheta = (2.0 * M_PI) / 120.0;
-        for (int k = 0; k < N; k++) {
-            double th = k * dtheta;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
-        }
-
-        fll_config_t cfg = {0};
-        cfg.enabled = 1;
-        cfg.alpha_q15 = 12000;
-        cfg.beta_q15 = 10000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 32767;
-
-        fll_state_t st1, st2;
-        fll_init_state(&st1);
-        fll_init_state(&st2);
-        fll_update_error(&cfg, &st1, iq, 2 * N);
-        fll_update_error_qpsk(&cfg, &st2, iq, 2 * N, 1); // fallback path
-        if (!((st1.freq_q15 > 0 && st2.freq_q15 > 0) || (st1.freq_q15 < 0 && st2.freq_q15 < 0))) {
-            fprintf(stderr, "FLL QPSK fallback: sign mismatch adj vs fallback\n");
-            return 1;
-        }
-    }
-
-    // Test 9: magnitude preserved by pure rotation (energy invariant)
+    // Test 7: magnitude preserved by pure rotation (energy invariant)
     {
         const int N = 64;
         int16_t iq[2 * N];
@@ -425,160 +344,7 @@ main(void) {
         }
     }
 
-    // Test 10: QPSK early return when N<4 leaves state unchanged
-    {
-        fll_config_t cfg = {0};
-        cfg.enabled = 1;
-        cfg.alpha_q15 = 10000;
-        cfg.beta_q15 = 10000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 200;
-
-        fll_state_t st;
-        fll_init_state(&st);
-        st.freq_q15 = 42;
-        st.int_q15 = 314;
-        int16_t one[2] = {2000, 0};
-        fll_update_error_qpsk(&cfg, &st, one, 2, 4);
-        if (!(st.freq_q15 == 42 && st.int_q15 == 314)) {
-            fprintf(stderr, "FLL QPSK small-N: state changed unexpectedly\n");
-            return 1;
-        }
-    }
-
-    // Test 11: QPSK sps too large for window (count==0) leaves state unchanged
-    {
-        fll_config_t cfg = {0};
-        cfg.enabled = 1;
-        cfg.alpha_q15 = 10000;
-        cfg.beta_q15 = 10000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 300;
-
-        const int Npairs = 10;
-        int16_t iq[2 * Npairs];
-        for (int i = 0; i < 2 * Npairs; i++) {
-            iq[i] = (i & 1) ? 1000 : 5000;
-        }
-
-        fll_state_t st;
-        fll_init_state(&st);
-        st.freq_q15 = -21;
-        st.int_q15 = -123;
-        int sps = 16; // stride_elems = 32 > N=20 elements
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-        if (!(st.freq_q15 == -21 && st.int_q15 == -123)) {
-            fprintf(stderr, "FLL QPSK sps-too-large: state changed unexpectedly\n");
-            return 1;
-        }
-    }
-
-    // Test 12: AWGN robustness for adjacent-sample discriminator (sign only)
-    {
-        const int N = 240; // complex samples
-        int16_t iq[2 * N];
-        double r = 12000.0;
-        double dtheta = (2.0 * M_PI) / 60.0; // moderate CFO per sample
-        int noise = 3000;                    // +/-3000 uniform noise on each axis
-        srand(1);
-        for (int k = 0; k < N; k++) {
-            double th = k * dtheta;
-            int ni = (rand() % (2 * noise)) - noise;
-            int nq = (rand() % (2 * noise)) - noise;
-            long vi = lrint(r * cos(th)) + ni;
-            long vq = lrint(r * sin(th)) + nq;
-            if (vi > 32767) {
-                vi = 32767;
-            }
-            if (vi < -32768) {
-                vi = -32768;
-            }
-            if (vq > 32767) {
-                vq = 32767;
-            }
-            if (vq < -32768) {
-                vq = -32768;
-            }
-            iq[2 * k + 0] = (int16_t)vi;
-            iq[2 * k + 1] = (int16_t)vq;
-        }
-
-        fll_config_t cfg = {0};
-        cfg.enabled = 1;
-        cfg.alpha_q15 = 8000;
-        cfg.beta_q15 = 6000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 500;
-
-        fll_state_t st;
-        fll_init_state(&st);
-        fll_update_error(&cfg, &st, iq, 2 * N);
-        if (st.freq_q15 <= 0) {
-            fprintf(stderr, "FLL AWGN adj: expected positive freq\n");
-            return 1;
-        }
-        if (st.freq_q15 < -4096 || st.freq_q15 > 4096) {
-            fprintf(stderr, "FLL AWGN adj: freq out of clamp (%d)\n", st.freq_q15);
-            return 1;
-        }
-    }
-
-    // Test 13: AWGN robustness for QPSK symbol-spaced update (sign only)
-    {
-        const int sps = 4;
-        const int syms = 40;
-        const int Npairs = sps * syms;
-        int16_t iq[2 * Npairs];
-        double r = 11000.0;
-        double dtheta = (2.0 * M_PI) / 90.0; // modest CFO per sample
-        int noise = 2500;
-        srand(2);
-        double qpsk_ph[4] = {0.0, M_PI_2, 0.0, -M_PI_2};
-        for (int k = 0; k < Npairs; k++) {
-            int m = k / sps;
-            double sym = qpsk_ph[m % 4];
-            double th = k * dtheta + sym;
-            int ni = (rand() % (2 * noise)) - noise;
-            int nq = (rand() % (2 * noise)) - noise;
-            long vi = lrint(r * cos(th)) + ni;
-            long vq = lrint(r * sin(th)) + nq;
-            if (vi > 32767) {
-                vi = 32767;
-            }
-            if (vi < -32768) {
-                vi = -32768;
-            }
-            if (vq > 32767) {
-                vq = 32767;
-            }
-            if (vq < -32768) {
-                vq = -32768;
-            }
-            iq[2 * k + 0] = (int16_t)vi;
-            iq[2 * k + 1] = (int16_t)vq;
-        }
-
-        fll_config_t cfg = {0};
-        cfg.enabled = 1;
-        cfg.alpha_q15 = 8000;
-        cfg.beta_q15 = 6000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 500;
-
-        fll_state_t st;
-        fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-        if (st.freq_q15 <= 0) {
-            fprintf(stderr, "FLL AWGN QPSK: expected positive freq\n");
-            return 1;
-        }
-        if (st.freq_q15 < -4096 || st.freq_q15 > 4096) {
-            fprintf(stderr, "FLL AWGN QPSK: freq out of clamp (%d)\n", st.freq_q15);
-            return 1;
-        }
-    }
-
-    // Test 14: phase accumulation wraps with negative frequency
+    // Test 8: phase accumulation wraps with negative frequency
     {
         fll_config_t cfg = {0};
         cfg.enabled = 1;
@@ -597,282 +363,80 @@ main(void) {
         }
     }
 
-    // Test 15: QPSK update with wrong sps (3) still tracks CFO sign
+    // Test 9: band-edge FLL integrates phase when error is zero
     {
-        const int sps_gen = 4;   // actual samples per symbol in the waveform
-        const int sps_wrong = 3; // intentionally wrong for the estimator
-        const int syms = 64;
-        const int Npairs = sps_gen * syms;
-        int16_t iq[2 * Npairs];
+        fll_config_t cfg = {0};
+        cfg.enabled = 1;
+        const int pairs = 50;
+        int16_t iq[2 * pairs];
+        memset(iq, 0, sizeof(iq)); // no error signal
+
+        fll_state_t st;
+        fll_init_state(&st);
+        double cycles = 0.05; // cycles per sample
+        double freq_rad = cycles * 2.0 * M_PI;
+        st.be_freq = (float)freq_rad;
+        st.freq_q15 = (int)lrint((freq_rad * 32768.0) / (2.0 * M_PI));
+
+        fll_update_error_qpsk(&cfg, &st, iq, 2 * pairs, 5);
+
+        int expected_q15 = (int)lrint((freq_rad * pairs) * (32768.0 / (2.0 * M_PI))) & 0x7FFF;
+        int got = st.phase_q15;
+        int diff = got - expected_q15;
+        if (diff < 0) {
+            diff = -diff;
+        }
+        if (diff > 16) {
+            fprintf(stderr, "BE-FLL phase integrate: got %d expected %d (diff=%d)\n", got, expected_q15, diff);
+            return 1;
+        }
+    }
+
+    // Test 10: band-edge FLL responds with opposite signs for +/- tones
+    {
+        const int sps = 5;
+        const int pairs = 200;
         double r = 12000.0;
-        double dtheta = (2.0 * M_PI) / 120.0; // modest CFO per sample
-        // Balanced QPSK sequence to keep average symbol-induced phase ~0
-        double qpsk_ph[4] = {0.0, M_PI_2, 0.0, -M_PI_2};
-
-        // Positive CFO
-        for (int k = 0; k < Npairs; k++) {
-            int m = k / sps_gen;
-            double sym = qpsk_ph[m % 4];
-            double th = k * dtheta + sym;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
+        double f_cyc = 0.18; // normalized cycles/sample within band-edge passband
+        int16_t iq_pos[2 * pairs];
+        int16_t iq_neg[2 * pairs];
+        for (int k = 0; k < pairs; k++) {
+            double th = 2.0 * M_PI * f_cyc * k;
+            iq_pos[(size_t)(k << 1)] = (int16_t)lrint(r * cos(th));
+            iq_pos[(size_t)(k << 1) + 1] = (int16_t)lrint(r * sin(th));
+            iq_neg[(size_t)(k << 1)] = (int16_t)lrint(r * cos(-th));
+            iq_neg[(size_t)(k << 1) + 1] = (int16_t)lrint(r * sin(-th));
         }
         fll_config_t cfg = {0};
         cfg.enabled = 1;
-        cfg.alpha_q15 = 10000;
-        cfg.beta_q15 = 8000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 500;
-        fll_state_t st;
-        fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps_wrong);
-        if (st.freq_q15 <= 0) {
-            fprintf(stderr, "FLL QPSK wrong-sps: expected positive freq for +CFO\n");
-            return 1;
+        fll_state_t stp, stn;
+        fll_init_state(&stp);
+        fll_init_state(&stn);
+        for (int i = 0; i < 2; i++) {
+            fll_update_error_qpsk(&cfg, &stp, iq_pos, 2 * pairs, sps);
+            fll_update_error_qpsk(&cfg, &stn, iq_neg, 2 * pairs, sps);
         }
-
-        // Negative CFO
-        for (int k = 0; k < Npairs; k++) {
-            int m = k / sps_gen;
-            double sym = qpsk_ph[m % 4];
-            double th = -k * dtheta + sym;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
-        }
-        fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps_wrong);
-        if (st.freq_q15 >= 0) {
-            fprintf(stderr, "FLL QPSK wrong-sps: expected negative freq for -CFO\n");
+        if (stp.freq_q15 == 0 || stn.freq_q15 == 0 || ((stp.freq_q15 > 0) == (stn.freq_q15 > 0))) {
+            fprintf(stderr, "BE-FLL tone sign: expected opposite nonzero freq, got %d and %d\n", stp.freq_q15,
+                    stn.freq_q15);
             return 1;
         }
     }
 
-    // Test 16: QPSK minimal-count path (exactly one measurement) updates sign correctly
+    // Test 11: band-edge FLL clamps to +/-2/sps
     {
-        const int sps = 2; // stride_elems=4
-        // Need N elements >= 6 (3 complex samples) to get one measurement
-        const int Npairs = 3;
-        int16_t iq[2 * Npairs];
-        double r = 13000.0;
-        double dtheta = (2.0 * M_PI) / 200.0; // small CFO per sample
-        // Constant symbol phase (no transitions) for clarity
-        for (int k = 0; k < Npairs; k++) {
-            double th = k * dtheta;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
-        }
         fll_config_t cfg = {0};
         cfg.enabled = 1;
-        cfg.alpha_q15 = 12000;
-        cfg.beta_q15 = 10000;
-        cfg.deadband_q14 = 0;
-        cfg.slew_max_q15 = 500;
+        const int sps = 5;
+        int16_t iq[4] = {0};
         fll_state_t st;
         fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-        if (st.freq_q15 <= 0) {
-            fprintf(stderr, "FLL QPSK minimal: expected positive freq for +CFO\n");
+        st.be_freq = 100.0f; /* intentionally huge */
+        fll_update_error_qpsk(&cfg, &st, iq, 4, sps);
+        int clamp_q15 = (int)lrint((2.0 / (double)sps) * 32768.0);
+        if (st.freq_q15 > clamp_q15 || st.freq_q15 < -clamp_q15) {
+            fprintf(stderr, "BE-FLL clamp: freq %d outside +/- %d\n", st.freq_q15, clamp_q15);
             return 1;
-        }
-        // Negative CFO case
-        for (int k = 0; k < Npairs; k++) {
-            double th = -k * dtheta;
-            iq[2 * k + 0] = (int16_t)lrint(r * cos(th));
-            iq[2 * k + 1] = (int16_t)lrint(r * sin(th));
-        }
-        fll_init_state(&st);
-        fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-        if (st.freq_q15 >= 0) {
-            fprintf(stderr, "FLL QPSK minimal: expected negative freq for -CFO\n");
-            return 1;
-        }
-    }
-
-    // Test 17: AWGN multi-seed, multi-SNR for adjacent and QPSK (sign and clamp)
-    {
-        const int seeds[] = {1, 2, 3, 12345};
-        const int nseeds = (int)(sizeof(seeds) / sizeof(seeds[0]));
-        const int noises[] = {1000, 3000};
-        const int nnoises = (int)(sizeof(noises) / sizeof(noises[0]));
-
-        // Adjacent-sample discriminator
-        for (int ni = 0; ni < nnoises; ni++) {
-            int noise = noises[ni];
-            for (int si = 0; si < nseeds; si++) {
-                int seed = seeds[si];
-                const int N = 480; // complex samples
-                int16_t iq[2 * N];
-                double r = 12000.0;
-                double dtheta = (2.0 * M_PI) / 80.0; // moderate CFO per sample
-                srand(seed);
-                for (int k = 0; k < N; k++) {
-                    double th = k * dtheta;
-                    int niu = (rand() % (2 * noise)) - noise;
-                    int nqu = (rand() % (2 * noise)) - noise;
-                    long vi = lrint(r * cos(th)) + niu;
-                    long vq = lrint(r * sin(th)) + nqu;
-                    if (vi > 32767) {
-                        vi = 32767;
-                    }
-                    if (vi < -32768) {
-                        vi = -32768;
-                    }
-                    if (vq > 32767) {
-                        vq = 32767;
-                    }
-                    if (vq < -32768) {
-                        vq = -32768;
-                    }
-                    iq[2 * k + 0] = (int16_t)vi;
-                    iq[2 * k + 1] = (int16_t)vq;
-                }
-                fll_config_t cfg = {0};
-                cfg.enabled = 1;
-                cfg.alpha_q15 = 8000;
-                cfg.beta_q15 = 6000;
-                cfg.deadband_q14 = 0;
-                cfg.slew_max_q15 = 500;
-                fll_state_t st;
-                fll_init_state(&st);
-                fll_update_error(&cfg, &st, iq, 2 * N);
-                if (st.freq_q15 <= 0) {
-                    fprintf(stderr, "FLL AWGN adj(se=%d,n=%d): want positive freq, got %d\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-                if (st.freq_q15 < -2048 || st.freq_q15 > 2048) {
-                    fprintf(stderr, "FLL AWGN adj(se=%d,n=%d): out of clamp (%d)\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-
-                // Negative CFO
-                srand(seed);
-                for (int k = 0; k < N; k++) {
-                    double th = -k * dtheta;
-                    int niu = (rand() % (2 * noise)) - noise;
-                    int nqu = (rand() % (2 * noise)) - noise;
-                    long vi = lrint(r * cos(th)) + niu;
-                    long vq = lrint(r * sin(th)) + nqu;
-                    if (vi > 32767) {
-                        vi = 32767;
-                    }
-                    if (vi < -32768) {
-                        vi = -32768;
-                    }
-                    if (vq > 32767) {
-                        vq = 32767;
-                    }
-                    if (vq < -32768) {
-                        vq = -32768;
-                    }
-                    iq[2 * k + 0] = (int16_t)vi;
-                    iq[2 * k + 1] = (int16_t)vq;
-                }
-                fll_init_state(&st);
-                fll_update_error(&cfg, &st, iq, 2 * N);
-                if (st.freq_q15 >= 0) {
-                    fprintf(stderr, "FLL AWGN adj-(se=%d,n=%d): want negative freq, got %d\n", seed, noise,
-                            st.freq_q15);
-                    return 1;
-                }
-                if (st.freq_q15 < -2048 || st.freq_q15 > 2048) {
-                    fprintf(stderr, "FLL AWGN adj-(se=%d,n=%d): out of clamp (%d)\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-            }
-        }
-
-        // QPSK symbol-spaced discriminator
-        for (int ni = 0; ni < nnoises; ni++) {
-            int noise = (ni == 0) ? 1000 : 2500; // keep QPSK noise a bit lower
-            for (int si = 0; si < nseeds; si++) {
-                int seed = seeds[si];
-                const int sps = 4;
-                const int syms = 60;
-                const int Npairs = sps * syms;
-                int16_t iq[2 * Npairs];
-                double r = 11000.0;
-                double dtheta = (2.0 * M_PI) / 90.0;
-                double qpsk_ph[4] = {0.0, M_PI_2, 0.0, -M_PI_2};
-
-                // Positive CFO
-                srand(seed);
-                for (int k = 0; k < Npairs; k++) {
-                    int m = k / sps;
-                    double sym = qpsk_ph[m % 4];
-                    double th = k * dtheta + sym;
-                    int niu = (rand() % (2 * noise)) - noise;
-                    int nqu = (rand() % (2 * noise)) - noise;
-                    long vi = lrint(r * cos(th)) + niu;
-                    long vq = lrint(r * sin(th)) + nqu;
-                    if (vi > 32767) {
-                        vi = 32767;
-                    }
-                    if (vi < -32768) {
-                        vi = -32768;
-                    }
-                    if (vq > 32767) {
-                        vq = 32767;
-                    }
-                    if (vq < -32768) {
-                        vq = -32768;
-                    }
-                    iq[2 * k + 0] = (int16_t)vi;
-                    iq[2 * k + 1] = (int16_t)vq;
-                }
-                fll_config_t cfg = {0};
-                cfg.enabled = 1;
-                cfg.alpha_q15 = 8000;
-                cfg.beta_q15 = 6000;
-                cfg.deadband_q14 = 0;
-                cfg.slew_max_q15 = 500;
-                fll_state_t st;
-                fll_init_state(&st);
-                fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-                if (st.freq_q15 <= 0) {
-                    fprintf(stderr, "FLL AWGN QPSK(se=%d,n=%d): want positive, got %d\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-                if (st.freq_q15 < -2048 || st.freq_q15 > 2048) {
-                    fprintf(stderr, "FLL AWGN QPSK(se=%d,n=%d): out of clamp (%d)\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-
-                // Negative CFO
-                srand(seed);
-                for (int k = 0; k < Npairs; k++) {
-                    int m = k / sps;
-                    double sym = qpsk_ph[m % 4];
-                    double th = -k * dtheta + sym;
-                    int niu = (rand() % (2 * noise)) - noise;
-                    int nqu = (rand() % (2 * noise)) - noise;
-                    long vi = lrint(r * cos(th)) + niu;
-                    long vq = lrint(r * sin(th)) + nqu;
-                    if (vi > 32767) {
-                        vi = 32767;
-                    }
-                    if (vi < -32768) {
-                        vi = -32768;
-                    }
-                    if (vq > 32767) {
-                        vq = 32767;
-                    }
-                    if (vq < -32768) {
-                        vq = -32768;
-                    }
-                    iq[2 * k + 0] = (int16_t)vi;
-                    iq[2 * k + 1] = (int16_t)vq;
-                }
-                fll_init_state(&st);
-                fll_update_error_qpsk(&cfg, &st, iq, 2 * Npairs, sps);
-                if (st.freq_q15 >= 0) {
-                    fprintf(stderr, "FLL AWGN QPSK-(se=%d,n=%d): want negative, got %d\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-                if (st.freq_q15 < -2048 || st.freq_q15 > 2048) {
-                    fprintf(stderr, "FLL AWGN QPSK-(se=%d,n=%d): out of clamp (%d)\n", seed, noise, st.freq_q15);
-                    return 1;
-                }
-            }
         }
     }
 
