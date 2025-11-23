@@ -7,13 +7,18 @@ if /I "%~1"=="--relaunch" (
   set "__RELAUNCHED=1"
   shift
 )
-if not "%__RELAUNCHED%"=="1" (
+
+REM Detect Windows Terminal; if already inside, skip the relaunch hop so args stay visible
+set "__IN_WT=0"
+if defined WT_SESSION set "__IN_WT=1"
+
+if not "%__RELAUNCHED%"=="1" if not "%__IN_WT%"=="1" (
   echo %CMDCMDLINE% | findstr /I " /c " >nul
   if not errorlevel 1 (
     REM Launched via double-click (cmd /c). Reopen in persistent terminal.
     if exist "%LocalAppData%\Microsoft\WindowsApps\wt.exe" (
       REM Use correct quoting so arguments are preserved through cmd /k
-      start "" "%LocalAppData%\Microsoft\WindowsApps\wt.exe" -w 0 nt -d "%CD%" cmd /k ""%~f0" --relaunch %*"
+      start "" "%LocalAppData%\Microsoft\WindowsApps\wt.exe" -w 0 nt -d "%CD%" -- cmd /k ""%~f0" --relaunch %*"
       exit /b
     ) else (
       REM Fallback to classic cmd with proper argument forwarding
