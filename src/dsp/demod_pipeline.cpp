@@ -103,6 +103,16 @@ static const int16_t channel_lpf_digital_q15[kChannelLpfTaps] = {
     -43,   -130, -26,   68,    42,  -22,  -31,  0,    15,   5,    -4,  -3,    0,     0,    0,
 };
 
+/* P25 Hann LPF (≈7 kHz cutoff @ 24 kHz Fs, 63 taps, Q15). Hann-windowed sinc
+   inspired by OP25 channel filter: ~0 dB through ~6.25 kHz, ~-6 dB near 7 kHz,
+   >60 dB attenuation by ~8 kHz. */
+static const int16_t channel_lpf_p25_hann_q15[kChannelLpfTaps] = {
+    0,     -1,    1,     7,    -11, -13,   36,   0,   -68,  46,    83,  -126, -46,   217,   -67,   -268,
+    258,   214,   -485,  0,    660, -399,  -661, 954, 339,  -1583, 506, 2167, -2402, -2581, 10049, 19114,
+    10049, -2581, -2402, 2167, 506, -1583, 339,  954, -661, -399,  660, 0,    -485,  214,   258,   -268,
+    -67,   217,   -46,   -126, 83,  46,    -68,  0,   36,   -13,   -11, 7,    1,     -1,    0,
+};
+
 /* ---------------- Post-demod audio polyphase decimator (M > 2) -------------- */
 /*
  * Lightweight 1/M polyphase decimator for audio. Designs a windowed-sinc
@@ -251,7 +261,12 @@ channel_lpf_apply(struct demod_state* d) {
     if (hist_len > d->channel_lpf_hist_len) {
         d->channel_lpf_hist_len = hist_len;
     }
-    const int16_t* taps = (d->channel_lpf_profile == 1) ? channel_lpf_digital_q15 : channel_lpf_wide_q15;
+    const int16_t* taps = channel_lpf_wide_q15;
+    switch (d->channel_lpf_profile) {
+        case DSD_CH_LPF_PROFILE_DIGITAL: taps = channel_lpf_digital_q15; break;
+        case DSD_CH_LPF_PROFILE_P25_HANN: taps = channel_lpf_p25_hann_q15; break;
+        default: break;
+    }
     const int16_t* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
     int16_t* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     int16_t* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);

@@ -451,7 +451,6 @@ demod_reset_on_retune(struct demod_state* s) {
     }
     /* Channel LPF history */
     s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
-    s->channel_lpf_profile = 0;
     for (int k = 0; k < 64; k++) {
         s->channel_lpf_hist_i[k] = 0;
         s->channel_lpf_hist_q[k] = 0;

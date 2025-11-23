@@ -95,7 +95,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Channel LPF (post-HB) */
     s->channel_lpf_enable = 0;    /* configured later by env/mode helper */
     s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
-    s->channel_lpf_profile = 0;   /* 0=wide/analog, 1=digital-narrow */
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     for (int k = 0; k < 64; k++) {
         s->channel_lpf_hist_i[k] = 0;
         s->channel_lpf_hist_q[k] = 0;
@@ -383,13 +383,14 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->cqpsk_acq_fll_locked = 0;
     demod->cqpsk_acq_quiet_runs = 0;
 
-    /* Matched filter pre-EQ defaults to ON for CQPSK paths (P25p2/QPSK).
-       Allow env to force on/off via DSD_NEO_CQPSK_MF=1/0. */
-    int default_cqpsk_mf = (opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    /* Matched filter pre-EQ: OFF by default for P25p2 (prefer Hann channel LPF),
+       ON for generic QPSK unless overridden via DSD_NEO_CQPSK_MF=1/0. */
+    int default_cqpsk_mf = (opts->frame_p25p2 == 1) ? 0 : ((opts->mod_qpsk == 1) ? 1 : 0);
     demod->cqpsk_mf_enable = env_flag_default("DSD_NEO_CQPSK_MF", default_cqpsk_mf);
 
-    /* Optional RRC matched filter configuration (defaults to spec roll-off). */
-    int default_rrc_enable = (opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    /* Optional RRC matched filter configuration (defaults to spec roll-off).
+       Default OFF for P25p2 to avoid over-narrow shaping. */
+    int default_rrc_enable = (opts->frame_p25p2 == 1) ? 0 : ((opts->mod_qpsk == 1) ? 1 : 0);
     double default_rrc_alpha = 0.2; /* fixed spec roll-off */
     demod->cqpsk_rrc_enable = env_flag_default("DSD_NEO_CQPSK_RRC", default_rrc_enable);
     demod->cqpsk_rrc_alpha_q15 = (int)(default_rrc_alpha * 32768.0); /* roll-off default */
@@ -439,26 +440,33 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
        Default policy (Fs~=24 kHz RTL DSP baseband):
          - For analog-like modes, enable a wide channel LPF to narrow
            out-of-channel noise while preserving audio bandwidth.
-         - For digital voice modes (P25/DMR/NXDN/etc.), enable a narrower
+         - For P25, prefer a Hann LPF tuned around 6-7 kHz (OP25-style) to
+           avoid over-narrow matched filtering while bounding channel noise.
+         - For other digital voice modes (DMR/NXDN/etc.), enable a narrower
            digital-specific LPF tuned for ~4.8 ksps symbols to improve SNR.
        Env override:
          - DSD_NEO_CHANNEL_LPF=0 forces off (all modes).
          - DSD_NEO_CHANNEL_LPF!=0 forces on (all modes, wide profile). */
     int channel_lpf = 0;
-    int channel_lpf_profile = 0; /* 0=wide/analog, 1=digital-narrow */
+    int channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     if (cfg->channel_lpf_is_set) {
         /* Env forces on/off; when forced on, use wide profile to avoid
            surprising very narrow channels. */
         channel_lpf = (cfg->channel_lpf_enable != 0);
-        channel_lpf_profile = 0;
+        channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     } else {
         int high_fs = (demod->rate_in >= 20000); /* currently 24 kHz DSP baseband */
         int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
                             || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                             || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+        int p25_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
         if (high_fs) {
             channel_lpf = 1;
-            channel_lpf_profile = digital_mode ? 1 : 0;
+            if (p25_mode) {
+                channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_HANN;
+            } else {
+                channel_lpf_profile = digital_mode ? DSD_CH_LPF_PROFILE_DIGITAL : DSD_CH_LPF_PROFILE_WIDE;
+            }
         }
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;

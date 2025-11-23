@@ -43,6 +43,13 @@
 #define HB_TAPS_MAX 31
 #endif
 
+/* Channel LPF profile ids */
+enum {
+    DSD_CH_LPF_PROFILE_WIDE = 0,
+    DSD_CH_LPF_PROFILE_DIGITAL = 1,
+    DSD_CH_LPF_PROFILE_P25_HANN = 2,
+};
+
 /* Forward declaration to avoid heavy dependencies here */
 struct output_state;
 
@@ -145,7 +152,7 @@ struct demod_state {
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs */
     int channel_lpf_enable; /* gate */
     int channel_lpf_hist_len;
-    int channel_lpf_profile;        /* 0=wide/analog, 1=digital-narrow */
+    int channel_lpf_profile;        /* see DSD_CH_LPF_PROFILE_* */
     int16_t channel_lpf_hist_i[64]; /* sized for up to 63-tap symmetric FIR (tap-1) */
     int16_t channel_lpf_hist_q[64];
 
