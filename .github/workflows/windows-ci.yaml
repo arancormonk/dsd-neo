@@ -206,7 +206,9 @@ jobs:
           test -f "$EXE"
 
           STAGE="dist/dsd-neo-cygwin"
-          mkdir -p "$STAGE/bin" "$STAGE/etc"
+          mkdir -p "$STAGE/bin" "$STAGE/etc" "$STAGE/dev/shm"
+          # libpulse expects /dev/shm to exist for POSIX shared memory
+          chmod 1777 "$STAGE/dev/shm" || true
           cp -f "$EXE" "$STAGE/bin/"
           DOCDIR="$STAGE/share/doc/dsd-neo"
           mkdir -p "$DOCDIR"
@@ -257,6 +259,25 @@ jobs:
           if command -v pulseaudio >/dev/null 2>&1; then
             PULSEAUDIO_BIN="$(command -v pulseaudio)"
             cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"
+            if command -v cygpath >/dev/null 2>&1; then
+              cp -f "$(command -v cygpath)" "$STAGE/bin/"
+            fi
+            # Bundle module tree so PulseAudio can load backends in the portable runtime
+            moddir=$(/usr/bin/pulseaudio --dump-conf 2>/dev/null | /usr/bin/sed -n 's/^module-dir = //p' | /usr/bin/head -n1)
+            if [ -z "$moddir" ] && command -v pkg-config >/dev/null 2>&1; then
+              moddir=$(/usr/bin/pkg-config --variable=modlibexecdir libpulse 2>/dev/null || true)
+            fi
+            if [ -z "$moddir" ]; then
+              moddir=$(/usr/bin/ls -d /usr/lib/pulse-*/modules 2>/dev/null | /usr/bin/head -n1 || true)
+            fi
+            if [ -n "$moddir" ] && [ -d "$moddir" ]; then
+              modroot=$(/usr/bin/dirname "$moddir")
+              modbase=$(/usr/bin/basename "$modroot")
+              mkdir -p "$STAGE/lib"
+              cp -R "$modroot" "$STAGE/lib/"
+            else
+              echo "Warning: could not locate PulseAudio modules; device backends may be missing" >&2
+            fi
           fi
 
           if command -v mintty >/dev/null 2>&1; then
@@ -267,9 +288,9 @@ jobs:
           # Closure: resolve dependencies until fixed point (cap at 10 passes)
           pass=1
           while true; do
-            before=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
-            collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll
-            after=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
+            before=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll "$STAGE"/lib/pulse-*/modules/* 2>/dev/null | wc -l | awk '{print $1}')
+            collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll "$STAGE"/lib/pulse-*/modules/*
+            after=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll "$STAGE"/lib/pulse-*/modules/* 2>/dev/null | wc -l | awk '{print $1}')
             [ "$after" -le "$before" ] && break
             pass=$((pass+1))
             [ "$pass" -gt 10 ] && break
