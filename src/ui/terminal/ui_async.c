@@ -134,8 +134,6 @@ ui_thread_main(void* arg) {
                 if (ch != ERR) {
                     ui_menu_handle_key(ch, g_ui_opts, g_ui_state);
                 }
-                // Keep overlays updated each frame
-                ui_menu_tick(g_ui_opts, g_ui_state);
             } else {
                 if (ch != ERR && ch != KEY_RESIZE) {
                     (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
@@ -159,6 +157,11 @@ ui_thread_main(void* arg) {
                 }
                 atomic_store(&g_ui_in_context, 0);
                 last_draw = now;
+            }
+
+            // Draw menu overlay on top of everything (every frame for responsiveness)
+            if (ui_menu_is_open()) {
+                ui_menu_tick(g_ui_opts, g_ui_state);
             }
         }
 

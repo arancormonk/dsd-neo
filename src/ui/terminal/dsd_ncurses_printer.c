@@ -3044,21 +3044,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
     uint8_t idas = 0;
     int level = 0;
-    int c = 0;
     int i = 0;
-
-    if (opts->audio_in_type != 1) //can't run getch/menu when using STDIN -
-    {
-        c = getch(); // non-blocking (set once in ncursesOpen)
-        if (c == KEY_RESIZE) {
-            // Force a full redraw on next refresh to avoid artifacts
-            if (ui_screen_size_changed(NULL, NULL)) {
-                resize_term(0, 0);
-                clearok(stdscr, TRUE);
-            }
-            c = -1; // ignore as input
-        }
-    }
 
     // Defer overlay drawing to the end so it stays on top.
 
@@ -5465,14 +5451,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     attroff(COLOR_PAIR(4)); //cyan for history
 
     refresh();
-
-    // Draw menu overlay last so it sits above base UI
-    if (ui_menu_is_open()) {
-        ui_menu_tick(opts, state);
-    }
-
-    //handle input
-    ncurses_input_handler(opts, state, c);
 }
 
 void
