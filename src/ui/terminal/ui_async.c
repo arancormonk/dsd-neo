@@ -7,7 +7,10 @@
 
 #include <ncurses.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include <dsd-neo/core/dsd.h>
@@ -25,6 +28,38 @@ static dsd_opts* g_ui_opts = NULL;
 static dsd_state* g_ui_state = NULL;
 static int g_ui_curses_cfg_done = 0;
 static atomic_int g_ui_in_context = 0;
+
+// Optional debugging of key handling; enable with DSD_NEO_UI_DEBUG_LOG=/path/to/file
+static FILE* g_ui_dbg = NULL;
+static int g_ui_dbg_enabled = -1;
+
+static void
+ui_dbg_log(const char* fmt, ...) {
+    if (g_ui_dbg_enabled == 0) {
+        return;
+    }
+    if (g_ui_dbg_enabled < 0) {
+        const char* p = getenv("DSD_NEO_UI_DEBUG_LOG");
+        if (!p || *p == '\0') {
+            g_ui_dbg_enabled = 0;
+            return;
+        }
+        g_ui_dbg = fopen(p, "a");
+        if (!g_ui_dbg) {
+            g_ui_dbg_enabled = 0;
+            return;
+        }
+        setvbuf(g_ui_dbg, NULL, _IOLBF, 0);
+        g_ui_dbg_enabled = 1;
+    }
+    if (!g_ui_dbg) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_ui_dbg, fmt, ap);
+    va_end(ap);
+}
 
 int
 ui_is_thread_context(void) {
@@ -77,12 +112,19 @@ ui_thread_main(void* arg) {
             int ch = ERR;
             if (osnap->audio_in_type != 1) { // Avoid getch when stdin is input
                 ch = getch();
+                if (ch != ERR) {
+                    int rh = 0, rw = 0;
+                    getmaxyx(stdscr, rh, rw);
+                    ui_dbg_log("key ch=%d (0x%x) rows=%d cols=%d\n", ch, ch, rh, rw);
+                }
                 if (ch == KEY_RESIZE) {
                     if (ui_screen_size_changed(NULL, NULL)) {
                         resize_term(0, 0);
                         clearok(stdscr, TRUE);
                         ui_request_redraw();
+                        ui_dbg_log("resize handled\n");
                     } else {
+                        ui_dbg_log("resize ignored (dimensions unchanged)\n");
                         ch = ERR; // ignore resize spam when dimensions stay the same
                     }
                 }
