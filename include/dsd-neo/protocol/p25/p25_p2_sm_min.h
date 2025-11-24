@@ -62,11 +62,14 @@ typedef void (*dsd_p25p2_min_on_state_change_cb)(dsd_opts* opts, dsd_state* stat
 
 typedef struct {
     // Config
-    double hangtime_s;            // hangtime in seconds (e.g., 1.0)
-    double vc_grace_s;            // grace window after tune before eligible for release (e.g., 1.5)
+    double hangtime_s;            // hangtime in seconds (e.g., 0.75)
+    double vc_grace_s;            // grace window after tune before eligible for release (e.g., 0.75)
     double min_follow_dwell_s;    // minimal dwell after first voice to avoid ping-pong (e.g., 0.7)
     double grant_voice_timeout_s; // max wait from GRANT (ARMED) to PTT/ACTIVE before returning (e.g., 2.0)
     double retune_backoff_s;      // ignore grants to same freq within this window after a return (e.g., 3.0)
+    // One-time configuration bookkeeping to avoid repeated env/opts reapply
+    int config_applied;
+    int boot_nosync_sent;
 
     // Current state and VC context
     dsd_p25p2_min_state_e state;
@@ -95,7 +98,7 @@ typedef struct {
 /**
  * @brief Initialize the minimal P25P2 state machine with defaults.
  *
- * hangtime defaults to 1.0s and vc_grace to 1.5s; callbacks start as NULL.
+ * hangtime defaults to 0.75s and vc_grace to 0.75s; callbacks start as NULL.
  *
  * @param sm State-machine instance to initialize.
  */

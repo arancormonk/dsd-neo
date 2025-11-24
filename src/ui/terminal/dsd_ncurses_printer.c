@@ -3560,9 +3560,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (state->lcn_freq_roll != 0) {
             printw(" Frequency: %.06lf Mhz", (double)state->trunk_lcn_freq[state->lcn_freq_roll - 1] / 1000000);
         }
-        printw(
-            " Speed: %.02lf sec \n",
-            opts->trunk_hangtime); //not sure values less than 1 make a difference, may be system/environment dependent
+        printw(" Speed: %.02lf sec \n",
+               opts->trunk_hangtime); // default now sub-second (0.75s) for faster VC release
     }
 
     if (opts->reverse_mute == 1) {

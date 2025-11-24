@@ -278,7 +278,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             // Consider per-slot audio gate, queued jitter frames, and
                             // very recent MAC_ACTIVE on the opposite slot to avoid
                             // tearing down a clear call that is just starting up.
-                            double mac_hold = 3.0; // seconds; env override aligns with SM
+                            double mac_hold = 0.75; // seconds; env override aligns with SM
                             {
                                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                                 if (s && s[0] != '\0') {
@@ -299,7 +299,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                             if (!other_audio) {
                                 fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); ");
                                 // Defer CC return within a short VC grace window after tuning
-                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                                 if (!(state->p25_cfg_vc_grace_s > 0.0)) {
                                     const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
                                     if (sg && sg[0] != '\0') {
@@ -481,7 +481,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                                 // Defer CC return within a short VC grace window after tuning
                                 // so we don't drop a clear opposite-slot call whose gates haven't
                                 // opened yet.
-                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                                 if (!(state->p25_cfg_vc_grace_s > 0.0)) {
                                     const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                                     if (s && s[0] != '\0') {
@@ -631,7 +631,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 // timer remains active).
                 int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
 
-                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                 time_t now2 = time(NULL);
                 double dt_since_tune =
                     (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
@@ -697,7 +697,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 // Ignore MAC hold timer; check only audio gate and ring.
                 int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
 
-                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                 time_t now2 = time(NULL);
                 double dt_since_tune =
                     (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
@@ -784,7 +784,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             int other_active =
                 state->p25_p2_audio_allowed[other_slot] || (state->p25_p2_audio_ring_count[other_slot] > 0);
 
-            double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+            double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
             time_t now2 = time(NULL);
             double dt_since_tune =
                 (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
@@ -859,7 +859,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
             if (enc_suspect) {
                 // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
-                double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                     if (s && s[0] != '\0') {
@@ -1282,7 +1282,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // to manage teardown.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
             // Only force release if both slots are idle by P25 metrics
-            double mac_hold = 3.0; // seconds
+            double mac_hold = 0.75; // seconds
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {
@@ -1356,8 +1356,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // and respect a short post-tune grace. This avoids bouncing on very
         // short follow-up calls where early MAC PDUs were missed.
         if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
-            double mac_hold = 3.0; // seconds
+            double vc_grace = 0.75; // seconds; override via DSD_NEO_P25_VC_GRACE
+            double mac_hold = 0.75; // seconds
             if (state->p25_cfg_vc_grace_s > 0.0) {
                 vc_grace = state->p25_cfg_vc_grace_s;
             }
@@ -1437,7 +1437,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             if (enc_suspect) {
                 // Consider ring fill and recent MAC activity on the opposite slot
                 int other = (slot ^ 1) & 1;
-                double mac_hold = 3.0;
+                double mac_hold = 0.75;
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                     if (s && s[0] != '\0') {

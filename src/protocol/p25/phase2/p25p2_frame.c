@@ -828,7 +828,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
 
                 int other = eslot ^ 1;
                 // Consider per-slot gate, ring, and recent MAC_ACTIVE recency on other slot
-                double mac_hold = 3.0; // seconds; env override aligns with SM/xCCH
+                double mac_hold = 0.75; // seconds; env override aligns with SM/xCCH
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                     if (s && s[0] != '\0') {
@@ -846,7 +846,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking; ");
                     // Defer return to CC within VC grace to protect opposite-slot clear calls
-                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                     if (!(state->p25_cfg_vc_grace_s > 0.0)) {
                         const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                         if (s && s[0] != '\0') {
@@ -1162,7 +1162,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             && ((now - state->last_vc_sync_time) > opts->trunk_hangtime)) { // MAC_SIGNAL hangtime expiry
             // Also respect a small grace window after VC tune so we don't
             // bounce back to CC before audio gates open on fresh calls.
-            double vc_grace = 1.5; // seconds; override via DSD_NEO_P25_VC_GRACE
+            double vc_grace = 0.75; // seconds; override via DSD_NEO_P25_VC_GRACE
             {
                 const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                 if (s && s[0] != '\0') {
@@ -1182,7 +1182,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // MAC_PTT/ACTIVE on either logical channel; this avoids bouncing
             // back to CC during the first moments after a tune when audio
             // gates are not yet open but valid voice is present.
-            double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+            double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {
@@ -1381,7 +1381,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         int both_slots_idle = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
         double dt_since_tune =
             (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-        double vc_grace = 1.5; // seconds; override with DSD_NEO_P25_VC_GRACE
+        double vc_grace = 0.75; // seconds; override with DSD_NEO_P25_VC_GRACE
         {
             const char* s = getenv("DSD_NEO_P25_VC_GRACE");
             if (s && s[0] != '\0') {

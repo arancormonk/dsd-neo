@@ -1541,11 +1541,22 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 // the control channel. Mirror the P25 SM tick's gating so we do
                 // not thrash back to CC while a slot still indicates ACTIVE.
                 if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-                    double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : 1e9;
-                    double dt_since_tune =
-                        (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
+                    double nowm = dsd_time_now_monotonic_s();
+                    double dt = 1e9;
+                    if (state->last_vc_sync_time_m > 0.0) {
+                        dt = nowm - state->last_vc_sync_time_m;
+                    } else if (state->last_vc_sync_time != 0) {
+                        /* Fall back to wall clock if monotonic stamps are absent */
+                        dt = (double)(now - state->last_vc_sync_time);
+                    }
+                    double dt_since_tune = 1e9;
+                    if (state->p25_last_vc_tune_time_m > 0.0) {
+                        dt_since_tune = nowm - state->p25_last_vc_tune_time_m;
+                    } else if (state->p25_last_vc_tune_time != 0) {
+                        dt_since_tune = (double)(now - state->p25_last_vc_tune_time);
+                    }
                     // Startup grace after a VC tune to avoid bouncing before PTT/audio
-                    double vc_grace = 1.5; // seconds
+                    double vc_grace = 0.75; // seconds
                     {
                         const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                         if (s && s[0] != '\0') {
@@ -1569,7 +1580,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             }
                         }
                     }
-                    double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                    double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
                     {
                         const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                         if (s && s[0] != '\0') {
@@ -1579,12 +1590,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             }
                         }
                     }
-                    double l_dmac = (state->p25_p2_last_mac_active[0] != 0)
-                                        ? (double)(now - state->p25_p2_last_mac_active[0])
-                                        : 1e9;
-                    double r_dmac = (state->p25_p2_last_mac_active[1] != 0)
-                                        ? (double)(now - state->p25_p2_last_mac_active[1])
-                                        : 1e9;
+                    double l_dmac = (state->p25_p2_last_mac_active_m[0] > 0.0)
+                                        ? (nowm - state->p25_p2_last_mac_active_m[0])
+                                        : ((state->p25_p2_last_mac_active[0] != 0)
+                                               ? ((double)(now - state->p25_p2_last_mac_active[0]))
+                                               : 1e9);
+                    double r_dmac = (state->p25_p2_last_mac_active_m[1] > 0.0)
+                                        ? (nowm - state->p25_p2_last_mac_active_m[1])
+                                        : ((state->p25_p2_last_mac_active[1] != 0)
+                                               ? ((double)(now - state->p25_p2_last_mac_active[1]))
+                                               : 1e9);
                     int l_ring = (state->p25_p2_audio_ring_count[0] > 0) && (l_dmac <= ring_hold);
                     int r_ring = (state->p25_p2_audio_ring_count[1] > 0) && (r_dmac <= ring_hold);
                     int left_has_audio = state->p25_p2_audio_allowed[0] || l_ring;

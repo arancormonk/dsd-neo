@@ -302,7 +302,7 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
     state->p25_retune_block_slot = -1;
     // Cache SM tunables once (prefer CLI, then env, then defaults)
     // VC grace
-    state->p25_cfg_vc_grace_s = (opts && opts->p25_vc_grace_s > 0.0) ? opts->p25_vc_grace_s : 1.5;
+    state->p25_cfg_vc_grace_s = (opts && opts->p25_vc_grace_s > 0.0) ? opts->p25_vc_grace_s : 0.75;
     if (!(opts && opts->p25_vc_grace_s > 0.0)) {
         const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
         if (sg && sg[0] != '\0') {
@@ -347,7 +347,7 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
         }
     }
     // MAC hold
-    state->p25_cfg_mac_hold_s = 3.0;
+    state->p25_cfg_mac_hold_s = 0.75;
     {
         const char* sm = getenv("DSD_NEO_P25_MAC_HOLD");
         if (sm && sm[0] != '\0') {
@@ -381,7 +381,7 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
     }
     // Force-release safety-net parameters
     state->p25_cfg_force_rel_extra_s =
-        (opts && opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 3.0;
+        (opts && opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 0.5;
     if (!(opts && opts->p25_force_release_extra_s > 0.0)) {
         const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
         if (se && se[0] != '\0') {
@@ -392,7 +392,7 @@ dsd_p25_sm_init_impl(dsd_opts* opts, dsd_state* state) {
         }
     }
     state->p25_cfg_force_rel_margin_s =
-        (opts && opts->p25_force_release_margin_s > 0.0) ? opts->p25_force_release_margin_s : 5.0;
+        (opts && opts->p25_force_release_margin_s > 0.0) ? opts->p25_force_release_margin_s : 0.25;
     if (!(opts && opts->p25_force_release_margin_s > 0.0)) {
         const char* sm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
         if (sm && sm[0] != '\0') {
@@ -535,7 +535,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // Treat a slot as active if audio is allowed, jitter has queued audio,
         // or we saw recent MAC_ACTIVE/PTT on that slot.
         time_t now = time(NULL);
-        double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+        double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
         {
             const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
             if (s && s[0] != '\0') {
@@ -560,7 +560,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         // Clamp ring_hold so ring-gated activity can never outlive the
         // safety-net window. If EXTRA is smaller, use it as an upper bound.
         {
-            double extra = 3.0;
+            double extra = 0.5;
             const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
             if (se && se[0] != '\0') {
                 double ve = atof(se);
@@ -593,7 +593,7 @@ dsd_p25_sm_on_release_impl(dsd_opts* opts, dsd_state* state) {
         }
         int left_audio = (state->p25_p2_audio_allowed[0] != 0) || left_ring || mac_recent_l;
         int right_audio = (state->p25_p2_audio_allowed[1] != 0) || right_ring || mac_recent_r;
-        double trunk_hang = (opts ? opts->trunk_hangtime : 1.0);
+        double trunk_hang = (opts ? opts->trunk_hangtime : 0.75);
         int recent_voice = 0;
         if (state->last_vc_sync_time_m > 0.0) {
             recent_voice = ((nowm_rel - state->last_vc_sync_time_m) <= trunk_hang);
@@ -810,7 +810,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // Small startup grace window after a VC tune to avoid bouncing back to
         // CC before MAC_PTT/ACTIVE and audio arrive. Override via
         // DSD_NEO_P25_VC_GRACE (seconds).
-        double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+        double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
         int is_p2_vc = (state->p25_p2_active_slot != -1);
         // Update high-level SM mode exposure (ARMED vs FOLLOW) while tuned
         if (opts->p25_is_tuned == 1) {
@@ -879,7 +879,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // force release regardless of per-slot gates or jitter. Place this
         // early to avoid being short-circuited by post-hang gating branches.
         {
-            double extra = (opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 3.0;
+            double extra = (opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 0.5;
             if (!(opts->p25_force_release_extra_s > 0.0)) {
                 const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
                 if (s && s[0] != '\0') {
@@ -917,7 +917,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // ring/MAC gating). This prevents any lingering state from wedging
         // the tuner on a dead VC under unexpected conditions.
         {
-            double extra = (opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 3.0;
+            double extra = (opts->p25_force_release_extra_s > 0.0) ? opts->p25_force_release_extra_s : 0.5;
             if (!(opts->p25_force_release_extra_s > 0.0)) {
                 const char* se = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
                 if (se && se[0] != '\0') {
@@ -927,7 +927,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
                     }
                 }
             }
-            double margin = (opts->p25_force_release_margin_s > 0.0) ? opts->p25_force_release_margin_s : 5.0;
+            double margin = (opts->p25_force_release_margin_s > 0.0) ? opts->p25_force_release_margin_s : 0.25;
             if (!(opts->p25_force_release_margin_s > 0.0)) {
                 const char* sm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
                 if (sm && sm[0] != '\0') {
@@ -962,7 +962,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         // and force release. This covers cases where the decoder drifted to a
         // P1/CC context but stale P2 gates kept post-hang logic alive.
         if (is_p2_vc && !cur_is_p25p2_sync) {
-            double extra = 3.0;
+            double extra = 0.5;
             const char* s = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
             if (s && s[0] != '\0') {
                 double v = atof(s);
@@ -1029,7 +1029,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
             }
             // Opposite slot activity consideration (recent MAC_ACTIVE hold)
             int other_active = 0;
-            double mac_hold = 3.0;
+            double mac_hold = 0.75;
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {
@@ -1286,7 +1286,7 @@ dsd_p25_sm_tick_impl(dsd_opts* opts, dsd_state* state) {
         int l_act = state->p25_p2_audio_allowed[0] || l_ring || l_recent;
         int r_act = state->p25_p2_audio_allowed[1] || r_ring || r_recent;
         int idle = (l_act == 0 && r_act == 0);
-        double vc_grace2 = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+        double vc_grace2 = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
         if (cur_is_p2 && idle && dt_v >= opts->trunk_hangtime && dt_tune >= vc_grace2) {
             if (state->p25_cc_freq != 0) {
                 state->p25_sm_force_release = 1;

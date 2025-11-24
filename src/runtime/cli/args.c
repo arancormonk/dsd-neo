@@ -1483,7 +1483,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 /* Trunking/scan hangtime seconds */
                 opts->trunk_hangtime = (float)atof(optarg);
                 if (opts->trunk_hangtime <= 0.0f) {
-                    opts->trunk_hangtime = 1.0f;
+                    opts->trunk_hangtime = 0.75f;
                 }
                 break;
             case 'q':

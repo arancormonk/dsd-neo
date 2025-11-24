@@ -41,8 +41,8 @@ dsd_p25p2_min_init(dsd_p25p2_min_sm* sm) {
         return;
     }
     memset(sm, 0, sizeof(*sm));
-    sm->hangtime_s = 1.0;
-    sm->vc_grace_s = 1.5;
+    sm->hangtime_s = 0.75;
+    sm->vc_grace_s = 0.75;
     sm->min_follow_dwell_s = 0.7;
     // Raise grant→voice timeout to reduce early VC→CC bounce on systems
     // that delay MAC_PTT/ACTIVE after issuing a grant.
@@ -51,6 +51,8 @@ dsd_p25p2_min_init(dsd_p25p2_min_sm* sm) {
     // is not ignored for long after an early (pre‑voice) return.
     sm->retune_backoff_s = 1.0;
     sm->state = DSD_P25P2_MIN_IDLE;
+    sm->config_applied = 0;
+    sm->boot_nosync_sent = 0;
 }
 
 void
@@ -75,6 +77,7 @@ dsd_p25p2_min_configure(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_grace
     if (vc_grace_s >= 0.0) {
         sm->vc_grace_s = vc_grace_s;
     }
+    sm->config_applied = 1;
 }
 
 void
@@ -93,6 +96,69 @@ dsd_p25p2_min_configure_ex(dsd_p25p2_min_sm* sm, double hangtime_s, double vc_gr
     if (retune_backoff_s >= 0.0) {
         sm->retune_backoff_s = retune_backoff_s;
     }
+    sm->config_applied = 1;
+}
+
+static void
+maybe_apply_config_once(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state) {
+    if (!sm || !opts || sm->config_applied) {
+        return;
+    }
+    double hang = (opts->trunk_hangtime > 0.0) ? opts->trunk_hangtime : sm->hangtime_s;
+    // Prefer CLI/opts overrides when provided; fall back to env, then defaults
+    double grace = (opts->p25_vc_grace_s > 0.0) ? opts->p25_vc_grace_s : sm->vc_grace_s;
+    if (state && state->p25_cfg_vc_grace_s > 0.0) {
+        grace = state->p25_cfg_vc_grace_s;
+    }
+    if (!(opts->p25_vc_grace_s > 0.0)) {
+        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                grace = v;
+            }
+        }
+    }
+    double min_follow = (opts->p25_min_follow_dwell_s > 0.0) ? opts->p25_min_follow_dwell_s : sm->min_follow_dwell_s;
+    if (state && state->p25_cfg_min_follow_dwell_s > 0.0) {
+        min_follow = state->p25_cfg_min_follow_dwell_s;
+    }
+    if (!(opts->p25_min_follow_dwell_s > 0.0)) {
+        const char* s = getenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 5.0) {
+                min_follow = v;
+            }
+        }
+    }
+    double gvt = (opts->p25_grant_voice_to_s > 0.0) ? opts->p25_grant_voice_to_s : sm->grant_voice_timeout_s;
+    if (state && state->p25_cfg_grant_voice_to_s > 0.0) {
+        gvt = state->p25_cfg_grant_voice_to_s;
+    }
+    if (!(opts->p25_grant_voice_to_s > 0.0)) {
+        const char* s = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                gvt = v;
+            }
+        }
+    }
+    double backoff = (opts->p25_retune_backoff_s > 0.0) ? opts->p25_retune_backoff_s : sm->retune_backoff_s;
+    if (state && state->p25_cfg_retune_backoff_s > 0.0) {
+        backoff = state->p25_cfg_retune_backoff_s;
+    }
+    if (!(opts->p25_retune_backoff_s > 0.0)) {
+        const char* s = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
+        if (s && s[0] != '\0') {
+            double v = atof(s);
+            if (v >= 0.0 && v < 10.0) {
+                backoff = v;
+            }
+        }
+    }
+    dsd_p25p2_min_configure_ex(sm, hang, grace, min_follow, gvt, backoff);
 }
 
 static void
@@ -188,65 +254,7 @@ dsd_p25p2_min_handle_event(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* stat
     if (!sm || !ev) {
         return;
     }
-    // Apply configuration based on options/env once at first use
-    if (opts && sm->hangtime_s == 1.0) {
-        double hang = (opts->trunk_hangtime > 0.0) ? opts->trunk_hangtime : sm->hangtime_s;
-        // Prefer CLI/opts overrides when provided; fall back to env, then defaults
-        double grace = (opts->p25_vc_grace_s > 0.0) ? opts->p25_vc_grace_s : sm->vc_grace_s;
-        if (state && state->p25_cfg_vc_grace_s > 0.0) {
-            grace = state->p25_cfg_vc_grace_s;
-        }
-        if (!(opts->p25_vc_grace_s > 0.0)) {
-            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    grace = v;
-                }
-            }
-        }
-        double min_follow =
-            (opts->p25_min_follow_dwell_s > 0.0) ? opts->p25_min_follow_dwell_s : sm->min_follow_dwell_s;
-        if (state && state->p25_cfg_min_follow_dwell_s > 0.0) {
-            min_follow = state->p25_cfg_min_follow_dwell_s;
-        }
-        if (!(opts->p25_min_follow_dwell_s > 0.0)) {
-            const char* s = getenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 5.0) {
-                    min_follow = v;
-                }
-            }
-        }
-        double gvt = (opts->p25_grant_voice_to_s > 0.0) ? opts->p25_grant_voice_to_s : sm->grant_voice_timeout_s;
-        if (state && state->p25_cfg_grant_voice_to_s > 0.0) {
-            gvt = state->p25_cfg_grant_voice_to_s;
-        }
-        if (!(opts->p25_grant_voice_to_s > 0.0)) {
-            const char* s = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    gvt = v;
-                }
-            }
-        }
-        double backoff = (opts->p25_retune_backoff_s > 0.0) ? opts->p25_retune_backoff_s : sm->retune_backoff_s;
-        if (state && state->p25_cfg_retune_backoff_s > 0.0) {
-            backoff = state->p25_cfg_retune_backoff_s;
-        }
-        if (!(opts->p25_retune_backoff_s > 0.0)) {
-            const char* s = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    backoff = v;
-                }
-            }
-        }
-        dsd_p25p2_min_configure_ex(sm, hang, grace, min_follow, gvt, backoff);
-    }
+    maybe_apply_config_once(sm, opts, state);
     switch (ev->type) {
         case DSD_P25P2_MIN_EV_GRANT: on_grant(sm, opts, state, ev->channel, ev->freq_hz); break;
         case DSD_P25P2_MIN_EV_PTT:
@@ -267,8 +275,11 @@ dsd_p25p2_min_tick(dsd_p25p2_min_sm* sm, dsd_opts* opts, dsd_state* state) {
     if (!sm) {
         return;
     }
-    // Apply configuration on first tick if not yet applied
-    if (opts && sm->hangtime_s == 1.0) {
+    // Apply configuration on first tick if not yet applied and seed a single NOSYNC once
+    // when idle (no tune context) to mark initial unsynced state.
+    maybe_apply_config_once(sm, opts, state);
+    if (opts && !sm->boot_nosync_sent && sm->state == DSD_P25P2_MIN_IDLE && sm->t_last_tune == 0) {
+        sm->boot_nosync_sent = 1;
         const dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_NOSYNC, -1, 0, 0};
         dsd_p25p2_min_handle_event(sm, opts, state, &ev);
     }

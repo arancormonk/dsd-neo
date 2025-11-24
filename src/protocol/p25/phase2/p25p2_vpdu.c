@@ -2291,7 +2291,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             p25_p2_audio_ring_reset(state, eslot);
 
             // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
-            double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+            double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
             {
                 const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                 if (s && s[0] != '\0') {
@@ -2301,9 +2301,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     }
                 }
             }
-            time_t now2 = time(NULL);
+            double nowm2 = dsd_time_now_monotonic_s();
+            double noww2 = (double)time(NULL);
             int os = eslot ^ 1;
-            double voice_hold = 1.0; // seconds; override via DSD_NEO_P25_VOICE_HOLD
+            double voice_hold = 0.75; // seconds; override via DSD_NEO_P25_VOICE_HOLD
             {
                 const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
                 if (s2 && s2[0] != '\0') {
@@ -2313,16 +2314,22 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     }
                 }
             }
-            int recent_voice =
-                (state->last_vc_sync_time != 0) && ((double)(now2 - state->last_vc_sync_time) <= voice_hold);
+            double dt_voice =
+                (state->last_vc_sync_time_m > 0.0)
+                    ? (nowm2 - state->last_vc_sync_time_m)
+                    : ((state->last_vc_sync_time != 0) ? (noww2 - (double)state->last_vc_sync_time) : 1e9);
+            int recent_voice = (dt_voice <= voice_hold);
+            double dt_mac =
+                (state->p25_p2_last_mac_active_m[os] > 0.0)
+                    ? (nowm2 - state->p25_p2_last_mac_active_m[os])
+                    : ((state->p25_p2_last_mac_active[os] != 0) ? (noww2 - (double)state->p25_p2_last_mac_active[os])
+                                                                : 1e9);
             int other_audio = state->p25_p2_audio_allowed[os] || (state->p25_p2_audio_ring_count[os] > 0)
-                              || (state->p25_p2_last_mac_active[os] != 0
-                                  && (double)(now2 - state->p25_p2_last_mac_active[os]) <= mac_hold)
-                              || recent_voice;
+                              || (state->p25_p2_last_mac_active[os] != 0 && dt_mac <= mac_hold) || recent_voice;
             if (!other_audio) {
                 // Only force release outside the VC grace window to avoid dropping
                 // an opposite-slot clear call that hasn't opened its gates yet.
-                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                 if (!(state->p25_cfg_vc_grace_s > 0.0)) {
                     const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
                     if (sg && sg[0] != '\0') {
@@ -2458,7 +2465,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 state->p25_p2_audio_allowed[slot] = 0;
                 p25_p2_audio_ring_reset(state, slot);
                 int other = slot ^ 1;
-                double mac_hold = 3.0; // seconds; override via DSD_NEO_P25_MAC_HOLD
+                double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
                 {
                     const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
                     if (s && s[0] != '\0') {
@@ -2468,7 +2475,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         }
                     }
                 }
-                time_t now2 = time(NULL);
+                double nowm2 = dsd_time_now_monotonic_s();
+                double noww2 = (double)time(NULL);
                 double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
                 {
                     const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
@@ -2479,18 +2487,24 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         }
                     }
                 }
-                int recent_voice =
-                    (state->last_vc_sync_time != 0) && ((double)(now2 - state->last_vc_sync_time) <= voice_hold);
+                double dt_voice =
+                    (state->last_vc_sync_time_m > 0.0)
+                        ? (nowm2 - state->last_vc_sync_time_m)
+                        : ((state->last_vc_sync_time != 0) ? (noww2 - (double)state->last_vc_sync_time) : 1e9);
+                int recent_voice = (dt_voice <= voice_hold);
+                double dt_mac = (state->p25_p2_last_mac_active_m[other] > 0.0)
+                                    ? (nowm2 - state->p25_p2_last_mac_active_m[other])
+                                    : ((state->p25_p2_last_mac_active[other] != 0)
+                                           ? (noww2 - (double)state->p25_p2_last_mac_active[other])
+                                           : 1e9);
                 int other_audio = state->p25_p2_audio_allowed[other] || (state->p25_p2_audio_ring_count[other] > 0)
-                                  || (state->p25_p2_last_mac_active[other] != 0
-                                      && (double)(now2 - state->p25_p2_last_mac_active[other]) <= mac_hold)
-                                  || recent_voice;
+                                  || (state->p25_p2_last_mac_active[other] != 0 && dt_mac <= mac_hold) || recent_voice;
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
                     // Defer immediate return to CC during a short post‑tune grace to
                     // avoid dropping a clear opposite-slot call that has not yet opened
                     // its audio gates.
-                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                     if (!(state->p25_cfg_vc_grace_s > 0.0)) {
                         const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                         if (s && s[0] != '\0') {
@@ -2622,7 +2636,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 int other_audio = state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
                 if (!other_audio) {
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
-                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 1.5;
+                    double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                     if (!(state->p25_cfg_vc_grace_s > 0.0)) {
                         const char* s = getenv("DSD_NEO_P25_VC_GRACE");
                         if (s && s[0] != '\0') {
