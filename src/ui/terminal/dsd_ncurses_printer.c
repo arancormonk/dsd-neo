@@ -3625,10 +3625,14 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     if (state->carrier == 1) {
         attron(COLOR_PAIR(3));
-        level = (int)state->max / 164; //only update on carrier present
-        if (opts->mod_qpsk == 1) {
-            level = (int)state->max / 328; //test values here
+        int level_div = 164; /* baseline scaling for C4FM/GFSK symbol magnitudes */
+        if (opts->mod_qpsk == 1 || state->rf_mod == 1) {
+            level_div = 82; /* CQPSK phase deltas peak near pi/4 (~4k), so use tighter scale */
         }
+        if (level_div < 1) {
+            level_div = 1;
+        }
+        level = (int)state->max / level_div; //only update on carrier present
         if (opts->audio_in_type == 4) {
             level = 50; //hard set when reading symbol bin files, otherwise, it will just be near zero
         }
