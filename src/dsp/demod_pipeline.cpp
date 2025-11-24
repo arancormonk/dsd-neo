@@ -722,22 +722,65 @@ raw_demod(struct demod_state* fm) {
 }
 
 /**
+ * @brief Differential phasor (OP25-style) applied before the Costas loop.
+ *
+ * Implements GNU Radio's `digital.diff_phasor_cc`: y[n] = x[n] * conj(x[n-1]).
+ * Maintains the previous raw complex sample across blocks via
+ * cqpsk_diff_prev_r/j. Treats inputs as Q15 to keep output on the same scale
+ * as the incoming complex stream.
+ *
+ * @param d Demodulator state (in-place transform of interleaved I/Q in lowpassed).
+ */
+static void
+cqpsk_diff_phasor(struct demod_state* d) {
+    if (!d || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    const int pairs = d->lp_len >> 1;
+    int16_t* iq = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
+    int prev_r = d->cqpsk_diff_prev_r;
+    int prev_j = d->cqpsk_diff_prev_j;
+
+    for (int n = 0; n < pairs; n++) {
+        int cr = iq[(size_t)(n << 1) + 0];
+        int cj = iq[(size_t)(n << 1) + 1];
+
+        /* Re/Im{x * conj(prev)} in Q30 (inputs are Q15) */
+        int64_t mr = (int64_t)cr * (int64_t)prev_r + (int64_t)cj * (int64_t)prev_j;
+        int64_t mj = (int64_t)cj * (int64_t)prev_r - (int64_t)cr * (int64_t)prev_j;
+
+        /* Scale back to Q15 with symmetric rounding */
+        int64_t rnd = (mr >= 0) ? (1LL << 14) : -(1LL << 14);
+        int32_t out_r = (int32_t)((mr + rnd) >> 15);
+        rnd = (mj >= 0) ? (1LL << 14) : -(1LL << 14);
+        int32_t out_j = (int32_t)((mj + rnd) >> 15);
+
+        iq[(size_t)(n << 1) + 0] = sat16(out_r);
+        iq[(size_t)(n << 1) + 1] = sat16(out_j);
+
+        prev_r = cr;
+        prev_j = cj;
+    }
+
+    d->cqpsk_diff_prev_r = prev_r;
+    d->cqpsk_diff_prev_j = prev_j;
+}
+
+/**
  * @brief QPSK helper demodulator: copy I channel from interleaved complex baseband.
  *
  * Assumes fm->lowpassed holds interleaved I/Q samples that have already passed
- * through CQPSK processing (matched filter, optional acquisition FLL/TED, Costas).
+ * through CQPSK processing (front-end filtering, optional acquisition FLL/TED, Costas).
  * Produces a single real stream (I only) to feed the legacy symbol sampler path.
  */
 /**
- * @brief Differential QPSK demodulator for CQPSK/LSM paths.
+ * @brief Phase extractor for CQPSK differential phasors.
  *
- * Computes the phase difference between consecutive complex samples using:
- *   delta_n = arg(z_n * conj(z_{n-1}))
+ * Expects fm->lowpassed to hold the output of cqpsk_diff_phasor (already
+ * differenced). Converts each complex phasor to a Q14 phase angle:
+ *   theta_n = arg(z_n)
  *
- * Phase is returned in Q14 units where pi == 1<<14. The differential history
- * is maintained across blocks via cqpsk_diff_prev_r/j in demod_state.
- *
- * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase deltas to result).
+ * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase to result).
  */
 void
 qpsk_differential_demod(struct demod_state* fm) {
@@ -752,33 +795,47 @@ qpsk_differential_demod(struct demod_state* fm) {
     const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
     int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
 
-    int prev_r = fm->cqpsk_diff_prev_r;
-    int prev_j = fm->cqpsk_diff_prev_j;
-
-    /* Initialize history on first use with the first sample to keep the
-       first phase delta well-defined (zero rotation). */
-    if (prev_r == 0 && prev_j == 0) {
-        prev_r = iq[0];
-        prev_j = iq[1];
-    }
-
     for (int n = 0; n < pairs; n++) {
-        int cr = iq[(size_t)(n << 1) + 0];
-        int cj = iq[(size_t)(n << 1) + 1];
-
-        int64_t mr = (int64_t)cr * (int64_t)prev_r + (int64_t)cj * (int64_t)prev_j; /* Re{z_n * conj(z_{n-1})} */
-        int64_t mj = (int64_t)cj * (int64_t)prev_r - (int64_t)cr * (int64_t)prev_j; /* Im{z_n * conj(z_{n-1})} */
-
-        int phase_q14 = dsd_neo_fast_atan2(mj, mr);
+        int phase_q14 = dsd_neo_fast_atan2(iq[(size_t)(n << 1) + 1], iq[(size_t)(n << 1) + 0]);
         out[n] = (int16_t)phase_q14;
-
-        prev_r = cr;
-        prev_j = cj;
     }
 
-    fm->cqpsk_diff_prev_r = prev_r;
-    fm->cqpsk_diff_prev_j = prev_j;
     fm->result_len = pairs;
+}
+
+/* RMS AGC for CQPSK paths (mirrors OP25 rms_agc placement/behavior). */
+static inline void
+cqpsk_rms_agc(struct demod_state* d) {
+    if (!d || !d->cqpsk_rms_agc_enable || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    const int pairs = d->lp_len >> 1;
+    const float kAlpha = 0.45f; /* OP25 default */
+    const float kRef = 0.85f;   /* target RMS (normalized) */
+    const float kInvMax = 1.0f / 32768.0f;
+    const float kEps = 1e-6f;
+
+    float rms = d->cqpsk_rms_agc_rms;
+    if (rms <= 0.0f) {
+        rms = kRef;
+    }
+
+    int16_t* out = d->lowpassed;
+    for (int n = 0; n < pairs; n++) {
+        float I = (float)out[(size_t)(n << 1)] * kInvMax;
+        float Q = (float)out[(size_t)(n << 1) + 1] * kInvMax;
+        float mag2 = I * I + Q * Q;
+        float rms2 = rms * rms;
+        rms2 = (1.0f - kAlpha) * rms2 + kAlpha * mag2;
+        rms = sqrtf(rms2);
+        float g = kRef / (rms + kEps);
+        int32_t yi = (int32_t)lrintf(I * g * 32768.0f);
+        int32_t yq = (int32_t)lrintf(Q * g * 32768.0f);
+        out[(size_t)(n << 1)] = sat16(yi);
+        out[(size_t)(n << 1) + 1] = sat16(yq);
+    }
+
+    d->cqpsk_rms_agc_rms = rms;
 }
 
 /**
@@ -1163,185 +1220,6 @@ fm_constant_envelope_limiter(struct demod_state* d) {
     }
 }
 
-/* Small symmetric 5-tap matched-like FIR on interleaved I/Q (in-place via workbuf). */
-static void
-mf5_complex_interleaved(struct demod_state* d) {
-    if (!d || !d->lowpassed || d->lp_len < 10) {
-        return;
-    }
-    const int N = d->lp_len >> 1; /* complex samples */
-    int16_t* in = d->lowpassed;
-    /* Choose an output buffer that does not alias input. If lowpassed already
-       points to hb_workbuf (odd HB decim passes), use timing_buf as scratch. */
-    int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
-    /* taps ~ [1, 4, 6, 4, 1] / 16 in Q15 */
-    const int t0 = 2048;  /* 1/16 */
-    const int t1 = 8192;  /* 4/16 */
-    const int t2 = 12288; /* 6/16 */
-    for (int n = 0; n < N; n++) {
-        int idxm2 = (n - 2);
-        int idxm1 = (n - 1);
-        int idxp1 = (n + 1 < N) ? (n + 1) : (N - 1);
-        int idxp2 = (n + 2 < N) ? (n + 2) : (N - 1);
-        if (idxm2 < 0) {
-            idxm2 = 0;
-        }
-        if (idxm1 < 0) {
-            idxm1 = 0;
-        }
-        int16_t im2 = in[(size_t)(idxm2 << 1)];
-        int16_t jm2 = in[(size_t)(idxm2 << 1) + 1];
-        int16_t im1 = in[(size_t)(idxm1 << 1)];
-        int16_t jm1 = in[(size_t)(idxm1 << 1) + 1];
-        int16_t i0 = in[(size_t)(n << 1)];
-        int16_t j0 = in[(size_t)(n << 1) + 1];
-        int16_t ip1 = in[(size_t)(idxp1 << 1)];
-        int16_t jp1 = in[(size_t)(idxp1 << 1) + 1];
-        int16_t ip2 = in[(size_t)(idxp2 << 1)];
-        int16_t jp2 = in[(size_t)(idxp2 << 1) + 1];
-        int64_t accI = (int64_t)im2 * t0 + (int64_t)im1 * t1 + (int64_t)i0 * t2 + (int64_t)ip1 * t1 + (int64_t)ip2 * t0;
-        int64_t accQ = (int64_t)jm2 * t0 + (int64_t)jm1 * t1 + (int64_t)j0 * t2 + (int64_t)jp1 * t1 + (int64_t)jp2 * t0;
-        out[(size_t)(n << 1)] = sat16((int32_t)((accI + (1 << 14)) >> 15));
-        out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
-    }
-    /* swap buffers */
-    memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
-}
-
-/* RRC matched filter on interleaved I/Q using current TED SPS and configured alpha/span. */
-static void
-mf_rrc_complex_interleaved(struct demod_state* d) {
-    if (!d || !d->lowpassed || d->lp_len < 10) {
-        return;
-    }
-    if (d->ted_sps <= 1) {
-        return;
-    }
-    int sps = d->ted_sps;
-    double alpha = (d->cqpsk_rrc_alpha_q15 > 0) ? ((double)d->cqpsk_rrc_alpha_q15 / 32768.0) : 0.25;
-    int taps_len;
-    int span_used = (d->cqpsk_rrc_span_syms > 0) ? d->cqpsk_rrc_span_syms : 0;
-    if (span_used > 0) {
-        taps_len = span_used * 2 * sps + 1;
-    } else {
-        /* Default to ntaps = 11*sps + 1 (e.g., 89 for sps=8) */
-        taps_len = 11 * sps + 1;
-    }
-    if (taps_len < 7) {
-        taps_len = 7;
-    }
-    if (taps_len > 257) {
-        taps_len = 257;
-    }
-    if ((taps_len & 1) == 0) {
-        taps_len += 1; /* enforce odd length for symmetry */
-        if (taps_len > 257) {
-            taps_len = 257;
-        }
-    }
-    static int last_sps = 0;
-    static int last_span = 0;
-    static int last_alpha_q15 = 0;
-    static int last_taps_len = 0;
-    static int16_t taps_q15[257];
-    static int taps_ready = 0;
-    if (!taps_ready || sps != last_sps || span_used != last_span || d->cqpsk_rrc_alpha_q15 != last_alpha_q15
-        || taps_len != last_taps_len) {
-        /* Design RRC taps */
-        int mid = taps_len / 2;
-        double sum = 0.0;
-        for (int n = 0; n < taps_len; n++) {
-            double t_over_T = ((double)n - (double)mid) / (double)sps;
-            double tau = t_over_T;
-            double h;
-            double pi = 3.14159265358979323846;
-            double four_a_tau = 4.0 * alpha * tau;
-            double denom = pi * tau * (1.0 - (four_a_tau * four_a_tau));
-            if (fabs(tau) < 1e-8) {
-                /* Limit at tau=0 */
-                h = (1.0 + alpha * (4.0 / pi - 1.0));
-            } else if (fabs(fabs(tau) - (1.0 / (4.0 * alpha))) < 1e-6) {
-                /* Limit at tau = ±1/(4α) */
-                double a = alpha;
-                double term1 = (1.0 + 2.0 / pi) * sin(pi / (4.0 * a));
-                double term2 = (1.0 - 2.0 / pi) * cos(pi / (4.0 * a));
-                h = (a / sqrt(2.0)) * (term1 + term2);
-            } else {
-                double num = sin(pi * tau * (1.0 - alpha)) + four_a_tau * cos(pi * tau * (1.0 + alpha));
-                h = num / denom;
-            }
-            sum += h;
-            /* store temporarily in taps_q15 for second pass */
-            taps_q15[n] = (int16_t)h; /* placeholder */
-        }
-        /* Normalize DC gain to 1.0 (sum taps = 1) */
-        if (fabs(sum) < 1e-9) {
-            sum = 1.0;
-        }
-        for (int n = 0; n < taps_len; n++) {
-            double t_over_T = ((double)n - (double)mid) / (double)sps;
-            double tau = t_over_T;
-            double h;
-            double pi = 3.14159265358979323846;
-            double four_a_tau = 4.0 * alpha * tau;
-            double denom = pi * tau * (1.0 - (four_a_tau * four_a_tau));
-            if (fabs(tau) < 1e-8) {
-                h = (1.0 + alpha * (4.0 / pi - 1.0));
-            } else if (fabs(fabs(tau) - (1.0 / (4.0 * alpha))) < 1e-6) {
-                double a = alpha;
-                double term1 = (1.0 + 2.0 / pi) * sin(pi / (4.0 * a));
-                double term2 = (1.0 - 2.0 / pi) * cos(pi / (4.0 * a));
-                h = (a / sqrt(2.0)) * (term1 + term2);
-            } else {
-                double num = sin(pi * tau * (1.0 - alpha)) + four_a_tau * cos(pi * tau * (1.0 + alpha));
-                h = num / denom;
-            }
-            h = h / sum;
-            long v = lrint(h * 32768.0);
-            if (v > 32767) {
-                v = 32767;
-            }
-            if (v < -32768) {
-                v = -32768;
-            }
-            taps_q15[n] = (int16_t)v;
-        }
-        last_sps = sps;
-        last_span = span_used;
-        last_alpha_q15 = d->cqpsk_rrc_alpha_q15;
-        last_taps_len = taps_len;
-        taps_ready = 1;
-    }
-
-    const int N = d->lp_len >> 1; /* complex length */
-    int16_t* in = d->lowpassed;
-    /* Avoid in-place aliasing with hb_workbuf; use timing_buf when needed. */
-    int16_t* out = (in == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
-    int mid = last_taps_len / 2;
-    for (int n = 0; n < N; n++) {
-        int64_t accI = 0;
-        int64_t accQ = 0;
-        for (int k = 0; k < last_taps_len; k++) {
-            int idx = n + (k - mid);
-            if (idx < 0) {
-                idx = 0;
-            }
-            if (idx >= N) {
-                idx = N - 1;
-            }
-            int16_t ir = in[(size_t)(idx << 1)];
-            int16_t iq = in[(size_t)(idx << 1) + 1];
-            int16_t t = taps_q15[k];
-            accI += (int32_t)ir * t;
-            accQ += (int32_t)iq * t;
-        }
-        out[(size_t)(n << 1)] = sat16((int32_t)((accI + (1 << 14)) >> 15));
-        out[(size_t)(n << 1) + 1] = sat16((int32_t)((accQ + (1 << 14)) >> 15));
-    }
-    /* swap buffers */
-    memcpy(d->lowpassed, out, (size_t)(N << 1) * sizeof(int16_t));
-}
-
 /**
  * @brief Apply a lightweight Gardner timing correction to complex baseband.
  *
@@ -1425,46 +1303,25 @@ full_demod(struct demod_state* d) {
     channel_lpf_apply(d);
     /* Reset per-block CQPSK rotation marker; set inside CQPSK branch when FLL applies rotation. */
     d->cqpsk_fll_rot_applied = 0;
-    /*
-     * Branch early by mode to simplify ordering.
-     *
-     * CQPSK (QPSK-like):
-     *   DC block (optional) -> Matched Filter (RRC/MF) -> FLL (optional) -> Gardner TED (optional) -> Costas -> diff QPSK
-     *
-     * FM/C4FM and others:
-     *   DC block -> AGC/limiter (when allowed) -> FLL (if enabled)
-     */
+    /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
-        /* Optional complex DC removal */
-        iq_dc_block(d);
-        /* CQPSK matched filter before timing/carrier recovery */
-        if (d->cqpsk_mf_enable) {
-            if (d->cqpsk_rrc_enable) {
-                mf_rrc_complex_interleaved(d);
-            } else {
-                mf5_complex_interleaved(d);
-            }
-        }
-        /* Optional acquisition-only FLL for CQPSK (pre-Costas).
-           Run after DC/MF so the symbol-spaced detector sees shaped, DC-free samples. */
-        if (d->fll_enabled && d->cqpsk_acq_fll_enable && !d->cqpsk_acq_fll_locked && d->ted_sps >= 2) {
-            int acq_updated = 0;
+        /* OP25 CQPSK chain:
+           channel LPF (above) -> RMS AGC -> band-edge FLL -> Gardner -> diff_phasor -> Costas -> arg/rescale -> slicer */
+        cqpsk_rms_agc(d);
+        /* Band-edge FLL (always active when enabled, OP25 style) */
+        if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2) {
             /* Sync from demod_state into modular FLL state so that any
                external tweaks to fll_freq_q15/phase (e.g., spectrum-assisted
-               correction) are honored by the CQPSK acquisition loop. */
+               correction) are honored. */
             int prev_freq = d->fll_state.freq_q15;
             d->fll_state.freq_q15 = d->fll_freq_q15;
             d->fll_state.phase_q15 = d->fll_phase_q15;
             d->fll_state.prev_r = d->fll_prev_r;
             d->fll_state.prev_j = d->fll_prev_j;
-            /* If the shared freq was externally adjusted (e.g., Costas), realign the
-               integrator to that new setpoint so the acquisition loop does not pull
-               back toward a stale integral state. Preserve the integrator otherwise. */
             if (prev_freq != d->fll_freq_q15) {
                 d->fll_state.int_q15 = d->fll_freq_q15;
             }
 
-            /* Build FLL config from current demod state */
             fll_config_t cfg;
             cfg.enabled = 1;
             cfg.alpha_q15 = (d->fll_alpha_q15 > 0) ? d->fll_alpha_q15 : 150;
@@ -1472,13 +1329,9 @@ full_demod(struct demod_state* d) {
             cfg.deadband_q14 = (d->fll_deadband_q14 > 0) ? d->fll_deadband_q14 : 45;
             cfg.slew_max_q15 = (d->fll_slew_max_q15 > 0) ? d->fll_slew_max_q15 : 64;
 
-            /* Update only when we likely have a carrier; use the squelch gate as proxy. */
-            if (d->squelch_gate_open && d->lp_len <= MAXIMUM_BUF_LENGTH) {
-                /* Band-edge FLL (OP25 settings): updates loop and rotates in-place. */
-                fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
-                d->cqpsk_fll_rot_applied = 1;
-                acq_updated = 1;
-            }
+            /* Band-edge FLL (OP25 settings): updates loop and rotates in-place. */
+            fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
+            d->cqpsk_fll_rot_applied = 1;
 
             /* Sync back minimal state */
             d->fll_freq_q15 = d->fll_state.freq_q15;
@@ -1486,31 +1339,29 @@ full_demod(struct demod_state* d) {
             d->fll_prev_r = d->fll_state.prev_r;
             d->fll_prev_j = d->fll_state.prev_j;
 
-            /* Simple lock detector: when |freq| stays small for several blocks, stop acquisition FLL */
-            if (acq_updated) {
-                int fmag = d->fll_state.freq_q15;
-                if (fmag < 0) {
-                    fmag = -fmag;
-                }
-                const int kLockFreqThr = 64; /* small residual */
-                const int kLockBlocks = 6;   /* consecutive blocks */
-                if (fmag <= kLockFreqThr) {
-                    d->cqpsk_acq_quiet_runs++;
-                } else {
-                    d->cqpsk_acq_quiet_runs = 0;
-                }
-                if (d->cqpsk_acq_quiet_runs >= kLockBlocks) {
-                    d->cqpsk_acq_fll_locked = 1;
-                }
+            /* Simple lock detector: when |freq| stays small for several blocks, mark locked */
+            int fmag = d->fll_state.freq_q15;
+            if (fmag < 0) {
+                fmag = -fmag;
+            }
+            const int kLockFreqThr = 64; /* small residual */
+            const int kLockBlocks = 6;   /* consecutive blocks */
+            if (fmag <= kLockFreqThr) {
+                d->cqpsk_acq_quiet_runs++;
             } else {
                 d->cqpsk_acq_quiet_runs = 0;
             }
+            d->cqpsk_acq_fll_locked = (d->cqpsk_acq_quiet_runs >= kLockBlocks);
+        } else {
+            d->cqpsk_acq_quiet_runs = 0;
+            d->cqpsk_acq_fll_locked = 0;
         }
-        /* Lightweight timing error correction after FLL for CQPSK paths.
-           Reuse the same FM guard to keep TED off for pure analog FM. */
-        if (d->ted_enabled && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+        /* Timing error correction after FLL (Gardner), matching OP25 ordering. */
+        if (d->ted_enabled && d->ted_sps >= 2 && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
             gardner_timing_adjust(d);
         }
+        /* OP25-style differential phasor ahead of the Costas loop. */
+        cqpsk_diff_phasor(d);
         /* Carrier recovery (always run Costas for CQPSK),
            but skip during unit tests that use raw_demod. */
         if (d->mode_demod != &raw_demod) {
@@ -1607,8 +1458,7 @@ full_demod(struct demod_state* d) {
             }
         }
     }
-    /* CQPSK matched filtering handled earlier in the CQPSK branch.
-       Apply Gardner TED here only for non-CQPSK paths (e.g., C4FM) and avoid
+    /* Apply Gardner TED here only for non-CQPSK paths (e.g., C4FM) and avoid
        analog FM unless explicitly forced. */
     if (d->ted_enabled && !d->cqpsk_enable && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
@@ -1677,8 +1527,9 @@ full_demod(struct demod_state* d) {
     }
     /*
      * For CQPSK, produce a single real stream of differential phase symbols
-     * (arg(z_n * conj(z_{n-1}))) to feed the legacy symbol sampler instead of
-     * FM discriminating. For other paths, use the configured demodulator.
+     * (arg(z_n), where z_n was differenced pre-Costas) to feed the legacy
+     * symbol sampler instead of FM discriminating. For other paths, use the
+     * configured demodulator.
      */
     if (d->cqpsk_enable) {
         qpsk_differential_demod(d);

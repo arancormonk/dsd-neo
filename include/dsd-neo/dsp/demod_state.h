@@ -202,12 +202,10 @@ struct demod_state {
 
     /* Experimental CQPSK pre-processing */
     int cqpsk_enable;
-    int cqpsk_mf_enable;     /* enable small matched filter pre-processing */
-    int cqpsk_rrc_enable;    /* use RRC matched filter instead of 5-tap MF */
-    int cqpsk_rrc_alpha_q15; /* RRC roll-off (Q15) */
-    int cqpsk_rrc_span_syms; /* half-span in symbols on each side */
+    int cqpsk_rms_agc_enable; /* 0/1: block RMS AGC before CQPSK acquisition FLL */
+    float cqpsk_rms_agc_rms;  /* normalized RMS estimate for CQPSK AGC */
 
-    /* CQPSK differential demodulator history (phase continuity across blocks) */
+    /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     int cqpsk_diff_prev_r;
     int cqpsk_diff_prev_j;
 

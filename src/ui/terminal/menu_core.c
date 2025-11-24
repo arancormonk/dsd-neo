@@ -3957,60 +3957,6 @@ lbl_ted_bias(void* v, char* b, size_t n) {
     return b;
 }
 
-static const char*
-lbl_onoff_mf(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int mf = 0;
-    rtl_stream_cqpsk_get(&mf);
-    snprintf(b, n, "Toggle Matched Filter [%s]", mf ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
-lbl_toggle_rrc(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "Toggle RRC [%s]", on ? "Active" : "Inactive");
-    return b;
-}
-
-static const char*
-lbl_rrc_s_up(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "RRC span +1 (now %d)", s);
-    return b;
-}
-
-static const char*
-lbl_rrc_s_dn(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "RRC span -1 (now %d)", s);
-    return b;
-}
-
-static const char*
-lbl_rrc_a_up(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "RRC alpha +5%% (now %d%%)", a);
-    return b;
-}
-
-static const char*
-lbl_rrc_a_dn(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = 0, a = 0, s = 0;
-    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-    snprintf(b, n, "RRC alpha -5%% (now %d%%)", a);
-    return b;
-}
-
 /* ---- CQPSK acquisition-only FLL (pre-Costas) ---- */
 static const char*
 lbl_cqpsk_acq_fll(void* v, char* b, size_t n) {
@@ -4049,48 +3995,6 @@ static void
 act_toggle_ted(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_TED};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_mf(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_MF};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_toggle_rrc(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_RRC};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_rrc_a_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_RRC_ALPHA_DELTA, .a = +5};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_rrc_a_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_RRC_ALPHA_DELTA, .a = -5};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_rrc_s_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_RRC_SPAN_DELTA, .a = +1};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_rrc_s_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_RRC_SPAN_DELTA, .a = -1};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -4762,7 +4666,7 @@ const NcMenuItem IO_MENU_ITEMS[] = {
      .submenu_len = sizeof IO_INV_ITEMS / sizeof IO_INV_ITEMS[0]},
     {.id = "io.filters",
      .label = "Filters...",
-     .help = "Cosine and fixed RRC presets.",
+     .help = "Cosine filter presets.",
      .submenu = IO_FILTER_ITEMS,
      .submenu_len = sizeof IO_FILTER_ITEMS / sizeof IO_FILTER_ITEMS[0]},
 };
@@ -5166,7 +5070,6 @@ const size_t LRRP_MENU_ITEMS_LEN = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITE
 #ifdef USE_RTLSDR
 // Submenus for DSP groups
 // Forward declare submenu visibility predicates
-static bool dsp_filters_any(void* v);
 static bool dsp_agc_any(void* v);
 static bool dsp_ted_any(void* v);
 static const NcMenuItem DSP_OVERVIEW_ITEMS[] = {
@@ -5221,52 +5124,6 @@ static const NcMenuItem DSP_PATH_ITEMS[] = {
      .is_enabled = is_mod_c4fm,
      .on_select = act_c4fm_clk_sync_toggle},
 };
-
-static const NcMenuItem DSP_FILTER_ITEMS[] = {
-    {.id = "rrc",
-     .label = "RRC Filter",
-     .label_fn = lbl_toggle_rrc,
-     .help = "Toggle RRC used by Matched Filter (requires MF enabled).",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_toggle_rrc},
-    {.id = "rrc_a+",
-     .label = "RRC alpha +5%",
-     .label_fn = lbl_rrc_a_up,
-     .help = "Increase RRC alpha.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_rrc_a_up},
-    {.id = "rrc_a-",
-     .label = "RRC alpha -5%",
-     .label_fn = lbl_rrc_a_dn,
-     .help = "Decrease RRC alpha.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_rrc_a_dn},
-    {.id = "rrc_s+",
-     .label = "RRC span +1",
-     .label_fn = lbl_rrc_s_up,
-     .help = "Increase RRC span.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_rrc_s_up},
-    {.id = "rrc_s-",
-     .label = "RRC span -1",
-     .label_fn = lbl_rrc_s_dn,
-     .help = "Decrease RRC span.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_rrc_s_dn},
-    {.id = "mf",
-     .label = "Matched Filter (pre-Costas)",
-     .label_fn = lbl_onoff_mf,
-     .help = "Pre-Costas matched filter; uses RRC when enabled, else 5-tap fallback.",
-     .is_enabled = is_mod_qpsk,
-     .on_select = act_toggle_mf},
-};
-
-// Visible only when at least one filter/EQ item applies
-static bool
-dsp_filters_any(void* v) {
-    return ui_submenu_has_visible(DSP_FILTER_ITEMS, sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0], v) ? true
-                                                                                                             : false;
-}
 
 static const NcMenuItem DSP_IQ_ITEMS[] = {
     {.id = "iqb",
@@ -5391,12 +5248,6 @@ const NcMenuItem DSP_MENU_ITEMS[] = {
      .help = "Demod path selection and timing assists.",
      .submenu = DSP_PATH_ITEMS,
      .submenu_len = sizeof DSP_PATH_ITEMS / sizeof DSP_PATH_ITEMS[0]},
-    {.id = "dsp.filters",
-     .label = "Filtering...",
-     .help = "RRC/MF.",
-     .submenu = DSP_FILTER_ITEMS,
-     .submenu_len = sizeof DSP_FILTER_ITEMS / sizeof DSP_FILTER_ITEMS[0],
-     .is_enabled = dsp_filters_any},
     {.id = "dsp.iq",
      .label = "IQ & Front-End...",
      .help = "IQ balance and DC blocker.",

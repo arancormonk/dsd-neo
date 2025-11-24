@@ -1511,44 +1511,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_toggle_ted(t ? 0 : 1);
                     break;
                 }
-                case UI_DSP_OP_TOGGLE_MF: {
-                    int mf = 0;
-                    rtl_stream_cqpsk_get(&mf);
-                    rtl_stream_cqpsk_set(mf ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_RRC: {
-                    int on = 0, a = 0, s = 0;
-                    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-                    rtl_stream_cqpsk_set_rrc(on ? 0 : 1, -1, -1);
-                    break;
-                }
-                case UI_DSP_OP_RRC_ALPHA_DELTA: {
-                    int on = 0, a = 0, s = 0;
-                    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-                    int na = a + p.a;
-                    if (na < 5) {
-                        na = 5;
-                    }
-                    if (na > 50) {
-                        na = 50;
-                    }
-                    rtl_stream_cqpsk_set_rrc(-1, na, -1);
-                    break;
-                }
-                case UI_DSP_OP_RRC_SPAN_DELTA: {
-                    int on = 0, a = 0, s = 0;
-                    rtl_stream_cqpsk_get_rrc(&on, &a, &s);
-                    int ns = s + p.a;
-                    if (ns < 3) {
-                        ns = 3;
-                    }
-                    if (ns > 16) {
-                        ns = 16;
-                    }
-                    rtl_stream_cqpsk_set_rrc(-1, -1, ns);
-                    break;
-                }
                 case UI_DSP_OP_TOGGLE_IQBAL: {
                     int on = rtl_stream_get_iq_balance();
 

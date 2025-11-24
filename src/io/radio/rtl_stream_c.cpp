@@ -34,10 +34,6 @@ int dsd_rtl_stream_get_ted_force(void);
 int dsd_rtl_stream_set_bias_tee(int on);
 void dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                      int sacch_err_delta, int voice_err_delta);
-void dsd_rtl_stream_cqpsk_set(int mf_enable);
-void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
-int dsd_rtl_stream_cqpsk_get(int* mf_enable);
-int dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
 int dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
 int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
 int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
@@ -294,26 +290,6 @@ rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, i
                             int voice_err_delta) {
     dsd_rtl_stream_p25p2_err_update(slot, facch_ok_delta, facch_err_delta, sacch_ok_delta, sacch_err_delta,
                                     voice_err_delta);
-}
-
-extern "C" void
-rtl_stream_cqpsk_set(int mf_enable) {
-    dsd_rtl_stream_cqpsk_set(mf_enable);
-}
-
-extern "C" int
-rtl_stream_cqpsk_get(int* mf_enable) {
-    return dsd_rtl_stream_cqpsk_get(mf_enable);
-}
-
-extern "C" void
-rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms) {
-    dsd_rtl_stream_cqpsk_set_rrc(enable, alpha_percent, span_syms);
-}
-
-extern "C" int
-rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
-    return dsd_rtl_stream_cqpsk_get_rrc(enable, alpha_percent, span_syms);
 }
 
 /* CQPSK acquisition-only FLL (pre-Costas) */

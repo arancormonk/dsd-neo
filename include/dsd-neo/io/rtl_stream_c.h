@@ -320,40 +320,6 @@ void rtl_stream_set_auto_ppm(int onoff);
 int rtl_stream_get_auto_ppm(void);
 
 /**
- * @brief Runtime CQPSK matched filter toggle.
- *
- * @param mf_enable Non-zero to enable matched filter; zero to disable; -1 to leave unchanged.
- */
-void rtl_stream_cqpsk_set(int mf_enable);
-/**
- * @brief Get CQPSK matched filter state; returns 0 on success.
- *
- * @param mf_enable [out] Matched filter enable flag.
- * @return 0 on success; negative on error.
- */
-int rtl_stream_cqpsk_get(int* mf_enable);
-
-/**
- * @brief Configure RRC matched filter (pass -1 to leave field unchanged).
- *
- * @param enable Non-zero to enable; zero to disable.
- * @param alpha_percent Roll-off (alpha*100) in [1,100]; negative to leave unchanged.
- * @param span_syms Span in symbols (3..16); negative to leave unchanged.
- */
-void rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
-/**
- * @brief Get current RRC parameters; returns 0 on success.
- *
- * Any pointer may be NULL.
- *
- * @param enable [out] Enable flag.
- * @param alpha_percent [out] Roll-off (alpha*100).
- * @param span_syms [out] Span in symbols.
- * @return 0 on success; negative on error.
- */
-int rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms);
-
-/**
  * @brief Get CQPSK acquisition-only pre-Costas FLL enable flag (0/1).
  *
  * @return 1 when enabled; 0 when disabled.

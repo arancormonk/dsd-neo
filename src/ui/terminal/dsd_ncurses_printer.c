@@ -561,10 +561,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #endif
     int cq = 0, fll = 0, ted = 0;
     rtl_stream_dsp_get(&cq, &fll, &ted);
-    int mf = 0;
-    rtl_stream_cqpsk_get(&mf);
-    int rrc_en = 0, rrc_a = 0, rrc_s = 0;
-    rtl_stream_cqpsk_get_rrc(&rrc_en, &rrc_a, &rrc_s);
     int iqb = rtl_stream_get_iq_balance();
     int dc_k = 0;
     int dc_on = rtl_stream_get_iq_dc(&dc_k);
@@ -604,12 +600,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     }
 
     if (cq) {
-        const char* mf_lab = mf ? (rrc_en ? "RRC" : "On") : "Off";
-        if (rrc_en) {
-            ui_print_kv_line("CQPSK MF", "MF:%s  a:%d%% s:%d", mf_lab, rrc_a, rrc_s);
-        } else {
-            ui_print_kv_line("CQPSK MF", "MF:%s", mf_lab);
-        }
         int acq = rtl_stream_get_cqpsk_acq_fll();
         int lck = 0;
 #ifdef USE_RTLSDR

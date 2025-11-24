@@ -1935,8 +1935,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int ted_sps;
         int ted_gain_q20;
         int ted_force;
-        int mf_enable;
-        int rrc_enable, rrc_alpha_q15, rrc_span_syms;
     } persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
@@ -1994,14 +1992,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             demod.ted_gain_q20 = persist.ted_gain_q20;
         }
         demod.ted_force = persist.ted_force ? 1 : 0;
-        demod.cqpsk_mf_enable = persist.mf_enable ? 1 : 0;
-        demod.cqpsk_rrc_enable = persist.rrc_enable ? 1 : 0;
-        if (persist.rrc_alpha_q15 > 0) {
-            demod.cqpsk_rrc_alpha_q15 = persist.rrc_alpha_q15;
-        }
-        if (persist.rrc_span_syms > 0) {
-            demod.cqpsk_rrc_span_syms = persist.rrc_span_syms;
-        }
     }
 
     /* Default: if user did not specify a manual tuner gain (0=AGC), enable
@@ -3268,9 +3258,6 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
 
 /* Runtime DSP tuning entrypoints (C shim) */
 
-/* Forward decl for CQPSK RRC reconfig */
-extern "C" void dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms);
-
 /* Helper: clamp integer within [lo, hi] */
 static inline int
 clampi(int v, int lo, int hi) {
@@ -3282,10 +3269,6 @@ clampi(int v, int lo, int hi) {
     }
     return v;
 }
-
-/* Forward declarations for CQPSK runtime helpers used by wrapper layer */
-extern "C" void dsd_rtl_stream_cqpsk_set(int mf_enable);
-extern "C" int dsd_rtl_stream_cqpsk_get(int* mf_enable);
 
 /**
  * @brief P25 Phase 2 error callbacks for runtime helpers.
@@ -3378,6 +3361,9 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.mode_demod = &qpsk_differential_demod;
         demod.cqpsk_diff_prev_r = 0;
         demod.cqpsk_diff_prev_j = 0;
+        demod.cqpsk_rms_agc_rms = 0.0f;
+        demod.cqpsk_acq_fll_locked = 0;
+        demod.cqpsk_acq_quiet_runs = 0;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
@@ -3436,72 +3422,6 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
     }
     if (ted_enable) {
         *ted_enable = demod.ted_enabled ? 1 : 0;
-    }
-    return 0;
-}
-
-/* CQPSK runtime helper: matched filter only */
-extern "C" void
-dsd_rtl_stream_cqpsk_set(int mf_enable) {
-    if (mf_enable >= 0) {
-        demod.cqpsk_mf_enable = mf_enable ? 1 : 0;
-    }
-}
-
-extern "C" int
-dsd_rtl_stream_cqpsk_get(int* mf_enable) {
-    if (mf_enable) {
-        *mf_enable = demod.cqpsk_mf_enable ? 1 : 0;
-    }
-    return 0;
-}
-
-/* Configure RRC matched filter parameters. Any arg <0 leaves it unchanged. */
-extern "C" void
-dsd_rtl_stream_cqpsk_set_rrc(int enable, int alpha_percent, int span_syms) {
-    if (enable >= 0) {
-        demod.cqpsk_rrc_enable = enable ? 1 : 0;
-    }
-    if (alpha_percent >= 0) {
-        int v = alpha_percent;
-        if (v < 1) {
-            v = 1;
-        }
-        if (v > 100) {
-            v = 100;
-        }
-        demod.cqpsk_rrc_alpha_q15 = (int)((v / 100.0) * 32768.0);
-    }
-    if (span_syms >= 0) {
-        int v = span_syms;
-        if (v < 3) {
-            v = 3;
-        }
-        if (v > 16) {
-            v = 16;
-        }
-        demod.cqpsk_rrc_span_syms = v;
-    }
-}
-
-/* Get current RRC MF params */
-extern "C" int
-dsd_rtl_stream_cqpsk_get_rrc(int* enable, int* alpha_percent, int* span_syms) {
-    if (enable) {
-        *enable = demod.cqpsk_rrc_enable ? 1 : 0;
-    }
-    if (alpha_percent) {
-        int ap = (int)lrint((demod.cqpsk_rrc_alpha_q15 / 32768.0) * 100.0);
-        if (ap < 0) {
-            ap = 0;
-        }
-        if (ap > 100) {
-            ap = 100;
-        }
-        *alpha_percent = ap;
-    }
-    if (span_syms) {
-        *span_syms = demod.cqpsk_rrc_span_syms;
     }
     return 0;
 }

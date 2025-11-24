@@ -538,10 +538,6 @@ target_include_directories(dsd-neo_test_dsp_audio_filters PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_dsp_audio_filters PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_AUDIO_FILTERS COMMAND dsd-neo_test_dsp_audio_filters)
 
-add_executable(dsd-neo_test_dsp_rrc dsp/test_dsp_rrc.cpp)
-target_include_directories(dsd-neo_test_dsp_rrc PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_rrc PRIVATE dsd-neo_dsp)
-add_test(NAME DSP_RRC COMMAND dsd-neo_test_dsp_rrc)
 
 # Additional DSP coverage
 add_executable(dsd-neo_test_dsp_hb_complex dsp/test_dsp_hb_complex.cpp)
@@ -566,10 +562,6 @@ target_link_libraries(dsd-neo_test_dsp_fm_agc_limit PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_FM_AGC_LIMIT COMMAND dsd-neo_test_dsp_fm_agc_limit)
 
 
-add_executable(dsd-neo_test_dsp_mf5 dsp/test_dsp_mf5.cpp)
-target_include_directories(dsd-neo_test_dsp_mf5 PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dsp_mf5 PRIVATE dsd-neo_dsp)
-add_test(NAME DSP_MF5 COMMAND dsd-neo_test_dsp_mf5)
 
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(dsd-neo_test_dsp_squelch PRIVATE ${PROJECT_SOURCE_DIR}/include)

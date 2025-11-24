@@ -136,6 +136,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->ted_gain_q20 = 0;
     s->ted_sps = 0;
     s->ted_mu_q20 = 0;
+    s->cqpsk_rms_agc_rms = 0.0f;
     s->cqpsk_fll_rot_applied = 0;
     /* Initialize FLL and TED module states */
     fll_init_state(&s->fll_state);
@@ -333,7 +334,8 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->resamp_target_hz = enable_resamp ? target : 0;
     demod->resamp_enabled = 0;
 
-    demod->fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : 0;
+    int default_fll = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    demod->fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : default_fll;
     demod->fll_alpha_q15 = cfg->fll_alpha_is_set ? cfg->fll_alpha_q15 : 50;
     demod->fll_beta_q15 = cfg->fll_beta_is_set ? cfg->fll_beta_q15 : 5;
     demod->fll_deadband_q14 = cfg->fll_deadband_is_set ? cfg->fll_deadband_q14 : 45;
@@ -358,7 +360,8 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
 
-    demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : 0;
+    int ted_default = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : ted_default;
     demod->ted_gain_q20 = cfg->ted_gain_is_set ? cfg->ted_gain_q20 : 64;
     demod->ted_sps = cfg->ted_sps_is_set ? cfg->ted_sps : 10;
     demod->ted_mu_q20 = 0;
@@ -372,8 +375,10 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     }
 
     /* Optional: acquisition-only FLL for CQPSK (pre-Costas).
-       Default OFF; may be enabled explicitly via env/UI. */
-    demod->cqpsk_acq_fll_enable = 0;
+       Default ON for CQPSK/P25/QPSK modes to mirror OP25 pull-in. */
+    int default_acq_fll =
+        (demod->cqpsk_enable || opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    demod->cqpsk_acq_fll_enable = default_acq_fll;
     const char* af = getenv("DSD_NEO_CQPSK_ACQ_FLL");
     if (af) {
         if (*af == '1' || *af == 'y' || *af == 'Y' || *af == 't' || *af == 'T') {
@@ -383,42 +388,9 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->cqpsk_acq_fll_locked = 0;
     demod->cqpsk_acq_quiet_runs = 0;
 
-    /* Matched filter pre-EQ: OFF by default for P25p2 (prefer Hann channel LPF),
-       ON for generic QPSK unless overridden via DSD_NEO_CQPSK_MF=1/0. */
-    int default_cqpsk_mf = (opts->frame_p25p2 == 1) ? 0 : ((opts->mod_qpsk == 1) ? 1 : 0);
-    demod->cqpsk_mf_enable = env_flag_default("DSD_NEO_CQPSK_MF", default_cqpsk_mf);
-
-    /* Optional RRC matched filter configuration (defaults to spec roll-off).
-       Default OFF for P25p2 to avoid over-narrow shaping. */
-    int default_rrc_enable = (opts->frame_p25p2 == 1) ? 0 : ((opts->mod_qpsk == 1) ? 1 : 0);
-    double default_rrc_alpha = 0.2; /* fixed spec roll-off */
-    demod->cqpsk_rrc_enable = env_flag_default("DSD_NEO_CQPSK_RRC", default_rrc_enable);
-    demod->cqpsk_rrc_alpha_q15 = (int)(default_rrc_alpha * 32768.0); /* roll-off default */
-    demod->cqpsk_rrc_span_syms = 6;                                  /* default 6 symbols (total span ~12) */
-    const char* rrca = getenv("DSD_NEO_CQPSK_RRC_ALPHA");
-    if (rrca) {
-        int v = atoi(rrca);
-        if (v < 1) {
-            v = 1;
-        }
-        if (v > 100) {
-            v = 100;
-        }
-        demod->cqpsk_rrc_alpha_q15 = (int)((v / 100.0) * 32768.0);
-    }
-    const char* rrcs = getenv("DSD_NEO_CQPSK_RRC_SPAN");
-    if (rrcs) {
-        int v = atoi(rrcs);
-        if (v < 3) {
-            v = 3;
-        }
-        if (v > 16) {
-            v = 16;
-        }
-        demod->cqpsk_rrc_span_syms = v;
-    }
-    /* When CQPSK is enabled for P25 Phase 2 we keep MF/RRC disabled by default.
-       Users may enable these helpers explicitly via env or the DSP menu. */
+    /* CQPSK RMS AGC (pre-FLL) to mirror OP25 rms_agc block */
+    demod->cqpsk_rms_agc_enable = env_flag_default("DSD_NEO_CQPSK_RMS_AGC", 1);
+    demod->cqpsk_rms_agc_rms = 0.0f;
 
     /* FM/C4FM amplitude AGC (pre-discriminator): default OFF for all modes.
        Users can enable via env `DSD_NEO_FM_AGC=1` or the UI toggle. */
@@ -523,11 +495,13 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             }
             /* Choose symbol rate by mode; keep explicit branches for narrow paths. */
             int sym_rate = 4800; /* generic 4.8 ksps */
-            if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
+            if (opts->frame_p25p1 == 1) {
+                sym_rate = 4800;
+            } else if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
                 sym_rate = 6000;
             } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
                 sym_rate = 2400;
-            } else if (opts->frame_p25p1 == 1 || opts->frame_provoice == 1) {
+            } else if (opts->frame_provoice == 1) {
                 sym_rate = 4800;
             }
             if (Fs_cx < (sym_rate * 2)) {
@@ -686,11 +660,13 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int sps = 0;
     if (opts) {
         int sym_rate = 4800;
-        if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
+        if (opts->frame_p25p1 == 1) {
+            sym_rate = 4800;
+        } else if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
             sym_rate = 6000;
         } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
             sym_rate = 2400;
-        } else if (opts->frame_p25p1 == 1 || opts->frame_provoice == 1) {
+        } else if (opts->frame_provoice == 1) {
             sym_rate = 4800;
         }
         if (Fs_cx < (sym_rate * 2)) {

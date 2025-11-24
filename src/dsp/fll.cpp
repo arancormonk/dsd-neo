@@ -11,6 +11,7 @@
  * Uses high-quality sin/cos from the math library for NCO rotation.
 */
 
+#include <complex>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <math.h>
@@ -44,14 +45,14 @@ fll_be_wrap_phase(float p) {
 }
 
 static inline void
-fll_be_update_gains(fll_state_t* st, float loop_bw) {
+fll_be_update_gains(fll_state_t* st, float loop_bw, float sps) {
     if (!st) {
         return;
     }
+    /* Match GNU Radio fll_band_edge_cc: alpha = 0, beta = 4*loop_bw/sps (loop_bw already in rad). */
     st->be_loop_bw = loop_bw;
-    float denom = 1.0f + 2.0f * kBeDamping * loop_bw + loop_bw * loop_bw;
-    st->be_alpha = (4.0f * kBeDamping * loop_bw) / denom;
-    st->be_beta = (4.0f * loop_bw * loop_bw) / denom;
+    st->be_alpha = 0.0f;
+    st->be_beta = (4.0f * loop_bw) / sps;
 }
 
 static void
@@ -101,7 +102,7 @@ fll_be_design_filters(fll_state_t* st, float sps, float rolloff, int filter_size
         st->be_buf_r[i] = 0.0f;
         st->be_buf_i[i] = 0.0f;
     }
-    fll_be_update_gains(st, kTwoPiF / (sps * 250.0f)); /* OP25 default */
+    fll_be_update_gains(st, kTwoPiF / (sps * 250.0f), sps); /* OP25 default */
 }
 
 /* Very small integrator leakage to avoid long-term windup/drift.
@@ -380,28 +381,29 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x
     float* buf_i = state->be_buf_i;
     const int pairs = N >> 1;
     const float q15_per_rad = 32768.0f / kTwoPiF;
+    /* Incremental NCO to avoid per-sample sinf/cosf (mirror GNURadio control_loop). */
+    std::complex<float> nco = std::exp(std::complex<float>(0.0f, phase));
     int last_r = 0;
     int last_j = 0;
 
     for (int n = 0; n < pairs; n++) {
         float ir = (float)x[(size_t)(n << 1)];
         float iq = (float)x[(size_t)(n << 1) + 1];
-        float c = cosf(phase);
-        float s = sinf(phase);
-        float zr = ir * c - iq * s;
-        float zi = ir * s + iq * c;
-        int32_t zr_i = (int32_t)lrintf(zr);
-        int32_t zi_i = (int32_t)lrintf(zi);
+        /* Apply NCO rotation via incremental phasor */
+        std::complex<float> z(ir, iq);
+        std::complex<float> y = z * nco;
+        int32_t zr_i = (int32_t)lrintf(y.real());
+        int32_t zi_i = (int32_t)lrintf(y.imag());
         x[(size_t)(n << 1)] = sat16(zr_i);
         x[(size_t)(n << 1) + 1] = sat16(zi_i);
         last_r = zr_i;
         last_j = zi_i;
 
         /* Push into ring buffer (with mirror to simplify dot product like GNU Radio). */
-        buf_r[buf_idx] = zr;
-        buf_i[buf_idx] = zi;
-        buf_r[buf_idx + taps_len] = zr;
-        buf_i[buf_idx + taps_len] = zi;
+        buf_r[buf_idx] = y.real();
+        buf_i[buf_idx] = y.imag();
+        buf_r[buf_idx + taps_len] = y.real();
+        buf_i[buf_idx + taps_len] = y.imag();
         buf_idx++;
         if (buf_idx >= taps_len) {
             buf_idx = 0;
@@ -420,12 +422,19 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x
         }
         float e_upper = acc_ur * acc_ur + acc_ui * acc_ui;
         float e_lower = acc_lr * acc_lr + acc_li * acc_li;
-        float error = e_upper - e_lower;
+        /* Align sign with GNU Radio fll_band_edge_cc: error = lower - upper */
+        float error = e_lower - e_upper;
 
         freq = freq + beta * error;
         phase = phase + freq + alpha * error;
         phase = fll_be_wrap_phase(phase);
         freq = clampf(freq, fmin, fmax);
+        /* Advance incremental NCO (rebuild occasionally to bound drift) */
+        std::complex<float> step = std::exp(std::complex<float>(0.0f, freq));
+        nco *= step;
+        if ((n & 63) == 0) {
+            nco = std::exp(std::complex<float>(0.0f, phase));
+        }
     }
 
     state->be_phase = phase;
@@ -435,6 +444,11 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x
     int fq15 = (int)lrintf(freq * q15_per_rad);
     int pq15 = ((int)lrintf(phase * q15_per_rad)) & 0x7FFF;
     int f_clamp_q15 = (int)lrintf(fmax * q15_per_rad);
+    /* Further limit clamp to avoid runaway when input is noisy */
+    const int kClampLimitQ15 = 8192;
+    if (f_clamp_q15 > kClampLimitQ15) {
+        f_clamp_q15 = kClampLimitQ15;
+    }
     state->freq_q15 = clamp_i(fq15, -f_clamp_q15, f_clamp_q15);
     state->phase_q15 = pq15;
     state->int_q15 = state->freq_q15; /* mirror loop state for outer helpers */
