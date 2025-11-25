@@ -212,6 +212,8 @@ analog_gain(dsd_opts* opts, dsd_state* state, short* input, int len) {
 
 // Automatic gain for float mono paths (analog monitor).
 // Native float version avoids repeated short<->float conversions.
+// Input is expected to be normalized ~[-1, 1] from the RTL demodulator.
+// Output should be scaled to int16 range for PulseAudio playback.
 void
 agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
     int i;
@@ -220,7 +222,7 @@ agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 
     float coeff = 0.0f;  //gain coefficient
     float max = 0.0f;    //the highest sample value
-    float nom = 4800.0f; //nominator value for 48k
+    float nom = 4800.0f; //target output level (int16 scale)
 
     // Find max absolute value
     for (i = 0; i < len; i++) {
@@ -236,9 +238,10 @@ agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 
     coeff = fabsf(nom / max);
 
-    // Keep coefficient with tolerable range when silence to prevent crackle/buzz
-    if (coeff > 3.0f) {
-        coeff = 3.0f;
+    // For normalized float input ~[-1,1], we need higher gain to reach int16 levels.
+    // Cap at 6000 to prevent extreme amplification on very quiet signals.
+    if (coeff > 6000.0f) {
+        coeff = 6000.0f;
     }
 
     // Apply the coefficient to bring the max value to our desired maximum value
@@ -250,13 +253,21 @@ agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 }
 
 // Manual analog gain control for float paths.
+// Input may be normalized ~[-1, 1] (RTL) or PCM16-scale (WAV/other inputs).
+// Uses audio_in_type to determine if base scaling is needed.
 void
 analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 
     int i;
     UNUSED(state);
 
-    float gain = (opts->audio_gainA / 100.0f) * 5.0f; //scale 0x - 5x
+    // RTL input (type 3) produces normalized [-1,1] samples and needs base scaling.
+    // All other input types (WAV, Pulse, TCP, etc.) produce PCM16-scale samples.
+    float base_scale = (opts->audio_in_type == 3) ? 4800.0f : 1.0f;
+
+    // User gain: 0% to 100% maps to 0x to 5x
+    float user_gain = (opts->audio_gainA / 100.0f) * 5.0f;
+    float gain = base_scale * user_gain;
 
     for (i = 0; i < len; i++) {
         input[i] *= gain;
