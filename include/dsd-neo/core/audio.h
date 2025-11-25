@@ -95,16 +95,22 @@ void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo
 void agf(dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
 /** @brief Apply short-domain gain to buffer of given length. */
 void agsm(dsd_opts* opts, dsd_state* state, short* input, int len); // short gain control
+/** @brief Apply float-domain auto gain control for analog monitor path. */
+void agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len); // float gain control for analog
 /** @brief Apply manual analog gain to short buffer. */
 void analog_gain(dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
+/** @brief Apply manual analog gain to float buffer. */
+void analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len); // float manual gain for analog
 
 /** @brief Multiply float buffer by gain factor in-place. */
 void audio_apply_gain_f32(float* buf, size_t n, float gain);
 /** @brief Multiply int16 buffer by gain factor in-place. */
 void audio_apply_gain_s16(short* buf, size_t n, float gain);
 
-/** @brief Simple legacy 8k→48k upsampler (6:1). */
+/** @brief Simple legacy 8k→48k upsampler (6:1) with linear interpolation. */
 void upsampleS(short invalue, short prev, short outbuf[6]);
+/** @brief Float 8k→48k upsampler (6:1) with linear interpolation. */
+void upsampleF(float invalue, float prev, float outbuf[6]);
 
 /** @brief Convert float samples to int16 with scaling. */
 void audio_float_to_s16(const float* in, short* out, size_t n, float scale);

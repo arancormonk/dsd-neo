@@ -815,12 +815,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 state->analog_sample_counter = (int)analog_block - 1;
             }
 
-            state->analog_out[state->analog_sample_counter++] = float_to_int16_clip(sample);
+            // Store float sample (native precision path)
+            state->analog_out_f[state->analog_sample_counter++] = sample;
 
             if ((unsigned int)state->analog_sample_counter == analog_block) {
-                //measure input power for non-RTL inputs
+                //measure input power for non-RTL inputs (use float path)
                 if (opts->audio_in_type != 3) {
-                    opts->rtl_pwr = raw_pwr(state->analog_out, (int)analog_block, 1);
+                    opts->rtl_pwr = raw_pwr_f(state->analog_out_f, (int)analog_block, 1);
                     // Optional: warn on persistently low input level
                     if (opts->input_warn_db < 0.0) {
                         double db = pwr_to_dB(opts->rtl_pwr);
@@ -837,45 +838,53 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
 
                 //raw wav file saving -- only write when not NXDN, dPMR, or M17 due to noise that can cause tons of false positives when no sync
+                // Convert to int16 for WAV file (before filtering for raw capture)
                 if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0
                     && opts->frame_dpmr == 0 && opts->frame_m17 == 0) {
+                    for (unsigned int i = 0; i < analog_block; i++) {
+                        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
+                    }
                     sf_write_short(opts->wav_out_raw, state->analog_out, analog_block);
                     sf_write_sync(opts->wav_out_raw);
                 }
 
-                //low pass filter
+                //low pass filter (native float path)
                 if (opts->use_lpf == 1) {
-                    lpf(state, state->analog_out, (int)analog_block);
+                    lpf_f(state, state->analog_out_f, (int)analog_block);
                 }
 
-                //high pass filter
+                //high pass filter (native float path)
                 if (opts->use_hpf == 1) {
-                    hpf(state, state->analog_out, (int)analog_block);
+                    hpf_f(state, state->analog_out_f, (int)analog_block);
                 }
 
-                //pass band filter
+                //pass band filter (native float path)
                 if (opts->use_pbf == 1) {
-                    pbf(state, state->analog_out, (int)analog_block);
+                    pbf_f(state, state->analog_out_f, (int)analog_block);
                 }
 
-                //manual gain control
+                //manual gain control (native float path)
                 if (opts->audio_gainA > 0.0f) {
-                    analog_gain(opts, state, state->analog_out, (int)analog_block);
+                    analog_gain_f(opts, state, state->analog_out_f, (int)analog_block);
                 }
 
-                //automatic gain control
+                //automatic gain control (native float path)
                 else {
-                    agsm(opts, state, state->analog_out, (int)analog_block);
+                    agsm_f(opts, state, state->analog_out_f, (int)analog_block);
                 }
 
                 //Running PWR after filtering does remove the analog spike from the PWR value
                 //but noise floor noise will still produce higher values
                 // if (opts->audio_in_type != 3  && opts->monitor_input_audio == 1)
-                //   opts->rtl_pwr = raw_pwr(state->analog_out, 960, 1);
+                //   opts->rtl_pwr = raw_pwr_f(state->analog_out_f, 960, 1);
 
                 //seems to be working now, but PWR values are lower on actual analog signal than on no signal but noise
                 if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
                     && opts->audio_out == 1) { //added carrier check here in lieu of disabling it above
+                    // Convert float to int16 for output (final conversion at output stage)
+                    for (unsigned int i = 0; i < analog_block; i++) {
+                        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
+                    }
                     size_t bytes = (size_t)analog_block * sizeof(short);
                     if (opts->audio_out_type == 0) {
                         pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, bytes, NULL);
@@ -925,6 +934,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 //   sf_write_sync (opts->wav_out_raw);
                 // }
 
+                memset(state->analog_out_f, 0, sizeof(state->analog_out_f));
                 memset(state->analog_out, 0, sizeof(state->analog_out));
                 state->analog_sample_counter = 0;
             }
@@ -937,16 +947,22 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 state->analog_sample_counter = analog_max_index;
             }
 
-            state->analog_out[state->analog_sample_counter++] = float_to_int16_clip(sample);
+            // Store float sample (native precision path)
+            state->analog_out_f[state->analog_sample_counter++] = sample;
 
             if ((unsigned int)state->analog_sample_counter == analog_out_cap) {
                 //raw wav file saving -- file size on this blimps pretty fast 1 min ~= 6 MB;  1 hour ~= 360 MB;
                 if (opts->wav_out_raw != NULL) {
+                    // Convert float to int16 for WAV file output
+                    for (unsigned int i = 0; i < analog_out_cap; i++) {
+                        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
+                    }
                     sf_write_short(opts->wav_out_raw, state->analog_out, analog_out_cap);
                     sf_write_sync(opts->wav_out_raw);
                 }
 
                 //zero out and reset counter
+                memset(state->analog_out_f, 0, sizeof(state->analog_out_f));
                 memset(state->analog_out, 0, sizeof(state->analog_out));
                 state->analog_sample_counter = 0;
             }

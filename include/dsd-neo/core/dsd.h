@@ -262,6 +262,53 @@ int getDibit(dsd_opts* opts, dsd_state* state);
  */
 int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
 /**
+ * @brief Get the next dibit and store the soft symbol for Viterbi decoding.
+ *
+ * This function reads the next dibit while also recording the raw float
+ * symbol value in state->soft_symbol_buf for later soft-decision FEC.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state containing symbol buffers and thresholds.
+ * @param out_soft_symbol [out] Raw float symbol value when non-NULL.
+ * @return Dibit value [0,3]; negative on shutdown/EOF.
+ */
+int getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
+/**
+ * @brief Mark the start of a new frame for soft symbol collection.
+ *
+ * Call this before reading dibits for a frame that will use soft-decision
+ * Viterbi decoding. The soft_symbol_frame_start index is recorded.
+ *
+ * @param state Decoder state.
+ */
+void soft_symbol_frame_begin(dsd_state* state);
+/**
+ * @brief Convert a soft symbol to Viterbi cost (0x0000 = strong 0, 0xFFFF = strong 1).
+ *
+ * Maps a float symbol value to a 16-bit Viterbi soft metric based on the
+ * symbol's position relative to slicer thresholds. Symbols near decision
+ * boundaries produce metrics near 0x7FFF (uncertain), while symbols far
+ * from boundaries produce metrics near 0x0000 or 0xFFFF (confident).
+ *
+ * @param symbol Raw float symbol value.
+ * @param state Decoder state containing slicer thresholds.
+ * @param bit_position 0 for MSB of dibit, 1 for LSB of dibit.
+ * @return 16-bit Viterbi cost metric.
+ */
+uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);
+/**
+ * @brief Convert a GMSK (binary) soft symbol to Viterbi cost.
+ *
+ * For GMSK modulation where each symbol represents a single bit.
+ * Maps based on distance from center threshold.
+ * 0x0000 = strong 0 (below center), 0xFFFF = strong 1 (above center).
+ *
+ * @param symbol Raw float symbol value.
+ * @param state Decoder state containing center threshold.
+ * @return 16-bit Viterbi cost metric.
+ */
+uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
+/**
  * @brief Map a raw symbol to a dibit using the active thresholds.
  *
  * @param opts Decoder options.
@@ -1110,6 +1157,8 @@ extern "C" {
 double raw_rms(const short* samples, int len, int step);
 /** @brief Compute mean power over a sample buffer with stride. */
 double raw_pwr(const short* samples, int len, int step);
+/** @brief Compute mean power over a float sample buffer with stride. */
+double raw_pwr_f(const float* samples, int len, int step);
 /** @brief Convert mean power (normalized) to dBFS, clamped to [-120,0]. */
 double pwr_to_dB(double mean_power);
 /** @brief Convert dBFS to normalized mean power. */
@@ -1127,10 +1176,16 @@ double dB_to_pwr(double dB);
 void init_audio_filters(dsd_state* state, int sample_rate_hz);
 /** @brief Apply one-pole low-pass filter to short buffer. */
 void lpf(dsd_state* state, short* input, int len);
+/** @brief Apply one-pole low-pass filter to float buffer. */
+void lpf_f(dsd_state* state, float* input, int len);
 /** @brief Apply one-pole high-pass filter to short buffer. */
 void hpf(dsd_state* state, short* input, int len);
+/** @brief Apply one-pole high-pass filter to float buffer. */
+void hpf_f(dsd_state* state, float* input, int len);
 /** @brief Apply band-pass filter to short buffer. */
 void pbf(dsd_state* state, short* input, int len);
+/** @brief Apply band-pass filter to float buffer. */
+void pbf_f(dsd_state* state, float* input, int len);
 /** @brief Apply notch filter to short buffer. */
 void nf(dsd_state* state, short* input, int len);
 /** @brief Apply digital high-pass filter to slot L audio. */

@@ -541,6 +541,193 @@ getDibit(dsd_opts* opts, dsd_state* state) {
     return get_dibit_and_analog_signal(opts, state, NULL);
 }
 
+/**
+ * \brief Get the next dibit and store the soft symbol for Viterbi decoding.
+ *
+ * This function reads the next dibit while also recording the raw float
+ * symbol value in state->soft_symbol_buf for soft-decision FEC.
+ */
+int
+getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) {
+    float symbol;
+    int dibit;
+
+    state->numflips = 0;
+    symbol = getSymbol(opts, state, 1);
+
+    // Store soft symbol in ring buffer
+    state->soft_symbol_buf[state->soft_symbol_head] = symbol;
+    state->soft_symbol_head = (state->soft_symbol_head + 1) & 511; // Wrap at 512
+
+    state->sbuf[state->sidx] = symbol;
+    use_symbol(opts, state, symbol);
+    dibit = digitize(opts, state, symbol);
+
+    if (opts->audio_in_type == 4) {
+        dibit = state->symbolc;
+        if (state->use_throttle == 1) {
+            usleep(0);
+        }
+    }
+
+    if (opts->symbol_out_f) {
+        fputc(dibit, opts->symbol_out_f);
+    }
+
+    if (out_soft_symbol != NULL) {
+        *out_soft_symbol = symbol;
+    }
+
+    return dibit;
+}
+
+/**
+ * \brief Mark the start of a new frame for soft symbol collection.
+ */
+void
+soft_symbol_frame_begin(dsd_state* state) {
+    state->soft_symbol_frame_start = state->soft_symbol_head;
+}
+
+/**
+ * \brief Convert a soft symbol to Viterbi cost metric.
+ *
+ * For 4-level modulations (C4FM, GFSK, QPSK), each dibit encodes 2 bits.
+ * The MSB (bit_position=0) determines upper/lower half (+3/+1 vs -1/-3).
+ * The LSB (bit_position=1) determines inner/outer level (+3/-3 vs +1/-1).
+ *
+ * Returns 0x0000 for confident '0', 0xFFFF for confident '1', ~0x7FFF for uncertain.
+ *
+ * M17 uses GFSK with dibit mapping: 01->+3, 00->+1, 10->-1, 11->-3
+ * So for M17: MSB=0 means positive (>center), MSB=1 means negative (<center)
+ *             LSB=0 means inner (±1), LSB=1 means outer (±3)
+ */
+uint16_t
+soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position) {
+    float center = state->center;
+    float umid = state->umid;
+    float lmid = state->lmid;
+    float max_val = state->max;
+    float min_val = state->min;
+    float confidence;
+    int bit_value;
+
+    // Compute span for normalization, guard against zero
+    float span = max_val - min_val;
+    if (span < 1e-6f) {
+        span = 1.0f;
+    }
+
+    if (bit_position == 0) {
+        // MSB: determines if symbol is in upper half (0) or lower half (1)
+        // For M17 GFSK: positive symbols -> bit 0, negative -> bit 1
+        if (symbol > center) {
+            bit_value = 0;
+            // Confidence based on distance from center toward max
+            confidence = (symbol - center) / (max_val - center + 1e-6f);
+        } else {
+            bit_value = 1;
+            // Confidence based on distance from center toward min
+            confidence = (center - symbol) / (center - min_val + 1e-6f);
+        }
+    } else {
+        // LSB: determines inner (0) or outer (1) level
+        // For M17 GFSK: ±1 -> bit 0, ±3 -> bit 1
+        float abs_sym = fabsf(symbol - center);
+        float mid_threshold = (fabsf(umid - center) + fabsf(lmid - center)) / 2.0f;
+
+        if (abs_sym < mid_threshold) {
+            // Inner level (±1)
+            bit_value = 0;
+            confidence = (mid_threshold - abs_sym) / (mid_threshold + 1e-6f);
+        } else {
+            // Outer level (±3)
+            bit_value = 1;
+            confidence = (abs_sym - mid_threshold) / (span / 2.0f - mid_threshold + 1e-6f);
+        }
+    }
+
+    // Clamp confidence to [0, 1]
+    if (confidence < 0.0f) {
+        confidence = 0.0f;
+    }
+    if (confidence > 1.0f) {
+        confidence = 1.0f;
+    }
+
+    // Map to Viterbi cost:
+    // bit_value=0: confident -> 0x0000, uncertain -> 0x7FFF
+    // bit_value=1: confident -> 0xFFFF, uncertain -> 0x7FFF
+    uint16_t cost;
+    if (bit_value == 0) {
+        // Strong 0 = 0x0000, weak 0 = 0x7FFF
+        cost = (uint16_t)((1.0f - confidence) * 32767.0f);
+    } else {
+        // Strong 1 = 0xFFFF, weak 1 = 0x7FFF
+        cost = (uint16_t)(32767.0f + confidence * 32768.0f);
+    }
+
+    return cost;
+}
+
+/**
+ * GMSK (binary) soft symbol to Viterbi cost.
+ *
+ * For GMSK modulation where each symbol represents a single bit.
+ * D-STAR uses GMSK where: symbol > center -> bit 1, symbol < center -> bit 0
+ * Distance from center indicates confidence in the decision.
+ */
+uint16_t
+gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
+    float center = state->center;
+    float max_val = state->max;
+    float min_val = state->min;
+    float confidence;
+    int bit_value;
+
+    float upper_span = max_val - center;
+    if (upper_span < 1e-6f) {
+        upper_span = 1e-6f;
+    }
+    float lower_span = center - min_val;
+    if (lower_span < 1e-6f) {
+        lower_span = 1e-6f;
+    }
+
+    // GMSK: above center = 1, below center = 0
+    if (symbol > center) {
+        bit_value = 1;
+        // Confidence based on distance from center toward max
+        confidence = (symbol - center) / upper_span;
+    } else {
+        bit_value = 0;
+        // Confidence based on distance from center toward min
+        confidence = (center - symbol) / lower_span;
+    }
+
+    // Clamp confidence to [0, 1]
+    if (confidence < 0.0f) {
+        confidence = 0.0f;
+    }
+    if (confidence > 1.0f) {
+        confidence = 1.0f;
+    }
+
+    // Map to Viterbi cost:
+    // bit_value=0: confident -> 0x0000, uncertain -> 0x7FFF
+    // bit_value=1: confident -> 0xFFFF, uncertain -> 0x7FFF
+    uint16_t cost;
+    if (bit_value == 0) {
+        // Strong 0 = 0x0000, weak 0 = 0x7FFF
+        cost = (uint16_t)((1.0f - confidence) * 32767.0f);
+    } else {
+        // Strong 1 = 0xFFFF, weak 1 = 0x7FFF
+        cost = (uint16_t)(32767.0f + confidence * 32768.0f);
+    }
+
+    return cost;
+}
+
 void
 skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 

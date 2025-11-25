@@ -772,147 +772,102 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
 
 } //end processM17STR
 
-//original version using nxdn convolutional decoder
+//Soft-symbol enhanced version using libM17 Viterbi decoder
 void
 processM17LSF(dsd_opts* opts, dsd_state* state) {
 
-    //NOTE: Works now with decisions based on previous bit, but still
-    //not quite as good as it needs to be, need better decision making on the punctured bit
-
     int i, j, k, x;
-    uint8_t dbuf[184];         //384-bit frame - 16-bit (8 symbol) sync pattern (184 dibits)
-    uint8_t m17_rnd_bits[368]; //368 bits that are still scrambled (randomized)
-    uint8_t m17_int_bits[368]; //368 bits that are still interleaved
-    uint8_t m17_bits[368];     //368 bits that have been de-interleaved and de-scrambled
-    uint8_t m17_depunc[500];   //488 bits after depuncturing
+    uint8_t dbuf[184];           //384-bit frame - 16-bit (8 symbol) sync pattern (184 dibits)
+    float soft_symbols[184];     //Raw float symbol values for soft-decision Viterbi
+    uint8_t m17_rnd_bits[368];   //368 bits that are still scrambled (randomized)
+    uint8_t m17_int_bits[368];   //368 bits that are still interleaved
+    uint16_t m17_soft_bits[368]; //368 soft bit costs (de-interleaved and de-scrambled)
+    uint16_t m17_depunc[488];    //488 weighted values after depuncturing
 
     memset(dbuf, 0, sizeof(dbuf));
+    memset(soft_symbols, 0, sizeof(soft_symbols));
     memset(m17_rnd_bits, 0, sizeof(m17_rnd_bits));
     memset(m17_int_bits, 0, sizeof(m17_int_bits));
-    memset(m17_bits, 0, sizeof(m17_bits));
+    memset(m17_soft_bits, 0, sizeof(m17_soft_bits));
     memset(m17_depunc, 0, sizeof(m17_depunc));
 
-    //load dibits into dibit buffer
+    //Mark frame start for soft symbol tracking
+    soft_symbol_frame_begin(state);
+
+    //load dibits and soft symbols into buffers
     for (i = 0; i < 184; i++) {
-        dbuf[i] = (uint8_t)getDibit(opts, state);
+        dbuf[i] = (uint8_t)getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
     }
 
-    //convert dbuf into a bit array
+    //Convert dibits to bits and compute soft costs from float symbols
+    //M17 uses GFSK with dibit mapping: 01->+3, 00->+1, 10->-1, 11->-3
+    uint16_t m17_soft_rnd[368]; //Soft costs before descrambling (interleaved)
     for (i = 0; i < 184; i++) {
-        m17_rnd_bits[i * 2 + 0] = (dbuf[i] >> 1) & 1;
-        m17_rnd_bits[i * 2 + 1] = (dbuf[i] >> 0) & 1;
+        //Extract hard bits for scramble XOR
+        m17_rnd_bits[i * 2 + 0] = (dbuf[i] >> 1) & 1; //MSB
+        m17_rnd_bits[i * 2 + 1] = (dbuf[i] >> 0) & 1; //LSB
+
+        //Compute soft costs from float symbol
+        //MSB (bit 0): positive symbols -> 0, negative -> 1
+        //LSB (bit 1): inner level -> 0, outer level -> 1
+        m17_soft_rnd[i * 2 + 0] = soft_symbol_to_viterbi_cost(soft_symbols[i], state, 0);
+        m17_soft_rnd[i * 2 + 1] = soft_symbol_to_viterbi_cost(soft_symbols[i], state, 1);
     }
 
-    //descramble the frame
+    //Descramble: XOR flips the bit, so we invert the soft cost
+    //If scramble bit is 1, invert cost: 0x0000 <-> 0xFFFF (flip around 0x7FFF)
+    uint16_t m17_soft_int[368]; //Soft costs after descrambling (still interleaved)
     for (i = 0; i < 368; i++) {
         m17_int_bits[i] = (m17_rnd_bits[i] ^ m17_scramble[i]) & 1;
+        if (m17_scramble[i]) {
+            //Invert soft cost: 0xFFFF - cost (flip around midpoint)
+            m17_soft_int[i] = 0xFFFF - m17_soft_rnd[i];
+        } else {
+            m17_soft_int[i] = m17_soft_rnd[i];
+        }
     }
 
-    //deinterleave the bit array using Quadratic Permutation Polynomial
-    //function π(x) = (45x + 92x^2 ) mod 368
+    //Deinterleave using Quadratic Permutation Polynomial
+    //function π(x) = (45x + 92x^2) mod 368
     for (i = 0; i < 368; i++) {
         x = ((45 * i) + (92 * i * i)) % 368;
-        m17_bits[i] = m17_int_bits[x];
+        m17_soft_bits[i] = m17_soft_int[x];
     }
 
+    //P1 Depuncture with soft costs
+    //For punctured positions, use neutral cost 0x7FFF (maximum uncertainty)
     j = 0;
-    k = 0;
-    x = 0;
-
-    // P1 Depuncture
     for (i = 0; i < 488; i++) {
-        //assign any puncture as a 0
-        // if (p1[k++] == 1) m17_depunc[x++] = m17_bits[j++];
-        // else m17_depunc[x++] = 0;
-
-        //seems to be better if we use the last bit as an educated guess on what the next bit should be
-        //this pseudo logic is based purely on 0xFFFFFFFFFF as Broadcast, and all zeroes as the Meta(IV)
-
-        //DST, or META field
-        if (i < 48 || i > 96) {
-            if (p1[k++] == 1) {
-                m17_depunc[x++] = m17_bits[j++];
-            } else if (m17_depunc[x - 2] == 1) {
-                m17_depunc[x++] = 1;
-            } else {
-                m17_depunc[x++] = 0;
-            }
-        } else //any other field
-        {
-            if (p1[k++] == 1) {
-                m17_depunc[x++] = m17_bits[j++];
-            } else {
-                m17_depunc[x++] = 0;
-            }
-        }
-
-        if (k == 61) {
-            k = 0; //61 -- should reset 8 times againt the array
+        if (p1[i % 61] == 1) {
+            m17_depunc[i] = m17_soft_bits[j++];
+        } else {
+            //Punctured bit: use neutral/uncertain cost
+            m17_depunc[i] = 0x7FFF;
         }
     }
 
-    //debug -- values seem okay at end of run
-    // fprintf (stderr, "K = %d; J = %d; X = %d", k, j, x);
+    //Use the libM17 Viterbi Decoder with soft costs
+    uint8_t lsf_bytes[31];
+    memset(lsf_bytes, 0, sizeof(lsf_bytes));
+    uint16_t len = 488;
+    (void)viterbi_decode(lsf_bytes, m17_depunc, len);
 
-    //debug deinterleaved bits
-    // fprintf (stderr, "\n DEINT: ");
-    // for (i = 0; i < 368; i++)
-    //   fprintf (stderr, "%d,", m17_bits[i]);
-
-    //debug depunctured bits
-    // fprintf (stderr, "\n DEPUNC: ");
-    // for (i = 0; i < 488; i++)
-    //   fprintf (stderr, "%d,", m17_depunc[i]);
-
-    //setup the convolutional decoder
-    uint8_t temp[500];
-    uint8_t s0;
-    uint8_t s1;
-    uint8_t m_data[32];
-    uint8_t trellis_buf[260]; //30*8 = 240
-    memset(trellis_buf, 0, sizeof(trellis_buf));
-    memset(temp, 0, sizeof(temp));
-    memset(m_data, 0, sizeof(m_data));
-
-    for (i = 0; i < 488; i++) {
-        temp[i] = m17_depunc[i] << 1;
-    }
-
-    CNXDNConvolution_start();
-    for (i = 0; i < 244; i++) {
-        s0 = temp[((size_t)2 * i)];
-        s1 = temp[((size_t)2 * i) + 1];
-
-        CNXDNConvolution_decode(s0, s1);
-    }
-
-    CNXDNConvolution_chainback(m_data, 240);
-
-    //244/8 = 30, last 4 (244-248) are trailing zeroes
-    for (i = 0; i < 30; i++) {
-        trellis_buf[((size_t)i * 8) + 0] = (m_data[i] >> 7) & 1;
-        trellis_buf[((size_t)i * 8) + 1] = (m_data[i] >> 6) & 1;
-        trellis_buf[((size_t)i * 8) + 2] = (m_data[i] >> 5) & 1;
-        trellis_buf[((size_t)i * 8) + 3] = (m_data[i] >> 4) & 1;
-        trellis_buf[((size_t)i * 8) + 4] = (m_data[i] >> 3) & 1;
-        trellis_buf[((size_t)i * 8) + 5] = (m_data[i] >> 2) & 1;
-        trellis_buf[((size_t)i * 8) + 6] = (m_data[i] >> 1) & 1;
-        trellis_buf[((size_t)i * 8) + 7] = (m_data[i] >> 0) & 1;
-    }
-
-    memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    memcpy(state->m17_lsf, trellis_buf, 240);
-
+    //Copy + left shift one octet (skip flush bits)
     uint8_t lsf_packed[30];
     memset(lsf_packed, 0, sizeof(lsf_packed));
+    memcpy(lsf_packed, lsf_bytes + 1, 30);
 
-    //need to pack bytes for the sw5wwp variant of the crc (might as well, may be useful in the future)
-    for (i = 0; i < 30; i++) {
-        lsf_packed[i] = (uint8_t)ConvertBitIntoBytes(&state->m17_lsf[((size_t)i * 8)], 8);
+    //Unpack bytes into m17_lsf bits
+    memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    k = 0;
+    for (j = 0; j < 30; j++) {
+        for (i = 0; i < 8; i++) {
+            state->m17_lsf[k++] = (lsf_packed[j] >> (7 - i)) & 1;
+        }
     }
 
     uint16_t crc_cmp = crc16m17(lsf_packed, 28);
-    uint16_t crc_ext = (uint16_t)ConvertBitIntoBytes(&state->m17_lsf[224], 16);
+    uint16_t crc_ext = (lsf_packed[28] << 8) + lsf_packed[29];
     int crc_err = 0;
 
     if (crc_cmp != crc_ext) {
@@ -3734,72 +3689,77 @@ decodeM17PKT(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
 PKT_END:; //do nothing
 }
 
-//WIP PKT decoder
+//WIP PKT decoder - soft symbol enhanced
 void
 processM17PKT(dsd_opts* opts, dsd_state* state) {
 
-    int i, x;
-    uint8_t dbuf[184];         //384-bit (192 symbol) frame - 16-bit (8 symbol) sync pattern (184 dibits)
-    uint8_t m17_int_bits[368]; //368 bits that are still interleaved
-    uint8_t m17_rnd_bits[368]; //368 bits that are still scrambled
-    uint16_t m17_bits[368];    //368 bits that have been de-interleaved and de-scrambled
-    uint16_t m17_depunc[488];  //488 weighted byte representation of bits after depuncturing
+    int i, j, x;
+    uint8_t dbuf[184];           //384-bit (192 symbol) frame - 16-bit (8 symbol) sync pattern (184 dibits)
+    float soft_symbols[184];     //Raw float symbol values for soft-decision Viterbi
+    uint8_t m17_int_bits[368];   //368 bits that are still interleaved
+    uint8_t m17_rnd_bits[368];   //368 bits that are still scrambled
+    uint16_t m17_soft_bits[368]; //368 soft costs (de-interleaved and de-scrambled)
+    uint16_t m17_depunc[488];    //488 weighted values after depuncturing
     uint8_t pkt_packed[50];
     uint8_t pkt_bytes[48];
 
-    uint32_t v_err = 0; //errors in viterbi decoder
-    UNUSED(v_err);
-
     memset(dbuf, 0, sizeof(dbuf));
+    memset(soft_symbols, 0, sizeof(soft_symbols));
     memset(state->m17_lsf, 0, sizeof(state->m17_lsf));
     memset(m17_int_bits, 0, sizeof(m17_int_bits));
-    memset(m17_bits, 0, sizeof(m17_bits));
+    memset(m17_soft_bits, 0, sizeof(m17_soft_bits));
     memset(m17_rnd_bits, 0, sizeof(m17_rnd_bits));
     memset(m17_depunc, 0, sizeof(m17_depunc));
 
     memset(pkt_packed, 0, sizeof(pkt_packed));
     memset(pkt_bytes, 0, sizeof(pkt_bytes));
 
-    //load dibits into dibit buffer
+    //Mark frame start for soft symbol tracking
+    soft_symbol_frame_begin(state);
+
+    //load dibits and soft symbols into buffers
     for (i = 0; i < 184; i++) {
-        dbuf[i] = getDibit(opts, state);
+        dbuf[i] = (uint8_t)getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
     }
 
-    //convert dbuf into a bit array
+    //Convert dibits to bits and compute soft costs from float symbols
+    uint16_t m17_soft_rnd[368]; //Soft costs before descrambling (interleaved)
     for (i = 0; i < 184; i++) {
-        m17_rnd_bits[i * 2 + 0] = (dbuf[i] >> 1) & 1;
-        m17_rnd_bits[i * 2 + 1] = (dbuf[i] >> 0) & 1;
+        m17_rnd_bits[i * 2 + 0] = (dbuf[i] >> 1) & 1; //MSB
+        m17_rnd_bits[i * 2 + 1] = (dbuf[i] >> 0) & 1; //LSB
+        m17_soft_rnd[i * 2 + 0] = soft_symbol_to_viterbi_cost(soft_symbols[i], state, 0);
+        m17_soft_rnd[i * 2 + 1] = soft_symbol_to_viterbi_cost(soft_symbols[i], state, 1);
     }
 
-    //descramble the frame
+    //Descramble: XOR flips the bit, so we invert the soft cost
+    uint16_t m17_soft_int[368];
     for (i = 0; i < 368; i++) {
         m17_int_bits[i] = (m17_rnd_bits[i] ^ m17_scramble[i]) & 1;
+        if (m17_scramble[i]) {
+            m17_soft_int[i] = 0xFFFF - m17_soft_rnd[i];
+        } else {
+            m17_soft_int[i] = m17_soft_rnd[i];
+        }
     }
 
-    //deinterleave the bit array using Quadratic Permutation Polynomial
-    //function π(x) = (45x + 92x^2 ) mod 368
+    //Deinterleave using Quadratic Permutation Polynomial
     for (i = 0; i < 368; i++) {
         x = ((45 * i) + (92 * i * i)) % 368;
-        m17_bits[i] = m17_int_bits[x];
+        m17_soft_bits[i] = m17_soft_int[x];
     }
 
-    //P3 Depuncture and Add Weights
-    x = 0;
+    //P3 Depuncture with soft costs (P3 uses 8-bit period)
+    j = 0;
     for (i = 0; i < 420; i++) {
         if (p3[i % 8] == 1) {
-            m17_depunc[i] = m17_bits[x++];
+            m17_depunc[i] = m17_soft_bits[j++];
         } else {
-            m17_depunc[i] = 0;
-        }
-
-        if (m17_depunc[i]) {
-            m17_depunc[i] = 0xFFFF;
-        } else {
+            //Punctured bit: use neutral/uncertain cost
             m17_depunc[i] = 0x7FFF;
         }
     }
 
-    //use the libM17 Viterbi Decoder
+    //use the libM17 Viterbi Decoder with soft costs
     uint16_t len = 420;
     (void)viterbi_decode(pkt_bytes, m17_depunc, len);
     // v_err -= 3932040; //cost negation (double check this as well as unit, meaning, etc)

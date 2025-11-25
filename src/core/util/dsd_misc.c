@@ -501,25 +501,39 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
 
 //FUNCTIONS for handing use of above filters
 
-//lpf
+//lpf (short)
 void
 lpf(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // fprintf (stderr, "\n in: %05d", input[i]);
-        input[i] = LPFilter_Update(&state->RCFilter, input[i]);
-        // fprintf (stderr, "\n out: %05d", input[i]);
+        input[i] = (short)LPFilter_Update(&state->RCFilter, (float)input[i]);
     }
 }
 
-//hpf
+//lpf (float) - native float path for analog monitor
+void
+lpf_f(dsd_state* state, float* input, int len) {
+    int i;
+    for (i = 0; i < len; i++) {
+        input[i] = LPFilter_Update(&state->RCFilter, input[i]);
+    }
+}
+
+//hpf (short)
 void
 hpf(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // fprintf (stderr, "\n in: %05d", input[i]);
+        input[i] = (short)HPFilter_Update(&state->HRCFilter, (float)input[i]);
+    }
+}
+
+//hpf (float) - native float path for analog monitor
+void
+hpf_f(dsd_state* state, float* input, int len) {
+    int i;
+    for (i = 0; i < len; i++) {
         input[i] = HPFilter_Update(&state->HRCFilter, input[i]);
-        // fprintf (stderr, "\n out: %05d", input[i]);
     }
 }
 
@@ -556,12 +570,20 @@ nf(dsd_state* state, short* input, int len) {
     }
 }
 
-//pbf
+//pbf (short)
 void
 pbf(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
-        // fprintf (stderr, "\n in: %05d", input[i]);
+        input[i] = (short)PBFilter_Update(&state->PBF, (float)input[i]);
+    }
+}
+
+//pbf (float) - native float path for analog monitor
+void
+pbf_f(dsd_state* state, float* input, int len) {
+    int i;
+    for (i = 0; i < len; i++) {
         input[i] = PBFilter_Update(&state->PBF, input[i]);
     }
 }
@@ -583,6 +605,34 @@ raw_rms(const int16_t* samples, int len, int step) //use samplespersymbol as len
  */
 double
 raw_pwr(const int16_t* samples, int len, int step) {
+    double p = 0.0;
+    double t = 0.0;
+    int count = 0;
+    const double kScale = 1.0 / 32768.0;
+    for (int i = 0; i < len; i += step) {
+        double s = (double)samples[i] * kScale;
+        t += s;
+        p += s * s;
+        count++;
+    }
+    if (count == 0) {
+        return 0.0;
+    }
+    /* DC-corrected energy ≈ p - (t^2)/count */
+    double dc_corr = (t * t) / (double)count;
+    double energy = p - dc_corr;
+    if (energy < 0.0) {
+        energy = 0.0;
+    }
+    return energy / (double)count;
+}
+
+/*
+ * Mean power for float samples (native float path for analog monitor).
+ * Input samples are expected to be in int16 scale (±32768 range).
+ */
+double
+raw_pwr_f(const float* samples, int len, int step) {
     double p = 0.0;
     double t = 0.0;
     int count = 0;

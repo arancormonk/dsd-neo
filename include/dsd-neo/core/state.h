@@ -319,8 +319,9 @@ struct dsd_state {
     float* audio_out_temp_buf_p;
     float audio_out_temp_bufR[160];
     float* audio_out_temp_buf_pR;
-    //analog/raw signal audio buffers
-    short analog_out[960];
+    //analog/raw signal audio buffers (float path for better SNR, convert to int16 at output)
+    float analog_out_f[960]; // float buffer for analog monitor path
+    short analog_out[960];   // int16 buffer for output and legacy paths
     int analog_sample_counter;
     //new stereo float sample storage
     float f_l[160];     //single sample left
@@ -867,8 +868,14 @@ struct dsd_state {
     //M17 Storage
     uint8_t m17_lsf[360];
     uint8_t m17_pkt[850];
-    uint8_t m17_pbc_ct; //pbc packet counter
-    uint8_t m17_str_dt; //stream contents
+
+    // Soft symbol buffer for Viterbi decoding (M17, NXDN, etc.)
+    // Stores raw float symbol values alongside dibits for soft-decision FEC
+    float soft_symbol_buf[512];  // Ring buffer for soft symbols
+    int soft_symbol_head;        // Write index (wraps at 512)
+    int soft_symbol_frame_start; // Index where current frame started
+    uint8_t m17_pbc_ct;          //pbc packet counter
+    uint8_t m17_str_dt;          //stream contents
 
     uint8_t m17_can; //can value that was decoded from signal
     int m17_can_en;  //can value supplied to the encoding side

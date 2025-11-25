@@ -209,3 +209,56 @@ analog_gain(dsd_opts* opts, dsd_state* state, short* input, int len) {
         input[i] = (short)(input[i] * gain);
     }
 }
+
+// Automatic gain for float mono paths (analog monitor).
+// Native float version avoids repeated short<->float conversions.
+void
+agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+    int i;
+
+    UNUSED(opts);
+
+    float coeff = 0.0f;  //gain coefficient
+    float max = 0.0f;    //the highest sample value
+    float nom = 4800.0f; //nominator value for 48k
+
+    // Find max absolute value
+    for (i = 0; i < len; i++) {
+        if (fabsf(input[i]) > max) {
+            max = fabsf(input[i]);
+        }
+    }
+
+    // Avoid division by zero
+    if (max < 1e-6f) {
+        max = 1e-6f;
+    }
+
+    coeff = fabsf(nom / max);
+
+    // Keep coefficient with tolerable range when silence to prevent crackle/buzz
+    if (coeff > 3.0f) {
+        coeff = 3.0f;
+    }
+
+    // Apply the coefficient to bring the max value to our desired maximum value
+    for (i = 0; i < len; i++) {
+        input[i] *= coeff;
+    }
+
+    state->aout_gainA = coeff; //store for internal use
+}
+
+// Manual analog gain control for float paths.
+void
+analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+
+    int i;
+    UNUSED(state);
+
+    float gain = (opts->audio_gainA / 100.0f) * 5.0f; //scale 0x - 5x
+
+    for (i = 0; i < len; i++) {
+        input[i] *= gain;
+    }
+}

@@ -1757,6 +1757,7 @@ initState(dsd_state* state) {
     memset(state->audio_out_bufR, 0, 100 * sizeof(short));
     //analog/raw signal audio buffers
     state->analog_sample_counter = 0; //when it reaches 960, then dump the raw/analog audio signal and reset
+    memset(state->analog_out_f, 0, sizeof(state->analog_out_f));
     memset(state->analog_out, 0, sizeof(state->analog_out));
     //
     state->audio_out_buf_p = state->audio_out_buf + 100;
