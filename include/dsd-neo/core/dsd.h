@@ -545,16 +545,16 @@ void processTSBK(dsd_opts* opts, dsd_state* state); //P25 Trunking Single Block
 void processMPDU(dsd_opts* opts,
                  dsd_state* state); //P25 Multi Block PDU (SAP 0x61 FMT 0x15 or 0x17 for Trunking Blocks)
 /** @brief FIR filter for DMR baseband samples. */
-float dmr_filter(float sample);
+float dmr_filter(float sample, int samples_per_symbol);
 /** @brief FIR filter for NXDN baseband samples. */
-float nxdn_filter(float sample);
+float nxdn_filter(float sample, int samples_per_symbol);
 /** @brief FIR filter for dPMR baseband samples. */
-float dpmr_filter(float sample);
+float dpmr_filter(float sample, int samples_per_symbol);
 /** @brief FIR filter for M17 baseband samples. */
-float m17_filter(float sample);
+float m17_filter(float sample, int samples_per_symbol);
 /** @brief FIR de-emphasis filter for P25 C4FM baseband samples (OP25 compatible).
  *  Sinc-based filter that inverts C4FM transmitter preemphasis. */
-float p25_filter(float sample);
+float p25_filter(float sample, int samples_per_symbol);
 
 //utility functions
 /** @brief Pack a little-endian bit vector into bytes. */

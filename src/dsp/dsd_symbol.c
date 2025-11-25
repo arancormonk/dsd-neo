@@ -875,19 +875,19 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             if ((state->lastsynctype >= 10 && state->lastsynctype <= 13) || state->lastsynctype == 32
                 || state->lastsynctype == 33 || state->lastsynctype == 34 || state->lastsynctype == 30
                 || state->lastsynctype == 31) {
-                sample = dmr_filter(sample);
+                sample = dmr_filter(sample, state->samplesPerSymbol);
             }
 
             else if (state->lastsynctype == 8 || state->lastsynctype == 9 || state->lastsynctype == 16
                      || state->lastsynctype == 17 || state->lastsynctype == 86 || state->lastsynctype == 87
                      || state->lastsynctype == 98 || state->lastsynctype == 99) {
-                sample = m17_filter(sample);
+                sample = m17_filter(sample, state->samplesPerSymbol);
             }
 
             // Apply matched filter to P25 Phase 1 (C4FM)
             else if (state->lastsynctype == 0 || state->lastsynctype == 1) {
                 // OP25-compatible sinc de-emphasis filter
-                sample = p25_filter(sample);
+                sample = p25_filter(sample, state->samplesPerSymbol);
             }
 
             else if (state->lastsynctype == 20 || state->lastsynctype == 21 || state->lastsynctype == 22
@@ -898,16 +898,16 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             {
                 //if(state->samplesPerSymbol == 20)
                 if (opts->frame_nxdn48 == 1) {
-                    sample = nxdn_filter(sample);
+                    sample = nxdn_filter(sample, state->samplesPerSymbol);
                 }
                 //else if (state->lastsynctype >= 20 && state->lastsynctype <=27) //this the right range?
                 else if (opts->frame_dpmr == 1) {
-                    sample = dpmr_filter(sample);
+                    sample = dpmr_filter(sample, state->samplesPerSymbol);
                 } else if (state->samplesPerSymbol == 8) //phase 2 cqpsk
                 {
                     //sample = dmr_filter(sample); //work on filter later
                 } else {
-                    sample = dmr_filter(sample);
+                    sample = dmr_filter(sample, state->samplesPerSymbol);
                 }
             }
         }

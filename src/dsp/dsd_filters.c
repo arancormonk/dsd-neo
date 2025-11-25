@@ -5,61 +5,171 @@
 
 #include <dsd-neo/core/dsd.h>
 
-//M17 Filter -- RRC Alpha = 0.5 at 48 kHz
-#define M17ZEROS 80
-float m17gain = 3.16227766f; //sqrt of 10.0f
-static float m17xv[81];
-static int m17xv_head = 0; /* circular history head (most recent index) */
+#define FIR_MAX_TAPS 1024
 
-//Sample RRC filter for 48 kHz (alpha=0.5, sps=10, gain=sqrt(sps))
-float m17coeffs[81] = //replaced old ones with ones from libm17
-    {-0.003195702904062073f, -0.002930279157647190f, -0.001940667871554463f, -0.000356087678023658f,
-     0.001547011339077758f,  0.003389554791179751f,  0.004761898604225673f,  0.005310860846138910f,
-     0.004824746306020221f,  0.003297923526848786f,  0.000958710871218619f,  -0.001749908029791816f,
-     -0.004238694106631223f, -0.005881783042101693f, -0.006150256456781309f, -0.004745376707651645f,
-     -0.001704189656473565f, 0.002547854551539951f,  0.007215575568844704f,  0.011231038205363532f,
-     0.013421952197060707f,  0.012730475385624438f,  0.008449554307303753f,  0.000436744366018287f,
-     -0.010735380379191660f, -0.023726883538258272f, -0.036498030780605324f, -0.046500883189991064f,
-     -0.050979050575999614f, -0.047340680079891187f, -0.033554880492651755f, -0.008513823955725943f,
-     0.027696543159614194f,  0.073664520037517042f,  0.126689053778116234f,  0.182990955139333916f,
-     0.238080025892859704f,  0.287235637987091563f,  0.326040247765297220f,  0.350895727088112619f,
-     0.359452932027607974f,  0.350895727088112619f,  0.326040247765297220f,  0.287235637987091563f,
-     0.238080025892859704f,  0.182990955139333916f,  0.126689053778116234f,  0.073664520037517042f,
-     0.027696543159614194f,  -0.008513823955725943f, -0.033554880492651755f, -0.047340680079891187f,
-     -0.050979050575999614f, -0.046500883189991064f, -0.036498030780605324f, -0.023726883538258272f,
-     -0.010735380379191660f, 0.000436744366018287f,  0.008449554307303753f,  0.012730475385624438f,
-     0.013421952197060707f,  0.011231038205363532f,  0.007215575568844704f,  0.002547854551539951f,
-     -0.001704189656473565f, -0.004745376707651645f, -0.006150256456781309f, -0.005881783042101693f,
-     -0.004238694106631223f, -0.001749908029791816f, 0.000958710871218619f,  0.003297923526848786f,
-     0.004824746306020221f,  0.005310860846138910f,  0.004761898604225673f,  0.003389554791179751f,
-     0.001547011339077758f,  -0.000356087678023658f, -0.001940667871554463f, -0.002930279157647190f,
-     -0.003195702904062073f};
+typedef struct {
+    const float* base; /* design taps at base_sps */
+    int base_len;
+    int base_sps;
+    float taps[FIR_MAX_TAPS];
+    float hist[FIR_MAX_TAPS];
+    int taps_len;
+    int head;
+    int last_sps;
+    int ready;
+} sps_fir;
 
-// Original DMR filter
-#define NZEROS 60
-float ngain = 7.423339364f;
-static float xv[NZEROS + 1];
-static int xv_head = 0; /* circular history head */
-float xcoeffs[61] = {
-    -0.0083649323f, -0.0265444850f, -0.0428141462f, -0.0537571943f, -0.0564141052f, -0.0489161045f, -0.0310068662f,
-    -0.0043393881f, +0.0275375106f, +0.0595423283f, +0.0857543325f, +0.1003565948f, +0.0986944931f, +0.0782804830f,
-    +0.0395670487f, -0.0136691535f, -0.0744390415f, -0.1331834575f, -0.1788967208f, -0.2005995448f, -0.1889627181f,
-    -0.1378439993f, -0.0454976231f, +0.0847488694f, +0.2444859269f, +0.4209222342f, +0.5982295474f, +0.7593684540f,
-    +0.8881539892f, +0.9712773915f, +0.9999999166f, +0.9712773915f, +0.8881539892f, +0.7593684540f, +0.5982295474f,
-    +0.4209222342f, +0.2444859269f, +0.0847488694f, -0.0454976231f, -0.1378439993f, -0.1889627181f, -0.2005995448f,
-    -0.1788967208f, -0.1331834575f, -0.0744390415f, -0.0136691535f, +0.0395670487f, +0.0782804830f, +0.0986944931f,
-    +0.1003565948f, +0.0857543325f, +0.0595423283f, +0.0275375106f, -0.0043393881f, -0.0310068662f, -0.0489161045f,
-    -0.0564141052f, -0.0537571943f, -0.0428141462f, -0.0265444850f, -0.0083649323f,
-};
+static inline void
+reset_sps_fir(sps_fir* f) {
+    if (!f) {
+        return;
+    }
+    memset(f->taps, 0, sizeof(f->taps));
+    memset(f->hist, 0, sizeof(f->hist));
+    f->taps_len = 0;
+    f->head = -1;
+    f->last_sps = 0;
+    f->ready = 0;
+}
 
-//reverted to original NXDN filters, do better with LICH/Data handling
-// NXDN48 filter - Original Version
-#define NXZEROS 134
-float nxgain = 15.95930463f;
-static float nxv[NXZEROS + 1];
-static int nxv_head = 0; /* circular history head */
+static float
+interp_base(const float* base, int len, float idx) {
+    if (idx < 0.0f || idx > (float)(len - 1)) {
+        return 0.0f;
+    }
+    int i0 = (int)idx;
+    int i1 = i0 + 1;
+    if (i1 >= len) {
+        i1 = len - 1;
+    }
+    float frac = idx - (float)i0;
+    return base[i0] + frac * (base[i1] - base[i0]);
+}
 
-float nxcoeffs[135] = {
+static void
+design_sps_fir(sps_fir* f, int sps) {
+    if (!f || !f->base || f->base_len <= 0 || f->base_sps <= 0 || sps <= 1) {
+        if (f) {
+            f->ready = 0;
+        }
+        return;
+    }
+    double span = (double)(f->base_len - 1) / (double)f->base_sps;
+    double desired = span * (double)sps;
+    int taps_len = (int)(desired + 0.5) + 1; /* preserve span + center tap */
+    if (taps_len < 3) {
+        taps_len = 3;
+    }
+    if ((taps_len & 1) == 0) {
+        taps_len += 1; /* prefer odd length for symmetry */
+    }
+    if (taps_len > FIR_MAX_TAPS) {
+        taps_len = FIR_MAX_TAPS;
+        if ((taps_len & 1) == 0) {
+            taps_len -= 1;
+        }
+    }
+
+    float mid_new = 0.5f * (float)(taps_len - 1);
+    float mid_base = 0.5f * (float)(f->base_len - 1);
+    for (int n = 0; n < taps_len; n++) {
+        float t_sym = ((float)n - mid_new) / (float)sps;
+        float base_idx = t_sym * (float)f->base_sps + mid_base;
+        f->taps[n] = interp_base(f->base, f->base_len, base_idx);
+    }
+
+    double sum = 0.0;
+    for (int n = 0; n < taps_len; n++) {
+        sum += f->taps[n];
+    }
+    if (fabs(sum) < 1e-12) {
+        sum = 1.0;
+    }
+    float inv_sum = (float)(1.0 / sum);
+    for (int n = 0; n < taps_len; n++) {
+        f->taps[n] *= inv_sum;
+        f->hist[n] = 0.0f;
+    }
+
+    f->taps_len = taps_len;
+    f->head = -1;
+    f->last_sps = sps;
+    f->ready = 1;
+}
+
+static float
+apply_sps_fir(sps_fir* f, float sample, int sps) {
+    if (!f || sps <= 1) {
+        return sample;
+    }
+    if (!f->ready || sps != f->last_sps) {
+        design_sps_fir(f, sps);
+    }
+    if (!f->ready || f->taps_len <= 0) {
+        return sample;
+    }
+
+    int head = f->head + 1;
+    if (head >= f->taps_len) {
+        head = 0;
+    }
+    f->hist[head] = sample;
+    f->head = head;
+
+    float acc = 0.0f;
+    int zeros = f->taps_len - 1;
+    for (int i = 0; i <= zeros; i++) {
+        int idx = head - (zeros - i);
+        if (idx < 0) {
+            idx += f->taps_len;
+        }
+        acc += f->taps[i] * f->hist[idx];
+    }
+    return acc;
+}
+
+// M17 Filter -- RRC Alpha = 0.5 at 48 kHz (sps=10)
+static const float m17coeffs[81] = {
+    -0.003195702904062073f, -0.002930279157647190f, -0.001940667871554463f, -0.000356087678023658f,
+    0.001547011339077758f,  0.003389554791179751f,  0.004761898604225673f,  0.005310860846138910f,
+    0.004824746306020221f,  0.003297923526848786f,  0.000958710871218619f,  -0.001749908029791816f,
+    -0.004238694106631223f, -0.005881783042101693f, -0.006150256456781309f, -0.004745376707651645f,
+    -0.001704189656473565f, 0.002547854551539951f,  0.007215575568844704f,  0.011231038205363532f,
+    0.013421952197060707f,  0.012730475385624438f,  0.008449554307303753f,  0.000436744366018287f,
+    -0.010735380379191660f, -0.023726883538258272f, -0.036498030780605324f, -0.046500883189991064f,
+    -0.050979050575999614f, -0.047340680079891187f, -0.033554880492651755f, -0.008513823955725943f,
+    0.027696543159614194f,  0.073664520037517042f,  0.126689053778116234f,  0.182990955139333916f,
+    0.238080025892859704f,  0.287235637987091563f,  0.326040247765297220f,  0.350895727088112619f,
+    0.359452932027607974f,  0.350895727088112619f,  0.326040247765297220f,  0.287235637987091563f,
+    0.238080025892859704f,  0.182990955139333916f,  0.126689053778116234f,  0.073664520037517042f,
+    0.027696543159614194f,  -0.008513823955725943f, -0.033554880492651755f, -0.047340680079891187f,
+    -0.050979050575999614f, -0.046500883189991064f, -0.036498030780605324f, -0.023726883538258272f,
+    -0.010735380379191660f, 0.000436744366018287f,  0.008449554307303753f,  0.012730475385624438f,
+    0.013421952197060707f,  0.011231038205363532f,  0.007215575568844704f,  0.002547854551539951f,
+    -0.001704189656473565f, -0.004745376707651645f, -0.006150256456781309f, -0.005881783042101693f,
+    -0.004238694106631223f, -0.001749908029791816f, 0.000958710871218619f,  0.003297923526848786f,
+    0.004824746306020221f,  0.005310860846138910f,  0.004761898604225673f,  0.003389554791179751f,
+    0.001547011339077758f,  -0.000356087678023658f, -0.001940667871554463f, -0.002930279157647190f,
+    -0.003195702904062073f};
+#define M17_BASE_SPS     10
+#define M17_BASE_TAP_LEN (int)(sizeof(m17coeffs) / sizeof(m17coeffs[0]))
+
+// DMR filter F4EXB - root raised cosine alpha=0.7 at 48 kHz (sps=10)
+static const float dmrcoeffs[61] = {
+    0.0301506278f,  0.0269200615f,  0.0159662432f,  -0.0013114705f, -0.0216605133f, -0.0404938748f, -0.0528141756f,
+    -0.0543747957f, -0.0428325003f, -0.0186176083f, 0.0147202645f,  0.0508418571f,  0.0816392577f,  0.0988113688f,
+    0.0957187780f,  0.0691512084f,  0.0206194642f,  -0.0431564563f, -0.1107569268f, -0.1675773224f, -0.1981519842f,
+    -0.1889130786f, -0.1308939560f, -0.0218608492f, 0.1325685970f,  0.3190962499f,  0.5182530574f,  0.7070497652f,
+    0.8623526878f,  0.9644213921f,  1.0000000000f,  0.9644213921f,  0.8623526878f,  0.7070497652f,  0.5182530574f,
+    0.3190962499f,  0.1325685970f,  -0.0218608492f, -0.1308939560f, -0.1889130786f, -0.1981519842f, -0.1675773224f,
+    -0.1107569268f, -0.0431564563f, 0.0206194642f,  0.0691512084f,  0.0957187780f,  0.0988113688f,  0.0816392577f,
+    0.0508418571f,  0.0147202645f,  -0.0186176083f, -0.0428325003f, -0.0543747957f, -0.0528141756f, -0.0404938748f,
+    -0.0216605133f, -0.0013114705f, 0.0159662432f,  0.0269200615f,  0.0301506278f};
+#define DMR_BASE_SPS     10
+#define DMR_BASE_TAP_LEN (int)(sizeof(dmrcoeffs) / sizeof(dmrcoeffs[0]))
+
+// NXDN48/96 filter - original version (designed for 48 kHz, sps=20)
+static const float nxcoeffs[135] = {
     +0.031462429f, +0.031747267f, +0.030401148f, +0.027362877f, +0.022653298f, +0.016379869f, +0.008737200f,
     +0.000003302f, -0.009468531f, -0.019262057f, -0.028914291f, -0.037935027f, -0.045828927f, -0.052119261f,
     -0.056372283f, -0.058221106f, -0.057387924f, -0.053703443f, -0.047122444f, -0.037734535f, -0.025769308f,
@@ -79,43 +189,12 @@ float nxcoeffs[135] = {
     +0.004287292f, -0.011595336f, -0.025769308f, -0.037734535f, -0.047122444f, -0.053703443f, -0.057387924f,
     -0.058221106f, -0.056372283f, -0.052119261f, -0.045828927f, -0.037935027f, -0.028914291f, -0.019262057f,
     -0.009468531f, +0.000003302f, +0.008737200f, +0.016379869f, +0.022653298f, +0.027362877f, +0.030401148f,
-    +0.031747267f, +0.031462429f,
-};
+    +0.031747267f, +0.031462429f};
+#define NXDN_BASE_SPS     20
+#define NXDN_BASE_TAP_LEN (int)(sizeof(nxcoeffs) / sizeof(nxcoeffs[0]))
 
-// DMR filter F4EXB
-#define DMRNZEROS 60
-
-// DMR filter F4EXB
-const float dmrgain = 6.82973073748f;
-
-// DMR filter F4EXB
-static float dxv[DMRNZEROS + 1];
-static int dxv_head = 0; /* circular history head */
-
-// DMR filter F4EXB - root raised cosine alpha=0.7 Ts = 6650 S/s Fc = 48kHz
-const float dmrcoeffs[61] = {
-    0.0301506278,  0.0269200615,  0.0159662432,  -0.0013114705, -0.0216605133, -0.0404938748, -0.0528141756,
-    -0.0543747957, -0.0428325003, -0.0186176083, 0.0147202645,  0.0508418571,  0.0816392577,  0.0988113688,
-    0.0957187780,  0.0691512084,  0.0206194642,  -0.0431564563, -0.1107569268, -0.1675773224, -0.1981519842,
-    -0.1889130786, -0.1308939560, -0.0218608492, 0.1325685970,  0.3190962499,  0.5182530574,  0.7070497652,
-    0.8623526878,  0.9644213921,  1.0000000000,  0.9644213921,  0.8623526878,  0.7070497652,  0.5182530574,
-    0.3190962499,  0.1325685970,  -0.0218608492, -0.1308939560, -0.1889130786, -0.1981519842, -0.1675773224,
-    -0.1107569268, -0.0431564563, 0.0206194642,  0.0691512084,  0.0957187780,  0.0988113688,  0.0816392577,
-    0.0508418571,  0.0147202645,  -0.0186176083, -0.0428325003, -0.0543747957, -0.0528141756, -0.0404938748,
-    -0.0216605133, -0.0013114705, 0.0159662432,  0.0269200615,  0.0301506278};
-
-// dPMR filter, version of F4EXB
-static float dpmrxv[NXZEROS + 1];
-static int dpmrxv_head = 0; /* circular history head */
-
-// dPMR filter, version of F4EXB
-#define DPMRNZEROS 134
-
-// dPMR filter, version of F4EXB
-const float dpmrgain = 14.6083498224f;
-
-// dPMR filter - root raised cosine alpha=0.2 Ts = 3325 S/s Fc = 48 kHz - zero at boundaries appears to be slightly better
-const float dpmrcoeffs[135] = {
+// dPMR filter - root raised cosine alpha=0.2 at 48 kHz (sps=20)
+static const float dpmrcoeffs[135] = {
     -0.0000983004, 0.0058388841,  0.0119748846,  0.0179185547,  0.0232592816,  0.0275919612,  0.0305433586,
     0.0317982965,  0.0311240307,  0.0283911865,  0.0235897433,  0.0168387650,  0.0083888763,  -0.0013831396,
     -0.0119878087, -0.0228442151, -0.0333082708, -0.0427067804, -0.0503756642, -0.0557003599, -0.0581561791,
@@ -136,18 +215,16 @@ const float dpmrcoeffs[135] = {
     -0.0228442151, -0.0119878087, -0.0013831396, 0.0083888763,  0.0168387650,  0.0235897433,  0.0283911865,
     0.0311240307,  0.0317982965,  0.0305433586,  0.0275919612,  0.0232592816,  0.0179185547,  0.0119748846,
     0.0058388841,  -0.0000983004};
+#define DPMR_BASE_SPS     20
+#define DPMR_BASE_TAP_LEN (int)(sizeof(dpmrcoeffs) / sizeof(dpmrcoeffs[0]))
 
 // P25 C4FM RX de-emphasis filter - OP25 compatible (transfer_function_rx)
 // Sinc-based filter that inverts the C4FM transmitter's preemphasis (t/sin(t)).
 // Parameters: sample_rate=48000, symbol_rate=4800, span=9, sps=10
 // Generated using IFFT of sinc(pi*f/rate) transfer function
 // See: https://github.com/boatbod/op25/blob/master/op25/gr-op25_repeater/apps/tx/op25_c4fm_mod.py
-#define P25ZEROS 90
-const float p25gain = 1.0f;
-static float p25xv[91];
-static int p25xv_head = 0;
-
-const float p25coeffs[91] = {
+#define P25_BASE_SPS      10
+static const float p25_base_coeffs[91] = {
     2.5136032328468223e-04f,  2.0151157806489389e-04f,  6.5614198114868653e-05f,  -1.1016182521584872e-04f,
     -2.5912718500147703e-04f, -3.1854080534864679e-04f, -2.5499192412346209e-04f, -8.0811341618403253e-05f,
     1.4587749827445741e-04f,  3.3924177267442553e-04f,  4.1684342104421064e-04f,  3.3300701153002625e-04f,
@@ -171,127 +248,44 @@ const float p25coeffs[91] = {
     4.1684342104421167e-04f,  3.3924177267442786e-04f,  1.4587749827445716e-04f,  -8.0811341618404093e-05f,
     -2.5499192412346220e-04f, -3.1854080534864690e-04f, -2.5912718500147660e-04f, -1.1016182521584800e-04f,
     6.5614198114868558e-05f,  2.0151157806489272e-04f,  2.5136032328468153e-04f};
+#define P25_BASE_TAP_LEN (int)(sizeof(p25_base_coeffs) / sizeof(p25_base_coeffs[0]))
 
-float dsd_input_filter(float sample, int mode);
+static sps_fir g_fir_p25 = {.base = p25_base_coeffs, .base_len = P25_BASE_TAP_LEN, .base_sps = P25_BASE_SPS};
+static sps_fir g_fir_dmr = {.base = dmrcoeffs, .base_len = DMR_BASE_TAP_LEN, .base_sps = DMR_BASE_SPS};
+static sps_fir g_fir_nxdn = {.base = nxcoeffs, .base_len = NXDN_BASE_TAP_LEN, .base_sps = NXDN_BASE_SPS};
+static sps_fir g_fir_dpmr = {.base = dpmrcoeffs, .base_len = DPMR_BASE_TAP_LEN, .base_sps = DPMR_BASE_SPS};
+static sps_fir g_fir_m17 = {.base = m17coeffs, .base_len = M17_BASE_TAP_LEN, .base_sps = M17_BASE_SPS};
 
 float
-dmr_filter(float sample) {
-    return dsd_input_filter(sample, 3);
+dmr_filter(float sample, int sps) {
+    return apply_sps_fir(&g_fir_dmr, sample, sps);
 }
 
 float
-nxdn_filter(float sample) {
-    // Use NXDN-specific filter (mode 2) rather than dPMR (mode 4)
-    return dsd_input_filter(sample, 2);
+nxdn_filter(float sample, int sps) {
+    return apply_sps_fir(&g_fir_nxdn, sample, sps);
 }
 
 float
-dpmr_filter(float sample) {
-    return dsd_input_filter(sample, 4);
+dpmr_filter(float sample, int sps) {
+    return apply_sps_fir(&g_fir_dpmr, sample, sps);
 }
 
 float
-m17_filter(float sample) {
-    return dsd_input_filter(sample, 5);
+m17_filter(float sample, int sps) {
+    return apply_sps_fir(&g_fir_m17, sample, sps);
 }
 
 float
-p25_filter(float sample) {
-    return dsd_input_filter(sample, 6);
-}
-
-float
-dsd_input_filter(float sample, int mode) {
-    float sum;
-    int i;
-    float gain;
-    int zeros;
-    float *v, *coeffs;
-    int* headp = NULL;
-    switch (mode) {
-        case 1:
-            gain = ngain;
-            v = xv;
-            coeffs = xcoeffs;
-            zeros = NZEROS;
-            headp = &xv_head;
-            break;
-        case 2:
-            gain = nxgain;
-            v = nxv;
-            coeffs = (float*)nxcoeffs;
-            zeros = NXZEROS;
-            headp = &nxv_head;
-            break;
-        case 3:
-            gain = dmrgain;
-            v = dxv;
-            coeffs = (float*)dmrcoeffs;
-            zeros = DMRNZEROS;
-            headp = &dxv_head;
-            break;
-        case 4:
-            gain = dpmrgain;
-            v = dpmrxv;
-            coeffs = (float*)dpmrcoeffs;
-            zeros = DPMRNZEROS;
-            headp = &dpmrxv_head;
-            break;
-
-        case 5:
-            gain = m17gain;
-            v = m17xv;
-            coeffs = (float*)m17coeffs;
-            zeros = M17ZEROS;
-            headp = &m17xv_head;
-            break;
-
-        case 6:
-            gain = p25gain;
-            v = p25xv;
-            coeffs = (float*)p25coeffs;
-            zeros = P25ZEROS;
-            headp = &p25xv_head;
-            break;
-
-        default: return sample;
-    }
-
-    /* Circular buffer update: write newest sample at head and convolve
-       in the same logical order as the legacy linear buffer (oldest->newest). */
-    const int cap = zeros + 1;
-    int head = *headp;
-    head++;
-    if (head >= cap) {
-        head = 0;
-    }
-    v[head] = (float)sample; /* most recent */
-    *headp = head;
-
-    sum = 0.0f;
-    for (i = 0; i <= zeros; i++) {
-        int idx = head - (zeros - i);
-        if (idx < 0) {
-            idx += cap;
-        }
-        sum += coeffs[i] * v[idx];
-    }
-
-    return sum / gain; // filtered sample out
+p25_filter(float sample, int sps) {
+    return apply_sps_fir(&g_fir_p25, sample, sps);
 }
 
 void
 init_rrc_filter_memory() {
-    memset(m17xv, 0, 81 * sizeof(float));
-    m17xv_head = 0;
-    memset(xv, 0, 61 * sizeof(float));
-    xv_head = 0;
-    memset(dxv, 0, 61 * sizeof(float));
-    dxv_head = 0;
-    memset(nxv, 0, 135 * sizeof(float));
-    nxv_head = 0;
-    memset(dpmrxv, 0, 135 * sizeof(float));
-    dpmrxv_head = 0;
-    memset(p25xv, 0, 91 * sizeof(float));
-    p25xv_head = 0;
+    reset_sps_fir(&g_fir_p25);
+    reset_sps_fir(&g_fir_dmr);
+    reset_sps_fir(&g_fir_nxdn);
+    reset_sps_fir(&g_fir_dpmr);
+    reset_sps_fir(&g_fir_m17);
 }
