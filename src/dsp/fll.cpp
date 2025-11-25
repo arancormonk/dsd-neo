@@ -112,36 +112,6 @@ static const int kFllIntLeakShift = 12; /* leak = x - (x >> 12) */
 
 /* High-quality trig path */
 /**
- * @brief Compute Q15 cosine/sine from Q15 phase using high-quality trig.
- *
- * Phase is Q15 where 2*pi == 1<<15. Outputs are Q15 in [-32767, 32767].
- */
-static inline void
-fll_sin_cos_q15_from_phase_trig(int phase_q15, int16_t* c_out, int16_t* s_out) {
-    const double kQ15ToRad = (2.0 * M_PI) / 32768.0; /* map [0..32768) -> [0..2*pi) */
-    int p = phase_q15 & 0x7FFF;                      /* wrap */
-    double th = (double)p * kQ15ToRad;
-    double cd = cos(th);
-    double sd = sin(th);
-    long ci = lrint(cd * 32767.0);
-    long si = lrint(sd * 32767.0);
-    if (ci > 32767) {
-        ci = 32767;
-    }
-    if (ci < -32767) {
-        ci = -32767;
-    }
-    if (si > 32767) {
-        si = 32767;
-    }
-    if (si < -32767) {
-        si = -32767;
-    }
-    *c_out = (int16_t)ci;
-    *s_out = (int16_t)si;
-}
-
-/**
  * @brief 64-bit complex multiply (a * conj(b)) helper.
  *
  * @param ar Real part of a.
@@ -164,15 +134,15 @@ multiply64(int ar, int aj, int br, int bj, int64_t* cr, int64_t* cj) {
  */
 void
 fll_init_state(fll_state_t* state) {
-    state->freq_q15 = 0;
-    state->phase_q15 = 0;
-    state->prev_r = 0;
-    state->prev_j = 0;
-    state->int_q15 = 0;
+    state->freq = 0.0f;
+    state->phase = 0.0f;
+    state->prev_r = 0.0f;
+    state->prev_j = 0.0f;
+    state->integrator = 0.0f;
     state->prev_hist_len = 0;
     for (int i = 0; i < 64; i++) {
-        state->prev_hist_r[i] = 0;
-        state->prev_hist_j[i] = 0;
+        state->prev_hist_r[i] = 0.0f;
+        state->prev_hist_j[i] = 0.0f;
     }
     state->be_phase = 0.0f;
     state->be_freq = 0.0f;
@@ -198,72 +168,78 @@ fll_init_state(fll_state_t* state) {
 }
 
 /**
- * @brief Mix I/Q by an NCO and advance phase by freq_q15 per sample.
+ * @brief Mix I/Q by an NCO and advance phase by freq per sample (GNU Radio style).
  *
- * Phase and frequency are Q15 where a full turn (2*pi) maps to 1<<15.
+ * Phase and frequency are in radians. Phase wraps at ±2π.
  * Uses high-quality sin/cos from the math library for rotation.
  *
  * @param config FLL configuration.
- * @param state  FLL state (updates phase_q15).
+ * @param state  FLL state (updates phase).
  * @param x      Input/output interleaved I/Q buffer (modified in-place).
  * @param N      Length of buffer in samples (must be even).
  */
 void
-fll_mix_and_update(const fll_config_t* config, fll_state_t* state, int16_t* x, int N) {
+fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int N) {
     if (!config->enabled) {
         return;
     }
 
-    int phase = state->phase_q15;     /* Q15 wraps at 1<<15 ~ 2*pi */
-    const int freq = state->freq_q15; /* Q15 increment per sample */
+    float phase = state->phase;
+    const float freq = state->freq;
 
-    /* High-quality trig-based rotator */
     for (int i = 0; i + 1 < N; i += 2) {
-        int16_t c, s;
-        fll_sin_cos_q15_from_phase_trig(phase, &c, &s);
-        int xr = x[i];
-        int xj = x[i + 1];
-        int32_t yr = ((int32_t)xr * c + (int32_t)xj * s) >> 15;
-        int32_t yj = ((int32_t)xj * c - (int32_t)xr * s) >> 15;
-        x[i] = (int16_t)yr;
-        x[i + 1] = (int16_t)yj;
+        float c = cosf(phase);
+        float s = sinf(phase);
+        float xr = x[i];
+        float xj = x[i + 1];
+        float yr = xr * c + xj * s;
+        float yj = xj * c - xr * s;
+        x[i] = yr;
+        x[i + 1] = yj;
         phase += freq;
+        /* Wrap phase to [-2π, 2π] to avoid float precision loss */
+        while (phase > kTwoPiF) {
+            phase -= kTwoPiF;
+        }
+        while (phase < -kTwoPiF) {
+            phase += kTwoPiF;
+        }
     }
-    state->phase_q15 = phase & 0x7FFF;
+    state->phase = phase;
 }
 
 /**
- * @brief Estimate frequency error and update FLL control (PI in Q15).
+ * @brief Estimate frequency error and update FLL control (GNU Radio-style native float PI).
  *
  * Uses a phase-difference discriminator to compute average error.
  * Applies proportional and integral actions to adjust the NCO frequency.
  *
- * @param config FLL configuration.
- * @param state  FLL state (updates freq_q15 and may advance phase_q15).
+ * @param config FLL configuration (native float gains).
+ * @param state  FLL state (updates freq and integrator).
  * @param x      Input interleaved I/Q buffer.
  * @param N      Length of buffer in samples (must be even).
  */
 void
-fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N) {
+fll_update_error(const fll_config_t* config, fll_state_t* state, const float* x, int N) {
     if (!config->enabled) {
         return;
     }
 
-    int alpha = config->alpha_q15; /* Q15 */
-    int beta = config->beta_q15;   /* Q15 */
-    int prev_r = state->prev_r;
-    int prev_j = state->prev_j;
-    int64_t err_acc = 0; /* use wide accumulator to avoid overflow on large blocks */
+    const float alpha = config->alpha;
+    const float beta = config->beta;
+    float prev_r = state->prev_r;
+    float prev_j = state->prev_j;
+    double err_acc = 0.0; /* accumulate in double for stability */
     int count = 0;
 
     for (int i = 0; i + 1 < N; i += 2) {
-        int r = x[i];
-        int j = x[i + 1];
-        if (i > 0 || (prev_r != 0 || prev_j != 0)) {
-            /* z_n * conj(z_{n-1}) phase delta (Q14) */
-            int64_t re = (int64_t)r * (int64_t)prev_r + (int64_t)j * (int64_t)prev_j;
-            int64_t im = (int64_t)j * (int64_t)prev_r - (int64_t)r * (int64_t)prev_j;
-            int e = dsd_neo_fast_atan2(im, re);
+        float r = x[i];
+        float j = x[i + 1];
+        if (i > 0 || (prev_r != 0.0f || prev_j != 0.0f)) {
+            /* phase delta */
+            double re = (double)r * (double)prev_r + (double)j * (double)prev_j;
+            double im = (double)j * (double)prev_r - (double)r * (double)prev_j;
+            double e = atan2(im, re); /* radians */
             err_acc += e;
             count++;
         }
@@ -278,49 +254,41 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
         return;
     }
 
-    int32_t err = (int32_t)(err_acc / count); /* Q14 */
+    float err_rad = (float)(err_acc / (double)count); /* radians */
 
-    /* Pre-apply small integrator leakage each update (even in deadband).
-     *
-     * Absolute clamp on integrator/frequency in Q15. Historically this was
-     * 2048 (~±3 kHz @48k). To give digital paths (e.g., CQPSK at 12 kHz) more
-     * pull-in range while remaining conservative for analog FM, use a slightly
-     * higher bound.
-     */
-    const int32_t F_CLAMP = 4096; /* ~±6 kHz @48k, ~±1.5 kHz @12k */
-    int32_t i_base = state->int_q15 - (state->int_q15 >> kFllIntLeakShift);
-    i_base = clamp_i(i_base, -F_CLAMP, F_CLAMP);
+    /* Integrator leakage: small exponential decay to avoid long-term drift.
+     * Decay factor = 1 - 1/4096 ≈ 0.99976 per update. */
+    const float kIntLeakFactor = 1.0f - (1.0f / 4096.0f);
+    /* Frequency clamp in rad/sample: ~±0.8 rad/sample (generous for digital modes) */
+    const float kFreqClamp = 0.8f;
+
+    float i_base = state->integrator * kIntLeakFactor;
+    i_base = clampf(i_base, -kFreqClamp, kFreqClamp);
 
     /* Deadband: ignore tiny phase errors to avoid audible low-frequency ramps.
        Keep leaked integrator so it slowly returns toward zero. */
-    if (err < config->deadband_q14 && err > -config->deadband_q14) {
-        state->int_q15 = (int)i_base;
+    if (fabsf(err_rad) < config->deadband) {
+        state->integrator = i_base;
         return;
     }
 
-    /* True PI: I[z] accumulates error; control u = Kp*e + I. Apply slew on delta(u).
-       Everything is in Q15 except err (Q14). */
+    /* True PI controller: u = Kp*e + I, where I accumulates beta*e */
+    float p = alpha * err_rad;
+    float i_term = beta * err_rad;
 
-    int32_t p = ((int64_t)alpha * err) >> 14;     /* -> Q15 */
-    int32_t i_term = ((int64_t)beta * err) >> 14; /* -> Q15 */
-
-    /* Integrator update with simple anti-windup bound */
-    int32_t i_next = i_base + i_term;
-    i_next = clamp_i(i_next, -F_CLAMP, F_CLAMP);
+    /* Integrator update with anti-windup bound */
+    float i_next = clampf(i_base + i_term, -kFreqClamp, kFreqClamp);
 
     /* Positional controller output */
-    int32_t u = p + i_next; /* Q15 */
+    float u = p + i_next;
 
     /* Apply slew limit to change in frequency per update */
-    int32_t df = u - state->freq_q15; /* desired delta */
-    df = clamp_i(df, -config->slew_max_q15, config->slew_max_q15);
-    int32_t f_new = state->freq_q15 + df;
+    float df = u - state->freq;
+    df = clampf(df, -config->slew_max, config->slew_max);
+    float f_new = clampf(state->freq + df, -kFreqClamp, kFreqClamp);
 
-    /* Clamp absolute frequency range */
-    f_new = clamp_i(f_new, -F_CLAMP, F_CLAMP);
-
-    state->freq_q15 = (int)f_new;
-    state->int_q15 = (int)i_next;
+    state->freq = f_new;
+    state->integrator = i_next;
 }
 
 /**
@@ -340,7 +308,7 @@ fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* 
  * @param sps    Samples-per-symbol (complex samples per symbol).
  */
 void
-fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x, int N, int sps) {
+fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, float* x, int N, int sps) {
     if (!config || !state || !config->enabled || !x || N < 2) {
         return;
     }
@@ -380,24 +348,21 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x
     float* buf_r = state->be_buf_r;
     float* buf_i = state->be_buf_i;
     const int pairs = N >> 1;
-    const float q15_per_rad = 32768.0f / kTwoPiF;
     /* Incremental NCO to avoid per-sample sinf/cosf (mirror GNURadio control_loop). */
     std::complex<float> nco = std::exp(std::complex<float>(0.0f, phase));
-    int last_r = 0;
-    int last_j = 0;
+    float last_r = 0.0f;
+    float last_j = 0.0f;
 
     for (int n = 0; n < pairs; n++) {
-        float ir = (float)x[(size_t)(n << 1)];
-        float iq = (float)x[(size_t)(n << 1) + 1];
+        float ir = x[(size_t)(n << 1)];
+        float iq = x[(size_t)(n << 1) + 1];
         /* Apply NCO rotation via incremental phasor */
         std::complex<float> z(ir, iq);
         std::complex<float> y = z * nco;
-        int32_t zr_i = (int32_t)lrintf(y.real());
-        int32_t zi_i = (int32_t)lrintf(y.imag());
-        x[(size_t)(n << 1)] = sat16(zr_i);
-        x[(size_t)(n << 1) + 1] = sat16(zi_i);
-        last_r = zr_i;
-        last_j = zi_i;
+        x[(size_t)(n << 1)] = y.real();
+        x[(size_t)(n << 1) + 1] = y.imag();
+        last_r = y.real();
+        last_j = y.imag();
 
         /* Push into ring buffer (with mirror to simplify dot product like GNU Radio). */
         buf_r[buf_idx] = y.real();
@@ -441,17 +406,11 @@ fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x
     state->be_freq = freq;
     state->be_buf_idx = buf_idx;
 
-    int fq15 = (int)lrintf(freq * q15_per_rad);
-    int pq15 = ((int)lrintf(phase * q15_per_rad)) & 0x7FFF;
-    int f_clamp_q15 = (int)lrintf(fmax * q15_per_rad);
-    /* Further limit clamp to avoid runaway when input is noisy */
-    const int kClampLimitQ15 = 8192;
-    if (f_clamp_q15 > kClampLimitQ15) {
-        f_clamp_q15 = kClampLimitQ15;
-    }
-    state->freq_q15 = clamp_i(fq15, -f_clamp_q15, f_clamp_q15);
-    state->phase_q15 = pq15;
-    state->int_q15 = state->freq_q15; /* mirror loop state for outer helpers */
+    /* Clamp frequency to avoid runaway on noisy input (~0.5 rad/sample max) */
+    const float kFreqClamp = 0.5f;
+    state->freq = clampf(freq, -kFreqClamp, kFreqClamp);
+    state->phase = fll_be_wrap_phase(phase);
+    state->integrator = state->freq; /* mirror loop state for outer helpers */
     state->prev_r = last_r;
     state->prev_j = last_j;
 }

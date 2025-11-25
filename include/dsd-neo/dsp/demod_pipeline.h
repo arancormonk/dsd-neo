@@ -33,7 +33,7 @@ struct demod_state;
  * @param step    Decimation factor.
  * @return New length after decimation.
  */
-int low_pass_simple(int16_t* signal2, int len, int step);
+int low_pass_simple(float* signal2, int len, int step);
 
 /**
  * Simple square window FIR on real samples with decimation to rate_out2.
@@ -58,7 +58,7 @@ void low_pass(struct demod_state* d);
  * @param length Input length (elements), processed in-place.
  * @param hist   Persistent history buffer of length >= 6.
  */
-void fifth_order(int16_t* data, int length, int16_t* hist);
+void fifth_order(float* data, int length, float* hist);
 
 /**
  * FIR filter with symmetric 9-tap coefficients (phase-saving implementation).
@@ -68,7 +68,7 @@ void fifth_order(int16_t* data, int length, int16_t* hist);
  * @param fir    Coefficient array (expects layout for length 9).
  * @param hist   History buffer used across calls.
  */
-void generic_fir(int16_t* data, int length, int* fir, int16_t* hist);
+void generic_fir(float* data, int length, const float* fir, float* hist);
 
 /**
  * Perform FM discriminator on interleaved low-passed I/Q to produce audio PCM.
@@ -127,7 +127,7 @@ void audio_lpf_filter(struct demod_state* fm);
  * @param step    Step size for sampling.
  * @return Mean power (squared RMS) with DC bias removed.
  */
-long int mean_power(int16_t* samples, int len, int step);
+float mean_power(float* samples, int len, int step);
 
 /**
  * Full demodulation pipeline for one block.

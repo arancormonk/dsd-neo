@@ -193,7 +193,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    int i, t, dibit, sync, symbol, synctest_pos, lastt;
+    int i, t, dibit, sync, synctest_pos, lastt;
+    float symbol;
     char synctest[25];
     char synctest12[13]; //dPMR
     char synctest10[11]; //NXDN FSW only
@@ -205,7 +206,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     char modulation[8];
     char* synctest_p;
     char synctest_buf[10240]; //what actually is assigned to this, can't find its use anywhere?
-    int lmin, lmax, lidx;
+    float lmin, lmax;
+    int lidx;
 
     //assign t_max value based on decoding type expected (all non-auto decodes first)
     int t_max = 24; //initialize as an actual value to prevent any overflow related issues
@@ -227,10 +229,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         t_max = 24; //24 for everything else
     }
 
-    int lbuf[48],
+    float lbuf[48],
         lbuf2
             [48]; //if we use t_max in these arrays, and t >=  t_max in condition below, then it can overflow those checks in there if t exceeds t_max
-    int lsum;
+    float lsum;
     //init the lbuf
     memset(lbuf, 0, sizeof(lbuf));
     memset(lbuf2, 0, sizeof(lbuf2));
@@ -554,9 +556,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             {
                 lbuf2[i] = lbuf[i];
             }
-            qsort(lbuf2, t_max, sizeof(int), comp);
-            lmin = (lbuf2[1] + lbuf2[2] + lbuf2[3]) / 3;
-            lmax = (lbuf2[t_max - 3] + lbuf2[t_max - 2] + lbuf2[t_max - 1]) / 3;
+            qsort(lbuf2, t_max, sizeof(float), comp);
+            lmin = (lbuf2[1] + lbuf2[2] + lbuf2[3]) / 3.0f;
+            lmax = (lbuf2[t_max - 3] + lbuf2[t_max - 2] + lbuf2[t_max - 1]) / 3.0f;
 
             if (state->rf_mod == 1) {
                 state->minbuf[state->midx] = lmin;
@@ -567,19 +569,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 } else {
                     state->midx++;
                 }
-                lsum = 0;
+                lsum = 0.0f;
                 for (i = 0; i < opts->msize; i++) {
                     lsum += state->minbuf[i];
                 }
-                state->min = lsum / opts->msize;
-                lsum = 0;
+                state->min = lsum / (float)opts->msize;
+                lsum = 0.0f;
                 for (i = 0; i < opts->msize; i++) {
                     lsum += state->maxbuf[i];
                 }
-                state->max = lsum / opts->msize;
-                state->center = ((state->max) + (state->min)) / 2;
-                state->maxref = (int)((state->max) * 0.80F);
-                state->minref = (int)((state->min) * 0.80F);
+                state->max = lsum / (float)opts->msize;
+                state->center = ((state->max) + (state->min)) / 2.0f;
+                state->maxref = (state->max) * 0.80F;
+                state->minref = (state->min) * 0.80F;
             } else {
                 state->maxref = state->max;
                 state->minref = state->min;

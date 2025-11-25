@@ -17,6 +17,7 @@
  */
 
 #include <assert.h>
+#include <math.h>
 
 #include <dsd-neo/core/dsd.h>
 #ifdef USE_RTLSDR
@@ -26,7 +27,7 @@
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 static void
-print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2, int count) {
+print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {
     int i, j, o;
     char modulation[8];
     int spectrum[64];
@@ -42,8 +43,14 @@ print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2, int count) {
     for (i = 0; i < 64; i++) {
         spectrum[i] = 0;
     }
+    float span = fmaxf(fabsf(state->max), fabsf(state->min));
+    if (span < 1e-3f) {
+        span = 1.0f;
+    }
+    const float scale = 32.0f / span;
     for (i = 0; i < count; i++) {
-        o = (sbuf2[i] + 32768) / 1024;
+        float v = sbuf2[i];
+        o = (int)lrintf((v * scale) + 32.0f);
         if (o < 0) {
             o = 0;
         }
@@ -61,15 +68,29 @@ print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2, int count) {
         fprintf(stderr, "TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light,
                 state->err_str);
         fprintf(stderr, "+----------------------------------------------------------------+\n");
+        int bin_min = (int)lrintf(state->min * scale + 32.0f);
+        int bin_max = (int)lrintf(state->max * scale + 32.0f);
+        int bin_lmid = (int)lrintf(state->lmid * scale + 32.0f);
+        int bin_umid = (int)lrintf(state->umid * scale + 32.0f);
+        int bin_center = (int)lrintf(state->center * scale + 32.0f);
+        int bins[] = {bin_min, bin_max, bin_lmid, bin_umid, bin_center};
+        for (size_t b = 0; b < sizeof(bins) / sizeof(bins[0]); b++) {
+            if (bins[b] < 0) {
+                bins[b] = 0;
+            }
+            if (bins[b] > 63) {
+                bins[b] = 63;
+            }
+        }
         for (i = 0; i < 10; i++) {
             printf("|");
             for (j = 0; j < 64; j++) {
                 if (i == 0) {
-                    if ((j == ((state->min) + 32768) / 1024) || (j == ((state->max) + 32768) / 1024)) {
+                    if (j == bins[0] || j == bins[1]) {
                         fprintf(stderr, "#");
-                    } else if ((j == ((state->lmid) + 32768) / 1024) || (j == ((state->umid) + 32768) / 1024)) {
+                    } else if (j == bins[2] || j == bins[3]) {
                         fprintf(stderr, "^");
-                    } else if (j == (state->center + 32768) / 1024) {
+                    } else if (j == bins[4]) {
                         fprintf(stderr, "!");
                     } else {
                         if (j == 32) {
@@ -97,12 +118,12 @@ print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2, int count) {
 }
 
 static void
-use_symbol(dsd_opts* opts, dsd_state* state, int symbol) {
+use_symbol(dsd_opts* opts, dsd_state* state, float symbol) {
     UNUSED(symbol);
 
     int i;
-    int sbuf2[128];
-    int lmin, lmax, lsum;
+    float sbuf2[128];
+    float lmin, lmax, lsum;
 
     int cap = opts->ssize;
     if (cap < 0) {
@@ -115,17 +136,17 @@ use_symbol(dsd_opts* opts, dsd_state* state, int symbol) {
         sbuf2[i] = state->sbuf[i];
     }
 
-    qsort(sbuf2, (size_t)cap, sizeof(int), comp);
+    qsort(sbuf2, (size_t)cap, sizeof(float), comp);
 
     // Continuous update of min/max
     // - QPSK: always (as before)
     // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
     if (state->rf_mod == 1 || (state->rf_mod == 0 && (state->lastsynctype == 0 || state->lastsynctype == 1))) {
         if (cap >= 2) {
-            lmin = (sbuf2[0] + sbuf2[1]) / 2;
-            lmax = (sbuf2[(cap - 1)] + sbuf2[(cap - 2)]) / 2;
+            lmin = (sbuf2[0] + sbuf2[1]) / 2.0f;
+            lmax = (sbuf2[(cap - 1)] + sbuf2[(cap - 2)]) / 2.0f;
         } else {
-            lmin = lmax = 0;
+            lmin = lmax = 0.0f;
         }
         state->minbuf[state->midx] = lmin;
         state->maxbuf[state->midx] = lmax;
@@ -134,21 +155,21 @@ use_symbol(dsd_opts* opts, dsd_state* state, int symbol) {
         } else {
             state->midx++;
         }
-        lsum = 0;
+        lsum = 0.0f;
         for (i = 0; i < opts->msize; i++) {
             lsum += state->minbuf[i];
         }
-        state->min = lsum / opts->msize;
-        lsum = 0;
+        state->min = lsum / (float)opts->msize;
+        lsum = 0.0f;
         for (i = 0; i < opts->msize; i++) {
             lsum += state->maxbuf[i];
         }
-        state->max = lsum / opts->msize;
-        state->center = ((state->max) + (state->min)) / 2;
-        state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-        state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-        state->maxref = (int)((state->max) * 0.80F);
-        state->minref = (int)((state->min) * 0.80F);
+        state->max = lsum / (float)opts->msize;
+        state->center = ((state->max) + (state->min)) / 2.0f;
+        state->umid = (((state->max) - state->center) * 5.0f / 8.0f) + state->center;
+        state->lmid = (((state->min) - state->center) * 5.0f / 8.0f) + state->center;
+        state->maxref = (state->max) * 0.80F;
+        state->minref = (state->min) * 0.80F;
     } else {
         state->maxref = state->max;
         state->minref = state->min;
@@ -193,39 +214,40 @@ invert_dibit(int dibit) {
 }
 
 static inline uint8_t
-dmr_compute_reliability(const dsd_state* st, int sym) {
-    int min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
+dmr_compute_reliability(const dsd_state* st, float sym) {
+    const float eps = 1e-6f;
+    float min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
     int rel = 0;
     if (sym > umid) {
-        int span = max - umid;
-        if (span < 1) {
-            span = 1;
+        float span = max - umid;
+        if (span < eps) {
+            span = eps;
         }
-        rel = (sym - umid) * 255 / span;
+        rel = (int)lrintf(((sym - umid) * 255.0f) / span);
     } else if (sym > center) {
-        int d1 = sym - center;
-        int d2 = umid - sym;
-        int span = umid - center;
-        if (span < 1) {
-            span = 1;
+        float d1 = sym - center;
+        float d2 = umid - sym;
+        float span = umid - center;
+        if (span < eps) {
+            span = eps;
         }
-        int m = d1 < d2 ? d1 : d2;
-        rel = (m * 510) / span; // scale to 0..255 (2x since max margin is span/2)
+        float m = d1 < d2 ? d1 : d2;
+        rel = (int)lrintf((m * 510.0f) / span); // scale to 0..255 (2x since max margin is span/2)
     } else if (sym >= lmid) {
-        int d1 = center - sym;
-        int d2 = sym - lmid;
-        int span = center - lmid;
-        if (span < 1) {
-            span = 1;
+        float d1 = center - sym;
+        float d2 = sym - lmid;
+        float span = center - lmid;
+        if (span < eps) {
+            span = eps;
         }
-        int m = d1 < d2 ? d1 : d2;
-        rel = (m * 510) / span;
+        float m = d1 < d2 ? d1 : d2;
+        rel = (int)lrintf((m * 510.0f) / span);
     } else {
-        int span = lmid - min;
-        if (span < 1) {
-            span = 1;
+        float span = lmid - min;
+        if (span < eps) {
+            span = eps;
         }
-        rel = (lmid - sym) * 255 / span;
+        rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
     }
     if (rel < 0) {
         rel = 0;
@@ -273,7 +295,7 @@ dmr_compute_reliability(const dsd_state* st, int sym) {
 }
 
 int
-digitize(dsd_opts* opts, dsd_state* state, int symbol) {
+digitize(dsd_opts* opts, dsd_state* state, float symbol) {
     // determine dibit state
     if ((state->synctype == 6) || (state->synctype == 14) || (state->synctype == 18) || (state->synctype == 37))
 
@@ -452,7 +474,7 @@ digitize(dsd_opts* opts, dsd_state* state, int symbol) {
 
 int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
-    int symbol;
+    float symbol;
     int dibit;
 
 #ifdef TRACE_DSD
@@ -474,7 +496,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     state->sbuf[state->sidx] = symbol;
 
     if (out_analog_signal != NULL) {
-        *out_analog_signal = symbol;
+        *out_analog_signal = (int)lrintf(symbol);
     }
 
     use_symbol(opts, state, symbol);

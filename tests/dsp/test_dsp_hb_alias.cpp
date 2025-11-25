@@ -12,14 +12,13 @@
  */
 
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <vector>
 
 #include <dsd-neo/dsp/halfband.h>
 
 static double
-rms(const std::vector<int16_t>& x) {
+rms(const std::vector<float>& x) {
     long double acc = 0.0;
     for (size_t i = 0; i < x.size(); i++) {
         long double v = (long double)x[i];
@@ -32,44 +31,37 @@ rms(const std::vector<int16_t>& x) {
 }
 
 static void
-gen_tone(std::vector<int16_t>& dst, double fs, double f, int amp) {
+gen_tone(std::vector<float>& dst, double fs, double f, double amp) {
     const double two_pi = 6.28318530717958647692;
     const size_t N = dst.size();
     for (size_t n = 0; n < N; n++) {
         double t = (double)n / fs;
         double s = std::sin(two_pi * f * t);
-        int v = (int)std::lrint((double)amp * s);
-        if (v > 32767) {
-            v = 32767;
-        }
-        if (v < -32768) {
-            v = -32768;
-        }
-        dst[n] = (int16_t)v;
+        dst[n] = (float)(amp * s);
     }
 }
 
 static double
 stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
-    const int amp = 28000;
+    const double amp = 0.85; // near full-scale without clipping
     int N = 8192;
-    std::vector<int16_t> in((size_t)N);
-    std::vector<int16_t> buf((size_t)N);
-    std::vector<int16_t> out((size_t)N);
-    int16_t hist_i[10][HB_TAPS - 1] = {};
+    std::vector<float> in((size_t)N);
+    std::vector<float> buf((size_t)N);
+    std::vector<float> out((size_t)N);
+    float hist_i[10][HB_TAPS - 1] = {};
 
     // Passband tone
     gen_tone(in, fs, f_pass, amp);
     int in_len = N;
-    const int16_t* src = in.data();
-    int16_t* dst = buf.data();
+    const float* src = in.data();
+    float* dst = buf.data();
     for (int s = 0; s < stages; s++) {
         int out_len = hb_decim2_real(src, in_len, dst, hist_i[s]);
         src = dst;
         in_len = out_len;
         dst = (src == buf.data()) ? out.data() : buf.data();
     }
-    std::vector<int16_t> y_pass((size_t)in_len);
+    std::vector<float> y_pass((size_t)in_len);
     for (int i = 0; i < in_len; i++) {
         y_pass[(size_t)i] = src[i];
     }
@@ -91,7 +83,7 @@ stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
         in_len = out_len;
         dst = (src == buf.data()) ? out.data() : buf.data();
     }
-    std::vector<int16_t> y_stop((size_t)in_len);
+    std::vector<float> y_stop((size_t)in_len);
     for (int i = 0; i < in_len; i++) {
         y_stop[(size_t)i] = src[i];
     }

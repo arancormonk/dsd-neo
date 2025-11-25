@@ -137,31 +137,31 @@ const float dpmrcoeffs[135] = {
     0.0311240307,  0.0317982965,  0.0305433586,  0.0275919612,  0.0232592816,  0.0179185547,  0.0119748846,
     0.0058388841,  -0.0000983004};
 
-short dsd_input_filter(short sample, int mode);
+float dsd_input_filter(float sample, int mode);
 
-short
-dmr_filter(short sample) {
+float
+dmr_filter(float sample) {
     return dsd_input_filter(sample, 3);
 }
 
-short
-nxdn_filter(short sample) {
+float
+nxdn_filter(float sample) {
     // Use NXDN-specific filter (mode 2) rather than dPMR (mode 4)
     return dsd_input_filter(sample, 2);
 }
 
-short
-dpmr_filter(short sample) {
+float
+dpmr_filter(float sample) {
     return dsd_input_filter(sample, 4);
 }
 
-short
-m17_filter(short sample) {
+float
+m17_filter(float sample) {
     return dsd_input_filter(sample, 5);
 }
 
-short
-dsd_input_filter(short sample, int mode) {
+float
+dsd_input_filter(float sample, int mode) {
     float sum;
     int i;
     float gain;
@@ -229,7 +229,7 @@ dsd_input_filter(short sample, int mode) {
         sum += coeffs[i] * v[idx];
     }
 
-    return (short)(sum / gain); // filtered sample out
+    return sum / gain; // filtered sample out
 }
 
 void

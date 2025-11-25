@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Input ring buffer implementation for interleaved I/Q int16_t samples.
+ * @brief Input ring buffer implementation for interleaved I/Q float samples.
  *
  * Provides producer/consumer primitives to reserve, commit, write, and
  * blockingly read samples with wrap-around handling and wakeup signaling.
@@ -31,7 +31,7 @@ extern "C" int dsd_rtl_stream_should_exit(void);
  * @return Total writable samples granted across regions.
  */
 int
-input_ring_reserve(struct input_ring_state* r, size_t min_needed, int16_t** p1, size_t* n1, int16_t** p2, size_t* n2) {
+input_ring_reserve(struct input_ring_state* r, size_t min_needed, float** p1, size_t* n1, float** p2, size_t* n2) {
     size_t free_sp = input_ring_free(r);
     /* Producer must never advance consumer tail; if full, grant nothing */
     /* Provide up to min(free_sp, min_needed) across at most two regions */
@@ -100,7 +100,7 @@ input_ring_commit(struct input_ring_state* r, size_t produced) {
  * @param count Number of samples to write.
  */
 void
-input_ring_write(struct input_ring_state* r, const int16_t* data, size_t count) {
+input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
     int need_signal = input_ring_is_empty(r);
     while (count > 0 && !exitflag) {
         size_t free_sp = input_ring_free(r);
@@ -115,7 +115,7 @@ input_ring_write(struct input_ring_state* r, const int16_t* data, size_t count) 
         /* First region: from head to end of buffer */
         size_t to_end = r->capacity - h;
         if (to_end >= write_now) {
-            memcpy(r->buffer + h, data, write_now * sizeof(int16_t));
+            memcpy(r->buffer + h, data, write_now * sizeof(float));
             h += write_now;
             if (h >= r->capacity) {
                 h = 0;
@@ -128,12 +128,12 @@ input_ring_write(struct input_ring_state* r, const int16_t* data, size_t count) 
 
         /* Handle wrap-around case: split write_now across tail and head */
         if (to_end > 0) {
-            memcpy(r->buffer + h, data, to_end * sizeof(int16_t));
+            memcpy(r->buffer + h, data, to_end * sizeof(float));
             data += to_end;
         }
         size_t remaining = write_now - to_end;
         if (remaining > 0) {
-            memcpy(r->buffer, data, remaining * sizeof(int16_t));
+            memcpy(r->buffer, data, remaining * sizeof(float));
             h = remaining;
             data += remaining;
         } else {
@@ -160,7 +160,7 @@ input_ring_write(struct input_ring_state* r, const int16_t* data, size_t count) 
  * @return Number of samples read (>=1), 0 if max_count is 0, or -1 on exit.
  */
 int
-input_ring_read_block(struct input_ring_state* r, int16_t* out, size_t max_count) {
+input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) {
     if (max_count == 0) {
         return 0;
     }
@@ -201,14 +201,14 @@ input_ring_read_block(struct input_ring_state* r, int16_t* out, size_t max_count
     size_t t = r->tail.load();
     size_t first = r->capacity - t;
     if (first >= read_now) {
-        memcpy(out, r->buffer + t, read_now * sizeof(int16_t));
+        memcpy(out, r->buffer + t, read_now * sizeof(float));
         t += read_now;
         if (t >= r->capacity) {
             t = 0;
         }
     } else {
-        memcpy(out, r->buffer + t, first * sizeof(int16_t));
-        memcpy(out + first, r->buffer, (read_now - first) * sizeof(int16_t));
+        memcpy(out, r->buffer + t, first * sizeof(float));
+        memcpy(out + first, r->buffer, (read_now - first) * sizeof(float));
         t = read_now - first;
     }
     r->tail.store(t);

@@ -6,6 +6,7 @@
 /* Unit tests for remaining demod helpers: deemph_filter, low_pass_real, low_pass,
    fifth_order, generic_fir, and dsd_fm_demod plumbing. */
 
+#include <cmath>
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -16,16 +17,12 @@
 int use_halfband_decimator = 0;
 
 static int
-approx_eq(int a, int b, int tol) {
-    int d = a - b;
-    if (d < 0) {
-        d = -d;
-    }
-    return d <= tol;
+approx_eq(float a, float b, float tol) {
+    return std::fabs(a - b) <= tol;
 }
 
 static int
-monotonic_nondecreasing(const int16_t* x, int n) {
+monotonic_nondecreasing(const float* x, int n) {
     for (int i = 1; i < n; i++) {
         if (x[i] < x[i - 1]) {
             return 0;
@@ -35,7 +32,7 @@ monotonic_nondecreasing(const int16_t* x, int n) {
 }
 
 // Fake discriminator for dsd_fm_demod
-static int
+[[maybe_unused]] static int
 fake_disc(int ar, int aj, int br, int bj) {
     (void)ar;
     (void)aj;
@@ -57,18 +54,18 @@ main(void) {
         const int N = 64;
         s->result_len = N;
         for (int i = 0; i < N; i++) {
-            s->result[i] = 2000;
+            s->result[i] = 1.0f;
         }
         s->deemph_a = 8192; // Q15 ~ 0.25
-        s->deemph_avg = 0;
+        s->deemph_avg = 0.0f;
         deemph_filter(s);
         if (!monotonic_nondecreasing(s->result, N)) {
             fprintf(stderr, "deemph_filter: non-monotonic step response\n");
             free(s);
             return 1;
         }
-        if (!approx_eq(s->result[N - 1], 2000, 150)) {
-            fprintf(stderr, "deemph_filter: final=%d not near 2000\n", s->result[N - 1]);
+        if (!approx_eq(s->result[N - 1], 1.0f, 1e-4f)) {
+            fprintf(stderr, "deemph_filter: final=%f not near 1.0\n", s->result[N - 1]);
             free(s);
             return 1;
         }
@@ -79,11 +76,11 @@ main(void) {
         const int N = 32;
         s->result_len = N;
         for (int i = 0; i < N; i++) {
-            s->result[i] = 1000;
+            s->result[i] = 0.5f;
         }
         s->rate_in = 48000;
         s->rate_out2 = 24000;
-        s->now_lpr = 0;
+        s->now_lpr = 0.0f;
         s->prev_lpr_index = 0;
         low_pass_real(s);
         if (s->result_len != N / 2) {
@@ -92,8 +89,8 @@ main(void) {
             return 1;
         }
         for (int i = 0; i < s->result_len; i++) {
-            if (!approx_eq(s->result[i], 1000, 1)) {
-                fprintf(stderr, "low_pass_real: out[%d]=%d not ~1000\n", i, s->result[i]);
+            if (!approx_eq(s->result[i], 0.5f, 1e-4f)) {
+                fprintf(stderr, "low_pass_real: out[%d]=%f not ~0.5\n", i, s->result[i]);
                 free(s);
                 return 1;
             }
@@ -104,18 +101,21 @@ main(void) {
     {
         s->lowpassed = s->hb_workbuf; // use internal storage
         for (int i = 0; i < 8; i++) {
-            s->lowpassed[i] = 100;
+            s->lowpassed[i] = 0.1f;
         }
         s->lp_len = 8; // 4 pairs
         s->downsample = 2;
-        s->now_r = s->now_j = s->prev_index = 0;
+        s->now_r = 0.0f;
+        s->now_j = 0.0f;
+        s->prev_index = 0;
         low_pass(s);
         if (s->lp_len != 4) {
             fprintf(stderr, "low_pass: lp_len=%d want 4\n", s->lp_len);
             free(s);
             return 1;
         }
-        if (!(s->lowpassed[0] == 200 && s->lowpassed[1] == 200 && s->lowpassed[2] == 200 && s->lowpassed[3] == 200)) {
+        if (!(approx_eq(s->lowpassed[0], 0.2f, 1e-6f) && approx_eq(s->lowpassed[1], 0.2f, 1e-6f)
+              && approx_eq(s->lowpassed[2], 0.2f, 1e-6f) && approx_eq(s->lowpassed[3], 0.2f, 1e-6f))) {
             fprintf(stderr, "low_pass: summed outputs mismatch\n");
             free(s);
             return 1;
@@ -124,16 +124,17 @@ main(void) {
 
     // fifth_order: constant input, prefilled history -> output doubles DC
     {
-        int16_t hist[6];
+        float hist[6];
         for (int i = 0; i < 6; i++) {
-            hist[i] = 500;
+            hist[i] = 0.05f;
         }
-        int16_t data[16];
+        float data[16];
         for (int i = 0; i < 16; i++) {
-            data[i] = 500;
+            data[i] = 0.05f;
         }
         fifth_order(data, 16, hist);
-        if (!(data[0] == 1000 && data[2] == 1000 && data[4] == 1000 && data[6] == 1000)) {
+        if (!(approx_eq(data[0], 0.1f, 1e-4f) && approx_eq(data[2], 0.1f, 1e-4f) && approx_eq(data[4], 0.1f, 1e-4f)
+              && approx_eq(data[6], 0.1f, 1e-4f))) {
             fprintf(stderr, "fifth_order: expected doubled DC on decimated indices\n");
             free(s);
             return 1;
@@ -142,28 +143,30 @@ main(void) {
 
     // generic_fir: center-tap passthrough via hist
     {
-        int16_t hist[9] = {0};
-        hist[4] = 1234;
-        int fir[6] = {0, 0, 0, 0, 0, (1 << 15)}; // only center contributes
-        int16_t buf[2] = {555, 0};               // only even indices processed
+        float hist[9] = {0.0f};
+        hist[4] = 1.234f;
+        float fir[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f}; // only center contributes
+        float buf[2] = {0.555f, 0.0f};                       // only even indices processed
         generic_fir(buf, 2, fir, hist);
-        if (buf[0] != 1234) {
-            fprintf(stderr, "generic_fir: expected center hist passthrough, got %d\n", buf[0]);
+        if (!approx_eq(buf[0], 1.234f, 1e-6f)) {
+            fprintf(stderr, "generic_fir: expected center hist passthrough, got %f\n", buf[0]);
             free(s);
             return 1;
         }
     }
-    // generic_fir: saturation when sum exceeds 16-bit range
+    // generic_fir: symmetric tap weighting combines mirrored history
     {
-        int16_t hist[9];
+        float hist[9];
         for (int i = 0; i < 9; i++) {
-            hist[i] = 30000;
+            hist[i] = (float)(i + 1); // 1..9
         }
-        int fir[6] = {0, 4096, 4096, 4096, 4096, 4096};
-        int16_t buf[2] = {0, 0};
+        float fir[6] = {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f};
+        float buf[2] = {10.0f, 0.0f};
         generic_fir(buf, 2, fir, hist);
-        if (buf[0] != 32767) {
-            fprintf(stderr, "generic_fir: expected saturation to 32767, got %d\n", buf[0]);
+        float expect =
+            (1.0f + 9.0f) * 0.1f + (2.0f + 8.0f) * 0.2f + (3.0f + 7.0f) * 0.3f + (4.0f + 6.0f) * 0.4f + 5.0f * 0.5f;
+        if (!approx_eq(buf[0], expect, 1e-5f)) {
+            fprintf(stderr, "generic_fir: expected %.3f got %f\n", expect, buf[0]);
             free(s);
             return 1;
         }
@@ -172,23 +175,33 @@ main(void) {
     // dsd_fm_demod: differential phase + FLL offset
     {
         /* Three complex samples rotating +90 deg each step. */
-        int16_t iq[6] = {100, 0, 0, 100, -100, 0};
+        float iq[6] = {0.5f, 0.0f, 0.0f, 0.5f, -0.5f, 0.0f};
         s->lowpassed = iq;
         s->lp_len = 6; // 3 complex samples
         s->fll_enabled = 1;
-        s->fll_freq_q15 = 100; // contributes +50 in Q14 domain
-        s->pre_r = 0;
-        s->pre_j = 0;
+        s->fll_freq = 0.003f; // small FLL offset in rad/sample (native float)
+        s->pre_r = 0.0f;
+        s->pre_j = 0.0f;
         dsd_fm_demod(s);
         if (s->result_len != 3) {
             fprintf(stderr, "dsd_fm_demod: result_len=%d want 3\n", s->result_len);
             free(s);
             return 1;
         }
-        int expect[3] = {50, 8242, 8242}; // first sample seeds history; then 90deg deltas + FLL bias
-        for (int i = 0; i < s->result_len; i++) {
-            if (s->result[i] != expect[i]) {
-                fprintf(stderr, "dsd_fm_demod: result[%d]=%d want %d\n", i, s->result[i], expect[i]);
+        /* Output is differential phase in radians + 0.5*fll_freq offset.
+         * First sample seeds history (~0), then +90 deg deltas (~π/2 ≈ 1.571).
+         * With fll_freq=0.003, offset contribution is 0.0015 rad per sample. */
+        float pi_2 = 1.5707963f;
+        float fll_offset = 0.5f * 0.003f;
+        if (fabsf(s->result[0] - fll_offset) > 0.01f) {
+            fprintf(stderr, "dsd_fm_demod: result[0]=%f want ~%f (fll offset)\n", s->result[0], fll_offset);
+            free(s);
+            return 1;
+        }
+        for (int i = 1; i < s->result_len; i++) {
+            float expect = pi_2 + fll_offset;
+            if (fabsf(s->result[i] - expect) > 0.01f) {
+                fprintf(stderr, "dsd_fm_demod: result[%d]=%f want ~%f\n", i, s->result[i], expect);
                 free(s);
                 return 1;
             }

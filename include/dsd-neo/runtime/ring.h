@@ -19,7 +19,7 @@
 
 struct output_state {
     int rate;
-    int16_t* buffer;
+    float* buffer;
     size_t capacity;
     std::atomic<size_t> head;
     std::atomic<size_t> tail;
@@ -93,7 +93,7 @@ ring_clear(struct output_state* o) {
  * @param data  Source samples to write.
  * @param count Number of samples to write.
  */
-void ring_write(struct output_state* o, const int16_t* data, size_t count);
+void ring_write(struct output_state* o, const float* data, size_t count);
 
 /**
  * @brief Write up to count samples, blocking until space is available.
@@ -104,7 +104,7 @@ void ring_write(struct output_state* o, const int16_t* data, size_t count);
  * @param data  Source samples to write.
  * @param count Number of samples to write.
  */
-void ring_write_no_signal(struct output_state* o, const int16_t* data, size_t count);
+void ring_write_no_signal(struct output_state* o, const float* data, size_t count);
 
 /**
  * @brief Write samples with signal on empty-to-non-empty transition.
@@ -113,7 +113,7 @@ void ring_write_no_signal(struct output_state* o, const int16_t* data, size_t co
  * @param data  Source samples to write.
  * @param count Number of samples to write.
  */
-void ring_write_signal_on_empty_transition(struct output_state* o, const int16_t* data, size_t count);
+void ring_write_signal_on_empty_transition(struct output_state* o, const float* data, size_t count);
 
 /**
  * @brief Read one sample from the output ring, blocking with timeout until available.
@@ -122,7 +122,7 @@ void ring_write_signal_on_empty_transition(struct output_state* o, const int16_t
  * @param out  Destination for one sample.
  * @return 0 on success, -1 on exit.
  */
-int ring_read_one(struct output_state* o, int16_t* out);
+int ring_read_one(struct output_state* o, float* out);
 
 /**
  * @brief Read up to max_count samples into out.
@@ -134,4 +134,4 @@ int ring_read_one(struct output_state* o, int16_t* out);
  * @param max_count Maximum number of samples to read.
  * @return Number of samples read (>=1) or -1 on exit.
  */
-int ring_read_batch(struct output_state* o, int16_t* out, size_t max_count);
+int ring_read_batch(struct output_state* o, float* out, size_t max_count);

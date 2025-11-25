@@ -9,14 +9,14 @@
 #include <stdio.h>
 
 extern "C" void init_rrc_filter_memory(void);
-extern "C" short dmr_filter(short sample);
-extern "C" short nxdn_filter(short sample);
-extern "C" short dpmr_filter(short sample);
-extern "C" short m17_filter(short sample);
+extern "C" float dmr_filter(float sample);
+extern "C" float nxdn_filter(float sample);
+extern "C" float dpmr_filter(float sample);
+extern "C" float m17_filter(float sample);
 
 static int
-approx_eq(int a, int b, int tol) {
-    int d = a - b;
+approx_eq(float a, float b, float tol) {
+    float d = a - b;
     if (d < 0) {
         d = -d;
     }
@@ -24,10 +24,10 @@ approx_eq(int a, int b, int tol) {
 }
 
 static int
-dc_pass_check(short (*f)(short), int dc, int warm, int tol) {
-    int y = 0;
+dc_pass_check(float (*f)(float), float dc, int warm, float tol) {
+    float y = 0.0f;
     for (int i = 0; i < warm; i++) {
-        y = f((short)dc);
+        y = f(dc);
     }
     return approx_eq(y, dc, tol);
 }
@@ -35,22 +35,22 @@ dc_pass_check(short (*f)(short), int dc, int warm, int tol) {
 int
 main(void) {
     init_rrc_filter_memory();
-    const int dc = 1000;
+    const float dc = 0.1f;
     const int warm = 512; // exceed any filter length for steady-state
     // Allow small rounding tolerance
-    if (!dc_pass_check(&dmr_filter, dc, warm, 8)) {
+    if (!dc_pass_check(&dmr_filter, dc, warm, 1e-4f)) {
         fprintf(stderr, "DMR DC fail\n");
         return 1;
     }
-    if (!dc_pass_check(&nxdn_filter, dc, warm, 8)) {
+    if (!dc_pass_check(&nxdn_filter, dc, warm, 1e-4f)) {
         fprintf(stderr, "NXDN DC fail\n");
         return 1;
     }
-    if (!dc_pass_check(&dpmr_filter, dc, warm, 8)) {
+    if (!dc_pass_check(&dpmr_filter, dc, warm, 1e-4f)) {
         fprintf(stderr, "DPMR DC fail\n");
         return 1;
     }
-    if (!dc_pass_check(&m17_filter, dc, warm, 8)) {
+    if (!dc_pass_check(&m17_filter, dc, warm, 1e-4f)) {
         fprintf(stderr, "M17 DC fail\n");
         return 1;
     }

@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Half-band decimation filter definitions (Q15).
+ * @brief Half-band decimation filter definitions (float).
  *
  * Declares FIR coefficients and the decimate-by-2 function with persistent
  * history for real-valued sequences.
@@ -26,16 +26,16 @@
 #endif
 
 /**
- * Q15-scaled symmetric half-band coefficients.
+ * Symmetric half-band coefficients normalized to unity DC gain.
  *
- * Odd-indexed taps are zero; the center tap is 0.5 (16384). The remaining even
+ * Odd-indexed taps are zero; the center tap is 0.5. The remaining even
  * taps sum to 0.5 to yield unity DC gain.
  */
-extern const int16_t hb_q15_taps[HB_TAPS];
+extern const float hb_q15_taps[HB_TAPS];
 
 /* Optional higher-order half-band prototypes (Q15). */
-extern const int16_t hb31_q15_taps[31];
-extern const int16_t hb23_q15_taps[23];
+extern const float hb31_q15_taps[31];
+extern const float hb23_q15_taps[23];
 
 /**
  * Decimate a real-valued sequence by 2 using a half-band FIR.
@@ -50,4 +50,4 @@ extern const int16_t hb23_q15_taps[23];
  * @param hist   Persistent history of length HB_TAPS-1 (left wing).
  * @return Number of output samples written (in_len/2).
  */
-int hb_decim2_real(const int16_t* in, int in_len, int16_t* out, int16_t* hist);
+int hb_decim2_real(const float* in, int in_len, float* out, float* hist);

@@ -21,7 +21,7 @@ extern "C" {
 #include <dsd-neo/io/rtl_stream_c.h>
 // Local forward declarations for legacy helpers used under the hood
 void dsd_rtl_stream_clear_output(void);
-long dsd_rtl_stream_return_pwr(void);
+double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
 void dsd_rtl_stream_set_ted_sps(int sps);
@@ -34,8 +34,8 @@ int dsd_rtl_stream_get_ted_force(void);
 int dsd_rtl_stream_set_bias_tee(int on);
 void dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                      int sacch_err_delta, int voice_err_delta);
-int dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
-int dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points);
+int dsd_rtl_stream_eye_get(float* out, int max_samples, int* out_sps);
+int dsd_rtl_stream_constellation_get(float* out_xy, int max_points);
 int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
 int dsd_rtl_stream_spectrum_set_size(int n);
 int dsd_rtl_stream_spectrum_get_size(void);
@@ -182,7 +182,7 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
  * @return 0 on success; otherwise <0 on error (e.g., shutdown).
  */
 extern "C" int
-rtl_stream_read(RtlSdrContext* ctx, int16_t* out, size_t count, int* out_got) {
+rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
     if (!ctx || !ctx->stream || !out || !out_got) {
         return -1;
     }
@@ -223,9 +223,9 @@ rtl_stream_clear_output(RtlSdrContext* /*ctx*/) {
  * the legacy implementation.
  *
  * @param ctx Stream context (unused).
- * @return Mean power value (approximate RMS squared).
+ * @return Mean power value (approximate RMS squared, normalized).
  */
-extern "C" long
+extern "C" double
 rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
     return dsd_rtl_stream_return_pwr();
 }
@@ -266,11 +266,11 @@ rtl_stream_get_ted_sps(void) {
 }
 
 extern "C" void
-rtl_stream_set_ted_gain(int gain_q20) {
-    dsd_rtl_stream_set_ted_gain(gain_q20);
+rtl_stream_set_ted_gain(float gain) {
+    dsd_rtl_stream_set_ted_gain(gain);
 }
 
-extern "C" int
+extern "C" float
 rtl_stream_get_ted_gain(void) {
     return dsd_rtl_stream_get_ted_gain();
 }
@@ -313,7 +313,7 @@ rtl_stream_get_cqpsk_acq_fll_locked(void) {
 }
 
 extern "C" int
-rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
+rtl_stream_constellation_get(float* out_xy, int max_points) {
     return dsd_rtl_stream_constellation_get(out_xy, max_points);
 }
 
@@ -404,15 +404,15 @@ rtl_stream_get_auto_ppm(void) {
 }
 
 extern "C" int
-rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
+rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
 }
 
 /* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
 extern "C" int dsd_rtl_stream_get_fm_agc(void);
 extern "C" void dsd_rtl_stream_set_fm_agc(int onoff);
-extern "C" void dsd_rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15);
-extern "C" void dsd_rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15);
+extern "C" void dsd_rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down);
+extern "C" void dsd_rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down);
 extern "C" int dsd_rtl_stream_get_fm_limiter(void);
 extern "C" void dsd_rtl_stream_set_fm_limiter(int onoff);
 extern "C" int dsd_rtl_stream_get_iq_dc(int* out_shift_k);
@@ -429,13 +429,13 @@ rtl_stream_set_fm_agc(int onoff) {
 }
 
 extern "C" void
-rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15) {
-    dsd_rtl_stream_get_fm_agc_params(target_rms, min_rms, alpha_up_q15, alpha_down_q15);
+rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down) {
+    dsd_rtl_stream_get_fm_agc_params(target_rms, min_rms, alpha_up, alpha_down);
 }
 
 extern "C" void
-rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15) {
-    dsd_rtl_stream_set_fm_agc_params(target_rms, min_rms, alpha_up_q15, alpha_down_q15);
+rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down) {
+    dsd_rtl_stream_set_fm_agc_params(target_rms, min_rms, alpha_up, alpha_down);
 }
 
 extern "C" int

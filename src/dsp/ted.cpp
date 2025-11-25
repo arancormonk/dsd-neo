@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/dsp/ted.h>
+#include <math.h>
 
 /**
  * @brief Initialize TED state with default values.
@@ -18,8 +19,8 @@
  */
 void
 ted_init_state(ted_state_t* state) {
-    state->mu_q20 = 0;
-    state->e_ema = 0;
+    state->mu = 0.0f;
+    state->e_ema = 0.0f;
 }
 
 /**
@@ -37,30 +38,25 @@ ted_init_state(ted_state_t* state) {
  * @note Skips processing when samples-per-symbol is large unless forced.
  */
 /* Cubic Farrow (Catmull-Rom) fractional-delay interpolator for one component. */
-static inline int32_t
-farrow_cubic_eval(int32_t s_m1, int32_t s0, int32_t s1, int32_t s2, int u_q15) {
+static inline float
+farrow_cubic_eval(float s_m1, float s0, float s1, float s2, float u) {
     /* Coefficients for cubic convolution (a = -0.5, Catmull-Rom):
        p(u) = c0 + c1*u + c2*u^2 + c3*u^3, u in [0,1]. */
-    int32_t c0 = s0;
-    int32_t c1 = (s1 - s_m1) >> 1; /* 0.5*(s1 - s-1) */
+    float c0 = s0;
+    float c1 = 0.5f * (s1 - s_m1); /* 0.5*(s1 - s-1) */
     /* c2 = s-1 - 2.5*s0 + 2*s1 - 0.5*s2 */
-    int32_t c2 = s_m1 - ((5 * s0) >> 1) + (s1 << 1) - (s2 >> 1);
+    float c2 = s_m1 - 2.5f * s0 + 2.0f * s1 - 0.5f * s2;
     /* c3 = 0.5*(s2 - s-1) + 1.5*(s0 - s1) */
-    int32_t c3 = ((s2 - s_m1) >> 1) + ((3 * (s0 - s1)) >> 1);
+    float c3 = 0.5f * (s2 - s_m1) + 1.5f * (s0 - s1);
 
-    /* Horner evaluation with fixed-point u (Q15). */
-    int32_t u = u_q15;
-    int32_t u2 = (int32_t)(((int64_t)u * u) >> 15);
-    int32_t u3 = (int32_t)(((int64_t)u2 * u) >> 15);
+    float u2 = u * u;
+    float u3 = u2 * u;
 
-    int64_t acc_q15 = ((int64_t)c3 * u3) + ((int64_t)c2 * u2) + ((int64_t)c1 * u) + (((int64_t)c0) << 15);
-    /* Round and shift back to Q0 */
-    int32_t y = (int32_t)((acc_q15 + (1 << 14)) >> 15);
-    return y;
+    return ((c3 * u3) + (c2 * u2) + (c1 * u) + c0);
 }
 
 void
-gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x, int* N, int16_t* y) {
+gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, int* N, float* y) {
     if (!config || !state || !x || !N || !y) {
         return;
     }
@@ -75,11 +71,10 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
         return;
     }
 
-    int mu = state->mu_q20;            /* Q20 fractional phase [0,1) */
-    const int gain = config->gain_q20; /* small integer gain */
-    const int buf_len = *N;            /* interleaved I/Q length */
-    const int one = (1 << 20);
-    const int mu_nom = one / (sps > 0 ? sps : 1); /* Q20 increment per complex sample */
+    float mu = state->mu; /* fractional phase [0.0, 1.0) */
+    const float gain = config->gain;
+    const int buf_len = *N;                                 /* interleaved I/Q length */
+    const float mu_nom = 1.0f / (float)(sps > 0 ? sps : 1); /* nominal advance per sample */
 
     if (buf_len < 6) {
         return;
@@ -95,9 +90,8 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
         int a_c = n_c;
         int a = a_c << 1;
 
-        /* Interpolation fraction from mu: convert Q20 -> Q15 for Farrow */
-        int frac_q20 = mu & (one - 1); /* 0..one-1 */
-        int u_q15 = frac_q20 >> 5;     /* Q15 in [0,1) */
+        /* Interpolation fraction from mu [0.0, 1.0) */
+        float u = mu - floorf(mu); /* ensure [0,1) */
 
         /* Cubic Farrow interpolation at mid position using support [a_c-1..a_c+2] */
         int am1_c = a_c - 1;
@@ -116,11 +110,10 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
         int ap1 = ap1_c << 1;
         int ap2 = ap2_c << 1;
 
-        int32_t yr = farrow_cubic_eval((int32_t)x[am1], (int32_t)x[a], (int32_t)x[ap1], (int32_t)x[ap2], u_q15);
-        int32_t yj =
-            farrow_cubic_eval((int32_t)x[am1 + 1], (int32_t)x[a + 1], (int32_t)x[ap1 + 1], (int32_t)x[ap2 + 1], u_q15);
-        y[out_n++] = (int16_t)yr;
-        y[out_n++] = (int16_t)yj;
+        float yr = farrow_cubic_eval(x[am1], x[a], x[ap1], x[ap2], u);
+        float yj = farrow_cubic_eval(x[am1 + 1], x[a + 1], x[ap1 + 1], x[ap2 + 1], u);
+        y[out_n++] = yr;
+        y[out_n++] = yj;
 
         /* Sample at ±T/2 around current mid-sample using same frac (Farrow).
            Use clamped indices to avoid boundary overruns. */
@@ -173,57 +166,46 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
         int rp1 = rp1_c << 1;
         int rp2 = rp2_c << 1;
 
-        int32_t lr = farrow_cubic_eval((int32_t)x[lm1], (int32_t)x[l0], (int32_t)x[lp1], (int32_t)x[lp2], u_q15);
-        int32_t lj =
-            farrow_cubic_eval((int32_t)x[lm1 + 1], (int32_t)x[l0 + 1], (int32_t)x[lp1 + 1], (int32_t)x[lp2 + 1], u_q15);
-        int32_t rr = farrow_cubic_eval((int32_t)x[rm1], (int32_t)x[r0], (int32_t)x[rp1], (int32_t)x[rp2], u_q15);
-        int32_t rj =
-            farrow_cubic_eval((int32_t)x[rm1 + 1], (int32_t)x[r0 + 1], (int32_t)x[rp1 + 1], (int32_t)x[rp2 + 1], u_q15);
+        float lr = farrow_cubic_eval(x[lm1], x[l0], x[lp1], x[lp2], u);
+        float lj = farrow_cubic_eval(x[lm1 + 1], x[l0 + 1], x[lp1 + 1], x[lp2 + 1], u);
+        float rr = farrow_cubic_eval(x[rm1], x[r0], x[rp1], x[rp2], u);
+        float rj = farrow_cubic_eval(x[rm1 + 1], x[r0 + 1], x[rp1 + 1], x[rp2 + 1], u);
 
         /* Gardner error: Re{ (x(+T/2) - x(-T/2)) * conj(y_mid) } */
-        int32_t dr = (int32_t)(rr - lr);
-        int32_t dj = (int32_t)(rj - lj);
-        int64_t e = (int64_t)dr * (int64_t)yr + (int64_t)dj * (int64_t)yj; /* Q0 */
+        float dr = rr - lr;
+        float dj = rj - lj;
+        float e = dr * yr + dj * yj; /* instantaneous Gardner error */
 
         /* Normalize by instantaneous power to keep scale stable. */
-        int64_t p2 = (int64_t)yr * (int64_t)yr + (int64_t)yj * (int64_t)yj;
-        if (p2 < 1) {
-            p2 = 1;
+        float p2 = yr * yr + yj * yj;
+        if (p2 < 1e-9f) {
+            p2 = 1e-9f;
         }
-        /* e_norm in Q15 in range roughly [-1,1] */
-        int32_t e_norm_q15 = (int32_t)((e << 15) / p2);
-        if (e_norm_q15 > 32767) {
-            e_norm_q15 = 32767;
-        }
-        if (e_norm_q15 < -32768) {
-            e_norm_q15 = -32768;
-        }
+        float e_norm = e / p2;
 
-        /* Update fractional phase: nominal advance + small correction.
-           Scale to Q20 with conservative shift to avoid runaway. */
-        int32_t corr = (int32_t)(((int64_t)gain * (int64_t)e_norm_q15) >> 10); /* Q20 step units */
+        /* Update fractional phase: nominal advance + small correction */
+        float corr = gain * e_norm;
 
         /* Bound correction to avoid large jumps (<= ~1/2 nominal step). */
-        if (corr > (mu_nom >> 1)) {
-            corr = (mu_nom >> 1);
+        float max_corr = mu_nom * 0.5f;
+        if (corr > max_corr) {
+            corr = max_corr;
         }
-        if (corr < -(mu_nom >> 1)) {
-            corr = -(mu_nom >> 1);
+        if (corr < -max_corr) {
+            corr = -max_corr;
         }
         mu += mu_nom + corr;
 
         /* Smooth residual using simple EMA with small weight (alpha≈1/64). */
-        int ee = state->e_ema;
-        int e_i32 = (int)e; /* compression to int32 is fine for EMA */
-        ee += (int)((e_i32 - ee) >> 6);
-        state->e_ema = ee;
+        const float kEmaAlpha = 1.0f / 64.0f;
+        state->e_ema = state->e_ema + kEmaAlpha * (e_norm - state->e_ema);
 
-        /* Wrap mu to [0, one) */
-        if (mu >= one) {
-            mu -= one;
+        /* Wrap mu to [0, 1) */
+        while (mu >= 1.0f) {
+            mu -= 1.0f;
         }
-        if (mu < 0) {
-            mu += one;
+        while (mu < 0.0f) {
+            mu += 1.0f;
         }
     }
 
@@ -235,5 +217,5 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x
         *N = out_n;
     }
 
-    state->mu_q20 = mu;
+    state->mu = mu;
 }

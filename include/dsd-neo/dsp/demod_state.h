@@ -67,27 +67,27 @@ struct output_state;
  */
 struct demod_state {
     /* Large aligned buffers first to minimize padding */
-    alignas(64) int16_t hb_i_buf[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) int16_t hb_q_buf[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) int16_t hb_i_out[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) int16_t hb_q_out[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) int16_t input_cb_buf[MAXIMUM_BUF_LENGTH];
-    alignas(64) int16_t result[MAXIMUM_BUF_LENGTH];
-    alignas(64) int16_t timing_buf[MAXIMUM_BUF_LENGTH];
-    alignas(64) int16_t resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
+    alignas(64) float hb_i_buf[MAXIMUM_BUF_LENGTH / 2];
+    alignas(64) float hb_q_buf[MAXIMUM_BUF_LENGTH / 2];
+    alignas(64) float hb_i_out[MAXIMUM_BUF_LENGTH / 2];
+    alignas(64) float hb_q_out[MAXIMUM_BUF_LENGTH / 2];
+    alignas(64) float input_cb_buf[MAXIMUM_BUF_LENGTH];
+    alignas(64) float result[MAXIMUM_BUF_LENGTH];
+    alignas(64) float timing_buf[MAXIMUM_BUF_LENGTH];
+    alignas(64) float resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
 
     /* Pointers and 64-bit items next */
     pthread_t thread;
-    int16_t* lowpassed;
-    int64_t squelch_running_power;
-    int16_t* resamp_taps; /* Q15 taps, length = K*L */
-    int16_t* resamp_hist; /* circular history, length = K */
+    float* lowpassed;
+    double squelch_running_power;
+    float* resamp_taps; /* normalized taps, length = K*L */
+    float* resamp_hist; /* circular history, length = K */
     int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
     struct output_state* output_target;
-    double fm_agc_ema_rms;        /* normalized RMS estimator (0..~1.0) */
-    int16_t* post_polydecim_taps; /* Q15 taps length K */
-    int16_t* post_polydecim_hist; /* circular history length K */
+    double fm_agc_ema_rms;      /* normalized RMS estimator (0..~1.0) */
+    float* post_polydecim_taps; /* normalized taps length K */
+    float* post_polydecim_hist; /* circular history length K */
     pthread_t mt_threads[2];
 
     struct {
@@ -109,52 +109,54 @@ struct demod_state {
     /* Scalars and small arrays */
     int exit_flag;
     int lp_len;
-    int16_t lp_i_hist[10][6];
-    int16_t lp_q_hist[10][6];
-    int16_t droop_i_hist[9];
-    int16_t droop_q_hist[9];
+    float lp_i_hist[10][6];
+    float lp_q_hist[10][6];
+    float droop_i_hist[9];
+    float droop_q_hist[9];
     int result_len;
     int rate_in;
     int rate_out;
     int rate_out2;
-    int now_r, now_j;
-    int pre_r, pre_j;
+    float now_r, now_j;
+    float pre_r, pre_j;
     int prev_index;
     int downsample; /* min 1, max 256 */
     int post_downsample;
-    int output_scale;
-    int squelch_level, conseq_squelch, squelch_hits, terminate_on_squelch;
+    float output_scale;
+    float squelch_level;
+    int conseq_squelch, squelch_hits, terminate_on_squelch;
     int squelch_decim_stride;
     int squelch_decim_phase;
     int squelch_window;
     /* Squelch soft gate (audio envelope) */
-    int squelch_gate_open;       /* 1=open, 0=closed (latched per block) */
-    int squelch_env_q15;         /* envelope gain in Q15 */
-    int squelch_env_attack_q15;  /* attack alpha (Q15) for opening */
-    int squelch_env_release_q15; /* release alpha (Q15) for closing */
+    int squelch_gate_open;     /* 1=open, 0=closed (latched per block) */
+    float squelch_env;         /* envelope gain [0,1] */
+    float squelch_env_attack;  /* attack alpha [0,1] for opening */
+    float squelch_env_release; /* release alpha [0,1] for closing */
     int downsample_passes;
     int comp_fir_size;
     int custom_atan;
     int deemph, deemph_a;
-    int deemph_avg;
+    float deemph_avg;
     /* Optional post-demod audio low-pass filter (one-pole) */
     int audio_lpf_enable;
-    int audio_lpf_alpha; /* Q15 alpha for one-pole LPF */
-    int audio_lpf_state; /* state/output y[n-1] in Q0 */
-    int now_lpr;
+    int audio_lpf_alpha;   /* Q15 alpha for one-pole LPF */
+    float audio_lpf_state; /* state/output y[n-1] */
+    float now_lpr;
     int prev_lpr_index;
-    int dc_block, dc_avg;
+    int dc_block;
+    float dc_avg;
     /* Half-band decimator */
-    int16_t hb_workbuf[MAXIMUM_BUF_LENGTH];
-    int16_t hb_hist_i[10][HB_TAPS_MAX - 1];
-    int16_t hb_hist_q[10][HB_TAPS_MAX - 1];
+    float hb_workbuf[MAXIMUM_BUF_LENGTH];
+    float hb_hist_i[10][HB_TAPS_MAX - 1];
+    float hb_hist_q[10][HB_TAPS_MAX - 1];
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs */
     int channel_lpf_enable; /* gate */
     int channel_lpf_hist_len;
-    int channel_lpf_profile;        /* see DSD_CH_LPF_PROFILE_* */
-    int16_t channel_lpf_hist_i[64]; /* sized for up to 63-tap symmetric FIR (tap-1) */
-    int16_t channel_lpf_hist_q[64];
+    int channel_lpf_profile;      /* see DSD_CH_LPF_PROFILE_* */
+    float channel_lpf_hist_i[64]; /* sized for up to 63-tap symmetric FIR (tap-1) */
+    float channel_lpf_hist_q[64];
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
@@ -166,26 +168,26 @@ struct demod_state {
     int resamp_taps_per_phase; /* K = ceil(taps_len/L) */
     int resamp_hist_head;      /* head index into circular history [0..K-1] */
 
-    /* Residual CFO FLL state */
+    /* Residual CFO FLL state (GNU Radio-style native float) */
     int fll_enabled;
-    int fll_alpha_q15;    /* proportional gain (Q15) */
-    int fll_beta_q15;     /* integral gain (Q15) */
-    int fll_freq_q15;     /* NCO frequency increment (Q15 radians/sample scaled) */
-    int fll_phase_q15;    /* NCO phase accumulator */
-    int fll_deadband_q14; /* ignore small phase errors |err| <= deadband (Q14) */
-    int fll_slew_max_q15; /* max |delta freq| per update (Q15) */
-    int fll_prev_r;
-    int fll_prev_j;
+    float fll_alpha;    /* proportional gain (native float, ~0.002..0.02) */
+    float fll_beta;     /* integral gain (native float, ~0.0002..0.002) */
+    float fll_freq;     /* NCO frequency increment (rad/sample) */
+    float fll_phase;    /* NCO phase accumulator (radians) */
+    float fll_deadband; /* ignore small phase errors |err| <= deadband (radians) */
+    float fll_slew_max; /* max |delta freq| per update (rad/sample) */
+    float fll_prev_r;
+    float fll_prev_j;
 
     /* CQPSK Costas loop tuning (separate from FLL) */
     dsd_costas_loop_state_t costas_state;
 
-    /* Timing error detector (Gardner) */
+    /* Timing error detector (Gardner) - native float */
     int ted_enabled;
-    int ted_force;    /* allow forcing TED even for FM/C4FM paths */
-    int ted_gain_q20; /* small gain (Q20) for stability */
-    int ted_sps;      /* nominal samples per symbol */
-    int ted_mu_q20;   /* fractional phase [0,1) in Q20 */
+    int ted_force;  /* allow forcing TED even for FM/C4FM paths */
+    float ted_gain; /* loop gain, typically 0.01..0.1 */
+    int ted_sps;    /* nominal samples per symbol */
+    float ted_mu;   /* fractional phase [0.0, 1.0) */
 
     /* FLL and TED module states */
     fll_state_t fll_state;
@@ -206,8 +208,8 @@ struct demod_state {
     float cqpsk_rms_agc_rms;  /* normalized RMS estimate for CQPSK AGC */
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
-    int cqpsk_diff_prev_r;
-    int cqpsk_diff_prev_j;
+    float cqpsk_diff_prev_r;
+    float cqpsk_diff_prev_j;
 
     /* Generic mode-aware IQ balance (image suppression) */
     int iqbal_enable;          /* 0/1 gate */
@@ -217,12 +219,12 @@ struct demod_state {
     int iqbal_alpha_ema_a_q15; /* EMA alpha (Q15) */
 
     /* FM envelope AGC (pre-discriminator) */
-    int fm_agc_enable;         /* 0/1 gate; constant-envelope limiter/AGC for FM/C4FM */
-    int fm_agc_gain_q15;       /* smoothed gain in Q15 (applied to I/Q) */
-    int fm_agc_target_rms;     /* target RMS magnitude for |z| in Q0 (int16 domain) */
-    int fm_agc_min_rms;        /* minimum RMS to engage AGC (avoid boosting noise) */
-    int fm_agc_alpha_up_q15;   /* smoothing when increasing gain (signal got weaker) */
-    int fm_agc_alpha_down_q15; /* smoothing when decreasing gain (signal got stronger) */
+    int fm_agc_enable;       /* 0/1 gate; constant-envelope limiter/AGC for FM/C4FM */
+    float fm_agc_gain;       /* smoothed gain applied to I/Q */
+    float fm_agc_target_rms; /* target RMS magnitude for |z| (normalized float) */
+    float fm_agc_min_rms;    /* minimum RMS to engage AGC (avoid boosting noise) */
+    float fm_agc_alpha_up;   /* smoothing when increasing gain (signal got weaker) */
+    float fm_agc_alpha_down; /* smoothing when decreasing gain (signal got stronger) */
 
     /* Optional constant-envelope limiter for FM/C4FM */
     int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
@@ -230,8 +232,8 @@ struct demod_state {
     /* Complex DC blocker before discriminator */
     int iq_dc_block_enable; /* 0/1 gate */
     int iq_dc_shift;        /* shift k for dc += (x-dc)>>k; typical 10..14 */
-    int iq_dc_avg_r;        /* running DC estimate for I */
-    int iq_dc_avg_i;        /* running DC estimate for Q */
+    float iq_dc_avg_r;      /* running DC estimate for I */
+    float iq_dc_avg_i;      /* running DC estimate for Q */
 
     /* Post-demod audio polyphase decimator (M>2) */
     int post_polydecim_enabled;   /* 0/1 gate for audio polyphase decimator */

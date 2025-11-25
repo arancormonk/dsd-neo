@@ -33,7 +33,7 @@ test_input_ring_wrap_and_read(void) {
     struct input_ring_state r;
     memset(&r, 0, sizeof(r));
 
-    r.buffer = (int16_t*)calloc(cap, sizeof(int16_t));
+    r.buffer = (float*)calloc(cap, sizeof(float));
     if (!r.buffer) {
         fprintf(stderr, "input_ring: allocation failed\n");
         return 1;
@@ -47,11 +47,11 @@ test_input_ring_wrap_and_read(void) {
     pthread_mutex_init(&r.ready_m, NULL);
 
     /* First write: no wrap, fills positions [0..5] */
-    int16_t src1[6] = {10, 20, 30, 40, 50, 60};
+    float src1[6] = {10, 20, 30, 40, 50, 60};
     input_ring_write(&r, src1, 6);
 
     /* Read three samples to advance tail -> positions [0..2] */
-    int16_t out[8] = {0};
+    float out[8] = {0};
     int read = input_ring_read_block(&r, out, 3);
     if (read != 3) {
         fprintf(stderr, "input_ring: expected read 3, got %d\n", read);
@@ -63,7 +63,7 @@ test_input_ring_wrap_and_read(void) {
     }
 
     /* Second write: triggers wrap-around from head near end of buffer */
-    int16_t src2[3] = {70, 80, 90};
+    float src2[3] = {70, 80, 90};
     input_ring_write(&r, src2, 3);
 
     /* Queue should now contain {40,50,60,70,80,90} */
@@ -79,7 +79,7 @@ test_input_ring_wrap_and_read(void) {
         fprintf(stderr, "input_ring: expected read 6, got %d\n", read);
         return 1;
     }
-    const int16_t expect[6] = {40, 50, 60, 70, 80, 90};
+    const float expect[6] = {40, 50, 60, 70, 80, 90};
     if (memcmp(out, expect, sizeof(expect)) != 0) {
         fprintf(stderr, "input_ring: wrap/read sequence mismatch\n");
         return 1;
@@ -97,7 +97,7 @@ test_input_ring_drop_on_full(void) {
     struct input_ring_state r;
     memset(&r, 0, sizeof(r));
 
-    r.buffer = (int16_t*)calloc(cap, sizeof(int16_t));
+    r.buffer = (float*)calloc(cap, sizeof(float));
     if (!r.buffer) {
         fprintf(stderr, "input_ring drop: allocation failed\n");
         return 1;
@@ -111,7 +111,7 @@ test_input_ring_drop_on_full(void) {
     pthread_mutex_init(&r.ready_m, NULL);
 
     /* Fill ring to capacity-1 (maximum usable occupancy) */
-    int16_t initial[3] = {1, 2, 3};
+    float initial[3] = {1, 2, 3};
     input_ring_write(&r, initial, 3);
     if (input_ring_used(&r) != 3) {
         fprintf(stderr, "input_ring drop: expected used=3 after initial write, got %zu\n", input_ring_used(&r));
@@ -120,7 +120,7 @@ test_input_ring_drop_on_full(void) {
 
     /* Write more than available space -> should be dropped, not overwrite */
     r.producer_drops.store(0);
-    int16_t extra[2] = {9, 10};
+    float extra[2] = {9, 10};
     input_ring_write(&r, extra, 2);
 
     if (input_ring_used(&r) != 3) {
@@ -134,7 +134,7 @@ test_input_ring_drop_on_full(void) {
     }
 
     /* Ensure the original data is still present and in order */
-    int16_t out[4] = {0};
+    float out[4] = {0};
     int read = input_ring_read_block(&r, out, 3);
     if (read != 3) {
         fprintf(stderr, "input_ring drop: expected read 3, got %d\n", read);
@@ -157,7 +157,7 @@ test_output_ring_wrap_and_read(void) {
     struct output_state o;
     memset(&o, 0, sizeof(o));
 
-    o.buffer = (int16_t*)calloc(cap, sizeof(int16_t));
+    o.buffer = (float*)calloc(cap, sizeof(float));
     if (!o.buffer) {
         fprintf(stderr, "output_ring: allocation failed\n");
         return 1;
@@ -172,11 +172,11 @@ test_output_ring_wrap_and_read(void) {
     pthread_cond_init(&o.space, NULL);
 
     /* First write: no wrap, fills positions [0..5] */
-    int16_t src1[6] = {1, 2, 3, 4, 5, 6};
+    float src1[6] = {1, 2, 3, 4, 5, 6};
     ring_write_no_signal(&o, src1, 6);
 
     /* Read three samples to advance tail -> positions [0..2] */
-    int16_t out[8] = {0};
+    float out[8] = {0};
     int read = ring_read_batch(&o, out, 3);
     if (read != 3) {
         fprintf(stderr, "output_ring: expected read 3, got %d\n", read);
@@ -188,7 +188,7 @@ test_output_ring_wrap_and_read(void) {
     }
 
     /* Second write: triggers wrap-around from head near end of buffer */
-    int16_t src2[3] = {7, 8, 9};
+    float src2[3] = {7, 8, 9};
     ring_write_no_signal(&o, src2, 3);
 
     /* Queue should now contain {4,5,6,7,8,9} */
@@ -204,7 +204,7 @@ test_output_ring_wrap_and_read(void) {
         fprintf(stderr, "output_ring: expected read 6, got %d\n", read);
         return 1;
     }
-    const int16_t expect[6] = {4, 5, 6, 7, 8, 9};
+    const float expect[6] = {4, 5, 6, 7, 8, 9};
     if (memcmp(out, expect, sizeof(expect)) != 0) {
         fprintf(stderr, "output_ring: wrap/read sequence mismatch\n");
         return 1;
@@ -219,7 +219,7 @@ test_output_ring_wrap_and_read(void) {
 
 struct OutputWriterArgs {
     struct output_state* ring;
-    const int16_t* data;
+    const float* data;
     size_t count;
     pthread_mutex_t* mu;
     pthread_cond_t* cv;
@@ -229,7 +229,7 @@ struct OutputWriterArgs {
 struct OutputReaderArgs {
     struct output_state* ring;
     size_t total_expected;
-    int16_t* out;
+    float* out;
     size_t* out_count;
     int* error_flag;
 };
@@ -251,14 +251,14 @@ static void*
 output_reader_thread(void* arg) {
     OutputReaderArgs* ctx = (OutputReaderArgs*)arg;
     size_t have = 0;
-    int16_t tmp[16];
+    float tmp[16];
     while (have < ctx->total_expected) {
         int n = ring_read_batch(ctx->ring, tmp, 8);
         if (n < 0) {
             *(ctx->error_flag) = 1;
             return NULL;
         }
-        memcpy(ctx->out + have, tmp, (size_t)n * sizeof(int16_t));
+        memcpy(ctx->out + have, tmp, (size_t)n * sizeof(float));
         have += (size_t)n;
     }
     *(ctx->out_count) = have;
@@ -271,7 +271,7 @@ test_output_ring_blocking_producer_consumer(void) {
     struct output_state o;
     memset(&o, 0, sizeof(o));
 
-    o.buffer = (int16_t*)calloc(cap, sizeof(int16_t));
+    o.buffer = (float*)calloc(cap, sizeof(float));
     if (!o.buffer) {
         fprintf(stderr, "output_ring pc: allocation failed\n");
         return 1;
@@ -286,16 +286,16 @@ test_output_ring_blocking_producer_consumer(void) {
     pthread_cond_init(&o.space, NULL);
 
     /* Prefill ring to capacity-1 so the next producer write observes full state */
-    int16_t pre[3] = {100, 101, 102};
+    float pre[3] = {100, 101, 102};
     ring_write_no_signal(&o, pre, 3);
     if (ring_used(&o) != 3) {
         fprintf(stderr, "output_ring pc: expected used=3 after prefill, got %zu\n", ring_used(&o));
         return 1;
     }
 
-    int16_t bulk[10];
+    float bulk[10];
     for (int i = 0; i < 10; i++) {
-        bulk[i] = (int16_t)(200 + i);
+        bulk[i] = (float)(200 + i);
     }
 
     pthread_mutex_t barrier_mu;
@@ -304,7 +304,7 @@ test_output_ring_blocking_producer_consumer(void) {
     pthread_mutex_init(&barrier_mu, NULL);
     pthread_cond_init(&barrier_cv, NULL);
 
-    int16_t all[16] = {0};
+    float all[16] = {0};
     size_t all_count = 0;
     int read_error = 0;
 
@@ -361,9 +361,9 @@ test_output_ring_blocking_producer_consumer(void) {
         return 1;
     }
     for (int i = 0; i < 10; i++) {
-        if (all[3 + i] != (int16_t)(200 + i)) {
-            fprintf(stderr, "output_ring pc: bulk sample mismatch at index %d (got %d, expected %d)\n", i,
-                    (int)all[3 + i], 200 + i);
+        if (all[3 + i] != (float)(200 + i)) {
+            fprintf(stderr, "output_ring pc: bulk sample mismatch at index %d (got %.1f, expected %d)\n", i, all[3 + i],
+                    200 + i);
             return 1;
         }
     }

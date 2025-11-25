@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -46,13 +47,14 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <vector>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 /* Forward declarations for internal helpers used by shims */
 void dsd_rtl_stream_clear_output(void);
-long int dsd_rtl_stream_return_pwr(void);
+double dsd_rtl_stream_return_pwr(void);
 unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_ted_bias(void);
 int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
@@ -62,7 +64,7 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 #endif
 
 /* Forward declaration for eye ring append used in demod loop */
-static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
+static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
 #define DEFAULT_SAMPLE_RATE 48000
 #define DEFAULT_BUF_LENGTH  (1 * 16384)
@@ -406,10 +408,10 @@ demod_reset_on_retune(struct demod_state* s) {
     memset(s->input_cb_buf, 0, sizeof(s->input_cb_buf));
     /* FLL */
     fll_init_state(&s->fll_state);
-    s->fll_freq_q15 = 0;
-    s->fll_phase_q15 = 0;
-    s->fll_prev_r = 0;
-    s->fll_prev_j = 0;
+    s->fll_freq = 0.0f;
+    s->fll_phase = 0.0f;
+    s->fll_prev_r = 0.0f;
+    s->fll_prev_j = 0.0f;
     /* CQPSK differential history */
     s->cqpsk_diff_prev_r = 0;
     s->cqpsk_diff_prev_j = 0;
@@ -422,7 +424,7 @@ demod_reset_on_retune(struct demod_state* s) {
     s->costas_state.initialized = 0;
     /* TED */
     ted_init_state(&s->ted_state);
-    s->ted_mu_q20 = 0;
+    s->ted_mu = 0.0f;
     /* Deemphasis / audio LPF / DC */
     s->deemph_avg = 0;
     s->audio_lpf_state = 0;
@@ -441,13 +443,13 @@ demod_reset_on_retune(struct demod_state* s) {
     s->resamp_phase = 0;
     s->resamp_hist_head = 0;
     if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
-        memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(int16_t));
+        memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
     }
     /* Post-demod polyphase decimator history */
     s->post_polydecim_hist_head = 0;
     s->post_polydecim_phase = 0;
     if (s->post_polydecim_hist && s->post_polydecim_K > 0) {
-        memset(s->post_polydecim_hist, 0, (size_t)s->post_polydecim_K * sizeof(int16_t));
+        memset(s->post_polydecim_hist, 0, (size_t)s->post_polydecim_K * sizeof(float));
     }
     /* Channel LPF history */
     s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
@@ -485,6 +487,24 @@ std::atomic<int> g_snr_qpsk_src{0};
 std::atomic<long long> g_snr_gfsk_last_ms{0};
 std::atomic<int> g_snr_gfsk_src{0};
 
+/* Apply a single gain factor to the final demod block before handing it to consumers. */
+static inline void
+apply_output_scale(struct demod_state* d, float* buf, int len) {
+    if (!d || !buf || len <= 0) {
+        return;
+    }
+    float s = d->output_scale;
+    if (s == 0.0f) {
+        return;
+    }
+    if (s == 1.0f) {
+        return;
+    }
+    for (int i = 0; i < len; i++) {
+        buf[i] *= s;
+    }
+}
+
 /* Fwd decl: eye-based C4FM SNR fallback */
 extern "C" double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 /* Fwd decl: QPSK and GFSK fallbacks */
@@ -497,8 +517,7 @@ extern "C" int dsd_rtl_stream_get_tuner_autogain(void);
 extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
 
 /* Spectrum updater used in demod thread (implemented in rtl_metrics.cpp). */
-extern "C" void rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved,
-                                                    int out_rate_hz);
+extern "C" void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz);
 
 static void*
 demod_thread_fn(void* arg) {
@@ -604,27 +623,27 @@ demod_thread_fn(void* arg) {
                 }
                 ag_spec_pass = 0; /* reset spectral gate persistence on retune */
             }
-            int max_abs = 0;
-            int64_t sum_abs = 0;
+            float max_abs = 0.0f;
+            double sum_abs = 0.0;
             int pairs = got >> 1;
-            const int16_t* p = d->input_cb_buf;
+            const float* p = d->input_cb_buf;
             for (int n = 0; n < pairs; n++) {
-                int I = p[(size_t)(n << 1) + 0];
-                int Q = p[(size_t)(n << 1) + 1];
-                int aI = (I >= 0) ? I : -I;
-                int aQ = (Q >= 0) ? Q : -Q;
-                int m = (aI > aQ) ? aI : aQ;
+                float I = p[(size_t)(n << 1) + 0];
+                float Q = p[(size_t)(n << 1) + 1];
+                float aI = fabsf(I);
+                float aQ = fabsf(Q);
+                float m = (aI > aQ) ? aI : aQ;
                 if (m > max_abs) {
                     max_abs = m;
                 }
                 sum_abs += (aI + aQ);
             }
-            int mean_abs = (pairs > 0) ? (int)(sum_abs / pairs) : 0;
+            float mean_abs = (pairs > 0) ? (float)(sum_abs / (double)pairs) : 0.0f;
             ag_blocks++;
-            if (max_abs > 30000) {
+            if (max_abs > 0.9f) {
                 ag_high++;
             }
-            if (mean_abs < 2000) {
+            if (mean_abs < 0.06f) {
                 ag_low++;
             }
             /* Every ~40 blocks, consider a nudge */
@@ -814,7 +833,7 @@ demod_thread_fn(void* arg) {
         d->lp_len = got;
         full_demod(d);
         /* Capture decimated I/Q for constellation view after DSP. */
-        extern void constellation_ring_append(const int16_t* iq, int len, int sps_hint);
+        extern void constellation_ring_append(const float* iq, int len, int sps_hint);
         constellation_ring_append(d->lowpassed, d->lp_len, d->ted_sps);
         /* Capture I-channel for eye diagram */
         eye_ring_append_i_chan(d->lowpassed, d->lp_len);
@@ -825,7 +844,7 @@ demod_thread_fn(void* arg) {
         static int c4fm_missed = 0; /* counts loops without C4FM SNR update */
         static int qpsk_missed = 0; /* counts loops without QPSK SNR update */
         static int gfsk_missed = 0; /* counts loops without GFSK SNR update */
-        const int16_t* iq = d->lowpassed;
+        const float* iq = d->lowpassed;
         const int n_iq = d->lp_len;
         const int sps = d->ted_sps;
         if (iq && n_iq >= 4 && sps >= 2) {
@@ -847,12 +866,12 @@ demod_thread_fn(void* arg) {
                 /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
                 enum { MAXS = 8192 };
 
-                static int vals[(size_t)MAXS];
+                static float vals[(size_t)MAXS];
                 int m = 0;
                 for (int k = 0; k < pairs && m < MAXS; k++) {
                     int phase = k % sps;
                     if (phase >= mid - win && phase <= mid + win) {
-                        vals[m++] = (int)iq[2 * k + 0]; /* I-channel */
+                        vals[m++] = iq[2 * k + 0]; /* I-channel */
                     }
                 }
                 if (m > 32) {
@@ -861,17 +880,17 @@ demod_thread_fn(void* arg) {
                     int idx2 = (int)((size_t)m / 2);
                     int idx3 = (int)((size_t)(3 * (size_t)m) / 4);
                     std::nth_element(vals, vals + idx2, vals + m);
-                    int q2 = vals[idx2];
+                    float q2 = vals[idx2];
                     std::nth_element(vals, vals + idx1, vals + idx2);
-                    int q1 = vals[idx1];
+                    float q1 = vals[idx1];
                     std::nth_element(vals + idx2 + 1, vals + idx3, vals + m);
-                    int q3 = vals[idx3];
+                    float q3 = vals[idx3];
                     /* 4-level (C4FM-like) */
                     {
                         double sum[4] = {0, 0, 0, 0};
                         int cnt[4] = {0, 0, 0, 0};
                         for (int i = 0; i < m; i++) {
-                            int v = vals[i];
+                            float v = vals[i];
                             int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
                             sum[b] += v;
                             cnt[b]++;
@@ -1051,6 +1070,7 @@ demod_thread_fn(void* arg) {
         if (d->resamp_enabled) {
             int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
             if (out_n > 0) {
+                apply_output_scale(d, d->resamp_outbuf, out_n);
                 ring_write_signal_on_empty_transition(o, d->resamp_outbuf, (size_t)out_n);
             }
             if (!logged_once) {
@@ -1060,6 +1080,7 @@ demod_thread_fn(void* arg) {
         } else {
             /* When resampler is disabled, pass-through. */
             if (d->result_len > 0) {
+                apply_output_scale(d, d->result, d->result_len);
                 ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
             }
             if (!logged_once) {
@@ -1161,13 +1182,8 @@ optimal_settings(int freq, int rate) {
         capture_freq = freq + capture_rate / 4;
     }
     capture_freq += cs->edge * dm->rate_in / 2;
-    dm->output_scale = (1 << 15) / (128 * dm->downsample);
-    if (dm->output_scale < 1) {
-        dm->output_scale = 1;
-    }
-    if (dm->mode_demod == &dsd_fm_demod) {
-        dm->output_scale = 1;
-    }
+    /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
+    dm->output_scale = (float)(1.0 / M_PI);
     /* Update the effective discriminator output sample rate based on current settings.
        If no HB cascade is used (downsample_passes==0), the legacy low_pass() decimator
        reduces by dm->downsample back toward the nominal bandwidth. Otherwise, HB/CIC
@@ -1384,14 +1400,14 @@ controller_thread_fn(void* arg) {
 /* ---------------- Constellation capture (simple lock-free ring) ---------------- */
 
 static const int kConstMaxPairs = 8192;
-static int16_t g_const_xy[kConstMaxPairs * 2];
+static float g_const_xy[kConstMaxPairs * 2];
 static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wraps */
 /* Forward decl for eye-ring append used in demod loop */
-static inline void eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved);
+static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
 /* Append decimated I/Q samples from lowpassed[] after DSP. */
 void
-constellation_ring_append(const int16_t* iq, int len, int sps_hint) {
+constellation_ring_append(const float* iq, int len, int sps_hint) {
     if (!iq || len < 2) {
         return;
     }
@@ -1401,11 +1417,11 @@ constellation_ring_append(const int16_t* iq, int len, int sps_hint) {
         stride = 1;
     }
     for (int n = 0; n < N; n += stride) {
-        int i = iq[(size_t)(n << 1) + 0];
-        int q = iq[(size_t)(n << 1) + 1];
+        float i = iq[(size_t)(n << 1) + 0];
+        float q = iq[(size_t)(n << 1) + 1];
         int h = g_const_head;
-        g_const_xy[(size_t)(h << 1) + 0] = (int16_t)i;
-        g_const_xy[(size_t)(h << 1) + 1] = (int16_t)q;
+        g_const_xy[(size_t)(h << 1) + 0] = i;
+        g_const_xy[(size_t)(h << 1) + 1] = q;
         h++;
         if (h >= kConstMaxPairs) {
             h = 0;
@@ -1415,7 +1431,7 @@ constellation_ring_append(const int16_t* iq, int len, int sps_hint) {
 }
 
 extern "C" int
-dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
+dsd_rtl_stream_constellation_get(float* out_xy, int max_points) {
     if (!out_xy || max_points <= 0) {
         return 0;
     }
@@ -1432,17 +1448,17 @@ dsd_rtl_stream_constellation_get(int16_t* out_xy, int max_points) {
 
 /* ---------------- Eye diagram capture (I-channel of complex baseband) ---------------- */
 static const int kEyeMax = 16384;
-static int16_t g_eye_buf[kEyeMax];
+static float g_eye_buf[kEyeMax];
 static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
 
 static inline void
-eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved) {
+eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved) {
     if (!iq_interleaved || len_interleaved < 2) {
         return;
     }
     int N = len_interleaved >> 1; /* complex samples */
     for (int n = 0; n < N; n++) {
-        int16_t i = iq_interleaved[(size_t)(n << 1) + 0];
+        float i = iq_interleaved[(size_t)(n << 1) + 0];
         int h = g_eye_head;
         g_eye_buf[h] = i;
         h++;
@@ -1454,7 +1470,7 @@ eye_ring_append_i_chan(const int16_t* iq_interleaved, int len_interleaved) {
 }
 
 extern "C" int
-dsd_rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps) {
+dsd_rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
     if (out_sps) {
         *out_sps = demod.ted_sps;
     }
@@ -1476,7 +1492,7 @@ extern "C" double
 dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
     enum { MAXS = 4096 };
 
-    static int16_t eb[(size_t)MAXS];
+    static float eb[(size_t)MAXS];
     int sps_fb = 0;
     int nfb = dsd_rtl_stream_eye_get(eb, MAXS, &sps_fb);
     if (nfb <= 100 || sps_fb <= 0) {
@@ -1495,10 +1511,10 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
     if (mct > 4096) {
         mct = 4096;
     }
-    static int qv[4096];
+    static float qv[4096];
     int vi = 0;
     for (int i = 0; i < nfb && vi < mct; i += step_ds) {
-        qv[vi++] = (int)eb[i];
+        qv[vi++] = eb[i]; /* normalized float samples [-1, 1] */
     }
     mct = vi;
     if (mct < 8) {
@@ -1509,11 +1525,11 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
     int idx2 = (int)((size_t)mct / 2);
     int idx3 = (int)((size_t)(3 * (size_t)mct) / 4);
     std::nth_element(qv, qv + idx2, qv + mct);
-    int q2 = qv[idx2];
+    float q2 = qv[idx2];
     std::nth_element(qv, qv + idx1, qv + idx2);
-    int q1 = qv[idx1];
+    float q1 = qv[idx1];
     std::nth_element(qv + idx2 + 1, qv + idx3, qv + mct);
-    int q3 = qv[idx3];
+    float q3 = qv[idx3];
     long long cnt[4] = {0, 0, 0, 0};
     double sum[4] = {0, 0, 0, 0};
     for (int i = 0; i < nfb; i++) {
@@ -1522,7 +1538,7 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
         if (!inwin) {
             continue;
         }
-        int v = (int)eb[i];
+        float v = eb[i];
         int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
         cnt[b]++;
         sum[b] += (double)v;
@@ -1542,7 +1558,7 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
         if (!inwin) {
             continue;
         }
-        int v = (int)eb[i];
+        float v = eb[i];
         int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
         double e = (double)v - mu[b];
         nsum += e * e;
@@ -1572,7 +1588,7 @@ extern "C" double
 dsd_rtl_stream_estimate_snr_qpsk_const(void) {
     enum { MAXP = 4096 };
 
-    static int16_t xy[(size_t)MAXP * 2];
+    static float xy[(size_t)MAXP * 2];
     int n = dsd_rtl_stream_constellation_get(xy, MAXP);
     if (n <= 64) {
         return -100.0;
@@ -1637,7 +1653,7 @@ extern "C" double
 dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     enum { MAXS = 4096 };
 
-    static int16_t eb[(size_t)MAXS];
+    static float eb[(size_t)MAXS];
     int sps_fb = 0;
     int nfb = dsd_rtl_stream_eye_get(eb, MAXS, &sps_fb);
     if (nfb <= 100 || sps_fb <= 0) {
@@ -1656,10 +1672,10 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     if (mct > 4096) {
         mct = 4096;
     }
-    static int qv[4096];
+    static float qv[4096];
     int vi = 0;
     for (int i = 0; i < nfb && vi < mct; i += step_ds) {
-        qv[vi++] = (int)eb[i];
+        qv[vi++] = eb[i];
     }
     mct = vi;
     if (mct < 8) {
@@ -1668,7 +1684,7 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     /* Median via nth_element (O(n)) */
     int idx2 = (int)((size_t)mct / 2);
     std::nth_element(qv, qv + idx2, qv + mct);
-    int q2 = qv[idx2]; /* median split */
+    float q2 = qv[idx2]; /* median split */
     double sumL = 0.0, sumH = 0.0;
     int cntL = 0, cntH = 0;
     for (int i = 0; i < nfb; i++) {
@@ -1677,7 +1693,7 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
         if (!inwin) {
             continue;
         }
-        int v = (int)eb[i];
+        float v = eb[i];
         if (v <= q2) {
             sumL += v;
             cntL++;
@@ -1698,7 +1714,7 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
         if (!inwin) {
             continue;
         }
-        int v = (int)eb[i];
+        float v = eb[i];
         double mu = (v <= q2) ? muL : muH;
         double e = (double)v - mu;
         nsum += e * e;
@@ -1763,13 +1779,13 @@ output_init(struct output_state* s) {
     s->capacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
     /* Try aligned allocation for better vectorized copies; fall back if unavailable */
     {
-        void* mem_ptr = dsd_neo_aligned_malloc(s->capacity * sizeof(int16_t));
+        void* mem_ptr = dsd_neo_aligned_malloc(s->capacity * sizeof(float));
         if (!mem_ptr) {
             LOG_ERROR("Failed to allocate output ring buffer (%zu samples).\n", s->capacity);
             /* Propagate by keeping buffer NULL; callers must detect before use */
             return;
         }
-        s->buffer = static_cast<int16_t*>(mem_ptr);
+        s->buffer = static_cast<float*>(mem_ptr);
     }
     s->head.store(0);
     s->tail.store(0);
@@ -1860,7 +1876,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
     }
     dongle.dev_index = opts->rtl_dev_index;
     LOG_INFO("Setting DSP baseband to %d Hz\n", rtl_dsp_bw_hz);
-    LOG_INFO("Setting RTL Power Squelch Level to %d\n", opts->rtl_squelch_level);
+    LOG_INFO("Setting RTL Power Squelch Level to %.1f dB\n", pwr_to_dB(opts->rtl_squelch_level));
     if (opts->rtl_udp_port != 0) {
         int p = opts->rtl_udp_port;
         if (p < 0) {
@@ -1933,7 +1949,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int fll_enable;
         int ted_enable;
         int ted_sps;
-        int ted_gain_q20;
+        float ted_gain;
         int ted_force;
     } persist = {};
 
@@ -1959,12 +1975,12 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     }
     /* Init input ring */
     {
-        void* mem_ptr = dsd_neo_aligned_malloc((size_t)(MAXIMUM_BUF_LENGTH * 8) * sizeof(int16_t));
+        void* mem_ptr = dsd_neo_aligned_malloc((size_t)(MAXIMUM_BUF_LENGTH * 8) * sizeof(float));
         if (!mem_ptr) {
             LOG_ERROR("Failed to allocate input ring buffer.\n");
             return -1;
         }
-        input_ring.buffer = static_cast<int16_t*>(mem_ptr);
+        input_ring.buffer = static_cast<float*>(mem_ptr);
         input_ring.capacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
         input_ring.head.store(0);
         input_ring.tail.store(0);
@@ -1988,8 +2004,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         if (persist.ted_sps > 0) {
             demod.ted_sps = persist.ted_sps;
         }
-        if (persist.ted_gain_q20 > 0) {
-            demod.ted_gain_q20 = persist.ted_gain_q20;
+        if (persist.ted_gain > 0.0f) {
+            demod.ted_gain = persist.ted_gain;
         }
         demod.ted_force = persist.ted_force ? 1 : 0;
     }
@@ -2324,7 +2340,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             }
         }
 
-        /* Compute desired prebuffer in int16 samples (I+Q), and ensure the
+        /* Compute desired prebuffer in float samples (I+Q), and ensure the
            input ring is large enough so that half the ring equals the
            requested prebuffer. This provides headroom while starting demod. */
         size_t desired_prebuf = (size_t)((double)dongle.rate * 2.0 * ((double)pre_ms / 1000.0));
@@ -2333,7 +2349,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
         size_t min_capacity = desired_prebuf * 2; /* use <= 50% for prebuffer */
         if (min_capacity > input_ring.capacity) {
-            int16_t* nb = (int16_t*)dsd_neo_aligned_malloc(min_capacity * sizeof(int16_t));
+            float* nb = (float*)dsd_neo_aligned_malloc(min_capacity * sizeof(float));
             if (nb) {
                 if (input_ring.buffer) {
                     dsd_neo_aligned_free(input_ring.buffer);
@@ -2343,11 +2359,10 @@ dsd_rtl_stream_open(dsd_opts* opts) {
                 input_ring.head.store(0);
                 input_ring.tail.store(0);
                 LOG_INFO("rtltcp resized input ring to %zu samples (%.2f MiB) for ~%d ms prebuffer.\n",
-                         input_ring.capacity, (double)input_ring.capacity * sizeof(int16_t) / (1024.0 * 1024.0),
-                         pre_ms);
+                         input_ring.capacity, (double)input_ring.capacity * sizeof(float) / (1024.0 * 1024.0), pre_ms);
             } else {
                 LOG_WARNING("rtltcp: allocation for %zu samples (%.2f MiB) failed; using existing ring (%zu).\n",
-                            min_capacity, (double)min_capacity * sizeof(int16_t) / (1024.0 * 1024.0),
+                            min_capacity, (double)min_capacity * sizeof(float) / (1024.0 * 1024.0),
                             input_ring.capacity);
             }
         }
@@ -2548,7 +2563,7 @@ dsd_rtl_stream_soft_stop(void) {
  * @return Number of samples read (>=1), 0 if count==0, or -1 on exit.
  */
 extern "C" int
-dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state) {
+dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
     if (count == 0) {
         return 0;
@@ -3059,19 +3074,19 @@ dsd_rtl_stream_get_ted_sps(void) {
 }
 
 extern "C" void
-dsd_rtl_stream_set_ted_gain(int g) {
-    if (g < 16) {
-        g = 16;
+dsd_rtl_stream_set_ted_gain(float g) {
+    if (g < 0.01f) {
+        g = 0.01f;
     }
-    if (g > 512) {
-        g = 512;
+    if (g > 0.5f) {
+        g = 0.5f;
     }
-    demod.ted_gain_q20 = g;
+    demod.ted_gain = g;
 }
 
-extern "C" int
+extern "C" float
 dsd_rtl_stream_get_ted_gain(void) {
-    return demod.ted_gain_q20;
+    return demod.ted_gain;
 }
 
 extern "C" void
@@ -3096,58 +3111,58 @@ dsd_rtl_stream_set_fm_agc(int onoff) {
 }
 
 extern "C" void
-dsd_rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15) {
+dsd_rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down) {
     if (target_rms) {
         *target_rms = demod.fm_agc_target_rms;
     }
     if (min_rms) {
         *min_rms = demod.fm_agc_min_rms;
     }
-    if (alpha_up_q15) {
-        *alpha_up_q15 = demod.fm_agc_alpha_up_q15;
+    if (alpha_up) {
+        *alpha_up = demod.fm_agc_alpha_up;
     }
-    if (alpha_down_q15) {
-        *alpha_down_q15 = demod.fm_agc_alpha_down_q15;
+    if (alpha_down) {
+        *alpha_down = demod.fm_agc_alpha_down;
     }
 }
 
 extern "C" void
-dsd_rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15) {
-    if (target_rms >= 0) {
-        if (target_rms < 1000) {
-            target_rms = 1000;
+dsd_rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down) {
+    if (target_rms >= 0.0f) {
+        if (target_rms < 0.05f) {
+            target_rms = 0.05f;
         }
-        if (target_rms > 20000) {
-            target_rms = 20000;
+        if (target_rms > 2.5f) {
+            target_rms = 2.5f;
         }
         demod.fm_agc_target_rms = target_rms;
     }
-    if (min_rms >= 0) {
-        if (min_rms < 0) {
-            min_rms = 0;
+    if (min_rms >= 0.0f) {
+        if (min_rms < 0.0f) {
+            min_rms = 0.0f;
         }
-        if (min_rms > 15000) {
-            min_rms = 15000;
+        if (min_rms > 1.0f) {
+            min_rms = 1.0f;
         }
         demod.fm_agc_min_rms = min_rms;
     }
-    if (alpha_up_q15 >= 0) {
-        if (alpha_up_q15 < 1) {
-            alpha_up_q15 = 1;
+    if (alpha_up >= 0.0f) {
+        if (alpha_up < 0.0f) {
+            alpha_up = 0.0f;
         }
-        if (alpha_up_q15 > 32768) {
-            alpha_up_q15 = 32768;
+        if (alpha_up > 1.0f) {
+            alpha_up = 1.0f;
         }
-        demod.fm_agc_alpha_up_q15 = alpha_up_q15;
+        demod.fm_agc_alpha_up = alpha_up;
     }
-    if (alpha_down_q15 >= 0) {
-        if (alpha_down_q15 < 1) {
-            alpha_down_q15 = 1;
+    if (alpha_down >= 0.0f) {
+        if (alpha_down < 0.0f) {
+            alpha_down = 0.0f;
         }
-        if (alpha_down_q15 > 32768) {
-            alpha_down_q15 = 32768;
+        if (alpha_down > 1.0f) {
+            alpha_down = 1.0f;
         }
-        demod.fm_agc_alpha_down_q15 = alpha_down_q15;
+        demod.fm_agc_alpha_down = alpha_down;
     }
 }
 
@@ -3188,31 +3203,32 @@ dsd_rtl_stream_set_iq_dc(int enable, int shift_k) {
        so there is no apparent level drop. */
     if (!was && demod.iq_dc_block_enable && demod.lowpassed && demod.lp_len >= 2) {
         const int pairs = demod.lp_len >> 1;
-        int64_t sumI = 0, sumQ = 0;
+        double sumI = 0.0;
+        double sumQ = 0.0;
         for (int n = 0; n < pairs; n++) {
-            sumI += (int)demod.lowpassed[(size_t)(n << 1) + 0];
-            sumQ += (int)demod.lowpassed[(size_t)(n << 1) + 1];
+            sumI += (double)demod.lowpassed[(size_t)(n << 1) + 0];
+            sumQ += (double)demod.lowpassed[(size_t)(n << 1) + 1];
         }
-        int meanI = (pairs > 0) ? (int)(sumI / pairs) : 0;
-        int meanQ = (pairs > 0) ? (int)(sumQ / pairs) : 0;
+        float meanI = (pairs > 0) ? (float)(sumI / (double)pairs) : 0.0f;
+        float meanQ = (pairs > 0) ? (float)(sumQ / (double)pairs) : 0.0f;
         demod.iq_dc_avg_r = meanI;
         demod.iq_dc_avg_i = meanQ;
         /* Estimate RMS after subtraction and retarget AGC gain */
-        uint64_t acc = 0;
+        double acc = 0.0;
         for (int n = 0; n < pairs; n++) {
-            int32_t I = (int)demod.lowpassed[(size_t)(n << 1) + 0] - meanI;
-            int32_t Q = (int)demod.lowpassed[(size_t)(n << 1) + 1] - meanQ;
-            acc += (uint64_t)((int64_t)I * I + (int64_t)Q * Q);
+            double I = (double)demod.lowpassed[(size_t)(n << 1) + 0] - (double)meanI;
+            double Q = (double)demod.lowpassed[(size_t)(n << 1) + 1] - (double)meanQ;
+            acc += I * I + Q * Q;
         }
         if (pairs > 0) {
-            double mean_r2 = (double)acc / (double)pairs;
+            double mean_r2 = acc / (double)pairs;
             double rms = sqrt(mean_r2);
-            int target = (demod.fm_agc_target_rms > 0) ? demod.fm_agc_target_rms : 10000;
-            if (target < 1000) {
-                target = 1000;
+            float target = (demod.fm_agc_target_rms > 0.0f) ? demod.fm_agc_target_rms : 0.30f;
+            if (target < 0.05f) {
+                target = 0.05f;
             }
-            if (target > 20000) {
-                target = 20000;
+            if (target > 2.5f) {
+                target = 2.5f;
             }
             double g_raw = (rms > 1e-6) ? ((double)target / rms) : 1.0;
             if (g_raw > 8.0) {
@@ -3221,14 +3237,8 @@ dsd_rtl_stream_set_iq_dc(int enable, int shift_k) {
             if (g_raw < 0.125) {
                 g_raw = 0.125;
             }
-            demod.fm_agc_gain_q15 = (int)(g_raw * 32768.0 + 0.5);
-            demod.fm_agc_ema_rms = rms * (1.0 / 32768.0); /* seed continuous AGC */
-            if (demod.fm_agc_gain_q15 < 1024) {
-                demod.fm_agc_gain_q15 = 1024;
-            }
-            if (demod.fm_agc_gain_q15 > 262144) {
-                demod.fm_agc_gain_q15 = 262144;
-            }
+            demod.fm_agc_gain = (float)g_raw;
+            demod.fm_agc_ema_rms = rms;
         }
     }
 }
@@ -3396,10 +3406,10 @@ rtl_stream_toggle_fll(int onoff) {
     if (!demod.fll_enabled) {
         /* Reset FLL state to baseline to avoid carryover */
         fll_init_state(&demod.fll_state);
-        demod.fll_freq_q15 = 0;
-        demod.fll_phase_q15 = 0;
-        demod.fll_prev_r = 0;
-        demod.fll_prev_j = 0;
+        demod.fll_freq = 0.0f;
+        demod.fll_phase = 0.0f;
+        demod.fll_prev_r = 0.0f;
+        demod.fll_prev_j = 0.0f;
     }
 }
 
@@ -3409,7 +3419,7 @@ rtl_stream_toggle_ted(int onoff) {
     if (!demod.ted_enabled) {
         /* Reset TED state */
         ted_init_state(&demod.ted_state);
-        demod.ted_mu_q20 = 0;
+        demod.ted_mu = 0.0f;
     }
 }
 
@@ -3476,9 +3486,8 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
  *
  * @return Mean power value (approximate RMS squared).
  */
-extern "C" long int
+extern "C" double
 dsd_rtl_stream_return_pwr(void) {
-    long int pwr = 0;
     int n = demod.lp_len;
     /* Use a slightly longer window for a more stable estimate. */
     if (n > 512) {
@@ -3487,8 +3496,8 @@ dsd_rtl_stream_return_pwr(void) {
     if (n < 0) {
         n = 0;
     }
-    pwr = mean_power(demod.lowpassed, n, 1);
-    return (pwr);
+    float pwr_f = mean_power(demod.lowpassed, n, 1);
+    return (double)pwr_f;
 }
 
 /**

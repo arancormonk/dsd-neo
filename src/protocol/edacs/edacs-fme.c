@@ -31,6 +31,18 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
+#include <math.h>
+
+static inline short
+clip_float_to_short(float v) {
+    if (v > 32767.0f) {
+        return 32767;
+    }
+    if (v < -32768.0f) {
+        return -32768;
+    }
+    return (short)lrintf(v);
+}
 
 int
 isCustomAfsString(dsd_state* state) {
@@ -200,7 +212,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     short analog1[960];
     short analog2[960];
     short analog3[960];
-    short sample = 0;
+    float sample = 0.0f;
 
     // #define DEBUG_ANALOG //enable to digitize analog if 'data' bursts heard
 
@@ -219,8 +231,8 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     memset(d2, 0, sizeof(d2));
     memset(d3, 0, sizeof(d3));
 
-    long int pwr = opts->rtl_squelch_level + 1; //one more for the initial loop phase
-    long int sql = opts->rtl_squelch_level;
+    double pwr = opts->rtl_squelch_level + 1e-3; // small offset for initial loop phase
+    double sql = opts->rtl_squelch_level;
 
     fprintf(stderr, "\n");
 
@@ -238,7 +250,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     }
                     sample = (short)v;
                 }
-                analog1[i] = sample;
+                analog1[i] = clip_float_to_short(sample);
             }
 
             for (i = 0; i < 960; i++) {
@@ -252,7 +264,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     }
                     sample = (short)v;
                 }
-                analog2[i] = sample;
+                analog2[i] = clip_float_to_short(sample);
             }
 
             for (i = 0; i < 960; i++) {
@@ -266,7 +278,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     }
                     sample = (short)v;
                 }
-                analog3[i] = sample;
+                analog3[i] = clip_float_to_short(sample);
             }
             //this pwr will only work properly (for now) with squelch enabled in SDR++ or other
             pwr = raw_pwr(analog3, 960, 1);
@@ -287,7 +299,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //TCP Input w/ Simple TCP Error Detection Implemented to prevent hard crash if TCP drops off
         if (opts->audio_in_type == 8) {
             for (i = 0; i < 960; i++) {
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                short s = 0;
+                result = sf_read_short(opts->tcp_file_in, &s, 1);
+                sample = (float)s;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
@@ -301,13 +315,15 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     } else if (v < -32768) {
                         v = -32768;
                     }
-                    sample = (short)v;
+                    sample = (float)v;
                 }
-                analog1[i] = sample;
+                analog1[i] = clip_float_to_short(sample);
             }
 
             for (i = 0; i < 960; i++) {
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                short s = 0;
+                result = sf_read_short(opts->tcp_file_in, &s, 1);
+                sample = (float)s;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
@@ -321,13 +337,15 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     } else if (v < -32768) {
                         v = -32768;
                     }
-                    sample = (short)v;
+                    sample = (float)v;
                 }
-                analog2[i] = sample;
+                analog2[i] = clip_float_to_short(sample);
             }
 
             for (i = 0; i < 960; i++) {
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                short s = 0;
+                result = sf_read_short(opts->tcp_file_in, &s, 1);
+                sample = (float)s;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
@@ -341,9 +359,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     } else if (v < -32768) {
                         v = -32768;
                     }
-                    sample = (short)v;
+                    sample = (float)v;
                 }
-                analog3[i] = sample;
+                analog3[i] = clip_float_to_short(sample);
             }
 
             //this pwr will only work properly (for now) with squelch enabled in SDR++
@@ -353,8 +371,11 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         // UDP direct input
         else if (opts->audio_in_type == 6) {
             for (i = 0; i < 960; i++) {
-                if (!udp_input_read_sample(opts, &sample)) {
-                    sample = 0;
+                short s = 0;
+                if (!udp_input_read_sample(opts, &s)) {
+                    sample = 0.0f;
+                } else {
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -365,11 +386,14 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     }
                     sample = (short)v;
                 }
-                analog1[i] = sample;
+                analog1[i] = clip_float_to_short(sample);
             }
             for (i = 0; i < 960; i++) {
-                if (!udp_input_read_sample(opts, &sample)) {
-                    sample = 0;
+                short s = 0;
+                if (!udp_input_read_sample(opts, &s)) {
+                    sample = 0.0f;
+                } else {
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -380,11 +404,14 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     }
                     sample = (short)v;
                 }
-                analog2[i] = sample;
+                analog2[i] = clip_float_to_short(sample);
             }
             for (i = 0; i < 960; i++) {
-                if (!udp_input_read_sample(opts, &sample)) {
-                    sample = 0;
+                short s = 0;
+                if (!udp_input_read_sample(opts, &s)) {
+                    sample = 0.0f;
+                } else {
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -395,7 +422,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     }
                     sample = (short)v;
                 }
-                analog3[i] = sample;
+                analog3[i] = clip_float_to_short(sample);
             }
             pwr = raw_pwr(analog3, 960, 1);
         }
@@ -418,7 +445,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 cleanupAndExit(opts, state);
 #endif
                 sample *= opts->rtl_volume_multiplier;
-                analog1[i] = sample;
+                analog1[i] = clip_float_to_short(sample);
             }
 
             for (i = 0; i < 960; i++) {
@@ -436,7 +463,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 cleanupAndExit(opts, state);
 #endif
                 sample *= opts->rtl_volume_multiplier;
-                analog2[i] = sample;
+                analog2[i] = clip_float_to_short(sample);
             }
 
             for (i = 0; i < 960; i++) {
@@ -454,7 +481,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 cleanupAndExit(opts, state);
 #endif
                 sample *= opts->rtl_volume_multiplier;
-                analog3[i] = sample;
+                analog3[i] = clip_float_to_short(sample);
             }
             //the rtl pwr value works properly without needing a 'hard' squelch value
             pwr = g_rtl_ctx ? rtl_stream_return_pwr(g_rtl_ctx) : 0;
@@ -466,7 +493,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         for (i = 0; i < 960; i += 5) //Samples Per Symbol is 5, so incrememnt every 5
         {
             sr = sr << 1;
-            sr += digitize(opts, state, (int)analog1[i]);
+            sr += digitize(opts, state, (float)analog1[i]);
         }
 
 #ifdef DEBUG_ANALOG
@@ -474,9 +501,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //this format assumes the same sample per symbol rateused in EDACS/PV
         for (i = 0; i < 192; i++) //Samples Per Symbol is 5, so incrememnt every 5
         {
-            d1[i] = digitize(opts, state, (int)analog1[i * 5]);
-            d2[i] = digitize(opts, state, (int)analog2[i * 5]);
-            d3[i] = digitize(opts, state, (int)analog3[i * 5]);
+            d1[i] = digitize(opts, state, (float)analog1[i * 5]);
+            d2[i] = digitize(opts, state, (float)analog2[i * 5]);
+            d3[i] = digitize(opts, state, (float)analog3[i * 5]);
         }
 #endif
 

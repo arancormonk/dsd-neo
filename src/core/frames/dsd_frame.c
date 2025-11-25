@@ -73,8 +73,8 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     duid[2] = 0;
 
     if (state->rf_mod == 1) {
-        state->maxref = (int)(state->max * 0.80F);
-        state->minref = (int)(state->min * 0.80F);
+        state->maxref = state->max * 0.80F;
+        state->minref = state->min * 0.80F;
     } else {
         state->maxref = state->max;
         state->minref = state->min;

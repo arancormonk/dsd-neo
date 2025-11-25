@@ -76,7 +76,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Common defaults */
     s->rate_in = rtl_dsp_bw_hz;
     s->rate_out = rtl_dsp_bw_hz;
-    s->squelch_level = 0;
+    s->squelch_level = 0.0f;
     s->conseq_squelch = 10;
     s->terminate_on_squelch = 0;
     s->squelch_hits = 11;
@@ -88,10 +88,10 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->deemph = 0;
     s->rate_out2 = -1;
     s->mode_demod = &dsd_fm_demod;
-    s->pre_j = s->pre_r = s->now_r = s->now_j = 0;
+    s->pre_j = s->pre_r = s->now_r = s->now_j = 0.0f;
     s->prev_lpr_index = 0;
     s->deemph_a = 0;
-    s->deemph_avg = 0;
+    s->deemph_avg = 0.0f;
     /* Channel LPF (post-HB) */
     s->channel_lpf_enable = 0;    /* configured later by env/mode helper */
     s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
@@ -103,10 +103,10 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Audio LPF defaults */
     s->audio_lpf_enable = 0;
     s->audio_lpf_alpha = 0;
-    s->audio_lpf_state = 0;
-    s->now_lpr = 0;
+    s->audio_lpf_state = 0.0f;
+    s->now_lpr = 0.0f;
     s->dc_block = 1;
-    s->dc_avg = 0;
+    s->dc_avg = 0.0f;
     /* Resampler defaults */
     s->resamp_enabled = 0;
     s->resamp_target_hz = 0;
@@ -124,18 +124,20 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->post_polydecim_hist_head = 0;
     s->post_polydecim_taps = NULL;
     s->post_polydecim_hist = NULL;
-    /* FLL/TED defaults */
+    /* FLL/TED defaults (GNU Radio-style native float) */
     s->fll_enabled = 0;
-    s->fll_alpha_q15 = 0;
-    s->fll_beta_q15 = 0;
-    s->fll_freq_q15 = 0;
-    s->fll_phase_q15 = 0;
-    s->fll_prev_r = 0;
-    s->fll_prev_j = 0;
+    s->fll_alpha = 0.0f;
+    s->fll_beta = 0.0f;
+    s->fll_freq = 0.0f;
+    s->fll_phase = 0.0f;
+    s->fll_deadband = 0.0f;
+    s->fll_slew_max = 0.0f;
+    s->fll_prev_r = 0.0f;
+    s->fll_prev_j = 0.0f;
     s->ted_enabled = 0;
-    s->ted_gain_q20 = 0;
+    s->ted_gain = 0.0f;
     s->ted_sps = 0;
-    s->ted_mu_q20 = 0;
+    s->ted_mu = 0.0f;
     s->cqpsk_rms_agc_rms = 0.0f;
     s->cqpsk_fll_rot_applied = 0;
     /* Initialize FLL and TED module states */
@@ -165,9 +167,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->squelch_decim_phase = 0;
     /* Squelch soft gate defaults */
     s->squelch_gate_open = 1;
-    s->squelch_env_q15 = 32768;
-    s->squelch_env_attack_q15 = 4096;  /* ~0.125 */
-    s->squelch_env_release_q15 = 1024; /* ~0.031 */
+    s->squelch_env = 1.0f;
+    s->squelch_env_attack = 0.125f;
+    s->squelch_env_release = 0.03125f;
     /* HB decimator histories */
     for (int st = 0; st < 10; st++) {
         memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
@@ -333,13 +335,14 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
 
     int default_fll = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
     demod->fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : default_fll;
-    demod->fll_alpha_q15 = cfg->fll_alpha_is_set ? cfg->fll_alpha_q15 : 50;
-    demod->fll_beta_q15 = cfg->fll_beta_is_set ? cfg->fll_beta_q15 : 5;
-    demod->fll_deadband_q14 = cfg->fll_deadband_is_set ? cfg->fll_deadband_q14 : 45;
-    demod->fll_slew_max_q15 = cfg->fll_slew_is_set ? cfg->fll_slew_max_q15 : 64;
-    demod->fll_freq_q15 = 0;
-    demod->fll_phase_q15 = 0;
-    demod->fll_prev_r = demod->fll_prev_j = 0;
+    /* Native float FLL parameters (equivalent to legacy Q15 values) */
+    demod->fll_alpha = cfg->fll_alpha_is_set ? cfg->fll_alpha : 0.0015f;          /* ~50/32768 */
+    demod->fll_beta = cfg->fll_beta_is_set ? cfg->fll_beta : 0.00015f;            /* ~5/32768 */
+    demod->fll_deadband = cfg->fll_deadband_is_set ? cfg->fll_deadband : 0.0086f; /* ~45/16384*π rad */
+    demod->fll_slew_max = cfg->fll_slew_is_set ? cfg->fll_slew_max : 0.012f;      /* ~64/32768*2π rad */
+    demod->fll_freq = 0.0f;
+    demod->fll_phase = 0.0f;
+    demod->fll_prev_r = demod->fll_prev_j = 0.0f;
     /* Costas loop state (GNU Radio control loop derivative) */
     dsd_costas_loop_state_t* cl = &demod->costas_state;
     cl->phase = 0.0f;
@@ -359,9 +362,10 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
 
     int ted_default = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
     demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : ted_default;
-    demod->ted_gain_q20 = cfg->ted_gain_is_set ? cfg->ted_gain_q20 : 64;
+    /* Native float TED gain (controls tracking aggressiveness, bounded internally) */
+    demod->ted_gain = cfg->ted_gain_is_set ? cfg->ted_gain : 0.05f;
     demod->ted_sps = cfg->ted_sps_is_set ? cfg->ted_sps : 10;
-    demod->ted_mu_q20 = 0;
+    demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
     /* Default all DSP handles Off unless explicitly requested via env/CLI. */
@@ -393,14 +397,14 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
        Users can enable via env `DSD_NEO_FM_AGC=1` or the UI toggle. */
     int default_fm_agc = 0;
     demod->fm_agc_enable = cfg->fm_agc_is_set ? (cfg->fm_agc_enable != 0) : default_fm_agc;
-    demod->fm_agc_target_rms = cfg->fm_agc_target_is_set ? cfg->fm_agc_target_rms : 10000;
-    demod->fm_agc_min_rms = cfg->fm_agc_min_is_set ? cfg->fm_agc_min_rms : 2000;
-    demod->fm_agc_alpha_up_q15 = cfg->fm_agc_alpha_up_is_set ? cfg->fm_agc_alpha_up_q15 : 8192;        /* ~0.25 */
-    demod->fm_agc_alpha_down_q15 = cfg->fm_agc_alpha_down_is_set ? cfg->fm_agc_alpha_down_q15 : 24576; /* ~0.75 */
-    if (demod->fm_agc_gain_q15 <= 0) {
-        demod->fm_agc_gain_q15 = 32768; /* unity */
+    demod->fm_agc_target_rms = cfg->fm_agc_target_is_set ? cfg->fm_agc_target_rms : 0.30f;
+    demod->fm_agc_min_rms = cfg->fm_agc_min_is_set ? cfg->fm_agc_min_rms : 0.06f;
+    demod->fm_agc_alpha_up = cfg->fm_agc_alpha_up_is_set ? cfg->fm_agc_alpha_up : 0.25f;
+    demod->fm_agc_alpha_down = cfg->fm_agc_alpha_down_is_set ? cfg->fm_agc_alpha_down : 0.75f;
+    if (demod->fm_agc_gain <= 0.0f) {
+        demod->fm_agc_gain = 1.0f; /* unity */
     }
-    demod->fm_agc_ema_rms = (double)demod->fm_agc_target_rms * (1.0 / 32768.0); /* seed near target */
+    demod->fm_agc_ema_rms = (demod->fm_agc_target_rms > 0.0f) ? (double)demod->fm_agc_target_rms : 0.0;
     demod->fm_limiter_enable = cfg->fm_limiter_is_set ? (cfg->fm_limiter_enable != 0) : 0;
     demod->iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod->iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
@@ -516,35 +520,35 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             demod->ted_sps = sps;
         }
         if (!env_ted_gain_set) {
-            int base_gain = 64;
+            float base_gain = 0.05f;
             /* For P25 at low SPS (e.g., 12 kHz / 4800 or 6000 sym/s),
                use a slightly stronger default Gardner gain. */
             if (p25_mode && demod->ted_sps > 0 && demod->ted_sps <= 4) {
-                base_gain = 96;
+                base_gain = 0.075f;
             }
-            demod->ted_gain_q20 = base_gain;
+            demod->ted_gain = base_gain;
         }
         /* Digital defaults: slightly stronger, lower-deadband FLL for CQPSK/FM. */
         if (!env_fll_alpha_set) {
-            demod->fll_alpha_q15 = 150;
+            demod->fll_alpha = 0.008f; /* ~150/32768 but in native float */
         }
         if (!env_fll_beta_set) {
-            demod->fll_beta_q15 = 15;
+            demod->fll_beta = 0.0008f; /* ~15/32768 but in native float */
         }
         if (!env_fll_deadband_set) {
-            demod->fll_deadband_q14 = 32;
+            demod->fll_deadband = 0.002f; /* ~32/16384 but in native float */
         }
         if (!env_fll_slew_set) {
-            demod->fll_slew_max_q15 = 128;
+            demod->fll_slew_max = 0.004f; /* ~128/32768 but in native float */
         }
     } else {
         /* For analog-like modes, also avoid auto-enabling FLL/TED.
            Respect any explicit env/CLI/UI decisions, but do not change gates. */
         if (!env_fll_alpha_set) {
-            demod->fll_alpha_q15 = 50;
+            demod->fll_alpha = 0.0015f; /* ~50/32768 but in native float */
         }
         if (!env_fll_beta_set) {
-            demod->fll_beta_q15 = 5;
+            demod->fll_beta = 0.00015f; /* ~5/32768 but in native float */
         }
     }
 }

@@ -73,7 +73,7 @@ class RtlSdrOrchestrator {
      * @param out_got [out] Number of samples read.
      * @return 0 on success, <0 on error (e.g., shutdown).
      */
-    int read(int16_t* out, size_t count, int& out_got);
+    int read(float* out, size_t count, int& out_got);
 
     /**
      * @brief Current output sample rate in Hz.

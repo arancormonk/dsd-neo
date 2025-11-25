@@ -36,7 +36,7 @@ struct dsd_opts {
     SNDFILE* wav_out_f;
     SNDFILE* wav_out_fR;
     SNDFILE* wav_out_raw;
-    long int rtl_pwr;
+    double rtl_pwr;
     pa_simple* pulse_raw_dev_in;
     pa_simple* pulse_raw_dev_out;
     pa_simple* pulse_digi_dev_in;
@@ -114,7 +114,7 @@ struct dsd_opts {
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;
-    int rtl_squelch_level;
+    double rtl_squelch_level;
     int rtl_volume_multiplier;
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;

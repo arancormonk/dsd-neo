@@ -9,7 +9,7 @@
  *
  * Implements the opaque `rtl_device` handle, device configuration helpers,
  * realtime threading hooks, and the asynchronous USB callback that widens
- * u8 I/Q samples into s16 and feeds the `input_ring_state`.
+ * u8 I/Q samples into normalized float and feeds the `input_ring_state`.
  */
 
 #include <atomic>
@@ -156,7 +156,7 @@ rotate_90(unsigned char* buf, uint32_t len) {
 
 /**
  * @brief RTL-SDR asynchronous USB callback.
- * Converts incoming u8 I/Q to s16 and enqueues into the input ring. If
+ * Converts incoming u8 I/Q to normalized float and enqueues into the input ring. If
  * `offset_tuning` is off and `DSD_NEO_COMBINE_ROT` is enabled (default), a
  * combined rotate+widen implementation is used. Otherwise it falls back to
  * legacy two-pass (rotate_90 u8, then widen subtracting 128) or a simple
@@ -206,7 +206,7 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         rotate_90(buf, len);
     }
     while (need > 0) {
-        int16_t *p1 = NULL, *p2 = NULL;
+        float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
         input_ring_reserve(s->input_ring, need, &p1, &n1, &p2, &n2);
         if (n1 == 0 && n2 == 0) {
@@ -229,25 +229,25 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
 
         if (!s->offset_tuning && s->combine_rotate_enabled) {
             if (w1) {
-                widen_rotate90_u8_to_s16_bias127(buf + done, p1, (uint32_t)w1);
+                widen_rotate90_u8_to_f32_bias127(buf + done, p1, (uint32_t)w1);
             }
             if (w2) {
-                widen_rotate90_u8_to_s16_bias127(buf + done + w1, p2, (uint32_t)w2);
+                widen_rotate90_u8_to_f32_bias127(buf + done + w1, p2, (uint32_t)w2);
             }
         } else if (use_two_pass) {
             /* bytes already rotated in-place; widen with 128 subtraction to avoid bias */
             if (w1) {
-                widen_u8_to_s16_bias128_scalar(buf + done, p1, (uint32_t)w1);
+                widen_u8_to_f32_bias128_scalar(buf + done, p1, (uint32_t)w1);
             }
             if (w2) {
-                widen_u8_to_s16_bias128_scalar(buf + done + w1, p2, (uint32_t)w2);
+                widen_u8_to_f32_bias128_scalar(buf + done + w1, p2, (uint32_t)w2);
             }
         } else {
             if (w1) {
-                widen_u8_to_s16_bias127(buf + done, p1, (uint32_t)w1);
+                widen_u8_to_f32_bias127(buf + done, p1, (uint32_t)w1);
             }
             if (w2) {
-                widen_u8_to_s16_bias127(buf + done + w1, p2, (uint32_t)w2);
+                widen_u8_to_f32_bias127(buf + done + w1, p2, (uint32_t)w2);
             }
         }
         input_ring_commit(s->input_ring, w1 + w2);
@@ -373,7 +373,7 @@ rtl_tcp_skip_header(int sockfd) {
     }
 }
 
-/* TCP reader thread: read u8 IQ, widen to s16, push to ring */
+/* TCP reader thread: read u8 IQ, widen to float, push to ring */
 static void*
 tcp_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
@@ -627,7 +627,7 @@ tcp_thread_fn(void* arg) {
                 if (use_two_pass) {
                     rotate_90(src, (uint32_t)SLICE);
                 }
-                int16_t *p1 = NULL, *p2 = NULL;
+                float *p1 = NULL, *p2 = NULL;
                 size_t n1 = 0, n2 = 0;
                 input_ring_reserve(s->input_ring, SLICE, &p1, &n1, &p2, &n2);
                 if (n1 == 0 && n2 == 0) {
@@ -647,24 +647,24 @@ tcp_thread_fn(void* arg) {
                     size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
                     if (!s->offset_tuning && s->combine_rotate_enabled) {
                         if (w1) {
-                            widen_rotate90_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                            widen_rotate90_u8_to_f32_bias127(src, p1, (uint32_t)w1);
                         }
                         if (w2) {
-                            widen_rotate90_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                            widen_rotate90_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
                         }
                     } else if (use_two_pass) {
                         if (w1) {
-                            widen_u8_to_s16_bias128_scalar(src, p1, (uint32_t)w1);
+                            widen_u8_to_f32_bias128_scalar(src, p1, (uint32_t)w1);
                         }
                         if (w2) {
-                            widen_u8_to_s16_bias128_scalar(src + w1, p2, (uint32_t)w2);
+                            widen_u8_to_f32_bias128_scalar(src + w1, p2, (uint32_t)w2);
                         }
                     } else {
                         if (w1) {
-                            widen_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                            widen_u8_to_f32_bias127(src, p1, (uint32_t)w1);
                         }
                         if (w2) {
-                            widen_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                            widen_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
                         }
                     }
                     input_ring_commit(s->input_ring, w1 + w2);
@@ -679,7 +679,7 @@ tcp_thread_fn(void* arg) {
             if (use_two_pass) {
                 rotate_90(src, (uint32_t)SLICE);
             }
-            int16_t *p1 = NULL, *p2 = NULL;
+            float *p1 = NULL, *p2 = NULL;
             size_t n1 = 0, n2 = 0;
             input_ring_reserve(s->input_ring, SLICE, &p1, &n1, &p2, &n2);
             if (n1 == 0 && n2 == 0) {
@@ -700,24 +700,24 @@ tcp_thread_fn(void* arg) {
             size_t w2 = (n2 < rem_after_w1) ? n2 : rem_after_w1;
             if (!s->offset_tuning && s->combine_rotate_enabled) {
                 if (w1) {
-                    widen_rotate90_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                    widen_rotate90_u8_to_f32_bias127(src, p1, (uint32_t)w1);
                 }
                 if (w2) {
-                    widen_rotate90_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                    widen_rotate90_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
                 }
             } else if (use_two_pass) {
                 if (w1) {
-                    widen_u8_to_s16_bias128_scalar(src, p1, (uint32_t)w1);
+                    widen_u8_to_f32_bias128_scalar(src, p1, (uint32_t)w1);
                 }
                 if (w2) {
-                    widen_u8_to_s16_bias128_scalar(src + w1, p2, (uint32_t)w2);
+                    widen_u8_to_f32_bias128_scalar(src + w1, p2, (uint32_t)w2);
                 }
             } else {
                 if (w1) {
-                    widen_u8_to_s16_bias127(src, p1, (uint32_t)w1);
+                    widen_u8_to_f32_bias127(src, p1, (uint32_t)w1);
                 }
                 if (w2) {
-                    widen_u8_to_s16_bias127(src + w1, p2, (uint32_t)w2);
+                    widen_u8_to_f32_bias127(src + w1, p2, (uint32_t)w2);
                 }
             }
             input_ring_commit(s->input_ring, w1 + w2);

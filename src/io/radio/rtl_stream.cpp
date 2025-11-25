@@ -19,7 +19,7 @@ extern "C" {
 // Local forward declarations for legacy functions now hidden from public headers
 int dsd_rtl_stream_open(dsd_opts* opts);
 void dsd_rtl_stream_close(void);
-int dsd_rtl_stream_read(int16_t* out, size_t count, dsd_opts* opts, dsd_state* state);
+int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
 unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_soft_stop(void);
@@ -145,7 +145,7 @@ RtlSdrOrchestrator::tune(uint32_t center_freq_hz) {
  * @return 0 on success, <0 on error (e.g., shutdown).
  */
 int
-RtlSdrOrchestrator::read(int16_t* out, size_t count, int& out_got) {
+RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
     if (!started_) {
         last_error_code_ = -1;
         return last_error_code_;

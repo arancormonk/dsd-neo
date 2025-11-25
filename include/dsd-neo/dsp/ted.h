@@ -18,20 +18,20 @@
 extern "C" {
 #endif
 
-/* TED Configuration structure */
+/* TED Configuration structure (GNU Radio-style native float) */
 typedef struct {
     int enabled;
-    int force;    /* allow forcing TED even for FM/C4FM paths */
-    int gain_q20; /* small gain (Q20) for stability */
-    int sps;      /* nominal samples per symbol (e.g., 10 for 4800 sym/s at 48k) */
+    int force;  /* allow forcing TED even for FM/C4FM paths */
+    float gain; /* loop gain, typically 0.01..0.1 for stability */
+    int sps;    /* nominal samples per symbol (e.g., 10 for 4800 sym/s at 48k) */
 } ted_config_t;
 
-/* TED State structure - minimal fields needed for TED operations */
+/* TED State structure (native float for precision) */
 typedef struct {
-    int mu_q20; /* fractional phase [0,1) in Q20 */
-    /* Smoothed Gardner error residual (EMA, coarse units). Sign indicates
-       persistent early/late bias; magnitude is relative and not normalized. */
-    int e_ema;
+    float mu; /* fractional phase [0.0, 1.0) */
+    /* Smoothed Gardner error residual (EMA). Sign indicates persistent
+       early/late bias; magnitude is relative (normalized by power). */
+    float e_ema;
 } ted_state_t;
 
 /**
@@ -55,18 +55,28 @@ void ted_init_state(ted_state_t* state);
  * @param y      Work buffer for timing-adjusted I/Q (must be at least size N).
  * @note Skips processing when samples-per-symbol is large unless forced.
  */
-void gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, int16_t* x, int* N, int16_t* y);
+void gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, int* N, float* y);
 
 /**
  * @brief Return the current smoothed TED residual (EMA of Gardner error).
  *
  * Positive values indicate a persistent "sample early" bias (center → right),
  * negative values indicate "sample late" (center → left). Zero means no bias
- * or TED disabled.
+ * or TED disabled. Returns float for full precision.
+ */
+static inline float
+ted_residual(const ted_state_t* s) {
+    return s ? s->e_ema : 0.0f;
+}
+
+/**
+ * @brief Return the current smoothed TED residual as integer (legacy compat).
+ *
+ * Scaled to roughly match old Q15 range for diagnostic displays.
  */
 static inline int
-ted_residual(const ted_state_t* s) {
-    return s ? s->e_ema : 0;
+ted_residual_int(const ted_state_t* s) {
+    return s ? (int)(s->e_ema * 32768.0f) : 0;
 }
 
 #ifdef __cplusplus

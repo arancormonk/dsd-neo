@@ -74,17 +74,6 @@ branchless_clip(float x, float clip) {
     return 0.5f * (std::abs(x + clip) - std::abs(x - clip));
 }
 
-static inline int16_t
-clamp_to_i16(float v) {
-    long s = lrintf(v);
-    if (s > 32767) {
-        s = 32767;
-    } else if (s < -32768) {
-        s = -32768;
-    }
-    return static_cast<int16_t>(s);
-}
-
 static void
 update_gains(dsd_costas_loop_state_t* c) {
     float bw = c->loop_bw;
@@ -206,8 +195,8 @@ prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
             c->phase = 0.0f;
             c->freq = 0.0f;
         } else {
-            c->phase = static_cast<float>(d->fll_phase_q15) * kQ15ToRad;
-            c->freq = static_cast<float>(d->fll_freq_q15) * kQ15ToRad;
+            c->phase = d->fll_phase;
+            c->freq = d->fll_freq;
         }
         c->initialized = 1;
     }
@@ -228,16 +217,16 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
     prepare_costas(c, d);
 
     int pairs = d->lp_len >> 1;
-    int16_t* iq = d->lowpassed;
+    float* iq = d->lowpassed;
     float err_acc = 0.0f;
 
     for (int i = 0; i < pairs; i++) {
-        std::complex<float> s(static_cast<float>(iq[(i << 1) + 0]), static_cast<float>(iq[(i << 1) + 1]));
+        std::complex<float> s(iq[(i << 1) + 0], iq[(i << 1) + 1]);
         std::complex<float> nco = std::polar(1.0f, -c->phase);
         std::complex<float> y = s * nco;
 
-        iq[(i << 1) + 0] = clamp_to_i16(y.real());
-        iq[(i << 1) + 1] = clamp_to_i16(y.imag());
+        iq[(i << 1) + 0] = y.real();
+        iq[(i << 1) + 1] = y.imag();
 
         float err_raw = detect_error(y, c);
         float err_loop = branchless_clip(err_raw, 1.0f);
@@ -259,10 +248,8 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
         frequency_limit(c);
     }
 
-    int freq_q15 = static_cast<int>(lrintf(c->freq * kRadToQ15));
-    int phase_q15 = static_cast<int>(lrintf(c->phase * kRadToQ15)) & 0x7FFF;
-    d->fll_freq_q15 = freq_q15;
-    d->fll_phase_q15 = phase_q15;
+    d->fll_freq = c->freq;
+    d->fll_phase = c->phase;
 
     if (pairs > 0) {
         float avg_err = err_acc / static_cast<float>(pairs);

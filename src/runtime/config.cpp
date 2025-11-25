@@ -107,10 +107,15 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.fll_beta_is_set = env_is_set(fb);
     c.fll_deadband_is_set = env_is_set(fdb);
     c.fll_slew_is_set = env_is_set(fsl);
-    c.fll_alpha_q15 = c.fll_alpha_is_set ? atoi(fa) : 50;
-    c.fll_beta_q15 = c.fll_beta_is_set ? atoi(fb) : 5;
-    c.fll_deadband_q14 = c.fll_deadband_is_set ? atoi(fdb) : 45;
-    c.fll_slew_max_q15 = c.fll_slew_is_set ? atoi(fsl) : 64;
+    /* Native float FLL parameters (GNU Radio style):
+     * alpha: proportional gain (typ 0.001-0.01)
+     * beta: integral gain (typ 0.0001-0.001)
+     * deadband: minimum error threshold (typ 0.001-0.01)
+     * slew_max: max freq change per sample in rad/sample */
+    c.fll_alpha = c.fll_alpha_is_set ? (float)atof(fa) : 0.005f;
+    c.fll_beta = c.fll_beta_is_set ? (float)atof(fb) : 0.0005f;
+    c.fll_deadband = c.fll_deadband_is_set ? (float)atof(fdb) : 0.003f;
+    c.fll_slew_max = c.fll_slew_is_set ? (float)atof(fsl) : 0.002f;
 
     /* CQPSK Costas loop (carrier recovery) using GNU Radio control loop */
     const char* cbw = getenv("DSD_NEO_COSTAS_BW");
@@ -129,7 +134,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.costas_use_snr = (c.costas_use_snr_is_set && csnr[0] == '1') ? 1 : 0;
     c.costas_noise_db = c.costas_noise_db_is_set ? atof(cndb) : 0.0;
 
-    /* TED */
+    /* TED - native float Gardner timing gain */
     const char* ted = getenv("DSD_NEO_TED");
     const char* tg = getenv("DSD_NEO_TED_GAIN");
     const char* ts = getenv("DSD_NEO_TED_SPS");
@@ -137,7 +142,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.ted_is_set = env_is_set(ted);
     c.ted_enable = (c.ted_is_set && ted[0] == '1') ? 1 : 0;
     c.ted_gain_is_set = env_is_set(tg);
-    c.ted_gain_q20 = c.ted_gain_is_set ? atoi(tg) : 64;
+    c.ted_gain = c.ted_gain_is_set ? (float)atof(tg) : 0.05f;
     c.ted_sps_is_set = env_is_set(ts);
     c.ted_sps = c.ted_sps_is_set ? atoi(ts) : 10;
     c.ted_force_is_set = env_is_set(tf);
@@ -235,19 +240,19 @@ dsd_neo_config_init(const dsd_opts* opts) {
 
     const char* fm_tgt = getenv("DSD_NEO_FM_AGC_TARGET");
     c.fm_agc_target_is_set = env_is_set(fm_tgt);
-    c.fm_agc_target_rms = c.fm_agc_target_is_set ? atoi(fm_tgt) : 10000;
+    c.fm_agc_target_rms = c.fm_agc_target_is_set ? (float)atof(fm_tgt) : 0.30f;
 
     const char* fm_min = getenv("DSD_NEO_FM_AGC_MIN");
     c.fm_agc_min_is_set = env_is_set(fm_min);
-    c.fm_agc_min_rms = c.fm_agc_min_is_set ? atoi(fm_min) : 2000;
+    c.fm_agc_min_rms = c.fm_agc_min_is_set ? (float)atof(fm_min) : 0.06f;
 
     const char* fm_au = getenv("DSD_NEO_FM_AGC_ALPHA_UP");
     c.fm_agc_alpha_up_is_set = env_is_set(fm_au);
-    c.fm_agc_alpha_up_q15 = c.fm_agc_alpha_up_is_set ? atoi(fm_au) : 8192; /* ~0.25 */
+    c.fm_agc_alpha_up = c.fm_agc_alpha_up_is_set ? (float)atof(fm_au) : 0.25f; /* ~0.25 */
 
     const char* fm_ad = getenv("DSD_NEO_FM_AGC_ALPHA_DOWN");
     c.fm_agc_alpha_down_is_set = env_is_set(fm_ad);
-    c.fm_agc_alpha_down_q15 = c.fm_agc_alpha_down_is_set ? atoi(fm_ad) : 24576; /* ~0.75 */
+    c.fm_agc_alpha_down = c.fm_agc_alpha_down_is_set ? (float)atof(fm_ad) : 0.75f; /* ~0.75 */
 
     /* FM constant-envelope limiter */
     const char* fml = getenv("DSD_NEO_FM_LIMITER");

@@ -567,71 +567,55 @@ pbf(dsd_state* state, short* input, int len) {
 }
 
 //Generic RMS function derived from RTL_FM (RTL_SDR) RMS code (doesnt' really work correctly outside of RTL)
-long int
-raw_rms(int16_t* samples, int len, int step) //use samplespersymbol as len
+double
+raw_rms(const int16_t* samples, int len, int step) //use samplespersymbol as len
 {
-
-    int i;
-    long int rms;
-    long p, t, s;
-    double dc, err;
-
-    p = t = 0L;
-    for (i = 0; i < len; i += step) {
-        s = (long)samples[i];
-        t += s;
-        p += s * s;
+    double mp = raw_pwr(samples, len, step);
+    if (mp < 0.0) {
+        mp = 0.0;
     }
-    /* correct for dc offset in squares */
-    dc = (double)(t * step) / (double)len;
-    err = t * 2 * dc - dc * dc * len;
-
-    rms = (long int)sqrt((p - err) / len);
-    if (rms < 0) {
-        rms = 150;
-    }
-    return rms;
+    return sqrt(mp);
 }
 
 /*
  * Mean power (RMS^2 proxy) without sqrt, modeled after mean_power() in rtl_sdr_fm.cpp.
  * Computes a DC-corrected average of squares to avoid costly sqrt operations.
  */
-long int
-raw_pwr(int16_t* samples, int len, int step) {
-    int64_t p = 0;
-    int64_t t = 0;
+double
+raw_pwr(const int16_t* samples, int len, int step) {
+    double p = 0.0;
+    double t = 0.0;
+    int count = 0;
+    const double kScale = 1.0 / 32768.0;
     for (int i = 0; i < len; i += step) {
-        int64_t s = (int64_t)samples[i];
+        double s = (double)samples[i] * kScale;
         t += s;
         p += s * s;
+        count++;
     }
-    /* DC-corrected energy ≈ p - (t^2)/len with rounded division */
-    int64_t dc_corr = 0;
-    if (len > 0) {
-        int64_t tt = t * t;
-        dc_corr = (tt + (len / 2)) / len;
+    if (count == 0) {
+        return 0.0;
     }
-    int64_t energy = p - dc_corr;
-    if (energy < 0) {
-        energy = 0;
+    /* DC-corrected energy ≈ p - (t^2)/count */
+    double dc_corr = (t * t) / (double)count;
+    double energy = p - dc_corr;
+    if (energy < 0.0) {
+        energy = 0.0;
     }
-    return (long int)(energy / (len > 0 ? len : 1));
+    return energy / (double)count;
 }
 
 /*
- * Convert a mean power value (RMS^2 proxy on 16-bit samples) to dB.
- * The input is the DC-corrected mean of squares on int16 samples.
+ * Convert a mean power value (RMS^2 proxy on normalized samples) to dB.
+ * The input is the DC-corrected mean of squares on normalized samples.
  * Output is clamped to [-120.0 dB, 0.0 dB] for stable display.
  */
 double
-pwr_to_dB(long int mean_power) {
+pwr_to_dB(double mean_power) {
     if (mean_power <= 0) {
         return -120.0;
     }
-    const double full_scale_sq = 32768.0 * 32768.0; /* int16 full scale squared */
-    double ratio = (double)mean_power / full_scale_sq;
-    double dB = 10.0 * log10(ratio);
+    double dB = 10.0 * log10(mean_power);
     if (dB > 0.0) {
         dB = 0.0; /* never exceed 0 dB */
     }
@@ -642,24 +626,22 @@ pwr_to_dB(long int mean_power) {
 }
 
 /* Inverse of pwr_to_dB: convert dB back to mean power threshold. */
-long int
+double
 dB_to_pwr(double dB) {
     if (dB >= 0.0) {
-        return (long int)(32768.0 * 32768.0);
+        return 1.0;
     }
     if (dB < -200.0) {
         dB = -200.0; /* avoid denormals */
     }
-    const double full_scale_sq = 32768.0 * 32768.0;
     /* Use exp(dB * ln(10)/10) instead of pow(10, dB/10) to avoid generic pow overhead */
     const double kLn10_over_10 = 2.302585092994046 / 10.0; /* ln(10)/10 */
-    double ratio = exp(dB * kLn10_over_10);
-    double pwr = ratio * full_scale_sq;
+    double pwr = exp(dB * kLn10_over_10);
     if (pwr < 0.0) {
         pwr = 0.0;
     }
-    if (pwr > full_scale_sq) {
-        pwr = full_scale_sq;
+    if (pwr > 1.0) {
+        pwr = 1.0;
     }
-    return (long int)(pwr + 0.5);
+    return pwr;
 }

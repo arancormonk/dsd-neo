@@ -567,7 +567,7 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     int ted_force = rtl_stream_get_ted_force();
     int clk_mode = rtl_stream_get_c4fm_clk();
     int clk_sync = rtl_stream_get_c4fm_clk_sync();
-    int agc_tgt = 0, agc_min = 0, agc_up = 0, agc_down = 0;
+    float agc_tgt = 0.0f, agc_min = 0.0f, agc_up = 0.0f, agc_down = 0.0f;
     int agc_on = rtl_stream_get_fm_agc();
     rtl_stream_get_fm_agc_params(&agc_tgt, &agc_min, &agc_up, &agc_down);
     int lim_on = rtl_stream_get_fm_limiter();
@@ -640,8 +640,8 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         ui_print_kv_line("C4FM", "CLK:%s%s", clk, (clk_mode && clk_sync) ? " (sync)" : "");
     }
     if (mod != 1 || agc_on || lim_on) {
-        ui_print_kv_line("FM AGC", "[%s] tgt:%d min:%d up:%d dn:%d | LIM:%s", agc_on ? "On" : "Off", agc_tgt, agc_min,
-                         agc_up, agc_down, lim_on ? "On" : "Off");
+        ui_print_kv_line("FM AGC", "[%s] tgt:%.3f min:%.3f up:%.2f dn:%.2f | LIM:%s", agc_on ? "On" : "Off", agc_tgt,
+                         agc_min, agc_up, agc_down, lim_on ? "On" : "Off");
     }
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));
@@ -661,7 +661,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     /* Fetch a snapshot of recent I/Q points */
     enum { MAXP = 4096 };
 
-    int16_t buf[(size_t)MAXP * 2];
+    float buf[(size_t)MAXP * 2];
     int n = rtl_stream_constellation_get(buf, MAXP);
 
     ui_print_header("Constellation");
@@ -748,25 +748,24 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     /* Dynamic radial scale using high-percentile magnitude (robust to outliers), then smooth. */
     static int s_maxR = 256; /* smoothed scale for radius (~99th percentile of |IQ|) */
     /* Collect absolute I/Q and magnitude values for percentile computation */
+    /* Note: float samples are normalized [-1.0, 1.0]; scale to integer range for legacy logic */
+    static const float kFloatScale = 16384.0f;
     static int absI[(size_t)MAXP];
     static int absQ[(size_t)MAXP];
     static int magR[(size_t)MAXP];
     for (int k = 0; k < n; k++) {
-        int i = buf[(size_t)(k << 1) + 0];
-        int q = buf[(size_t)(k << 1) + 1];
-        int ai = (i < 0) ? -i : i;
-        int aq = (q < 0) ? -q : q;
+        float i = buf[(size_t)(k << 1) + 0] * kFloatScale;
+        float q = buf[(size_t)(k << 1) + 1] * kFloatScale;
+        int ai = (int)lrintf(fabsf(i));
+        int aq = (int)lrintf(fabsf(q));
         absI[k] = ai;
         absQ[k] = aq;
-        /* Approximate magnitude without floating point: sqrt(i*i + q*q). */
-        (void)absI;
-        (void)absQ;
-        long ii = (long)i;
-        long qq = (long)q;
-        long r2 = ii * ii + qq * qq;
-        int r = (int)lrint(sqrt((double)r2));
+        double r2 = (double)i * (double)i + (double)q * (double)q;
+        int r = (int)lrint(sqrt(r2));
         magR[k] = r;
     }
+    (void)absI;
+    (void)absQ;
     /* Compute 99th percentile radius via quickselect (avoid full sort) */
     /* Use 99th percentile (index ~ 0.99*(n-1)) to ignore rare spikes */
     int idxP = (int)lrint(0.99 * (double)(n - 1));
@@ -824,11 +823,12 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     int y1 = cy + scale_eq;
     unsigned short dmax = 0;
     for (int k = 0; k < n; k++) {
-        int i = buf[(size_t)(k << 1) + 0];
-        int q = buf[(size_t)(k << 1) + 1];
+        /* Scale normalized float samples to integer range for legacy logic */
+        float fi = buf[(size_t)(k << 1) + 0] * kFloatScale;
+        float fq = buf[(size_t)(k << 1) + 1] * kFloatScale;
         /* Compute raw magnitude for gating and optional unit-circle normalization */
-        double ii = (double)i;
-        double qq = (double)q;
+        double ii = (double)fi;
+        double qq = (double)fq;
         double r = sqrt(ii * ii + qq * qq);
         double rn = r / (double)s_maxR; /* normalized radius for gating */
         if ((rn * rn) < gate2) {
@@ -1180,7 +1180,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     /* Fetch a snapshot of recent I-channel samples and SPS */
     enum { MAXS = 16384 };
 
-    static int16_t buf[(size_t)MAXS];
+    static float buf[(size_t)MAXS];
     int sps = 0;
     int n = rtl_stream_eye_get(buf, MAXS, &sps);
     ui_print_header("Eye Diagram (C4FM/FSK)");
@@ -1245,11 +1245,13 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     }
     int mid = H / 2;
     /* Normalize peak with EMA for stability */
+    /* Note: float samples are normalized [-1.0, 1.0]; scale to integer range for legacy logic */
+    static const float kEyeFloatScale = 16384.0f;
     static int s_peak = 256;
     int peak = 1;
     for (int i = 0; i < n; i++) {
-        int v = buf[i];
-        int a = v < 0 ? -v : v;
+        float v = buf[i] * kEyeFloatScale;
+        int a = (int)lrintf(fabsf(v));
         if (a > peak) {
             peak = a;
         }
@@ -1270,7 +1272,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     static int qvals[8192];
     int vi = 0;
     for (int i = 0; i < n && vi < m; i += step_ds) {
-        qvals[vi++] = (int)buf[i];
+        qvals[vi++] = (int)lrintf(buf[i] * kEyeFloatScale);
     }
     m = vi;
     if (m < 8) {
@@ -1291,7 +1293,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
         two_sps = 8;
     }
     for (int i = 0; i < n; i++) {
-        double v = (double)buf[i] / (double)s_peak;
+        double v = ((double)buf[i] * (double)kEyeFloatScale) / (double)s_peak;
         if (v > 1.0) {
             v = 1.0;
         }
@@ -1703,7 +1705,7 @@ print_fsk_hist_view(void) {
 #ifdef USE_RTLSDR
     enum { MAXS = 8192 };
 
-    static int16_t buf[(size_t)MAXS];
+    static float buf[(size_t)MAXS];
     int sps = 0;
     int n = rtl_stream_eye_get(buf, MAXS, &sps);
     ui_print_header("FSK 4-Level Histogram");
@@ -1716,11 +1718,13 @@ print_fsk_hist_view(void) {
         return;
     }
     /* Compute peak and mean DC offset */
+    /* Note: float samples are normalized [-1.0, 1.0]; scale to integer range for legacy logic */
+    static const float kHistFloatScale = 16384.0f;
     int peak = 1;
-    int64_t sum = 0;
+    double sum = 0.0;
     for (int i = 0; i < n; i++) {
-        int v = (int)buf[i];
-        int a = v < 0 ? -v : v;
+        float v = buf[i] * kHistFloatScale;
+        int a = (int)lrintf(fabsf(v));
         if (a > peak) {
             peak = a;
         }
@@ -1745,7 +1749,7 @@ print_fsk_hist_view(void) {
     }
     int vi = 0;
     for (int i = 0; i < n && vi < m; i += step) {
-        vals[vi++] = (int)buf[i];
+        vals[vi++] = (int)lrintf(buf[i] * kHistFloatScale);
     }
     m = vi;
     /* Quartiles via quickselect */
@@ -1758,7 +1762,7 @@ print_fsk_hist_view(void) {
     /* Bin using quartile boundaries */
     int64_t bin[4] = {0, 0, 0, 0};
     for (int i = 0; i < n; i++) {
-        int v = (int)buf[i];
+        int v = (int)lrintf(buf[i] * kHistFloatScale);
         int b = 0;
         if (v <= q1) {
             b = 0;

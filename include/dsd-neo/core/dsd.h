@@ -269,7 +269,7 @@ int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analo
  * @param symbol Raw symbol magnitude.
  * @return Dibit value [0,3].
  */
-int digitize(dsd_opts* opts, dsd_state* state, int symbol);
+int digitize(dsd_opts* opts, dsd_state* state, float symbol);
 
 /** @brief Skip @p count dibits from the input stream without processing. */
 void skipDibit(dsd_opts* opts, dsd_state* state, int count);
@@ -415,7 +415,7 @@ void resumeScan(dsd_opts* opts, dsd_state* state);
  * @param have_sync Non-zero when symbol timing is synchronized.
  * @return Raw symbol magnitude.
  */
-int getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
+float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 /** @brief Legacy linear upsampler for analog monitor audio. */
 void upsample(dsd_state* state, float invalue);
 /** @brief Full D-STAR voice/data processing pipeline entry point. */
@@ -498,13 +498,13 @@ void processTSBK(dsd_opts* opts, dsd_state* state); //P25 Trunking Single Block
 void processMPDU(dsd_opts* opts,
                  dsd_state* state); //P25 Multi Block PDU (SAP 0x61 FMT 0x15 or 0x17 for Trunking Blocks)
 /** @brief FIR filter for DMR baseband samples. */
-short dmr_filter(short sample);
+float dmr_filter(float sample);
 /** @brief FIR filter for NXDN baseband samples. */
-short nxdn_filter(short sample);
+float nxdn_filter(float sample);
 /** @brief FIR filter for dPMR baseband samples. */
-short dpmr_filter(short sample);
+float dpmr_filter(float sample);
 /** @brief FIR filter for M17 baseband samples. */
-short m17_filter(short sample);
+float m17_filter(float sample);
 
 //utility functions
 /** @brief Pack a little-endian bit vector into bytes. */
@@ -1103,14 +1103,20 @@ void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq);
 void init_rrc_filter_memory();
 
 //misc audio filtering for analog
+#ifdef __cplusplus
+extern "C" {
+#endif
 /** @brief Compute RMS over a sample buffer with stride. */
-long int raw_rms(short* samples, int len, int step);
+double raw_rms(const short* samples, int len, int step);
 /** @brief Compute mean power over a sample buffer with stride. */
-long int raw_pwr(short* samples, int len, int step);
-/** @brief Convert mean power (RMS^2 on int16 samples) to dBFS, clamped to [-120,0]. */
-double pwr_to_dB(long int mean_power);
-/** @brief Convert dBFS to mean power (RMS^2 on int16 samples). */
-long int dB_to_pwr(double dB);
+double raw_pwr(const short* samples, int len, int step);
+/** @brief Convert mean power (normalized) to dBFS, clamped to [-120,0]. */
+double pwr_to_dB(double mean_power);
+/** @brief Convert dBFS to normalized mean power. */
+double dB_to_pwr(double dB);
+#ifdef __cplusplus
+}
+#endif
 /**
  * @brief Initialize or refresh audio-domain filters with the current sample rate.
  *

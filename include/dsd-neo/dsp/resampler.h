@@ -42,7 +42,7 @@ void resamp_design(struct demod_state* s, int L, int M);
  * @param out    Pointer to output buffer (sized to hold produced samples).
  * @return Number of output samples written.
  */
-int resamp_process_block(struct demod_state* s, const int16_t* in, int in_len, int16_t* out);
+int resamp_process_block(struct demod_state* s, const float* in, int in_len, float* out);
 
 #ifdef __cplusplus
 }

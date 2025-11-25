@@ -23,6 +23,18 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
+#include <math.h>
+
+static inline short
+clip_float_to_short(float v) {
+    if (v > 32767.0f) {
+        return 32767;
+    }
+    if (v < -32768.0f) {
+        return -32768;
+    }
+    return (short)lrintf(v);
+}
 
 //from M17_Implementations / libM17 -- sp5wwp -- should have just looked here to begin with
 //this setup looks very similar to the OP25 variant of crc16, but with a few differences (uses packed bytes)
@@ -1555,7 +1567,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     //end
 
     int i, j, k, x;                   //basic utility counters
-    short sample = 0;                 //individual audio sample from source
+    float sample = 0.0f;              //individual audio sample from source
     size_t nsam = 160;                //number of samples to be read in (default is 160 samples for codec2 3200 bps)
     int dec = state->m17_rate / 8000; //number of samples to run before selecting a sample from source input
     int sql_hit = 11;                 //squelch hits, hit enough, and deactivate vox
@@ -1876,7 +1888,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
-                    pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+                    short s = 0;
+                    pa_simple_read(opts->pulse_digi_dev_in, &s, 2, NULL);
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -1885,15 +1899,17 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     } else if (v < -32768) {
                         v = -32768;
                     }
-                    sample = (short)v;
+                    sample = (float)v;
                 }
-                voice1[i] = sample; //only store the 6th sample
+                voice1[i] = clip_float_to_short(sample); //only store the 6th sample
             }
 
             if (st == 2) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
-                        pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+                        short s = 0;
+                        pa_simple_read(opts->pulse_digi_dev_in, &s, 2, NULL);
+                        sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {
                         int v = (int)sample * opts->input_volume_multiplier;
@@ -1902,9 +1918,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         } else if (v < -32768) {
                             v = -32768;
                         }
-                        sample = (short)v;
+                        sample = (float)v;
                     }
-                    voice2[i] = sample; //only store the 6th sample
+                    voice2[i] = clip_float_to_short(sample); //only store the 6th sample
                 }
             }
         }
@@ -1914,7 +1930,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             int result = 0;
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
-                    result = sf_read_short(opts->audio_in_file, &sample, 1);
+                    short s = 0;
+                    result = sf_read_short(opts->audio_in_file, &s, 1);
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -1925,7 +1943,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                     sample = (short)v;
                 }
-                voice1[i] = sample;
+                voice1[i] = clip_float_to_short(sample);
                 if (result == 0) {
                     sf_close(opts->audio_in_file);
                     fprintf(stderr, "Connection to STDIN Disconnected.\n");
@@ -1938,7 +1956,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             if (st == 2) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
-                        result = sf_read_short(opts->audio_in_file, &sample, 1);
+                        short s = 0;
+                        result = sf_read_short(opts->audio_in_file, &s, 1);
+                        sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {
                         int v = (int)sample * opts->input_volume_multiplier;
@@ -1947,9 +1967,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         } else if (v < -32768) {
                             v = -32768;
                         }
-                        sample = (short)v;
+                        sample = (float)v;
                     }
-                    voice2[i] = sample;
+                    voice2[i] = clip_float_to_short(sample);
                     if (result == 0) {
                         sf_close(opts->audio_in_file);
                         fprintf(stderr, "Connection to STDIN Disconnected.\n");
@@ -1965,7 +1985,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
-                    read(opts->audio_in_fd, &sample, 2);
+                    short s = 0;
+                    read(opts->audio_in_fd, &s, 2);
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -1976,13 +1998,15 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                     sample = (short)v;
                 }
-                voice1[i] = sample;
+                voice1[i] = clip_float_to_short(sample);
             }
 
             if (st == 2) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
-                        read(opts->audio_in_fd, &sample, 2);
+                        short s = 0;
+                        read(opts->audio_in_fd, &s, 2);
+                        sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {
                         int v = (int)sample * opts->input_volume_multiplier;
@@ -1993,7 +2017,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         }
                         sample = (short)v;
                     }
-                    voice2[i] = sample;
+                    voice2[i] = clip_float_to_short(sample);
                 }
             }
         }
@@ -2003,7 +2027,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             int result = 0;
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
-                    result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                    short s = 0;
+                    result = sf_read_short(opts->tcp_file_in, &s, 1);
+                    sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -2014,7 +2040,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                     sample = (short)v;
                 }
-                voice1[i] = sample;
+                voice1[i] = clip_float_to_short(sample);
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
                     fprintf(stderr, "Connection to TCP Server Disconnected.\n");
@@ -2027,7 +2053,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             if (st == 2) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
-                        result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                        short s = 0;
+                        result = sf_read_short(opts->tcp_file_in, &s, 1);
+                        sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {
                         int v = (int)sample * opts->input_volume_multiplier;
@@ -2038,7 +2066,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         }
                         sample = (short)v;
                     }
-                    voice2[i] = sample;
+                    voice2[i] = clip_float_to_short(sample);
                     if (result == 0) {
                         sf_close(opts->tcp_file_in);
                         fprintf(stderr, "Connection to TCP Server Disconnected.\n");
@@ -2053,8 +2081,11 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             int result = 1;
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
-                    if (!udp_input_read_sample(opts, &sample)) {
+                    short s = 0;
+                    if (!udp_input_read_sample(opts, &s)) {
                         result = 0;
+                    } else {
+                        sample = (float)s;
                     }
                 }
                 if (opts->input_volume_multiplier > 1) {
@@ -2066,7 +2097,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                     sample = (short)v;
                 }
-                voice1[i] = sample;
+                voice1[i] = clip_float_to_short(sample);
                 if (result == 0) {
                     fprintf(stderr, "UDP input stopped.\n");
                     exitflag = 1;
@@ -2077,8 +2108,11 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             if (st == 2) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
-                        if (!udp_input_read_sample(opts, &sample)) {
+                        short s = 0;
+                        if (!udp_input_read_sample(opts, &s)) {
                             result = 0;
+                        } else {
+                            sample = (float)s;
                         }
                     }
                     if (opts->input_volume_multiplier > 1) {
@@ -2121,7 +2155,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                 }
                 sample *= opts->rtl_volume_multiplier;
-                voice1[i] = sample;
+                voice1[i] = clip_float_to_short(sample);
             }
 
             if (st == 2) {

@@ -5,6 +5,7 @@
 
 /* Focused unit test for polyphase rational resampler (L/M). */
 
+#include <cmath>
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -13,11 +14,8 @@
 #include <string.h>
 
 static int
-approx_eq(int a, int b, int tol) {
-    int d = a - b;
-    if (d < 0) {
-        d = -d;
-    }
+approx_eq(float a, float b, float tol) {
+    float d = fabsf(a - b);
     return d <= tol;
 }
 
@@ -55,11 +53,11 @@ main(void) {
     }
 
     const int N = 96;
-    int16_t in[N];
+    float in[N];
     for (int i = 0; i < N; i++) {
-        in[i] = 1000; // DC input
+        in[i] = 1.0f; // DC input (normalized)
     }
-    int16_t out[N * 4];
+    float out[N * 4];
     int out_len = resamp_process_block(s, in, N, out);
 
     int exp_len = expected_out_len_for_block(N, L, M);
@@ -76,8 +74,8 @@ main(void) {
         warm = out_len;
     }
     for (int i = warm; i < out_len; i++) {
-        if (!approx_eq(out[i], 1000, 5)) {
-            fprintf(stderr, "RESAMP: out[%d]=%d not within tol of 1000\n", i, (int)out[i]);
+        if (!approx_eq(out[i], 1.0f, 2e-3f)) {
+            fprintf(stderr, "RESAMP: out[%d]=%f not within tol of 1.0\n", i, out[i]);
             return 1;
         }
     }

@@ -22,25 +22,25 @@ extern "C" {
 
 #define DSP_FLL_BE_MAX_TAPS 129 /* 2*sps+1 with sps<=64 -> 129 */
 
-/* FLL Configuration structure */
+/* FLL Configuration structure (GNU Radio-style native float) */
 typedef struct {
     int enabled;
-    int alpha_q15;    /* proportional gain (Q15) */
-    int beta_q15;     /* integral gain (Q15) */
-    int deadband_q14; /* ignore small phase errors |err| <= deadband (Q14) */
-    int slew_max_q15; /* max |delta freq| per update (Q15) */
+    float alpha;    /* proportional gain (native float, ~0.002..0.02) */
+    float beta;     /* integral gain (native float, ~0.0002..0.002) */
+    float deadband; /* ignore small phase errors |err| <= deadband (radians, ~0.01) */
+    float slew_max; /* max |delta freq| per update (rad/sample, ~0.005) */
 } fll_config_t;
 
-/* FLL State structure - minimal fields needed for FLL operations */
+/* FLL State structure - native float (GNU Radio-style) */
 typedef struct {
-    int freq_q15;  /* NCO frequency increment (Q15 radians/sample scaled) */
-    int phase_q15; /* NCO phase accumulator (wrap at 2*pi -> 1<<15 scale) */
-    int prev_r;
-    int prev_j;
-    int int_q15; /* PI integrator state (Q15), bounded for anti-windup */
+    float freq;  /* NCO frequency increment (rad/sample) */
+    float phase; /* NCO phase accumulator (radians, wraps at +/-2*pi) */
+    float prev_r;
+    float prev_j;
+    float integrator; /* PI integrator state (native float), bounded for anti-windup */
     /* Small history of trailing complex samples for symbol-spaced updates. */
-    int prev_hist_r[64];
-    int prev_hist_j[64];
+    float prev_hist_r[64];
+    float prev_hist_j[64];
     int prev_hist_len; /* number of valid samples in prev_hist_* (0..64) */
     /* Band-edge FLL (CQPSK) state */
     float be_phase; /* radians */
@@ -80,7 +80,7 @@ void fll_init_state(fll_state_t* state);
  * @param x      Input/output interleaved I/Q buffer (modified in-place).
  * @param N      Length of buffer in samples (must be even).
  */
-void fll_mix_and_update(const fll_config_t* config, fll_state_t* state, int16_t* x, int N);
+void fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int N);
 
 /**
  * @brief Estimate frequency error and update FLL control (PI in Q15).
@@ -93,7 +93,7 @@ void fll_mix_and_update(const fll_config_t* config, fll_state_t* state, int16_t*
  * @param x      Input interleaved I/Q buffer.
  * @param N      Length of buffer in samples (must be even).
  */
-void fll_update_error(const fll_config_t* config, fll_state_t* state, const int16_t* x, int N);
+void fll_update_error(const fll_config_t* config, fll_state_t* state, const float* x, int N);
 
 /**
  * @brief Band-edge FLL identical to GNU Radio's `fll_band_edge_cc`.
@@ -111,7 +111,7 @@ void fll_update_error(const fll_config_t* config, fll_state_t* state, const int1
  * @param N      Length of buffer in elements (must be even).
  * @param sps    Nominal samples-per-symbol (complex samples per symbol).
  */
-void fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, int16_t* x, int N, int sps);
+void fll_update_error_qpsk(const fll_config_t* config, fll_state_t* state, float* x, int N, int sps);
 
 #ifdef __cplusplus
 }

@@ -29,6 +29,17 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+static inline short
+float_to_int16_clip(float v) {
+    if (v > 32767.0f) {
+        return 32767;
+    }
+    if (v < -32768.0f) {
+        return -32768;
+    }
+    return (short)lrintf(v);
+}
+
 /*
  * Centralized window selection helpers per modulation. These encapsulate
  * left/right offsets used during symbol decision and allow a single point for
@@ -58,8 +69,8 @@ select_window_c4fm(const dsd_state* state, int* l_edge, int* r_edge, int freeze_
  * This matches common GNU Radio guidance (firdes.root_raised_cosine with ntaps=11*sps),
  * using an odd number of taps for symmetry.
  */
-static short
-c4fm_rrc_filter_sample(short sample, int sps, double alpha) {
+static float
+c4fm_rrc_filter_sample(float sample, int sps, double alpha) {
     if (sps <= 1) {
         return sample;
     }
@@ -145,13 +156,7 @@ c4fm_rrc_filter_sample(short sample, int sps, double alpha) {
         }
         acc += taps[i] * hist[idx];
     }
-    if (acc > 32767.0f) {
-        acc = 32767.0f;
-    }
-    if (acc < -32768.0f) {
-        acc = -32768.0f;
-    }
-    return (short)lrintf(acc);
+    return acc;
 }
 
 static inline void
@@ -173,14 +178,14 @@ select_window_gfsk(int* l_edge, int* r_edge, int freeze_window) {
 static inline int
 slice_c4fm_level(int x, const dsd_state* s) {
     /* Map sample to nearest of {-3,-1,1,3} using center/min/max refs. */
-    int c = s->center;
-    int lo = (s->minref + c) / 2;
-    int hi = (s->maxref + c) / 2;
-    if (x >= hi) {
+    float c = s->center;
+    float lo = (s->minref + c) / 2.0f;
+    float hi = (s->maxref + c) / 2.0f;
+    if ((float)x >= hi) {
         return 3;
-    } else if (x >= c) {
+    } else if ((float)x >= c) {
         return 1;
-    } else if (x >= lo) {
+    } else if ((float)x >= lo) {
         return -1;
     } else {
         return -3;
@@ -423,16 +428,18 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
 }
 #endif
 
-int
+float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
-    short sample;
-    int i, sum, symbol, count;
+    float sample;
+    int i, count;
+    float symbol;
+    float sum;
     ssize_t result;
     const unsigned int analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
 
-    sum = 0;
+    sum = 0.0f;
     count = 0;
-    sample = 0; //init sample with a value of 0...see if this was causing issues with raw audio monitoring
+    sample = 0.0f; //init sample with a value of 0...see if this was causing issues with raw audio monitoring
 
 #ifdef USE_RTLSDR
     /* C4FM clock assist capture around symbol center */
@@ -521,36 +528,42 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         // Read the new sample from the input
         if (opts->audio_in_type == 0) //pulse audio
         {
-            pa_simple_read(opts->pulse_digi_dev_in, &sample, 2, NULL);
+            short s = 0;
+            pa_simple_read(opts->pulse_digi_dev_in, &s, 2, NULL);
             if (opts->input_volume_multiplier > 1) {
-                int v = (int)sample * opts->input_volume_multiplier;
+                int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
                     v = 32767;
                 } else if (v < -32768) {
                     v = -32768;
                 }
-                sample = (short)v;
+                s = (short)v;
             }
+            sample = (float)s;
         }
 
         else if (opts->audio_in_type == 5) //OSS
         {
-            read(opts->audio_in_fd, &sample, 2);
+            short s = 0;
+            read(opts->audio_in_fd, &s, 2);
+            sample = (float)s;
         }
 
         //stdin only, wav files moving to new number
         else if (opts->audio_in_type == 1) //won't work in windows, needs posix pipe (mintty)
         {
-            result = sf_read_short(opts->audio_in_file, &sample, 1);
+            short s = 0;
+            result = sf_read_short(opts->audio_in_file, &s, 1);
             if (opts->input_volume_multiplier > 1) {
-                int v = (int)sample * opts->input_volume_multiplier;
+                int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
                     v = 32767;
                 } else if (v < -32768) {
                     v = -32768;
                 }
-                sample = (short)v;
+                s = (short)v;
             }
+            sample = (float)s;
             if (result == 0) {
                 sf_close(opts->audio_in_file);
                 cleanupAndExit(opts, state);
@@ -559,16 +572,18 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         //wav files, same but using seperate value so we can still manipulate ncurses menu
         //since we can not worry about getch/stdin conflict
         else if (opts->audio_in_type == 2) {
-            result = sf_read_short(opts->audio_in_file, &sample, 1);
+            short s = 0;
+            result = sf_read_short(opts->audio_in_file, &s, 1);
             if (opts->input_volume_multiplier > 1) {
-                int v = (int)sample * opts->input_volume_multiplier;
+                int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
                     v = 32767;
                 } else if (v < -32768) {
                     v = -32768;
                 }
-                sample = (short)v;
+                s = (short)v;
             }
+            sample = (float)s;
             if (result == 0) {
 
                 sf_close(opts->audio_in_file);
@@ -603,16 +618,18 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         //tcp socket input from SDR++ -- now with 1 retry if connection is broken
         else if (opts->audio_in_type == 8) {
 #ifdef __CYGWIN__
-            result = sf_read_short(opts->tcp_file_in, &sample, 1);
+            short s = 0;
+            result = sf_read_short(opts->tcp_file_in, &s, 1);
             if (opts->input_volume_multiplier > 1) {
-                int v = (int)sample * opts->input_volume_multiplier;
+                int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
                     v = 32767;
                 } else if (v < -32768) {
                     v = -32768;
                 }
-                sample = (short)v;
+                s = (short)v;
             }
+            sample = (float)s;
             if (result == 0) {
                 fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in 3 seconds.\n");
                 sample = 0;
@@ -641,7 +658,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
 
                 //now retry reading sample
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                short s_retry = 0;
+                result = sf_read_short(opts->tcp_file_in, &s_retry, 1);
+                sample = (float)s_retry;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
                     opts->audio_in_type = 0; //set input type
@@ -665,16 +684,18 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
             }
 #else
-            result = sf_read_short(opts->tcp_file_in, &sample, 1);
+            short s = 0;
+            result = sf_read_short(opts->tcp_file_in, &s, 1);
             if (opts->input_volume_multiplier > 1) {
-                int v = (int)sample * opts->input_volume_multiplier;
+                int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
                     v = 32767;
                 } else if (v < -32768) {
                     v = -32768;
                 }
-                sample = (short)v;
+                s = (short)v;
             }
+            sample = (float)s;
             if (result == 0) {
             TCP_RETRY:
                 if (exitflag == 1) {
@@ -722,7 +743,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
 
                 //now retry reading sample
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                short s_retry = 0;
+                result = sf_read_short(opts->tcp_file_in, &s_retry, 1);
+                sample = (float)s_retry;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
                     opts->audio_in_type = 0; //set input type
@@ -738,17 +761,19 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
         // UDP direct audio input (PCM16LE over UDP)
         else if (opts->audio_in_type == 6) {
-            if (!udp_input_read_sample(opts, &sample)) {
+            short s = 0;
+            if (!udp_input_read_sample(opts, &s)) {
                 cleanupAndExit(opts, state);
             }
+            sample = (float)s;
             if (opts->input_volume_multiplier > 1) {
-                int v = (int)sample * opts->input_volume_multiplier;
+                int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
                     v = 32767;
                 } else if (v < -32768) {
                     v = -32768;
                 }
-                sample = (short)v;
+                sample = (float)v;
             }
         }
 
@@ -790,7 +815,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 state->analog_sample_counter = (int)analog_block - 1;
             }
 
-            state->analog_out[state->analog_sample_counter++] = sample;
+            state->analog_out[state->analog_sample_counter++] = float_to_int16_clip(sample);
 
             if ((unsigned int)state->analog_sample_counter == analog_block) {
                 //measure input power for non-RTL inputs
@@ -912,7 +937,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 state->analog_sample_counter = analog_max_index;
             }
 
-            state->analog_out[state->analog_sample_counter++] = sample;
+            state->analog_out[state->analog_sample_counter++] = float_to_int16_clip(sample);
 
             if ((unsigned int)state->analog_sample_counter == analog_out_cap) {
                 //raw wav file saving -- file size on this blimps pretty fast 1 min ~= 6 MB;  1 hour ~= 360 MB;
@@ -1068,20 +1093,20 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         if (clk_mode && state->rf_mod == 0) {
             int c = state->symbolCenter;
             if (i == c - 1) {
-                clk_early = sample;
+                clk_early = (int)lrintf(sample);
             } else if (i == c) {
-                clk_mid = sample;
+                clk_mid = (int)lrintf(sample);
             } else if (i == c + 1) {
-                clk_late = sample;
+                clk_late = (int)lrintf(sample);
             }
         }
 #endif
     }
 
     if (count > 0) {
-        symbol = (sum / count);
+        symbol = sum / (float)count;
     } else {
-        symbol = 0;
+        symbol = 0.0f;
     }
 
     if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
@@ -1102,13 +1127,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         right = state->debug_sample_right_edge / SAMPLE_RATE_IN;
         if (state->debug_prefix != '\0') {
             if (state->debug_prefix == 'I') {
-                fprintf(state->debug_label_file, "%f\t%f\t%c%c %i\n", left, right, state->debug_prefix,
+                fprintf(state->debug_label_file, "%f\t%f\t%c%c %.3f\n", left, right, state->debug_prefix,
                         state->debug_prefix_2, symbol);
             } else {
-                fprintf(state->debug_label_file, "%f\t%f\t%c %i\n", left, right, state->debug_prefix, symbol);
+                fprintf(state->debug_label_file, "%f\t%f\t%c %.3f\n", left, right, state->debug_prefix, symbol);
             }
         } else {
-            fprintf(state->debug_label_file, "%f\t%f\t%i\n", left, right, symbol);
+            fprintf(state->debug_label_file, "%f\t%f\t%.3f\n", left, right, symbol);
         }
     }
 #endif
@@ -1118,7 +1143,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         //use fopen and read in a symbol, check op25 for clues
         if (opts->symbolfile == NULL) {
             fprintf(stderr, "Error Opening File %s\n", opts->audio_in_dev); //double check this
-            return (-1);
+            return -1.0f;
         }
 
         state->symbolc = fgetc(opts->symbolfile);
@@ -1150,24 +1175,24 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         {
             symbol = state->symbolc;
             if (state->symbolc == 0) {
-                symbol = -3; //-1
+                symbol = -3.0f; //-1
             }
             if (state->symbolc == 1) {
-                symbol = -1; //-3
+                symbol = -1.0f; //-3
             }
         } else //everything else
         {
             if (state->symbolc == 0) {
-                symbol = 1; //-1
+                symbol = 1.0f; //-1
             }
             if (state->symbolc == 1) {
-                symbol = 3; //-3
+                symbol = 3.0f; //-3
             }
             if (state->symbolc == 2) {
-                symbol = -1; //1
+                symbol = -1.0f; //1
             }
             if (state->symbolc == 3) {
-                symbol = -3; //3
+                symbol = -3.0f; //3
             }
         }
     }
@@ -1180,7 +1205,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             exitflag = 1; //end of file, exit
         }
         // float_symbol = -float_symbol; //inversion
-        symbol = (int)float_symbol * (int)10000;
+        symbol = float_symbol * 10000.0f;
     }
 
     /* Apply C4FM clock assist after symbol decision (unsynced only) */

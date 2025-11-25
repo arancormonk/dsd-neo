@@ -71,26 +71,26 @@ resetState(dsd_state* state) {
     }
 
     //Sync
-    state->center = 0;
+    state->center = 0.0f;
     state->jitter = -1;
     state->synctype = -1;
-    state->min = -15000;
-    state->max = 15000;
-    state->lmid = 0;
-    state->umid = 0;
-    state->minref = -12000;
-    state->maxref = 12000;
+    state->min = -4.0f;
+    state->max = 4.0f;
+    state->lmid = 0.0f;
+    state->umid = 0.0f;
+    state->minref = -3.2f;
+    state->maxref = 3.2f;
 
-    state->lastsample = 0;
+    state->lastsample = 0.0f;
     for (i = 0; i < 128; i++) {
-        state->sbuf[i] = 0;
+        state->sbuf[i] = 0.0f;
     }
     state->sidx = 0;
     for (i = 0; i < 1024; i++) {
-        state->maxbuf[i] = 15000;
+        state->maxbuf[i] = 4.0f;
     }
     for (i = 0; i < 1024; i++) {
-        state->minbuf[i] = -15000;
+        state->minbuf[i] = -4.0f;
     }
 
     state->midx = 0;

@@ -803,7 +803,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                             opts->rtl_dsp_bw_khz = cfg.rtl_bw_khz;
                         }
                         if (cfg.rtl_sql) {
-                            opts->rtl_squelch_level = cfg.rtl_sql;
+                            double sql = (double)cfg.rtl_sql;
+                            if (sql > 1.0) {
+                                sql /= (32768.0 * 32768.0);
+                            }
+                            opts->rtl_squelch_level = sql;
                         }
                         if (cfg.rtl_gain) {
                             opts->rtl_gain_value = cfg.rtl_gain;
@@ -832,7 +836,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                             opts->rtl_dsp_bw_khz = cfg.rtl_bw_khz;
                         }
                         if (cfg.rtl_sql) {
-                            opts->rtl_squelch_level = cfg.rtl_sql;
+                            double sql = (double)cfg.rtl_sql;
+                            if (sql > 1.0) {
+                                sql /= (32768.0 * 32768.0);
+                            }
+                            opts->rtl_squelch_level = sql;
                         }
                         if (cfg.rtl_gain) {
                             opts->rtl_gain_value = cfg.rtl_gain;
@@ -1575,55 +1583,55 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     break;
                 }
                 case UI_DSP_OP_FM_AGC_TARGET_DELTA: {
-                    int tgt = 0;
+                    float tgt = 0.0f;
                     rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-                    int nt = tgt + p.a;
-                    if (nt < 1000) {
-                        nt = 1000;
+                    float nt = tgt + ((float)p.a * 0.01f);
+                    if (nt < 0.05f) {
+                        nt = 0.05f;
                     }
-                    if (nt > 20000) {
-                        nt = 20000;
+                    if (nt > 2.5f) {
+                        nt = 2.5f;
                     }
-                    rtl_stream_set_fm_agc_params(nt, -1, -1, -1);
+                    rtl_stream_set_fm_agc_params(nt, -1.0f, -1.0f, -1.0f);
                     break;
                 }
                 case UI_DSP_OP_FM_AGC_MIN_DELTA: {
-                    int mn = 0;
+                    float mn = 0.0f;
                     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-                    int nm = mn + p.a;
-                    if (nm < 0) {
-                        nm = 0;
+                    float nm = mn + ((float)p.a * 0.01f);
+                    if (nm < 0.0f) {
+                        nm = 0.0f;
                     }
-                    if (nm > 10000) {
-                        nm = 10000;
+                    if (nm > 1.0f) {
+                        nm = 1.0f;
                     }
-                    rtl_stream_set_fm_agc_params(-1, nm, -1, -1);
+                    rtl_stream_set_fm_agc_params(-1.0f, nm, -1.0f, -1.0f);
                     break;
                 }
                 case UI_DSP_OP_FM_AGC_ATTACK_DELTA: {
-                    int au = 0;
+                    float au = 0.0f;
                     rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-                    int na = au + p.a;
-                    if (na < 0) {
-                        na = 0;
+                    float na = au + ((float)p.a * 0.01f);
+                    if (na < 0.0f) {
+                        na = 0.0f;
                     }
-                    if (na > 10000) {
-                        na = 10000;
+                    if (na > 1.0f) {
+                        na = 1.0f;
                     }
-                    rtl_stream_set_fm_agc_params(-1, -1, na, -1);
+                    rtl_stream_set_fm_agc_params(-1.0f, -1.0f, na, -1.0f);
                     break;
                 }
                 case UI_DSP_OP_FM_AGC_DECAY_DELTA: {
-                    int ad = 0;
+                    float ad = 0.0f;
                     rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-                    int nd = ad + p.a;
-                    if (nd < 0) {
-                        nd = 0;
+                    float nd = ad + ((float)p.a * 0.01f);
+                    if (nd < 0.0f) {
+                        nd = 0.0f;
                     }
-                    if (nd > 10000) {
-                        nd = 10000;
+                    if (nd > 1.0f) {
+                        nd = 1.0f;
                     }
-                    rtl_stream_set_fm_agc_params(-1, -1, -1, nd);
+                    rtl_stream_set_fm_agc_params(-1.0f, -1.0f, -1.0f, nd);
                     break;
                 }
                 case UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE: {

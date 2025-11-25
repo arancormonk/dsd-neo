@@ -16,7 +16,7 @@
 int use_halfband_decimator = 0;
 
 static double
-rms_mag(const int16_t* iq, int pairs) {
+rms_mag(const float* iq, int pairs) {
     double acc = 0.0;
     for (int n = 0; n < pairs; n++) {
         double I = iq[(size_t)(2 * n) + 0];
@@ -35,12 +35,12 @@ main(void) {
     memset(s, 0, sizeof(*s));
 
     const int pairs = 256;
-    static int16_t in[(size_t)pairs * 2];
-    // Build a block with low RMS (~5000) compared to target 10000
+    static float in[(size_t)pairs * 2];
+    // Build a block with low RMS (~0.14) compared to target 0.30
     for (int n = 0; n < pairs; n++) {
         double ang = (2.0 * 3.14159265358979323846 * n) / 37.0; // avoid exact periodicity
-        int16_t I = (int16_t)lrint(3500.0 * cos(ang));
-        int16_t Q = (int16_t)lrint(3500.0 * sin(ang));
+        float I = (float)(0.10 * cos(ang));
+        float Q = (float)(0.10 * sin(ang));
         in[(size_t)(2 * n) + 0] = I;
         in[(size_t)(2 * n) + 1] = Q;
     }
@@ -49,13 +49,17 @@ main(void) {
     s->mode_demod = &raw_demod; // copy lowpassed -> result
     s->iq_dc_block_enable = 0;
     s->fm_agc_enable = 1;
-    s->fm_agc_target_rms = 10000;
-    s->fm_agc_min_rms = 1000;
-    s->fm_agc_gain_q15 = 32768; // start at 1.0
-    s->fm_limiter_enable = 0;   // keep limiter off for this test
+    s->fm_agc_target_rms = 0.30f;
+    s->fm_agc_min_rms = 0.05f;
+    s->fm_agc_gain = 1.0f;    // start at 1.0
+    s->fm_limiter_enable = 0; // keep limiter off for this test
     s->iqbal_enable = 0;
     s->fll_enabled = 0;
     s->ted_enabled = 0;
+    s->squelch_gate_open = 1;
+    s->squelch_env = 1.0f;
+    s->squelch_env_attack = 0.125f;
+    s->squelch_env_release = 0.03125f;
 
     double pre = rms_mag(in, pairs);
     // Run multiple blocks with same input to allow smoothed gain to converge
@@ -63,8 +67,8 @@ main(void) {
         // refresh input buffer (full_demod modifies in-place)
         for (int n = 0; n < pairs; n++) {
             double ang = (2.0 * 3.14159265358979323846 * n) / 37.0;
-            in[(size_t)(2 * n) + 0] = (int16_t)lrint(3500.0 * cos(ang));
-            in[(size_t)(2 * n) + 1] = (int16_t)lrint(3500.0 * sin(ang));
+            in[(size_t)(2 * n) + 0] = (float)(0.10 * cos(ang));
+            in[(size_t)(2 * n) + 1] = (float)(0.10 * sin(ang));
         }
         s->lowpassed = in;
         s->lp_len = pairs * 2;
@@ -72,14 +76,14 @@ main(void) {
     }
     double post = rms_mag(s->result, s->result_len / 2);
 
-    if (!(pre > 2000.0 && pre < 6000.0)) {
-        fprintf(stderr, "AGC: unexpected pre-RMS %.2f\n", pre);
+    if (!(pre > 0.10 && pre < 0.20)) {
+        fprintf(stderr, "AGC: unexpected pre-RMS %.4f\n", pre);
         free(s);
         return 1;
     }
     // Expect post-RMS to be close to target after several iterations
-    if (!(post > 8000.0 && post < 13000.0)) {
-        fprintf(stderr, "AGC: post-RMS %.2f not near target 10000 after iterations\n", post);
+    if (!(post > 0.22 && post < 0.38)) {
+        fprintf(stderr, "AGC: post-RMS %.4f not near target 0.30 after iterations\n", post);
         free(s);
         return 1;
     }

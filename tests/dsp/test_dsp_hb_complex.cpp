@@ -15,8 +15,8 @@
 int use_halfband_decimator = 1; // exercise HB path
 
 static int
-approx_eq(int a, int b, int tol) {
-    int d = a - b;
+approx_eq(float a, float b, float tol) {
+    float d = a - b;
     if (d < 0) {
         d = -d;
     }
@@ -33,10 +33,10 @@ main(void) {
 
     // Prepare constant DC complex input
     const int pairs = 128;
-    static int16_t in[(size_t)pairs * 2];
+    static float in[(size_t)pairs * 2];
     for (int k = 0; k < pairs; k++) {
-        in[(size_t)(2 * k) + 0] = 1000; // I
-        in[(size_t)(2 * k) + 1] = -500; // Q
+        in[(size_t)(2 * k) + 0] = 0.25f;   // I
+        in[(size_t)(2 * k) + 1] = -0.125f; // Q
     }
     s->lowpassed = in;
     s->lp_len = pairs * 2;
@@ -58,10 +58,10 @@ main(void) {
     }
     // After warmup (~HB_TAPS), DC should be preserved within a few LSBs
     for (int k = 16; k < (s->result_len / 2) - 8; k++) {
-        int I = s->result[(size_t)(2 * k) + 0];
-        int Q = s->result[(size_t)(2 * k) + 1];
-        if (!approx_eq(I, 1000, 4) || !approx_eq(Q, -500, 4)) {
-            fprintf(stderr, "HB complex: sample %d=(%d,%d) deviates from DC\n", k, I, Q);
+        float I = s->result[(size_t)(2 * k) + 0];
+        float Q = s->result[(size_t)(2 * k) + 1];
+        if (!approx_eq(I, 0.25f, 1e-3f) || !approx_eq(Q, -0.125f, 1e-3f)) {
+            fprintf(stderr, "HB complex: sample %d=(%f,%f) deviates from DC\n", k, I, Q);
             free(s);
             return 1;
         }

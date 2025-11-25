@@ -736,7 +736,7 @@ svc_rtl_set_sql_db(dsd_opts* opts, double dB) {
     if (!opts) {
         return -1;
     }
-    opts->rtl_squelch_level = (long)dB_to_pwr(dB);
+    opts->rtl_squelch_level = dB_to_pwr(dB);
     return 0;
 }
 

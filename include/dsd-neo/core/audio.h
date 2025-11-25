@@ -20,6 +20,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Forward declarations for PulseAudio types used in callbacks.
 typedef struct pa_context pa_context;
 typedef struct pa_sink_info pa_sink_info;
@@ -149,3 +153,7 @@ void pa_sourcelist_cb(pa_context* c, const pa_source_info* l, int eol, void* use
 int pa_get_devicelist(pa_devicelist_t* input, pa_devicelist_t* output);
 /** @brief Print available Pulse devices to stdout. */
 int pulse_list(void);
+
+#ifdef __cplusplus
+}
+#endif

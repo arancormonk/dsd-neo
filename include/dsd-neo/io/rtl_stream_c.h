@@ -82,7 +82,7 @@ int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
  * @param out_got [out] Set to the number of samples actually read.
  * @return 0 on success; otherwise <0 on error (e.g., shutdown).
  */
-int rtl_stream_read(RtlSdrContext* ctx, int16_t* out, size_t count, int* out_got);
+int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.
@@ -101,9 +101,9 @@ void rtl_stream_clear_output(RtlSdrContext* ctx);
  * @brief Return mean power approximation (RMS^2 proxy) for soft squelch.
  * The computation uses a small fixed sample window and mirrors the legacy implementation.
  * @param ctx Stream context (unused).
- * @return Mean power value (approximate RMS squared).
+ * @return Mean power value (approximate RMS squared, normalized to full scale 1.0).
  */
-long rtl_stream_return_pwr(const RtlSdrContext* ctx);
+double rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
 /**
  * @brief Enable or disable RTL-SDR bias tee at runtime.
@@ -155,18 +155,18 @@ int rtl_stream_ted_bias(const RtlSdrContext* ctx);
 int rtl_stream_get_ted_sps(void);
 
 /**
- * @brief Set the Gardner TED small gain term (Q20).
+ * @brief Set the Gardner TED loop gain (native float).
  *
- * @param gain_q20 Gain value in Q20 fixed-point; typical 32..256 (default ~64).
+ * @param gain Loop gain; typical 0.01..0.1, default ~0.05.
  */
-void rtl_stream_set_ted_gain(int gain_q20);
+void rtl_stream_set_ted_gain(float gain);
 
 /**
- * @brief Get the current Gardner TED gain (Q20).
+ * @brief Get the current Gardner TED loop gain.
  *
- * @return Gain value in Q20 fixed-point.
+ * @return Native float loop gain.
  */
-int rtl_stream_get_ted_gain(void);
+float rtl_stream_get_ted_gain(void);
 
 /**
  * @brief Force-enable the TED even for FM/C4FM paths (0/1).
@@ -194,7 +194,7 @@ int rtl_stream_get_ted_force(void);
  * @param out_sps [out] Receives nominal samples-per-symbol (may be NULL).
  * @return Number of samples written; 0 if unavailable.
  */
-int rtl_stream_eye_get(int16_t* out, int max_samples, int* out_sps);
+int rtl_stream_eye_get(float* out, int max_samples, int* out_sps);
 
 /**
  * @brief Get smoothed demod SNR estimate in dB (post-filter, center-of-symbol).
@@ -422,14 +422,15 @@ void rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_del
 /**
  * @brief Capture a snapshot of recent constellation points after DSP.
  *
- * Copies up to `max_points` I/Q pairs into `out_xy` as interleaved int16
- * [I0,Q0,I1,Q1,...]. Returns the number of pairs copied (0 if unavailable).
+ * Copies up to `max_points` I/Q pairs into `out_xy` as interleaved floats
+ * [I0,Q0,I1,Q1,...] on the normalized float amplitude scale used by the DSP.
+ * Returns the number of pairs copied (0 if unavailable).
  *
  * @param out_xy Destination buffer for interleaved I/Q pairs (must not be NULL).
  * @param max_points Maximum number of pairs to write.
  * @return Number of pairs written; 0 if unavailable.
  */
-int rtl_stream_constellation_get(int16_t* out_xy, int max_points);
+int rtl_stream_constellation_get(float* out_xy, int max_points);
 
 /**
  * @brief Get a snapshot of the current baseband power spectrum (magnitude, dBFS-like).
@@ -478,25 +479,22 @@ void rtl_stream_set_fm_agc(int onoff);
 /**
  * @brief Get FM AGC parameters (any pointer may be NULL).
  *
- * target_rms/min_rms are int16-domain magnitudes (~1000..20000).
- * alpha_up/down are Q15 smoothing factors (0..32768).
- *
- * @param target_rms [out] Target RMS magnitude.
- * @param min_rms [out] Minimum RMS to engage AGC.
- * @param alpha_up_q15 [out] Q15 smoothing when gain increases.
- * @param alpha_down_q15 [out] Q15 smoothing when gain decreases.
+ * @param target_rms [out] Target RMS magnitude (normalized float).
+ * @param min_rms [out] Minimum RMS to engage AGC (normalized float).
+ * @param alpha_up [out] Smoothing when gain increases (0..1).
+ * @param alpha_down [out] Smoothing when gain decreases (0..1).
  */
-void rtl_stream_get_fm_agc_params(int* target_rms, int* min_rms, int* alpha_up_q15, int* alpha_down_q15);
+void rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down);
 
 /**
  * @brief Set FM AGC parameters; pass negative to leave a field unchanged.
  *
- * @param target_rms Target RMS magnitude (int16-domain); negative to keep existing.
+ * @param target_rms Target RMS magnitude (normalized); negative to keep existing.
  * @param min_rms Minimum RMS threshold; negative to keep existing.
- * @param alpha_up_q15 Q15 smoothing when gain increases; negative to keep existing.
- * @param alpha_down_q15 Q15 smoothing when gain decreases; negative to keep existing.
+ * @param alpha_up Smoothing when gain increases (0..1); negative to keep existing.
+ * @param alpha_down Smoothing when gain decreases (0..1); negative to keep existing.
  */
-void rtl_stream_set_fm_agc_params(int target_rms, int min_rms, int alpha_up_q15, int alpha_down_q15);
+void rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down);
 
 /** Get FM constant-envelope limiter state (1 on, 0 off). */
 int rtl_stream_get_fm_limiter(void);

@@ -127,7 +127,7 @@ fft_rad2(float* xr, float* xi, int N) {
  * @param out_rate_hz Output sample rate used for CFO scaling.
  */
 void
-rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz) {
+rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz) {
     if (!iq_interleaved || len_interleaved < 2) {
         return;
     }
@@ -149,8 +149,8 @@ rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_inter
     double sumQ = 0.0;
     for (int n = 0; n < take; n++) {
         int idx = start + n;
-        int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
-        int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
+        float I = iq_interleaved[(size_t)(idx << 1) + 0];
+        float Q = iq_interleaved[(size_t)(idx << 1) + 1];
         sumI += static_cast<double>(I);
         sumQ += static_cast<double>(Q);
     }
@@ -164,8 +164,8 @@ rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_inter
         float w =
             0.5f * (1.0f - cosf(2.0f * static_cast<float>(M_PI) * static_cast<float>(n) / static_cast<float>(N - 1)));
         int idx = start + n;
-        int16_t I = iq_interleaved[(size_t)(idx << 1) + 0];
-        int16_t Q = iq_interleaved[(size_t)(idx << 1) + 1];
+        float I = iq_interleaved[(size_t)(idx << 1) + 0];
+        float Q = iq_interleaved[(size_t)(idx << 1) + 1];
         xr[n] = w * (static_cast<float>(I) - meanI);
         xi[n] = w * (static_cast<float>(Q) - meanQ);
     }
@@ -222,14 +222,16 @@ rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_inter
     }
     g_resid_cfo_spec_hz.store(df_spec_hz, std::memory_order_relaxed);
 
-    /* NCO CFO from Costas/FLL (Q15 cycles/sample scaled by Fs) */
+    /* NCO CFO from Costas/FLL (native float freq in rad/sample, scaled by Fs/(2π)) */
     double cfo_hz = 0.0;
     if (out_rate_hz > 0) {
-        int fq = demod.fll_freq_q15;
-        cfo_hz = (static_cast<double>(fq) * static_cast<double>(out_rate_hz)) / 32768.0;
+        /* fll_freq is in radians/sample; convert to Hz: f_hz = freq * Fs / (2π) */
+        cfo_hz = static_cast<double>(demod.fll_freq) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
     }
     g_cfo_nco_hz.store(cfo_hz, std::memory_order_relaxed);
-    g_nco_q15.store(demod.fll_freq_q15, std::memory_order_relaxed);
+    /* Store native float freq as legacy Q15 for backwards-compatible metrics */
+    int fll_freq_q15_compat = static_cast<int>(lrint(demod.fll_freq * (32768.0 / (2.0 * M_PI))));
+    g_nco_q15.store(fll_freq_q15_compat, std::memory_order_relaxed);
     g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
 
@@ -257,38 +259,38 @@ rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_inter
         if (acq_ok && snr_qpsk > -3.0 && abs_df > k_df_min && abs_df < k_df_max) {
             /* Outer-loop gain: fraction of residual per update. */
             const double k_outer = 0.05;
-            /* Residual is after NCO; increase NCO CFO toward signal CFO:
-             * freq_new = freq_old + k * residual * (32768/Fs).
-             */
-            double delta_q15_d = k_outer * df_spec_hz * 32768.0 / static_cast<double>(out_rate_hz);
-            int delta_q15 = static_cast<int>(lrint(delta_q15_d));
-            if (delta_q15 != 0) {
-                const int F_CLAMP = 4096; /* must track FLL clamp */
-                int f_old = demod.fll_freq_q15;
-                int f_new = f_old + delta_q15;
+            /* Residual is after NCO; increase NCO CFO toward signal CFO.
+             * Convert residual Hz to rad/sample: delta_rad = df_hz * 2π / Fs */
+            double delta_rad = k_outer * df_spec_hz * 2.0 * M_PI / static_cast<double>(out_rate_hz);
+            if (fabs(delta_rad) > 1e-9) {
+                const float F_CLAMP = 0.25f; /* ~±0.25 rad/sample max CFO */
+                float f_old = demod.fll_freq;
+                float f_new = f_old + static_cast<float>(delta_rad);
                 if (f_new > F_CLAMP) {
                     f_new = F_CLAMP;
                 }
                 if (f_new < -F_CLAMP) {
                     f_new = -F_CLAMP;
                 }
-                int delta_applied = f_new - f_old;
+                float delta_applied = f_new - f_old;
                 /* Mirror the outer-loop nudge into the acquisition FLL integrator so that
                  * the PI controller's internal state tracks the new target and does not
-                 * immediately pull freq_q15 back toward the old integrator value. */
-                int i_old = demod.fll_state.int_q15;
-                int i_new = i_old + delta_applied;
+                 * immediately pull freq back toward the old integrator value. */
+                float i_old = demod.fll_state.integrator;
+                float i_new = i_old + delta_applied;
                 if (i_new > F_CLAMP) {
                     i_new = F_CLAMP;
                 }
                 if (i_new < -F_CLAMP) {
                     i_new = -F_CLAMP;
                 }
-                demod.fll_freq_q15 = f_new;
-                demod.fll_state.int_q15 = i_new;
-                g_nco_q15.store(f_new, std::memory_order_relaxed);
+                demod.fll_freq = f_new;
+                demod.fll_state.integrator = i_new;
+                /* Store native float freq as legacy Q15 for backwards-compatible metrics */
+                int fll_q15_compat = static_cast<int>(lrint(f_new * (32768.0 / (2.0 * M_PI))));
+                g_nco_q15.store(fll_q15_compat, std::memory_order_relaxed);
                 /* Recompute NCO CFO export after adjustment */
-                cfo_hz = (static_cast<double>(f_new) * static_cast<double>(out_rate_hz)) / 32768.0;
+                cfo_hz = static_cast<double>(f_new) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
                 g_cfo_nco_hz.store(cfo_hz, std::memory_order_relaxed);
             }
         }

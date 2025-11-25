@@ -3695,109 +3695,104 @@ act_toggle_fm_limiter(void* v) {
 static const char*
 lbl_fm_agc_target(void* v, char* b, size_t n) {
     UNUSED(v);
-    int tgt = 0;
+    float tgt = 0.0f;
     rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-    snprintf(b, n, "AGC Target: %d (+/-)", tgt);
+    snprintf(b, n, "AGC Target: %.3f (+/-)", tgt);
     return b;
 }
 
 static void
 act_fm_agc_target_up(void* v) {
     UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = +500};
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = +2};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_target_dn(void* v) {
     UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = -500};
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = -2};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static const char*
 lbl_fm_agc_min(void* v, char* b, size_t n) {
     UNUSED(v);
-    int mn = 0;
+    float mn = 0.0f;
     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-    snprintf(b, n, "AGC Min: %d (+/-)", mn);
+    snprintf(b, n, "AGC Min: %.3f (+/-)", mn);
     return b;
 }
 
 static void
 act_fm_agc_min_up(void* v) {
     UNUSED(v);
-    int mn = 0;
+    float mn = 0.0f;
     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-    mn += 500;
-    if (mn > 15000) {
-        mn = 15000;
+    mn += 0.01f;
+    if (mn > 1.0f) {
+        mn = 1.0f;
     }
-    rtl_stream_set_fm_agc_params(-1, mn, -1, -1);
+    rtl_stream_set_fm_agc_params(-1.0f, mn, -1.0f, -1.0f);
 }
 
 static void
 act_fm_agc_min_dn(void* v) {
     UNUSED(v);
-    int mn = 0;
+    float mn = 0.0f;
     rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-    mn -= 500;
-    if (mn < 0) {
-        mn = 0;
+    mn -= 0.01f;
+    if (mn < 0.0f) {
+        mn = 0.0f;
     }
-    rtl_stream_set_fm_agc_params(-1, mn, -1, -1);
+    rtl_stream_set_fm_agc_params(-1.0f, mn, -1.0f, -1.0f);
 }
 
 static const char*
 lbl_fm_agc_alpha_up(void* v, char* b, size_t n) {
     UNUSED(v);
-    int au = 0;
+    float au = 0.0f;
     rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-    int pct = (int)((au * 100 + 16384) / 32768);
-    snprintf(b, n, "AGC Alpha Up: %d (Q15 ~%d%%)", au, pct);
+    int pct = (int)lrintf(au * 100.0f);
+    snprintf(b, n, "AGC Alpha Up: %.3f (~%d%%)", au, pct);
     return b;
 }
 
 static const char*
 lbl_fm_agc_alpha_down(void* v, char* b, size_t n) {
     UNUSED(v);
-    int ad = 0;
+    float ad = 0.0f;
     rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-    int pct = (int)((ad * 100 + 16384) / 32768);
-    snprintf(b, n, "AGC Alpha Down: %d (Q15 ~%d%%)", ad, pct);
+    int pct = (int)lrintf(ad * 100.0f);
+    snprintf(b, n, "AGC Alpha Down: %.3f (~%d%%)", ad, pct);
     return b;
 }
 
 static void
 act_fm_agc_alpha_up_up(void* v) {
     UNUSED(v);
-    int au = 0;
-    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-    au += 1024;
-    if (au > 32768) {
-        au = 32768;
-    }
-    rtl_stream_set_fm_agc_params(-1, -1, au, -1);
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_ATTACK_DELTA, .a = +5};
+    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_alpha_up_dn(void* v) {
     UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_ATTACK_DELTA, .a = -1024};
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_ATTACK_DELTA, .a = -5};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_alpha_down_up(void* v) {
     UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = +1024};
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = +5};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_fm_agc_alpha_down_dn(void* v) {
     UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = -1024};
+    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = -5};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -5162,31 +5157,31 @@ static const NcMenuItem DSP_AGC_ITEMS[] = {
     {.id = "fm_tgt",
      .label = "AGC Target (status)",
      .label_fn = lbl_fm_agc_target,
-     .help = "Target RMS amplitude (int16).",
+     .help = "Target RMS amplitude (normalized float).",
      .is_enabled = is_mod_fm},
-    {.id = "fm_tgt+", .label = "AGC Target +500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_target_up},
-    {.id = "fm_tgt-", .label = "AGC Target -500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_target_dn},
+    {.id = "fm_tgt+", .label = "AGC Target +0.02", .is_enabled = is_mod_fm, .on_select = act_fm_agc_target_up},
+    {.id = "fm_tgt-", .label = "AGC Target -0.02", .is_enabled = is_mod_fm, .on_select = act_fm_agc_target_dn},
     {.id = "fm_min",
      .label = "AGC Min (status)",
      .label_fn = lbl_fm_agc_min,
      .help = "Min RMS to engage AGC.",
      .is_enabled = is_mod_fm},
-    {.id = "fm_min+", .label = "AGC Min +500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_min_up},
-    {.id = "fm_min-", .label = "AGC Min -500", .is_enabled = is_mod_fm, .on_select = act_fm_agc_min_dn},
+    {.id = "fm_min+", .label = "AGC Min +0.01", .is_enabled = is_mod_fm, .on_select = act_fm_agc_min_up},
+    {.id = "fm_min-", .label = "AGC Min -0.01", .is_enabled = is_mod_fm, .on_select = act_fm_agc_min_dn},
     {.id = "fm_au",
      .label = "AGC Alpha Up (status)",
      .label_fn = lbl_fm_agc_alpha_up,
-     .help = "Smoothing when gain increases (Q15).",
+     .help = "Smoothing when gain increases (0..1).",
      .is_enabled = is_mod_fm},
-    {.id = "fm_au+", .label = "Alpha Up +1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_up_up},
-    {.id = "fm_au-", .label = "Alpha Up -1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_up_dn},
+    {.id = "fm_au+", .label = "Alpha Up +0.05", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_up_up},
+    {.id = "fm_au-", .label = "Alpha Up -0.05", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_up_dn},
     {.id = "fm_ad",
      .label = "AGC Alpha Down (status)",
      .label_fn = lbl_fm_agc_alpha_down,
-     .help = "Smoothing when gain decreases (Q15).",
+     .help = "Smoothing when gain decreases (0..1).",
      .is_enabled = is_mod_fm},
-    {.id = "fm_ad+", .label = "Alpha Down +1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_down_up},
-    {.id = "fm_ad-", .label = "Alpha Down -1024", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_down_dn},
+    {.id = "fm_ad+", .label = "Alpha Down +0.05", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_down_up},
+    {.id = "fm_ad-", .label = "Alpha Down -0.05", .is_enabled = is_mod_fm, .on_select = act_fm_agc_alpha_down_dn},
 };
 
 static bool

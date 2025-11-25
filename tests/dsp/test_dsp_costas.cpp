@@ -21,30 +21,30 @@
 #include <string.h>
 
 static void
-fill_qpsk_diag_pattern(int16_t* iq, int pairs, int16_t a) {
+fill_qpsk_diag_pattern(float* iq, int pairs, float a) {
     for (int k = 0; k < pairs; k++) {
         int m = k & 3;
-        int16_t i = (m == 0 || m == 3) ? a : (int16_t)-a;
-        int16_t q = (m == 0 || m == 1) ? a : (int16_t)-a;
+        float i = (m == 0 || m == 3) ? a : -a;
+        float q = (m == 0 || m == 1) ? a : -a;
         iq[2 * k + 0] = i;
         iq[2 * k + 1] = q;
     }
 }
 
 static void
-fill_cfo_sequence(int16_t* iq, int pairs, double r, double dtheta) {
+fill_cfo_sequence(float* iq, int pairs, double r, double dtheta) {
     double ph = 0.0;
     for (int k = 0; k < pairs; k++) {
-        iq[2 * k + 0] = (int16_t)lrint(r * cos(ph));
-        iq[2 * k + 1] = (int16_t)lrint(r * sin(ph));
+        iq[2 * k + 0] = (float)(r * cos(ph));
+        iq[2 * k + 1] = (float)(r * sin(ph));
         ph += dtheta;
     }
 }
 
 static int
-arrays_close(const int16_t* a, const int16_t* b, int n, int tol) {
+arrays_close(const float* a, const float* b, int n, float tol) {
     for (int i = 0; i < n; i++) {
-        int d = (int)a[i] - (int)b[i];
+        float d = a[i] - b[i];
         if (d < 0) {
             d = -d;
         }
@@ -67,9 +67,9 @@ alloc_state(void) {
 static int
 test_identity_rotation(void) {
     const int pairs = 8;
-    int16_t buf[pairs * 2];
-    int16_t ref[pairs * 2];
-    fill_qpsk_diag_pattern(buf, pairs, 12000);
+    float buf[pairs * 2];
+    float ref[pairs * 2];
+    fill_qpsk_diag_pattern(buf, pairs, 0.5f);
     memcpy(ref, buf, sizeof(buf));
 
     demod_state* s = alloc_state();
@@ -82,13 +82,14 @@ test_identity_rotation(void) {
     s->lp_len = pairs * 2;
     cqpsk_costas_mix_and_update(s);
 
-    if (!arrays_close(buf, ref, pairs * 2, 1)) {
+    if (!arrays_close(buf, ref, pairs * 2, 1e-4f)) {
         fprintf(stderr, "IDENTITY: rotation distorted samples\n");
         free(s);
         return 1;
     }
-    if (s->fll_freq_q15 < -16 || s->fll_freq_q15 > 16) {
-        fprintf(stderr, "IDENTITY: expected near-zero freq, got %d\n", s->fll_freq_q15);
+    /* fll_freq is native float rad/sample; small tolerance for near-zero */
+    if (s->fll_freq < -0.001f || s->fll_freq > 0.001f) {
+        fprintf(stderr, "IDENTITY: expected near-zero freq, got %f\n", s->fll_freq);
         free(s);
         return 1;
     }
@@ -99,8 +100,8 @@ test_identity_rotation(void) {
 static int
 test_positive_cfo_pushes_freq(void) {
     const int pairs = 128;
-    int16_t buf[pairs * 2];
-    fill_cfo_sequence(buf, pairs, 12000.0, (2.0 * M_PI) / 400.0);
+    float buf[pairs * 2];
+    fill_cfo_sequence(buf, pairs, 0.5, (2.0 * M_PI) / 400.0);
 
     demod_state* s = alloc_state();
     if (!s) {
@@ -112,8 +113,9 @@ test_positive_cfo_pushes_freq(void) {
     s->lp_len = pairs * 2;
     cqpsk_costas_mix_and_update(s);
 
-    if (s->fll_freq_q15 <= 0) {
-        fprintf(stderr, "CFO: expected positive freq correction, got %d\n", s->fll_freq_q15);
+    /* fll_freq is native float rad/sample; positive correction expected */
+    if (s->fll_freq <= 0.0f) {
+        fprintf(stderr, "CFO: expected positive freq correction, got %f\n", s->fll_freq);
         free(s);
         return 1;
     }
@@ -128,9 +130,9 @@ test_positive_cfo_pushes_freq(void) {
 
 static int
 test_phase_seed_from_fll(void) {
-    int16_t buf[2];
-    buf[0] = 14000;
-    buf[1] = 0;
+    float buf[2];
+    buf[0] = 0.5f;
+    buf[1] = 0.0f;
 
     demod_state* s = alloc_state();
     if (!s) {
@@ -140,11 +142,12 @@ test_phase_seed_from_fll(void) {
     s->cqpsk_enable = 1;
     s->lowpassed = buf;
     s->lp_len = 2;
-    s->fll_phase_q15 = 8192; /* ~pi/2 to seed initial rotation */
+    s->fll_phase = -1.5707963f; /* -pi/2 to seed initial rotation (native float rad)
+                                  * Costas uses nco = polar(1, -phase), so negative phase -> CCW rotation */
     cqpsk_costas_mix_and_update(s);
 
-    if (buf[0] > 100 || buf[1] > -100) {
-        fprintf(stderr, "SEED: rotation not applied as expected (I=%d Q=%d)\n", buf[0], buf[1]);
+    if (!(fabsf(buf[0]) < 0.1f && buf[1] > 0.3f)) {
+        fprintf(stderr, "SEED: rotation not applied as expected (I=%f Q=%f)\n", buf[0], buf[1]);
         free(s);
         return 1;
     }

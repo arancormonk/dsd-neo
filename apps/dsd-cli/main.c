@@ -802,13 +802,12 @@ pretty_colors() {
 
 inline int
 comp(const void* a, const void* b) {
-    if (*((const int*)a) == *((const int*)b)) {
+    const float fa = *((const float*)a);
+    const float fb = *((const float*)b);
+    if (fa == fb) {
         return 0;
-    } else if (*((const int*)a) < *((const int*)b)) {
-        return -1;
-    } else {
-        return 1;
     }
+    return (fa < fb) ? -1 : 1;
 }
 
 // Small helpers to efficiently set fixed-width strings

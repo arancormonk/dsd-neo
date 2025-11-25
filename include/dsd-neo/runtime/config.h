@@ -46,7 +46,7 @@ extern "C" {
  *     Use half-band FIR decimator cascade (fast, good response) instead of legacy CIC-like path.
  *     Values: 1 enable, 0 disable. Default: 1 (enabled).
  * - DSD_NEO_COMBINE_ROT
- *     Combine 90° IQ rotation with USB byte→int16 widening in one pass when offset tuning is off.
+ *     Combine 90° IQ rotation with USB byte→float widening in one pass when offset tuning is off.
  *     Values: 1 enable, 0 disable. Default: 1 (enabled).
  * - DSD_NEO_UPSAMPLE_FP
  *     Use fixed-point arithmetic in legacy linear upsampler for lower CPU/divisions.
@@ -108,13 +108,14 @@ extern "C" {
  *     RTL-SDR amplitude bounce (e.g., +/-3 dB) that can raise P25 P1 error rates.
  *     Default: off for all modes. Values: 1 enable, 0 disable.
  * - DSD_NEO_FM_AGC_TARGET
- *     Target RMS amplitude of the complex envelope |z| in int16 units after decimation. Typical 8000..12000.
- *     Default: 10000.
+ *     Target RMS amplitude of the complex envelope |z| using normalized float samples (~0..1).
+ *     Typical 0.2..0.6. Default: 0.30.
  * - DSD_NEO_FM_AGC_MIN
- *     Minimum RMS to engage AGC; below this, gain is held to avoid boosting noise. Default: 2000.
+ *     Minimum RMS to engage AGC (normalized); below this, gain is held to avoid boosting noise.
+ *     Default: 0.06.
  * - DSD_NEO_FM_AGC_ALPHA_UP, DSD_NEO_FM_AGC_ALPHA_DOWN
- *     Q15 smoothing factors when the computed block gain increases vs decreases, respectively.
- *     Larger values react faster. Defaults: ALPHA_UP=8192 (~0.25), ALPHA_DOWN=24576 (~0.75).
+ *     Smoothing factors when the computed block gain increases vs decreases, respectively.
+ *     Larger values react faster. Defaults: ALPHA_UP=0.25, ALPHA_DOWN=0.75.
  * - DSD_NEO_FM_LIMITER
  *     Enable constant-envelope limiter that normalizes each complex sample to a near-constant
  *     magnitude around the AGC target. Helpful to clamp fast AM ripple. Default: off (try enabling
@@ -182,17 +183,17 @@ typedef struct dsdneoRuntimeConfig {
     int resamp_disable;   /* env explicitly disables */
     int resamp_target_hz; /* >0 when enabled */
 
-    /* Residual CFO FLL */
+    /* Residual CFO FLL - native float parameters (GNU Radio style) */
     int fll_is_set;
     int fll_enable;
     int fll_alpha_is_set;
-    int fll_alpha_q15;
+    float fll_alpha; /* proportional gain (typ 0.001-0.01) */
     int fll_beta_is_set;
-    int fll_beta_q15;
+    float fll_beta; /* integral gain (typ 0.0001-0.001) */
     int fll_deadband_is_set;
-    int fll_deadband_q14;
+    float fll_deadband; /* minimum error magnitude to update (typ 0.001-0.01) */
     int fll_slew_is_set;
-    int fll_slew_max_q15;
+    float fll_slew_max; /* max per-sample freq change (rad/sample) */
 
     /* CQPSK Costas loop (carrier recovery) */
     int costas_bw_is_set;
@@ -206,11 +207,11 @@ typedef struct dsdneoRuntimeConfig {
     int costas_noise_db_is_set;
     double costas_noise_db;
 
-    /* Gardner TED */
+    /* Gardner TED - native float parameters */
     int ted_is_set;
     int ted_enable;
     int ted_gain_is_set;
-    int ted_gain_q20;
+    float ted_gain; /* timing error gain (typ 0.01-0.1) */
     int ted_sps_is_set;
     int ted_sps;
     int ted_force_is_set;
@@ -261,13 +262,13 @@ typedef struct dsdneoRuntimeConfig {
     int fm_agc_is_set;
     int fm_agc_enable;
     int fm_agc_target_is_set;
-    int fm_agc_target_rms;
+    float fm_agc_target_rms;
     int fm_agc_min_is_set;
-    int fm_agc_min_rms;
+    float fm_agc_min_rms;
     int fm_agc_alpha_up_is_set;
-    int fm_agc_alpha_up_q15;
+    float fm_agc_alpha_up;
     int fm_agc_alpha_down_is_set;
-    int fm_agc_alpha_down_q15;
+    float fm_agc_alpha_down;
 
     /* FM constant-envelope limiter */
     int fm_limiter_is_set;

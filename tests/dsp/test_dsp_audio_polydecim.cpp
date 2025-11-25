@@ -27,7 +27,7 @@
 int use_halfband_decimator = 1;
 
 static double
-rms(const std::vector<int16_t>& x) {
+rms(const std::vector<float>& x) {
     long double acc = 0.0;
     for (size_t i = 0; i < x.size(); i++) {
         long double v = (long double)x[i];
@@ -40,21 +40,21 @@ rms(const std::vector<int16_t>& x) {
 }
 
 static void
-gen_tone_iq(std::vector<int16_t>& iq, double fs, double f, int amp) {
+gen_tone_iq(std::vector<float>& iq, double fs, double f, double amp) {
     const double two_pi = 6.28318530717958647692;
     const int pairs = (int)(iq.size() / 2);
     for (int n = 0; n < pairs; n++) {
         double t = (double)n / fs;
         double s = std::sin(two_pi * f * t);
-        int v = (int)std::lrint((double)amp * s);
-        if (v > 32767) {
-            v = 32767;
+        double v = amp * s;
+        if (v > 1.0) {
+            v = 1.0;
         }
-        if (v < -32768) {
-            v = -32768;
+        if (v < -1.0) {
+            v = -1.0;
         }
-        iq[(size_t)(n << 1) + 0] = (int16_t)v; // I
-        iq[(size_t)(n << 1) + 1] = 0;          // Q
+        iq[(size_t)(n << 1) + 0] = (float)v; // I
+        iq[(size_t)(n << 1) + 1] = 0.0f;     // Q
     }
 }
 
@@ -71,9 +71,9 @@ copy_i_to_audio_demod(struct demod_state* d) {
 static int
 run_once(double fs, double f) {
     const int M = 4;
-    const int amp = 28000;
+    const double amp = 0.8;
     int Npairs = 4096;
-    std::vector<int16_t> iq((size_t)Npairs * 2);
+    std::vector<float> iq((size_t)Npairs * 2);
     gen_tone_iq(iq, fs, f, amp);
 
     demod_state* d = (demod_state*)malloc(sizeof(demod_state));
@@ -95,7 +95,9 @@ run_once(double fs, double f) {
     d->audio_lpf_enable = 0;
     d->iq_dc_block_enable = 0;
     d->squelch_gate_open = 1;
-    d->squelch_env_q15 = 32768;
+    d->squelch_env = 1.0f;
+    d->squelch_env_attack = 0.125f;
+    d->squelch_env_release = 0.03125f;
 
     full_demod(d);
     int rv = d->result_len;
@@ -116,8 +118,8 @@ main(void) {
     int N = Npairs * 2;
 
     // Build single run to capture outputs
-    std::vector<int16_t> iq_pass((size_t)N);
-    gen_tone_iq(iq_pass, Fs, f_pass, 28000);
+    std::vector<float> iq_pass((size_t)N);
+    gen_tone_iq(iq_pass, Fs, f_pass, 0.8);
     demod_state* d1 = (demod_state*)malloc(sizeof(demod_state));
     if (!d1) {
         return 1;
@@ -134,13 +136,15 @@ main(void) {
     d1->mode_demod = &copy_i_to_audio_demod;
     d1->rate_out = (int)Fs;
     d1->squelch_gate_open = 1;
-    d1->squelch_env_q15 = 32768;
+    d1->squelch_env = 1.0f;
+    d1->squelch_env_attack = 0.125f;
+    d1->squelch_env_release = 0.03125f;
     full_demod(d1);
     int out_len_pass = d1->result_len;
 
     // Stopband run
-    std::vector<int16_t> iq_stop((size_t)N);
-    gen_tone_iq(iq_stop, Fs, f_stop, 28000);
+    std::vector<float> iq_stop((size_t)N);
+    gen_tone_iq(iq_stop, Fs, f_stop, 0.8);
     demod_state* d2 = (demod_state*)malloc(sizeof(demod_state));
     if (!d2) {
         free(d1);
@@ -158,7 +162,9 @@ main(void) {
     d2->mode_demod = &copy_i_to_audio_demod;
     d2->rate_out = (int)Fs;
     d2->squelch_gate_open = 1;
-    d2->squelch_env_q15 = 32768;
+    d2->squelch_env = 1.0f;
+    d2->squelch_env_attack = 0.125f;
+    d2->squelch_env_release = 0.03125f;
     full_demod(d2);
     int out_len_stop = d2->result_len;
 
@@ -170,8 +176,8 @@ main(void) {
         std::fprintf(stderr, "polydecim: length mismatch stop=%d pass=%d\n", out_len_stop, out_len_pass);
         return 1;
     }
-    std::vector<int16_t> y_pass((size_t)out_len_pass);
-    std::vector<int16_t> y_stop((size_t)out_len_stop);
+    std::vector<float> y_pass((size_t)out_len_pass);
+    std::vector<float> y_stop((size_t)out_len_stop);
     for (int i = 0; i < out_len_pass; i++) {
         y_pass[(size_t)i] = d1->result[i];
     }

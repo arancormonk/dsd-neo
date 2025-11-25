@@ -41,7 +41,7 @@ int dsd_rtl_stream_get_auto_ppm(void);
  *
  * Used by the demod thread to feed the auto-PPM estimator.
  */
-void rtl_metrics_update_spectrum_from_iq(const int16_t* iq_interleaved, int len_interleaved, int out_rate_hz);
+void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz);
 
 #ifdef __cplusplus
 }

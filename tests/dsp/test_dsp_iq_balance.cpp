@@ -17,7 +17,7 @@
 int use_halfband_decimator = 0;
 
 static double
-impropriety_ratio(const int16_t* x, int pairs) {
+impropriety_ratio(const float* x, int pairs) {
     double s2r = 0.0, s2i = 0.0, p2 = 0.0;
     for (int n = 0; n < pairs; n++) {
         double I = x[(size_t)(2 * n) + 0];
@@ -42,22 +42,22 @@ main(void) {
     memset(s, 0, sizeof(*s));
 
     const int pairs = 512;
-    static int16_t buf[(size_t)pairs * 2];
+    static float buf[(size_t)pairs * 2];
     // Generate QPSK-like random symbols
     int seed = 12345;
     for (int n = 0; n < pairs; n++) {
         seed = (1103515245 * seed + 12345);
         int bi = (seed >> 16) & 1;
         int bq = (seed >> 17) & 1;
-        int16_t I = bi ? 8000 : -8000;
-        int16_t Q = bq ? 8000 : -8000;
+        float I = bi ? 8000.0f : -8000.0f;
+        float Q = bq ? 8000.0f : -8000.0f;
         // Inject small conjugate image: y = z + a*conj(z)
         // a ~ 0.1 -> (3277 in Q15), but do in float for simplicity
         double a = 0.10;
         double yI = I + a * I;
         double yQ = Q - a * Q; // conj(z) => (I, -Q)
-        buf[(size_t)(2 * n) + 0] = (int16_t)lrint(yI);
-        buf[(size_t)(2 * n) + 1] = (int16_t)lrint(yQ);
+        buf[(size_t)(2 * n) + 0] = (float)yI;
+        buf[(size_t)(2 * n) + 1] = (float)yQ;
     }
 
     double pre = impropriety_ratio(buf, pairs);

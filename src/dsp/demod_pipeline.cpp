@@ -88,29 +88,207 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
  *   ~-3 dB at 4.8 kHz, stopband < -60 dB by 6 kHz; tailored for 4.8 ksps 4FSK/CQPSK. */
 static const int kChannelLpfTaps = 63;
 static const int kChannelLpfHistLen = kChannelLpfTaps - 1;
-static const int16_t channel_lpf_wide_q15[kChannelLpfTaps] = {
-    0,    0, -1,   3,    0, -9,    14,   0, -28,   39,   0,     -68,  88,    0, -142, 178,   0, -271, 330,  0, -486,
-    586,  0, -859, 1047, 0, -1625, 2111, 0, -4441, 8995, 21845, 8995, -4441, 0, 2111, -1625, 0, 1047, -859, 0, 586,
-    -486, 0, 330,  -271, 0, 178,   -142, 0, 88,    -68,  0,     39,   -28,   0, 14,   -9,    0, 3,    -1,   0, 0,
+static const float channel_lpf_wide[kChannelLpfTaps] = {
+    0.0f,
+    0.0f,
+    -1.0f / 32768.0f,
+    3.0f / 32768.0f,
+    0.0f,
+    -9.0f / 32768.0f,
+    14.0f / 32768.0f,
+    0.0f,
+    -28.0f / 32768.0f,
+    39.0f / 32768.0f,
+    0.0f,
+    -68.0f / 32768.0f,
+    88.0f / 32768.0f,
+    0.0f,
+    -142.0f / 32768.0f,
+    178.0f / 32768.0f,
+    0.0f,
+    -271.0f / 32768.0f,
+    330.0f / 32768.0f,
+    0.0f,
+    -486.0f / 32768.0f,
+    586.0f / 32768.0f,
+    0.0f,
+    -859.0f / 32768.0f,
+    1047.0f / 32768.0f,
+    0.0f,
+    -1625.0f / 32768.0f,
+    2111.0f / 32768.0f,
+    0.0f,
+    -4441.0f / 32768.0f,
+    8995.0f / 32768.0f,
+    21845.0f / 32768.0f,
+    8995.0f / 32768.0f,
+    -4441.0f / 32768.0f,
+    0.0f,
+    2111.0f / 32768.0f,
+    -1625.0f / 32768.0f,
+    0.0f,
+    1047.0f / 32768.0f,
+    -859.0f / 32768.0f,
+    0.0f,
+    586.0f / 32768.0f,
+    -486.0f / 32768.0f,
+    0.0f,
+    330.0f / 32768.0f,
+    -271.0f / 32768.0f,
+    0.0f,
+    178.0f / 32768.0f,
+    -142.0f / 32768.0f,
+    0.0f,
+    88.0f / 32768.0f,
+    -68.0f / 32768.0f,
+    0.0f,
+    39.0f / 32768.0f,
+    -28.0f / 32768.0f,
+    0.0f,
+    14.0f / 32768.0f,
+    -9.0f / 32768.0f,
+    0.0f,
+    3.0f / 32768.0f,
+    -1.0f / 32768.0f,
+    0.0f,
+    0.0f,
 };
 
-/* Digital-narrow profile taps (fc≈5 kHz @ 24 kHz, 63 taps, Q15). Designed as
+/* Digital-narrow profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
    Blackman-windowed sinc and normalized to unity DC gain. */
-static const int16_t channel_lpf_digital_q15[kChannelLpfTaps] = {
-    0,     0,    0,     -3,    -4,  5,    15,   0,    -31,  -22,  42,  68,    -26,   -130, -43,   178,
-    180,   -156, -368,  0,     542, 339,  -579, -859, 313,  1492, 486, -2111, -2367, 2564, 10033, 13654,
-    10033, 2564, -2367, -2111, 486, 1492, 313,  -859, -579, 339,  542, 0,     -368,  -156, 180,   178,
-    -43,   -130, -26,   68,    42,  -22,  -31,  0,    15,   5,    -4,  -3,    0,     0,    0,
+static const float channel_lpf_digital[kChannelLpfTaps] = {
+    0.0f,
+    0.0f,
+    0.0f,
+    -3.0f / 32768.0f,
+    -4.0f / 32768.0f,
+    5.0f / 32768.0f,
+    15.0f / 32768.0f,
+    0.0f,
+    -31.0f / 32768.0f,
+    -22.0f / 32768.0f,
+    42.0f / 32768.0f,
+    68.0f / 32768.0f,
+    -26.0f / 32768.0f,
+    -130.0f / 32768.0f,
+    -43.0f / 32768.0f,
+    178.0f / 32768.0f,
+    180.0f / 32768.0f,
+    -156.0f / 32768.0f,
+    -368.0f / 32768.0f,
+    0.0f,
+    542.0f / 32768.0f,
+    339.0f / 32768.0f,
+    -579.0f / 32768.0f,
+    -859.0f / 32768.0f,
+    313.0f / 32768.0f,
+    1492.0f / 32768.0f,
+    486.0f / 32768.0f,
+    -2111.0f / 32768.0f,
+    -2367.0f / 32768.0f,
+    2564.0f / 32768.0f,
+    10033.0f / 32768.0f,
+    13654.0f / 32768.0f,
+    10033.0f / 32768.0f,
+    2564.0f / 32768.0f,
+    -2367.0f / 32768.0f,
+    -2111.0f / 32768.0f,
+    486.0f / 32768.0f,
+    1492.0f / 32768.0f,
+    313.0f / 32768.0f,
+    -859.0f / 32768.0f,
+    -579.0f / 32768.0f,
+    339.0f / 32768.0f,
+    542.0f / 32768.0f,
+    0.0f,
+    -368.0f / 32768.0f,
+    -156.0f / 32768.0f,
+    180.0f / 32768.0f,
+    178.0f / 32768.0f,
+    -43.0f / 32768.0f,
+    -130.0f / 32768.0f,
+    -26.0f / 32768.0f,
+    68.0f / 32768.0f,
+    42.0f / 32768.0f,
+    -22.0f / 32768.0f,
+    -31.0f / 32768.0f,
+    0.0f,
+    15.0f / 32768.0f,
+    5.0f / 32768.0f,
+    -4.0f / 32768.0f,
+    -3.0f / 32768.0f,
+    0.0f,
+    0.0f,
+    0.0f,
 };
 
-/* P25 Hann LPF (≈7 kHz cutoff @ 24 kHz Fs, 63 taps, Q15). Hann-windowed sinc
+/* P25 Hann LPF (≈7 kHz cutoff @ 24 kHz Fs, 63 taps). Hann-windowed sinc
    inspired by OP25 channel filter: ~0 dB through ~6.25 kHz, ~-6 dB near 7 kHz,
    >60 dB attenuation by ~8 kHz. */
-static const int16_t channel_lpf_p25_hann_q15[kChannelLpfTaps] = {
-    0,     -1,    1,     7,    -11, -13,   36,   0,   -68,  46,    83,  -126, -46,   217,   -67,   -268,
-    258,   214,   -485,  0,    660, -399,  -661, 954, 339,  -1583, 506, 2167, -2402, -2581, 10049, 19114,
-    10049, -2581, -2402, 2167, 506, -1583, 339,  954, -661, -399,  660, 0,    -485,  214,   258,   -268,
-    -67,   217,   -46,   -126, 83,  46,    -68,  0,   36,   -13,   -11, 7,    1,     -1,    0,
+static const float channel_lpf_p25_hann[kChannelLpfTaps] = {
+    0.0f,
+    -1.0f / 32768.0f,
+    1.0f / 32768.0f,
+    7.0f / 32768.0f,
+    -11.0f / 32768.0f,
+    -13.0f / 32768.0f,
+    36.0f / 32768.0f,
+    0.0f,
+    -68.0f / 32768.0f,
+    46.0f / 32768.0f,
+    83.0f / 32768.0f,
+    -126.0f / 32768.0f,
+    -46.0f / 32768.0f,
+    217.0f / 32768.0f,
+    -67.0f / 32768.0f,
+    -268.0f / 32768.0f,
+    258.0f / 32768.0f,
+    214.0f / 32768.0f,
+    -485.0f / 32768.0f,
+    0.0f,
+    660.0f / 32768.0f,
+    -399.0f / 32768.0f,
+    -661.0f / 32768.0f,
+    954.0f / 32768.0f,
+    339.0f / 32768.0f,
+    -1583.0f / 32768.0f,
+    506.0f / 32768.0f,
+    2167.0f / 32768.0f,
+    -2402.0f / 32768.0f,
+    -2581.0f / 32768.0f,
+    10049.0f / 32768.0f,
+    19114.0f / 32768.0f,
+    10049.0f / 32768.0f,
+    -2581.0f / 32768.0f,
+    -2402.0f / 32768.0f,
+    2167.0f / 32768.0f,
+    506.0f / 32768.0f,
+    -1583.0f / 32768.0f,
+    339.0f / 32768.0f,
+    954.0f / 32768.0f,
+    -661.0f / 32768.0f,
+    -399.0f / 32768.0f,
+    660.0f / 32768.0f,
+    0.0f,
+    -485.0f / 32768.0f,
+    214.0f / 32768.0f,
+    258.0f / 32768.0f,
+    -268.0f / 32768.0f,
+    -67.0f / 32768.0f,
+    217.0f / 32768.0f,
+    -46.0f / 32768.0f,
+    -126.0f / 32768.0f,
+    83.0f / 32768.0f,
+    46.0f / 32768.0f,
+    -68.0f / 32768.0f,
+    0.0f,
+    36.0f / 32768.0f,
+    -13.0f / 32768.0f,
+    -11.0f / 32768.0f,
+    7.0f / 32768.0f,
+    1.0f / 32768.0f,
+    -1.0f / 32768.0f,
+    0.0f,
 };
 
 /* ---------------- Post-demod audio polyphase decimator (M > 2) -------------- */
@@ -143,12 +321,12 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
         d->post_polydecim_hist = NULL;
     }
     {
-        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(int16_t));
-        d->post_polydecim_taps = (int16_t*)mem_ptr;
+        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(float));
+        d->post_polydecim_taps = (float*)mem_ptr;
     }
     {
-        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(int16_t));
-        d->post_polydecim_hist = (int16_t*)mem_ptr;
+        void* mem_ptr = dsd_neo_aligned_malloc((size_t)K * sizeof(float));
+        d->post_polydecim_hist = (float*)mem_ptr;
     }
     if (!d->post_polydecim_taps || !d->post_polydecim_hist) {
         if (d->post_polydecim_taps) {
@@ -162,7 +340,7 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
         d->post_polydecim_enabled = 0;
         return;
     }
-    memset(d->post_polydecim_hist, 0, (size_t)K * sizeof(int16_t));
+    memset(d->post_polydecim_hist, 0, (size_t)K * sizeof(float));
     d->post_polydecim_hist_head = 0;
     d->post_polydecim_phase = 0;
 
@@ -186,14 +364,7 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
         double w = 0.54 - 0.46 * cos(2.0 * 3.14159265358979323846 * (double)n / (double)(N - 1));
         double h = 2.0 * fc * dsd_neo_sinc(2.0 * fc * (double)m);
         double t = (h * w) / gain;
-        int v = (int)lrint(t * 32768.0);
-        if (v > 32767) {
-            v = 32767;
-        }
-        if (v < -32768) {
-            v = -32768;
-        }
-        d->post_polydecim_taps[n] = (int16_t)v;
+        d->post_polydecim_taps[n] = (float)t;
     }
     d->post_polydecim_M = M;
     d->post_polydecim_K = K;
@@ -201,10 +372,10 @@ audio_polydecim_ensure(struct demod_state* d, int M) {
 }
 
 static int
-audio_polydecim_process(struct demod_state* d, const int16_t* in, int in_len, int16_t* out) {
+audio_polydecim_process(struct demod_state* d, const float* in, int in_len, float* out) {
     if (!d || !d->post_polydecim_enabled || !d->post_polydecim_taps || !d->post_polydecim_hist || in_len <= 0) {
-        if (in && out && in_len > 0) {
-            memcpy(out, in, (size_t)in_len * sizeof(int16_t));
+        if (in && out && in_len > 0 && in != out) {
+            memcpy(out, in, (size_t)in_len * sizeof(float));
         }
         return in_len;
     }
@@ -212,7 +383,7 @@ audio_polydecim_process(struct demod_state* d, const int16_t* in, int in_len, in
     const int M = d->post_polydecim_M;
     int head = d->post_polydecim_hist_head;
     int phase = d->post_polydecim_phase;
-    const int16_t* taps = d->post_polydecim_taps;
+    const float* taps = d->post_polydecim_taps;
     int out_len = 0;
     for (int n = 0; n < in_len; n++) {
         /* push */
@@ -230,17 +401,15 @@ audio_polydecim_process(struct demod_state* d, const int16_t* in, int in_len, in
             if (idx < 0) {
                 idx += K;
             }
-            int64_t acc = 0;
+            float acc = 0.0f;
             for (int k = 0; k < K; k++) {
-                acc += (int32_t)d->post_polydecim_hist[idx] * (int32_t)taps[k];
+                acc += d->post_polydecim_hist[idx] * taps[k];
                 idx--;
                 if (idx < 0) {
                     idx += K;
                 }
             }
-            acc += (1 << 14);
-            int32_t y = (int32_t)(acc >> 15);
-            out[out_len++] = sat16(y);
+            out[out_len++] = acc;
         }
     }
     d->post_polydecim_hist_head = head;
@@ -261,22 +430,22 @@ channel_lpf_apply(struct demod_state* d) {
     if (hist_len > d->channel_lpf_hist_len) {
         d->channel_lpf_hist_len = hist_len;
     }
-    const int16_t* taps = channel_lpf_wide_q15;
+    const float* taps = channel_lpf_wide;
     switch (d->channel_lpf_profile) {
-        case DSD_CH_LPF_PROFILE_DIGITAL: taps = channel_lpf_digital_q15; break;
-        case DSD_CH_LPF_PROFILE_P25_HANN: taps = channel_lpf_p25_hann_q15; break;
+        case DSD_CH_LPF_PROFILE_DIGITAL: taps = channel_lpf_digital; break;
+        case DSD_CH_LPF_PROFILE_P25_HANN: taps = channel_lpf_p25_hann; break;
         default: break;
     }
-    const int16_t* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
-    int16_t* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
-    int16_t* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
-    int16_t* hq = assume_aligned_ptr(d->channel_lpf_hist_q, DSD_NEO_ALIGN);
-    int16_t lastI = (N > 0) ? in[(size_t)((N - 1) << 1)] : 0;
-    int16_t lastQ = (N > 0) ? in[(size_t)(((N - 1) << 1) + 1)] : 0;
+    const float* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
+    float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    float* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
+    float* hq = assume_aligned_ptr(d->channel_lpf_hist_q, DSD_NEO_ALIGN);
+    float lastI = (N > 0) ? in[(size_t)((N - 1) << 1)] : 0.0f;
+    float lastQ = (N > 0) ? in[(size_t)(((N - 1) << 1) + 1)] : 0.0f;
 
     for (int n = 0; n < N; n++) {
         int center_idx = hist_len + n; /* index into combined hist+current stream */
-        auto get_iq = [&](int src_idx, int16_t& xi, int16_t& xq) {
+        auto get_iq = [&](int src_idx, float& xi, float& xq) {
             if (src_idx < hist_len) {
                 xi = hi[src_idx];
                 xq = hq[src_idx];
@@ -291,33 +460,31 @@ channel_lpf_apply(struct demod_state* d) {
                 }
             }
         };
-        int64_t accI = 0;
-        int64_t accQ = 0;
+        float accI = 0.0f;
+        float accQ = 0.0f;
         /* center tap */
         {
-            int16_t ci, cq;
+            float ci, cq;
             get_iq(center_idx, ci, cq);
-            int16_t cc = taps[center];
-            accI += (int32_t)cc * (int32_t)ci;
-            accQ += (int32_t)cc * (int32_t)cq;
+            float cc = taps[center];
+            accI += cc * ci;
+            accQ += cc * cq;
         }
         /* symmetric pairs */
         for (int k = 0; k < center; k++) {
-            int16_t ce = taps[k];
-            if (ce == 0) {
+            float ce = taps[k];
+            if (ce == 0.0f) {
                 continue;
             }
             int dists = center - k;
-            int16_t xmI, xmQ, xpI, xpQ;
+            float xmI, xmQ, xpI, xpQ;
             get_iq(center_idx - dists, xmI, xmQ);
             get_iq(center_idx + dists, xpI, xpQ);
-            accI += (int32_t)ce * (int32_t)(xmI + xpI);
-            accQ += (int32_t)ce * (int32_t)(xmQ + xpQ);
+            accI += ce * (xmI + xpI);
+            accQ += ce * (xmQ + xpQ);
         }
-        accI += (1 << 14);
-        accQ += (1 << 14);
-        out[(size_t)(n << 1)] = sat16((int32_t)(accI >> 15));
-        out[(size_t)(n << 1) + 1] = sat16((int32_t)(accQ >> 15));
+        out[(size_t)(n << 1)] = accI;
+        out[(size_t)(n << 1) + 1] = accQ;
     }
 
     /* Update history with the last (hist_len) complex samples of this block */
@@ -331,8 +498,8 @@ channel_lpf_apply(struct demod_state* d) {
         } else {
             int need = hist_len - N;
             if (need > 0) {
-                memmove(hi, hi + (hist_len - need), (size_t)need * sizeof(int16_t));
-                memmove(hq, hq + (hist_len - need), (size_t)need * sizeof(int16_t));
+                memmove(hi, hi + (hist_len - need), (size_t)need * sizeof(float));
+                memmove(hq, hq + (hist_len - need), (size_t)need * sizeof(float));
             }
             for (int k = 0; k < N; k++) {
                 hi[need + k] = in[(size_t)(k << 1)];
@@ -346,29 +513,36 @@ channel_lpf_apply(struct demod_state* d) {
 
 /* CIC compensation filter tables */
 #define CIC_TABLE_MAX 10
-static const int cic_9_tables[][10] = {
+static const float cic_9_tables[][10] = {
     /* ds_p=0: no compensation needed */
-    {0},
+    {0.0f},
     /* ds_p=1: single stage */
-    {0, 8192, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0.0f, 8192.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     /* ds_p=2: two stages */
-    {0, 4096, 4096, 0, 0, 0, 0, 0, 0, 0},
+    {0.0f, 4096.0f / 32768.0f, 4096.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     /* ds_p=3: three stages */
-    {0, 2730, 2730, 2730, 0, 0, 0, 0, 0, 0},
+    {0.0f, 2730.0f / 32768.0f, 2730.0f / 32768.0f, 2730.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     /* ds_p=4: four stages */
-    {0, 2048, 2048, 2048, 2048, 0, 0, 0, 0, 0},
+    {0.0f, 2048.0f / 32768.0f, 2048.0f / 32768.0f, 2048.0f / 32768.0f, 2048.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+     0.0f},
     /* ds_p=5: five stages */
-    {0, 1638, 1638, 1638, 1638, 1638, 0, 0, 0, 0},
+    {0.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 0.0f,
+     0.0f, 0.0f, 0.0f},
     /* ds_p=6: six stages */
-    {0, 1365, 1365, 1365, 1365, 1365, 1365, 0, 0, 0},
+    {0.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f,
+     1365.0f / 32768.0f, 0.0f, 0.0f, 0.0f},
     /* ds_p=7: seven stages */
-    {0, 1170, 1170, 1170, 1170, 1170, 1170, 1170, 0, 0},
+    {0.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f,
+     1170.0f / 32768.0f, 1170.0f / 32768.0f, 0.0f, 0.0f},
     /* ds_p=8: eight stages */
-    {0, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 0},
+    {0.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f,
+     1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 0.0f},
     /* ds_p=9: nine stages */
-    {0, 910, 910, 910, 910, 910, 910, 910, 910, 910},
+    {0.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f,
+     910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f},
     /* ds_p=10: ten stages */
-    {0, 819, 819, 819, 819, 819, 819, 819, 819, 819}};
+    {0.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f,
+     819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f}};
 
 /* Global flags provided by rtl front-end */
 extern int use_halfband_decimator;
@@ -399,11 +573,9 @@ extern int use_halfband_decimator;
 /* Generalized complex half-band decimator by 2 that accepts arbitrary Q15 tap sets.
    Falls back to an optimized unrolled path for 15-tap filters. */
 static int
-hb_decim2_complex_interleaved_ex(const int16_t* DSD_NEO_RESTRICT in, int in_len, int16_t* DSD_NEO_RESTRICT out,
-                                 int16_t* DSD_NEO_RESTRICT hist_i, int16_t* DSD_NEO_RESTRICT hist_q,
-                                 const int16_t* DSD_NEO_RESTRICT taps_q15, int taps_len) {
-    const int hist_len = HB_TAPS - 1;
-    (void)hist_len; /* not used in generalized path */
+hb_decim2_complex_interleaved_ex(const float* DSD_NEO_RESTRICT in, int in_len, float* DSD_NEO_RESTRICT out,
+                                 float* DSD_NEO_RESTRICT hist_i, float* DSD_NEO_RESTRICT hist_q,
+                                 const float* DSD_NEO_RESTRICT taps_q15, int taps_len) {
     if (taps_len < 3 || (taps_len & 1) == 0) {
         return 0; /* invalid */
     }
@@ -412,21 +584,22 @@ hb_decim2_complex_interleaved_ex(const int16_t* DSD_NEO_RESTRICT in, int in_len,
     if (out_ch_len <= 0) {
         return 0;
     }
-    const int16_t* DSD_NEO_RESTRICT in_al = assume_aligned_ptr(in, DSD_NEO_ALIGN);
-    int16_t* DSD_NEO_RESTRICT out_al = assume_aligned_ptr(out, DSD_NEO_ALIGN);
-    int16_t* DSD_NEO_RESTRICT hi = assume_aligned_ptr(hist_i, DSD_NEO_ALIGN);
-    int16_t* DSD_NEO_RESTRICT hq = assume_aligned_ptr(hist_q, DSD_NEO_ALIGN);
-    int16_t lastI = (ch_len > 0) ? in_al[in_len - 2] : 0;
-    int16_t lastQ = (ch_len > 0) ? in_al[in_len - 1] : 0;
+    const float* DSD_NEO_RESTRICT in_al = assume_aligned_ptr(in, DSD_NEO_ALIGN);
+    float* DSD_NEO_RESTRICT out_al = assume_aligned_ptr(out, DSD_NEO_ALIGN);
+    float* DSD_NEO_RESTRICT hi = assume_aligned_ptr(hist_i, DSD_NEO_ALIGN);
+    float* DSD_NEO_RESTRICT hq = assume_aligned_ptr(hist_q, DSD_NEO_ALIGN);
+    float lastI = (ch_len > 0) ? in_al[in_len - 2] : 0.0f;
+    float lastQ = (ch_len > 0) ? in_al[in_len - 1] : 0.0f;
     const int center = (taps_len - 1) >> 1;
+    const int left_len = taps_len - 1;
     for (int n = 0; n < out_ch_len; n++) {
         int center_idx = (taps_len - 1) + (n << 1); /* per-channel index with left history */
-        auto get_iq = [&](int src_idx, int16_t& xi, int16_t& xq) {
-            if (src_idx < (taps_len - 1)) {
+        auto get_iq = [&](int src_idx, float& xi, float& xq) {
+            if (src_idx < left_len) {
                 xi = hi[src_idx];
                 xq = hq[src_idx];
             } else {
-                int rel = src_idx - (taps_len - 1);
+                int rel = src_idx - left_len;
                 if (rel < ch_len) {
                     xi = in_al[(size_t)(rel << 1)];
                     xq = in_al[(size_t)(rel << 1) + 1];
@@ -436,52 +609,50 @@ hb_decim2_complex_interleaved_ex(const int16_t* DSD_NEO_RESTRICT in, int in_len,
                 }
             }
         };
-        int64_t accI = 0;
-        int64_t accQ = 0;
+        float accI = 0.0f;
+        float accQ = 0.0f;
         /* center tap */
         {
-            int16_t ci, cq;
+            float ci, cq;
             get_iq(center_idx, ci, cq);
-            int16_t cc = taps_q15[center];
-            accI += (int32_t)cc * (int32_t)ci;
-            accQ += (int32_t)cc * (int32_t)cq;
+            float cc = taps_q15[center];
+            accI += cc * ci;
+            accQ += cc * cq;
         }
         /* symmetric pairs: only even indices in the full taps array are non-zero */
         for (int e = 0; e < center; e += 2) {
             int d = center - e; /* distance from center */
-            int16_t ce = taps_q15[e];
-            if (ce == 0) {
+            float ce = taps_q15[e];
+            if (ce == 0.0f) {
                 continue;
             }
-            int16_t xmI, xmQ, xpI, xpQ;
+            float xmI, xmQ, xpI, xpQ;
             get_iq(center_idx - d, xmI, xmQ);
             get_iq(center_idx + d, xpI, xpQ);
-            accI += (int32_t)ce * (int32_t)(xmI + xpI);
-            accQ += (int32_t)ce * (int32_t)(xmQ + xpQ);
+            accI += ce * (xmI + xpI);
+            accQ += ce * (xmQ + xpQ);
         }
-        accI += (1 << 14);
-        accQ += (1 << 14);
-        out_al[(size_t)(n << 1)] = sat16((int32_t)(accI >> 15));
-        out_al[(size_t)(n << 1) + 1] = sat16((int32_t)(accQ >> 15));
+        out_al[(size_t)(n << 1)] = accI;
+        out_al[(size_t)(n << 1) + 1] = accQ;
     }
     /* Update histories with last (taps_len-1) per-channel input samples */
-    if (ch_len >= (taps_len - 1)) {
-        int start = ch_len - (taps_len - 1);
-        for (int k = 0; k < (taps_len - 1); k++) {
+    if (ch_len >= left_len) {
+        int start = ch_len - left_len;
+        for (int k = 0; k < left_len; k++) {
             int rel = start + k;
             hi[k] = in_al[(size_t)(rel << 1)];
             hq[k] = in_al[(size_t)(rel << 1) + 1];
         }
     } else {
         int existing = ch_len;
-        for (int k = 0; k < (taps_len - 1); k++) {
+        for (int k = 0; k < left_len; k++) {
             if (k < existing) {
                 int rel = k;
                 hi[k] = in_al[(size_t)(rel << 1)];
                 hq[k] = in_al[(size_t)(rel << 1) + 1];
             } else {
-                hi[k] = 0;
-                hq[k] = 0;
+                hi[k] = 0.0f;
+                hq[k] = 0.0f;
             }
         }
     }
@@ -499,19 +670,19 @@ hb_decim2_complex_interleaved_ex(const int16_t* DSD_NEO_RESTRICT in, int in_len,
  * @return New length after decimation.
  */
 int
-low_pass_simple(int16_t* signal2, int len, int step) {
-    int i, i2, sum;
+low_pass_simple(float* signal2, int len, int step) {
+    int i, i2;
     if (step <= 0) {
         return len;
     }
     for (i = 0; i + (step - 1) < len; i += step) {
-        sum = 0;
+        float sum = 0.0f;
         for (i2 = 0; i2 < step; i2++) {
-            sum += (int)signal2[i + i2];
+            sum += signal2[i + i2];
         }
         // Normalize by step with rounding. Writes output at i/step index.
-        int val = (sum >= 0) ? (sum + step / 2) / step : -(((-sum) + step / 2) / step);
-        signal2[i / step] = (int16_t)val;
+        float val = sum / (float)step;
+        signal2[i / step] = val;
     }
     /* Duplicate the final sample to provide one-sample lookahead for callers
 	   that expect at least one extra element. Only do this when there is
@@ -531,16 +702,14 @@ low_pass_simple(int16_t* signal2, int len, int step) {
 void
 low_pass_real(struct demod_state* s) {
     int i = 0, i2 = 0;
-    int16_t* r = assume_aligned_ptr(s->result, DSD_NEO_ALIGN);
+    float* r = assume_aligned_ptr(s->result, DSD_NEO_ALIGN);
     int fast = (int)s->rate_in;
     int slow = s->rate_out2;
-    /* Precompute fixed-point reciprocal of decimation factor to avoid per-sample division */
     int decim = (slow != 0) ? (fast / slow) : 1;
     if (decim < 1) {
         decim = 1;
     }
-    const int kShiftLPR = 15; /* Q15 reciprocal */
-    int recip_decim_q = (1 << kShiftLPR) / decim;
+    float recip = 1.0f / (float)decim;
     DSD_NEO_IVDEP
     while (i < s->result_len) {
         s->now_lpr += r[i];
@@ -549,11 +718,9 @@ low_pass_real(struct demod_state* s) {
         if (s->prev_lpr_index < fast) {
             continue;
         }
-        /* Multiply by reciprocal and shift instead of dividing by (fast/slow) */
-        int64_t scaled = ((int64_t)s->now_lpr * recip_decim_q);
-        r[i2] = (int16_t)(scaled >> kShiftLPR);
+        r[i2] = s->now_lpr * recip;
         s->prev_lpr_index -= fast;
-        s->now_lpr = 0;
+        s->now_lpr = 0.0f;
         i2 += 1;
     }
     s->result_len = i2;
@@ -567,7 +734,7 @@ low_pass_real(struct demod_state* s) {
 void
 low_pass(struct demod_state* d) {
     int i = 0, i2 = 0;
-    int16_t* DSD_NEO_RESTRICT lp = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
+    float* DSD_NEO_RESTRICT lp = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
     while (i < d->lp_len) {
         d->now_r += lp[i];
         d->now_j += lp[i + 1];
@@ -576,12 +743,11 @@ low_pass(struct demod_state* d) {
         if (d->prev_index < d->downsample) {
             continue;
         }
-        /* Saturate accumulated sums when writing back to int16 */
-        lp[i2] = sat16(d->now_r);
-        lp[i2 + 1] = sat16(d->now_j);
+        lp[i2] = d->now_r;
+        lp[i2 + 1] = d->now_j;
         d->prev_index = 0;
-        d->now_r = 0;
-        d->now_j = 0;
+        d->now_r = 0.0f;
+        d->now_j = 0.0f;
         i2 += 2;
     }
     d->lp_len = i2;
@@ -598,9 +764,9 @@ low_pass(struct demod_state* d) {
  * @param hist   Persistent history buffer of length >= 6.
  */
 void
-fifth_order(int16_t* data, int length, int16_t* hist) {
+fifth_order(float* data, int length, float* hist) {
     int i;
-    int16_t a, b, c, d, e, f;
+    float a, b, c, d, e, f;
     a = hist[1];
     b = hist[2];
     c = hist[3];
@@ -608,7 +774,7 @@ fifth_order(int16_t* data, int length, int16_t* hist) {
     e = hist[5];
     f = data[0];
     /* a downsample should improve resolution, so don't fully shift */
-    data[0] = (a + (b + e) * 5 + (c + d) * 10 + f) >> 4;
+    data[0] = (a + (b + e) * 5.0f + (c + d) * 10.0f + f) * (1.0f / 16.0f);
     for (i = 4; i < length; i += 4) {
         a = c;
         b = d;
@@ -616,7 +782,7 @@ fifth_order(int16_t* data, int length, int16_t* hist) {
         d = f;
         e = data[i - 2];
         f = data[i];
-        data[i / 2] = (a + (b + e) * 5 + (c + d) * 10 + f) >> 4;
+        data[i / 2] = (a + (b + e) * 5.0f + (c + d) * 10.0f + f) * (1.0f / 16.0f);
     }
     /* archive */
     hist[0] = a;
@@ -636,19 +802,17 @@ fifth_order(int16_t* data, int length, int16_t* hist) {
  * @param hist   History buffer used across calls.
  */
 void
-generic_fir(int16_t* data, int length, int* fir, int16_t* hist) {
-    int d, temp, sum;
+generic_fir(float* data, int length, const float* fir, float* hist) {
+    int d;
     for (d = 0; d < length; d += 2) {
-        temp = data[d];
-        sum = 0;
+        float temp = data[d];
+        float sum = 0.0f;
         sum += (hist[0] + hist[8]) * fir[1];
         sum += (hist[1] + hist[7]) * fir[2];
         sum += (hist[2] + hist[6]) * fir[3];
         sum += (hist[3] + hist[5]) * fir[4];
         sum += hist[4] * fir[5];
-        sum += (1 << 14); /* Round */
-        /* Saturate on writeback to guard future coefficient changes */
-        data[d] = sat16((int32_t)(sum >> 15));
+        data[d] = sum;
         hist[0] = hist[1];
         hist[1] = hist[2];
         hist[2] = hist[3];
@@ -676,28 +840,28 @@ dsd_fm_demod(struct demod_state* fm) {
         return;
     }
 
-    const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
-    int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
 
-    int prev_r = fm->pre_r;
-    int prev_j = fm->pre_j;
+    float prev_r = fm->pre_r;
+    float prev_j = fm->pre_j;
     /* Seed history on first use to keep the first phase delta well-defined. */
-    if (prev_r == 0 && prev_j == 0) {
+    if (prev_r == 0.0f && prev_j == 0.0f) {
         prev_r = iq[0];
         prev_j = iq[1];
     }
 
     for (int n = 0; n < pairs; n++) {
-        int cr = iq[(size_t)(n << 1) + 0];
-        int cj = iq[(size_t)(n << 1) + 1];
+        float cr = iq[(size_t)(n << 1) + 0];
+        float cj = iq[(size_t)(n << 1) + 1];
         /* z_n * conj(z_{n-1}) => phase delta; amplitude cancels inside atan2 */
-        int64_t re = (int64_t)cr * (int64_t)prev_r + (int64_t)cj * (int64_t)prev_j;
-        int64_t im = (int64_t)cj * (int64_t)prev_r - (int64_t)cr * (int64_t)prev_j;
-        int angle_q14 = dsd_neo_fast_atan2(im, re);
+        float re = cr * prev_r + cj * prev_j;
+        float im = cj * prev_r - cr * prev_j;
+        float angle = atan2f(im, re);
         if (fm->fll_enabled) {
-            angle_q14 += (fm->fll_freq_q15 >> 1);
+            angle += 0.5f * fm->fll_freq;
         }
-        out[n] = sat16(angle_q14);
+        out[n] = angle;
         prev_r = cr;
         prev_j = cj;
     }
@@ -716,7 +880,7 @@ void
 raw_demod(struct demod_state* fm) {
     int i;
     for (i = 0; i < fm->lp_len; i++) {
-        fm->result[i] = (int16_t)fm->lowpassed[i];
+        fm->result[i] = fm->lowpassed[i];
     }
     fm->result_len = fm->lp_len;
 }
@@ -737,26 +901,19 @@ cqpsk_diff_phasor(struct demod_state* d) {
         return;
     }
     const int pairs = d->lp_len >> 1;
-    int16_t* iq = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
-    int prev_r = d->cqpsk_diff_prev_r;
-    int prev_j = d->cqpsk_diff_prev_j;
+    float* iq = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
+    float prev_r = d->cqpsk_diff_prev_r;
+    float prev_j = d->cqpsk_diff_prev_j;
 
     for (int n = 0; n < pairs; n++) {
-        int cr = iq[(size_t)(n << 1) + 0];
-        int cj = iq[(size_t)(n << 1) + 1];
+        float cr = iq[(size_t)(n << 1) + 0];
+        float cj = iq[(size_t)(n << 1) + 1];
 
-        /* Re/Im{x * conj(prev)} in Q30 (inputs are Q15) */
-        int64_t mr = (int64_t)cr * (int64_t)prev_r + (int64_t)cj * (int64_t)prev_j;
-        int64_t mj = (int64_t)cj * (int64_t)prev_r - (int64_t)cr * (int64_t)prev_j;
+        float out_r = cr * prev_r + cj * prev_j;
+        float out_j = cj * prev_r - cr * prev_j;
 
-        /* Scale back to Q15 with symmetric rounding */
-        int64_t rnd = (mr >= 0) ? (1LL << 14) : -(1LL << 14);
-        int32_t out_r = (int32_t)((mr + rnd) >> 15);
-        rnd = (mj >= 0) ? (1LL << 14) : -(1LL << 14);
-        int32_t out_j = (int32_t)((mj + rnd) >> 15);
-
-        iq[(size_t)(n << 1) + 0] = sat16(out_r);
-        iq[(size_t)(n << 1) + 1] = sat16(out_j);
+        iq[(size_t)(n << 1) + 0] = out_r;
+        iq[(size_t)(n << 1) + 1] = out_j;
 
         prev_r = cr;
         prev_j = cj;
@@ -792,12 +949,12 @@ qpsk_differential_demod(struct demod_state* fm) {
     }
 
     const int pairs = fm->lp_len >> 1; /* complex samples */
-    const int16_t* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
-    int16_t* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
 
     for (int n = 0; n < pairs; n++) {
-        int phase_q14 = dsd_neo_fast_atan2(iq[(size_t)(n << 1) + 1], iq[(size_t)(n << 1) + 0]);
-        out[n] = (int16_t)phase_q14;
+        float phase = atan2f(iq[(size_t)(n << 1) + 1], iq[(size_t)(n << 1) + 0]);
+        out[n] = phase;
     }
 
     fm->result_len = pairs;
@@ -812,7 +969,6 @@ cqpsk_rms_agc(struct demod_state* d) {
     const int pairs = d->lp_len >> 1;
     const float kAlpha = 0.45f; /* OP25 default */
     const float kRef = 0.85f;   /* target RMS (normalized) */
-    const float kInvMax = 1.0f / 32768.0f;
     const float kEps = 1e-6f;
 
     float rms = d->cqpsk_rms_agc_rms;
@@ -820,19 +976,23 @@ cqpsk_rms_agc(struct demod_state* d) {
         rms = kRef;
     }
 
-    int16_t* out = d->lowpassed;
+    float* out = d->lowpassed;
     for (int n = 0; n < pairs; n++) {
-        float I = (float)out[(size_t)(n << 1)] * kInvMax;
-        float Q = (float)out[(size_t)(n << 1) + 1] * kInvMax;
+        float I = out[(size_t)(n << 1)];
+        float Q = out[(size_t)(n << 1) + 1];
         float mag2 = I * I + Q * Q;
         float rms2 = rms * rms;
         rms2 = (1.0f - kAlpha) * rms2 + kAlpha * mag2;
         rms = sqrtf(rms2);
         float g = kRef / (rms + kEps);
-        int32_t yi = (int32_t)lrintf(I * g * 32768.0f);
-        int32_t yq = (int32_t)lrintf(Q * g * 32768.0f);
-        out[(size_t)(n << 1)] = sat16(yi);
-        out[(size_t)(n << 1) + 1] = sat16(yq);
+        if (g > 8.0f) {
+            g = 8.0f;
+        }
+        if (g < 0.125f) {
+            g = 0.125f;
+        }
+        out[(size_t)(n << 1)] = I * g;
+        out[(size_t)(n << 1) + 1] = Q * g;
     }
 
     d->cqpsk_rms_agc_rms = rms;
@@ -845,31 +1005,21 @@ cqpsk_rms_agc(struct demod_state* d) {
  */
 void
 deemph_filter(struct demod_state* fm) {
-    int avg = fm->deemph_avg; /* per-instance state */
-    int i, d;
-    int16_t* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    /* Q15 alpha = (1 - a), where a = exp(-1/(Fs*tau)) */
-    const int kShiftDeemph = 15; /* Q15 */
-    int alpha_q15 = fm->deemph_a;
-    if (alpha_q15 < 0) {
-        alpha_q15 = 0;
+    float avg = fm->deemph_avg; /* per-instance state */
+    float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    float alpha = (float)fm->deemph_a * (1.0f / 32768.0f);
+    if (alpha < 0.0f) {
+        alpha = 0.0f;
     }
-    if (alpha_q15 > (1 << kShiftDeemph)) {
-        alpha_q15 = (1 << kShiftDeemph);
+    if (alpha > 1.0f) {
+        alpha = 1.0f;
     }
     /* Single-pole IIR: avg += (x - avg) * alpha */
     DSD_NEO_IVDEP
-    for (i = 0; i < fm->result_len; i++) {
-        d = res[i] - avg;
-        int64_t delta = (int64_t)d * (int64_t)alpha_q15;
-        /* symmetric rounding */
-        if (d > 0) {
-            delta += (1LL << (kShiftDeemph - 1));
-        } else if (d < 0) {
-            delta -= (1LL << (kShiftDeemph - 1));
-        }
-        avg += (int)(delta >> kShiftDeemph);
-        res[i] = (int16_t)avg;
+    for (int i = 0; i < fm->result_len; i++) {
+        float d = res[i] - avg;
+        avg += d * alpha;
+        res[i] = avg;
     }
     fm->deemph_avg = avg; /* write back state */
 }
@@ -881,17 +1031,17 @@ deemph_filter(struct demod_state* fm) {
  */
 void
 dc_block_filter(struct demod_state* fm) {
-    int i;
-    /* Leaky integrator high-pass: dc += (x - dc) >> k; y = x - dc */
-    int dc = fm->dc_avg;
+    /* Leaky integrator high-pass: dc += (x - dc) / 2^k; y = x - dc */
+    float dc = fm->dc_avg;
     const int k = 11; /* cutoff ~ Fs / 2^k (k in 10..12) */
-    int16_t* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    float k_scale = 1.0f / (float)(1 << k);
+    float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
     DSD_NEO_IVDEP
-    for (i = 0; i < fm->result_len; i++) {
-        int x = (int)res[i];
-        dc += (x - dc) >> k;
-        int y = x - dc;
-        res[i] = sat16(y);
+    for (int i = 0; i < fm->result_len; i++) {
+        float x = res[i];
+        dc += (x - dc) * k_scale;
+        float y = x - dc;
+        res[i] = y;
     }
     fm->dc_avg = dc;
 }
@@ -906,24 +1056,21 @@ audio_lpf_filter(struct demod_state* fm) {
     if (!fm->audio_lpf_enable) {
         return;
     }
-    int i;
-    int16_t* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    int y = fm->audio_lpf_state;               /* Q0 */
-    const int alpha_q15 = fm->audio_lpf_alpha; /* Q15 */
-    const int kShift = 15;
+    float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    float y = fm->audio_lpf_state;
+    float alpha = (float)fm->audio_lpf_alpha * (1.0f / 32768.0f);
+    if (alpha < 0.0f) {
+        alpha = 0.0f;
+    }
+    if (alpha > 1.0f) {
+        alpha = 1.0f;
+    }
     DSD_NEO_IVDEP
-    for (i = 0; i < fm->result_len; i++) {
-        int x = (int)res[i];
-        int d = x - y;
-        int64_t delta = (int64_t)d * (int64_t)alpha_q15;
-        /* symmetric rounding */
-        if (d >= 0) {
-            delta += (1LL << (kShift - 1));
-        } else {
-            delta -= (1LL << (kShift - 1));
-        }
-        y += (int)(delta >> kShift);
-        res[i] = (int16_t)y;
+    for (int i = 0; i < fm->result_len; i++) {
+        float x = res[i];
+        float d = x - y;
+        y += d * alpha;
+        res[i] = y;
     }
     fm->audio_lpf_state = y;
 }
@@ -936,26 +1083,25 @@ audio_lpf_filter(struct demod_state* fm) {
  * @param step    Step size for sampling.
  * @return Mean power (squared RMS) with DC bias removed.
  */
-long int
-mean_power(int16_t* samples, int len, int step) {
-    int64_t p = 0;
-    int64_t t = 0;
+float
+mean_power(float* samples, int len, int step) {
+    double p = 0.0;
+    double t = 0.0;
     for (int i = 0; i < len; i += step) {
-        int64_t s = (int64_t)samples[i];
+        double s = (double)samples[i];
         t += s;
         p += s * s;
     }
-    /* DC-corrected energy ≈ p - (t^2)/len with rounded division */
-    int64_t dc_corr = 0;
+    /* DC-corrected energy ≈ p - (t^2)/len */
+    double dc_corr = 0.0;
     if (len > 0) {
-        int64_t tt = t * t;
-        dc_corr = (tt + (len / 2)) / len;
+        dc_corr = (t * t) / (double)len;
     }
-    int64_t energy = p - dc_corr;
-    if (energy < 0) {
-        energy = 0;
+    double energy = p - dc_corr;
+    if (energy < 0.0) {
+        energy = 0.0;
     }
-    return (long int)(energy / (len > 0 ? len : 1));
+    return (float)(energy / (double)(len > 0 ? len : 1));
 }
 
 /**
@@ -972,17 +1118,17 @@ fll_update_error(struct demod_state* d) {
         return;
     }
     /* Sync from demod_state to module state */
-    d->fll_state.freq_q15 = d->fll_freq_q15;
-    d->fll_state.phase_q15 = d->fll_phase_q15;
+    d->fll_state.freq = d->fll_freq;
+    d->fll_state.phase = d->fll_phase;
     d->fll_state.prev_r = d->fll_prev_r;
     d->fll_state.prev_j = d->fll_prev_j;
 
     fll_config_t cfg;
     cfg.enabled = d->fll_enabled;
-    cfg.alpha_q15 = d->fll_alpha_q15;
-    cfg.beta_q15 = d->fll_beta_q15;
-    cfg.deadband_q14 = d->fll_deadband_q14;
-    cfg.slew_max_q15 = d->fll_slew_max_q15;
+    cfg.alpha = d->fll_alpha;
+    cfg.beta = d->fll_beta;
+    cfg.deadband = d->fll_deadband;
+    cfg.slew_max = d->fll_slew_max;
 
     /* Use QPSK-friendly symbol-spaced update when CQPSK path is active */
     if (d->cqpsk_enable && d->ted_sps >= 2) {
@@ -992,8 +1138,8 @@ fll_update_error(struct demod_state* d) {
     }
 
     /* Sync back to demod_state */
-    d->fll_freq_q15 = d->fll_state.freq_q15;
-    d->fll_phase_q15 = d->fll_state.phase_q15;
+    d->fll_freq = d->fll_state.freq;
+    d->fll_phase = d->fll_state.phase;
     d->fll_prev_r = d->fll_state.prev_r;
     d->fll_prev_j = d->fll_state.prev_j;
 }
@@ -1013,23 +1159,23 @@ fll_mix_and_update(struct demod_state* d) {
     }
 
     /* Sync from demod_state to module state */
-    d->fll_state.freq_q15 = d->fll_freq_q15;
-    d->fll_state.phase_q15 = d->fll_phase_q15;
+    d->fll_state.freq = d->fll_freq;
+    d->fll_state.phase = d->fll_phase;
     d->fll_state.prev_r = d->fll_prev_r;
     d->fll_state.prev_j = d->fll_prev_j;
 
     fll_config_t cfg;
     cfg.enabled = d->fll_enabled;
-    cfg.alpha_q15 = d->fll_alpha_q15;
-    cfg.beta_q15 = d->fll_beta_q15;
-    cfg.deadband_q14 = d->fll_deadband_q14;
-    cfg.slew_max_q15 = d->fll_slew_max_q15;
+    cfg.alpha = d->fll_alpha;
+    cfg.beta = d->fll_beta;
+    cfg.deadband = d->fll_deadband;
+    cfg.slew_max = d->fll_slew_max;
 
     fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
 
     /* Sync back to demod_state */
-    d->fll_freq_q15 = d->fll_state.freq_q15;
-    d->fll_phase_q15 = d->fll_state.phase_q15;
+    d->fll_freq = d->fll_state.freq;
+    d->fll_phase = d->fll_state.phase;
     d->fll_prev_r = d->fll_state.prev_r;
     d->fll_prev_j = d->fll_state.prev_j;
 }
@@ -1053,46 +1199,55 @@ fm_envelope_agc(struct demod_state* d) {
         return;
     }
     /* Guard: avoid boosting pure noise when input is below configured minimum */
-    uint64_t acc = 0;
-    const int16_t* iq_pre = d->lowpassed;
+    double acc = 0.0;
+    const float* iq_pre = d->lowpassed;
     for (int n = 0; n < pairs; n++) {
-        int32_t I = iq_pre[(size_t)(n << 1) + 0];
-        int32_t Q = iq_pre[(size_t)(n << 1) + 1];
-        acc += (uint64_t)((int64_t)I * (int64_t)I + (int64_t)Q * (int64_t)Q);
+        double I = (double)iq_pre[(size_t)(n << 1) + 0];
+        double Q = (double)iq_pre[(size_t)(n << 1) + 1];
+        acc += I * I + Q * Q;
     }
     if (acc == 0) {
         return;
     }
-    double rms_pre = sqrt((double)acc / (double)pairs);
-    int min_rms = (d->fm_agc_min_rms > 0) ? d->fm_agc_min_rms : 2000;
+    double rms_pre = sqrt(acc / (double)pairs);
+    float min_rms = (d->fm_agc_min_rms > 0.0f) ? d->fm_agc_min_rms : 0.06f;
     if (rms_pre < (double)min_rms) {
         return;
     }
-    int target = (d->fm_agc_target_rms > 0) ? d->fm_agc_target_rms : 10000;
-    if (target < 1000) {
-        target = 1000;
+    float target = (d->fm_agc_target_rms > 0.0f) ? d->fm_agc_target_rms : 0.30f;
+    if (target < 0.05f) {
+        target = 0.05f;
     }
-    if (target > 20000) {
-        target = 20000;
+    if (target > 2.5f) {
+        target = 2.5f;
     }
-    const float kInvMax = 1.0f / 32768.0f;
-    const float target_n = (float)target * kInvMax; /* normalized target */
-    const float alpha_up = (float)((d->fm_agc_alpha_up_q15 > 0) ? d->fm_agc_alpha_up_q15 : 8192) * (1.0f / 32768.0f);
-    const float alpha_dn =
-        (float)((d->fm_agc_alpha_down_q15 > 0) ? d->fm_agc_alpha_down_q15 : 24576) * (1.0f / 32768.0f);
+    float alpha_up = (d->fm_agc_alpha_up > 0.0f) ? d->fm_agc_alpha_up : 0.25f;
+    float alpha_dn = (d->fm_agc_alpha_down > 0.0f) ? d->fm_agc_alpha_down : 0.75f;
+    if (alpha_up < 0.0f) {
+        alpha_up = 0.0f;
+    }
+    if (alpha_up > 1.0f) {
+        alpha_up = 1.0f;
+    }
+    if (alpha_dn < 0.0f) {
+        alpha_dn = 0.0f;
+    }
+    if (alpha_dn > 1.0f) {
+        alpha_dn = 1.0f;
+    }
     const float kEps = 1e-6f;
 
     float rms = (float)d->fm_agc_ema_rms;
     if (rms <= 0.0f) {
-        rms = target_n; /* seed estimator near target */
+        rms = target; /* seed estimator near target */
     }
     float rms2 = rms * rms;
 
-    int16_t* out = d->lowpassed;
+    float* out = d->lowpassed;
     float last_g = 1.0f;
     for (int n = 0; n < pairs; n++) {
-        float I = (float)out[(size_t)(n << 1)] * kInvMax;
-        float Q = (float)out[(size_t)(n << 1) + 1] * kInvMax;
+        float I = (float)out[(size_t)(n << 1)];
+        float Q = (float)out[(size_t)(n << 1) + 1];
         float mag2 = I * I + Q * Q;
 
         /* Faster update when we need to back off gain; slower when ramping up. */
@@ -1109,7 +1264,7 @@ fm_envelope_agc(struct demod_state* d) {
         }
         rms = sqrtf(rms2);
 
-        float g = target_n / (rms + kEps);
+        float g = target / (rms + kEps);
         if (g > 8.0f) {
             g = 8.0f;
         }
@@ -1118,19 +1273,10 @@ fm_envelope_agc(struct demod_state* d) {
         }
         last_g = g;
 
-        int32_t yI = (int32_t)lrintf(I * g * 32768.0f);
-        int32_t yQ = (int32_t)lrintf(Q * g * 32768.0f);
-        out[(size_t)(n << 1)] = sat16(yI);
-        out[(size_t)(n << 1) + 1] = sat16(yQ);
+        out[(size_t)(n << 1)] = I * g;
+        out[(size_t)(n << 1) + 1] = Q * g;
     }
-    int g_q15 = (int)lrintf(last_g * 32768.0f);
-    if (g_q15 < 1024) {
-        g_q15 = 1024;
-    }
-    if (g_q15 > 262144) {
-        g_q15 = 262144;
-    }
-    d->fm_agc_gain_q15 = g_q15;
+    d->fm_agc_gain = last_g;
     d->fm_agc_ema_rms = (double)rms;
 }
 
@@ -1147,20 +1293,21 @@ iq_dc_block(struct demod_state* d) {
     if (k > 15) {
         k = 15;
     }
-    int16_t* iq = d->lowpassed;
+    float* iq = d->lowpassed;
     const int pairs = d->lp_len >> 1;
-    int dcI = d->iq_dc_avg_r;
-    int dcQ = d->iq_dc_avg_i;
+    float dcI = d->iq_dc_avg_r;
+    float dcQ = d->iq_dc_avg_i;
+    float alpha = 1.0f / (float)(1 << k);
     for (int n = 0; n < pairs; n++) {
-        int I = (int)iq[(size_t)(n << 1) + 0];
-        int Q = (int)iq[(size_t)(n << 1) + 1];
+        float I = iq[(size_t)(n << 1) + 0];
+        float Q = iq[(size_t)(n << 1) + 1];
         /* Update leaky integrator toward current sample */
-        dcI += (I - dcI) >> k;
-        dcQ += (Q - dcQ) >> k;
-        int yI = I - dcI;
-        int yQ = Q - dcQ;
-        iq[(size_t)(n << 1) + 0] = sat16(yI);
-        iq[(size_t)(n << 1) + 1] = sat16(yQ);
+        dcI += (I - dcI) * alpha;
+        dcQ += (Q - dcQ) * alpha;
+        float yI = I - dcI;
+        float yQ = Q - dcQ;
+        iq[(size_t)(n << 1) + 0] = yI;
+        iq[(size_t)(n << 1) + 1] = yQ;
     }
     d->iq_dc_avg_r = dcI;
     d->iq_dc_avg_i = dcQ;
@@ -1172,23 +1319,23 @@ fm_constant_envelope_limiter(struct demod_state* d) {
     if (!d || !d->fm_limiter_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
         return;
     }
-    int target = (d->fm_agc_target_rms > 0) ? d->fm_agc_target_rms : 10000;
-    if (target < 1000) {
-        target = 1000;
+    float target = (d->fm_agc_target_rms > 0.0f) ? d->fm_agc_target_rms : 0.30f;
+    if (target < 0.05f) {
+        target = 0.05f;
     }
-    if (target > 20000) {
-        target = 20000;
+    if (target > 2.5f) {
+        target = 2.5f;
     }
-    const int64_t t2 = (int64_t)target * (int64_t)target;
-    const int64_t lo2 = (t2 >> 2); /* 0.5^2 */
-    const int64_t hi2 = (t2 << 2); /* 2.0^2 */
-    int16_t* iq = d->lowpassed;
+    const float t2 = target * target;
+    const float lo2 = t2 * 0.25f; /* 0.5^2 */
+    const float hi2 = t2 * 4.0f;  /* 2.0^2 */
+    float* iq = d->lowpassed;
     const int pairs = d->lp_len >> 1;
     for (int n = 0; n < pairs; n++) {
-        int32_t I = iq[(size_t)(n << 1) + 0];
-        int32_t Q = iq[(size_t)(n << 1) + 1];
-        int64_t m2 = (int64_t)I * I + (int64_t)Q * Q;
-        if (m2 <= 0) {
+        float I = iq[(size_t)(n << 1) + 0];
+        float Q = iq[(size_t)(n << 1) + 1];
+        float m2 = I * I + Q * Q;
+        if (m2 <= 0.0f) {
             continue;
         }
         if (m2 >= lo2 && m2 <= hi2) {
@@ -1206,10 +1353,10 @@ fm_constant_envelope_limiter(struct demod_state* d) {
         if (g < 0.125) {
             g = 0.125;
         }
-        int32_t yI = (int32_t)lrint((double)I * g);
-        int32_t yQ = (int32_t)lrint((double)Q * g);
-        iq[(size_t)(n << 1) + 0] = sat16(yI);
-        iq[(size_t)(n << 1) + 1] = sat16(yQ);
+        float yI = (float)((double)I * g);
+        float yQ = (float)((double)Q * g);
+        iq[(size_t)(n << 1) + 0] = yI;
+        iq[(size_t)(n << 1) + 1] = yQ;
     }
 }
 
@@ -1228,14 +1375,14 @@ gardner_timing_adjust(struct demod_state* d) {
     }
 
     /* Sync from demod_state to module state */
-    d->ted_state.mu_q20 = d->ted_mu_q20;
+    d->ted_state.mu = d->ted_mu;
 
-    ted_config_t cfg = {d->ted_enabled, d->ted_force, d->ted_gain_q20, d->ted_sps};
+    ted_config_t cfg = {d->ted_enabled, d->ted_force, d->ted_gain, d->ted_sps};
 
     gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
 
     /* Sync back to demod_state */
-    d->ted_mu_q20 = d->ted_state.mu_q20;
+    d->ted_mu = d->ted_state.mu;
 }
 
 /**
@@ -1255,11 +1402,11 @@ full_demod(struct demod_state* d) {
         if (use_halfband_decimator) {
             /* Apply ds_p stages of 2:1 half-band decimation on interleaved lowpassed */
             int in_len = d->lp_len;
-            int16_t* src = d->lowpassed;
-            int16_t* dst = d->hb_workbuf;
+            float* src = d->lowpassed;
+            float* dst = d->hb_workbuf;
             for (i = 0; i < ds_p; i++) {
                 /* Stage-aware HB selection: heavier early, light later */
-                const int16_t* taps = hb_q15_taps;
+                const float* taps = hb_q15_taps;
                 int taps_len = HB_TAPS;
                 if (i == 0) {
                     taps = hb31_q15_taps;
@@ -1285,8 +1432,8 @@ full_demod(struct demod_state* d) {
             d->lp_len = d->lp_len >> ds_p;
             /* droop compensation */
             if (d->comp_fir_size == 9 && ds_p <= CIC_TABLE_MAX) {
-                generic_fir(d->lowpassed, d->lp_len, (int*)cic_9_tables[ds_p], d->droop_i_hist);
-                generic_fir(d->lowpassed + 1, d->lp_len - 1, (int*)cic_9_tables[ds_p], d->droop_q_hist);
+                generic_fir(d->lowpassed, d->lp_len, cic_9_tables[ds_p], d->droop_i_hist);
+                generic_fir(d->lowpassed + 1, d->lp_len - 1, cic_9_tables[ds_p], d->droop_q_hist);
             }
         }
     } else {
@@ -1304,41 +1451,39 @@ full_demod(struct demod_state* d) {
         /* Band-edge FLL (always active when enabled, OP25 style) */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2) {
             /* Sync from demod_state into modular FLL state so that any
-               external tweaks to fll_freq_q15/phase (e.g., spectrum-assisted
+               external tweaks to fll_freq/phase (e.g., spectrum-assisted
                correction) are honored. */
-            int prev_freq = d->fll_state.freq_q15;
-            d->fll_state.freq_q15 = d->fll_freq_q15;
-            d->fll_state.phase_q15 = d->fll_phase_q15;
+            float prev_freq = d->fll_state.freq;
+            d->fll_state.freq = d->fll_freq;
+            d->fll_state.phase = d->fll_phase;
             d->fll_state.prev_r = d->fll_prev_r;
             d->fll_state.prev_j = d->fll_prev_j;
-            if (prev_freq != d->fll_freq_q15) {
-                d->fll_state.int_q15 = d->fll_freq_q15;
+            if (prev_freq != d->fll_freq) {
+                d->fll_state.integrator = d->fll_freq;
             }
 
             fll_config_t cfg;
             cfg.enabled = 1;
-            cfg.alpha_q15 = (d->fll_alpha_q15 > 0) ? d->fll_alpha_q15 : 150;
-            cfg.beta_q15 = (d->fll_beta_q15 > 0) ? d->fll_beta_q15 : 15;
-            cfg.deadband_q14 = (d->fll_deadband_q14 > 0) ? d->fll_deadband_q14 : 45;
-            cfg.slew_max_q15 = (d->fll_slew_max_q15 > 0) ? d->fll_slew_max_q15 : 64;
+            /* OP25 default gains converted to native float (rad/sample units) */
+            cfg.alpha = (d->fll_alpha > 0.0f) ? d->fll_alpha : 0.0046f;          /* ~150/32768 */
+            cfg.beta = (d->fll_beta > 0.0f) ? d->fll_beta : 0.00046f;            /* ~15/32768 */
+            cfg.deadband = (d->fll_deadband > 0.0f) ? d->fll_deadband : 0.0086f; /* ~45/16384 * pi */
+            cfg.slew_max = (d->fll_slew_max > 0.0f) ? d->fll_slew_max : 0.012f;  /* ~64/32768 * 2pi */
 
             /* Band-edge FLL (OP25 settings): updates loop and rotates in-place. */
             fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
             d->cqpsk_fll_rot_applied = 1;
 
             /* Sync back minimal state */
-            d->fll_freq_q15 = d->fll_state.freq_q15;
-            d->fll_phase_q15 = d->fll_state.phase_q15;
+            d->fll_freq = d->fll_state.freq;
+            d->fll_phase = d->fll_state.phase;
             d->fll_prev_r = d->fll_state.prev_r;
             d->fll_prev_j = d->fll_state.prev_j;
 
             /* Simple lock detector: when |freq| stays small for several blocks, mark locked */
-            int fmag = d->fll_state.freq_q15;
-            if (fmag < 0) {
-                fmag = -fmag;
-            }
-            const int kLockFreqThr = 64; /* small residual */
-            const int kLockBlocks = 6;   /* consecutive blocks */
+            float fmag = fabsf(d->fll_state.freq);
+            const float kLockFreqThr = 0.002f; /* small residual in rad/sample */
+            const int kLockBlocks = 6;         /* consecutive blocks */
             if (fmag <= kLockFreqThr) {
                 d->cqpsk_acq_quiet_runs++;
             } else {
@@ -1386,7 +1531,7 @@ full_demod(struct demod_state* d) {
         /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */
         double s2r = 0.0, s2i = 0.0, p2 = 0.0;
         int N = d->lp_len >> 1; /* complex pairs */
-        const int16_t* iq = d->lowpassed;
+        const float* iq = d->lowpassed;
         for (int n = 0; n < N; n++) {
             double I = (double)iq[(size_t)(n << 1) + 0];
             double Q = (double)iq[(size_t)(n << 1) + 1];
@@ -1426,28 +1571,18 @@ full_demod(struct demod_state* d) {
         if (mag2 >= thr2) {
             int ar_q15 = er;
             int ai_q15 = ei;
-            int16_t* out = d->lowpassed;
+            float ar_f = (float)ar_q15 * (1.0f / 32768.0f);
+            float ai_f = (float)ai_q15 * (1.0f / 32768.0f);
+            float* out = d->lowpassed;
             for (int n = 0; n < N; n++) {
-                int32_t I = out[(size_t)(n << 1) + 0];
-                int32_t Q = out[(size_t)(n << 1) + 1];
-                int32_t tI = (int32_t)(((int64_t)ar_q15 * I + (int64_t)ai_q15 * Q) >> 15);
-                int32_t tQ = (int32_t)((-(int64_t)ar_q15 * Q + (int64_t)ai_q15 * I) >> 15);
-                int32_t yI = I - tI;
-                int32_t yQ = Q - tQ;
-                if (yI > 32767) {
-                    yI = 32767;
-                }
-                if (yI < -32768) {
-                    yI = -32768;
-                }
-                if (yQ > 32767) {
-                    yQ = 32767;
-                }
-                if (yQ < -32768) {
-                    yQ = -32768;
-                }
-                out[(size_t)(n << 1) + 0] = (int16_t)yI;
-                out[(size_t)(n << 1) + 1] = (int16_t)yQ;
+                float I = out[(size_t)(n << 1) + 0];
+                float Q = out[(size_t)(n << 1) + 1];
+                float tI = ar_f * I + ai_f * Q;
+                float tQ = -ar_f * Q + ai_f * I;
+                float yI = I - tI;
+                float yQ = Q - tQ;
+                out[(size_t)(n << 1) + 0] = yI;
+                out[(size_t)(n << 1) + 1] = yQ;
             }
         }
     }
@@ -1457,22 +1592,22 @@ full_demod(struct demod_state* d) {
         gardner_timing_adjust(d);
     }
     /* Power squelch (sqrt-free): compare pair power mean (I^2+Q^2) against a threshold.
-	   Threshold is specified as per-component mean power (RMS^2 on int16).
+	   Threshold is specified as per-component mean power on normalized float samples.
 	   Since block_mean estimates E[I^2+Q^2], the equivalent threshold in this
 	   domain is 2 * squelch_level. Samples are decimated by `squelch_decim_stride`;
 	   an EMA smooths block power. The sampling phase advances by lp_len % stride
 	   per block to cover all offsets. */
-    if (d->squelch_level) {
+    if (d->squelch_level > 0.0f) {
         /* Decimated block power estimate (no DC correction; EMA smooths) */
         int stride = (d->squelch_decim_stride > 0) ? d->squelch_decim_stride : 16;
         int phase = d->squelch_decim_phase;
-        int64_t p = 0;
+        double p = 0.0;
         int count = 0;
         /* Ensure even I/Q alignment and accumulate pair power I^2+Q^2 */
         int start = phase & ~1;
         for (int j = start; j + 1 < d->lp_len; j += stride) {
-            int64_t ir = (int64_t)d->lowpassed[j];
-            int64_t jq = (int64_t)d->lowpassed[j + 1];
+            double ir = (double)d->lowpassed[j];
+            double jq = (double)d->lowpassed[j + 1];
             p += ir * ir + jq * jq;
             count++;
         }
@@ -1489,8 +1624,8 @@ full_demod(struct demod_state* d) {
             d->squelch_decim_phase = (phase + adv) % stride;
         }
         if (count > 0) {
-            int64_t block_mean = p / count; /* mean of I^2+Q^2 per complex sample */
-            if (d->squelch_running_power == 0) {
+            double block_mean = p / (double)count; /* mean of I^2+Q^2 per complex sample */
+            if (d->squelch_running_power == 0.0) {
                 /* Initialize on first measurement to avoid long ramp */
                 d->squelch_running_power = block_mean;
             } else {
@@ -1501,16 +1636,16 @@ full_demod(struct demod_state* d) {
                 while ((1 << shift) < w && shift < 30) {
                     shift++;
                 }
-                int64_t delta = (block_mean - d->squelch_running_power);
-                d->squelch_running_power += (delta >> shift);
+                double delta = (block_mean - d->squelch_running_power);
+                d->squelch_running_power += delta / (double)(1 << shift);
             }
         }
         /* Convert per-component mean power threshold -> pair domain */
-        int64_t thr_pair = 2LL * (int64_t)d->squelch_level;
+        double thr_pair = 2.0 * (double)d->squelch_level;
         if (d->squelch_running_power < thr_pair) {
             d->squelch_hits++;
             for (i = 0; i < d->lp_len; i++) {
-                d->lowpassed[i] = 0;
+                d->lowpassed[i] = 0.0f;
             }
             d->squelch_gate_open = 0;
         } else {
@@ -1541,7 +1676,7 @@ full_demod(struct demod_state* d) {
             audio_polydecim_ensure(d, decim);
             int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
             if (out_n > 0) {
-                memcpy(d->result, d->timing_buf, (size_t)out_n * sizeof(int16_t));
+                memcpy(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
                 d->result_len = out_n;
             }
         } else {
@@ -1558,25 +1693,19 @@ full_demod(struct demod_state* d) {
             if (a > 1.0) {
                 a = 1.0;
             }
-            int alpha_q15 = (int)lrint(a * 32768.0);
-            if (alpha_q15 < 1) {
-                alpha_q15 = 1;
+            float alpha_f = (float)a;
+            if (alpha_f < 0.0f) {
+                alpha_f = 0.0f;
             }
-            if (alpha_q15 > 32767) {
-                alpha_q15 = 32767;
+            if (alpha_f > 1.0f) {
+                alpha_f = 1.0f;
             }
-            int y = (d->result_len > 0) ? d->result[0] : 0;
+            float y = (d->result_len > 0) ? d->result[0] : 0.0f;
             for (int k = 0; k < d->result_len; k++) {
-                int x = (int)d->result[k];
-                int dlt = x - y;
-                int64_t delta = (int64_t)dlt * alpha_q15;
-                if (dlt >= 0) {
-                    delta += (1 << 14);
-                } else {
-                    delta -= (1 << 14);
-                }
-                y += (int)(delta >> 15);
-                d->result[k] = sat16(y);
+                float x = d->result[k];
+                float dlt = x - y;
+                y += dlt * alpha_f;
+                d->result[k] = y;
             }
             d->result_len = low_pass_simple(d->result, d->result_len, decim);
         }
@@ -1599,31 +1728,23 @@ full_demod(struct demod_state* d) {
 
     /* Apply soft squelch envelope on audio (skip for CQPSK symbol stream) */
     if (!d->cqpsk_enable) {
-        int env = d->squelch_env_q15;
-        int target = d->squelch_gate_open ? 32768 : 0;
-        int alpha = d->squelch_gate_open ? (d->squelch_env_attack_q15 > 0 ? d->squelch_env_attack_q15 : 4096)
-                                         : (d->squelch_env_release_q15 > 0 ? d->squelch_env_release_q15 : 1024);
-        int err = target - env;
-        int64_t delta = (int64_t)alpha * (int64_t)err;
-        env += (int)(delta >> 15);
-        if (env < 0) {
-            env = 0;
+        float env = d->squelch_env;
+        float target = d->squelch_gate_open ? 1.0f : 0.0f;
+        float alpha = d->squelch_gate_open ? (d->squelch_env_attack > 0.0f ? d->squelch_env_attack : 0.125f)
+                                           : (d->squelch_env_release > 0.0f ? d->squelch_env_release : 0.03125f);
+        float err = target - env;
+        env += alpha * err;
+        if (env < 0.0f) {
+            env = 0.0f;
         }
-        if (env > 32768) {
-            env = 32768;
+        if (env > 1.0f) {
+            env = 1.0f;
         }
-        d->squelch_env_q15 = env;
+        d->squelch_env = env;
         /* Multiply audio by envelope */
-        int16_t* res = d->result;
+        float* res = d->result;
         for (int k = 0; k < d->result_len; k++) {
-            int32_t v = (int32_t)((int64_t)res[k] * env >> 15);
-            if (v > 32767) {
-                v = 32767;
-            }
-            if (v < -32768) {
-                v = -32768;
-            }
-            res[k] = (int16_t)v;
+            res[k] = res[k] * env;
         }
     }
 }
