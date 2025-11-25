@@ -1035,12 +1035,13 @@ fll_mix_and_update(struct demod_state* d) {
 }
 
 /*
- * FM envelope AGC/limiter (block-based)
+ * FM envelope AGC/limiter (per-sample)
  *
  * Normalizes complex I/Q magnitude toward a target RMS to reduce amplitude
- * bounce from low-cost front-ends (e.g., RTL-SDR). Uses per-block RMS with a
- * smoothed gain (separate attack/decay alphas) to avoid pumping. Disabled for
- * CQPSK paths to leave constellation amplitude untouched.
+ * bounce from low-cost front-ends (e.g., RTL-SDR). Matches the OP25/GNU Radio
+ * style of per-sample RMS tracking and gain update (attack/decay), rather than
+ * a block-stepped gain. Disabled for CQPSK paths to leave constellation
+ * amplitude untouched.
  */
 static inline void
 fm_envelope_agc(struct demod_state* d) {
@@ -1051,21 +1052,20 @@ fm_envelope_agc(struct demod_state* d) {
     if (pairs <= 0) {
         return;
     }
-    /* Compute block RMS of |z| */
+    /* Guard: avoid boosting pure noise when input is below configured minimum */
     uint64_t acc = 0;
-    const int16_t* iq = d->lowpassed;
+    const int16_t* iq_pre = d->lowpassed;
     for (int n = 0; n < pairs; n++) {
-        int32_t I = iq[(size_t)(n << 1) + 0];
-        int32_t Q = iq[(size_t)(n << 1) + 1];
+        int32_t I = iq_pre[(size_t)(n << 1) + 0];
+        int32_t Q = iq_pre[(size_t)(n << 1) + 1];
         acc += (uint64_t)((int64_t)I * (int64_t)I + (int64_t)Q * (int64_t)Q);
     }
     if (acc == 0) {
         return;
     }
-    double mean_r2 = (double)acc / (double)pairs;
-    double rms = sqrt(mean_r2);
-    if (rms < (double)(d->fm_agc_min_rms > 0 ? d->fm_agc_min_rms : 2000)) {
-        /* Hold gain on very weak input to avoid boosting noise */
+    double rms_pre = sqrt((double)acc / (double)pairs);
+    int min_rms = (d->fm_agc_min_rms > 0) ? d->fm_agc_min_rms : 2000;
+    if (rms_pre < (double)min_rms) {
         return;
     }
     int target = (d->fm_agc_target_rms > 0) ? d->fm_agc_target_rms : 10000;
@@ -1075,70 +1075,63 @@ fm_envelope_agc(struct demod_state* d) {
     if (target > 20000) {
         target = 20000;
     }
-    double g_raw = (double)target / rms;
-    /* Clamp extreme steps */
-    if (g_raw > 8.0) {
-        g_raw = 8.0;
+    const float kInvMax = 1.0f / 32768.0f;
+    const float target_n = (float)target * kInvMax; /* normalized target */
+    const float alpha_up = (float)((d->fm_agc_alpha_up_q15 > 0) ? d->fm_agc_alpha_up_q15 : 8192) * (1.0f / 32768.0f);
+    const float alpha_dn =
+        (float)((d->fm_agc_alpha_down_q15 > 0) ? d->fm_agc_alpha_down_q15 : 24576) * (1.0f / 32768.0f);
+    const float kEps = 1e-6f;
+
+    float rms = (float)d->fm_agc_ema_rms;
+    if (rms <= 0.0f) {
+        rms = target_n; /* seed estimator near target */
     }
-    if (g_raw < 0.125) {
-        g_raw = 0.125;
+    float rms2 = rms * rms;
+
+    int16_t* out = d->lowpassed;
+    float last_g = 1.0f;
+    for (int n = 0; n < pairs; n++) {
+        float I = (float)out[(size_t)(n << 1)] * kInvMax;
+        float Q = (float)out[(size_t)(n << 1) + 1] * kInvMax;
+        float mag2 = I * I + Q * Q;
+
+        /* Faster update when we need to back off gain; slower when ramping up. */
+        float alpha = (mag2 > rms2) ? alpha_dn : alpha_up;
+        if (alpha < 0.0f) {
+            alpha = 0.0f;
+        }
+        if (alpha > 1.0f) {
+            alpha = 1.0f;
+        }
+        rms2 = (1.0f - alpha) * rms2 + alpha * mag2;
+        if (rms2 < 0.0f) {
+            rms2 = 0.0f;
+        }
+        rms = sqrtf(rms2);
+
+        float g = target_n / (rms + kEps);
+        if (g > 8.0f) {
+            g = 8.0f;
+        }
+        if (g < 0.125f) {
+            g = 0.125f;
+        }
+        last_g = g;
+
+        int32_t yI = (int32_t)lrintf(I * g * 32768.0f);
+        int32_t yQ = (int32_t)lrintf(Q * g * 32768.0f);
+        out[(size_t)(n << 1)] = sat16(yI);
+        out[(size_t)(n << 1) + 1] = sat16(yQ);
     }
-    int g_tgt_q15 = (int)(g_raw * 32768.0 + 0.5);
-    if (g_tgt_q15 < 512) {
-        g_tgt_q15 = 512;
-    }
-    if (g_tgt_q15 > 262144) {
-        g_tgt_q15 = 262144; /* allow >1 in Q15 via later clamp */
-    }
-    int g_q15 = d->fm_agc_gain_q15 > 0 ? d->fm_agc_gain_q15 : 32768;
-    int alpha_up = d->fm_agc_alpha_up_q15 > 0 ? d->fm_agc_alpha_up_q15 : 8192;      /* ~0.25 */
-    int alpha_dn = d->fm_agc_alpha_down_q15 > 0 ? d->fm_agc_alpha_down_q15 : 24576; /* ~0.75 */
-    int diff = g_tgt_q15 - g_q15;
-    int alpha = (diff > 0) ? alpha_up : alpha_dn;
-    g_q15 += (int)(((int64_t)alpha * (int64_t)diff) >> 15);
+    int g_q15 = (int)lrintf(last_g * 32768.0f);
     if (g_q15 < 1024) {
-        g_q15 = 1024; /* >= 1/32 */
+        g_q15 = 1024;
     }
     if (g_q15 > 262144) {
-        g_q15 = 262144; /* <= 8x */
-    }
-    /* Apply smoothed gain and collect simple post-AGC stats for auto-tune */
-    int16_t* out = d->lowpassed;
-    int clip_cnt = 0;
-    int max_abs = 0;
-    for (int n = 0; n < pairs; n++) {
-        int32_t I = out[(size_t)(n << 1) + 0];
-        int32_t Q = out[(size_t)(n << 1) + 1];
-        int32_t yI = (int32_t)(((int64_t)I * (int64_t)g_q15) >> 15);
-        int32_t yQ = (int32_t)(((int64_t)Q * (int64_t)g_q15) >> 15);
-        if (yI > 32767) {
-            yI = 32767;
-            clip_cnt++;
-        }
-        if (yI < -32768) {
-            yI = -32768;
-            clip_cnt++;
-        }
-        if (yQ > 32767) {
-            yQ = 32767;
-            clip_cnt++;
-        }
-        if (yQ < -32768) {
-            yQ = -32768;
-            clip_cnt++;
-        }
-        int aI = yI >= 0 ? yI : -yI;
-        int aQ = yQ >= 0 ? yQ : -yQ;
-        if (aI > max_abs) {
-            max_abs = aI;
-        }
-        if (aQ > max_abs) {
-            max_abs = aQ;
-        }
-        out[(size_t)(n << 1) + 0] = (int16_t)yI;
-        out[(size_t)(n << 1) + 1] = (int16_t)yQ;
+        g_q15 = 262144;
     }
     d->fm_agc_gain_q15 = g_q15;
+    d->fm_agc_ema_rms = (double)rms;
 }
 
 /* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator) */

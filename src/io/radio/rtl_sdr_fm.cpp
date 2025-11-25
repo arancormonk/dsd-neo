@@ -3222,6 +3222,7 @@ dsd_rtl_stream_set_iq_dc(int enable, int shift_k) {
                 g_raw = 0.125;
             }
             demod.fm_agc_gain_q15 = (int)(g_raw * 32768.0 + 0.5);
+            demod.fm_agc_ema_rms = rms * (1.0 / 32768.0); /* seed continuous AGC */
             if (demod.fm_agc_gain_q15 < 1024) {
                 demod.fm_agc_gain_q15 = 1024;
             }

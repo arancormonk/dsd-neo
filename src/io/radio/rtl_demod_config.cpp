@@ -189,10 +189,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->output_target = output;
 
     /* FM AGC auto-tune per-instance state */
-    s->fm_agc_auto_init = 0;
     s->fm_agc_ema_rms = 0.0;
-    s->fm_agc_clip_run = 0;
-    s->fm_agc_under_run = 0;
 
     /* Experimental CQPSK path (off by default). Enable via env DSD_NEO_CQPSK=1 */
     s->cqpsk_enable = 0;
@@ -403,6 +400,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     if (demod->fm_agc_gain_q15 <= 0) {
         demod->fm_agc_gain_q15 = 32768; /* unity */
     }
+    demod->fm_agc_ema_rms = (double)demod->fm_agc_target_rms * (1.0 / 32768.0); /* seed near target */
     demod->fm_limiter_enable = cfg->fm_limiter_is_set ? (cfg->fm_limiter_enable != 0) : 0;
     demod->iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod->iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;

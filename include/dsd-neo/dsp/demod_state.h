@@ -85,7 +85,7 @@ struct demod_state {
     int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
     struct output_state* output_target;
-    double fm_agc_ema_rms;
+    double fm_agc_ema_rms;        /* normalized RMS estimator (0..~1.0) */
     int16_t* post_polydecim_taps; /* Q15 taps length K */
     int16_t* post_polydecim_hist; /* circular history length K */
     pthread_t mt_threads[2];
@@ -223,11 +223,6 @@ struct demod_state {
     int fm_agc_min_rms;        /* minimum RMS to engage AGC (avoid boosting noise) */
     int fm_agc_alpha_up_q15;   /* smoothing when increasing gain (signal got weaker) */
     int fm_agc_alpha_down_q15; /* smoothing when decreasing gain (signal got stronger) */
-    int fm_agc_auto_enable;    /* auto-tune AGC target/alphas based on runtime stats */
-    /* FM AGC auto-tune per-instance state */
-    int fm_agc_auto_init; /* 0 until EMA initialized */
-    int fm_agc_clip_run;  /* run-length of clipping blocks */
-    int fm_agc_under_run; /* run-length of under-utilized full-scale */
 
     /* Optional constant-envelope limiter for FM/C4FM */
     int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
