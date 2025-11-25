@@ -904,7 +904,7 @@ demod_thread_fn(void* arg) {
                             }
                             double nsum = 0.0;
                             for (int i = 0; i < m; i++) {
-                                int v = vals[i];
+                                float v = vals[i];
                                 int b = (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
                                 double e = (double)v - mu[b];
                                 nsum += e * e;
@@ -946,7 +946,7 @@ demod_thread_fn(void* arg) {
                             double sumL = 0.0, sumH = 0.0;
                             int cntL = 0, cntH = 0;
                             for (int i = 0; i < m; i++) {
-                                int v = vals[i];
+                                float v = vals[i];
                                 if (v <= q2) {
                                     sumL += v;
                                     cntL++;
@@ -960,7 +960,7 @@ demod_thread_fn(void* arg) {
                                 int total = cntL + cntH;
                                 double nsum = 0.0;
                                 for (int i = 0; i < m; i++) {
-                                    int v = vals[i];
+                                    float v = vals[i];
                                     double mu = (v <= q2) ? muL : muH;
                                     double e = (double)v - mu;
                                     nsum += e * e;
