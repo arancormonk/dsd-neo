@@ -48,11 +48,18 @@ dsd_neo_costas_default_damping(void) {
 }
 
 /**
- * @brief Run Costas loop rotation and loop update on interleaved I/Q in-place.
+ * @brief Combined Costas NCO + differential decode + loop update with per-sample feedback.
  *
- * Uses demod_state configuration for loop bandwidth and damping.
+ * OP25-style: Performs NCO rotation, differential decoding, phase error detection,
+ * and loop update in a single per-sample loop. This maintains proper PLL feedback
+ * where each sample's correction is applied before processing the next sample.
+ *
+ * Expects raw IQ samples in lowpassed buffer. Output is differential phasors
+ * ready for phase extraction.
+ *
+ * @param d Demodulator state (modifies lowpassed in-place to diff phasors).
  */
-void cqpsk_costas_mix_and_update(struct demod_state* d);
+void cqpsk_costas_diff_and_update(struct demod_state* d);
 
 #ifdef __cplusplus
 }

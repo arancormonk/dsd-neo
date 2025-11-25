@@ -1445,8 +1445,15 @@ full_demod(struct demod_state* d) {
     d->cqpsk_fll_rot_applied = 0;
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
-        /* OP25 CQPSK chain:
-           channel LPF (above) -> RMS AGC -> band-edge FLL -> Gardner -> diff_phasor -> Costas -> arg/rescale -> slicer */
+        /* OP25 CQPSK chain (gardner_costas_cc signal flow):
+           channel LPF (above) -> RMS AGC -> band-edge FLL -> Gardner -> [Costas+diff combined] -> arg/rescale -> slicer
+
+           Key insight from OP25's gardner_costas_cc:
+           - NCO rotation, differential decoding, and phase error detection happen
+             in a SINGLE per-sample loop with immediate feedback
+           - Each sample sees the loop correction from the previous sample
+           - This is implemented in cqpsk_costas_diff_and_update()
+        */
         cqpsk_rms_agc(d);
         /* Band-edge FLL (always active when enabled, OP25 style) */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2) {
@@ -1494,16 +1501,20 @@ full_demod(struct demod_state* d) {
             d->cqpsk_acq_quiet_runs = 0;
             d->cqpsk_acq_fll_locked = 0;
         }
-        /* Timing error correction after FLL (Gardner), matching OP25 ordering. */
+        /* Timing error correction after FLL (Gardner), before Costas+diff. */
         if (d->ted_enabled && d->ted_sps >= 2 && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
             gardner_timing_adjust(d);
         }
-        /* OP25-style differential phasor ahead of the Costas loop. */
-        cqpsk_diff_phasor(d);
-        /* Carrier recovery (always run Costas for CQPSK),
-           but skip during unit tests that use raw_demod. */
+        /* OP25-style combined Costas + differential decode with per-sample feedback.
+           This performs NCO rotation -> diff decode -> phase error -> loop update
+           in a single pass, ensuring each sample sees the correction from previous samples.
+           Output is differential phasors ready for phase extraction.
+           Skip during unit tests that use raw_demod. */
         if (d->mode_demod != &raw_demod) {
-            cqpsk_costas_mix_and_update(d);
+            cqpsk_costas_diff_and_update(d);
+        } else {
+            /* For raw_demod tests, just do differential decoding without Costas */
+            cqpsk_diff_phasor(d);
         }
     } else {
         /* Baseband conditioning order (FM/C4FM):
