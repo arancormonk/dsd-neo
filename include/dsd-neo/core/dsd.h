@@ -552,6 +552,9 @@ float nxdn_filter(float sample);
 float dpmr_filter(float sample);
 /** @brief FIR filter for M17 baseband samples. */
 float m17_filter(float sample);
+/** @brief FIR de-emphasis filter for P25 C4FM baseband samples (OP25 compatible).
+ *  Sinc-based filter that inverts C4FM transmitter preemphasis. */
+float p25_filter(float sample);
 
 //utility functions
 /** @brief Pack a little-endian bit vector into bytes. */
