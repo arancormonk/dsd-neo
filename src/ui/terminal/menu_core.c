@@ -3868,30 +3868,34 @@ act_ted_sps_dn(void* v) {
 static const char*
 lbl_ted_gain(void* v, char* b, size_t n) {
     UNUSED(v);
-    int g = rtl_stream_get_ted_gain();
-    snprintf(b, n, "TED Gain (Q20): %d (+/-)", g);
+    float g = rtl_stream_get_ted_gain();
+    /* Display as integer milli-units for easier UI manipulation (e.g., 25 = 0.025) */
+    int g_milli = (int)(g * 1000.0f + 0.5f);
+    snprintf(b, n, "TED Gain: %d (x0.001, +/-)", g_milli);
     return b;
 }
 
 static void
 act_ted_gain_up(void* v) {
     UNUSED(v);
-    int g = rtl_stream_get_ted_gain();
-    if (g < 512) {
-        g += 8;
+    float g = rtl_stream_get_ted_gain();
+    int g_milli = (int)(g * 1000.0f + 0.5f);
+    if (g_milli < 500) { /* max 0.5 */
+        g_milli += 5;    /* step by 0.005 */
     }
-    UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g};
+    UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g_milli};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
 static void
 act_ted_gain_dn(void* v) {
     UNUSED(v);
-    int g = rtl_stream_get_ted_gain();
-    if (g > 16) {
-        g -= 8;
+    float g = rtl_stream_get_ted_gain();
+    int g_milli = (int)(g * 1000.0f + 0.5f);
+    if (g_milli > 10) { /* min 0.01 */
+        g_milli -= 5;   /* step by 0.005 */
     }
-    UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g};
+    UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g_milli};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 

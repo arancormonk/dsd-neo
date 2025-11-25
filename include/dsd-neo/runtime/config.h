@@ -200,12 +200,6 @@ typedef struct dsdneoRuntimeConfig {
     double costas_loop_bw;
     int costas_damping_is_set;
     double costas_damping;
-    int costas_order_is_set;
-    int costas_order;
-    int costas_use_snr_is_set;
-    int costas_use_snr;
-    int costas_noise_db_is_set;
-    double costas_noise_db;
 
     /* Gardner TED - native float parameters */
     int ted_is_set;

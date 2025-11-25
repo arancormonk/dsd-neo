@@ -26,8 +26,8 @@ int dsd_rtl_stream_ted_bias(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
 void dsd_rtl_stream_set_ted_sps(int sps);
 int dsd_rtl_stream_get_ted_sps(void);
-void dsd_rtl_stream_set_ted_gain(int g);
-int dsd_rtl_stream_get_ted_gain(void);
+void dsd_rtl_stream_set_ted_gain(float g);
+float dsd_rtl_stream_get_ted_gain(void);
 void dsd_rtl_stream_set_ted_force(int onoff);
 int dsd_rtl_stream_get_ted_force(void);
 /* Bias tee control implemented in rtl_sdr_fm.cpp */

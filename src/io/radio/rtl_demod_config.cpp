@@ -14,8 +14,6 @@
 
 #include <dsd-neo/io/rtl_demod_config.h>
 
-#include <math.h>
-
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -30,7 +28,6 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
 
-#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -354,9 +351,6 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     cl->alpha = 0.0f;
     cl->beta = 0.0f;
     cl->error = 0.0f;
-    cl->noise = cfg->costas_noise_db_is_set ? (float)pow(10.0, cfg->costas_noise_db / 10.0) : 1.0f;
-    cl->order = cfg->costas_order_is_set ? cfg->costas_order : 4;
-    cl->use_snr = cfg->costas_use_snr_is_set ? cfg->costas_use_snr : 0;
     cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
 

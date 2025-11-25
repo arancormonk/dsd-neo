@@ -17,57 +17,15 @@
 
 #include <cmath>
 #include <complex>
-#include <cstdint>
 
 namespace {
 
 constexpr float kTwoPi = 6.28318530717958647692f;
-constexpr float kQ15ToRad = kTwoPi / 32768.0f;
-constexpr float kRadToQ15 = 32768.0f / kTwoPi;
+constexpr float kPiOver4 = 0.78539816339744830962f;
 
-/* LUT copied from GNU Radio blocks/control_loop.h */
-static const float kTanhLut[256] = {
-    -0.96402758, -0.96290241, -0.96174273, -0.96054753, -0.95931576, -0.95804636, -0.95673822, -0.95539023, -0.95400122,
-    -0.95257001, -0.95109539, -0.9495761,  -0.94801087, -0.94639839, -0.94473732, -0.94302627, -0.94126385, -0.93944862,
-    -0.93757908, -0.93565374, -0.93367104, -0.93162941, -0.92952723, -0.92736284, -0.92513456, -0.92284066, -0.92047938,
-    -0.91804891, -0.91554743, -0.91297305, -0.91032388, -0.90759795, -0.9047933,  -0.90190789, -0.89893968, -0.89588656,
-    -0.89274642, -0.88951709, -0.88619637, -0.88278203, -0.87927182, -0.87566342, -0.87195453, -0.86814278, -0.86422579,
-    -0.86020115, -0.85606642, -0.85181914, -0.84745683, -0.84297699, -0.83837709, -0.83365461, -0.82880699, -0.82383167,
-    -0.81872609, -0.81348767, -0.80811385, -0.80260204, -0.7969497,  -0.79115425, -0.78521317, -0.77912392, -0.772884,
-    -0.76649093, -0.75994227, -0.75323562, -0.74636859, -0.73933889, -0.73214422, -0.7247824,  -0.71725127, -0.70954876,
-    -0.70167287, -0.6936217,  -0.68539341, -0.67698629, -0.66839871, -0.65962916, -0.65067625, -0.64153871, -0.6322154,
-    -0.62270534, -0.61300768, -0.60312171, -0.59304692, -0.58278295, -0.57232959, -0.56168685, -0.55085493, -0.53983419,
-    -0.52862523, -0.51722883, -0.50564601, -0.49387799, -0.48192623, -0.46979241, -0.45747844, -0.44498647, -0.4323189,
-    -0.41947836, -0.40646773, -0.39329014, -0.37994896, -0.36644782, -0.35279057, -0.33898135, -0.32502449, -0.31092459,
-    -0.2966865,  -0.28231527, -0.26781621, -0.25319481, -0.23845682, -0.22360817, -0.208655,   -0.19360362, -0.17846056,
-    -0.16323249, -0.14792623, -0.13254879, -0.11710727, -0.10160892, -0.08606109, -0.07047123, -0.05484686, -0.0391956,
-    -0.02352507, -0.00784298, 0.00784298,  0.02352507,  0.0391956,   0.05484686,  0.07047123,  0.08606109,  0.10160892,
-    0.11710727,  0.13254879,  0.14792623,  0.16323249,  0.17846056,  0.19360362,  0.208655,    0.22360817,  0.23845682,
-    0.25319481,  0.26781621,  0.28231527,  0.2966865,   0.31092459,  0.32502449,  0.33898135,  0.35279057,  0.36644782,
-    0.37994896,  0.39329014,  0.40646773,  0.41947836,  0.4323189,   0.44498647,  0.45747844,  0.46979241,  0.48192623,
-    0.49387799,  0.50564601,  0.51722883,  0.52862523,  0.53983419,  0.55085493,  0.56168685,  0.57232959,  0.58278295,
-    0.59304692,  0.60312171,  0.61300768,  0.62270534,  0.6322154,   0.64153871,  0.65067625,  0.65962916,  0.66839871,
-    0.67698629,  0.68539341,  0.6936217,   0.70167287,  0.70954876,  0.71725127,  0.7247824,   0.73214422,  0.73933889,
-    0.74636859,  0.75323562,  0.75994227,  0.76649093,  0.772884,    0.77912392,  0.78521317,  0.79115425,  0.7969497,
-    0.80260204,  0.80811385,  0.81348767,  0.81872609,  0.82383167,  0.82880699,  0.83365461,  0.83837709,  0.84297699,
-    0.84745683,  0.85181914,  0.85606642,  0.86020115,  0.86422579,  0.86814278,  0.87195453,  0.87566342,  0.87927182,
-    0.88278203,  0.88619637,  0.88951709,  0.89274642,  0.89588656,  0.89893968,  0.90190789,  0.9047933,   0.90759795,
-    0.91032388,  0.91297305,  0.91554743,  0.91804891,  0.92047938,  0.92284066,  0.92513456,  0.92736284,  0.92952723,
-    0.93162941,  0.93367104,  0.93565374,  0.93757908,  0.93944862,  0.94126385,  0.94302627,  0.94473732,  0.94639839,
-    0.94801087,  0.9495761,   0.95109539,  0.95257001,  0.95400122,  0.95539023,  0.95673822,  0.95804636,  0.95931576,
-    0.96054753,  0.96174273,  0.96290241,  0.96402758};
-
-static inline float
-tanhf_lut(float x) {
-    if (x > 2.0f) {
-        return 1.0f;
-    }
-    if (x <= -2.0f) {
-        return -1.0f;
-    }
-    int index = 128 + static_cast<int>(64.0f * x);
-    return kTanhLut[index];
-}
+/* OP25 PT_45: 45-degree rotation phasor for CQPSK constellation alignment.
+ * CQPSK symbols sit at ±45° and ±135°; rotating by 45° aligns them to axes. */
+static const std::complex<float> kPT45 = std::polar(1.0f, kPiOver4);
 
 static inline float
 branchless_clip(float x, float clip) {
@@ -110,57 +68,19 @@ frequency_limit(dsd_costas_loop_state_t* c) {
     }
 }
 
+/*
+ * OP25-style QPSK phase detector for CQPSK after PT_45 rotation.
+ *
+ * Unlike the GNU Radio phase_detector_4, this version selects either ±imag
+ * or ±real based on which axis the sample is closer to. This gives near-zero
+ * error for samples on the I/Q axes (where CQPSK symbols land after PT_45).
+ */
 static inline float
-phase_detector_8(const std::complex<float>& sample) {
-    const float K = (std::sqrt(2.0f) - 1.0f);
-    if (fabsf(sample.real()) >= fabsf(sample.imag())) {
-        return ((sample.real() > 0.0f ? 1.0f : -1.0f) * sample.imag()
-                - (sample.imag() > 0.0f ? 1.0f : -1.0f) * sample.real() * K);
-    }
-    return ((sample.real() > 0.0f ? 1.0f : -1.0f) * sample.imag() * K
-            - (sample.imag() > 0.0f ? 1.0f : -1.0f) * sample.real());
-}
-
-static inline float
-phase_detector_4(const std::complex<float>& sample) {
-    return ((sample.real() > 0.0f ? 1.0f : -1.0f) * sample.imag()
-            - (sample.imag() > 0.0f ? 1.0f : -1.0f) * sample.real());
-}
-
-static inline float
-phase_detector_2(const std::complex<float>& sample) {
-    return sample.real() * sample.imag();
-}
-
-static inline float
-phase_detector_snr_8(const std::complex<float>& sample, float noise) {
-    const float K = (std::sqrt(2.0f) - 1.0f);
-    const float snr = std::norm(sample) / noise;
-    if (fabsf(sample.real()) >= fabsf(sample.imag())) {
-        return (tanhf_lut(snr * sample.real()) * sample.imag()) - (tanhf_lut(snr * sample.imag()) * sample.real() * K);
-    }
-    return (tanhf_lut(snr * sample.real()) * sample.imag() * K) - (tanhf_lut(snr * sample.imag()) * sample.real());
-}
-
-static inline float
-phase_detector_snr_4(const std::complex<float>& sample, float noise) {
-    const float snr = std::norm(sample) / noise;
-    return (tanhf_lut(snr * sample.real()) * sample.imag()) - (tanhf_lut(snr * sample.imag()) * sample.real());
-}
-
-static inline float
-phase_detector_snr_2(const std::complex<float>& sample, float noise) {
-    const float snr = std::norm(sample) / noise;
-    return tanhf_lut(snr * sample.real()) * sample.imag();
-}
-
-static float
-detect_error(const std::complex<float>& sample, const dsd_costas_loop_state_t* c) {
-    switch (c->order) {
-        case 2: return c->use_snr ? phase_detector_snr_2(sample, c->noise) : phase_detector_2(sample);
-        case 8: return c->use_snr ? phase_detector_snr_8(sample, c->noise) : phase_detector_8(sample);
-        case 4:
-        default: return c->use_snr ? phase_detector_snr_4(sample, c->noise) : phase_detector_4(sample);
+phase_detector_4_op25(const std::complex<float>& sample) {
+    if (fabsf(sample.real()) > fabsf(sample.imag())) {
+        return (sample.real() > 0.0f) ? -sample.imag() : sample.imag();
+    } else {
+        return (sample.imag() > 0.0f) ? sample.real() : -sample.real();
     }
 }
 
@@ -180,12 +100,6 @@ prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
         float tmp = c->max_freq;
         c->max_freq = c->min_freq;
         c->min_freq = tmp;
-    }
-    if (c->order != 2 && c->order != 4 && c->order != 8) {
-        c->order = 4;
-    }
-    if (c->noise <= 0.0f) {
-        c->noise = 1.0f;
     }
     update_gains(c);
 
@@ -220,20 +134,47 @@ cqpsk_costas_mix_and_update(struct demod_state* d) {
     float* iq = d->lowpassed;
     float err_acc = 0.0f;
 
+    /*
+     * CQPSK Costas loop with OP25-style phase detection:
+     *
+     * At this point, iq[] contains differential phasors from cqpsk_diff_phasor():
+     *   diffdec[n] = sample[n] * conj(sample[n-1])
+     *
+     * For CQPSK, symbols sit at ±45° and ±135°. OP25's phase_error_tracking()
+     * rotates by PT_45 (45°) to align the constellation to I/Q axes before
+     * running the standard QPSK phase detector.
+     *
+     * Key operations:
+     * 1. Apply NCO rotation to correct residual CFO/phase offset
+     * 2. Compute phase error from (rotated_diffdec * PT_45) for CQPSK alignment
+     * 3. Update loop state (phase, frequency)
+     * 4. Write NCO-corrected phasors back for downstream phase extraction
+     *
+     * Note on differential domain: A constant frequency offset ω in the raw
+     * samples appears as a constant phase offset in the differential domain.
+     * Thus, NCO rotation of differential phasors effectively corrects CFO.
+     */
     for (int i = 0; i < pairs; i++) {
-        std::complex<float> s(iq[(i << 1) + 0], iq[(i << 1) + 1]);
+        std::complex<float> diffdec(iq[(i << 1) + 0], iq[(i << 1) + 1]);
+
+        /* Apply NCO rotation to correct carrier offset */
         std::complex<float> nco = std::polar(1.0f, -c->phase);
-        std::complex<float> y = s * nco;
+        std::complex<float> corrected = diffdec * nco;
 
-        iq[(i << 1) + 0] = y.real();
-        iq[(i << 1) + 1] = y.imag();
+        /* Write corrected phasor back for downstream phase extraction */
+        iq[(i << 1) + 0] = corrected.real();
+        iq[(i << 1) + 1] = corrected.imag();
 
-        float err_raw = detect_error(y, c);
+        /* OP25-style phase detection: rotate by PT_45 to align CQPSK to axes */
+        std::complex<float> rotated = corrected * kPT45;
+
+        /* Use OP25's phase detector which handles axis-aligned samples correctly */
+        float err_raw = phase_detector_4_op25(rotated);
         float err_loop = branchless_clip(err_raw, 1.0f);
 
         /* Diagnostic: normalize the raw detector output (pre-clipping) by magnitude. */
-        float mag_r = fabsf(y.real());
-        float mag_i = fabsf(y.imag());
+        float mag_r = fabsf(rotated.real());
+        float mag_i = fabsf(rotated.imag());
         float mag = (mag_i > mag_r) ? mag_i : mag_r;
         float err_diag_raw = err_raw;
         if (mag > 1.0f) {

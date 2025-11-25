@@ -590,9 +590,9 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     /* Show TED status and basic timing metrics regardless of modulation so forced TED is visible. */
     {
         int ted_sps = rtl_stream_get_ted_sps();
-        int ted_gain = rtl_stream_get_ted_gain();
+        float ted_gain = rtl_stream_get_ted_gain();
         int ted_bias = rtl_stream_ted_bias(NULL);
-        ui_print_kv_line("TED", "[%s] sps:%d g:%d bias:%d%s", ted ? "On" : "Off", ted_sps, ted_gain, ted_bias,
+        ui_print_kv_line("TED", "[%s] sps:%d g:%.3f bias:%d%s", ted ? "On" : "Off", ted_sps, ted_gain, ted_bias,
                          ted_force ? " force" : "");
     }
     if (mod == 1 || cq) {

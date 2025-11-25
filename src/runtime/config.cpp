@@ -120,19 +120,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     /* CQPSK Costas loop (carrier recovery) using GNU Radio control loop */
     const char* cbw = getenv("DSD_NEO_COSTAS_BW");
     const char* cdp = getenv("DSD_NEO_COSTAS_DAMPING");
-    const char* cor = getenv("DSD_NEO_COSTAS_ORDER");
-    const char* csnr = getenv("DSD_NEO_COSTAS_USE_SNR");
-    const char* cndb = getenv("DSD_NEO_COSTAS_NOISE_DB");
     c.costas_bw_is_set = env_is_set(cbw);
     c.costas_damping_is_set = env_is_set(cdp);
-    c.costas_order_is_set = env_is_set(cor);
-    c.costas_use_snr_is_set = env_is_set(csnr);
-    c.costas_noise_db_is_set = env_is_set(cndb);
     c.costas_loop_bw = c.costas_bw_is_set ? atof(cbw) : dsd_neo_costas_default_loop_bw();
     c.costas_damping = c.costas_damping_is_set ? atof(cdp) : dsd_neo_costas_default_damping();
-    c.costas_order = c.costas_order_is_set ? atoi(cor) : 4;
-    c.costas_use_snr = (c.costas_use_snr_is_set && csnr[0] == '1') ? 1 : 0;
-    c.costas_noise_db = c.costas_noise_db_is_set ? atof(cndb) : 0.0;
 
     /* TED - native float Gardner timing gain */
     const char* ted = getenv("DSD_NEO_TED");

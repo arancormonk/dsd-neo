@@ -1550,13 +1550,15 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     break;
                 }
                 case UI_DSP_OP_TED_GAIN_SET: {
-                    int g = p.a;
-                    if (g < 0) {
-                        g = 0;
+                    /* p.a is gain in milli-units (e.g., 25 = 0.025) */
+                    int g_milli = p.a;
+                    if (g_milli < 10) {
+                        g_milli = 10; /* min 0.01 */
                     }
-                    if (g > 100) {
-                        g = 100;
+                    if (g_milli > 500) {
+                        g_milli = 500; /* max 0.5 */
                     }
+                    float g = (float)g_milli * 0.001f;
                     rtl_stream_set_ted_gain(g);
                     break;
                 }

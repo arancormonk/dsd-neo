@@ -243,7 +243,7 @@ cmake --build build/dev-release --target uninstall
 
   - Deemphasis/post‑filters: `DSD_NEO_DEEMPH=off|50|75|nfm`, `DSD_NEO_AUDIO_LPF=<Hz>`.
   - C4FM helpers and Costas tuning: `DSD_NEO_C4FM_CLK=el|mm`, `DSD_NEO_C4FM_CLK_SYNC=1`,
-    `DSD_NEO_COSTAS_BW/DAMPING/ORDER/USE_SNR/NOISE_DB`.
+    `DSD_NEO_COSTAS_BW/DAMPING`.
   - Experimental helpers: `DSD_NEO_CHANNEL_LPF=1`.
   - Misc: `DSD_NEO_MT=1` enables the light worker pool; `DSD_NEO_PDU_JSON=1` emits P25 MAC/VPDU JSON to stdout.
 

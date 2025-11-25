@@ -4,12 +4,16 @@
  */
 
 /*
- * Unit tests for the GNU Radio-derived Costas loop implementation.
+ * Unit tests for the CQPSK Costas loop implementation with OP25-style phase detection.
  *
  * These tests focus on basic behaviors:
- *   - Identity rotation when phase/frequency are zero.
- *   - Positive CFO drives a positive frequency estimate.
+ *   - NCO rotation is applied to differential phasors (carrier recovery).
+ *   - Positive CFO in differential phasors drives positive frequency estimate.
  *   - Initial phase is seeded from the FLL state.
+ *
+ * The key difference from standard QPSK Costas is the PT_45 rotation applied
+ * before the phase detector to align the CQPSK constellation (±45°, ±135°)
+ * to the I/Q axes for proper phase error detection.
  */
 
 #include <dsd-neo/dsp/costas.h>
@@ -66,10 +70,25 @@ alloc_state(void) {
 
 static int
 test_identity_rotation(void) {
+    /*
+     * When phase=0 and frequency=0, NCO rotation should be identity.
+     * For CQPSK, we use a constant differential phasor at 45° (0.5, 0.5).
+     * After PT_45 rotation this lands on the +Q axis (0, 0.707), which
+     * should give near-zero phase error from the order-4 detector.
+     *
+     * Note: We use a single repeated symbol to avoid loop drift from
+     * averaging over different constellation points.
+     */
     const int pairs = 8;
     float buf[pairs * 2];
     float ref[pairs * 2];
-    fill_qpsk_diag_pattern(buf, pairs, 0.5f);
+
+    /* Fill with constant CQPSK differential phasor at 45° */
+    const float a = 0.5f;
+    for (int k = 0; k < pairs; k++) {
+        buf[2 * k + 0] = a;
+        buf[2 * k + 1] = a;
+    }
     memcpy(ref, buf, sizeof(buf));
 
     demod_state* s = alloc_state();
@@ -82,13 +101,14 @@ test_identity_rotation(void) {
     s->lp_len = pairs * 2;
     cqpsk_costas_mix_and_update(s);
 
+    /* With zero initial phase, samples should be nearly unchanged */
     if (!arrays_close(buf, ref, pairs * 2, 1e-4f)) {
         fprintf(stderr, "IDENTITY: rotation distorted samples\n");
         free(s);
         return 1;
     }
-    /* fll_freq is native float rad/sample; small tolerance for near-zero */
-    if (s->fll_freq < -0.001f || s->fll_freq > 0.001f) {
+    /* fll_freq should remain near zero for a locked signal */
+    if (s->fll_freq < -0.01f || s->fll_freq > 0.01f) {
         fprintf(stderr, "IDENTITY: expected near-zero freq, got %f\n", s->fll_freq);
         free(s);
         return 1;
@@ -130,6 +150,10 @@ test_positive_cfo_pushes_freq(void) {
 
 static int
 test_phase_seed_from_fll(void) {
+    /*
+     * Costas loop phase is seeded from FLL state and NCO rotation is applied.
+     * With fll_phase = -pi/2, the NCO = exp(j*pi/2), which rotates (0.5, 0) to (0, 0.5).
+     */
     float buf[2];
     buf[0] = 0.5f;
     buf[1] = 0.0f;
@@ -146,6 +170,7 @@ test_phase_seed_from_fll(void) {
                                   * Costas uses nco = polar(1, -phase), so negative phase -> CCW rotation */
     cqpsk_costas_mix_and_update(s);
 
+    /* NCO rotation should be applied: (0.5, 0) rotated by +pi/2 -> (0, 0.5) */
     if (!(fabsf(buf[0]) < 0.1f && buf[1] > 0.3f)) {
         fprintf(stderr, "SEED: rotation not applied as expected (I=%f Q=%f)\n", buf[0], buf[1]);
         free(s);

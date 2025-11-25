@@ -31,9 +31,6 @@ typedef struct {
     float alpha;
     float beta;
     float error;
-    float noise;
-    int order;
-    int use_snr;
     int initialized;
 } dsd_costas_loop_state_t;
 
@@ -53,7 +50,7 @@ dsd_neo_costas_default_damping(void) {
 /**
  * @brief Run Costas loop rotation and loop update on interleaved I/Q in-place.
  *
- * Uses demod_state configuration to select detector order and toggles.
+ * Uses demod_state configuration for loop bandwidth and damping.
  */
 void cqpsk_costas_mix_and_update(struct demod_state* d);
 
