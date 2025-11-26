@@ -16,6 +16,13 @@
 #include <string.h>
 #include <time.h>
 
+// COFF/Windows archives can drop weak symbols; make wrappers strong there.
+#if defined(_WIN32) || defined(__CYGWIN__)
+#define P25_WEAK_API
+#else
+#define P25_WEAK_API __attribute__((weak))
+#endif
+
 /* ============================================================================
  * Weak fallbacks for tuning functions (overridden by io/control when linked)
  * ============================================================================ */
@@ -1014,7 +1021,7 @@ p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid
  * Neighbor Update and CC Candidate Functions
  * ============================================================================ */
 
-__attribute__((weak)) void
+P25_WEAK_API void
 p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     if (count <= 0 || !state || !freqs) {
         return;
@@ -1034,7 +1041,7 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     }
 }
 
-__attribute__((weak)) int
+P25_WEAK_API int
 p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
     if (!state || !out_freq) {
         return 0;
@@ -1119,29 +1126,29 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
  * These use weak symbols to allow tests to override them with stubs.
  * ============================================================================ */
 
-__attribute__((weak)) void
+P25_WEAK_API void
 p25_sm_init(dsd_opts* opts, dsd_state* state) {
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, dst, src, svc_bits);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 p25_sm_tick(dsd_opts* opts, dsd_state* state) {
     p25_sm_tick_ctx(p25_sm_get_ctx(), opts, state);
 }
