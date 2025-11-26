@@ -302,29 +302,11 @@ target_link_libraries(dsd-neo_test_p25_p2_vpdu_enc_flush PRIVATE dsd-neo_proto_p
 add_test(NAME P25_P2_VPDU_ENC_FLUSH COMMAND dsd-neo_test_p25_p2_vpdu_enc_flush)
 
 
-# P25 trunk SM CC cache persist/load and candidate iteration
-add_executable(dsd-neo_test_p25_trunk_cc_cache protocol/p25/test_p25_trunk_cc_cache.c)
-target_include_directories(dsd-neo_test_p25_trunk_cc_cache PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_trunk_cc_cache PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_TRUNK_CC_CACHE COMMAND dsd-neo_test_p25_trunk_cc_cache)
-
 # P25 CC cache path builder (identity and RFSS/SITE scoping)
 add_executable(dsd-neo_test_p25_cc_cache_path protocol/p25/test_p25_cc_cache_path.c)
 target_include_directories(dsd-neo_test_p25_cc_cache_path PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_cc_cache_path PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_CC_CACHE_PATH COMMAND dsd-neo_test_p25_cc_cache_path)
-
-# Minimal call follower core transitions
-add_executable(dsd-neo_test_p25_min_follower_core protocol/p25/test_p25_min_follower_core.c)
-target_include_directories(dsd-neo_test_p25_min_follower_core PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_min_follower_core PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_MIN_FOLLOWER_CORE COMMAND dsd-neo_test_p25_min_follower_core)
-
-# P25 min follower: ensure its return forces trunk SM release past gating
-add_executable(dsd-neo_test_p25_min_return_forces_release protocol/p25/test_p25_min_return_forces_release.c)
-target_include_directories(dsd-neo_test_p25_min_return_forces_release PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_min_return_forces_release PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_MIN_RETURN_FORCES_RELEASE COMMAND dsd-neo_test_p25_min_return_forces_release)
 
 # P25 P2 early ENC lockout per-slot gating (stay on VC when other slot active)
 add_executable(dsd-neo_test_p25_p2_early_enc_lockout protocol/p25/test_p25_p2_early_enc_lockout.c)
@@ -363,29 +345,11 @@ target_include_directories(dsd-neo_test_p25_freq_fallback_tdma PRIVATE ${PROJECT
 target_link_libraries(dsd-neo_test_p25_freq_fallback_tdma PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_FREQ_FALLBACK_TDMA COMMAND dsd-neo_test_p25_freq_fallback_tdma)
 
-# P25 P2 release gating semantics
-add_executable(dsd-neo_test_p25_p2_release_gating protocol/p25/test_p25_p2_release_gating.c)
-target_include_directories(dsd-neo_test_p25_p2_release_gating PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_p2_release_gating PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_P2_RELEASE_GATING COMMAND dsd-neo_test_p25_p2_release_gating)
-
 # P25 regroup/patch tracking
 add_executable(dsd-neo_test_p25_patch_tracking protocol/p25/test_p25_patch_tracking.c)
 target_include_directories(dsd-neo_test_p25_patch_tracking PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
 target_link_libraries(dsd-neo_test_p25_patch_tracking PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_PATCH_TRACKING COMMAND dsd-neo_test_p25_patch_tracking)
-
-# P25 P2 SM should defer release when right slot has activity
-add_executable(dsd-neo_test_p25_p2_sm_right_slot_active protocol/p25/test_p25_p2_sm_right_slot_active.c)
-target_include_directories(dsd-neo_test_p25_p2_sm_right_slot_active PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_p2_sm_right_slot_active PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_P2_SM_RIGHT_SLOT_ACTIVE COMMAND dsd-neo_test_p25_p2_sm_right_slot_active)
-
-# P25 P2 SM safety-net release after hangtime+extra
-add_executable(dsd-neo_test_p25_p2_sm_safety_net_release protocol/p25/test_p25_p2_sm_safety_net_release.c)
-target_include_directories(dsd-neo_test_p25_p2_sm_safety_net_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_p2_sm_safety_net_release PRIVATE dsd-neo_proto_p25)
-add_test(NAME P25_P2_SM_SAFETY_NET_RELEASE COMMAND dsd-neo_test_p25_p2_sm_safety_net_release)
 
 # P25 grant trust clamp
 add_executable(dsd-neo_test_p25_grant_trust_clamp protocol/p25/test_p25_grant_trust_clamp.c)
@@ -435,12 +399,11 @@ target_include_directories(dsd-neo_test_p25_neighbor_spam PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_p25_neighbor_spam PRIVATE dsd-neo_proto_p25 dsd-neo_core)
 add_test(NAME P25_NEIGHBOR_SPAM COMMAND dsd-neo_test_p25_neighbor_spam)
 
-# P25 trunk SM fuzz (liveness under randomized sequences)
-add_executable(dsd-neo_test_p25_trunk_sm_fuzz protocol/p25/test_p25_trunk_sm_fuzz.c)
-# Include local P25 stubs first (e.g., mbelib.h)
-target_include_directories(dsd-neo_test_p25_trunk_sm_fuzz PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_trunk_sm_fuzz PRIVATE dsd-neo_proto_p25 dsd-neo_core)
-add_test(NAME P25_TRUNK_SM_FUZZ COMMAND dsd-neo_test_p25_trunk_sm_fuzz)
+# P25 Unified SM v2 tests
+add_executable(dsd-neo_test_p25_sm_v2_core protocol/p25/test_p25_sm_v2_core.c)
+target_include_directories(dsd-neo_test_p25_sm_v2_core PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_sm_v2_core PRIVATE dsd-neo_proto_p25 dsd-neo_core)
+add_test(NAME P25_SM_V2_CORE COMMAND dsd-neo_test_p25_sm_v2_core)
 
 # DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
 # M17 protocol tests

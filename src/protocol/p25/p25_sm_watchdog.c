@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/core/dsd.h>
-#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <pthread.h>
@@ -32,9 +31,6 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
         atomic_store(&g_p25_sm_in_tick, 1);
         // Drive the high-level trunk SM tick
         p25_sm_tick(opts, state);
-        // Drive the minimal P25p2 follower tick so grant→voice and hang
-        // timers are enforced independently of frame processing cadence.
-        dsd_p25p2_min_tick(dsd_p25p2_min_get(), opts, state);
         atomic_store(&g_p25_sm_in_tick, 0);
         atomic_store(&g_p25_sm_tick_lock, 0);
     }

@@ -13,7 +13,6 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
@@ -202,12 +201,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n  CHAN [%04X] Group [%d][%04X]", channel, sgroup, sgroup);
             freq = process_channel_to_freq(opts, state, channel);
 
-            // Minimal SM: emit GRANT
-            {
-                dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel, freq};
-                dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-            }
-
             //add active channel to string for ncurses display
             char suf_m90a[32];
             p25_format_chan_suffix(state, (uint16_t)channel, -1, suf_m90a, sizeof suf_m90a);
@@ -275,12 +268,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n MFID90 Group Regroup Channel Grant - Explicit");
             fprintf(stderr, "\n  CHAN [%04X] Group [%d][%04X]", channel, sgroup, sgroup);
             freq = process_channel_to_freq(opts, state, channel);
-
-            // Minimal SM: emit GRANT
-            {
-                dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel, freq};
-                dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-            }
 
             //add active channel to string for ncurses display
             char suf_m90b[32];
@@ -352,12 +339,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (channel2 != channel1 && channel2 != 0 && channel2 != 0xFFFF) {
                 fprintf(stderr, "\n  Channel 2 [%04X] Group 2 [%d][%04X]", channel2, group2, group2);
                 freq2 = process_channel_to_freq(opts, state, channel2);
-            }
-
-            // Minimal SM: emit GRANT for first channel; multi grants handled individually below when tuning
-            if (freq1 != 0) {
-                dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel1, freq1};
-                dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
             }
 
             //add active channel to string for ncurses display
@@ -544,11 +525,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
                     p25p2_mac_handle(&mac_res, opts, state, channel, svc, group, source);
                 }
-            }
-            // Minimal SM: emit GRANT
-            if (freq != 0) {
-                dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel, freq};
-                dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
             }
             //if playing back files, and we still want to see what freqs are in use in the ncurses terminal
             //might only want to do these on a grant update, and not a grant by itself?
@@ -955,11 +931,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                         p25p2_mac_handle(&mac_res, opts, state, tunable_chan, svc_bits, tunable_group, /*src*/ 0);
                     }
                 }
-                // Minimal SM: emit GRANT
-                if (tunable_freq != 0 && tunable_chan != 0) {
-                    dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, tunable_chan, tunable_freq};
-                    dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-                }
                 if (opts->p25_trunk == 0) {
                     if (tunable_group == state->lasttg || tunable_group == state->lasttgR) {
                         //P1 FDMA
@@ -1040,12 +1011,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 }
                 freq2 = process_channel_to_freq(opts, state, channel2);
             }
-            // Minimal SM: emit grant for primary
-            if (freq1 != 0) {
-                dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_GRANT, -1, channel1, freq1};
-                dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-            }
-
             if (channel3 != channel2 && channel3 != 0 && channel3 != 0xFFFF) {
                 fprintf(stderr, "\n  Channel 3 [%04X] Group 3 [%d][%04X]", channel3, group3, group3);
                 if (so3 & 0x80) {

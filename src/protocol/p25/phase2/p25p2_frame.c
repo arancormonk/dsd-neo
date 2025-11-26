@@ -17,8 +17,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
@@ -456,11 +456,8 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     int s = 0;
     int t = 0;
 
-    // Notify minimal P25p2 follower that voice activity is present on this slot
-    {
-        dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
-        dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-    }
+    // SM event: ACTIVE on current slot
+    p25_sm_v2_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
     // Mark recent voice on every decoded 4V frame. This keeps the SM's
     // last_vc_sync_time fresh throughout the call, preventing post-hang
     // watchdog from tearing down an active VC.
@@ -924,11 +921,8 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     int s = 0;
     int t = 0;
 
-    // Notify minimal P25p2 follower that voice activity is present on this slot
-    {
-        dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, (state ? (state->currentslot & 1) : 0), 0, 0};
-        dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-    }
+    // SM event: ACTIVE on current slot
+    p25_sm_v2_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
     // Mark recent voice on this path as well.
     {
         time_t now = time(NULL);

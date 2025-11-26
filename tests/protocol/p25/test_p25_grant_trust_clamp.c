@@ -77,6 +77,7 @@ main(void) {
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     opts.p25_trunk = 1;
+    opts.trunk_tune_group_calls = 1;
     st.p25_cc_freq = 851000000;
     st.p25_chan_type[iden] = 1;
     st.p25_chan_tdma[iden] = 0;
@@ -87,6 +88,7 @@ main(void) {
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     opts.p25_trunk = 1;
+    opts.trunk_tune_group_calls = 1;
     st.p25_cc_freq = 851000000;
     st.p25_chan_type[iden] = 1;
     st.p25_chan_tdma[iden] = 0;

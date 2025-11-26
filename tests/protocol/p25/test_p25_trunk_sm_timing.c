@@ -63,6 +63,7 @@ main(void) {
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     opts.p25_trunk = 1;
+    opts.trunk_tune_group_calls = 1;
     st.p25_cc_freq = 851000000;
 
     // TDMA IDEN: id=2, type=3 => denom=2

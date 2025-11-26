@@ -12,8 +12,8 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -133,11 +133,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x1 && err == 0) {
         fprintf(stderr, " MAC_PTT ");
         fprintf(stderr, "%s", KGRN);
-        // Minimal SM: PTT event for logical slot
-        {
-            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_PTT, slot, 0, 0};
-            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-        }
+        // SM event: PTT on logical slot
+        p25_sm_v2_emit_ptt(opts, state, slot);
         // Mark recent activity for this logical slot to avoid early bounce
         state->p25_p2_last_mac_active[slot] = time(NULL);
         state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
@@ -203,156 +200,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 //expand 64-bit MI to 128-bit for AES
                 if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
                     LFSR128(state);
-                    // fprintf (stderr, "\n");
                 }
-                // Early ENC lockout (hardened): require two consecutive indications
-                if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-                    int alg = state->payload_algid;
-                    int have_key = 0;
-                    if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
-                        || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)) {
-                        have_key = 1; // key present for chosen algorithm
-                    }
-                    int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
-                    if (enc_suspect) {
-                        int ttg = state->lasttg;
-                        // SACCH context uses inverted slot mapping; gate the logical slot
-                        // indicated by this SACCH (use 'slot', not state->currentslot).
-                        uint8_t eslot = slot;
-                        if (state->p25_p2_enc_pending[eslot] == 0
-                            || state->p25_p2_enc_pending_ttg[eslot] != (uint32_t)ttg) {
-                            // First indication: remember and wait for confirmation
-                            state->p25_p2_enc_pending[eslot] = 1;
-                            state->p25_p2_enc_pending_ttg[eslot] = (uint32_t)ttg;
-                        } else {
-                            // Second consecutive indication for same TG: mark and release
-                            if (ttg != 0) {
-                                int idx = -1;
-                                int was_de = 0;
-                                for (unsigned int xx = 0; xx < state->group_tally; xx++) {
-                                    if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                                        idx = (int)xx;
-                                        break;
-                                    }
-                                }
-                                if (idx >= 0) {
-                                    was_de = (strcmp(state->group_array[idx].groupMode, "DE") == 0);
-                                    if (!was_de) {
-                                        snprintf(state->group_array[idx].groupMode,
-                                                 sizeof state->group_array[idx].groupMode, "%s", "DE");
-                                    }
-                                } else if (state->group_tally
-                                           < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-                                    state->group_array[state->group_tally].groupNumber = ttg;
-                                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
-                                    sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-                                    state->group_tally++;
-                                    was_de = 0;
-                                }
-                                // Emit only when transitioning to DE (first time this TG is marked)
-                                if (idx < 0 || !was_de) {
-                                    snprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
-                                             sizeof state->event_history_s[eslot].Event_History_Items[0].internal_str,
-                                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                                    watchdog_event_current(opts, state, eslot);
-                                    Event_History_I* eh = &state->event_history_s[eslot];
-                                    if (strncmp(eh->Event_History_Items[1].internal_str,
-                                                eh->Event_History_Items[0].internal_str,
-                                                sizeof eh->Event_History_Items[0].internal_str)
-                                        != 0) {
-                                        if (opts->event_out_file[0] != 0) {
-                                            uint8_t swrite =
-                                                (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
-                                            write_event_to_log_file(opts, state, eslot, swrite,
-                                                                    eh->Event_History_Items[0].event_string);
-                                        }
-                                        push_event_history(eh);
-                                        init_event_history(eh, 0, 1);
-                                    }
-                                }
-                            }
-                            state->p25_p2_enc_lo_early++;
-                            // Hardened early ENC lockout: mute only this slot, and
-                            // release to CC only if the opposite slot is not active.
-                            int other = eslot ^ 1;
-                            // Consider per-slot audio gate, queued jitter frames, and
-                            // very recent MAC_ACTIVE on the opposite slot to avoid
-                            // tearing down a clear call that is just starting up.
-                            double mac_hold = 0.75; // seconds; env override aligns with SM
-                            {
-                                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                                if (s && s[0] != '\0') {
-                                    double v = atof(s);
-                                    if (v >= 0.0 && v < 10.0) {
-                                        mac_hold = v;
-                                    }
-                                }
-                            }
-                            double nowm = dsd_time_now_monotonic_s();
-                            int other_recent = (state->p25_p2_last_mac_active_m[other] > 0.0)
-                                               && ((nowm - state->p25_p2_last_mac_active_m[other]) <= mac_hold);
-                            int other_audio = state->p25_p2_audio_allowed[other]
-                                              || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
-                            state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
-                            // Flush any residual audio already queued for this slot
-                            p25_p2_audio_ring_reset(state, eslot);
-                            if (!other_audio) {
-                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); ");
-                                // Defer CC return within a short VC grace window after tuning
-                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
-                                if (!(state->p25_cfg_vc_grace_s > 0.0)) {
-                                    const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
-                                    if (sg && sg[0] != '\0') {
-                                        double vg = atof(sg);
-                                        if (vg >= 0.0 && vg < 10.0) {
-                                            vc_grace = vg;
-                                        }
-                                    }
-                                }
-                                double nowm2 = dsd_time_now_monotonic_s();
-                                double dt_since_tune2 = (state->p25_last_vc_tune_time_m > 0.0)
-                                                            ? (nowm2 - state->p25_last_vc_tune_time_m)
-                                                            : 1e9;
-                                if (dt_since_tune2 >= vc_grace) {
-                                    fprintf(stderr, "Return to CC; \n");
-                                    state->p25_sm_force_release = 1;
-                                    p25_sm_on_release(opts, state);
-                                } else {
-                                    fprintf(stderr, "Defer (VC grace); stay on VC. \n");
-                                }
-                            } else {
-                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
-                                                "slot active; stay on VC. \n");
-                                // UI hygiene: clear V XTRA fields and banner for this slot so stale
-                                // ALG/KID/MI and "Group Encrypted" are not shown while gated
-                                if (slot == 0) {
-                                    state->payload_algid = 0;
-                                    state->payload_keyid = 0;
-                                    state->payload_miP = 0ULL;
-                                    snprintf(state->call_string[0], sizeof state->call_string[0], "%s",
-                                             "                     ");
-                                } else {
-                                    state->payload_algidR = 0;
-                                    state->payload_keyidR = 0;
-                                    state->payload_miN = 0ULL;
-                                    snprintf(state->call_string[1], sizeof state->call_string[1], "%s",
-                                             "                     ");
-                                }
-                            }
-                            // Avoid enabling audio; bail out early
-                            fprintf(stderr, "%s", KNRM);
-                            // Clear pending after action
-                            state->p25_p2_enc_pending[eslot] = 0;
-                            state->p25_p2_enc_pending_ttg[eslot] = 0;
-                            goto END_SMAC;
-                        }
-                    } else {
-                        // Clear pending if condition no longer holds
-                        uint8_t eslot = slot;
-                        state->p25_p2_enc_pending[eslot] = 0;
-                        state->p25_p2_enc_pending_ttg[eslot] = 0;
-                    }
-                }
+                // Emit ENC event to SM for lockout decision
+                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algid, state->payload_keyid, state->lasttg);
             }
 
             //reset gain
@@ -425,99 +275,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 //expand 64-bit MI to 128-bit for AES
                 if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
                     LFSR128(state);
-                    // fprintf (stderr, "\n");
                 }
-                // Early ENC lockout on slot 1 as well (hardened)
-                if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-                    int alg = state->payload_algidR;
-                    int have_key = 0;
-                    if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->RR != 0)
-                        || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[1] == 1)) {
-                        have_key = 1; // key present for chosen algorithm (slot R)
-                    }
-                    int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
-                    if (enc_suspect) {
-                        int ttg = state->lasttgR;
-                        // SACCH context: use logical slot ('slot')
-                        uint8_t eslot = slot;
-                        if (state->p25_p2_enc_pending[eslot] == 0
-                            || state->p25_p2_enc_pending_ttg[eslot] != (uint32_t)ttg) {
-                            state->p25_p2_enc_pending[eslot] = 1;
-                            state->p25_p2_enc_pending_ttg[eslot] = (uint32_t)ttg;
-                        } else {
-                            if (ttg != 0) {
-                                int idx = -1;
-                                for (unsigned int xx = 0; xx < state->group_tally; xx++) {
-                                    if (state->group_array[xx].groupNumber == (unsigned long)ttg) {
-                                        idx = (int)xx;
-                                        break;
-                                    }
-                                }
-                                if (idx >= 0) {
-                                    snprintf(state->group_array[idx].groupMode,
-                                             sizeof state->group_array[idx].groupMode, "%s", "DE");
-                                } else if (state->group_tally
-                                           < (unsigned)(sizeof(state->group_array) / sizeof(state->group_array[0]))) {
-                                    state->group_array[state->group_tally].groupNumber = ttg;
-                                    sprintf(state->group_array[state->group_tally].groupMode, "%s", "DE");
-                                    sprintf(state->group_array[state->group_tally].groupName, "%s", "ENC LO");
-                                    state->group_tally++;
-                                }
-                                sprintf(state->event_history_s[eslot].Event_History_Items[0].internal_str,
-                                        "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                                watchdog_event_current(opts, state, eslot);
-                            }
-                            state->p25_p2_enc_lo_early++;
-                            // Hardened early ENC lockout: mute only this slot, and
-                            // release to CC only if the opposite slot is not active.
-                            int other = eslot ^ 1;
-                            int other_audio =
-                                state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0;
-                            state->p25_p2_audio_allowed[eslot] = 0; // gate current slot
-                            // Flush any residual audio already queued for this slot
-                            p25_p2_audio_ring_reset(state, eslot);
-                            if (!other_audio) {
-                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); ");
-                                // Defer CC return within a short VC grace window after tuning
-                                // so we don't drop a clear opposite-slot call whose gates haven't
-                                // opened yet.
-                                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
-                                if (!(state->p25_cfg_vc_grace_s > 0.0)) {
-                                    const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                                    if (s && s[0] != '\0') {
-                                        double v = atof(s);
-                                        if (v >= 0.0 && v < 10.0) {
-                                            vc_grace = v;
-                                        }
-                                    }
-                                }
-                                double nowm = dsd_time_now_monotonic_s();
-                                double dt_since_tune = (state->p25_last_vc_tune_time_m > 0.0)
-                                                           ? (nowm - state->p25_last_vc_tune_time_m)
-                                                           : 1e9;
-                                if (dt_since_tune >= vc_grace) {
-                                    fprintf(stderr, "Return to CC; \n");
-                                    // Force release so SM ignores any stale gates
-                                    state->p25_sm_force_release = 1;
-                                    p25_sm_on_release(opts, state);
-                                } else {
-                                    fprintf(stderr, "Defer (VC grace); stay on VC. \n");
-                                }
-                            } else {
-                                fprintf(stderr, " No Enc Following on P25p2 Trunking (early MAC_PTT, confirmed); Other "
-                                                "slot active; stay on VC. \n");
-                            }
-                            fprintf(stderr, "%s", KNRM);
-                            state->p25_p2_enc_pending[eslot] = 0;
-                            state->p25_p2_enc_pending_ttg[eslot] = 0;
-                            goto END_SMAC;
-                        }
-                    } else {
-                        uint8_t eslot = slot;
-                        state->p25_p2_enc_pending[eslot] = 0;
-                        state->p25_p2_enc_pending_ttg[eslot] = 0;
-                    }
-                }
+                // Emit ENC event to SM for lockout decision
+                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algidR, state->payload_keyidR, state->lasttgR);
             }
 
             //reset gain
@@ -581,11 +341,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (opcode == 0x2 && err == 0) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
-        // Minimal SM: END event for logical slot
-        {
-            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_END, slot, 0, 0};
-            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-        }
+        // SM event: END on logical slot
+        p25_sm_v2_emit_end(opts, state, slot);
         // Mark end-of-PTT for this logical slot to allow SM tick to release
         // early once per-slot audio/jitter drains.
         state->p25_p2_last_end_ptt[slot] = time(NULL);
@@ -615,33 +372,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             //blank the call string here -- slot variable is already flipped accordingly for sacch
             sprintf(state->call_string[slot], "%s", "                     "); //21 spaces -- wrong placement!
 
-            // Do not flush the per-slot jitter ring on PTT end; allow queued
-            // audio to drain so short calls and endings are not cut off.
-            // Instead, gate this slot so no new frames are queued.
+            // Gate this slot so no new frames are queued; let jitter ring drain.
             state->p25_p2_audio_allowed[slot] = 0;
-
-            // If both logical channels are idle, return to CC — but respect a
-            // short post-tune grace so we don't bounce on quick follow-ups when
-            // early MAC_PTT/ACTIVE PDUs were missed.
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-                // Check Slot 1 activity (other slot)
-                // We only care if the other slot has permitted audio or queued frames.
-                // Do NOT rely on recent MAC activity timer alone, as that can hold
-                // the channel open after a call ends (MAC_END clears allowed, but
-                // timer remains active).
-                int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0);
-
-                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
-                time_t now2 = time(NULL);
-                double dt_since_tune =
-                    (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-
-                // Return if opposite slot is inactive and grace period passed
-                if (!r_active && dt_since_tune >= vc_grace) {
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                }
-            }
+            // Release decision handled by SM tick based on hangtime/slot activity.
 
             //reset gain
             if (opts->floating_point == 1) {
@@ -684,30 +417,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             //blank the call string here -- slot variable is already flipped accordingly for sacch
             sprintf(state->call_string[slot], "%s", "                     "); //21 spaces -- wrong placement!
 
-            // Do not flush the per-slot jitter ring on PTT end; allow queued
-            // audio to drain so short calls and endings are not cut off.
-            // Instead, gate this slot so no new frames are queued.
+            // Gate this slot so no new frames are queued; let jitter ring drain.
             state->p25_p2_audio_allowed[slot] = 0;
-
-            // If both logical channels are idle, return to CC — but respect a
-            // short post-tune grace so we don't bounce on quick follow-ups when
-            // early MAC_PTT/ACTIVE PDUs were missed.
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-                // Check Slot 0 activity (other slot)
-                // Ignore MAC hold timer; check only audio gate and ring.
-                int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0);
-
-                double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
-                time_t now2 = time(NULL);
-                double dt_since_tune =
-                    (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-
-                // Return if opposite slot is inactive and grace period passed
-                if (!l_active && dt_since_tune >= vc_grace) {
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                }
-            }
+            // Release decision handled by SM tick based on hangtime/slot activity.
 
             //reset gain
             if (opts->floating_point == 1) {
@@ -746,11 +458,8 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
-        // Minimal SM: IDLE event for logical slot
-        {
-            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_IDLE, slot, 0, 0};
-            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-        }
+        // SM event: IDLE on logical slot
+        p25_sm_v2_emit_idle(opts, state, slot);
 
         // if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1)
         // {
@@ -773,28 +482,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         state->p25_p2_audio_allowed[slot] = 0;
         // Clear Packet/Data flag for this slot on IDLE
         state->p25_call_is_packet[slot] = 0;
-
-        // If both logical channels are idle, return to CC — but respect a
-        // short post-tune grace.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            int other_slot = (slot ^ 1) & 1;
-            // Check activity on other slot
-            // Only consider explicit audio gates or ring content. Ignore stale
-            // MAC_ACTIVE timers to allow prompt return on end of call.
-            int other_active =
-                state->p25_p2_audio_allowed[other_slot] || (state->p25_p2_audio_ring_count[other_slot] > 0);
-
-            double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
-            time_t now2 = time(NULL);
-            double dt_since_tune =
-                (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-
-            // Return if opposite slot is inactive and grace period passed
-            if (!other_active && dt_since_tune >= vc_grace) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            }
-        }
+        // Release decision handled by SM tick based on hangtime/slot activity.
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim
@@ -840,76 +528,13 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }
 
-        // Fallback early ENC lockout on MAC_ACTIVE: if encryption lockout is
-        // enabled and the stream is encrypted without a usable key, mute only
-        // this slot and return to CC if the opposite slot is not active.
-        // Hardened: require an encrypted MAC_PTT to have set enc_pending for
-        // this logical slot before acting. This avoids bouncing on first
-        // MAC_ACTIVE before ALG/KID arrive.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0
-            && state->p25_p2_enc_pending[slot] == 1) {
+        // Emit ENC event for dual indication (SM tracks pending/confirmed)
+        {
             int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-            unsigned long long key = (slot == 0) ? state->R : state->RR;
-            int aes_loaded = state->aes_key_loaded[slot];
-            int have_key = 0;
-            if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                have_key = 1;
-            }
-            int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
-            if (enc_suspect) {
-                // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
-                double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
-                {
-                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                    if (s && s[0] != '\0') {
-                        double v = atof(s);
-                        if (v >= 0.0 && v < 10.0) {
-                            mac_hold = v;
-                        }
-                    }
-                }
-                time_t now2 = time(NULL);
-                int os = slot ^ 1;
-                // Recent-voice tail window to bridge short gaps even if MAC_ACTIVE and rings are momentarily quiet
-                double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
-                {
-                    const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
-                    if (s2 && s2[0] != '\0') {
-                        double v2 = atof(s2);
-                        if (v2 >= 0.0 && v2 <= 5.0) {
-                            voice_hold = v2;
-                        }
-                    }
-                }
-                int recent_voice =
-                    (state->last_vc_sync_time != 0) && ((double)(now2 - state->last_vc_sync_time) <= voice_hold);
-                int other_audio = state->p25_p2_audio_allowed[os] || (state->p25_p2_audio_ring_count[os] > 0)
-                                  || (state->p25_p2_last_mac_active[os] != 0
-                                      && (double)(now2 - state->p25_p2_last_mac_active[os]) <= mac_hold)
-                                  || recent_voice;
-                state->p25_p2_audio_allowed[slot] = 0; // gate current slot
-                if (!other_audio) {
-                    fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                } else {
-                    fprintf(stderr,
-                            " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Other slot active; stay on VC. \n");
-                    // UI hygiene: clear V XTRA fields and banner for this slot so stale ALG/KID/MI and
-                    // "Group Encrypted" are not shown
-                    if (slot == 0) {
-                        state->payload_algid = 0;
-                        state->payload_keyid = 0;
-                        state->payload_miP = 0ULL;
-                        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
-                    } else {
-                        state->payload_algidR = 0;
-                        state->payload_keyidR = 0;
-                        state->payload_miN = 0ULL;
-                        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
-                    }
-                }
+            int keyid = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
+            int tg = (slot == 0) ? state->lasttg : state->lasttgR;
+            if (alg != 0 && alg != 0x80) {
+                p25_sm_v2_emit_enc(opts, state, slot, alg, keyid, tg);
             }
         }
     }
@@ -1055,10 +680,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 //expand 64-bit MI to 128-bit for AES
                 if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
                     LFSR128(state);
-                    // fprintf (stderr, "\n");
                 }
-                // fprintf (stderr, " %s", KRED);
-                // fprintf (stderr, "ENC");
+                // Emit ENC event to SM for lockout decision
+                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algid, state->payload_keyid, state->lasttg);
             }
 
             //reset gain
@@ -1130,10 +754,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 //expand 64-bit MI to 128-bit for AES
                 if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {
                     LFSR128(state);
-                    // fprintf (stderr, "\n");
                 }
-                // fprintf (stderr, " %s", KRED);
-                // fprintf (stderr, "ENC");
+                // Emit ENC event to SM for lockout decision
+                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algidR, state->payload_keyidR, state->lasttgR);
             }
 
             //reset gain
@@ -1195,6 +818,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
     if (opcode == 0x2 && err == 0) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
+        // SM event: END on this slot
+        p25_sm_v2_emit_end(opts, state, slot);
         if (state->currentslot == 0) {
 
             state->fourv_counter[0] = 0;
@@ -1275,34 +900,9 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             }
         }
 
-        // Disable audio for this slot (FACCH uses current slot index)
+        // Gate this slot so no new frames are queued; let jitter ring drain.
         state->p25_p2_audio_allowed[slot] = 0;
-        // Hardened behavior: only force release to CC when BOTH logical
-        // channels are explicitly idle. Otherwise, allow hangtime fallback
-        // to manage teardown.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            // Only force release if both slots are idle by P25 metrics
-            double mac_hold = 0.75; // seconds
-            {
-                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        mac_hold = v;
-                    }
-                }
-            }
-            int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)
-                           || (state->p25_p2_last_mac_active_m[0] > 0.0
-                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
-            int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
-                           || (state->p25_p2_last_mac_active_m[1] > 0.0
-                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
-            if (!l_active && !r_active) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            }
-        }
+        // Release decision handled by SM tick based on hangtime/slot activity.
 
         fprintf(stderr, "%s", KNRM);
     }
@@ -1348,36 +948,13 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
 
         //blank the call string here
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
+        // SM event: IDLE on this slot
+        p25_sm_v2_emit_idle(opts, state, slot);
         // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
         // Flush ring for this slot to drop any residual samples
         p25_p2_audio_ring_reset(state, slot);
-        // Only return to CC when both slots are IDLE (not merely audio-gated),
-        // and respect a short post-tune grace. This avoids bouncing on very
-        // short follow-up calls where early MAC PDUs were missed.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            double vc_grace = 0.75; // seconds; override via DSD_NEO_P25_VC_GRACE
-            double mac_hold = 0.75; // seconds
-            if (state->p25_cfg_vc_grace_s > 0.0) {
-                vc_grace = state->p25_cfg_vc_grace_s;
-            }
-            if (state->p25_cfg_mac_hold_s > 0.0) {
-                mac_hold = state->p25_cfg_mac_hold_s;
-            }
-            time_t now2 = time(NULL);
-            int l_active = state->p25_p2_audio_allowed[0] || (state->p25_p2_audio_ring_count[0] > 0)
-                           || (state->p25_p2_last_mac_active_m[0] > 0.0
-                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold);
-            int r_active = state->p25_p2_audio_allowed[1] || (state->p25_p2_audio_ring_count[1] > 0)
-                           || (state->p25_p2_last_mac_active_m[1] > 0.0
-                               && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold);
-            double dt_since_tune =
-                (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-            if (!l_active && !r_active && dt_since_tune >= vc_grace) {
-                state->p25_sm_force_release = 1;
-                p25_sm_on_release(opts, state);
-            }
-        }
+        // Release decision handled by SM tick based on hangtime/slot activity.
     }
     if (opcode == 0x4 && err == 0) {
 //disable to prevent blinking in ncurses terminal due to OSS preemption shim
@@ -1401,11 +978,8 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 0, FMAC);
         fprintf(stderr, "%s", KNRM);
-        // Minimal SM: ACTIVE event for logical slot
-        {
-            dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_ACTIVE, slot, 0, 0};
-            dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
-        }
+        // SM event: ACTIVE on logical slot
+        p25_sm_v2_emit_active(opts, state, slot);
         // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
             int allow_audio = 0;
@@ -1421,48 +995,13 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             state->p25_p2_audio_allowed[slot] = allow_audio;
         }
 
-        // Fallback early ENC lockout on MAC_ACTIVE (FACCH path). Hardened with
-        // enc_pending prerequisite to avoid bouncing without PTT context.
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0
-            && state->p25_p2_enc_pending[slot] == 1) {
+        // Emit ENC event for dual indication (SM tracks pending/confirmed)
+        {
             int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-            unsigned long long key = (slot == 0) ? state->R : state->RR;
-            int aes_loaded = state->aes_key_loaded[slot];
-            int have_key = 0;
-            if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0)
-                || ((alg == 0x84 || alg == 0x89) && aes_loaded == 1)) {
-                have_key = 1;
-            }
-            int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
-            if (enc_suspect) {
-                // Consider ring fill and recent MAC activity on the opposite slot
-                int other = (slot ^ 1) & 1;
-                double mac_hold = 0.75;
-                {
-                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                    if (s && s[0] != '\0') {
-                        double v = atof(s);
-                        if (v >= 0.0 && v < 10.0) {
-                            mac_hold = v;
-                        }
-                    }
-                }
-                double nowm3 = dsd_time_now_monotonic_s();
-                int other_recent = (state->p25_p2_last_mac_active_m[other] > 0.0)
-                                   && ((nowm3 - state->p25_p2_last_mac_active_m[other]) <= mac_hold);
-                int other_audio =
-                    state->p25_p2_audio_allowed[other] || state->p25_p2_audio_ring_count[other] > 0 || other_recent;
-                state->p25_p2_audio_allowed[slot] = 0; // gate current slot
-                // Flush any residual audio already queued for this slot
-                p25_p2_audio_ring_reset(state, slot);
-                if (!other_audio) {
-                    fprintf(stderr, " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Return to CC; \n");
-                    state->p25_sm_force_release = 1;
-                    p25_sm_on_release(opts, state);
-                } else {
-                    fprintf(stderr,
-                            " No Enc Following on P25p2 Trunking (MAC_ACTIVE); Other slot active; stay on VC. \n");
-                }
+            int keyid = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
+            int tg = (slot == 0) ? state->lasttg : state->lasttgR;
+            if (alg != 0 && alg != 0x80) {
+                p25_sm_v2_emit_enc(opts, state, slot, alg, keyid, tg);
             }
         }
     }

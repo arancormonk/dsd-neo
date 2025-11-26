@@ -28,7 +28,6 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -1617,11 +1616,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->p25_sm_force_release = 1;
                         p25_sm_on_release(opts, state);
                     }
-                }
-                // Minimal SM: notify no-sync to help it consider HANG
-                {
-                    dsd_p25p2_min_evt ev = {DSD_P25P2_MIN_EV_NOSYNC, -1, 0, 0};
-                    dsd_p25p2_min_handle_event(dsd_p25p2_min_get(), opts, state, &ev);
                 }
                 noCarrier(opts, state);
 

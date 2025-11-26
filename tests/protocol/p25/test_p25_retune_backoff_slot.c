@@ -77,6 +77,7 @@ main(void) {
 
     // Enable trunking and seed a CC
     opts.p25_trunk = 1;
+    opts.trunk_tune_group_calls = 1;
     opts.trunk_hangtime = 0.2f;
     opts.p25_grant_voice_to_s = 0.5; // apply backoff when dt_since_tune >= 0.5s
     opts.p25_retune_backoff_s = 2.0; // backoff window

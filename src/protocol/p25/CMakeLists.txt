@@ -7,8 +7,8 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   p25_lcw.c
   p25_trunk_sm.c
   p25_trunk_sm_wrap.c
+  p25_trunk_sm_v2.c
   p25_cc_candidates.c
-  p25_p2_sm_min.c
   p25_sm_ui.c
   p25_sm_watchdog.c
   p25_patch.c

@@ -104,6 +104,7 @@ main(int argc, char** argv) {
 
     // Simulate a group grant: enable trunking and a non-zero CC freq
     opts.p25_trunk = 1;
+    opts.trunk_tune_group_calls = 1;
     state.p25_cc_freq = 851012500;
 
     // Mark IDEN 1 as TDMA to exercise slot detection; choose odd channel number => slot 1

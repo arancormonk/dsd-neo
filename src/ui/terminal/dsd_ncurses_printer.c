@@ -19,7 +19,6 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype.h>
-#include <dsd-neo/protocol/p25/p25_p2_sm_min.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -2423,16 +2422,6 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
                state->p25_p2_audio_allowed[0] ? 1 : 0, state->p25_p2_audio_ring_count[0], l_dmac, l_act,
                state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, r_act, dt, dt_tune);
         lines++;
-
-        // Minimal SM configuration (hang/grace/dwell/voice-wait/backoff) to aid tuning
-        {
-            dsd_p25p2_min_sm* msm = dsd_p25p2_min_get();
-            if (msm) {
-                printw("| minSM: hang:%.1fs grace:%.1fs dwell:%.1fs vwait:%.1fs backoff:%.1fs\n", msm->hangtime_s,
-                       msm->vc_grace_s, msm->min_follow_dwell_s, msm->grant_voice_timeout_s, msm->retune_backoff_s);
-                lines++;
-            }
-        }
     }
 
     /* Additional Phase 1 state-machine diagnostics (timers/flags) */
