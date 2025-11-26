@@ -22,6 +22,40 @@
 #endif
 
 int
+p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
+    if (!state || freq_hz == 0) {
+        return 0;
+    }
+    if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
+        state->p25_cc_cand_count = 0;
+        state->p25_cc_cand_idx = 0;
+    }
+    if (freq_hz == state->p25_cc_freq) {
+        return 0;
+    }
+    for (int k = 0; k < state->p25_cc_cand_count; k++) {
+        if (state->p25_cc_candidates[k] == freq_hz) {
+            return 0;
+        }
+    }
+    if (state->p25_cc_cand_count < 16) {
+        state->p25_cc_candidates[state->p25_cc_cand_count++] = freq_hz;
+    } else {
+        for (int k = 1; k < 16; k++) {
+            state->p25_cc_candidates[k - 1] = state->p25_cc_candidates[k];
+        }
+        state->p25_cc_candidates[15] = freq_hz;
+        if (state->p25_cc_cand_idx > 0) {
+            state->p25_cc_cand_idx--;
+        }
+    }
+    if (bump_added) {
+        state->p25_cc_cand_added++;
+    }
+    return 1;
+}
+
+int
 p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     if (!state || !out || out_len == 0) {
         return 0;
@@ -104,21 +138,7 @@ p25_cc_try_load_cache(dsd_opts* opts, dsd_state* state) {
         if (end == line) {
             continue;
         }
-        if (f == 0 || f == state->p25_cc_freq) {
-            continue;
-        }
-        int exists = 0;
-        for (int k = 0; k < state->p25_cc_cand_count; k++) {
-            if (state->p25_cc_candidates[k] == f) {
-                exists = 1;
-                break;
-            }
-        }
-        if (!exists) {
-            if (state->p25_cc_cand_count < 16) {
-                state->p25_cc_candidates[state->p25_cc_cand_count++] = f;
-            }
-        }
+        (void)p25_cc_add_candidate(state, f, 0);
     }
     fclose(fp);
     state->p25_cc_cache_loaded = 1;

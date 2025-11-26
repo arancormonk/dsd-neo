@@ -34,6 +34,16 @@ extern "C" {
 int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
 
 /**
+ * @brief Add a control channel candidate (Hz) with deduplication and FIFO rollover.
+ *
+ * @param state Decoder state containing candidate list.
+ * @param freq_hz Candidate control channel frequency in Hz.
+ * @param bump_added Whether to increment the added counter/stat.
+ * @return 1 if added; 0 if skipped.
+ */
+int p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added);
+
+/**
  * @brief Attempt to load a persisted candidate CC list (best-effort).
  *
  * @param opts Decoder options (used for logging/context).

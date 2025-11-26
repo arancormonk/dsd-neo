@@ -694,6 +694,10 @@ struct dsd_state {
     double p25_cfg_ring_hold_s;        // seconds to honor audio ring after recent MAC
     double p25_cfg_force_rel_extra_s;  // safety-net extra seconds beyond hang
     double p25_cfg_force_rel_margin_s; // safety-net hard margin seconds beyond extra
+    double p25_cfg_tail_ms;            // P2 tail wait in ms before early release
+    double p25_cfg_p1_tail_ms;         // P1 tail wait in ms before early release
+    double p25_cfg_p1_err_hold_pct;    // P1 elevated-error threshold percentage
+    double p25_cfg_p1_err_hold_s;      // P1 elevated-error additional hold seconds
 
     // P25 Phase 1 FEC/CRC telemetry (for BER display)
     unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes
