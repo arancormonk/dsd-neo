@@ -13,7 +13,6 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -134,7 +133,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, " MAC_PTT ");
         fprintf(stderr, "%s", KGRN);
         // SM event: PTT on logical slot
-        p25_sm_v2_emit_ptt(opts, state, slot);
+        p25_sm_emit_ptt(opts, state, slot);
         // Mark recent activity for this logical slot to avoid early bounce
         state->p25_p2_last_mac_active[slot] = time(NULL);
         state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
@@ -202,7 +201,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     LFSR128(state);
                 }
                 // Emit ENC event to SM for lockout decision
-                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algid, state->payload_keyid, state->lasttg);
+                p25_sm_emit_enc(opts, state, slot, state->payload_algid, state->payload_keyid, state->lasttg);
             }
 
             //reset gain
@@ -277,7 +276,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     LFSR128(state);
                 }
                 // Emit ENC event to SM for lockout decision
-                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algidR, state->payload_keyidR, state->lasttgR);
+                p25_sm_emit_enc(opts, state, slot, state->payload_algidR, state->payload_keyidR, state->lasttgR);
             }
 
             //reset gain
@@ -342,7 +341,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
         // SM event: END on logical slot
-        p25_sm_v2_emit_end(opts, state, slot);
+        p25_sm_emit_end(opts, state, slot);
         // Mark end-of-PTT for this logical slot to allow SM tick to release
         // early once per-slot audio/jitter drains.
         state->p25_p2_last_end_ptt[slot] = time(NULL);
@@ -459,7 +458,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         process_MAC_VPDU(opts, state, 1, SMAC);
         fprintf(stderr, "%s", KNRM);
         // SM event: IDLE on logical slot
-        p25_sm_v2_emit_idle(opts, state, slot);
+        p25_sm_emit_idle(opts, state, slot);
 
         // if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1)
         // {
@@ -534,7 +533,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             int keyid = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
             int tg = (slot == 0) ? state->lasttg : state->lasttgR;
             if (alg != 0 && alg != 0x80) {
-                p25_sm_v2_emit_enc(opts, state, slot, alg, keyid, tg);
+                p25_sm_emit_enc(opts, state, slot, alg, keyid, tg);
             }
         }
     }
@@ -682,7 +681,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                     LFSR128(state);
                 }
                 // Emit ENC event to SM for lockout decision
-                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algid, state->payload_keyid, state->lasttg);
+                p25_sm_emit_enc(opts, state, slot, state->payload_algid, state->payload_keyid, state->lasttg);
             }
 
             //reset gain
@@ -756,7 +755,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                     LFSR128(state);
                 }
                 // Emit ENC event to SM for lockout decision
-                p25_sm_v2_emit_enc(opts, state, slot, state->payload_algidR, state->payload_keyidR, state->lasttgR);
+                p25_sm_emit_enc(opts, state, slot, state->payload_algidR, state->payload_keyidR, state->lasttgR);
             }
 
             //reset gain
@@ -819,7 +818,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         fprintf(stderr, " MAC_END_PTT ");
         fprintf(stderr, "%s", KRED);
         // SM event: END on this slot
-        p25_sm_v2_emit_end(opts, state, slot);
+        p25_sm_emit_end(opts, state, slot);
         if (state->currentslot == 0) {
 
             state->fourv_counter[0] = 0;
@@ -949,7 +948,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         //blank the call string here
         sprintf(state->call_string[slot], "%s", "                     "); //21 spaces
         // SM event: IDLE on this slot
-        p25_sm_v2_emit_idle(opts, state, slot);
+        p25_sm_emit_idle(opts, state, slot);
         // Disable audio for this slot
         state->p25_p2_audio_allowed[slot] = 0;
         // Flush ring for this slot to drop any residual samples
@@ -979,7 +978,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         process_MAC_VPDU(opts, state, 0, FMAC);
         fprintf(stderr, "%s", KNRM);
         // SM event: ACTIVE on logical slot
-        p25_sm_v2_emit_active(opts, state, slot);
+        p25_sm_emit_active(opts, state, slot);
         // Enable audio per policy (respect encryption, key presence, and ignore stale packet bit when clear)
         {
             int allow_audio = 0;
@@ -1001,7 +1000,7 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
             int keyid = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
             int tg = (slot == 0) ? state->lasttg : state->lasttgR;
             if (alg != 0 && alg != 0x80) {
-                p25_sm_v2_emit_enc(opts, state, slot, alg, keyid, tg);
+                p25_sm_emit_enc(opts, state, slot, alg, keyid, tg);
             }
         }
     }

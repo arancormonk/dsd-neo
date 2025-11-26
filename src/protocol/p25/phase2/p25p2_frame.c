@@ -18,7 +18,6 @@
 #endif
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
@@ -457,7 +456,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     int t = 0;
 
     // SM event: ACTIVE on current slot
-    p25_sm_v2_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
+    p25_sm_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
     // Mark recent voice on every decoded 4V frame. This keeps the SM's
     // last_vc_sync_time fresh throughout the call, preventing post-hang
     // watchdog from tearing down an active VC.
@@ -922,7 +921,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     int t = 0;
 
     // SM event: ACTIVE on current slot
-    p25_sm_v2_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
+    p25_sm_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
     // Mark recent voice on this path as well.
     {
         time_t now = time(NULL);

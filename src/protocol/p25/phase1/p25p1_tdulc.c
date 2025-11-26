@@ -19,7 +19,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -205,7 +205,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
 
     // SM event: TDU (P1 terminator with LC)
-    p25_sm_v2_emit_tdu(opts, state);
+    p25_sm_emit_tdu(opts, state);
 
     // Clear call flags for single-carrier channel
     state->p25_call_emergency[0] = 0;

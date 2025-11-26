@@ -22,7 +22,6 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 
 #include <dsd-neo/protocol/p25/p25_lsd.h>
@@ -124,7 +123,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         playSynthesizedVoiceFS(opts, state);
     }
     // SM event: ACTIVE (P1 uses slot 0)
-    p25_sm_v2_emit_active(opts, state, 0);
+    p25_sm_emit_active(opts, state, 0);
 
     // IMBE 2
 #ifdef TRACE_DSD

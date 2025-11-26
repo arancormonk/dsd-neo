@@ -4,12 +4,12 @@
  */
 
 /*
- * Basic tests for the simplified unified P25 state machine (v2).
- * Updated for 4-state model: IDLE, ON_CC, TUNED, HUNTING
+ * Basic tests for the unified P25 state machine.
+ * 4-state model: IDLE, ON_CC, TUNED, HUNTING
  */
 
 #include <dsd-neo/core/dsd.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,10 +36,10 @@ test_init_with_cc(void) {
     reset_test_state();
     p25_sm_ctx_t ctx;
 
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     if (ctx.state != P25_SM_ON_CC) {
-        fprintf(stderr, "FAIL: Expected ON_CC, got %s\n", p25_sm_v2_state_name(ctx.state));
+        fprintf(stderr, "FAIL: Expected ON_CC, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (!ctx.initialized) {
@@ -56,10 +56,10 @@ test_init_without_cc(void) {
     g_state.p25_cc_freq = 0; // No CC known
     p25_sm_ctx_t ctx;
 
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     if (ctx.state != P25_SM_IDLE) {
-        fprintf(stderr, "FAIL: Expected IDLE, got %s\n", p25_sm_v2_state_name(ctx.state));
+        fprintf(stderr, "FAIL: Expected IDLE, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     return 0;
@@ -73,14 +73,14 @@ test_grant_to_tuned(void) {
     g_state.trunk_chan_map[0x1234] = 851500000;
 
     p25_sm_ctx_t ctx;
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // In 4-state model, grant goes to TUNED (which includes armed/following/hangtime)
     if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after grant, got %s\n", p25_sm_v2_state_name(ctx.state));
+        fprintf(stderr, "FAIL: Expected TUNED after grant, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.vc_freq_hz != 851500000) {
@@ -101,19 +101,19 @@ test_ptt_voice_active(void) {
     g_state.trunk_chan_map[0x1234] = 851500000;
 
     p25_sm_ctx_t ctx;
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     // Grant
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // PTT
     ev = p25_sm_ev_ptt(0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // Still in TUNED state (now unified)
     if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after PTT, got %s\n", p25_sm_v2_state_name(ctx.state));
+        fprintf(stderr, "FAIL: Expected TUNED after PTT, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.slots[0].voice_active != 1) {
@@ -130,21 +130,21 @@ test_end_clears_voice(void) {
     g_state.trunk_chan_map[0x1234] = 851500000;
 
     p25_sm_ctx_t ctx;
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     // Grant -> PTT -> END
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     ev = p25_sm_ev_ptt(0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     ev = p25_sm_ev_end(0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // Still in TUNED (hangtime is now handled within TUNED state)
     if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after END, got %s\n", p25_sm_v2_state_name(ctx.state));
+        fprintf(stderr, "FAIL: Expected TUNED after END, got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.slots[0].voice_active != 0) {
@@ -157,19 +157,19 @@ test_end_clears_voice(void) {
 // Test: State name function for 4-state model
 static int
 test_state_names(void) {
-    if (strcmp(p25_sm_v2_state_name(P25_SM_IDLE), "IDLE") != 0) {
+    if (strcmp(p25_sm_state_name(P25_SM_IDLE), "IDLE") != 0) {
         fprintf(stderr, "FAIL: Expected 'IDLE'\n");
         return 1;
     }
-    if (strcmp(p25_sm_v2_state_name(P25_SM_ON_CC), "ON_CC") != 0) {
+    if (strcmp(p25_sm_state_name(P25_SM_ON_CC), "ON_CC") != 0) {
         fprintf(stderr, "FAIL: Expected 'ON_CC'\n");
         return 1;
     }
-    if (strcmp(p25_sm_v2_state_name(P25_SM_TUNED), "TUNED") != 0) {
+    if (strcmp(p25_sm_state_name(P25_SM_TUNED), "TUNED") != 0) {
         fprintf(stderr, "FAIL: Expected 'TUNED'\n");
         return 1;
     }
-    if (strcmp(p25_sm_v2_state_name(P25_SM_HUNTING), "HUNT") != 0) {
+    if (strcmp(p25_sm_state_name(P25_SM_HUNTING), "HUNT") != 0) {
         fprintf(stderr, "FAIL: Expected 'HUNT'\n");
         return 1;
     }
@@ -181,7 +181,7 @@ static int
 test_config_defaults(void) {
     reset_test_state();
     p25_sm_ctx_t ctx;
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     // Check defaults (hangtime from opts, others from code defaults)
     if (ctx.config.hangtime_s != 0.75) {
@@ -202,8 +202,8 @@ test_config_defaults(void) {
 // Test: Singleton access
 static int
 test_singleton(void) {
-    p25_sm_ctx_t* sm1 = p25_sm_v2_get();
-    p25_sm_ctx_t* sm2 = p25_sm_v2_get();
+    p25_sm_ctx_t* sm1 = p25_sm_get_ctx();
+    p25_sm_ctx_t* sm2 = p25_sm_get_ctx();
 
     if (sm1 != sm2) {
         fprintf(stderr, "FAIL: Singleton should return same pointer\n");
@@ -223,34 +223,34 @@ test_audio_allowed(void) {
     g_state.trunk_chan_map[0x1234] = 851500000;
 
     p25_sm_ctx_t ctx;
-    p25_sm_v2_init(&ctx, &g_opts, &g_state);
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
     // Before grant, audio not allowed
-    if (p25_sm_v2_audio_allowed(&ctx, &g_state, 0) != 0) {
+    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
         fprintf(stderr, "FAIL: Audio should not be allowed before grant\n");
         return 1;
     }
 
     // Grant + PTT
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     ev = p25_sm_ev_ptt(0);
-    p25_sm_v2_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // PTT alone doesn't enable audio - that's handled by MAC_PTT in xcch.c
     // which sets p25_p2_audio_allowed. Simulate what xcch.c does:
     g_state.p25_p2_audio_allowed[0] = 1;
 
     // Now audio should be allowed (via legacy state)
-    if (p25_sm_v2_audio_allowed(&ctx, &g_state, 0) != 1) {
+    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 1) {
         fprintf(stderr, "FAIL: Audio should be allowed when p25_p2_audio_allowed is set\n");
         return 1;
     }
 
     // Test that disabling it works
     g_state.p25_p2_audio_allowed[0] = 0;
-    if (p25_sm_v2_audio_allowed(&ctx, &g_state, 0) != 0) {
+    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
         fprintf(stderr, "FAIL: Audio should not be allowed when p25_p2_audio_allowed is cleared\n");
         return 1;
     }
@@ -277,7 +277,7 @@ int
 main(void) {
     int fail = 0;
 
-    printf("Testing P25 SM v2 (4-state model)...\n");
+    printf("Testing P25 SM (4-state model)...\n");
 
     fail += test_init_with_cc();
     fail += test_init_without_cc();
@@ -294,6 +294,6 @@ main(void) {
         printf("FAILED: %d test(s)\n", fail);
         return 1;
     }
-    printf("PASSED: All P25 SM v2 tests\n");
+    printf("PASSED: All P25 SM tests\n");
     return 0;
 }

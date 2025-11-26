@@ -24,7 +24,7 @@
 
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
@@ -94,7 +94,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
 #endif
     process_IMBE(opts, state, &status_count);
     // SM event: ACTIVE (P1 uses slot 0)
-    p25_sm_v2_emit_active(opts, state, 0);
+    p25_sm_emit_active(opts, state, 0);
     if (opts->floating_point == 0 && opts->pulse_digi_out_channels == 1) {
         playSynthesizedVoiceMS(opts, state);
     }

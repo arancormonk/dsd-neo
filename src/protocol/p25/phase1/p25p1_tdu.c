@@ -5,7 +5,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_v2.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 #include <time.h>
@@ -68,7 +68,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     // state->gi[0] = -1;
 
     // SM event: TDU (P1 terminator)
-    p25_sm_v2_emit_tdu(opts, state);
+    p25_sm_emit_tdu(opts, state);
 
     // Clear call flags for single-carrier channel
     state->p25_call_emergency[0] = 0;

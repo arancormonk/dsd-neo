@@ -399,11 +399,11 @@ target_include_directories(dsd-neo_test_p25_neighbor_spam PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_p25_neighbor_spam PRIVATE dsd-neo_proto_p25 dsd-neo_core)
 add_test(NAME P25_NEIGHBOR_SPAM COMMAND dsd-neo_test_p25_neighbor_spam)
 
-# P25 Unified SM v2 tests
-add_executable(dsd-neo_test_p25_sm_v2_core protocol/p25/test_p25_sm_v2_core.c)
-target_include_directories(dsd-neo_test_p25_sm_v2_core PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_sm_v2_core PRIVATE dsd-neo_proto_p25 dsd-neo_core)
-add_test(NAME P25_SM_V2_CORE COMMAND dsd-neo_test_p25_sm_v2_core)
+# P25 Unified SM tests
+add_executable(dsd-neo_test_p25_sm_unified_core protocol/p25/test_p25_sm_unified_core.c)
+target_include_directories(dsd-neo_test_p25_sm_unified_core PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_sm_unified_core PRIVATE dsd-neo_proto_p25 dsd-neo_core)
+add_test(NAME P25_SM_UNIFIED_CORE COMMAND dsd-neo_test_p25_sm_unified_core)
 
 # DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
 # M17 protocol tests
