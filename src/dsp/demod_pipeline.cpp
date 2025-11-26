@@ -1130,9 +1130,13 @@ fll_update_error(struct demod_state* d) {
     cfg.deadband = d->fll_deadband;
     cfg.slew_max = d->fll_slew_max;
 
-    /* Use QPSK-friendly symbol-spaced update when CQPSK path is active */
-    if (d->cqpsk_enable && d->ted_sps >= 2) {
+    /* Use QPSK-friendly symbol-spaced update when CQPSK path is active.
+       Skip FLL band-edge if non-integer SPS detected (requires integer SPS). */
+    if (d->cqpsk_enable && d->ted_sps >= 2 && d->sps_is_integer) {
         fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
+    } else if (d->cqpsk_enable && d->ted_sps >= 2 && !d->sps_is_integer) {
+        /* Non-integer SPS: fall back to standard FLL to avoid band-edge malfunction */
+        fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
     } else {
         fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
     }
@@ -1455,8 +1459,9 @@ full_demod(struct demod_state* d) {
            - This is implemented in cqpsk_costas_diff_and_update()
         */
         cqpsk_rms_agc(d);
-        /* Band-edge FLL (always active when enabled, OP25 style) */
-        if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2) {
+        /* Band-edge FLL (always active when enabled, OP25 style).
+           Requires integer SPS; skip band-edge if non-integer. */
+        if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2 && d->sps_is_integer) {
             /* Sync from demod_state into modular FLL state so that any
                external tweaks to fll_freq/phase (e.g., spectrum-assisted
                correction) are honored. */
@@ -1501,8 +1506,10 @@ full_demod(struct demod_state* d) {
             d->cqpsk_acq_quiet_runs = 0;
             d->cqpsk_acq_fll_locked = 0;
         }
-        /* Timing error correction after FLL (Gardner), before Costas+diff. */
-        if (d->ted_enabled && d->ted_sps >= 2 && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+        /* Timing error correction after FLL (Gardner), before Costas+diff.
+           Requires integer SPS; auto-skipped if non-integer. */
+        if (d->ted_enabled && d->ted_sps >= 2 && d->sps_is_integer
+            && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
             gardner_timing_adjust(d);
         }
         /* OP25-style combined Costas + differential decode with per-sample feedback.
@@ -1598,8 +1605,8 @@ full_demod(struct demod_state* d) {
         }
     }
     /* Apply Gardner TED here only for non-CQPSK paths (e.g., C4FM) and avoid
-       analog FM unless explicitly forced. */
-    if (d->ted_enabled && !d->cqpsk_enable && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+       analog FM unless explicitly forced. Requires integer SPS. */
+    if (d->ted_enabled && !d->cqpsk_enable && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
     }
     /* Power squelch (sqrt-free): compare pair power mean (I^2+Q^2) against a threshold.

@@ -3836,36 +3836,6 @@ act_iq_dc_k_dn(void* v) {
 }
 
 static const char*
-lbl_ted_sps(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int sps = rtl_stream_get_ted_sps();
-    snprintf(b, n, "TED SPS: %d (+1/-1)", sps);
-    return b;
-}
-
-static void
-act_ted_sps_up(void* v) {
-    UNUSED(v);
-    int sps = rtl_stream_get_ted_sps();
-    if (sps < 64) {
-        sps++;
-    }
-    UiDspPayload p = {.op = UI_DSP_OP_TED_SPS_SET, .a = sps};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static void
-act_ted_sps_dn(void* v) {
-    UNUSED(v);
-    int sps = rtl_stream_get_ted_sps();
-    if (sps > 2) {
-        sps--;
-    }
-    UiDspPayload p = {.op = UI_DSP_OP_TED_SPS_SET, .a = sps};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-static const char*
 lbl_ted_gain(void* v, char* b, size_t n) {
     UNUSED(v);
     float g = rtl_stream_get_ted_gain();
@@ -5194,21 +5164,6 @@ dsp_agc_any(void* v) {
 }
 
 static const NcMenuItem DSP_TED_ITEMS[] = {
-    {.id = "ted_sps",
-     .label = "TED SPS (status)",
-     .label_fn = lbl_ted_sps,
-     .help = "Nominal samples-per-symbol.",
-     .is_enabled = is_ted_allowed},
-    {.id = "ted_sps+",
-     .label = "TED SPS +1",
-     .help = "Increase TED SPS.",
-     .is_enabled = is_ted_allowed,
-     .on_select = act_ted_sps_up},
-    {.id = "ted_sps-",
-     .label = "TED SPS -1",
-     .help = "Decrease TED SPS.",
-     .is_enabled = is_ted_allowed,
-     .on_select = act_ted_sps_dn},
     {.id = "ted_gain_status",
      .label = "TED Gain (status)",
      .label_fn = lbl_ted_gain,

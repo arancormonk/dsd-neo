@@ -135,6 +135,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->ted_gain = 0.0f;
     s->ted_sps = 0;
     s->ted_mu = 0.0f;
+    s->sps_is_integer = 1; /* assume integer SPS until proven otherwise */
     s->cqpsk_rms_agc_rms = 0.0f;
     s->cqpsk_fll_rot_applied = 0;
     /* Initialize FLL and TED module states */
@@ -358,7 +359,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : ted_default;
     /* Native float TED gain (controls tracking aggressiveness, bounded internally) */
     demod->ted_gain = cfg->ted_gain_is_set ? cfg->ted_gain : 0.05f;
-    demod->ted_sps = cfg->ted_sps_is_set ? cfg->ted_sps : 10;
+    demod->ted_sps = 10;
     demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
@@ -466,7 +467,6 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     int env_fll_beta_set = cfg->fll_beta_is_set;
     int env_fll_deadband_set = cfg->fll_deadband_is_set;
     int env_fll_slew_set = cfg->fll_slew_is_set;
-    int env_ted_sps_set = cfg->ted_sps_is_set;
     int env_ted_gain_set = cfg->ted_gain_is_set;
     /* Treat all digital voice modes as digital for FLL/TED defaults */
     int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
@@ -477,7 +477,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
         /* For digital modes, never auto-enable FLL/TED.
            Leave on/off decisions to env/CLI/UI, but still derive sane defaults
            for TED/FLL parameters when not explicitly provided. */
-        if (!env_ted_sps_set) {
+        {
             int Fs_cx = 0;
             /* TED operates on complex baseband at demod->rate_out.
                Prefer that rate even when an audio resampler is enabled. */
@@ -512,6 +512,24 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                 sps = 64;
             }
             demod->ted_sps = sps;
+
+            /* Check if SPS is truly integer: Fs_cx must be exactly divisible by sym_rate.
+               Non-integer SPS causes TED/FLL band-edge to malfunction. */
+            int remainder = Fs_cx % sym_rate;
+            if (remainder == 0) {
+                demod->sps_is_integer = 1;
+            } else {
+                demod->sps_is_integer = 0;
+                LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
+                            "TED and FLL band-edge will be auto-disabled. "
+                            "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
+                            Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate, sps);
+                /* Auto-disable TED when non-integer SPS is detected */
+                if (demod->ted_enabled && !demod->ted_force) {
+                    demod->ted_enabled = 0;
+                    LOG_INFO("TED auto-disabled due to non-integer SPS.\n");
+                }
+            }
         }
         if (!env_ted_gain_set) {
             float base_gain = 0.05f;
@@ -633,13 +651,8 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
 void
 rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, const dsd_opts* opts,
                                                   const struct output_state* output) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!demod || !cfg || !output) {
+    if (!demod || !output) {
         return;
-    }
-
-    if (cfg->ted_sps_is_set) {
-        return; /* user explicitly set; do not override */
     }
 
     int Fs_cx = 0;
@@ -669,8 +682,26 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
             LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx, sym_rate);
         }
         sps = (Fs_cx + (sym_rate / 2)) / sym_rate;
+        /* Check if SPS is truly integer: Fs_cx must be exactly divisible by sym_rate. */
+        int remainder = Fs_cx % sym_rate;
+        if (remainder == 0) {
+            demod->sps_is_integer = 1;
+        } else {
+            demod->sps_is_integer = 0;
+            LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
+                        "TED and FLL band-edge auto-disabled.\n",
+                        Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate);
+        }
     } else {
         sps = (Fs_cx + 2400) / 4800;
+        /* Check if SPS is truly integer for default 4800 sym/s. */
+        int remainder = Fs_cx % 4800;
+        demod->sps_is_integer = (remainder == 0) ? 1 : 0;
+        if (!demod->sps_is_integer) {
+            LOG_WARNING("Non-integer SPS after rate change: %d Hz / 4800 sym/s = %.3f. "
+                        "TED and FLL band-edge auto-disabled.\n",
+                        Fs_cx, (float)Fs_cx / 4800.0f);
+        }
     }
     if (sps < 2) {
         sps = 2;

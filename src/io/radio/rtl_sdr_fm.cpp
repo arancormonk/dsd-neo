@@ -1948,7 +1948,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         int cqpsk_enable;
         int fll_enable;
         int ted_enable;
-        int ted_sps;
         float ted_gain;
         int ted_force;
     } persist = {};
@@ -2001,9 +2000,6 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         demod.cqpsk_enable = persist.cqpsk_enable ? 1 : 0;
         demod.fll_enabled = persist.fll_enable ? 1 : 0;
         demod.ted_enabled = persist.ted_enable ? 1 : 0;
-        if (persist.ted_sps > 0) {
-            demod.ted_sps = persist.ted_sps;
-        }
         if (persist.ted_gain > 0.0f) {
             demod.ted_gain = persist.ted_gain;
         }
@@ -3053,21 +3049,6 @@ dsd_rtl_stream_ted_bias(void) {
     return demod.ted_state.e_ema;
 }
 
-/**
- * @brief Set the Gardner TED nominal samples-per-symbol.
- * Clamps to a sensible range and applies immediately.
- */
-extern "C" void
-dsd_rtl_stream_set_ted_sps(int sps) {
-    if (sps < 2) {
-        sps = 2;
-    }
-    if (sps > 64) {
-        sps = 64;
-    }
-    demod.ted_sps = sps;
-}
-
 extern "C" int
 dsd_rtl_stream_get_ted_sps(void) {
     return demod.ted_sps;
@@ -3288,65 +3269,16 @@ clampi(int v, int lo, int hi) {
 extern "C" void
 dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
                                 int sacch_err_delta, int voice_err_delta) {
-    (void)slot;            /* reserved for future per-slot tuning */
-    (void)facch_ok_delta;  /* currently unused */
-    (void)facch_err_delta; /* currently unused */
-    (void)sacch_ok_delta;  /* currently unused */
-    (void)sacch_err_delta; /* currently unused */
-    (void)voice_err_delta; /* currently unused */
-
-    /* Auto-set TED SPS for P25 Phase 2 (≈6000 sym/s) based on complex baseband rate. */
-    if (demod.ted_enabled) {
-        int Fs_cx = 0;
-        /* TED operates on demod.rate_out; prefer that even when an audio
-           resampler is enabled. */
-        if (demod.rate_out > 0) {
-            Fs_cx = demod.rate_out;
-        } else {
-            Fs_cx = (int)output.rate;
-        }
-        if (Fs_cx <= 0) {
-            Fs_cx = 48000;
-        }
-        int sps = (Fs_cx + 3000) / 6000; /* round(Fs/6000) */
-        if (sps < 2) {
-            sps = 2;
-        }
-        if (sps > 32) {
-            sps = 32;
-        }
-        if (demod.ted_sps != sps) {
-            dsd_rtl_stream_set_ted_sps(sps);
-        }
-    }
+    (void)slot;
+    (void)facch_ok_delta;
+    (void)facch_err_delta;
+    (void)sacch_ok_delta;
+    (void)sacch_err_delta;
+    (void)voice_err_delta;
 }
 
 extern "C" void
 rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
-    /* Auto-set TED SPS for P25 Phase 1 (≈4800 sym/s) based on complex baseband rate. */
-    if (demod.ted_enabled) {
-        int Fs_cx = 0;
-        /* TED operates on demod.rate_out; prefer that even when an audio
-           resampler is enabled. */
-        if (demod.rate_out > 0) {
-            Fs_cx = demod.rate_out;
-        } else {
-            Fs_cx = (int)output.rate;
-        }
-        if (Fs_cx <= 0) {
-            Fs_cx = 48000;
-        }
-        int sps = (Fs_cx + 2400) / 4800; /* round(Fs/4800) */
-        if (sps < 2) {
-            sps = 2;
-        }
-        if (sps > 32) {
-            sps = 32;
-        }
-        if (demod.ted_sps != sps) {
-            dsd_rtl_stream_set_ted_sps(sps);
-        }
-    }
     (void)fec_ok_delta;
     (void)fec_err_delta;
 }

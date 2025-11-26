@@ -128,14 +128,11 @@ dsd_neo_config_init(const dsd_opts* opts) {
     /* TED - native float Gardner timing gain */
     const char* ted = getenv("DSD_NEO_TED");
     const char* tg = getenv("DSD_NEO_TED_GAIN");
-    const char* ts = getenv("DSD_NEO_TED_SPS");
     const char* tf = getenv("DSD_NEO_TED_FORCE");
     c.ted_is_set = env_is_set(ted);
     c.ted_enable = (c.ted_is_set && ted[0] == '1') ? 1 : 0;
     c.ted_gain_is_set = env_is_set(tg);
     c.ted_gain = c.ted_gain_is_set ? (float)atof(tg) : 0.05f;
-    c.ted_sps_is_set = env_is_set(ts);
-    c.ted_sps = c.ted_sps_is_set ? atoi(ts) : 10;
     c.ted_force_is_set = env_is_set(tf);
     c.ted_force = (c.ted_force_is_set && tf[0] == '1') ? 1 : 0;
 

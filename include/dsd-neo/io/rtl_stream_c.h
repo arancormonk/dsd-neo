@@ -393,17 +393,6 @@ int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
 void rtl_stream_set_resampler_target(int target_hz);
 
 /**
- * @brief Set the nominal samples-per-symbol used by the Gardner TED.
- *
- * Useful to align the complex DSP pipeline with protocol-layer symbol timing
- * (e.g., 10 for P25 Phase 1 at 48 kHz, 8 for P25 Phase 2 at 48 kHz).
- * Values < 2 are clamped to 2; large values are clamped to a safe range.
- *
- * @param sps Nominal samples-per-symbol target.
- */
-void rtl_stream_set_ted_sps(int sps);
-
-/**
  * @brief Provide P25 Phase 2 RS/voice error deltas for runtime helpers.
  *
  * Pass positive deltas (not totals). Slot is 0 or 1. Any delta may be 0 when

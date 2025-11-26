@@ -24,7 +24,6 @@ void dsd_rtl_stream_clear_output(void);
 double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
-void dsd_rtl_stream_set_ted_sps(int sps);
 int dsd_rtl_stream_get_ted_sps(void);
 void dsd_rtl_stream_set_ted_gain(float g);
 float dsd_rtl_stream_get_ted_gain(void);
@@ -248,16 +247,6 @@ rtl_stream_ted_bias(const RtlSdrContext* /*ctx*/) {
 extern "C" void
 rtl_stream_set_resampler_target(int target_hz) {
     dsd_rtl_stream_set_resampler_target(target_hz);
-}
-
-extern "C" void
-rtl_stream_set_ted_sps(int sps) {
-    static int s_last_sps = 0;
-    if (sps == s_last_sps) {
-        return; // no change
-    }
-    dsd_rtl_stream_set_ted_sps(sps);
-    s_last_sps = sps;
 }
 
 extern "C" int

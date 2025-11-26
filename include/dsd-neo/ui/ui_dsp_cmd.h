@@ -13,7 +13,6 @@ enum UiDspOp {
     UI_DSP_OP_TOGGLE_IQBAL = 5,
     UI_DSP_OP_IQ_DC_TOGGLE = 6,
     UI_DSP_OP_IQ_DC_K_DELTA = 7, // a: delta (+/-)
-    UI_DSP_OP_TED_SPS_SET = 8,   // a: sps
     UI_DSP_OP_TED_GAIN_SET = 9,  // a: gain
     UI_DSP_OP_C4FM_CLK_CYCLE = 10,
     UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE = 11,

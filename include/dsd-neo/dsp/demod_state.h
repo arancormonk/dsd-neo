@@ -189,6 +189,10 @@ struct demod_state {
     int ted_sps;    /* nominal samples per symbol */
     float ted_mu;   /* fractional phase [0.0, 1.0) */
 
+    /* Non-integer SPS detection: set when Fs/sym_rate doesn't divide evenly.
+       Blocks like TED/FLL band-edge require integer SPS and auto-disable. */
+    int sps_is_integer; /* 1 = integer SPS, 0 = non-integer (blocks disabled) */
+
     /* FLL and TED module states */
     fll_state_t fll_state;
     ted_state_t ted_state;

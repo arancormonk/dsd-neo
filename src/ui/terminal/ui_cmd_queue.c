@@ -1538,17 +1538,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_iq_dc(-1, nk);
                     break;
                 }
-                case UI_DSP_OP_TED_SPS_SET: {
-                    int sps = p.a;
-                    if (sps < 2) {
-                        sps = 2;
-                    }
-                    if (sps > 20) {
-                        sps = 20;
-                    }
-                    rtl_stream_set_ted_sps(sps);
-                    break;
-                }
                 case UI_DSP_OP_TED_GAIN_SET: {
                     /* p.a is gain in milli-units (e.g., 25 = 0.025) */
                     int g_milli = p.a;

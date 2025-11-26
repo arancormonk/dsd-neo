@@ -206,8 +206,6 @@ typedef struct dsdneoRuntimeConfig {
     int ted_enable;
     int ted_gain_is_set;
     float ted_gain; /* timing error gain (typ 0.01-0.1) */
-    int ted_sps_is_set;
-    int ted_sps;
     int ted_force_is_set;
     int ted_force;
 
