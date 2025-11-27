@@ -999,7 +999,7 @@ cqpsk_rms_agc(struct demod_state* d) {
 }
 
 /**
- * @brief Apply post-demod deemphasis IIR filter with Q15 coefficient.
+ * @brief Apply post-demod deemphasis IIR filter.
  *
  * @param fm Demodulator state (reads/writes result, updates deemph_avg).
  */
@@ -1007,7 +1007,7 @@ void
 deemph_filter(struct demod_state* fm) {
     float avg = fm->deemph_avg; /* per-instance state */
     float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    float alpha = (float)fm->deemph_a * (1.0f / 32768.0f);
+    float alpha = fm->deemph_a;
     if (alpha < 0.0f) {
         alpha = 0.0f;
     }
@@ -1058,7 +1058,7 @@ audio_lpf_filter(struct demod_state* fm) {
     }
     float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
     float y = fm->audio_lpf_state;
-    float alpha = (float)fm->audio_lpf_alpha * (1.0f / 32768.0f);
+    float alpha = fm->audio_lpf_alpha;
     if (alpha < 0.0f) {
         alpha = 0.0f;
     }
@@ -1560,43 +1560,26 @@ full_demod(struct demod_state* d) {
         if (p2 <= 1e-9) {
             p2 = 1e-9;
         }
-        double ar = s2r / p2;
-        double ai = s2i / p2;
-        int a_q15 = d->iqbal_alpha_ema_a_q15 > 0 ? d->iqbal_alpha_ema_a_q15 : 6553; /* ~0.2 */
-        int r_q15 = (int)(ar * 32768.0 + 0.5);
-        int i_q15 = (int)(ai * 32768.0 + 0.5);
-        if (r_q15 > 32767) {
-            r_q15 = 32767;
-        }
-        if (r_q15 < -32768) {
-            r_q15 = -32768;
-        }
-        if (i_q15 > 32767) {
-            i_q15 = 32767;
-        }
-        if (i_q15 < -32768) {
-            i_q15 = -32768;
-        }
-        int er = d->iqbal_alpha_ema_r_q15;
-        int ei = d->iqbal_alpha_ema_i_q15;
-        er += (int)(((int64_t)a_q15 * (int64_t)(r_q15 - er)) >> 15);
-        ei += (int)(((int64_t)a_q15 * (int64_t)(i_q15 - ei)) >> 15);
-        d->iqbal_alpha_ema_r_q15 = er;
-        d->iqbal_alpha_ema_i_q15 = ei;
-        int thr = d->iqbal_thr_q15 > 0 ? d->iqbal_thr_q15 : 655; /* ~0.02 */
-        int mag2 = (er * er + ei * ei) >> 15;
-        int thr2 = (thr * thr) >> 15;
+        float ar = (float)(s2r / p2);
+        float ai = (float)(s2i / p2);
+        float ema_alpha = d->iqbal_alpha_ema_a > 0.0f ? d->iqbal_alpha_ema_a : 0.2f;
+        /* EMA update: er += alpha * (ar - er) */
+        float er = d->iqbal_alpha_ema_r;
+        float ei = d->iqbal_alpha_ema_i;
+        er += ema_alpha * (ar - er);
+        ei += ema_alpha * (ai - ei);
+        d->iqbal_alpha_ema_r = er;
+        d->iqbal_alpha_ema_i = ei;
+        float thr = d->iqbal_thr > 0.0f ? d->iqbal_thr : 0.02f;
+        float mag2 = er * er + ei * ei;
+        float thr2 = thr * thr;
         if (mag2 >= thr2) {
-            int ar_q15 = er;
-            int ai_q15 = ei;
-            float ar_f = (float)ar_q15 * (1.0f / 32768.0f);
-            float ai_f = (float)ai_q15 * (1.0f / 32768.0f);
             float* out = d->lowpassed;
             for (int n = 0; n < N; n++) {
                 float I = out[(size_t)(n << 1) + 0];
                 float Q = out[(size_t)(n << 1) + 1];
-                float tI = ar_f * I + ai_f * Q;
-                float tQ = -ar_f * Q + ai_f * I;
+                float tI = er * I + ei * Q;
+                float tQ = -er * Q + ei * I;
                 float yI = I - tI;
                 float yQ = Q - tQ;
                 out[(size_t)(n << 1) + 0] = yI;

@@ -56,7 +56,7 @@ main(void) {
         for (int i = 0; i < N; i++) {
             s->result[i] = 1.0f;
         }
-        s->deemph_a = 8192; // Q15 ~ 0.25
+        s->deemph_a = 0.25f;
         s->deemph_avg = 0.0f;
         deemph_filter(s);
         if (!monotonic_nondecreasing(s->result, N)) {

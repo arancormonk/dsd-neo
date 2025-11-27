@@ -2207,7 +2207,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             if (coef_q15 > ((1 << 15) - 1)) {
                 coef_q15 = ((1 << 15) - 1);
             }
-            demod.deemph_a = coef_q15;
+            demod.deemph_a = (float)alpha;
         }
     }
 
@@ -2238,17 +2238,10 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             if (a > 1.0) {
                 a = 1.0;
             }
-            int alpha_q15 = (int)lrint(a * (double)(1 << 15));
-            if (alpha_q15 < 1) {
-                alpha_q15 = 1;
-            }
-            if (alpha_q15 > ((1 << 15) - 1)) {
-                alpha_q15 = ((1 << 15) - 1);
-            }
-            demod.audio_lpf_alpha = alpha_q15;
+            demod.audio_lpf_alpha = (float)a;
             demod.audio_lpf_enable = 1;
             const char* approx = dsd_unicode_or_ascii("≈", "~");
-            LOG_INFO("Audio LPF enabled: fc%s%d Hz, alpha_q15=%d\n", approx, cutoff_hz, demod.audio_lpf_alpha);
+            LOG_INFO("Audio LPF enabled: fc%s%d Hz, alpha=%.4f\n", approx, cutoff_hz, demod.audio_lpf_alpha);
         }
     }
 

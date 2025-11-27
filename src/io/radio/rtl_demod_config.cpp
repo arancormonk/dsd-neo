@@ -87,7 +87,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->mode_demod = &dsd_fm_demod;
     s->pre_j = s->pre_r = s->now_r = s->now_j = 0.0f;
     s->prev_lpr_index = 0;
-    s->deemph_a = 0;
+    s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;
     /* Channel LPF (post-HB) */
     s->channel_lpf_enable = 0;    /* configured later by env/mode helper */
@@ -99,7 +99,7 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     }
     /* Audio LPF defaults */
     s->audio_lpf_enable = 0;
-    s->audio_lpf_alpha = 0;
+    s->audio_lpf_alpha = 0.0f;
     s->audio_lpf_state = 0.0f;
     s->now_lpr = 0.0f;
     s->dc_block = 1;
@@ -182,8 +182,8 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 0;
     /* Reset IQ balance EMA */
-    s->iqbal_alpha_ema_r_q15 = 0;
-    s->iqbal_alpha_ema_i_q15 = 0;
+    s->iqbal_alpha_ema_r = 0.0f;
+    s->iqbal_alpha_ema_i = 0.0f;
     pthread_cond_init(&s->ready, NULL);
     pthread_mutex_init(&s->ready_m, NULL);
     s->output_target = output;
@@ -238,10 +238,10 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Generic IQ balance defaults (image suppression); mode-aware guards in DSP pipeline.
        Start disabled so the UI/DSP menu fully controls this DSP block. */
     s->iqbal_enable = 0;
-    s->iqbal_thr_q15 = 655; /* ~0.02 */
-    s->iqbal_alpha_ema_r_q15 = 0;
-    s->iqbal_alpha_ema_i_q15 = 0;
-    s->iqbal_alpha_ema_a_q15 = 6553; /* ~0.2 */
+    s->iqbal_thr = 0.02f;
+    s->iqbal_alpha_ema_r = 0.0f;
+    s->iqbal_alpha_ema_i = 0.0f;
+    s->iqbal_alpha_ema_a = 0.2f;
 }
 
 } // namespace

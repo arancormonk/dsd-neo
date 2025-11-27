@@ -136,11 +136,12 @@ struct demod_state {
     int downsample_passes;
     int comp_fir_size;
     int custom_atan;
-    int deemph, deemph_a;
+    int deemph;
+    float deemph_a; /* deemphasis alpha [0.0, 1.0] for one-pole IIR */
     float deemph_avg;
     /* Optional post-demod audio low-pass filter (one-pole) */
     int audio_lpf_enable;
-    int audio_lpf_alpha;   /* Q15 alpha for one-pole LPF */
+    float audio_lpf_alpha; /* alpha [0.0, 1.0] for one-pole LPF */
     float audio_lpf_state; /* state/output y[n-1] */
     float now_lpr;
     int prev_lpr_index;
@@ -216,11 +217,11 @@ struct demod_state {
     float cqpsk_diff_prev_j;
 
     /* Generic mode-aware IQ balance (image suppression) */
-    int iqbal_enable;          /* 0/1 gate */
-    int iqbal_thr_q15;         /* |alpha| threshold in Q15 for enable */
-    int iqbal_alpha_ema_r_q15; /* EMA of alpha real (Q15) */
-    int iqbal_alpha_ema_i_q15; /* EMA of alpha imag (Q15) */
-    int iqbal_alpha_ema_a_q15; /* EMA alpha (Q15) */
+    int iqbal_enable;        /* 0/1 gate */
+    float iqbal_thr;         /* |alpha| threshold for enable (normalized) */
+    float iqbal_alpha_ema_r; /* EMA of alpha real (normalized) */
+    float iqbal_alpha_ema_i; /* EMA of alpha imag (normalized) */
+    float iqbal_alpha_ema_a; /* EMA smoothing alpha [0.0, 1.0] */
 
     /* FM envelope AGC (pre-discriminator) */
     int fm_agc_enable;       /* 0/1 gate; constant-envelope limiter/AGC for FM/C4FM */

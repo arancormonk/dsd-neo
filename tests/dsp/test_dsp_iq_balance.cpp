@@ -72,8 +72,10 @@ main(void) {
     s->mode_demod = &raw_demod; // pass-through after preprocessing
     s->cqpsk_enable = 0;        // ensure IQ balance engages
     s->iqbal_enable = 1;
-    s->iqbal_thr_q15 = 327;          // low-ish threshold to ensure engagement
-    s->iqbal_alpha_ema_a_q15 = 8192; // moderate smoothing
+    s->iqbal_thr = 0.01f;         // low-ish threshold to ensure engagement
+    s->iqbal_alpha_ema_a = 0.25f; // moderate smoothing
+    s->iqbal_alpha_ema_r = 0.0f;
+    s->iqbal_alpha_ema_i = 0.0f;
 
     full_demod(s);
 

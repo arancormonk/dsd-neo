@@ -42,7 +42,7 @@ main(void) {
             s->result[i] = 1.0f; // step from 0 (state) to 1.0
         }
         s->audio_lpf_enable = 1;
-        s->audio_lpf_alpha = 8192; // Q15 ~ 0.25
+        s->audio_lpf_alpha = 0.25f;
         s->audio_lpf_state = 0.0f;
         audio_lpf_filter(s);
         if (!monotonic_nondecreasing(s->result, s->result_len)) {
