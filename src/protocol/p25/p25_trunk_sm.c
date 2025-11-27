@@ -149,21 +149,12 @@ set_state(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, p25_sm_state_e ne
     p25_sm_state_e old = ctx->state;
     ctx->state = new_state;
 
-    // Update legacy state->p25_sm_mode for UI compatibility
+    // Update state->p25_sm_mode for UI - direct 1:1 mapping
     if (state) {
         switch (new_state) {
             case P25_SM_IDLE: state->p25_sm_mode = DSD_P25_SM_MODE_UNKNOWN; break;
             case P25_SM_ON_CC: state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC; break;
-            case P25_SM_TUNED:
-                // Map TUNED to appropriate legacy mode based on voice activity
-                if (ctx->slots[0].voice_active || ctx->slots[1].voice_active) {
-                    state->p25_sm_mode = DSD_P25_SM_MODE_FOLLOW;
-                } else if (ctx->t_voice_m > 0.0) {
-                    state->p25_sm_mode = DSD_P25_SM_MODE_HANG;
-                } else {
-                    state->p25_sm_mode = DSD_P25_SM_MODE_ARMED;
-                }
-                break;
+            case P25_SM_TUNED: state->p25_sm_mode = DSD_P25_SM_MODE_ON_VC; break;
             case P25_SM_HUNTING: state->p25_sm_mode = DSD_P25_SM_MODE_HUNTING; break;
         }
     }
@@ -200,10 +191,24 @@ any_slot_active(const p25_sm_ctx_t* ctx, double hangtime, double now_m) {
  * Grant Filtering (preserve existing policy logic)
  * ============================================================================ */
 
-typedef enum {
-    GRANT_GROUP = 0,
-    GRANT_INDIV = 1,
-} grant_kind_e;
+// Service option bit helpers
+#define SVC_IS_DATA(svc) (((svc) & 0x10) != 0)
+#define SVC_IS_ENC(svc)  (((svc) & 0x40) != 0)
+
+// Check if TG is blocked in group array (mode "DE" or "B")
+static int
+tg_is_blocked(const dsd_state* state, int tg) {
+    if (!state || tg <= 0) {
+        return 0;
+    }
+    for (unsigned int i = 0; i < state->group_tally; i++) {
+        if (state->group_array[i].groupNumber == (unsigned long)tg) {
+            const char* m = state->group_array[i].groupMode;
+            return (m[0] == 'D' && m[1] == 'E') || (m[0] == 'B' && m[1] == '\0');
+        }
+    }
+    return 0;
+}
 
 static int
 grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
@@ -211,28 +216,32 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
         return 0;
     }
 
-    grant_kind_e kind = ev->is_group ? GRANT_GROUP : GRANT_INDIV;
-    int svc_bits = ev->svc_bits;
+    int svc = ev->svc_bits;
     int tg = ev->tg;
+    int is_indiv = !ev->is_group;
 
-    // Data call policy
-    if ((svc_bits & 0x10) && opts->trunk_tune_data_calls == 0) {
-        sm_log(opts, state, kind == GRANT_INDIV ? "indiv-blocked-data" : "grant-blocked-data");
+    // Fast path: TG hold check (integer compare)
+    if (state->tg_hold != 0) {
+        if (is_indiv || (uint32_t)tg != state->tg_hold) {
+            sm_log(opts, state, is_indiv ? "indiv-blocked-hold" : "grant-blocked-hold");
+            return 0;
+        }
+    }
+
+    // Data call policy (bit check)
+    if (SVC_IS_DATA(svc) && opts->trunk_tune_data_calls == 0) {
+        sm_log(opts, state, is_indiv ? "indiv-blocked-data" : "grant-blocked-data");
         return 0;
     }
 
-    if (kind == GRANT_INDIV) {
-        // Individual (private) call gating
+    // Individual (private) call gating
+    if (is_indiv) {
         if (opts->trunk_tune_private_calls == 0) {
             sm_log(opts, state, "indiv-blocked-private");
             return 0;
         }
-        if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
+        if (SVC_IS_ENC(svc) && opts->trunk_tune_enc_calls == 0) {
             sm_log(opts, state, "indiv-blocked-enc");
-            return 0;
-        }
-        if (state->tg_hold != 0) {
-            sm_log(opts, state, "indiv-blocked-hold");
             return 0;
         }
         return 1;
@@ -244,35 +253,19 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
         return 0;
     }
 
-    // Group grant: ENC policy with patch override
-    if ((svc_bits & 0x40) && opts->trunk_tune_enc_calls == 0) {
-        if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
-            sm_log(opts, state, "enc-override-clear");
-        } else {
+    // Encryption policy with patch override
+    if (SVC_IS_ENC(svc) && opts->trunk_tune_enc_calls == 0) {
+        if (!p25_patch_tg_key_is_clear(state, tg) && !p25_patch_sg_key_is_clear(state, tg)) {
             sm_log(opts, state, "grant-blocked-enc");
-            p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
+            p25_emit_enc_lockout_once(opts, state, 0, tg, svc);
             return 0;
         }
+        sm_log(opts, state, "enc-override-clear");
     }
 
-    // Group list mode check
-    char mode[8] = {0};
-    if (tg > 0) {
-        for (unsigned int i = 0; i < state->group_tally; i++) {
-            if (state->group_array[i].groupNumber == (unsigned long)tg) {
-                snprintf(mode, sizeof(mode), "%s", state->group_array[i].groupMode);
-                break;
-            }
-        }
-    }
-    if (strcmp(mode, "DE") == 0 || strcmp(mode, "B") == 0) {
+    // Group list mode check (string compare - rare path)
+    if (tg_is_blocked(state, tg)) {
         sm_log(opts, state, "grant-blocked-mode");
-        return 0;
-    }
-
-    // TG Hold
-    if (state->tg_hold != 0 && (uint32_t)tg != state->tg_hold) {
-        sm_log(opts, state, "grant-blocked-hold");
         return 0;
     }
 
@@ -324,14 +317,10 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
 
-    // Clear slot activity and audio gates
+    // Clear slot activity
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;
-        ctx->slots[s].allow_audio = 0;
         ctx->slots[s].last_active_m = 0.0;
-        ctx->slots[s].enc_pending = 0;
-        ctx->slots[s].enc_pending_tg = 0;
-        ctx->slots[s].enc_confirmed = 0;
         ctx->slots[s].algid = 0;
         ctx->slots[s].keyid = 0;
         ctx->slots[s].tg = 0;
@@ -389,21 +378,11 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot
     ctx->slots[s].voice_active = 1;
     ctx->slots[s].last_active_m = now_m;
 
-    // NOTE: Audio gating is NOT changed here. Audio gating is managed by:
-    // 1. MAC_PTT/MAC_ACTIVE handlers in xcch.c (which set p25_p2_audio_allowed)
-    // 2. ENC event handler (which gates based on encryption lockout)
-    // 3. ESS processing in frame.c (which enables for clear/decryptable streams)
-    //
+    // NOTE: Audio gating is managed by MAC_PTT/MAC_ACTIVE handlers in xcch.c,
+    // ENC event handler, and ESS processing in frame.c.
     // This event just marks voice as active for state machine timing purposes.
-    // The existing code in xcch.c/frame.c manages p25_p2_audio_allowed directly.
 
     ctx->t_voice_m = now_m;
-
-    // Update UI mode to FOLLOW while in TUNED state
-    if (state && ctx->state == P25_SM_TUNED) {
-        state->p25_sm_mode = DSD_P25_SM_MODE_FOLLOW;
-    }
-
     sm_log(opts, state, why);
 }
 
@@ -419,14 +398,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     ctx->slots[s].voice_active = 0;
 
     // NOTE: Audio gating is managed by MAC_END/MAC_IDLE handlers in xcch.c
-    // which set p25_p2_audio_allowed[slot] = 0. We don't change it here
-    // to maintain compatibility with existing audio gating flow.
-
-    // Update UI mode to HANG if all slots quiet (but stay in TUNED state)
-    int all_quiet = (!ctx->slots[0].voice_active && !ctx->slots[1].voice_active);
-    if (all_quiet && state && ctx->state == P25_SM_TUNED) {
-        state->p25_sm_mode = DSD_P25_SM_MODE_HANG;
-    }
+    // which set p25_p2_audio_allowed[slot] = 0.
 
     sm_log(opts, state, why);
 }
@@ -461,8 +433,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     // Skip lockout processing if encryption lockout is disabled
     if (opts->trunk_tune_enc_calls != 0) {
         // Still update audio gating based on decryptability
-        ctx->slots[slot].allow_audio = slot_can_decrypt(state, slot, algid) ? 1 : 0;
-        state->p25_p2_audio_allowed[slot] = ctx->slots[slot].allow_audio;
+        state->p25_p2_audio_allowed[slot] = slot_can_decrypt(state, slot, algid) ? 1 : 0;
         return;
     }
 
@@ -473,26 +444,12 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
 
     // Skip if stream is clear or we have a key
     if (slot_can_decrypt(state, slot, algid)) {
-        ctx->slots[slot].enc_pending = 0;
-        ctx->slots[slot].enc_confirmed = 0;
-        ctx->slots[slot].allow_audio = 1;
         state->p25_p2_audio_allowed[slot] = 1;
         return;
     }
 
-    // Hardened dual-indication logic: require two consecutive ENC indications
-    // for the same TG before triggering lockout
-    if (ctx->slots[slot].enc_pending == 0 || ctx->slots[slot].enc_pending_tg != tg) {
-        // First indication: remember and wait for confirmation
-        ctx->slots[slot].enc_pending = 1;
-        ctx->slots[slot].enc_pending_tg = tg;
-        sm_log(opts, state, "enc-pending");
-        return;
-    }
-
-    // Second consecutive indication for same TG: confirmed encrypted
-    ctx->slots[slot].enc_confirmed = 1;
-    sm_log(opts, state, "enc-confirmed");
+    // Single-indication lockout: trigger immediately on encrypted stream
+    sm_log(opts, state, "enc-lockout");
 
     // Mark TG as encrypted in group array
     if (tg > 0) {
@@ -525,14 +482,13 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     }
 
     // Gate audio for this slot
-    ctx->slots[slot].allow_audio = 0;
     state->p25_p2_audio_allowed[slot] = 0;
     p25_p2_audio_ring_reset(state, slot);
 
     // Check if opposite slot is active - only release if both slots are quiet
     int other = slot ^ 1;
-    int other_active =
-        ctx->slots[other].voice_active || ctx->slots[other].allow_audio || (state->p25_p2_audio_ring_count[other] > 0);
+    int other_active = ctx->slots[other].voice_active || state->p25_p2_audio_allowed[other]
+                       || (state->p25_p2_audio_ring_count[other] > 0);
 
     if (!other_active) {
         do_release(ctx, opts, state, "enc-lockout");
@@ -556,11 +512,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     // Clear all slot state
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;
-        ctx->slots[s].allow_audio = 0;
         ctx->slots[s].last_active_m = 0.0;
-        ctx->slots[s].enc_pending = 0;
-        ctx->slots[s].enc_pending_tg = 0;
-        ctx->slots[s].enc_confirmed = 0;
         ctx->slots[s].algid = 0;
         ctx->slots[s].keyid = 0;
         ctx->slots[s].tg = 0;
@@ -1083,20 +1035,12 @@ p25_sm_audio_allowed(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
     if (!ctx || ctx->state != P25_SM_TUNED) {
         return 0;
     }
+    if (!state) {
+        return 0;
+    }
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
-
-    // Check SM's allow_audio flag
-    if (ctx->slots[s].allow_audio) {
-        return 1;
-    }
-
-    // Fallback: check legacy state for compatibility during transition
-    if (state && state->p25_p2_audio_allowed[s]) {
-        return 1;
-    }
-
-    return 0;
+    return state->p25_p2_audio_allowed[s] ? 1 : 0;
 }
 
 void
@@ -1110,15 +1054,12 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
-    // Store encryption info
+    // Store encryption info in slot context
     ctx->slots[s].algid = algid;
     ctx->slots[s].keyid = keyid;
 
-    // Determine if audio should be allowed
-    int allow = slot_can_decrypt(state, s, algid) ? 1 : 0;
-
-    ctx->slots[s].allow_audio = allow;
-    state->p25_p2_audio_allowed[s] = allow;
+    // Update audio gating in state (single source of truth)
+    state->p25_p2_audio_allowed[s] = slot_can_decrypt(state, s, algid) ? 1 : 0;
 }
 
 /* ============================================================================

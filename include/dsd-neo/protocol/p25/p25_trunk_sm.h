@@ -100,10 +100,6 @@ typedef struct {
 typedef struct {
     double last_active_m; // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
     int voice_active;     // 1 if voice is currently active on this slot
-    int allow_audio;      // 1 if audio should be output (SM-controlled)
-    int enc_pending;      // 1 if waiting for second ENC indication (hardening)
-    int enc_pending_tg;   // TG associated with pending ENC indication
-    int enc_confirmed;    // 1 if ENC confirmed (two consecutive indications)
     int algid;            // Current algorithm ID for this slot
     int keyid;            // Current key ID for this slot
     int tg;               // Current talkgroup for this slot
