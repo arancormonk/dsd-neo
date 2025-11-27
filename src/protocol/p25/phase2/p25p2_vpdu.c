@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
@@ -1460,6 +1461,15 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             fprintf(stderr, "\n  DSO: %02X; DAC: %02X; Target: %d;", dso, dac, target);
         }
 
+        // SNDCP (opcode 0x56 in MAC = TSBK opcode 0x16 ^ 0x40)
+        // Minimal handling for P1 TSBK SNDCP data-channel messages per OP25 parity
+        if (MAC[1 + len_a] == 0x56) {
+            int ch1 = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
+            int ch2 = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+            fprintf(stderr, "\n SNDCP (P1 TSBK) CH1 [%04X] CH2 [%04X]", ch1, ch2);
+            // Minimal handling: just log channels, no frequency conversion per OP25 approach
+        }
+
         //SNDCP Data Channel Announcement
         if (MAC[1 + len_a] == 0xD6) {
             fprintf(stderr, "\n SNDCP Data Channel Announcement ");
@@ -1481,11 +1491,77 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
         }
 
-        //MFID90 Group Regroup Add Command
-        if (MAC[1 + len_a] == 0x81
-            && MAC[2 + len_a] == 0x90) //needs MAC message len update, may work same as explicit enc regroup?
-        {
-            fprintf(stderr, "\n MFID90 Group Regroup Add Command ");
+        // MFID90 Group Regroup Add Command (0x81)
+        // Layout: opcode(8)=0x81, mfid(8)=0x90, wg_len(6), sg(16), wg1(16), wg2(16)...
+        if (MAC[1 + len_a] == 0x81 && MAC[2 + len_a] == 0x90) {
+            int wg_len = MAC[3 + len_a] & 0x3F; // length in bytes of workgroup list
+            int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Add Command\n");
+            fprintf(stderr, "  SG: %d", sg);
+            // Workgroup IDs start at byte 6, each is 16 bits
+            int num_wg = (wg_len >= 2) ? ((wg_len - 2) / 2) : 0; // subtract sg bytes, divide by 2
+            for (int wi = 0; wi < num_wg && (6 + len_a + wi * 2 + 1) < 24; wi++) {
+                int wg = (MAC[6 + len_a + wi * 2] << 8) | MAC[6 + len_a + wi * 2 + 1];
+                if (wg != 0) {
+                    fprintf(stderr, " WG%d: %d", wi + 1, wg);
+                    p25_patch_add_wgid(state, sg, wg);
+                }
+            }
+            fprintf(stderr, "\n");
+            p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
+        }
+
+        // MFID90 Group Regroup Delete Command (0x89)
+        // Layout: opcode(8)=0x89, mfid(8)=0x90, wg_len(6), sg(16), wg1(16), wg2(16)...
+        if (MAC[1 + len_a] == 0x89 && MAC[2 + len_a] == 0x90) {
+            int wg_len = MAC[3 + len_a] & 0x3F;
+            int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Delete Command\n");
+            fprintf(stderr, "  SG: %d", sg);
+            int num_wg = (wg_len >= 2) ? ((wg_len - 2) / 2) : 0;
+            for (int wi = 0; wi < num_wg && (6 + len_a + wi * 2 + 1) < 24; wi++) {
+                int wg = (MAC[6 + len_a + wi * 2] << 8) | MAC[6 + len_a + wi * 2 + 1];
+                if (wg != 0) {
+                    fprintf(stderr, " WG%d: %d", wi + 1, wg);
+                    p25_patch_remove_wgid(state, sg, wg);
+                }
+            }
+            fprintf(stderr, "\n");
+        }
+
+        // MFID90 Group Regroup Voice Channel Update (0x83)
+        // Layout: opcode(8)=0x83, mfid(8)=0x90, reserved(8), sg(16), ch(16)
+        if (MAC[1 + len_a] == 0x83 && MAC[2 + len_a] == 0x90) {
+            int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+            int channel = (MAC[6 + len_a] << 8) | MAC[7 + len_a];
+            fprintf(stderr, "\n MFID90 (Moto) Group Regroup Voice Channel Update\n");
+            fprintf(stderr, "  SG: %d CHAN [%04X]", sg, channel);
+            long int freq = process_channel_to_freq(opts, state, channel);
+            char suf[32];
+            p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
+            sprintf(state->active_channel[slot], "MFID90 GRG VCH Upd: %04X%s SG: %d; ", channel, suf, sg);
+            state->last_active_time = time(NULL);
+            fprintf(stderr, "\n");
+            // Route through SM for tuning consideration
+            if (opts->p25_trunk == 1 && channel != 0 && freq != 0) {
+                p25_sm_on_group_grant(opts, state, channel, /*svc*/ 0, sg, /*src*/ 0);
+            }
+        }
+
+        // MFID90 Motorola System Information / BSI (MAC opcode 0x05)
+        if (MAC[1 + len_a] == 0x05 && MAC[2 + len_a] == 0x90) {
+            fprintf(stderr, "\n MFID90 (Moto) System Broadcast (BSI)\n");
+            fprintf(stderr, "  Data:");
+            for (int bi = 3; bi <= 9 && (bi + len_a) < 24; bi++) {
+                fprintf(stderr, " %02llX", MAC[bi + len_a]);
+            }
+            // Show computed callsign from current WACN/SysID if available
+            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+                char callsign[7];
+                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+                fprintf(stderr, " [%s]", callsign);
+            }
+            fprintf(stderr, "\n");
         }
 
         //the len on these indicate they are always a single messages, foregoing the +len_a index pointer

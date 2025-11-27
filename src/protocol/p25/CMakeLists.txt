@@ -2,6 +2,7 @@ add_library(dsd-neo_proto_p25)
 
 target_sources(dsd-neo_proto_p25 PRIVATE
   p25_12.c
+  p25_callsign.c
   p25_crc.c
   p25_frequency.c
   p25_lcw.c

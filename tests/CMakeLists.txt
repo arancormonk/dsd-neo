@@ -351,6 +351,18 @@ target_include_directories(dsd-neo_test_p25_patch_tracking PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_p25_patch_tracking PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_PATCH_TRACKING COMMAND dsd-neo_test_p25_patch_tracking)
 
+# P25 MFID90 GRG (Group Regroup) handler tests
+add_executable(dsd-neo_test_p25_mfid90_grg protocol/p25/test_p25_mfid90_grg.c)
+target_include_directories(dsd-neo_test_p25_mfid90_grg PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
+target_link_libraries(dsd-neo_test_p25_mfid90_grg PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_MFID90_GRG COMMAND dsd-neo_test_p25_mfid90_grg)
+
+# P25 WACN/SysID to Callsign conversion
+add_executable(dsd-neo_test_p25_callsign protocol/p25/test_p25_callsign.c)
+target_include_directories(dsd-neo_test_p25_callsign PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_callsign PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_CALLSIGN COMMAND dsd-neo_test_p25_callsign)
+
 # P25 grant trust clamp
 add_executable(dsd-neo_test_p25_grant_trust_clamp protocol/p25/test_p25_grant_trust_clamp.c)
 target_include_directories(dsd-neo_test_p25_grant_trust_clamp PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)

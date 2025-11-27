@@ -26,6 +26,7 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     snprintf(dst + len, dstsz - len, "%s", src);
 }
 
+#include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/unicode.h>
 #ifdef USE_RTLSDR
@@ -530,6 +531,23 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
         else if (lc_mfid == 0x90 && lc_opcode == 0x4) {
             fprintf(stderr, " MFID90 (Moto) Group Regroup Delete");
             // Best-effort: without membership parsing, avoid clearing SG to prevent flicker.
+        }
+
+        else if (lc_mfid == 0x90 && lc_opcode == 0x5) {
+            // MFID90 Motorola System Information / BSI
+            // Field layout is proprietary; log raw data and show computed callsign
+            fprintf(stderr, " MFID90 (Moto) System Information (BSI)");
+            fprintf(stderr, " Data:");
+            for (int bi = 16; bi + 8 <= 72; bi += 8) {
+                uint8_t b = (uint8_t)ConvertBitIntoBytes(&LCW_bits[bi], 8);
+                fprintf(stderr, " %02X", b);
+            }
+            // Show computed callsign from current WACN/SysID if available
+            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+                char callsign[7];
+                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+                fprintf(stderr, " [%s]", callsign);
+            }
         }
 
         else if (lc_mfid == 0x90 && lc_opcode == 0xF) {

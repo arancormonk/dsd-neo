@@ -19,6 +19,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype.h>
+#include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -4405,8 +4406,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         {
             // Clarify identifiers to avoid confusion when SYSID and NAC
             // happen to have the same numeric value on some systems.
-            printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX; RFSS: %lld SITE: %lld ", state->p2_wacn,
-                   state->p2_sysid, state->p2_cc, state->p2_rfssid, state->p2_siteid);
+            char callsign[7] = {0};
+            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+            }
+            printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
+            if (callsign[0] != '\0' && callsign[0] != ' ') {
+                printw(" [%s]", callsign);
+            }
+            printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
             if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
                 long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
                 printw("FREQ: %.06lf MHz", (double)f / 1000000);
@@ -4426,8 +4434,15 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         {
             // Clarify identifiers to avoid confusion when SYSID and NAC
             // happen to have the same numeric value on some systems.
-            printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX; RFSS: %lld SITE: %lld ", state->p2_wacn,
-                   state->p2_sysid, state->p2_cc, state->p2_rfssid, state->p2_siteid);
+            char callsign[7] = {0};
+            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+                p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+            }
+            printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
+            if (callsign[0] != '\0' && callsign[0] != ' ') {
+                printw(" [%s]", callsign);
+            }
+            printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
             if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
                 attron(COLOR_PAIR(2));
                 printw(" Phase 2 Missing Parameters ");
