@@ -58,9 +58,9 @@ dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* st
 
         /* Voice vs data grant distinction is made on opcode. */
         if (res->opcode == 49) {
-            dmr_sm_on_group_grant(opts, state, freq, lpcn, (int)res->target, (int)res->source);
+            dmr_sm_emit_group_grant(opts, state, freq, lpcn, (int)res->target, (int)res->source);
         } else {
-            dmr_sm_on_indiv_grant(opts, state, freq, lpcn, (int)res->target, (int)res->source);
+            dmr_sm_emit_indiv_grant(opts, state, freq, lpcn, (int)res->target, (int)res->source);
         }
     }
 }

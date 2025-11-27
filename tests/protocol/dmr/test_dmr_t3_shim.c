@@ -8,7 +8,7 @@
  * - Neighbor/alternate CC candidates
  * - Explicit frequency grants
  * - LPCN-derived grants with trust gating (on-CC vs off-CC)
- * - Release handling: slot activity + hangtime
+ * - Release handling via tick with slot activity + hangtime
  */
 
 #include <assert.h>
@@ -52,11 +52,11 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
-        opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
     }
     if (state) {
-        state->p25_vc_freq[0] = 0;
-        state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = 0;
+        state->trunk_vc_freq[1] = 0;
     }
 }
 
@@ -72,9 +72,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
         return;
     }
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     state->last_vc_sync_time = time(NULL);
 }
@@ -83,11 +81,10 @@ static void
 init_env(dsd_opts* opts, dsd_state* state) {
     memset(opts, 0, sizeof(*opts));
     memset(state, 0, sizeof(*state));
-    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
     opts->use_rigctl = 0;
     opts->audio_in_type = 0;
-    state->p25_cc_freq = 851000000; // mock CC
+    state->trunk_cc_freq = 851000000; // mock CC
 }
 
 static void
@@ -111,28 +108,43 @@ test_explicit_grant_and_release(void) {
     dsd_opts opts;
     dsd_state state;
     init_env(&opts, &state);
+    opts.trunk_hangtime = 0.5f;
+
+    // Initialize SM
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx != NULL);
 
     long vc = 852000000;
-    dmr_sm_on_group_grant(&opts, &state, vc, /*lpcn*/ 0, /*tg*/ 1001, /*src*/ 42);
-    assert(opts.p25_is_tuned == 1);
-    assert(state.p25_vc_freq[0] == vc);
+    dmr_sm_emit_group_grant(&opts, &state, vc, /*lpcn*/ 0, /*tg*/ 1001, /*src*/ 42);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == vc);
+    assert(ctx->state == DMR_SM_TUNED);
 
-    // Slot activity prevents return (DMR VOICE=16)
-    state.dmrburstL = 16; // active voice
-    dmr_sm_on_release(&opts, &state);
-    assert(opts.p25_is_tuned == 1);
+    // Voice active on slot 0
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    assert(ctx->slots[0].voice_active == 1);
 
-    // Clear activity; hangtime defers (based on recent voice activity)
-    state.dmrburstL = 24; // idle
-    opts.trunk_hangtime = 1.0f;
-    state.last_vc_sync_time = time(NULL);
-    dmr_sm_on_release(&opts, &state);
-    assert(opts.p25_is_tuned == 1);
+    // Tick while voice active - should stay tuned
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 1);
 
-    // After hangtime, return to CC
-    state.last_vc_sync_time = time(NULL) - 2; // ensure elapsed > hangtime
-    dmr_sm_on_release(&opts, &state);
-    assert(opts.p25_is_tuned == 0);
+    // Mark voice inactive (but hangtime not expired yet)
+    ctx->slots[0].voice_active = 0;
+    // t_voice_m was just set, so within hangtime
+
+    // Tick - should stay tuned (hangtime)
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 1);
+
+    // Set voice timestamp far in past to exceed hangtime
+    double now_m = ctx->t_voice_m; // Get current monotonic time reference
+    ctx->t_voice_m = now_m - 10.0; // 10 seconds ago, well past hangtime
+
+    // Tick - should release
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 0);
+    assert(ctx->state == DMR_SM_ON_CC);
 }
 
 static void
@@ -141,25 +153,30 @@ test_lpcn_trust_gating(void) {
     dsd_state state;
     init_env(&opts, &state);
 
-    // On CC (p25_is_tuned==0): allow tuning with untrusted LPCN mapping
+    // Initialize SM
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+
+    // On CC (trunk_is_tuned==0): allow tuning with untrusted LPCN mapping
     int lpcn = 0x0123;
     long f1 = 853000000;
     state.trunk_chan_map[lpcn] = f1;
     state.dmr_lcn_trust[lpcn] = 1; // unconfirmed
-    opts.p25_is_tuned = 0;         // on CC
-    dmr_sm_on_group_grant(&opts, &state, /*freq_hz*/ 0, lpcn, /*tg*/ 101, /*src*/ 99);
-    assert(opts.p25_is_tuned == 1);
-    assert(state.p25_vc_freq[0] == f1);
+    opts.trunk_is_tuned = 0;       // on CC
+    ctx->state = DMR_SM_ON_CC;
+    dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 0, lpcn, /*tg*/ 101, /*src*/ 99);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == f1);
 
     // Off CC (currently tuned to VC): block tune with untrusted mapping
     int lpcn2 = 0x0124;
     long f2 = 854000000;
     state.trunk_chan_map[lpcn2] = f2;
     state.dmr_lcn_trust[lpcn2] = 1; // unconfirmed
-    long prev = state.p25_vc_freq[0];
-    opts.p25_is_tuned = 1; // off CC
-    dmr_sm_on_group_grant(&opts, &state, /*freq_hz*/ 0, lpcn2, /*tg*/ 101, /*src*/ 99);
-    assert(state.p25_vc_freq[0] == prev); // unchanged (blocked)
+    long prev = state.trunk_vc_freq[0];
+    opts.trunk_is_tuned = 1; // off CC
+    dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 0, lpcn2, /*tg*/ 101, /*src*/ 99);
+    assert(state.trunk_vc_freq[0] == prev); // unchanged (blocked)
 }
 
 int

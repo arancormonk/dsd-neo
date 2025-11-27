@@ -16,13 +16,13 @@
 void
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (opts) {
-        opts->p25_is_tuned = 1;
+        opts->trunk_is_tuned = 1;
     }
     if (opts) {
         opts->trunk_is_tuned = 1;
     }
     if (state) {
-        state->p25_vc_freq[0] = freq;
+        state->trunk_vc_freq[0] = freq;
         state->trunk_vc_freq[0] = freq;
     }
 }
@@ -30,10 +30,10 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
-        opts->p25_is_tuned = opts->trunk_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
     }
     if (state) {
-        state->p25_vc_freq[0] = state->trunk_vc_freq[0] = 0;
+        state->trunk_vc_freq[0] = 0;
     }
 }
 
@@ -47,7 +47,6 @@ static void
 init_opts_state(dsd_opts* opts, dsd_state* state) {
     memset(opts, 0, sizeof(*opts));
     memset(state, 0, sizeof(*state));
-    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
     opts->trunk_hangtime = 0.0f;
 }
@@ -67,17 +66,17 @@ main(int argc, char** argv) {
     state.dmr_lcn_trust[lcn] = 1; // learned off-CC
 
     // Off-CC: should NOT tune
-    opts.p25_is_tuned = 1;         // simulate on a VC
-    state.p25_cc_freq = 851000000; // known CC
-    dmr_sm_on_group_grant(&opts, &state, /*freq_hz*/ 0, /*lpcn*/ lcn, /*tg*/ 1234, /*src*/ 0);
-    assert(opts.p25_is_tuned == 1); // unchanged
-    assert(state.p25_vc_freq[0] == 0);
+    opts.trunk_is_tuned = 1;         // simulate on a VC
+    state.trunk_cc_freq = 851000000; // known CC
+    dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 0, /*lpcn*/ lcn, /*tg*/ 1234, /*src*/ 0);
+    assert(opts.trunk_is_tuned == 1); // unchanged
+    assert(state.trunk_vc_freq[0] == 0);
 
     // On-CC: allow tuning with untrusted mapping
-    opts.p25_is_tuned = 0; // on CC
-    dmr_sm_on_group_grant(&opts, &state, /*freq_hz*/ 0, /*lpcn*/ lcn, /*tg*/ 1234, /*src*/ 0);
-    assert(opts.p25_is_tuned == 1);
-    assert(state.p25_vc_freq[0] == freq);
+    opts.trunk_is_tuned = 0; // on CC
+    dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 0, /*lpcn*/ lcn, /*tg*/ 1234, /*src*/ 0);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == freq);
 
     return 0;
 }

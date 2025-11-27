@@ -13,6 +13,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
@@ -462,6 +463,8 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
                     openMbeOutFile(opts, state);
                 }
+                // Emit voice sync to SM
+                dmr_sm_emit_voice_sync(opts, state, 0);
             } else {
                 state->dmrburstR = 16;
                 vc = vc2;
@@ -470,6 +473,8 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
                     openMbeOutFileR(opts, state);
                 }
+                // Emit voice sync to SM
+                dmr_sm_emit_voice_sync(opts, state, 1);
             }
             if (opts->inverted_dmr == 0) {
                 sprintf(polarity, "%s", "+");
@@ -683,6 +688,9 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
         //slot 2 for TDMA systems
         watchdog_event_history(opts, state, 1);
         watchdog_event_current(opts, state, 1);
+
+        // Tick the trunking state machine to handle hangtime/release logic
+        dmr_sm_tick(opts, state);
 
         //
         if (timestr != NULL) {

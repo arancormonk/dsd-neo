@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 
 // Stubs and helpers (same pattern as other DMR tests)
 uint64_t
@@ -106,8 +107,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
         return;
     }
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-    opts->p25_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
     state->last_vc_sync_time = time(NULL);
 }
@@ -115,24 +115,21 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
 }
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
-extern void dmr_sm_on_group_grant(dsd_opts*, dsd_state*, long, int, int, int);
 
 static void
 init_env(dsd_opts* o, dsd_state* s) {
     memset(o, 0, sizeof(*o));
     memset(s, 0, sizeof(*s));
-    o->p25_trunk = 1;
     o->trunk_enable = 1;
-    s->p25_cc_freq = 851000000;
+    s->trunk_cc_freq = 851000000;
 }
 
 static void
@@ -150,8 +147,8 @@ main(int argc, char** argv) {
     dsd_state state;
     init_env(&opts, &state);
     // 1) Tune to VC via SM grant call
-    dmr_sm_on_group_grant(&opts, &state, /*freq_hz*/ 852000000, /*lpcn*/ 0, /*tg*/ 1234, /*src*/ 42);
-    assert(opts.p25_is_tuned == 1);
+    dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 852000000, /*lpcn*/ 0, /*tg*/ 1234, /*src*/ 42);
+    assert(opts.trunk_is_tuned == 1);
     // Set TG Hold to match active TG; ensure slot 0 context
     state.lasttg = 1234;
     state.tg_hold = 1234;
@@ -160,7 +157,7 @@ main(int argc, char** argv) {
     uint8_t bits[256], bytes[48];
     build_pclear(bits, bytes);
     dmr_cspdu(&opts, &state, bits, bytes, 1, 0);
-    assert(opts.p25_is_tuned == 0);
+    assert(opts.trunk_is_tuned == 0);
     printf("DMR_T3_FORCE_RELEASE: OK\n");
     return 0;
 }

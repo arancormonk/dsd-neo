@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -354,6 +355,12 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     }
     if (state->currentslot == 1) {
         state->dmrburstR = burst;
+    }
+
+    // Emit data sync to trunk SM for data burst types (DATA header, R12D, R34D, R1_D)
+    // This keeps the channel active when trunk_tune_data_calls is enabled
+    if (burst == 6 || burst == 7 || burst == 8 || burst == 10) {
+        dmr_sm_emit_data_sync(opts, state, state->currentslot);
     }
 
     // Current slot - Second Half - Data Payload - 2nd part

@@ -3,9 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-// DMR SM release gating: defer when either slot is active; then return to CC.
+// DMR SM release gating: defer when slot is active; release via tick.
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 #define MBELIB_NO_HEADERS 1
@@ -17,17 +18,21 @@ void
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     (void)freq;
     if (opts) {
-        opts->p25_is_tuned = opts->trunk_is_tuned = 1;
+        opts->trunk_is_tuned = 1;
+    }
+    if (state) {
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     }
 }
 
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
-        opts->p25_is_tuned = opts->trunk_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
     }
     if (state) {
-        state->p25_vc_freq[0] = state->trunk_vc_freq[0] = 0;
+        state->trunk_vc_freq[0] = 0;
+        state->trunk_vc_freq[1] = 0;
     }
 }
 
@@ -45,26 +50,49 @@ main(int argc, char** argv) {
     dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
-    opts.p25_trunk = 1;
     opts.trunk_enable = 1;
-    state.p25_cc_freq = 851000000;
-    opts.p25_is_tuned = 1;
+    opts.trunk_hangtime = 0.5f;
+    state.trunk_cc_freq = 851000000;
 
-    // Mark slot bursts as active voice on left (DMR VOICE=16), idle on right
-    state.dmrburstL = 16;
-    state.dmrburstR = 24; // one idle, one active
+    // Initialize and get context
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx != NULL);
+    assert(ctx->state == DMR_SM_ON_CC);
 
-    // Invoke release: should defer (stay tuned)
-    dmr_sm_on_release(&opts, &state);
-    assert(opts.p25_is_tuned == 1);
+    // Grant to tune to VC
+    long vc = 852000000;
+    dmr_sm_emit_group_grant(&opts, &state, vc, 0, 100, 1234);
+    assert(opts.trunk_is_tuned == 1);
+    assert(ctx->state == DMR_SM_TUNED);
 
-    // Clear activity, honor hangtime
-    opts.trunk_hangtime = 0.0f;
-    state.dmrburstL = 24;
-    state.dmrburstR = 24;
-    state.last_t3_tune_time = 0; // no debounce
-    dmr_sm_on_release(&opts, &state);
-    assert(opts.p25_is_tuned == 0);
+    // Simulate voice active on slot 0
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    assert(ctx->slots[0].voice_active == 1);
 
+    // Tick while voice active - should NOT release
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 1);
+    assert(ctx->state == DMR_SM_TUNED);
+
+    // Mark voice inactive but with recent activity (hangtime applies)
+    ctx->slots[0].voice_active = 0;
+    // t_voice_m is still recent, so tick should defer
+
+    // Tick with recent voice - should stay tuned (hangtime)
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 1);
+
+    // Set voice timestamp far in the past to exceed hangtime
+    // Use a small positive value that's clearly in the past (more than hangtime_s ago)
+    double now_m = ctx->t_voice_m; // Get current monotonic time reference
+    ctx->t_voice_m = now_m - 10.0; // 10 seconds ago, well past hangtime
+
+    // Tick should now release
+    dmr_sm_tick(&opts, &state);
+    assert(opts.trunk_is_tuned == 0);
+    assert(ctx->state == DMR_SM_ON_CC);
+
+    printf("DMR_T3_SM_RELEASE: OK\n");
     return 0;
 }

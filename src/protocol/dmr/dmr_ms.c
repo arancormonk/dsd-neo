@@ -14,6 +14,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
@@ -79,6 +80,8 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
     for (j = 0; j < 6; j++) {
         state->dmrburstL = 16;
+        // Emit voice sync to SM (slot 0 for simplex)
+        dmr_sm_emit_voice_sync(opts, state, 0);
 
         memset(ambe_fr, 0, sizeof(ambe_fr));
         memset(ambe_fr2, 0, sizeof(ambe_fr2));
@@ -342,6 +345,9 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         watchdog_event_history(opts, state, 0);
         watchdog_event_current(opts, state, 0);
 
+        // Tick the trunking state machine to handle hangtime/release logic
+        dmr_sm_tick(opts, state);
+
     } // end loop
 
 END:
@@ -403,6 +409,8 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     state->dmrburstL = 16;
     state->currentslot = 0; //force to slot 0
+    // Emit voice sync to SM (slot 0 for simplex)
+    dmr_sm_emit_voice_sync(opts, state, 0);
 
     dibit_p = state->dmr_payload_p - 90;
 

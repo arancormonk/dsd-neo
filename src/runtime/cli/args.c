@@ -1480,9 +1480,9 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             case 'l': opts->use_cosine_filter = 0; break;
             case 't':
-                /* Trunking/scan hangtime seconds */
+                /* Trunking/scan hangtime seconds (0 = immediate release) */
                 opts->trunk_hangtime = (float)atof(optarg);
-                if (opts->trunk_hangtime <= 0.0f) {
+                if (opts->trunk_hangtime < 0.0f) {
                     opts->trunk_hangtime = 0.75f;
                 }
                 break;

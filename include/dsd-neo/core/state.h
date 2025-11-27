@@ -642,7 +642,7 @@ struct dsd_state {
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)
     int p25_sys_is_tdma; // system hint: 1 when P25p2 voice observed (TDMA present)
 
-    // P25 CC hunting candidates discovered from RFSS/Adjacent/Network messages
+    // CC hunting candidates discovered from RFSS/Adjacent/Network messages
     int p25_cc_cand_count;
     int p25_cc_cand_idx;
     // Optional cooldown window per candidate to avoid immediate re-tries (monotonic seconds)
@@ -653,13 +653,14 @@ struct dsd_state {
     // Persisted CC cache bookkeeping
     uint8_t p25_cc_cache_loaded; // 1 once we attempted to load per-system cache
 
-    // P25 SM metrics
+    // Trunk SM metrics (shared by P25 and DMR trunking)
     unsigned int p25_sm_tune_count;      // number of VC tunes via SM
     unsigned int p25_sm_release_count;   // number of release requests via SM
     unsigned int p25_sm_cc_return_count; // number of actual returns to CC via SM
     // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;
+    int trunk_sm_force_release; // protocol-agnostic alias (kept in sync with p25_sm_force_release)
     // Timestamp of last p25_sm_on_release() (0 when none yet)
     time_t p25_sm_last_release_time;
     // Last SM status/reason tag (e.g., "after-tune", "release-deferred-gated") and timestamp

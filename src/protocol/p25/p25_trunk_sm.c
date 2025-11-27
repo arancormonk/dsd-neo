@@ -677,9 +677,9 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     ctx->config.grant_timeout_s = 4.0;
     ctx->config.cc_grace_s = 2.0;
 
-    // Override from opts if available
+    // Override from opts if available (including zero for immediate release)
     if (opts) {
-        if (opts->trunk_hangtime > 0.0) {
+        if (opts->trunk_hangtime >= 0.0) {
             ctx->config.hangtime_s = opts->trunk_hangtime;
         }
         if (opts->p25_grant_voice_to_s > 0.0) {
@@ -1069,6 +1069,10 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
 
 P25_WEAK_API void
 p25_sm_init(dsd_opts* opts, dsd_state* state) {
+    // Reset global flag to allow re-initialization with real opts/state.
+    // This ensures user configuration (e.g., trunk_hangtime) is applied
+    // even if the singleton was previously auto-initialized with NULLs.
+    g_sm_initialized = 0;
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
 }
 

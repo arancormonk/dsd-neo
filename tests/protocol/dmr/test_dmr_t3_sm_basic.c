@@ -3,7 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-// Minimal DMR SM smoke test: grant tunes to VC; release returns to CC.
+// Minimal DMR SM smoke test: grant tunes to VC; tick handles release.
 
 #include <assert.h>
 #include <stdio.h>
@@ -46,11 +46,11 @@ void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     // Minimal behavior needed by the test
     if (opts) {
-        opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
     }
     if (state) {
-        state->p25_vc_freq[0] = 0;
-        state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = 0;
+        state->trunk_vc_freq[1] = 0;
     }
 }
 
@@ -58,13 +58,12 @@ static void
 init_opts_state(dsd_opts* opts, dsd_state* state) {
     memset(opts, 0, sizeof(*opts));
     memset(state, 0, sizeof(*state));
-    opts->p25_trunk = 1;     // enable trunking logic
-    opts->trunk_enable = 1;  // protocol-agnostic alias
+    opts->trunk_enable = 1;  // enable trunking logic
     opts->use_rigctl = 0;    // avoid IO during test
     opts->audio_in_type = 0; // avoid RTL path
     opts->setmod_bw = 0;
-    opts->trunk_hangtime = 0.0f;    // no hangtime delay for this test
-    state->p25_cc_freq = 851000000; // pretend CC
+    opts->trunk_hangtime = 0.0f;      // no hangtime delay for this test
+    state->trunk_cc_freq = 851000000; // pretend CC
 }
 
 int
@@ -75,26 +74,47 @@ main(int argc, char** argv) {
     dsd_state state;
     init_opts_state(&opts, &state);
 
+    // Initialize the SM
+    dmr_sm_init(&opts, &state);
+
+    // Get context to check state
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx != NULL);
+    assert(ctx->state == DMR_SM_ON_CC);
+
     // Before grant, not tuned
-    assert(opts.p25_is_tuned == 0);
-    assert(state.p25_vc_freq[0] == 0);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_vc_freq[0] == 0);
 
     // Group grant with explicit frequency
     long vc = 852000000;
-    dmr_sm_on_group_grant(&opts, &state, vc, /*lpcn*/ 0, /*tg*/ 101, /*src*/ 1234);
+    dmr_sm_emit_group_grant(&opts, &state, vc, /*lpcn*/ 0, /*tg*/ 101, /*src*/ 1234);
 
     // Expect tuned
-    assert(opts.p25_is_tuned == 1);
-    assert(state.p25_vc_freq[0] == vc);
-    assert(state.p25_vc_freq[1] == vc);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == vc);
+    assert(state.trunk_vc_freq[1] == vc);
+    assert(ctx->state == DMR_SM_TUNED);
 
-    // Release (P_CLEAR equivalent)
-    dmr_sm_on_release(&opts, &state);
+    // Simulate voice activity
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    assert(ctx->slots[0].voice_active == 1);
+
+    // Mark voice inactive
+    ctx->slots[0].voice_active = 0;
+
+    // Set voice timestamp in the past to exceed hangtime
+    double now_m = ctx->t_voice_m; // Get current monotonic time reference
+    ctx->t_voice_m = now_m - 10.0; // 10 seconds ago, well past hangtime
+
+    // Tick should trigger release due to hangtime expiry
+    dmr_sm_tick(&opts, &state);
 
     // Expect back on CC
-    assert(opts.p25_is_tuned == 0);
-    assert(state.p25_vc_freq[0] == 0);
-    assert(state.p25_vc_freq[1] == 0);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_vc_freq[0] == 0);
+    assert(state.trunk_vc_freq[1] == 0);
+    assert(ctx->state == DMR_SM_ON_CC);
 
     printf("DMR_T3_SM_BASIC: OK\n");
     return 0;

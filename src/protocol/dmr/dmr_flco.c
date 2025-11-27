@@ -1330,11 +1330,11 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         }
 
         //if using rigctl we can set an unknown cc frequency by polling rigctl for the current frequency
-        if (opts->use_rigctl == 1 && state->p25_cc_freq == 0) //if not set from channel map 0
+        if (opts->use_rigctl == 1 && state->trunk_cc_freq == 0) //if not set from channel map 0
         {
             ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
             if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
 
@@ -1377,7 +1377,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         if (opts->use_rigctl == 1 && opts->p25_is_tuned == 0) {
             ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
             if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
 
@@ -1385,7 +1385,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         if (opts->audio_in_type == 3 && opts->p25_is_tuned == 0) {
             ccfreq = (long int)opts->rtlsdr_center_freq;
             if (ccfreq != 0) {
-                state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
 
@@ -1425,11 +1425,11 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
                     //assign to cc freq if available -- move to right before needed for new logic on rest lsn
                     if (state->trunk_chan_map[restchannel] != 0) {
-                        state->p25_cc_freq = state->trunk_chan_map[restchannel];
+                        state->trunk_cc_freq = state->trunk_chan_map[restchannel];
                     }
 
                     //tune to the current rest channel so we can observe its channel status csbks for the TG on hold
-                    if (state->p25_cc_freq != 0) {
+                    if (state->trunk_cc_freq != 0) {
                         //RIGCTL
                         if (opts->use_rigctl == 1) {
                             if (opts->setmod_bw != 0) {
@@ -1437,7 +1437,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             }
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+                            SetFreq(opts->rigctl_sockfd, state->trunk_cc_freq);
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
                             state->last_cc_sync_time = time(NULL);
@@ -1451,7 +1451,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             if (g_rtl_ctx) {
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_cc_freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
@@ -1499,11 +1499,11 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
                     //check to see if the XPT free channel converted to lsn is available in the map
                     if (state->trunk_chan_map[xpt_free] != 0) {
-                        state->p25_cc_freq = state->trunk_chan_map[xpt_free];
+                        state->trunk_cc_freq = state->trunk_chan_map[xpt_free];
                     }
 
                     //tune to the current rest channel so we can observe its channel status csbks for the TG on hold
-                    if (state->p25_cc_freq != 0) {
+                    if (state->trunk_cc_freq != 0) {
                         //RIGCTL
                         if (opts->use_rigctl == 1) {
                             if (opts->setmod_bw != 0) {
@@ -1511,7 +1511,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             }
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+                            SetFreq(opts->rigctl_sockfd, state->trunk_cc_freq);
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
                             dsd_mark_cc_sync(state);
@@ -1525,7 +1525,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                             if (g_rtl_ctx) {
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_cc_freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;

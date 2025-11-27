@@ -92,9 +92,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
         return;
     }
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     state->last_vc_sync_time = time(NULL);
 }
@@ -102,11 +100,9 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
 }
@@ -136,10 +132,9 @@ static void
 init_env(dsd_opts* opts, dsd_state* state) {
     memset(opts, 0, sizeof(*opts));
     memset(state, 0, sizeof(*state));
-    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
-    opts->trunk_hangtime = 0.0f;    // immediate release on clear
-    state->p25_cc_freq = 851000000; // mock CC
+    opts->trunk_hangtime = 0.0f;      // immediate release on clear
+    state->trunk_cc_freq = 851000000; // mock CC
 }
 
 // Compose a minimal C_MOVE CSBK + MBC absolute channel parms
@@ -191,8 +186,8 @@ main(int argc, char** argv) {
 
     // Step 1: tune to initial VC via SM grant (pretend TS2 voice ongoing)
     long f1 = 852000000;
-    dmr_sm_on_group_grant(&opts, &state, f1, /*lpcn*/ 0x0010, /*tg*/ 1001, /*src*/ 222);
-    assert(opts.p25_is_tuned == 1);
+    dmr_sm_emit_group_grant(&opts, &state, f1, /*lpcn*/ 0x0010, /*tg*/ 1001, /*src*/ 222);
+    assert(opts.trunk_is_tuned == 1);
     state.currentslot = 1; // slot 2 context in data path
     state.dmrburstR = 16;  // voice on TS2
     state.dmrburstL = 9;   // idle on TS1
@@ -206,8 +201,8 @@ main(int argc, char** argv) {
     long f2 = 853000000 + 4000 * 125;                                 // 853.500000 MHz
     build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0); // TS1
     dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
-    assert(opts.p25_is_tuned == 1);
-    assert(state.p25_vc_freq[0] == f2);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == f2);
     // After move, opposite slot should clear; destination slot shows voice
     assert(state.dmrburstL == 16);
     assert(state.dmrburstR == 9);
@@ -218,9 +213,9 @@ main(int argc, char** argv) {
     build_pclear(bits, bytes);
     dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
 
-    assert(opts.p25_is_tuned == 0);
-    assert(state.p25_vc_freq[0] == 0);
-    assert(state.p25_vc_freq[1] == 0);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_vc_freq[0] == 0);
+    assert(state.trunk_vc_freq[1] == 0);
 
     printf("DMR_T3_MOVE_RELEASE: OK\n");
     return 0;

@@ -797,6 +797,7 @@ pretty_colors() {
 }
 
 #include <dsd-neo/io/pa_devs.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
@@ -3045,6 +3046,11 @@ main(int argc, char** argv) {
         int filter_rate = analog_filter_rate_hz(&opts);
         init_audio_filters(&state, filter_rate);
     }
+
+    /* Initialize trunking state machines with user configuration.
+       Must be done after all opts parsing so hangtime/timeouts are honored. */
+    p25_sm_init(&opts, &state);
+    dmr_sm_init(&opts, &state);
 
     /* long-option normalization handled inside dsd_parse_args */
 
