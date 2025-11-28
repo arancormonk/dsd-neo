@@ -110,8 +110,8 @@ Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
 
 Key public headers:
 
-- Menu core/services: `include/dsd-neo/ui/menu_core.h`, `include/dsd-neo/ui/menu_services.h`
-- Async/UI plumbing: `include/dsd-neo/ui/ui_async.h`, `include/dsd-neo/ui/ui_cmd.h`, `include/dsd-neo/ui/ui_snapshot.h`, `include/dsd-neo/ui/ui_opts_snapshot.h`, `include/dsd-neo/ui/keymap.h`
+- Menu core/services: `include/dsd-neo/ui/menu_core.h`, `include/dsd-neo/ui/menu_defs.h`, `include/dsd-neo/ui/menu_services.h`
+- Async/UI plumbing: `include/dsd-neo/ui/ui_async.h`, `include/dsd-neo/ui/ui_cmd.h`, `include/dsd-neo/ui/ui_cmd_dispatch.h`, `include/dsd-neo/ui/ui_dsp_cmd.h`, `include/dsd-neo/ui/ui_snapshot.h`, `include/dsd-neo/ui/ui_opts_snapshot.h`, `include/dsd-neo/ui/ui_prims.h`, `include/dsd-neo/ui/keymap.h`, `include/dsd-neo/ui/panels.h`
 
 ### Adding Menu Items
 - Define a handler:
@@ -137,8 +137,8 @@ Key public headers:
 
 Additional includes of interest:
 
-- IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_device.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`
-- UI: `<dsd-neo/ui/menu_core.h>`, `<dsd-neo/ui/menu_services.h>`
+- IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`, `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`, `<dsd-neo/io/pa_devs.h>`
+- UI: `<dsd-neo/ui/menu_core.h>`, `<dsd-neo/ui/menu_defs.h>`, `<dsd-neo/ui/menu_services.h>`
 
 ## Build Targets
 

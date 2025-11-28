@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
+#include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
@@ -425,7 +426,6 @@ channel_lpf_apply(struct demod_state* d) {
     }
     const int taps_len = kChannelLpfTaps;
     const int hist_len = kChannelLpfHistLen;
-    const int center = (taps_len - 1) >> 1;
     const int N = d->lp_len >> 1; /* complex samples */
     if (hist_len > d->channel_lpf_hist_len) {
         d->channel_lpf_hist_len = hist_len;
@@ -440,73 +440,10 @@ channel_lpf_apply(struct demod_state* d) {
     float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     float* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
     float* hq = assume_aligned_ptr(d->channel_lpf_hist_q, DSD_NEO_ALIGN);
-    float lastI = (N > 0) ? in[(size_t)((N - 1) << 1)] : 0.0f;
-    float lastQ = (N > 0) ? in[(size_t)(((N - 1) << 1) + 1)] : 0.0f;
 
-    for (int n = 0; n < N; n++) {
-        int center_idx = hist_len + n; /* index into combined hist+current stream */
-        auto get_iq = [&](int src_idx, float& xi, float& xq) {
-            if (src_idx < hist_len) {
-                xi = hi[src_idx];
-                xq = hq[src_idx];
-            } else {
-                int rel = src_idx - hist_len;
-                if (rel < N) {
-                    xi = in[(size_t)(rel << 1)];
-                    xq = in[(size_t)(rel << 1) + 1];
-                } else {
-                    xi = lastI;
-                    xq = lastQ;
-                }
-            }
-        };
-        float accI = 0.0f;
-        float accQ = 0.0f;
-        /* center tap */
-        {
-            float ci, cq;
-            get_iq(center_idx, ci, cq);
-            float cc = taps[center];
-            accI += cc * ci;
-            accQ += cc * cq;
-        }
-        /* symmetric pairs */
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int dists = center - k;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - dists, xmI, xmQ);
-            get_iq(center_idx + dists, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
-        out[(size_t)(n << 1)] = accI;
-        out[(size_t)(n << 1) + 1] = accQ;
-    }
+    /* Use SIMD-dispatched complex symmetric FIR */
+    simd_fir_complex_apply(in, d->lp_len, out, hi, hq, taps, taps_len);
 
-    /* Update history with the last (hist_len) complex samples of this block */
-    if (hist_len > 0) {
-        if (N >= hist_len) {
-            for (int k = 0; k < hist_len; k++) {
-                int rel = N - hist_len + k;
-                hi[k] = in[(size_t)(rel << 1)];
-                hq[k] = in[(size_t)(rel << 1) + 1];
-            }
-        } else {
-            int need = hist_len - N;
-            if (need > 0) {
-                memmove(hi, hi + (hist_len - need), (size_t)need * sizeof(float));
-                memmove(hq, hq + (hist_len - need), (size_t)need * sizeof(float));
-            }
-            for (int k = 0; k < N; k++) {
-                hi[need + k] = in[(size_t)(k << 1)];
-                hq[need + k] = in[(size_t)(k << 1) + 1];
-            }
-        }
-    }
     d->lowpassed = out;
     d->lp_len = N << 1;
 }
@@ -514,102 +451,23 @@ channel_lpf_apply(struct demod_state* d) {
 /**
  * @brief Half-band decimator for complex interleaved I/Q data.
  *
- * Decimates by 2:1 using symmetric FIR filter.
+ * Decimates by 2:1 using symmetric FIR filter. Uses SIMD-dispatched implementation.
  *
  * @param in      Input complex samples (interleaved I/Q).
  * @param in_len  Number of complex samples (total elements = 2 * in_len).
  * @param out     Output buffer for decimated complex samples.
  * @param hist_i  Persistent I-channel history of length HB_TAPS-1.
  * @param hist_q  Persistent Q-channel history of length HB_TAPS-1.
- * @return Number of output complex samples.
+ * @param taps_q15 Half-band filter taps (odd count, odd indices zero except center).
+ * @param taps_len Number of taps.
+ * @return Number of output floats (decimated complex samples * 2).
  */
-/* Generalized complex half-band decimator by 2 that accepts arbitrary Q15 tap sets.
-   Falls back to an optimized unrolled path for 15-tap filters. */
 static int
 hb_decim2_complex_interleaved_ex(const float* DSD_NEO_RESTRICT in, int in_len, float* DSD_NEO_RESTRICT out,
                                  float* DSD_NEO_RESTRICT hist_i, float* DSD_NEO_RESTRICT hist_q,
                                  const float* DSD_NEO_RESTRICT taps_q15, int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0) {
-        return 0; /* invalid */
-    }
-    int ch_len = in_len >> 1;     /* per-channel samples */
-    int out_ch_len = ch_len >> 1; /* decimated per-channel */
-    if (out_ch_len <= 0) {
-        return 0;
-    }
-    const float* DSD_NEO_RESTRICT in_al = assume_aligned_ptr(in, DSD_NEO_ALIGN);
-    float* DSD_NEO_RESTRICT out_al = assume_aligned_ptr(out, DSD_NEO_ALIGN);
-    float* DSD_NEO_RESTRICT hi = assume_aligned_ptr(hist_i, DSD_NEO_ALIGN);
-    float* DSD_NEO_RESTRICT hq = assume_aligned_ptr(hist_q, DSD_NEO_ALIGN);
-    float lastI = (ch_len > 0) ? in_al[in_len - 2] : 0.0f;
-    float lastQ = (ch_len > 0) ? in_al[in_len - 1] : 0.0f;
-    const int center = (taps_len - 1) >> 1;
-    const int left_len = taps_len - 1;
-    for (int n = 0; n < out_ch_len; n++) {
-        int center_idx = (taps_len - 1) + (n << 1); /* per-channel index with left history */
-        auto get_iq = [&](int src_idx, float& xi, float& xq) {
-            if (src_idx < left_len) {
-                xi = hi[src_idx];
-                xq = hq[src_idx];
-            } else {
-                int rel = src_idx - left_len;
-                if (rel < ch_len) {
-                    xi = in_al[(size_t)(rel << 1)];
-                    xq = in_al[(size_t)(rel << 1) + 1];
-                } else {
-                    xi = lastI;
-                    xq = lastQ;
-                }
-            }
-        };
-        float accI = 0.0f;
-        float accQ = 0.0f;
-        /* center tap */
-        {
-            float ci, cq;
-            get_iq(center_idx, ci, cq);
-            float cc = taps_q15[center];
-            accI += cc * ci;
-            accQ += cc * cq;
-        }
-        /* symmetric pairs: only even indices in the full taps array are non-zero */
-        for (int e = 0; e < center; e += 2) {
-            int d = center - e; /* distance from center */
-            float ce = taps_q15[e];
-            if (ce == 0.0f) {
-                continue;
-            }
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
-        out_al[(size_t)(n << 1)] = accI;
-        out_al[(size_t)(n << 1) + 1] = accQ;
-    }
-    /* Update histories with last (taps_len-1) per-channel input samples */
-    if (ch_len >= left_len) {
-        int start = ch_len - left_len;
-        for (int k = 0; k < left_len; k++) {
-            int rel = start + k;
-            hi[k] = in_al[(size_t)(rel << 1)];
-            hq[k] = in_al[(size_t)(rel << 1) + 1];
-        }
-    } else {
-        int existing = ch_len;
-        for (int k = 0; k < left_len; k++) {
-            if (k < existing) {
-                int rel = k;
-                hi[k] = in_al[(size_t)(rel << 1)];
-                hq[k] = in_al[(size_t)(rel << 1) + 1];
-            } else {
-                hi[k] = 0.0f;
-                hq[k] = 0.0f;
-            }
-        }
-    }
-    return out_ch_len << 1;
+    /* Use SIMD-dispatched complex half-band decimator */
+    return simd_hb_decim2_complex(in, in_len, out, hist_i, hist_q, taps_q15, taps_len);
 }
 
 /**
