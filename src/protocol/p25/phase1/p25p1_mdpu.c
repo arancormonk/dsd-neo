@@ -58,6 +58,9 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     uint8_t tsbk_dibit[98];
     memset(tsbk_dibit, 0, sizeof(tsbk_dibit));
 
+    uint8_t tsbk_reliab[98]; // per-dibit reliability for soft decoding
+    memset(tsbk_reliab, 255, sizeof(tsbk_reliab));
+
     int dibit = 0;
     int r34 = 0;
 
@@ -132,10 +135,13 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         k = 0;
         dibit_count = 0;
         for (i = start; i < stop; i++) {
-            dibit = getDibit(opts, state);
+            uint8_t rel = 255;
+            dibit = getDibitWithReliability(opts, state, &rel);
             if ((skipdibit / 36) == 0) {
                 dibit_count++;
-                tsbk_dibit[k++] = dibit;
+                tsbk_dibit[k] = dibit;
+                tsbk_reliab[k] = rel;
+                k++;
             } else {
                 skipdibit = 0;
                 status_count++;
@@ -179,7 +185,7 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
             }
 
         } else {
-            ec[j] = p25_12(tsbk_dibit, tsbk_byte);
+            ec[j] = p25_12_soft(tsbk_dibit, tsbk_reliab, tsbk_byte);
         }
 
         //too many bit manipulations!

@@ -42,6 +42,9 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     uint8_t tsbk_dibit[98];
     memset(tsbk_dibit, 0, sizeof(tsbk_dibit));
 
+    uint8_t tsbk_reliab[98]; // per-dibit reliability for soft decoding
+    memset(tsbk_reliab, 255, sizeof(tsbk_reliab));
+
     uint8_t tsbk_byte[12]; // per repetition
     memset(tsbk_byte, 0, sizeof(tsbk_byte));
 
@@ -76,10 +79,13 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     for (j = 0; j < 3; j++) {
         k = 0;
         for (i = 0; i < 101; i++) {
-            int dibit = getDibit(opts, state);
+            uint8_t rel = 255;
+            int dibit = getDibitWithReliability(opts, state, &rel);
             if ((skipdibit / 36) == 0) {
                 dibit_count++;
-                tsbk_dibit[k++] = (uint8_t)dibit;
+                tsbk_dibit[k] = (uint8_t)dibit;
+                tsbk_reliab[k] = rel;
+                k++;
             } else {
                 skipdibit = 0;
                 status_count++;
@@ -87,8 +93,8 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             skipdibit++;
         }
 
-        // 1/2-rate decode this repetition
-        (void)p25_12(tsbk_dibit, tsbk_byte);
+        // 1/2-rate soft decode this repetition
+        (void)p25_12_soft(tsbk_dibit, tsbk_reliab, tsbk_byte);
 
         // Convert decoded bytes into a 96-bit MSB-first vector
         k = 0;

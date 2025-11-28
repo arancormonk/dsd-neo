@@ -155,3 +155,122 @@ p25_12(uint8_t* input, uint8_t treturn[12]) {
     /* Return aggregate metric as a rough error indicator (compat: previous returned count) */
     return (int)best_final;
 }
+
+/*
+ * Soft-decision 1/2-rate trellis decoder.
+ * Same algorithm as p25_12() but weights bit mismatches by reliability values.
+ * reliab98: per-dibit reliability (0=uncertain, 255=confident) parallel to input.
+ */
+int
+p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]) {
+    enum { N_SYMS = 49, N_ST = 4 };
+
+    int i, j;
+
+    /* Deinterleave input dibits (98) into symbol-ordered dibits */
+    uint8_t deinterleaved_dibits[98];
+    memset(deinterleaved_dibits, 0, sizeof(deinterleaved_dibits));
+    for (i = 0; i < 98; i++) {
+        deinterleaved_dibits[p25_interleave[i]] = input[i];
+    }
+
+    /* Deinterleave reliabilities in parallel */
+    uint8_t reliab_dei[98];
+    memset(reliab_dei, 0, sizeof(reliab_dei));
+    for (i = 0; i < 98; i++) {
+        reliab_dei[p25_interleave[i]] = reliab98[i];
+    }
+
+    /* Pack dibit pairs into 4-bit nibbles and gather per-dibit reliability */
+    uint8_t nibs[N_SYMS];
+    uint8_t rhi[N_SYMS], rlo[N_SYMS]; /* reliability for high/low dibit in nibble */
+    memset(nibs, 0, sizeof(nibs));
+    for (i = 0; i < N_SYMS; i++) {
+        nibs[i] = (uint8_t)((deinterleaved_dibits[(i * 2) + 0] << 2) | (deinterleaved_dibits[(i * 2) + 1]));
+        rhi[i] = reliab_dei[(i * 2) + 0];
+        rlo[i] = reliab_dei[(i * 2) + 1];
+    }
+
+    /* Viterbi: path metrics and backpointers */
+    /* Worst-case metric: 49 symbols * 4 bits * 255 = ~50k, fits uint32_t easily */
+    uint32_t prev_metric[N_ST];
+    uint32_t curr_metric[N_ST];
+    uint8_t backptr[N_SYMS][N_ST];
+
+    /* Initialize metrics: bias start at state 0 */
+    for (j = 0; j < N_ST; j++) {
+        prev_metric[j] = (j == 0) ? 0 : 256;
+    }
+
+    for (i = 0; i < N_SYMS; i++) {
+        /* For each candidate next state, pick best predecessor */
+        for (int st_next = 0; st_next < N_ST; st_next++) {
+            uint32_t best = 0xFFFFFFFFu;
+            uint8_t best_prev = 0;
+            for (int st_prev = 0; st_prev < N_ST; st_prev++) {
+                /* Expected transition nibble from (st_prev -> st_next) */
+                uint8_t expect = p25_dtm[(st_prev << 2) | st_next] & 0xF;
+                uint8_t obs = nibs[i];
+                uint8_t diff = (uint8_t)((obs ^ expect) & 0xF);
+
+                /* Weighted bit mismatch cost:
+                 * High dibit (bits 3,2) weighted by rhi, low dibit (bits 1,0) by rlo.
+                 * Each differing bit adds the corresponding reliability as cost. */
+                uint32_t cost = 0;
+                if (diff & 0x8) {
+                    cost += rhi[i];
+                }
+                if (diff & 0x4) {
+                    cost += rhi[i];
+                }
+                if (diff & 0x2) {
+                    cost += rlo[i];
+                }
+                if (diff & 0x1) {
+                    cost += rlo[i];
+                }
+
+                uint32_t m = prev_metric[st_prev] + cost;
+                if (m < best) {
+                    best = m;
+                    best_prev = (uint8_t)st_prev;
+                }
+            }
+            curr_metric[st_next] = best;
+            backptr[i][st_next] = best_prev;
+        }
+        /* Roll metrics */
+        for (j = 0; j < N_ST; j++) {
+            prev_metric[j] = curr_metric[j];
+        }
+    }
+
+    /* Select best ending state */
+    uint32_t best_final = curr_metric[0];
+    int st = 0;
+    for (j = 1; j < N_ST; j++) {
+        if (curr_metric[j] < best_final) {
+            best_final = curr_metric[j];
+            st = j;
+        }
+    }
+
+    /* Traceback to recover tdibits (next states) */
+    uint8_t tdibits[N_SYMS];
+    for (i = N_SYMS - 1; i >= 0; i--) {
+        tdibits[i] = (uint8_t)st;
+        st = backptr[i][st];
+        if (i == 0) {
+            break;
+        }
+    }
+
+    /* Pack first 48 tdibits into 12 bytes (MSB-first) */
+    for (i = 0; i < 12; i++) {
+        treturn[i] = (uint8_t)((tdibits[(i * 4) + 0] << 6) | (tdibits[(i * 4) + 1] << 4) | (tdibits[(i * 4) + 2] << 2)
+                               | (tdibits[(i * 4) + 3]));
+    }
+
+    /* Return normalized metric (divide by 256 to roughly match hard-decision scale) */
+    return (int)(best_final >> 8);
+}

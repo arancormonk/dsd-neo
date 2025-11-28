@@ -262,6 +262,18 @@ int getDibit(dsd_opts* opts, dsd_state* state);
  */
 int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
 /**
+ * @brief Get the next dibit along with its reliability value.
+ *
+ * This function reads the next dibit and returns the associated reliability
+ * (0=uncertain, 255=confident) via out_reliability.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state containing symbol buffers and thresholds.
+ * @param out_reliability [out] Reliability value when non-NULL.
+ * @return Dibit value [0,3]; negative on shutdown/EOF.
+ */
+int getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability);
+/**
  * @brief Get the next dibit and store the soft symbol for Viterbi decoding.
  *
  * This function reads the next dibit while also recording the raw float
@@ -491,6 +503,17 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrec
  * @return Error count/status from the trellis decoder.
  */
 int p25_12(uint8_t* input, uint8_t treturn[12]);
+/**
+ * @brief Soft-decision P25 1/2-rate trellis decoder.
+ *
+ * Same algorithm as p25_12() but weights bit mismatches by reliability values.
+ *
+ * @param input Input dibits (98).
+ * @param reliab98 Per-dibit reliability (0=uncertain, 255=confident).
+ * @param treturn [out] Decoded 12-symbol output.
+ * @return Normalized error metric from the trellis decoder.
+ */
+int p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]);
 // P25 LSD FEC is provided via <dsd-neo/protocol/p25/p25_lsd.h>
 
 /** @brief Decode and display P25 LCW information from the current frame. */
@@ -593,22 +616,65 @@ void nxdn_descramble(uint8_t dibits[], int len);
 //nxdn deinterleaving/depuncturing functions
 /** @brief Deinterleave FACCH bits into their original order. */
 void nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_facch.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
 /** @brief Deinterleave SACCH bits into their original order. */
 void nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_sacch.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 /** @brief Deinterleave CAC bits into their original order. */
 void nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_cac.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 /** @brief Deinterleave FACCH2/UDCH blocks based on type. */
 void nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uint8_t type);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_facch2_udch.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
+                                  uint8_t type);
 //type-d 'idas' deinterleaving/depuncturing functions
 /** @brief Deinterleave SCCH bits (type-D) with direction flag. */
 void nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t direction);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_scch.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
+                           uint8_t direction);
 /** @brief Deinterleave FACCH3/UDCH2 (type-D) blocks. */
 void nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], uint8_t type);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_facch3_udch2.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
+                                   uint8_t type);
 //DCR Mode
 /** @brief Deinterleave SACCH2 block for DCR mode. */
 void nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_sacch2.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_sacch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 /** @brief Deinterleave PICH/TCH block for DCR mode. */
 void nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]);
+/**
+ * @brief Soft-decision variant of nxdn_deperm_pich_tch.
+ * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
+ */
+void nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
 //MT and Voice
 /** @brief Decode NXDN message type header. */
 void nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType);
@@ -637,6 +703,13 @@ uint8_t crc7_scch(uint8_t bits[], int len); //converted from op25 crc6
 void CNXDNConvolution_start(void);
 /** @brief Push one pair of encoded bits into the convolutional decoder. */
 void CNXDNConvolution_decode(uint8_t s0, uint8_t s1);
+/**
+ * @brief Soft-decision variant of CNXDNConvolution_decode.
+ *
+ * @param s0, s1 Observed soft values (0..2 range).
+ * @param r0, r1 Reliability weights (0..255, higher = more confident).
+ */
+void CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1);
 /** @brief Chain back through the decoded trellis to recover bits. */
 void CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits);
 /** @brief Encode input bits using the NXDN convolutional code. */

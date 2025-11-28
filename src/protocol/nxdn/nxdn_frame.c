@@ -33,6 +33,7 @@ void
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     // length is implicitly 192, with frame sync in first 10 dibits
     uint8_t dbuf[182];
+    uint8_t dbuf_reliab[182]; // per-dibit reliability for soft decoding
     uint8_t lich;
     uint8_t answer[32];
     uint8_t sacch_answer[32];
@@ -64,33 +65,51 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
     uint8_t lich_dibits[8];
     uint8_t sacch_bits[60];
+    uint8_t sacch_reliab[60]; // per-bit reliability for sacch
     uint8_t facch_bits_a[144];
+    uint8_t facch_reliab_a[144]; // per-bit reliability for facch_a
     uint8_t facch_bits_b[144];
+    uint8_t facch_reliab_b[144]; // per-bit reliability for facch_b
     uint8_t cac_bits[300];
-    uint8_t facch2_bits[348]; //facch2 or udch, same amount of bits
-    uint8_t facch3_bits[288]; //facch3 or udch2, same amount of bits
+    uint8_t cac_reliab[300];    // per-bit reliability for cac
+    uint8_t facch2_bits[348];   //facch2 or udch, same amount of bits
+    uint8_t facch2_reliab[348]; // per-bit reliability
+    uint8_t facch3_bits[288];   //facch3 or udch2, same amount of bits
+    uint8_t facch3_reliab[288]; // per-bit reliability
 
     //nxdn bit buffer, for easy assignment handling
     int nxdn_bit_buffer[364];
+    uint8_t nxdn_reliab_buffer[364]; // per-bit reliability buffer
     int nxdn_dibit_buffer[182];
 
     //init all arrays
     memset(dbuf, 0, sizeof(dbuf));
+    memset(dbuf_reliab, 255, sizeof(dbuf_reliab));
     memset(answer, 0, sizeof(answer));
     memset(sacch_answer, 0, sizeof(sacch_answer));
     memset(lich_dibits, 0, sizeof(lich_dibits));
     memset(sacch_bits, 0, sizeof(sacch_bits));
+    memset(sacch_reliab, 255, sizeof(sacch_reliab));
     memset(facch_bits_b, 0, sizeof(facch_bits_b));
+    memset(facch_reliab_b, 255, sizeof(facch_reliab_b));
     memset(facch_bits_a, 0, sizeof(facch_bits_a));
+    memset(facch_reliab_a, 255, sizeof(facch_reliab_a));
     memset(cac_bits, 0, sizeof(cac_bits));
+    memset(cac_reliab, 255, sizeof(cac_reliab));
     memset(facch2_bits, 0, sizeof(facch2_bits));
+    memset(facch2_reliab, 255, sizeof(facch2_reliab));
+    memset(facch3_bits, 0, sizeof(facch3_bits));
+    memset(facch3_reliab, 255, sizeof(facch3_reliab));
 
     memset(nxdn_bit_buffer, 0, sizeof(nxdn_bit_buffer));
+    memset(nxdn_reliab_buffer, 255, sizeof(nxdn_reliab_buffer));
     memset(nxdn_dibit_buffer, 0, sizeof(nxdn_dibit_buffer));
 
     //collect lich bits first, if they are good, then we can collect the rest of them
     for (int i = 0; i < 8; i++) {
-        lich_dibits[i] = dbuf[i] = getDibit(opts, state);
+        uint8_t rel = 255;
+        lich_dibits[i] = dbuf[i] = (uint8_t)getDibitWithReliability(opts, state, &rel);
+        dbuf_reliab[i] = rel;
     }
 
     nxdn_descramble(lich_dibits, 8);
@@ -335,42 +354,55 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     //and push them to the proper places for decoding (if LICH calls for that type)
     for (int i = 0; i < 174; i++) //192total-10FSW-8lich = 174
     {
-        dbuf[i + 8] = getDibit(opts, state);
+        uint8_t rel = 255;
+        dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
+        dbuf_reliab[i + 8] = rel;
     }
 
     nxdn_descramble(dbuf, 182); //sizeof(dbuf)
+    // Note: descramble only XORs dibit sign bit, doesn't affect reliability
 
     //seperate our dbuf (dibit_buffer) into individual bit array
+    //each dibit has one reliability value that applies to both bits
     for (size_t i = 0; i < 182; i++) {
         size_t idx = i * 2;
         nxdn_bit_buffer[idx] = dbuf[i] >> 1;
         nxdn_bit_buffer[idx + 1] = dbuf[i] & 1;
+        // Both bits from same dibit share the same reliability
+        nxdn_reliab_buffer[idx] = dbuf_reliab[i];
+        nxdn_reliab_buffer[idx + 1] = dbuf_reliab[i];
     }
 
-    //sacch or scch bits
+    //sacch or scch bits (with reliability)
     for (int i = 0; i < 60; i++) {
         sacch_bits[i] = nxdn_bit_buffer[i + 16];
+        sacch_reliab[i] = nxdn_reliab_buffer[i + 16];
     }
 
-    //facch
+    //facch (with reliability)
     for (int i = 0; i < 144; i++) {
         facch_bits_a[i] = nxdn_bit_buffer[i + 16 + 60];
+        facch_reliab_a[i] = nxdn_reliab_buffer[i + 16 + 60];
         facch_bits_b[i] = nxdn_bit_buffer[i + 16 + 60 + 144];
+        facch_reliab_b[i] = nxdn_reliab_buffer[i + 16 + 60 + 144];
     }
 
-    //cac
+    //cac (with reliability)
     for (int i = 0; i < 300; i++) {
         cac_bits[i] = nxdn_bit_buffer[i + 16];
+        cac_reliab[i] = nxdn_reliab_buffer[i + 16];
     }
 
-    //udch or facch2
+    //udch or facch2 (with reliability)
     for (int i = 0; i < 348; i++) {
         facch2_bits[i] = nxdn_bit_buffer[i + 16];
+        facch2_reliab[i] = nxdn_reliab_buffer[i + 16];
     }
 
-    //udch2 or facch3
+    //udch2 or facch3 (with reliability)
     for (int i = 0; i < 288; i++) {
         facch3_bits[i] = nxdn_bit_buffer[i + 16 + 60];
+        facch3_reliab[i] = nxdn_reliab_buffer[i + 16 + 60];
     }
 
     //vch frames stay inside dbuf, easier to assign that to ambe_fr frames
@@ -554,50 +586,50 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
     //TODO Later: Add Direction and/or LICH to all decoding functions
     if (scch) {
-        nxdn_deperm_scch(opts, state, sacch_bits, direction);
+        nxdn_deperm_scch_soft(opts, state, sacch_bits, sacch_reliab, direction);
     }
 
     if (udch2) {
-        nxdn_deperm_facch3_udch2(opts, state, facch3_bits, 0);
+        nxdn_deperm_facch3_udch2_soft(opts, state, facch3_bits, facch3_reliab, 0);
     }
     if (facch3) {
-        nxdn_deperm_facch3_udch2(opts, state, facch3_bits, 1);
+        nxdn_deperm_facch3_udch2_soft(opts, state, facch3_bits, facch3_reliab, 1);
     }
 
     if (sacch) {
-        nxdn_deperm_sacch(opts, state, sacch_bits);
+        nxdn_deperm_sacch_soft(opts, state, sacch_bits, sacch_reliab);
     }
     if (cac) {
-        nxdn_deperm_cac(opts, state, cac_bits);
+        nxdn_deperm_cac_soft(opts, state, cac_bits, cac_reliab);
     }
 
     //Seperated UDCH user data from facch2 data
     if (udch) {
-        nxdn_deperm_facch2_udch(opts, state, facch2_bits, 0);
+        nxdn_deperm_facch2_udch_soft(opts, state, facch2_bits, facch2_reliab, 0);
     }
     if (facch2) {
-        nxdn_deperm_facch2_udch(opts, state, facch2_bits, 1);
+        nxdn_deperm_facch2_udch_soft(opts, state, facch2_bits, facch2_reliab, 1);
     }
 
     //DCR
     if (sacch2) {
-        nxdn_deperm_sacch2(opts, state, sacch_bits);
+        nxdn_deperm_sacch2_soft(opts, state, sacch_bits, sacch_reliab);
     }
     if (pich_tch & 1) {
-        nxdn_deperm_pich_tch(opts, state, facch_bits_a);
+        nxdn_deperm_pich_tch_soft(opts, state, facch_bits_a, facch_reliab_a);
     }
     if (pich_tch & 2) {
-        nxdn_deperm_pich_tch(opts, state, facch_bits_b);
+        nxdn_deperm_pich_tch_soft(opts, state, facch_bits_b, facch_reliab_b);
     }
 
     //only run facch in second slot if its not equal to the first one
     //ideally, this would work better AFTER decoding/FEC
     if (facch & 1) {
-        nxdn_deperm_facch(opts, state, facch_bits_a);
+        nxdn_deperm_facch_soft(opts, state, facch_bits_a, facch_reliab_a);
     }
     if (facch & 2) {
         if (memcmp(facch_bits_a, facch_bits_b, 144) != 0) {
-            nxdn_deperm_facch(opts, state, facch_bits_b);
+            nxdn_deperm_facch_soft(opts, state, facch_bits_b, facch_reliab_b);
         }
     }
 

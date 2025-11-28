@@ -542,6 +542,38 @@ getDibit(dsd_opts* opts, dsd_state* state) {
 }
 
 /**
+ * \brief Get the next dibit along with its reliability value.
+ *
+ * This function reads the next dibit and returns the associated reliability
+ * (0=uncertain, 255=confident) via out_reliability. The reliability is computed
+ * based on the symbol's position relative to decision thresholds.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state containing symbol buffers and thresholds.
+ * @param out_reliability [out] Reliability value when non-NULL.
+ * @return Dibit value [0,3]; negative on shutdown/EOF.
+ */
+int
+getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
+    int dibit = get_dibit_and_analog_signal(opts, state, NULL);
+
+    if (out_reliability != NULL) {
+        /* Reliability was written at dmr_reliab_p - 1 (pointer already advanced).
+         * We read from there rather than caching the pointer before the call,
+         * because get_dibit_and_analog_signal() may wrap dmr_reliab_p back to
+         * dmr_reliab_buf + 200 when it exceeds 900000 elements. */
+        if (state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
+            *out_reliability = *(state->dmr_reliab_p - 1);
+        } else {
+            /* Fallback: max reliability if buffer not available */
+            *out_reliability = 255;
+        }
+    }
+
+    return dibit;
+}
+
+/**
  * \brief Get the next dibit and store the soft symbol for Viterbi decoding.
  *
  * This function reads the next dibit while also recording the raw float

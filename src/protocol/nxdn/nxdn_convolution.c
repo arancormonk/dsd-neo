@@ -166,3 +166,61 @@ CNXDNConvolution_init() {
     memset(m_metrics2, 0x0, sizeof(m_metrics2));
     memset(m_decisions, 0x0, sizeof(m_decisions));
 }
+
+/*
+ * Soft-decision variant of CNXDNConvolution_decode.
+ * s0, s1: observed soft values (0..2 range, as in hard version)
+ * r0, r1: reliability weights (0..255, higher = more confident)
+ *
+ * The branch metric is scaled by reliability. Low reliability reduces
+ * the penalty for mismatches, allowing the Viterbi to favor paths
+ * through more reliable symbols.
+ */
+void
+CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1) {
+    uint8_t i = 0;
+    uint8_t j = 0;
+    uint8_t decision0 = 0;
+    uint8_t decision1 = 0;
+    uint32_t metric = 0;
+    uint32_t m0 = 0;
+    uint32_t m1 = 0;
+    uint16_t* tmp = NULL;
+
+    /* Scale factor: hard metric uses 0,2 range, scale reliability from 0-255 to 0-128 */
+    const uint32_t scale = 128;
+
+    *m_dp = 0U;
+
+    for (i = 0U; i < CNXDNConvolution_NUM_OF_STATES_D2; i++) {
+        j = i * 2U;
+
+        /* Weighted branch metric: difference * reliability / scale */
+        uint32_t diff0 = (uint32_t)abs((int)CNXDNConvolution_BRANCH_TABLE1[i] - (int)s0);
+        uint32_t diff1 = (uint32_t)abs((int)CNXDNConvolution_BRANCH_TABLE2[i] - (int)s1);
+        metric = ((diff0 * r0) + (diff1 * r1)) / scale;
+
+        /* Cap metric to avoid overflow in 16-bit path metric */
+        if (metric > 1000) {
+            metric = 1000;
+        }
+
+        m0 = m_oldMetrics[i] + metric;
+        m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + (CNXDNConvolution_M * 256 / scale - metric);
+        decision0 = (m0 >= m1) ? 1U : 0U;
+        m_newMetrics[j + 0U] = (uint16_t)(decision0 != 0U ? m1 : m0);
+
+        m0 = m_oldMetrics[i] + (CNXDNConvolution_M * 256 / scale - metric);
+        m1 = m_oldMetrics[i + CNXDNConvolution_NUM_OF_STATES_D2] + metric;
+        decision1 = (m0 >= m1) ? 1U : 0U;
+        m_newMetrics[j + 1U] = (uint16_t)(decision1 != 0U ? m1 : m0);
+
+        *m_dp |= ((uint64_t)(decision1) << (j + 1U)) | ((uint64_t)(decision0) << (j + 0U));
+    }
+
+    ++m_dp;
+
+    tmp = m_oldMetrics;
+    m_oldMetrics = m_newMetrics;
+    m_newMetrics = tmp;
+}
