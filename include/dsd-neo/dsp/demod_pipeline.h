@@ -43,34 +43,6 @@ int low_pass_simple(float* signal2, int len, int step);
 void low_pass_real(struct demod_state* s);
 
 /**
- * Deferred low-pass: sums and decimates with saturation on writeback.
- *
- * @param d Demodulator state (uses lowpassed buffer and decimation state).
- */
-void low_pass(struct demod_state* d);
-
-/**
- * Fifth-order half-band-like decimator operating on a single real sequence.
- * Caller applies this separately to I and Q streams. Uses 6-tap state in
- * `hist` and writes decimated output in-place.
- *
- * @param data   In/out real data buffer (single channel).
- * @param length Input length (elements), processed in-place.
- * @param hist   Persistent history buffer of length >= 6.
- */
-void fifth_order(float* data, int length, float* hist);
-
-/**
- * FIR filter with symmetric 9-tap coefficients (phase-saving implementation).
- *
- * @param data   In/out data buffer (interleaved step of 2 assumed).
- * @param length Number of input samples.
- * @param fir    Coefficient array (expects layout for length 9).
- * @param hist   History buffer used across calls.
- */
-void generic_fir(float* data, int length, const float* fir, float* hist);
-
-/**
  * Perform FM discriminator on interleaved low-passed I/Q to produce audio PCM.
  * Uses the active discriminator configured in fm->discriminator.
  *
@@ -131,7 +103,7 @@ float mean_power(float* samples, int len, int step);
 
 /**
  * Full demodulation pipeline for one block.
- * Applies decimation (HB cascade or legacy), optional FLL and timing
+ * Applies decimation via half-band cascade, optional FLL and timing
  * correction, followed by the configured discriminator and post-processing.
  *
  * @param d Demodulator state (consumes lowpassed, produces result).

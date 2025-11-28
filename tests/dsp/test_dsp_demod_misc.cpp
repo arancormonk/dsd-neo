@@ -3,8 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests for remaining demod helpers: deemph_filter, low_pass_real, low_pass,
-   fifth_order, generic_fir, and dsd_fm_demod plumbing. */
+/* Unit tests for remaining demod helpers: deemph_filter, low_pass_real, and dsd_fm_demod plumbing. */
 
 #include <cmath>
 #include <cstdlib>
@@ -12,9 +11,6 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
 #include <string.h>
-
-// Provide globals expected by demod_pipeline.cpp to avoid linking RTL front-end
-int use_halfband_decimator = 0;
 
 static int
 approx_eq(float a, float b, float tol) {
@@ -29,16 +25,6 @@ monotonic_nondecreasing(const float* x, int n) {
         }
     }
     return 1;
-}
-
-// Fake discriminator for dsd_fm_demod
-[[maybe_unused]] static int
-fake_disc(int ar, int aj, int br, int bj) {
-    (void)ar;
-    (void)aj;
-    (void)br;
-    (void)bj;
-    return 123;
 }
 
 int
@@ -94,81 +80,6 @@ main(void) {
                 free(s);
                 return 1;
             }
-        }
-    }
-
-    // low_pass: 2:1 decimation on complex pairs by summing
-    {
-        s->lowpassed = s->hb_workbuf; // use internal storage
-        for (int i = 0; i < 8; i++) {
-            s->lowpassed[i] = 0.1f;
-        }
-        s->lp_len = 8; // 4 pairs
-        s->downsample = 2;
-        s->now_r = 0.0f;
-        s->now_j = 0.0f;
-        s->prev_index = 0;
-        low_pass(s);
-        if (s->lp_len != 4) {
-            fprintf(stderr, "low_pass: lp_len=%d want 4\n", s->lp_len);
-            free(s);
-            return 1;
-        }
-        if (!(approx_eq(s->lowpassed[0], 0.2f, 1e-6f) && approx_eq(s->lowpassed[1], 0.2f, 1e-6f)
-              && approx_eq(s->lowpassed[2], 0.2f, 1e-6f) && approx_eq(s->lowpassed[3], 0.2f, 1e-6f))) {
-            fprintf(stderr, "low_pass: summed outputs mismatch\n");
-            free(s);
-            return 1;
-        }
-    }
-
-    // fifth_order: constant input, prefilled history -> output doubles DC
-    {
-        float hist[6];
-        for (int i = 0; i < 6; i++) {
-            hist[i] = 0.05f;
-        }
-        float data[16];
-        for (int i = 0; i < 16; i++) {
-            data[i] = 0.05f;
-        }
-        fifth_order(data, 16, hist);
-        if (!(approx_eq(data[0], 0.1f, 1e-4f) && approx_eq(data[2], 0.1f, 1e-4f) && approx_eq(data[4], 0.1f, 1e-4f)
-              && approx_eq(data[6], 0.1f, 1e-4f))) {
-            fprintf(stderr, "fifth_order: expected doubled DC on decimated indices\n");
-            free(s);
-            return 1;
-        }
-    }
-
-    // generic_fir: center-tap passthrough via hist
-    {
-        float hist[9] = {0.0f};
-        hist[4] = 1.234f;
-        float fir[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f}; // only center contributes
-        float buf[2] = {0.555f, 0.0f};                       // only even indices processed
-        generic_fir(buf, 2, fir, hist);
-        if (!approx_eq(buf[0], 1.234f, 1e-6f)) {
-            fprintf(stderr, "generic_fir: expected center hist passthrough, got %f\n", buf[0]);
-            free(s);
-            return 1;
-        }
-    }
-    // generic_fir: symmetric tap weighting combines mirrored history
-    {
-        float hist[9];
-        for (int i = 0; i < 9; i++) {
-            hist[i] = (float)(i + 1); // 1..9
-        }
-        float fir[6] = {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f};
-        float buf[2] = {10.0f, 0.0f};
-        generic_fir(buf, 2, fir, hist);
-        float expect =
-            (1.0f + 9.0f) * 0.1f + (2.0f + 8.0f) * 0.2f + (3.0f + 7.0f) * 0.3f + (4.0f + 6.0f) * 0.4f + 5.0f * 0.5f;
-        if (!approx_eq(buf[0], expect, 1e-5f)) {
-            fprintf(stderr, "generic_fir: expected %.3f got %f\n", expect, buf[0]);
-            free(s);
-            return 1;
         }
     }
 

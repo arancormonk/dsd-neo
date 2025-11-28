@@ -12,9 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Provide globals expected by demod_pipeline.cpp
-int use_halfband_decimator = 0;
-
 static double
 rms_mag(const float* iq, int pairs) {
     double acc = 0.0;

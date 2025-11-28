@@ -36,9 +36,6 @@
 int combine_rotate_enabled = 1;      /* DSD_NEO_COMBINE_ROT (1 default) */
 int upsample_fixedpoint_enabled = 1; /* DSD_NEO_UPSAMPLE_FP (1 default) */
 
-/* Runtime flag (default enabled). Set DSD_NEO_HB_DECIM=0 to use legacy decimator. */
-int use_halfband_decimator = 1;
-
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
 
@@ -78,14 +75,12 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->terminate_on_squelch = 0;
     s->squelch_hits = 11;
     s->downsample_passes = 0;
-    s->comp_fir_size = 0;
-    s->prev_index = 0;
     s->post_downsample = 1;
     s->custom_atan = 0;
     s->deemph = 0;
     s->rate_out2 = -1;
     s->mode_demod = &dsd_fm_demod;
-    s->pre_j = s->pre_r = s->now_r = s->now_j = 0.0f;
+    s->pre_j = s->pre_r = 0.0f;
     s->prev_lpr_index = 0;
     s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;
@@ -173,11 +168,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
         memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
         memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
     }
-    /* Legacy CIC histories used by fifth_order path */
-    for (int st = 0; st < 10; st++) {
-        memset(s->lp_i_hist[st], 0, sizeof(s->lp_i_hist[st]));
-        memset(s->lp_q_hist[st], 0, sizeof(s->lp_q_hist[st]));
-    }
     /* Input ring does not require double-buffer init */
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 0;
@@ -211,20 +201,17 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {
         s->downsample_passes = 1;
-        s->comp_fir_size = 9;
         s->custom_atan = 0;
         s->deemph = 1;
         s->rate_out2 = rtl_dsp_bw_hz;
     } else if (mode == DEMOD_RO2) {
         s->downsample_passes = 0;
-        s->comp_fir_size = 0;
         s->custom_atan = 0;
         s->deemph = (p && p->deemph_default) ? 1 : 0;
         s->rate_out2 = rtl_dsp_bw_hz;
     } else {
         /* Digital default */
         s->downsample_passes = 0;
-        s->comp_fir_size = 0;
         s->custom_atan = 0;
         s->deemph = (p && p->deemph_default) ? 1 : 0;
         s->rate_out2 = rtl_dsp_bw_hz;
@@ -280,9 +267,8 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
  * @brief Apply environment/runtime overrides to the demodulator state.
  *
  * Mirrors CLI/env-driven configuration into the demodulator, covering DSP
- * toggles (HB vs legacy decimator, FS/4 shift, combine-rotate), resampler
- * targets, FLL/TED tuning, CQPSK path enable, AGC knobs, and
- * IQ balance defaults. Early-exits on NULL inputs.
+ * toggles (FS/4 shift, combine-rotate), resampler targets, FLL/TED tuning,
+ * CQPSK path enable, AGC knobs, and IQ balance defaults. Early-exits on NULL inputs.
  *
  * @param demod Demodulator state to configure.
  * @param opts  Decoder options used for runtime flags.
@@ -299,9 +285,6 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         return;
     }
 
-    if (cfg->hb_decim_is_set) {
-        use_halfband_decimator = (cfg->hb_decim != 0);
-    }
     if (cfg->combine_rot_is_set) {
         combine_rotate_enabled = (cfg->combine_rot != 0);
     }

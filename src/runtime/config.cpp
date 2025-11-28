@@ -63,11 +63,6 @@ dsd_neo_config_init(const dsd_opts* opts) {
     dsdneoRuntimeConfig c;
     memset(&c, 0, sizeof(c));
 
-    /* HB_DECIM */
-    const char* hb = getenv("DSD_NEO_HB_DECIM");
-    c.hb_decim_is_set = env_is_set(hb);
-    c.hb_decim = c.hb_decim_is_set ? (atoi(hb) != 0) : 1;
-
     /* COMBINE_ROT */
     const char* cr = getenv("DSD_NEO_COMBINE_ROT");
     c.combine_rot_is_set = env_is_set(cr);

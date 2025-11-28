@@ -13,9 +13,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Provide globals expected by demod_pipeline.cpp to avoid undefined refs
-int use_halfband_decimator = 0;
-
 int
 main(void) {
     demod_state* s = (demod_state*)malloc(sizeof(demod_state));

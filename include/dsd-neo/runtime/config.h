@@ -42,9 +42,6 @@ extern "C" {
  *     Optional CPU core pinning for each thread. Integer CPU id (>=0). Example: export DSD_NEO_CPU_DEMOD=2
  *
  * Frontend/decimation/upsampling
- * - DSD_NEO_HB_DECIM
- *     Use half-band FIR decimator cascade (fast, good response) instead of legacy CIC-like path.
- *     Values: 1 enable, 0 disable. Default: 1 (enabled).
  * - DSD_NEO_COMBINE_ROT
  *     Combine 90° IQ rotation with USB byte→float widening in one pass when offset tuning is off.
  *     Values: 1 enable, 0 disable. Default: 1 (enabled).
@@ -166,10 +163,6 @@ typedef enum {
 } dsdneoDeemphMode;
 
 typedef struct dsdneoRuntimeConfig {
-    /* Half-band decimator toggle */
-    int hb_decim_is_set;
-    int hb_decim;
-
     /* Combine rotate + widen */
     int combine_rot_is_set;
     int combine_rot;

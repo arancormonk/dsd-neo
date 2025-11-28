@@ -109,18 +109,11 @@ struct demod_state {
     /* Scalars and small arrays */
     int exit_flag;
     int lp_len;
-    float lp_i_hist[10][6];
-    float lp_q_hist[10][6];
-    float droop_i_hist[9];
-    float droop_q_hist[9];
     int result_len;
     int rate_in;
     int rate_out;
     int rate_out2;
-    float now_r, now_j;
     float pre_r, pre_j;
-    int prev_index;
-    int downsample; /* min 1, max 256 */
     int post_downsample;
     float output_scale;
     float squelch_level;
@@ -134,7 +127,6 @@ struct demod_state {
     float squelch_env_attack;  /* attack alpha [0,1] for opening */
     float squelch_env_release; /* release alpha [0,1] for closing */
     int downsample_passes;
-    int comp_fir_size;
     int custom_atan;
     int deemph;
     float deemph_a; /* deemphasis alpha [0.0, 1.0] for one-pole IIR */

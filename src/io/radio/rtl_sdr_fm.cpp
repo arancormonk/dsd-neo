@@ -149,8 +149,6 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 extern int combine_rotate_enabled;      /* DSD_NEO_COMBINE_ROT (1 default) */
 extern int upsample_fixedpoint_enabled; /* DSD_NEO_UPSAMPLE_FP (1 default) */
 
-/* Runtime flag (default enabled). Set DSD_NEO_HB_DECIM=0 to use legacy decimator. */
-extern int use_halfband_decimator;
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 extern int disable_fs4_shift; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
 
@@ -400,7 +398,6 @@ demod_reset_on_retune(struct demod_state* s) {
     s->squelch_hits = 0;
     s->squelch_running_power = 0;
     s->squelch_decim_phase = 0;
-    s->prev_index = 0;
     s->prev_lpr_index = 0;
     s->now_lpr = 0;
     /* Clear any staged block so power API does not see stale data */
@@ -433,11 +430,6 @@ demod_reset_on_retune(struct demod_state* s) {
     for (int st = 0; st < 10; st++) {
         memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
         memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
-    }
-    /* Legacy CIC-like histories */
-    for (int st = 0; st < 10; st++) {
-        memset(s->lp_i_hist[st], 0, sizeof(s->lp_i_hist[st]));
-        memset(s->lp_q_hist[st], 0, sizeof(s->lp_q_hist[st]));
     }
     /* Resampler */
     s->resamp_phase = 0;
@@ -1110,13 +1102,13 @@ optimal_settings(int freq, int rate) {
     struct demod_state* dm = &demod;
     struct controller_state* cs = &controller;
     /* Compute integer oversample factor to target ~1 MS/s capture then map
-       to a cascade of 2:1 decimators (half-band/CIC) via passes = ceil(log2(ds)). */
-    dm->downsample = (1000000 / dm->rate_in) + 1;
+       to a cascade of 2:1 decimators via passes = ceil(log2(ds)). */
+    int downsample_factor = (1000000 / dm->rate_in) + 1;
     {
-        int ds = dm->downsample;
+        int ds = downsample_factor;
         if (ds <= 1) {
             dm->downsample_passes = 0;
-            dm->downsample = 1;
+            downsample_factor = 1;
         } else {
 #if defined(__GNUC__) || defined(__clang__)
             int floor_log2 = 31 - __builtin_clz(ds);
@@ -1172,11 +1164,11 @@ optimal_settings(int freq, int rate) {
             };
             int adj_passes = choose_passes_near_good_rate(dm->rate_in, passes);
             dm->downsample_passes = adj_passes;
-            dm->downsample = 1 << adj_passes;
+            downsample_factor = 1 << adj_passes;
         }
     }
     capture_freq = freq;
-    capture_rate = dm->downsample * dm->rate_in; // input capture rate
+    capture_rate = downsample_factor * dm->rate_in;
     /* Apply fs/4 shift for zero-IF DC spur avoidance when offset_tuning is disabled. */
     if (!d->offset_tuning && !disable_fs4_shift) {
         capture_freq = freq + capture_rate / 4;
@@ -1185,19 +1177,9 @@ optimal_settings(int freq, int rate) {
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
     dm->output_scale = (float)(1.0 / M_PI);
     /* Update the effective discriminator output sample rate based on current settings.
-       If no HB cascade is used (downsample_passes==0), the legacy low_pass() decimator
-       reduces by dm->downsample back toward the nominal bandwidth. Otherwise, HB/CIC
-       reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
+       HB cascade reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
     {
-        int base_decim = 1;
-        if (dm->downsample_passes > 0) {
-            base_decim = (1 << dm->downsample_passes);
-        } else {
-            base_decim = (dm->downsample > 0) ? dm->downsample : 1;
-        }
-        if (base_decim < 1) {
-            base_decim = 1;
-        }
+        int base_decim = (dm->downsample_passes > 0) ? (1 << dm->downsample_passes) : 1;
         int out_rate = capture_rate / base_decim;
         if (dm->post_downsample > 1) {
             out_rate /= dm->post_downsample;
@@ -1229,8 +1211,7 @@ apply_capture_settings(uint32_t center_freq_hz) {
     if (actual > 0 && (uint32_t)actual != dongle.rate) {
         uint32_t prev = dongle.rate;
         dongle.rate = (uint32_t)actual;
-        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes)
-                                                       : ((demod.downsample > 0) ? demod.downsample : 1);
+        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
         if (base_decim < 1) {
             base_decim = 1;
         }
@@ -1301,7 +1282,7 @@ controller_thread_fn(void* arg) {
 
     /* Set the frequency then sample rate (rtl_fm order). */
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
-    LOG_INFO("Oversampling input by: %ix.\n", demod.downsample);
+    LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
     LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
 
@@ -1313,8 +1294,7 @@ controller_thread_fn(void* arg) {
         if (actual > 0 && (uint32_t)actual != dongle.rate) {
             uint32_t prev = dongle.rate;
             dongle.rate = (uint32_t)actual;
-            int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes)
-                                                           : ((demod.downsample > 0) ? demod.downsample : 1);
+            int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
             if (base_decim < 1) {
                 base_decim = 1;
             }
@@ -2262,7 +2242,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (dongle.direct_sampling) {
         rtl_device_set_direct_sampling(rtl_device_handle, 1);
     }
-    LOG_INFO("Oversampling input by: %ix.\n", demod.downsample);
+    LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
     LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
@@ -2415,8 +2395,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     /* One-time startup summary of the rate chain */
     {
         unsigned int capture_hz = dongle.rate;
-        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes)
-                                                       : (demod.downsample > 0 ? demod.downsample : 1);
+        int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
         int post = (demod.post_downsample > 0) ? demod.post_downsample : 1;
         int L = demod.resamp_enabled ? demod.resamp_L : 1;
         int M = demod.resamp_enabled ? demod.resamp_M : 1;

@@ -12,9 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Provide globals expected by demod_pipeline.cpp to avoid linking RTL front-end
-int use_halfband_decimator = 0;
-
 static int
 monotonic_nondecreasing(const float* x, int n) {
     for (int i = 1; i < n; i++) {

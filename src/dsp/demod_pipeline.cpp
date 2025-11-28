@@ -511,53 +511,6 @@ channel_lpf_apply(struct demod_state* d) {
     d->lp_len = N << 1;
 }
 
-/* CIC compensation filter tables */
-#define CIC_TABLE_MAX 10
-static const float cic_9_tables[][10] = {
-    /* ds_p=0: no compensation needed */
-    {0.0f},
-    /* ds_p=1: single stage */
-    {0.0f, 8192.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
-    /* ds_p=2: two stages */
-    {0.0f, 4096.0f / 32768.0f, 4096.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
-    /* ds_p=3: three stages */
-    {0.0f, 2730.0f / 32768.0f, 2730.0f / 32768.0f, 2730.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
-    /* ds_p=4: four stages */
-    {0.0f, 2048.0f / 32768.0f, 2048.0f / 32768.0f, 2048.0f / 32768.0f, 2048.0f / 32768.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-     0.0f},
-    /* ds_p=5: five stages */
-    {0.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 1638.0f / 32768.0f, 0.0f,
-     0.0f, 0.0f, 0.0f},
-    /* ds_p=6: six stages */
-    {0.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f, 1365.0f / 32768.0f,
-     1365.0f / 32768.0f, 0.0f, 0.0f, 0.0f},
-    /* ds_p=7: seven stages */
-    {0.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f, 1170.0f / 32768.0f,
-     1170.0f / 32768.0f, 1170.0f / 32768.0f, 0.0f, 0.0f},
-    /* ds_p=8: eight stages */
-    {0.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f,
-     1024.0f / 32768.0f, 1024.0f / 32768.0f, 1024.0f / 32768.0f, 0.0f},
-    /* ds_p=9: nine stages */
-    {0.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f,
-     910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f, 910.0f / 32768.0f},
-    /* ds_p=10: ten stages */
-    {0.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f,
-     819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f, 819.0f / 32768.0f}};
-
-/* Global flags provided by rtl front-end */
-extern int use_halfband_decimator;
-
-/**
- * Decimate one real channel by 2 using a half-band FIR with persistent left history.
- *
- * @param in   Pointer to real input samples.
- * @param in_len Number of real input samples.
- * @param out  Pointer to output buffer (size >= in_len/2).
- * @param hist Persistent history of length HB_TAPS-1 (left wing).
- * @return Number of output samples written (in_len/2).
- */
-/* hb_decim2_real provided by dsp/halfband.h */
-
 /**
  * @brief Half-band decimator for complex interleaved I/Q data.
  *
@@ -724,105 +677,6 @@ low_pass_real(struct demod_state* s) {
         i2 += 1;
     }
     s->result_len = i2;
-}
-
-/**
- * @brief Deferred low-pass: sums and decimates with saturation on writeback.
- *
- * @param d Demodulator state (uses lowpassed buffer and decimation state).
- */
-void
-low_pass(struct demod_state* d) {
-    int i = 0, i2 = 0;
-    float* DSD_NEO_RESTRICT lp = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
-    while (i < d->lp_len) {
-        d->now_r += lp[i];
-        d->now_j += lp[i + 1];
-        i += 2;
-        d->prev_index++;
-        if (d->prev_index < d->downsample) {
-            continue;
-        }
-        lp[i2] = d->now_r;
-        lp[i2 + 1] = d->now_j;
-        d->prev_index = 0;
-        d->now_r = 0.0f;
-        d->now_j = 0.0f;
-        i2 += 2;
-    }
-    d->lp_len = i2;
-}
-
-/**
- * @brief Fifth-order half-band-like decimator operating on a single real sequence.
- *
- * Caller applies this separately to I and Q streams. Uses 6-tap state in
- * `hist` and writes decimated output in-place.
- *
- * @param data   In/out real data buffer (single channel).
- * @param length Input length (elements), processed in-place.
- * @param hist   Persistent history buffer of length >= 6.
- */
-void
-fifth_order(float* data, int length, float* hist) {
-    int i;
-    float a, b, c, d, e, f;
-    a = hist[1];
-    b = hist[2];
-    c = hist[3];
-    d = hist[4];
-    e = hist[5];
-    f = data[0];
-    /* a downsample should improve resolution, so don't fully shift */
-    data[0] = (a + (b + e) * 5.0f + (c + d) * 10.0f + f) * (1.0f / 16.0f);
-    for (i = 4; i < length; i += 4) {
-        a = c;
-        b = d;
-        c = e;
-        d = f;
-        e = data[i - 2];
-        f = data[i];
-        data[i / 2] = (a + (b + e) * 5.0f + (c + d) * 10.0f + f) * (1.0f / 16.0f);
-    }
-    /* archive */
-    hist[0] = a;
-    hist[1] = b;
-    hist[2] = c;
-    hist[3] = d;
-    hist[4] = e;
-    hist[5] = f;
-}
-
-/**
- * @brief FIR filter with symmetric 9-tap coefficients (phase-saving implementation).
- *
- * @param data   In/out data buffer (interleaved step of 2 assumed).
- * @param length Number of input samples.
- * @param fir    Coefficient array (expects layout for length 9).
- * @param hist   History buffer used across calls.
- */
-void
-generic_fir(float* data, int length, const float* fir, float* hist) {
-    int d;
-    for (d = 0; d < length; d += 2) {
-        float temp = data[d];
-        float sum = 0.0f;
-        sum += (hist[0] + hist[8]) * fir[1];
-        sum += (hist[1] + hist[7]) * fir[2];
-        sum += (hist[2] + hist[6]) * fir[3];
-        sum += (hist[3] + hist[5]) * fir[4];
-        sum += hist[4] * fir[5];
-        data[d] = sum;
-        hist[0] = hist[1];
-        hist[1] = hist[2];
-        hist[2] = hist[3];
-        hist[3] = hist[4];
-        hist[4] = hist[5];
-        hist[5] = hist[6];
-        hist[6] = hist[7];
-        hist[7] = hist[8];
-        hist[8] = temp;
-    }
 }
 
 /**
@@ -1392,7 +1246,7 @@ gardner_timing_adjust(struct demod_state* d) {
 /**
  * @brief Full demodulation pipeline for one block.
  *
- * Applies decimation (HB cascade or legacy), optional FLL and timing
+ * Applies decimation via half-band cascade, optional FLL and timing
  * correction, followed by the configured discriminator and post-processing.
  *
  * @param d Demodulator state (consumes lowpassed, produces result).
@@ -1401,47 +1255,30 @@ void
 full_demod(struct demod_state* d) {
     int i, ds_p;
     ds_p = d->downsample_passes;
-    if (ds_p) {
-        /* Choose decimator: half-band cascade (default) or legacy path */
-        if (use_halfband_decimator) {
-            /* Apply ds_p stages of 2:1 half-band decimation on interleaved lowpassed */
-            int in_len = d->lp_len;
-            float* src = d->lowpassed;
-            float* dst = d->hb_workbuf;
-            for (i = 0; i < ds_p; i++) {
-                /* Stage-aware HB selection: heavier early, light later */
-                const float* taps = hb_q15_taps;
-                int taps_len = HB_TAPS;
-                if (i == 0) {
-                    taps = hb31_q15_taps;
-                    taps_len = 31;
-                }
-                /* Fused complex HB decimation on interleaved I/Q */
-                int out_len_interleaved = hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i],
-                                                                           d->hb_hist_q[i], taps, taps_len);
-                /* Next stage */
-                src = dst;
-                in_len = out_len_interleaved;
-                dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;
+    if (ds_p > 0) {
+        /* Apply ds_p stages of 2:1 half-band decimation on interleaved lowpassed */
+        int in_len = d->lp_len;
+        float* src = d->lowpassed;
+        float* dst = d->hb_workbuf;
+        for (i = 0; i < ds_p; i++) {
+            /* Stage-aware HB selection: heavier early, light later */
+            const float* taps = hb_q15_taps;
+            int taps_len = HB_TAPS;
+            if (i == 0) {
+                taps = hb31_q15_taps;
+                taps_len = 31;
             }
-            /* Final output resides in 'src' with length in_len; consume in-place (no copy) */
-            d->lowpassed = src;
-            d->lp_len = in_len;
-            /* No droop compensation for half-band cascade */
-        } else {
-            for (i = 0; i < ds_p; i++) {
-                fifth_order(d->lowpassed, (d->lp_len >> i), d->lp_i_hist[i]);
-                fifth_order(d->lowpassed + 1, (d->lp_len >> i) - 1, d->lp_q_hist[i]);
-            }
-            d->lp_len = d->lp_len >> ds_p;
-            /* droop compensation */
-            if (d->comp_fir_size == 9 && ds_p <= CIC_TABLE_MAX) {
-                generic_fir(d->lowpassed, d->lp_len, cic_9_tables[ds_p], d->droop_i_hist);
-                generic_fir(d->lowpassed + 1, d->lp_len - 1, cic_9_tables[ds_p], d->droop_q_hist);
-            }
+            /* Fused complex HB decimation on interleaved I/Q */
+            int out_len_interleaved =
+                hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
+            /* Next stage */
+            src = dst;
+            in_len = out_len_interleaved;
+            dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;
         }
-    } else {
-        low_pass(d);
+        /* Final output resides in 'src' with length in_len; consume in-place (no copy) */
+        d->lowpassed = src;
+        d->lp_len = in_len;
     }
     /* Bound channel noise when running at higher Fs (24 kHz default) */
     channel_lpf_apply(d);

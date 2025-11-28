@@ -11,9 +11,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Provide globals expected by demod_pipeline.cpp
-int use_halfband_decimator = 1; // exercise HB path
-
 static int
 approx_eq(float a, float b, float tol) {
     float d = a - b;

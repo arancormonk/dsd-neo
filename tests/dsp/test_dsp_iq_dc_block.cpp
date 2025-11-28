@@ -11,9 +11,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Provide globals expected by demod_pipeline.cpp
-int use_halfband_decimator = 0;
-
 static double
 mean_of(const float* x, int n, int step) {
     double acc = 0.0;

@@ -8,8 +8,6 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <math.h>
 
-// Provide globals expected by demod_pipeline.cpp to avoid linking RTL front-end
-int use_halfband_decimator = 0;
 #include <stdio.h>
 
 int

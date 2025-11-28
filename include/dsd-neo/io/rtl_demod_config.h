@@ -37,8 +37,8 @@ void rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* out
 
 /**
  * Apply environment- and options-driven DSP configuration to the
- * demodulator (HB vs legacy decim, resampler target, FLL/TED and CQPSK
- * path toggles, FM AGC, etc.).
+ * demodulator (resampler target, FLL/TED and CQPSK path toggles,
+ * FM AGC, etc.).
  *
  * @param demod Demodulator state.
  * @param opts  Decoder options (CLI/runtime flags).

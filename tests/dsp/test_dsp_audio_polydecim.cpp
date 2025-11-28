@@ -23,9 +23,6 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 
-// Provide globals expected by demod_pipeline.cpp
-int use_halfband_decimator = 1;
-
 static double
 rms(const std::vector<float>& x) {
     long double acc = 0.0;
@@ -87,7 +84,6 @@ run_once(double fs, double f) {
         d->input_cb_buf[i] = iq[(size_t)i];
     }
     d->downsample_passes = 0;
-    d->downsample = 1; // identity in low_pass()
     d->post_downsample = M;
     d->mode_demod = &copy_i_to_audio_demod;
     d->rate_out = (int)fs;
@@ -131,7 +127,6 @@ main(void) {
     d1->lowpassed = d1->input_cb_buf;
     d1->lp_len = N;
     d1->downsample_passes = 0;
-    d1->downsample = 1;
     d1->post_downsample = M;
     d1->mode_demod = &copy_i_to_audio_demod;
     d1->rate_out = (int)Fs;
@@ -157,7 +152,6 @@ main(void) {
     d2->lowpassed = d2->input_cb_buf;
     d2->lp_len = N;
     d2->downsample_passes = 0;
-    d2->downsample = 1;
     d2->post_downsample = M;
     d2->mode_demod = &copy_i_to_audio_demod;
     d2->rate_out = (int)Fs;
