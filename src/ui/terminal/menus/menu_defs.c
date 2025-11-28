@@ -10,25 +10,8 @@
 
 #include <dsd-neo/ui/menu_defs.h>
 
-// subtrees provided by menu_core (arrays must have external linkage)
-extern const NcMenuItem IO_MENU_ITEMS[];
-extern const NcMenuItem LOGGING_MENU_ITEMS[];
-extern const NcMenuItem TRUNK_MENU_ITEMS[];
-extern const NcMenuItem KEYS_MENU_ITEMS[];
-extern const NcMenuItem DSP_MENU_ITEMS[];
-extern const NcMenuItem UI_DISPLAY_MENU_ITEMS[];
-extern const NcMenuItem LRRP_MENU_ITEMS[];
-extern const NcMenuItem ADV_MENU_ITEMS[];
-extern const size_t IO_MENU_ITEMS_LEN;
-extern const size_t LOGGING_MENU_ITEMS_LEN;
-extern const size_t TRUNK_MENU_ITEMS_LEN;
-extern const size_t KEYS_MENU_ITEMS_LEN;
-extern const size_t DSP_MENU_ITEMS_LEN;
-extern const size_t UI_DISPLAY_MENU_ITEMS_LEN;
-extern const size_t LRRP_MENU_ITEMS_LEN;
-extern const size_t ADV_MENU_ITEMS_LEN;
-extern const NcMenuItem CONFIG_MENU_ITEMS[];
-extern const size_t CONFIG_MENU_ITEMS_LEN;
+// All NcMenuItem arrays are declared in menu_items.h
+#include "menu_items.h"
 
 void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {

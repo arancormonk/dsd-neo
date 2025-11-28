@@ -14,6 +14,13 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   ui_cmd_queue.c
   ui_async.c
   menu_core.c
+  menu_env.c
+  menu_labels.c
+  menu_callbacks.c
+  menu_actions.c
+  menu_items.c
+  menu_prompts.c
+  menu_render.c
   menu_services.c
   panels/header.c
   panels/footer.c
@@ -23,6 +30,7 @@ target_sources(dsd-neo_ui_terminal PRIVATE
 target_include_directories(dsd-neo_ui_terminal
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${_PUBLIC_INCLUDES}
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_link_libraries(dsd-neo_ui_terminal PUBLIC dsd-neo_core dsd-neo_runtime)
@@ -49,4 +57,10 @@ endif()
 
 # Many menu actions are conditionally referenced; suppress unused-function just for these sources
 set_source_files_properties(menu_core.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+set_source_files_properties(menu_labels.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+set_source_files_properties(menu_callbacks.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+set_source_files_properties(menu_actions.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+set_source_files_properties(menu_items.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+set_source_files_properties(menu_prompts.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+set_source_files_properties(menu_render.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
 set_source_files_properties(dsd_ncurses_menu.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
