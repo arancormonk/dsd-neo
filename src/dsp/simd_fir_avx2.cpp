@@ -14,10 +14,16 @@
 
 #include <cstring>
 #include <immintrin.h> /* AVX2 + FMA */
+#include <vector>
+
+/* Thread-local scratch buffers to avoid per-call allocation */
+static thread_local std::vector<float> tls_scratch_iq;
+static thread_local std::vector<float> tls_scratch_real;
 
 /**
  * AVX2+FMA complex symmetric FIR filter (no decimation).
  * Processes 4 complex samples (8 floats) at a time.
+ * Uses pre-concatenated scratch buffer to eliminate branching in hot loop.
  */
 extern "C" void
 simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
@@ -29,24 +35,37 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
     const int N = in_len >> 1; /* complex samples */
     const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
+    const int total_len = hist_len + N;
+    const int pad = center + 4;                    /* for n+3+d lookups */
+    const int scratch_len = (total_len + pad) * 2; /* *2 for complex (I, Q) */
 
+    /* Resize thread-local buffer if needed (amortized O(1)) */
+    if (tls_scratch_iq.size() < (size_t)scratch_len) {
+        tls_scratch_iq.resize((size_t)scratch_len);
+    }
+    float* scratch = tls_scratch_iq.data();
+
+    /* Copy history (interleave from split buffers) */
+    for (int k = 0; k < hist_len; k++) {
+        scratch[2 * k] = hist_i[k];
+        scratch[2 * k + 1] = hist_q[k];
+    }
+
+    /* Copy input (already interleaved) */
+    std::memcpy(scratch + 2 * hist_len, in, (size_t)N * 2 * sizeof(float));
+
+    /* Tail padding to preserve lastI/lastQ behavior */
     float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
     float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
+    for (int k = 0; k < pad; k++) {
+        scratch[2 * (hist_len + N + k)] = lastI;
+        scratch[2 * (hist_len + N + k) + 1] = lastQ;
+    }
 
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < hist_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            if (rel < N) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
+    /* Branch-free sample access (index is always valid due to padding) */
+    auto get_iq = [&](int idx, float& xi, float& xq) {
+        xi = scratch[2 * idx];
+        xq = scratch[2 * idx + 1];
     };
 
     /* Process 4 complex samples at a time (8 floats) */
@@ -127,7 +146,7 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history */
+    /* Update history: read from original `in` buffer, not scratch */
     if (N >= hist_len) {
         for (int k = 0; k < hist_len; k++) {
             int rel = N - hist_len + k;
@@ -152,6 +171,7 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
 /**
  * AVX2+FMA complex half-band decimator by 2.
  * Processes 4 output samples (8 floats) at a time.
+ * Uses pre-concatenated scratch buffer to eliminate branching in hot loop.
  */
 extern "C" int
 simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
@@ -168,23 +188,37 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
+    const int total_len = left_len + ch_len;
+    const int pad = center + 1;                    /* stride-2 centers, 4-output vectorization */
+    const int scratch_len = (total_len + pad) * 2; /* *2 for complex (I, Q) */
+
+    /* Resize thread-local buffer if needed (amortized O(1)) */
+    if (tls_scratch_iq.size() < (size_t)scratch_len) {
+        tls_scratch_iq.resize((size_t)scratch_len);
+    }
+    float* scratch = tls_scratch_iq.data();
+
+    /* Copy history (interleave from split buffers) */
+    for (int k = 0; k < left_len; k++) {
+        scratch[2 * k] = hist_i[k];
+        scratch[2 * k + 1] = hist_q[k];
+    }
+
+    /* Copy input (already interleaved) */
+    std::memcpy(scratch + 2 * left_len, in, (size_t)ch_len * 2 * sizeof(float));
+
+    /* Tail padding to preserve lastI/lastQ behavior */
     float lastI = (ch_len > 0) ? in[in_len - 2] : 0.0f;
     float lastQ = (ch_len > 0) ? in[in_len - 1] : 0.0f;
+    for (int k = 0; k < pad; k++) {
+        scratch[2 * (left_len + ch_len + k)] = lastI;
+        scratch[2 * (left_len + ch_len + k) + 1] = lastQ;
+    }
 
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < left_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - left_len;
-            if (rel < ch_len) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
+    /* Branch-free sample access (index is always valid due to padding) */
+    auto get_iq = [&](int idx, float& xi, float& xq) {
+        xi = scratch[2 * idx];
+        xq = scratch[2 * idx + 1];
     };
 
     /* Process 4 output samples at a time */
@@ -269,7 +303,7 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history */
+    /* Update history: read from original `in` buffer, not scratch */
     if (ch_len >= left_len) {
         int start = ch_len - left_len;
         for (int k = 0; k < left_len; k++) {
@@ -296,6 +330,7 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
 /**
  * AVX2+FMA real half-band decimator by 2.
  * Processes 8 output samples at a time.
+ * Uses pre-concatenated scratch buffer to eliminate branching in hot loop.
  */
 extern "C" int
 simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, const float* taps, int taps_len) {
@@ -310,16 +345,30 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
         return 0;
     }
 
-    float last = (in_len > 0) ? in[in_len - 1] : 0.0f;
+    const int total_len = hist_len + in_len;
+    const int pad = center + 1; /* stride-2 centers, 8-output vectorization */
+    const int scratch_len = total_len + pad;
 
-    auto get_sample = [&](int src_idx) -> float {
-        if (src_idx < hist_len) {
-            return hist[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            return (rel < in_len) ? in[rel] : last;
-        }
-    };
+    /* Resize thread-local buffer if needed (amortized O(1)) */
+    if (tls_scratch_real.size() < (size_t)scratch_len) {
+        tls_scratch_real.resize((size_t)scratch_len);
+    }
+    float* scratch = tls_scratch_real.data();
+
+    /* Copy history */
+    std::memcpy(scratch, hist, (size_t)hist_len * sizeof(float));
+
+    /* Copy input */
+    std::memcpy(scratch + hist_len, in, (size_t)in_len * sizeof(float));
+
+    /* Tail padding to preserve last sample behavior */
+    float last = (in_len > 0) ? in[in_len - 1] : 0.0f;
+    for (int k = 0; k < pad; k++) {
+        scratch[hist_len + in_len + k] = last;
+    }
+
+    /* Branch-free sample access (index is always valid due to padding) */
+    auto get_sample = [&](int idx) -> float { return scratch[idx]; };
 
     /* Process 8 output samples at a time */
     int n = 0;
@@ -384,7 +433,7 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
         out[n] = acc;
     }
 
-    /* Update history */
+    /* Update history: read from original `in` buffer, not scratch */
     if (in_len >= hist_len) {
         std::memcpy(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
     } else {

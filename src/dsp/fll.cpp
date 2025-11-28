@@ -171,7 +171,7 @@ fll_init_state(fll_state_t* state) {
  * @brief Mix I/Q by an NCO and advance phase by freq per sample (GNU Radio style).
  *
  * Phase and frequency are in radians. Phase wraps at ±2π.
- * Uses high-quality sin/cos from the math library for rotation.
+ * Uses incremental NCO (phasor rotation) to avoid per-sample sinf/cosf calls.
  *
  * @param config FLL configuration.
  * @param state  FLL state (updates phase).
@@ -187,25 +187,44 @@ fll_mix_and_update(const fll_config_t* config, fll_state_t* state, float* x, int
     float phase = state->phase;
     const float freq = state->freq;
 
+    /* Initial NCO phasor */
+    float nco_r = cosf(phase);
+    float nco_i = sinf(phase);
+
+    /* Step phasor (computed once) */
+    float step_r = cosf(freq);
+    float step_i = sinf(freq);
+
+    int sample_count = 0;
     for (int i = 0; i + 1 < N; i += 2) {
-        float c = cosf(phase);
-        float s = sinf(phase);
         float xr = x[i];
         float xj = x[i + 1];
-        float yr = xr * c + xj * s;
-        float yj = xj * c - xr * s;
+
+        /* Rotation: y = x * conj(nco) for down-mixing */
+        float yr = xr * nco_r + xj * nco_i;
+        float yj = xj * nco_r - xr * nco_i;
         x[i] = yr;
         x[i + 1] = yj;
-        phase += freq;
-        /* Wrap phase to [-2π, 2π] to avoid float precision loss */
-        while (phase > kTwoPiF) {
-            phase -= kTwoPiF;
-        }
-        while (phase < -kTwoPiF) {
-            phase += kTwoPiF;
+
+        /* Advance NCO: nco *= step (complex multiply) */
+        float new_r = nco_r * step_r - nco_i * step_i;
+        float new_i = nco_r * step_i + nco_i * step_r;
+        nco_r = new_r;
+        nco_i = new_i;
+
+        /* Periodic renormalization to prevent drift (every 64 complex samples) */
+        if (++sample_count == 64) {
+            float mag = sqrtf(nco_r * nco_r + nco_i * nco_i);
+            if (mag > 0.0f) {
+                nco_r /= mag;
+                nco_i /= mag;
+            }
+            sample_count = 0;
         }
     }
-    state->phase = phase;
+
+    /* Recover phase from final phasor for state persistence */
+    state->phase = fll_be_wrap_phase(atan2f(nco_i, nco_r));
 }
 
 /**
