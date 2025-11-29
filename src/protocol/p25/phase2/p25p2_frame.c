@@ -455,17 +455,16 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     int s = 0;
     int t = 0;
 
-    // SM event: ACTIVE on current slot
-    p25_sm_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
-    // Mark recent voice on every decoded 4V frame. This keeps the SM's
-    // last_vc_sync_time fresh throughout the call, preventing post-hang
-    // watchdog from tearing down an active VC.
-    {
-        time_t now = time(NULL);
-        double nowm = dsd_time_now_monotonic_s();
-        if (state) {
-            state->last_vc_sync_time = now;
-            state->last_vc_sync_time_m = nowm;
+    // SM event: ACTIVE on current slot - only emit if audio is allowed for this
+    // slot (clear or decryptable). This prevents encrypted/undecryptable frames
+    // from keeping the SM alive indefinitely and defeating grant timeout.
+    if (state) {
+        int slot = state->currentslot & 1;
+        if (state->p25_p2_audio_allowed[slot]) {
+            p25_sm_emit_active(opts, state, slot);
+            // Mark recent voice only when audio is actually allowed
+            state->last_vc_sync_time = time(NULL);
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         }
     }
     for (int x = 0; x < 72; x++) {
@@ -920,15 +919,16 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     int s = 0;
     int t = 0;
 
-    // SM event: ACTIVE on current slot
-    p25_sm_emit_active(opts, state, state ? (state->currentslot & 1) : 0);
-    // Mark recent voice on this path as well.
-    {
-        time_t now = time(NULL);
-        double nowm = dsd_time_now_monotonic_s();
-        if (state) {
-            state->last_vc_sync_time = now;
-            state->last_vc_sync_time_m = nowm;
+    // SM event: ACTIVE on current slot - only emit if audio is allowed for this
+    // slot (clear or decryptable). This prevents encrypted/undecryptable frames
+    // from keeping the SM alive indefinitely and defeating grant timeout.
+    if (state) {
+        int slot = state->currentslot & 1;
+        if (state->p25_p2_audio_allowed[slot]) {
+            p25_sm_emit_active(opts, state, slot);
+            // Mark recent voice only when audio is actually allowed
+            state->last_vc_sync_time = time(NULL);
+            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         }
     }
     for (int x = 0; x < 72; x++) {

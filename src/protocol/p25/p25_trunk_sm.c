@@ -793,6 +793,15 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         p25_sm_init_ctx(ctx, opts, state);
     }
 
+    // Check for forced release request (e.g., from encryption lockout paths)
+    if (state && state->p25_sm_force_release != 0) {
+        state->p25_sm_force_release = 0;
+        if (ctx->state == P25_SM_TUNED) {
+            do_release(ctx, opts, state, "release-forced");
+        }
+        return;
+    }
+
     double now_m = now_monotonic();
     double hangtime = ctx->config.hangtime_s;
     double grant_timeout = ctx->config.grant_timeout_s;
