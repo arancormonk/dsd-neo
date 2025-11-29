@@ -216,36 +216,36 @@ invert_dibit(int dibit) {
 /**
  * @brief CQPSK 4-level slicer matching OP25's fsk4_slicer_fb.
  *
- * When the RTL-SDR CQPSK demodulation path is active, symbols are phase values
- * scaled by 4/π and then further amplified by the pipeline's RMS AGC. The actual
- * symbol range is approximately {-10, -3.3, +3.3, +10} rather than the nominal
- * {-3, -1, +1, +3}. Thresholds are set at -6.7, 0, +6.7 to slice correctly.
+ * When the RTL-SDR CQPSK demodulation path is active, qpsk_differential_demod
+ * outputs phase values scaled by 4/π. For π/4-DQPSK, the differential phases
+ * are at ±45° and ±135°, which map to symbol values of ±1 and ±3 respectively.
  *
  * Symbol-to-dibit mapping (same as OP25 fsk4_slicer_fb):
- *   sym >= +6.7  → dibit 1 (was +3, now ~+10)
- *   0 <= sym < +6.7 → dibit 0 (was +1, now ~+3.3)
- *   -6.7 <= sym < 0 → dibit 2 (was -1, now ~-3.3)
- *   sym < -6.7  → dibit 3 (was -3, now ~-10)
+ *   sym >= +2.0  → dibit 1 (symbol +3, phase +135°)
+ *   0 <= sym < +2.0 → dibit 0 (symbol +1, phase +45°)
+ *   -2.0 <= sym < 0 → dibit 2 (symbol -1, phase -45°)
+ *   sym < -2.0  → dibit 3 (symbol -3, phase -135°)
  *
- * @param symbol Input symbol value (scaled phase, ~[-10,+10]).
+ * @param symbol Input symbol value (scaled phase, ~[-4,+4]).
  * @return Dibit value [0,3].
  */
 static inline int
 cqpsk_slice(float symbol) {
-    /* Fixed threshold slicer for CQPSK symbols.
-     * Thresholds scaled ~3.3x from nominal {-2,0,+2} to match actual symbol range. */
-    const float kUpperThresh = 6.7f;  /* boundary between +3.3 and +10 symbols */
-    const float kLowerThresh = -6.7f; /* boundary between -3.3 and -10 symbols */
+    /* Fixed threshold slicer for CQPSK symbols, matching OP25's fsk4_slicer_fb.
+     * qpsk_differential_demod outputs phase * 4/π, giving symbols at ±1, ±3.
+     * Threshold at ±2.0 is the midpoint between these symbol levels. */
+    const float kUpperThresh = 2.0f;  /* boundary between +1 and +3 symbols */
+    const float kLowerThresh = -2.0f; /* boundary between -1 and -3 symbols */
     int dibit;
 
     if (symbol >= kUpperThresh) {
-        dibit = 1; /* +10 (was +3) */
+        dibit = 1; /* +3 (phase +135°) */
     } else if (symbol >= 0.0f) {
-        dibit = 0; /* +3.3 (was +1) */
+        dibit = 0; /* +1 (phase +45°) */
     } else if (symbol >= kLowerThresh) {
-        dibit = 2; /* -3.3 (was -1) */
+        dibit = 2; /* -1 (phase -45°) */
     } else {
-        dibit = 3; /* -10 (was -3) */
+        dibit = 3; /* -3 (phase -135°) */
     }
 
     return dibit;

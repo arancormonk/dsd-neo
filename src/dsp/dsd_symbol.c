@@ -535,8 +535,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
             //update root means square power level
             opts->rtl_pwr = rtl_stream_return_pwr(g_rtl_ctx);
-            sample *= opts->rtl_volume_multiplier;
-
+            /* Skip volume multiplier for CQPSK symbols - they're already properly
+             * scaled by qpsk_differential_demod (phase * 4/π giving ±1, ±3 symbols).
+             * The volume multiplier is meant for FM audio amplitude, not symbol levels. */
+            if (!cqpsk_symbol_rate) {
+                sample *= opts->rtl_volume_multiplier;
+            }
 #endif
         }
 
