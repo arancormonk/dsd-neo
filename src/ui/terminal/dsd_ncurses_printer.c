@@ -1628,11 +1628,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             // Clarify identifiers to avoid confusion when SYSID and NAC
             // happen to have the same numeric value on some systems.
             char callsign[7] = {0};
-            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
                 p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
             }
             printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-            if (callsign[0] != '\0' && callsign[0] != ' ') {
+            if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
                 printw(" [%s]", callsign);
             }
             printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
@@ -1656,11 +1656,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             // Clarify identifiers to avoid confusion when SYSID and NAC
             // happen to have the same numeric value on some systems.
             char callsign[7] = {0};
-            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
                 p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
             }
             printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-            if (callsign[0] != '\0' && callsign[0] != ' ') {
+            if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
                 printw(" [%s]", callsign);
             }
             printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);

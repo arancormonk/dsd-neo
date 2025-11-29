@@ -1043,6 +1043,12 @@ act_toggle_ui_channels(void* v) {
     ui_post_cmd(UI_CMD_UI_SHOW_CHANNELS_TOGGLE, NULL, 0);
 }
 
+void
+act_toggle_ui_p25_callsign(void* v) {
+    UNUSED(v);
+    ui_post_cmd(UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, NULL, 0);
+}
+
 // ---- RTL-SDR actions ----
 
 #ifdef USE_RTLSDR

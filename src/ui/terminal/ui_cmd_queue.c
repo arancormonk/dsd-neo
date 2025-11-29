@@ -1315,6 +1315,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         case UI_CMD_UI_SHOW_P25_IDEN_TOGGLE: opts->show_p25_iden_plan = opts->show_p25_iden_plan ? 0 : 1; break;
         case UI_CMD_UI_SHOW_P25_CCC_TOGGLE: opts->show_p25_cc_candidates = opts->show_p25_cc_candidates ? 0 : 1; break;
         case UI_CMD_UI_SHOW_CHANNELS_TOGGLE: opts->show_channels = opts->show_channels ? 0 : 1; break;
+        case UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE:
+            opts->show_p25_callsign_decode = opts->show_p25_callsign_decode ? 0 : 1;
+            break;
         case UI_CMD_KEY_BASIC_SET: {
             if (state && opts && c->n >= (int)sizeof(uint32_t)) {
                 uint32_t v = 0;

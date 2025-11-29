@@ -164,6 +164,7 @@ struct dsd_opts {
     uint8_t show_channels;               //show Channels section (0=hidden)
     uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
     uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
+    uint8_t show_p25_callsign_decode;    //show P25 callsign decode from WACN/SysID (0=hidden)
     // P25 SM unified follower configuration (CLI-mirrored; env fallback retained)
     // Values <= 0 mean "unset" and will defer to environment or defaults.
     double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return

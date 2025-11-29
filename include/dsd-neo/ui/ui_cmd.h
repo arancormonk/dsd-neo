@@ -187,6 +187,7 @@ enum UiCmdId {
     UI_CMD_UI_SHOW_P25_IDEN_TOGGLE = 624,
     UI_CMD_UI_SHOW_P25_CCC_TOGGLE = 625,
     UI_CMD_UI_SHOW_CHANNELS_TOGGLE = 626,
+    UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE = 627,
 
     // Key management
     UI_CMD_KEY_BASIC_SET = 640,     // payload: uint32_t

@@ -632,6 +632,10 @@ static const NcMenuItem UI_DISPLAY_P25_ITEMS[] = {
      .label_fn = lbl_ui_p25_ccc,
      .help = "Toggle P25 CC Candidates list.",
      .on_select = act_toggle_ui_p25_ccc},
+    {.id = "p25call",
+     .label_fn = lbl_ui_p25_callsign,
+     .help = "Toggle P25 callsign decode from WACN/SysID (may show false positives).",
+     .on_select = act_toggle_ui_p25_callsign},
 };
 
 static const NcMenuItem UI_DISPLAY_GENERAL_ITEMS[] = {

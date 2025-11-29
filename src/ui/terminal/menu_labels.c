@@ -781,6 +781,13 @@ lbl_ui_channels(void* v, char* b, size_t n) {
     return b;
 }
 
+const char*
+lbl_ui_p25_callsign(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    snprintf(b, n, "Show P25 Callsign Decode [%s]", (c && c->opts && c->opts->show_p25_callsign_decode) ? "On" : "Off");
+    return b;
+}
+
 // ---- LRRP labels ----
 
 const char*
