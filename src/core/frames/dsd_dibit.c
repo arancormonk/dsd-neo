@@ -213,6 +213,44 @@ invert_dibit(int dibit) {
     return -1;
 }
 
+/**
+ * @brief CQPSK 4-level slicer matching OP25's fsk4_slicer_fb.
+ *
+ * When the RTL-SDR CQPSK demodulation path is active, symbols are phase values
+ * scaled by 4/π and then further amplified by the pipeline's RMS AGC. The actual
+ * symbol range is approximately {-10, -3.3, +3.3, +10} rather than the nominal
+ * {-3, -1, +1, +3}. Thresholds are set at -6.7, 0, +6.7 to slice correctly.
+ *
+ * Symbol-to-dibit mapping (same as OP25 fsk4_slicer_fb):
+ *   sym >= +6.7  → dibit 1 (was +3, now ~+10)
+ *   0 <= sym < +6.7 → dibit 0 (was +1, now ~+3.3)
+ *   -6.7 <= sym < 0 → dibit 2 (was -1, now ~-3.3)
+ *   sym < -6.7  → dibit 3 (was -3, now ~-10)
+ *
+ * @param symbol Input symbol value (scaled phase, ~[-10,+10]).
+ * @return Dibit value [0,3].
+ */
+static inline int
+cqpsk_slice(float symbol) {
+    /* Fixed threshold slicer for CQPSK symbols.
+     * Thresholds scaled ~3.3x from nominal {-2,0,+2} to match actual symbol range. */
+    const float kUpperThresh = 6.7f;  /* boundary between +3.3 and +10 symbols */
+    const float kLowerThresh = -6.7f; /* boundary between -3.3 and -10 symbols */
+    int dibit;
+
+    if (symbol >= kUpperThresh) {
+        dibit = 1; /* +10 (was +3) */
+    } else if (symbol >= 0.0f) {
+        dibit = 0; /* +3.3 (was +1) */
+    } else if (symbol >= kLowerThresh) {
+        dibit = 2; /* -3.3 (was -1) */
+    } else {
+        dibit = 3; /* -10 (was -3) */
+    }
+
+    return dibit;
+}
+
 static inline uint8_t
 dmr_compute_reliability(const dsd_state* st, float sym) {
     const float eps = 1e-6f;
@@ -294,6 +332,31 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
     return (uint8_t)rel;
 }
 
+/**
+ * @brief Check if CQPSK demodulation path is active.
+ *
+ * Returns 1 if the RTL-SDR CQPSK path with TED is active, meaning symbols
+ * are pre-scaled phase values suitable for the CQPSK slicer.
+ *
+ * @param opts Decoder options (checks audio_in_type).
+ * @return 1 if CQPSK active, 0 otherwise.
+ */
+static inline int
+is_cqpsk_active(dsd_opts* opts) {
+#ifdef USE_RTLSDR
+    if (opts && opts->audio_in_type == 3) {
+        int cqpsk = 0, fll = 0, ted = 0;
+        rtl_stream_dsp_get(&cqpsk, &fll, &ted);
+        if (cqpsk && ted) {
+            return 1;
+        }
+    }
+#else
+    UNUSED(opts);
+#endif
+    return 0;
+}
+
 int
 digitize(dsd_opts* opts, dsd_state* state, float symbol) {
     // determine dibit state
@@ -357,11 +420,17 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
 
         valid = 0;
 
-        UNUSED(opts);
+        /* For P25 synctypes (1=P25p1, 36=P25p2), use CQPSK slicer when active.
+         * The CQPSK slicer uses fixed thresholds optimized for the scaled phase
+         * symbols output by qpsk_differential_demod(). */
+        if ((state->synctype == 1 || state->synctype == 36) && is_cqpsk_active(opts)) {
+            dibit = cqpsk_slice(symbol);
+            valid = 1;
+        }
 
         //testing again, either on Voice channels only (when tuned) or with trunk disabled
         // if (state->synctype == 1 && (opts->p25_is_tuned == 1 || opts->p25_trunk == 0) && opts->use_heuristics == 1)
-        if (state->synctype == 1 && opts->use_heuristics == 1) {
+        if (valid == 0 && state->synctype == 1 && opts->use_heuristics == 1) {
             // Use the P25p1 heuristics if available
             valid = estimate_symbol(state->rf_mod, &(state->inv_p25_heuristics), state->last_dibit, symbol, &dibit);
         }
@@ -422,9 +491,17 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
 
         valid = 0;
 
+        /* For P25 synctypes (0=P25p1, 35=P25p2), use CQPSK slicer when active.
+         * The CQPSK slicer uses fixed thresholds optimized for the scaled phase
+         * symbols output by qpsk_differential_demod(). */
+        if ((state->synctype == 0 || state->synctype == 35) && is_cqpsk_active(opts)) {
+            dibit = cqpsk_slice(symbol);
+            valid = 1;
+        }
+
         //testing again, either on Voice channels only (when tuned) or with trunk disabled
         // if (state->synctype == 0 && (opts->p25_is_tuned == 1 || opts->p25_trunk == 0) && opts->use_heuristics == 1)
-        if (state->synctype == 0 && opts->use_heuristics == 1) {
+        if (valid == 0 && state->synctype == 0 && opts->use_heuristics == 1) {
             // Use the P25p1 heuristics if available
             valid = estimate_symbol(state->rf_mod, &(state->p25_heuristics), state->last_dibit, symbol, &dibit);
         }

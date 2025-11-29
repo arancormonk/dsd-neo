@@ -422,6 +422,45 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         //determine dibit state
+#ifdef USE_RTLSDR
+        /* Debug: print symbol values when DSD_NEO_DEBUG_SYNC=1 */
+        {
+            static int debug_init2 = 0;
+            static int debug_sync2 = 0;
+            static int sym_count = 0;
+            static int pos_count = 0, neg_count = 0;
+            static float sym_min = 1e9f, sym_max = -1e9f, sym_sum = 0.0f;
+            if (!debug_init2) {
+                const char* env = getenv("DSD_NEO_DEBUG_SYNC");
+                debug_sync2 = (env && *env == '1') ? 1 : 0;
+                debug_init2 = 1;
+            }
+            if (debug_sync2) {
+                if (symbol < sym_min) {
+                    sym_min = symbol;
+                }
+                if (symbol > sym_max) {
+                    sym_max = symbol;
+                }
+                sym_sum += symbol;
+                if (symbol > 0) {
+                    pos_count++;
+                } else {
+                    neg_count++;
+                }
+                if (++sym_count >= 4800) {
+                    float dc = sym_sum / (float)sym_count;
+                    fprintf(stderr, "[SYNC] range:[%.1f,%.1f] dc:%.2f ratio(1:3)=%d:%d\n", sym_min, sym_max, dc,
+                            pos_count, neg_count);
+                    sym_min = 1e9f;
+                    sym_max = -1e9f;
+                    sym_sum = 0.0f;
+                    pos_count = neg_count = 0;
+                    sym_count = 0;
+                }
+            }
+        }
+#endif
         if (symbol > 0) {
             *state->dibit_buf_p = 1;
             state->dibit_buf_p++;
@@ -624,6 +663,22 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
 
             strncpy(synctest, (synctest_p - 23), 24);
+#ifdef USE_RTLSDR
+            /* Debug: print sync pattern when DSD_NEO_DEBUG_SYNC=1 */
+            {
+                static int debug_init = 0;
+                static int debug_sync = 0;
+                static int debug_count = 0;
+                if (!debug_init) {
+                    const char* env = getenv("DSD_NEO_DEBUG_SYNC");
+                    debug_sync = (env && *env == '1') ? 1 : 0;
+                    debug_init = 1;
+                }
+                if (debug_sync && (++debug_count % 4800) == 0) {
+                    fprintf(stderr, "[SYNC] pattern=%s expect=%s\n", synctest, P25P1_SYNC);
+                }
+            }
+#endif
             if (opts->frame_p25p1 == 1) {
                 if (strcmp(synctest, P25P1_SYNC) == 0) {
                     state->carrier = 1;

@@ -1059,7 +1059,20 @@ demod_thread_fn(void* arg) {
             safe_cond_signal(&controller.hop, &controller.hop_m);
             continue;
         }
-        if (d->resamp_enabled) {
+        /* For CQPSK mode, bypass the resampler entirely. The TED already decimates
+         * to symbol rate, and the symbol stream should go directly to the ring buffer
+         * without upsampling. The downstream symbol reader expects 1 sample per symbol.
+         * Upsampling would cause every-other-symbol to be read, corrupting the data. */
+        if (d->cqpsk_enable) {
+            /* CQPSK: direct symbol passthrough, no resampling or scaling */
+            if (d->result_len > 0) {
+                ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
+            }
+            if (!logged_once) {
+                LOG_INFO("Demod first block (CQPSK): in=%d symbols=%d (no resamp)\n", got, d->result_len);
+                logged_once = 1;
+            }
+        } else if (d->resamp_enabled) {
             int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
             if (out_n > 0) {
                 apply_output_scale(d, d->resamp_outbuf, out_n);
