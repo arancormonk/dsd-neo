@@ -181,14 +181,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* FM AGC auto-tune per-instance state */
     s->fm_agc_ema_rms = 0.0;
 
-    /* Experimental CQPSK path (off by default). Enable via env DSD_NEO_CQPSK=1 */
+    /* CQPSK path default (may be overridden by rtl_demod_config_from_env_and_opts
+       based on mod_qpsk and DSD_NEO_CQPSK env). */
     s->cqpsk_enable = 0;
-    const char* env_cqpsk = getenv("DSD_NEO_CQPSK");
-    if (env_cqpsk
-        && (*env_cqpsk == '1' || *env_cqpsk == 'y' || *env_cqpsk == 'Y' || *env_cqpsk == 't' || *env_cqpsk == 'T')) {
-        s->cqpsk_enable = 1;
-        fprintf(stderr, " DSP: CQPSK pre-processing enabled (experimental)\n");
-    }
 
     /* CQPSK acquisition FLL defaults */
     s->cqpsk_acq_fll_enable = 0;
@@ -346,11 +341,34 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 
-    /* Default all DSP handles Off unless explicitly requested via env/CLI. */
-    demod->cqpsk_enable = 0;
+    /* CQPSK path: auto-enable for QPSK modulation (P25 LSM/TDMA, etc.).
+       Env DSD_NEO_CQPSK overrides: 1/y/t to force on, 0/n/f to force off. */
+    int default_cqpsk = (opts->mod_qpsk == 1) ? 1 : 0;
+    demod->cqpsk_enable = default_cqpsk;
     const char* ev_cq = getenv("DSD_NEO_CQPSK");
-    if (ev_cq && (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T')) {
-        demod->cqpsk_enable = 1;
+    if (ev_cq) {
+        if (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T') {
+            demod->cqpsk_enable = 1;
+        } else if (*ev_cq == '0' || *ev_cq == 'n' || *ev_cq == 'N' || *ev_cq == 'f' || *ev_cq == 'F') {
+            demod->cqpsk_enable = 0;
+        }
+    }
+    /* CQPSK Costas/differential stage assumes symbol-rate samples from the Gardner TED.
+       Require TED whenever the CQPSK path is enabled so the pipeline never feeds
+       oversampled I/Q into cqpsk_costas_diff_and_update. Also set mode_demod so that
+       full_demod's TED gate check (mode_demod != &dsd_fm_demod) passes. */
+    if (demod->cqpsk_enable) {
+        if (!demod->ted_enabled) {
+            demod->ted_enabled = 1;
+        }
+        extern void qpsk_differential_demod(struct demod_state*);
+        demod->mode_demod = &qpsk_differential_demod;
+        /* Reset differential decode history */
+        demod->cqpsk_diff_prev_r = 0;
+        demod->cqpsk_diff_prev_j = 0;
+        demod->cqpsk_rms_agc_rms = 0.0f;
+        demod->cqpsk_acq_fll_locked = 0;
+        demod->cqpsk_acq_quiet_runs = 0;
     }
 
     /* Optional: acquisition-only FLL for CQPSK (pre-Costas).
@@ -503,14 +521,22 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
                 demod->sps_is_integer = 1;
             } else {
                 demod->sps_is_integer = 0;
-                LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                            "TED and FLL band-edge will be auto-disabled. "
-                            "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
-                            Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate, sps);
-                /* Auto-disable TED when non-integer SPS is detected */
-                if (demod->ted_enabled && !demod->ted_force) {
-                    demod->ted_enabled = 0;
-                    LOG_INFO("TED auto-disabled due to non-integer SPS.\n");
+                if (demod->cqpsk_enable) {
+                    LOG_WARNING(
+                        "Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
+                        "FLL band-edge will be auto-disabled; CQPSK will continue to run Gardner TED at the "
+                        "rounded SPS. Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
+                        Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate, sps);
+                } else {
+                    LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
+                                "TED and FLL band-edge will be auto-disabled. "
+                                "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
+                                Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate, sps);
+                    /* Auto-disable TED when non-integer SPS is detected for non-CQPSK paths */
+                    if (demod->ted_enabled && !demod->ted_force) {
+                        demod->ted_enabled = 0;
+                        LOG_INFO("TED auto-disabled due to non-integer SPS.\n");
+                    }
                 }
             }
         }
@@ -671,9 +697,15 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
             demod->sps_is_integer = 1;
         } else {
             demod->sps_is_integer = 0;
-            LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                        "TED and FLL band-edge auto-disabled.\n",
-                        Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate);
+            if (demod->cqpsk_enable) {
+                LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
+                            "FLL band-edge auto-disabled; CQPSK continues to run Gardner TED at the rounded SPS.\n",
+                            Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate);
+            } else {
+                LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
+                            "TED and FLL band-edge auto-disabled.\n",
+                            Fs_cx, sym_rate, (float)Fs_cx / (float)sym_rate);
+            }
         }
     } else {
         sps = (Fs_cx + 2400) / 4800;
@@ -681,9 +713,15 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
         int remainder = Fs_cx % 4800;
         demod->sps_is_integer = (remainder == 0) ? 1 : 0;
         if (!demod->sps_is_integer) {
-            LOG_WARNING("Non-integer SPS after rate change: %d Hz / 4800 sym/s = %.3f. "
-                        "TED and FLL band-edge auto-disabled.\n",
-                        Fs_cx, (float)Fs_cx / 4800.0f);
+            if (demod->cqpsk_enable) {
+                LOG_WARNING("Non-integer SPS after rate change: %d Hz / 4800 sym/s = %.3f. "
+                            "FLL band-edge auto-disabled; CQPSK continues to run Gardner TED at the rounded SPS.\n",
+                            Fs_cx, (float)Fs_cx / 4800.0f);
+            } else {
+                LOG_WARNING("Non-integer SPS after rate change: %d Hz / 4800 sym/s = %.3f. "
+                            "TED and FLL band-edge auto-disabled.\n",
+                            Fs_cx, (float)Fs_cx / 4800.0f);
+            }
         }
     }
     if (sps < 2) {

@@ -395,11 +395,33 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         select_window_gfsk(&l_edge_pre, &r_edge_pre, freeze_window);
     }
 
-    for (i = 0; i < state->samplesPerSymbol; i++) //right HERE
-    {
+    /* Effective samples-per-symbol: when the RTL CQPSK path runs a decimating TED,
+       the demodulated stream already arrives at symbol rate (1 sample/symbol). */
+    int symbol_span = state->samplesPerSymbol;
+    if (symbol_span < 1) {
+        symbol_span = 1;
+    }
+#ifdef USE_RTLSDR
+    int cqpsk_symbol_rate = 0;
+    if (opts->audio_in_type == 3 && state->rf_mod == 1) {
+        int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
+        rtl_stream_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
+        if (dsp_cqpsk && dsp_ted) {
+            cqpsk_symbol_rate = 1;
+            symbol_span = 1;
+        }
+    }
+#else
+    int cqpsk_symbol_rate = 0;
+#endif
+    if (symbol_span <= 1) {
+        state->jitter = -1;
+    }
+
+    for (i = 0; i < symbol_span; i++) {
 
         // timing control
-        if ((i == 0) && (have_sync == 0)) {
+        if (symbol_span > 1 && (i == 0) && (have_sync == 0)) {
             if (state->samplesPerSymbol == 20) {
                 if ((state->jitter >= 7) && (state->jitter <= 10)) {
                     i--;
@@ -975,8 +997,14 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 count++;
             }
         }
-        if (state->samplesPerSymbol == 5) //provoice or gfsk
-        {
+        if (cqpsk_symbol_rate) {
+            /* TED already decimated to symbol rate: consume one sample per symbol.
+             * This must be checked first to override modulation-specific sampling
+             * (e.g., sps==5 for P25 CQPSK at 24kHz). */
+            sum += sample;
+            count++;
+        } else if (state->samplesPerSymbol == 5) {
+            // provoice or gfsk at sps=5 (non-TED path)
             if (i == 2) {
                 sum += sample;
                 count++;

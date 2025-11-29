@@ -3270,6 +3270,12 @@ dsd_rtl_stream_get_iq_balance(void) {
 extern "C" void
 rtl_stream_toggle_cqpsk(int onoff) {
     demod.cqpsk_enable = onoff ? 1 : 0;
+    if (demod.cqpsk_enable) {
+        /* CQPSK Costas/differential stage assumes symbol-rate samples from
+           the Gardner TED. Require TED whenever CQPSK is active so the
+           pipeline never feeds oversampled I/Q into cqpsk_costas_diff_and_update. */
+        demod.ted_enabled = 1;
+    }
     /* Switch demod output selector and reset CQPSK differential history. */
     if (demod.cqpsk_enable) {
         extern void qpsk_differential_demod(struct demod_state*);
@@ -3319,6 +3325,13 @@ rtl_stream_toggle_fll(int onoff) {
 
 extern "C" void
 rtl_stream_toggle_ted(int onoff) {
+    if (!onoff && demod.cqpsk_enable) {
+        /* Prevent disabling TED while CQPSK path is active: the CQPSK
+           Costas/differential stage requires symbol-rate samples from
+           the Gardner TED. Ignore the request when CQPSK is enabled. */
+        return;
+    }
+
     demod.ted_enabled = onoff ? 1 : 0;
     if (!demod.ted_enabled) {
         /* Reset TED state */

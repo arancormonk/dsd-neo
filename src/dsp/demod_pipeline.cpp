@@ -643,13 +643,18 @@ cqpsk_diff_phasor(struct demod_state* d) {
  * Produces a single real stream (I only) to feed the legacy symbol sampler path.
  */
 /**
- * @brief Phase extractor for CQPSK differential phasors.
+ * @brief Phase extractor for CQPSK differential phasors (OP25-compatible).
  *
- * Expects fm->lowpassed to hold the output of cqpsk_diff_phasor (already
- * differenced). Converts each complex phasor to a Q14 phase angle:
- *   theta_n = arg(z_n)
+ * Expects fm->lowpassed to hold the output of cqpsk_costas_diff_and_update
+ * (already differenced and carrier-corrected). Converts each complex phasor
+ * to a scaled float symbol value:
+ *   theta_n = arg(z_n) * (4/pi)
  *
- * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase to result).
+ * The 4/pi scaling (OP25: multiply_const_ff(4.0/pi)) maps CQPSK constellation
+ * points at ±45°/±135° to symbol levels ~{-3, -1, +1, +3}, matching OP25's
+ * fsk4_slicer_fb input expectation.
+ *
+ * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes symbols to result).
  */
 void
 qpsk_differential_demod(struct demod_state* fm) {
@@ -664,9 +669,12 @@ qpsk_differential_demod(struct demod_state* fm) {
     const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
     float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
 
+    /* OP25 scaling: 4/pi maps ±pi/4 (±45°) to ±1, ±3*pi/4 (±135°) to ±3 */
+    const float k4_over_pi = 4.0f / 3.14159265358979323846f; /* ~1.2732 */
+
     for (int n = 0; n < pairs; n++) {
         float phase = atan2f(iq[(size_t)(n << 1) + 1], iq[(size_t)(n << 1) + 0]);
-        out[n] = phase;
+        out[n] = phase * k4_over_pi;
     }
 
     fm->result_len = pairs;
@@ -1093,9 +1101,24 @@ gardner_timing_adjust(struct demod_state* d) {
     /* Sync from demod_state to module state */
     d->ted_state.mu = d->ted_mu;
 
-    ted_config_t cfg = {d->ted_enabled, d->ted_force, d->ted_gain, d->ted_sps};
+    ted_config_t cfg = {}; /* Zero-initialize for safety if struct grows */
+    cfg.enabled = d->ted_enabled;
+    cfg.force = d->ted_force;
+    cfg.sps = d->ted_sps;
+    /* Map runtime ted_gain to loop gain parameter.
+     * If ted_gain > 0, use it; otherwise let ted.cpp use defaults. */
+    cfg.gain_mu = d->ted_gain;
+    cfg.gain_omega = 0.0f; /* 0 = use defaults (0.1 * gain_mu^2) */
+    cfg.omega_rel = 0.0f;  /* 0 = use defaults (0.002) */
 
-    gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
+    /* For CQPSK paths, use OP25-compatible decimating Gardner; for FM/C4FM
+       paths, use the legacy non-decimating Farrow-based TED to preserve the
+       expected sample-rate interface for downstream processing. */
+    if (d->cqpsk_enable) {
+        gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
+    } else {
+        gardner_timing_adjust_farrow(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
+    }
 
     /* Sync back to demod_state */
     d->ted_mu = d->ted_state.mu;
@@ -1202,16 +1225,17 @@ full_demod(struct demod_state* d) {
             d->cqpsk_acq_fll_locked = 0;
         }
         /* Timing error correction after FLL (Gardner), before Costas+diff.
-           Requires integer SPS; auto-skipped if non-integer. */
-        if (d->ted_enabled && d->ted_sps >= 2 && d->sps_is_integer
-            && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+           For CQPSK paths, always run the decimating Gardner TED when enabled so that
+           cqpsk_costas_diff_and_update() sees symbol-rate samples, even when SPS is
+           not an exact integer. Non-CQPSK paths retain the integer-SPS guard. */
+        if (d->ted_enabled && d->ted_sps >= 2 && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
             gardner_timing_adjust(d);
         }
-        /* OP25-style combined Costas + differential decode with per-sample feedback.
-           This performs NCO rotation -> diff decode -> phase error -> loop update
-           in a single pass, ensuring each sample sees the correction from previous samples.
-           Output is differential phasors ready for phase extraction.
-           Skip during unit tests that use raw_demod. */
+        /* OP25-style combined differential decode + Costas with per-sample feedback.
+           This performs diff decode -> NCO rotation -> phase error -> loop update
+           in a single pass, matching OP25's signal flow where diff_phasor_cc comes
+           before costas_loop_cc. Output is carrier-corrected differential phasors
+           ready for phase extraction. Skip during unit tests that use raw_demod. */
         if (d->mode_demod != &raw_demod) {
             cqpsk_costas_diff_and_update(d);
         } else {
@@ -1282,8 +1306,10 @@ full_demod(struct demod_state* d) {
             }
         }
     }
-    /* Apply Gardner TED here only for non-CQPSK paths (e.g., C4FM) and avoid
-       analog FM unless explicitly forced. Requires integer SPS. */
+    /* Apply Gardner TED for non-CQPSK paths (e.g., C4FM) using the legacy
+       non-decimating Farrow-based implementation so that FM/C4FM downstream
+       stages continue to see sample-rate complex baseband. Requires integer
+       SPS; analog FM remains excluded unless explicitly forced. */
     if (d->ted_enabled && !d->cqpsk_enable && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
     }

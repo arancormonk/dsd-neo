@@ -21,11 +21,26 @@
 namespace {
 
 constexpr float kTwoPi = 6.28318530717958647692f;
-constexpr float kPiOver4 = 0.78539816339744830962f;
 
-/* OP25 PT_45: 45-degree rotation phasor for CQPSK constellation alignment.
- * CQPSK symbols sit at ±45° and ±135°; rotating by 45° aligns them to axes. */
-static const std::complex<float> kPT45 = std::polar(1.0f, kPiOver4);
+/*
+ * Standard GNU Radio QPSK phase detector for diagonal constellation symbols.
+ *
+ * CQPSK differential outputs sit at ±45° and ±135° (diagonals).
+ * This detector produces zero error when symbols are on the diagonals,
+ * and proportional error when they deviate.
+ *
+ * This is the standard GNU Radio phase_detector_4 formula from costas_loop_cc_impl.cc:
+ *   return ((sample.real() > 0 ? 1.0 : -1.0) * sample.imag() -
+ *           (sample.imag() > 0 ? 1.0 : -1.0) * sample.real());
+ *
+ * For a symbol at 45°+ε, this produces error ∝ +ε (positive error for positive offset).
+ */
+static inline float
+phase_detector_4(float real, float imag) {
+    float sign_r = (real > 0.0f) ? 1.0f : -1.0f;
+    float sign_i = (imag > 0.0f) ? 1.0f : -1.0f;
+    return sign_r * imag - sign_i * real;
+}
 
 static inline float
 branchless_clip(float x, float clip) {
@@ -65,22 +80,6 @@ frequency_limit(dsd_costas_loop_state_t* c) {
         c->freq = c->max_freq;
     } else if (c->freq < c->min_freq) {
         c->freq = c->min_freq;
-    }
-}
-
-/*
- * OP25-style QPSK phase detector for CQPSK after PT_45 rotation.
- *
- * Unlike the GNU Radio phase_detector_4, this version selects either ±imag
- * or ±real based on which axis the sample is closer to. This gives near-zero
- * error for samples on the I/Q axes (where CQPSK symbols land after PT_45).
- */
-static inline float
-phase_detector_4_op25(const std::complex<float>& sample) {
-    if (fabsf(sample.real()) > fabsf(sample.imag())) {
-        return (sample.real() > 0.0f) ? -sample.imag() : sample.imag();
-    } else {
-        return (sample.imag() > 0.0f) ? sample.real() : -sample.real();
     }
 }
 
@@ -133,11 +132,19 @@ prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
  */
 
 /*
- * Combined Costas NCO + differential decode + loop update with per-sample feedback.
+ * OP25-compatible CQPSK demodulation: differential decode + Costas loop.
+ *
+ * OP25's p25_demodulator.py CQPSK chain (line 504):
+ *   agc -> fll -> clock (gardner_cc) -> diffdec -> costas -> to_float -> rescale
+ *
+ * Key insight: In OP25, diff_phasor_cc comes BEFORE costas_loop_cc.
+ * The Costas loop operates on the already-differentiated signal.
  *
  * Signal flow per sample:
- *   raw[n] -> NCO rotation -> diff decode with prev -> phase error -> loop update
- *                                                                  -> output diff[n]
+ *   1. diff_phasor: out[n] = in[n] * conj(in[n-1])  -- removes data modulation
+ *   2. costas: rotated = diff * exp(-j*phase)       -- carrier phase correction
+ *   3. phase_detector_4 on rotated signal           -- error detection
+ *   4. loop update                                  -- track phase
  */
 void
 cqpsk_costas_diff_and_update(struct demod_state* d) {
@@ -155,71 +162,68 @@ cqpsk_costas_diff_and_update(struct demod_state* d) {
     float* iq = d->lowpassed;
     float err_acc = 0.0f;
 
-    /* Previous NCO-corrected sample for differential decoding (persistent across blocks) */
+    /* Previous raw sample for differential decoding (persistent across blocks) */
     float prev_r = d->cqpsk_diff_prev_r;
     float prev_j = d->cqpsk_diff_prev_j;
 
     for (int i = 0; i < pairs; i++) {
-        std::complex<float> raw(iq[(i << 1) + 0], iq[(i << 1) + 1]);
+        float raw_r = iq[(i << 1) + 0];
+        float raw_j = iq[(i << 1) + 1];
 
         /*
-         * Step 1: NCO rotation on raw sample.
+         * Step 1: Differential decode FIRST (like OP25's diff_phasor_cc).
          *
-         * Match OP25 exactly: nco = gr_expj(d_phase + d_theta)
-         * We use exp(+j*phase) to match their sign convention.
-         * Note: The d_theta (π/4) cancels in differential decoding, but we
-         * include it here to match OP25's structure exactly.
+         * diff = raw * conj(prev) = raw * (prev_r - j*prev_j)
+         * This removes the data modulation, leaving only carrier phase error.
          */
-        std::complex<float> nco = std::polar(1.0f, c->phase);
-        std::complex<float> corrected = raw * nco;
+        float diff_r = raw_r * prev_r + raw_j * prev_j;
+        float diff_j = raw_j * prev_r - raw_r * prev_j;
+
+        /* Save current raw sample as prev for next iteration */
+        prev_r = raw_r;
+        prev_j = raw_j;
 
         /*
-         * Step 2: Differential decode.
+         * Step 2: Costas NCO rotation (like OP25's costas_loop_cc).
          *
-         * diffdec = corrected * conj(prev) = corrected * (prev_r - j*prev_j)
+         * OP25 uses: optr[i] = iptr[i] * gr_expj(-d_phase)
+         * Note the NEGATIVE phase - this is critical!
          */
-        float corr_r = corrected.real();
-        float corr_j = corrected.imag();
-
-        float diff_r = corr_r * prev_r + corr_j * prev_j;
-        float diff_j = corr_j * prev_r - corr_r * prev_j;
-
-        std::complex<float> diffdec(diff_r, diff_j);
-
-        /* Save current corrected sample as prev for next iteration */
-        prev_r = corr_r;
-        prev_j = corr_j;
+        float cos_phase = cosf(-c->phase);
+        float sin_phase = sinf(-c->phase);
+        float rotated_r = diff_r * cos_phase - diff_j * sin_phase;
+        float rotated_j = diff_r * sin_phase + diff_j * cos_phase;
 
         /*
-         * Step 3: Phase error detection.
+         * Step 3: Phase error detection (standard GNU Radio detector).
          *
-         * The θ rotation applied to raw samples cancels out in differential
-         * decoding (since both samples are rotated by the same θ). CQPSK
-         * symbols are at ±45°/±135°, not axis-aligned.
+         * CQPSK differential outputs sit at ±45° and ±135° (diagonals).
+         * The standard phase_detector_4 produces zero error when symbols are
+         * on the diagonals, which is exactly what we need.
          *
-         * OP25's phase_error_tracking() (line 510) multiplies by PT_45 after
-         * differential decoding to align the constellation to I/Q axes:
-         *   phase_error_tracking(diffdec * PT_45)
-         *
-         * Apply the same +45° rotation before the phase detector.
+         * NOTE: We do NOT apply PT_45 rotation here. The downstream slicer
+         * (qpsk_differential_demod) expects diagonal symbols for its 4/π
+         * scaling to produce the correct {-3, -1, +1, +3} symbol levels.
          */
-        std::complex<float> rotated = diffdec * kPT45;
-        float err_raw = phase_detector_4_op25(rotated);
+        float err_raw = phase_detector_4(rotated_r, rotated_j);
 
         /*
-         * Step 4: Loop update.
+         * Step 4: Magnitude-weighted loop update (matches OP25 exactly).
          *
-         * Match OP25 exactly (lines 389-390):
+         * OP25 costas_loop_cc (lines 389-390):
          *   d_freq += d_beta * phase_error * abs(sample);
          *   d_phase += d_alpha * phase_error * abs(sample);
          *
-         * No negation - use error directly as OP25 does.
+         * The magnitude weighting is critical: it de-weights samples with low
+         * amplitude (noise, fades, limiter hits) so they don't drive the loop,
+         * and properly scales the effective loop gain relative to signal energy.
+         * Without this, the PLL random-walks during signal dropouts.
          */
-        float mag = std::abs(diffdec);
-        float err_scaled = err_raw * mag; /* Match OP25: no negation */
+        float mag = sqrtf(rotated_r * rotated_r + rotated_j * rotated_j);
+        float err_scaled = err_raw * mag;
         float err_loop = branchless_clip(err_scaled, 1.0f);
 
-        /* Diagnostic */
+        /* Diagnostic: use unscaled error for display */
         float err_diag = branchless_clip(err_raw, 1.0f);
         c->error = err_diag;
         err_acc += fabsf(err_diag);
@@ -228,9 +232,10 @@ cqpsk_costas_diff_and_update(struct demod_state* d) {
         phase_wrap(c);
         frequency_limit(c);
 
-        /* Write differential output back (replaces raw sample) */
-        iq[(i << 1) + 0] = diff_r;
-        iq[(i << 1) + 1] = diff_j;
+        /* Write the carrier-corrected differential output back (diagonal symbols
+         * at ±45°/±135° for downstream qpsk_differential_demod) */
+        iq[(i << 1) + 0] = rotated_r;
+        iq[(i << 1) + 1] = rotated_j;
     }
 
     /* Persist state for next block */
