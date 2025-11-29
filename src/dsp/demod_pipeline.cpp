@@ -690,6 +690,11 @@ cqpsk_rms_agc(struct demod_state* d) {
     const float kAlpha = 0.45f; /* OP25 default */
     const float kRef = 0.85f;   /* target RMS (normalized) */
     const float kEps = 1e-6f;
+    /* Gain limits: increased max from 8.0 to 64.0 to handle weak RTL signals.
+       RTL-SDR with low input levels can produce very weak baseband that needs
+       significant gain to reach the 0.85 target for proper Costas/TED operation. */
+    const float kGainMax = 64.0f;
+    const float kGainMin = 0.0625f;
 
     float rms = d->cqpsk_rms_agc_rms;
     if (rms <= 0.0f) {
@@ -705,11 +710,11 @@ cqpsk_rms_agc(struct demod_state* d) {
         rms2 = (1.0f - kAlpha) * rms2 + kAlpha * mag2;
         rms = sqrtf(rms2);
         float g = kRef / (rms + kEps);
-        if (g > 8.0f) {
-            g = 8.0f;
+        if (g > kGainMax) {
+            g = kGainMax;
         }
-        if (g < 0.125f) {
-            g = 0.125f;
+        if (g < kGainMin) {
+            g = kGainMin;
         }
         out[(size_t)(n << 1)] = I * g;
         out[(size_t)(n << 1) + 1] = Q * g;
@@ -1122,6 +1127,24 @@ gardner_timing_adjust(struct demod_state* d) {
 
     /* Sync back to demod_state */
     d->ted_mu = d->ted_state.mu;
+
+    /* Debug: TED state when DSD_NEO_DEBUG_CQPSK=1 */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        static int call_count = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk && d->cqpsk_enable && (++call_count % 50) == 0) {
+            float lock_norm =
+                (d->ted_state.lock_count > 0) ? d->ted_state.lock_accum / (float)d->ted_state.lock_count : 0.0f;
+            fprintf(stderr, "[TED] omega:%.3f mu:%.3f e_ema:%.4f lock:%.2f in:%d out:%d\n", d->ted_state.omega,
+                    d->ted_state.mu, d->ted_state.e_ema, lock_norm, d->lp_len, d->lp_len);
+        }
+    }
 }
 
 /**
@@ -1177,6 +1200,31 @@ full_demod(struct demod_state* d) {
            - This is implemented in cqpsk_costas_diff_and_update()
         */
         cqpsk_rms_agc(d);
+        /* Debug: Post-AGC magnitudes when DSD_NEO_DEBUG_CQPSK=1 */
+        {
+            static int debug_init = 0;
+            static int debug_cqpsk = 0;
+            static int call_count = 0;
+            if (!debug_init) {
+                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                debug_init = 1;
+            }
+            if (debug_cqpsk && (++call_count % 50) == 0 && d->lp_len >= 8) {
+                const float* iq = d->lowpassed;
+                float mag_sum = 0.0f;
+                int pairs = d->lp_len >> 1;
+                for (int k = 0; k < pairs && k < 100; k++) {
+                    float I = iq[(k << 1)];
+                    float Q = iq[(k << 1) + 1];
+                    mag_sum += sqrtf(I * I + Q * Q);
+                }
+                float avg_mag = mag_sum / (pairs < 100 ? pairs : 100);
+                float implied_gain = (d->cqpsk_rms_agc_rms > 1e-6f) ? 0.85f / d->cqpsk_rms_agc_rms : 0.0f;
+                fprintf(stderr, "[POST-AGC] avg_mag:%.3f rms_est:%.3f implied_gain:%.1f samples:%d\n", avg_mag,
+                        d->cqpsk_rms_agc_rms, implied_gain, d->lp_len / 2);
+            }
+        }
         /* Band-edge FLL (always active when enabled, OP25 style).
            Requires integer SPS; skip band-edge if non-integer. */
         if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2 && d->sps_is_integer) {
@@ -1229,7 +1277,35 @@ full_demod(struct demod_state* d) {
            cqpsk_costas_diff_and_update() sees symbol-rate samples, even when SPS is
            not an exact integer. Non-CQPSK paths retain the integer-SPS guard. */
         if (d->ted_enabled && d->ted_sps >= 2 && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+            int pre_ted_len = d->lp_len;
             gardner_timing_adjust(d);
+            /* Debug: Pre-Costas IQ (after TED) when DSD_NEO_DEBUG_CQPSK=1 */
+            {
+                static int debug_init = 0;
+                static int debug_cqpsk = 0;
+                static int call_count = 0;
+                if (!debug_init) {
+                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                    debug_init = 1;
+                }
+                if (debug_cqpsk && (++call_count % 50) == 0) {
+                    fprintf(stderr, "[PRE-COSTAS] in_samples:%d out_symbols:%d\n", pre_ted_len / 2, d->lp_len / 2);
+                    /* Log first few raw IQ symbols before Costas/diff decode */
+                    if (d->lp_len >= 8) {
+                        const float* iq = d->lowpassed;
+                        fprintf(stderr, "[RAW-IQ] ");
+                        for (int k = 0; k < 4 && k < (d->lp_len >> 1); k++) {
+                            float I = iq[(k << 1)];
+                            float Q = iq[(k << 1) + 1];
+                            float phase_deg = atan2f(Q, I) * 57.2957795f;
+                            float mag = sqrtf(I * I + Q * Q);
+                            fprintf(stderr, "(%.2f,%.2f|%.0f°,%.2f) ", I, Q, phase_deg, mag);
+                        }
+                        fprintf(stderr, "\n");
+                    }
+                }
+            }
         }
         /* OP25-style combined differential decode + Costas with per-sample feedback.
            This performs diff decode -> NCO rotation -> phase error -> loop update
@@ -1238,6 +1314,36 @@ full_demod(struct demod_state* d) {
            ready for phase extraction. Skip during unit tests that use raw_demod. */
         if (d->mode_demod != &raw_demod) {
             cqpsk_costas_diff_and_update(d);
+            /* Debug: Costas loop state when DSD_NEO_DEBUG_CQPSK=1 */
+            {
+                static int debug_init = 0;
+                static int debug_cqpsk = 0;
+                static int call_count = 0;
+                if (!debug_init) {
+                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                    debug_init = 1;
+                }
+                if (debug_cqpsk && (++call_count % 50) == 0) {
+                    dsd_costas_loop_state_t* c = &d->costas_state;
+                    fprintf(stderr,
+                            "[COSTAS] phase:%.3f freq:%.5f err:%.3f alpha:%.4f beta:%.5f | FLL freq:%.5f locked:%d\n",
+                            c->phase, c->freq, c->error, c->alpha, c->beta, d->fll_freq, d->cqpsk_acq_fll_locked);
+                    /* Log IQ constellation: first few symbols to check if on diagonals */
+                    if (d->lp_len >= 8) {
+                        const float* iq = d->lowpassed;
+                        fprintf(stderr, "[IQ] ");
+                        for (int k = 0; k < 4 && k < (d->lp_len >> 1); k++) {
+                            float I = iq[(k << 1)];
+                            float Q = iq[(k << 1) + 1];
+                            float phase_deg = atan2f(Q, I) * 57.2957795f;
+                            float mag = sqrtf(I * I + Q * Q);
+                            fprintf(stderr, "(%.2f,%.2f|%.0f°,%.2f) ", I, Q, phase_deg, mag);
+                        }
+                        fprintf(stderr, "\n");
+                    }
+                }
+            }
         } else {
             /* For raw_demod tests, just do differential decoding without Costas */
             cqpsk_diff_phasor(d);
@@ -1383,6 +1489,44 @@ full_demod(struct demod_state* d) {
      */
     if (d->cqpsk_enable) {
         qpsk_differential_demod(d);
+        /* Debug: Symbol histogram when DSD_NEO_DEBUG_CQPSK=1 */
+        {
+            static int debug_init = 0;
+            static int debug_cqpsk = 0;
+            static int call_count = 0;
+            /* Accumulate histogram over multiple blocks for meaningful statistics */
+            static int hist_p3 = 0, hist_p1 = 0, hist_m1 = 0, hist_m3 = 0, hist_other = 0;
+            static int hist_samples = 0;
+            if (!debug_init) {
+                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                debug_init = 1;
+            }
+            if (debug_cqpsk) {
+                const float* syms = d->result;
+                for (int k = 0; k < d->result_len; k++) {
+                    float s = syms[k];
+                    if (s > 2.0f) {
+                        hist_p3++;
+                    } else if (s > 0.0f) {
+                        hist_p1++;
+                    } else if (s > -2.0f) {
+                        hist_m1++;
+                    } else {
+                        hist_m3++;
+                    }
+                    hist_samples++;
+                }
+                if ((++call_count % 100) == 0 && hist_samples > 0) {
+                    float total = (float)hist_samples;
+                    fprintf(stderr, "[SYM] +3:%.1f%% +1:%.1f%% -1:%.1f%% -3:%.1f%% (n=%d)\n", 100.0f * hist_p3 / total,
+                            100.0f * hist_p1 / total, 100.0f * hist_m1 / total, 100.0f * hist_m3 / total, hist_samples);
+                    /* Reset histogram */
+                    hist_p3 = hist_p1 = hist_m1 = hist_m3 = hist_other = 0;
+                    hist_samples = 0;
+                }
+            }
+        }
     } else {
         d->mode_demod(d); /* lowpassed -> result */
     }

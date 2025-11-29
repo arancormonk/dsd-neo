@@ -34,11 +34,13 @@ typedef struct {
     int initialized;
 } dsd_costas_loop_state_t;
 
-/* Defaults tuned for lower-bandwidth DSP than upstream GNU Radio usage. */
-/** @brief Default Costas loop bandwidth (~2*pi/800). */
+/* Defaults tuned for symbol-rate operation (post-TED decimation).
+   Since we run at symbol rate (1 sample/symbol) instead of sample rate
+   (~5 samples/symbol), use WIDER bandwidth to track faster with fewer samples. */
+/** @brief Default Costas loop bandwidth (~2*pi/100). */
 static inline float
 dsd_neo_costas_default_loop_bw(void) {
-    return 6.28318530717958647692f / 800.0f; /* ~2*pi/800 */
+    return 6.28318530717958647692f / 100.0f; /* ~2*pi/100 (wider for symbol-rate tracking) */
 }
 
 /** @brief Default Costas loop damping factor (sqrt(2)/2). */
