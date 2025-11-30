@@ -243,6 +243,7 @@ struct demod_state {
     int cqpsk_acq_fll_enable;  /* 0/1: allow pre-Costas FLL pull-in */
     int cqpsk_acq_fll_locked;  /* 0/1: stop when locked */
     int cqpsk_acq_quiet_runs;  /* consecutive quiet blocks for lock */
+    int cqpsk_acq_noisy_runs;  /* consecutive noisy blocks to force unlock */
     int cqpsk_fll_rot_applied; /* 0/1: cqpsk branch applied FLL rotation this block */
 
     /* Costas diagnostics (updated per block) */

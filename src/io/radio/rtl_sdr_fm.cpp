@@ -3298,6 +3298,7 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.cqpsk_rms_agc_rms = 0.0f;
         demod.cqpsk_acq_fll_locked = 0;
         demod.cqpsk_acq_quiet_runs = 0;
+        demod.cqpsk_acq_noisy_runs = 0;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
@@ -3316,6 +3317,7 @@ dsd_rtl_stream_set_cqpsk_acq_fll(int onoff) {
     /* Reset latch so it can re-acquire if re-enabled */
     demod.cqpsk_acq_fll_locked = 0;
     demod.cqpsk_acq_quiet_runs = 0;
+    demod.cqpsk_acq_noisy_runs = 0;
 }
 
 extern "C" int

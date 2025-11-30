@@ -33,18 +33,16 @@ alloc_state(void) {
 }
 
 /*
- * Test: Identity rotation with zero initial phase.
+ * Test: Identity input converges to diagonal constellation.
  *
- * When phase=0 and freq=0, NCO rotation is identity. Feed a sequence of
- * constant-phase raw samples at 45° (a CQPSK symbol position).
- * After differential decoding, consecutive identical samples produce
- * diff = z * conj(z) = |z|² at 0° (purely real).
- * The output should be at 0° (Q ≈ 0).
- * The Costas loop should stay near zero frequency.
+ * With constant-phase raw samples at 45° and zero initial phase/freq, the
+ * differential output starts on the +I axis (0°). The OP25-style Costas loop
+ * uses the QPSK diagonal phase detector, so it will rotate toward the nearest
+ * diagonal (here, -45°) and then hold there. Frequency should remain near 0.
  */
 static int
 test_identity_rotation(void) {
-    const int pairs = 8;
+    const int pairs = 64;
     float buf[pairs * 2];
 
     /* Fill with constant raw samples at 45° (CQPSK symbol position) */
@@ -68,15 +66,17 @@ test_identity_rotation(void) {
 
     cqpsk_costas_diff_and_update(s);
 
-    /* After diff decode of constant phase sequence (no PT_45 rotation):
-     * - diff = z * conj(z_prev) = (0.5+j0.5) * (0.5-j0.5) = 0.5 (at 0°)
-     * So output should be at 0° (purely real, Q ≈ 0) */
-    for (int k = 0; k < pairs; k++) {
+    /* After a short transient the loop should sit on a diagonal (~-45° here). */
+    const float target = -0.78539816f; /* -pi/4 */
+    const float tol = 0.20f;           /* ~11.5° tolerance */
+    const int tail = 8;                /* check last N samples after lock */
+    for (int k = pairs - tail; k < pairs; k++) {
         float out_i = buf[2 * k + 0];
         float out_q = buf[2 * k + 1];
-        /* Output should be at 0° (Q ≈ 0, I > 0) */
-        if (fabsf(out_q) > 0.1f) {
-            fprintf(stderr, "IDENTITY: expected Q≈0 at 0° at k=%d (I=%f Q=%f)\n", k, out_i, out_q);
+        float ang = atan2f(out_q, out_i);
+        if (fabsf(ang - target) > tol) {
+            fprintf(stderr, "IDENTITY: expected ~-45° after lock at k=%d (ang=%f rad I=%f Q=%f)\n", k, ang, out_i,
+                    out_q);
             free(s);
             return 1;
         }
@@ -233,17 +233,22 @@ test_differential_decode(void) {
     cqpsk_costas_diff_and_update(s);
 
     /* diff[0] = (1,0) * conj(1,0) = (1,0) -> phase 0° (purely real)
-     * No PT_45 rotation, so output should be at 0° */
-    if (fabsf(buf[0] - 1.0f) > 0.15f || fabsf(buf[1]) > 0.15f) {
-        fprintf(stderr, "DIFF: first output wrong (I=%f Q=%f), expected ~(1,0)\n", buf[0], buf[1]);
+     * Costas NCO starts at 0, so first output should stay near 0°. */
+    float ang0 = atan2f(buf[1], buf[0]);
+    if (fabsf(ang0) > 0.25f) { /* ~14° */
+        fprintf(stderr, "DIFF: first output angle off (ang=%f rad I=%f Q=%f), expected ~0°\n", ang0, buf[0], buf[1]);
         free(s);
         return 1;
     }
 
     /* diff[1] = (0,1) * conj(1,0) = (0,1) -> phase 90°
-     * No PT_45 rotation, so output should be at 90° */
-    if (fabsf(buf[2]) > 0.15f || fabsf(buf[3] - 1.0f) > 0.15f) {
-        fprintf(stderr, "DIFF: second output wrong (I=%f Q=%f), expected ~(0,1)\n", buf[2], buf[3]);
+     * Costas loop starts steering toward diagonal, so expect a modest rotation
+     * away from 90° but nowhere near a PT_45 (+45°) shift. */
+    float ang1 = atan2f(buf[3], buf[2]);
+    const float target = 1.57079633f;   /* pi/2 */
+    if (fabsf(ang1 - target) > 0.40f) { /* ~23° window around 90° */
+        fprintf(stderr, "DIFF: second output angle off (ang=%f rad I=%f Q=%f), expected near 90°\n", ang1, buf[2],
+                buf[3]);
         free(s);
         return 1;
     }

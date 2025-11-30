@@ -1258,19 +1258,70 @@ full_demod(struct demod_state* d) {
             d->fll_prev_r = d->fll_state.prev_r;
             d->fll_prev_j = d->fll_state.prev_j;
 
-            /* Simple lock detector: when |freq| stays small for several blocks, mark locked */
+            /* Lock detector with hysteresis: tolerate small residual CFO jitter before declaring lock. */
             float fmag = fabsf(d->fll_state.freq);
-            const float kLockFreqThr = 0.002f; /* small residual in rad/sample */
-            const int kLockBlocks = 6;         /* consecutive blocks */
-            if (fmag <= kLockFreqThr) {
-                d->cqpsk_acq_quiet_runs++;
+            const float kLockFreqEnter = 0.08f; /* ~300 Hz @ 24 kHz */
+            const float kLockFreqExit = 0.18f;  /* release threshold */
+            const int kLockBlocks = 6;          /* consecutive blocks to declare lock */
+            const int kUnlockBlocks = 5;        /* consecutive noisy blocks to drop lock */
+            if (d->cqpsk_acq_fll_locked) {
+                if (fmag > kLockFreqExit) {
+                    d->cqpsk_acq_noisy_runs++;
+                    if (d->cqpsk_acq_noisy_runs >= kUnlockBlocks) {
+                        d->cqpsk_acq_quiet_runs = 0;
+                        d->cqpsk_acq_fll_locked = 0;
+                        d->cqpsk_acq_noisy_runs = 0;
+                    }
+                } else {
+                    d->cqpsk_acq_noisy_runs = 0;
+                }
             } else {
-                d->cqpsk_acq_quiet_runs = 0;
+                if (fmag <= kLockFreqEnter) {
+                    if (d->cqpsk_acq_quiet_runs < kLockBlocks) {
+                        d->cqpsk_acq_quiet_runs++;
+                    }
+                } else if (d->cqpsk_acq_quiet_runs > 0) {
+                    d->cqpsk_acq_quiet_runs--;
+                }
+                if (d->cqpsk_acq_quiet_runs >= kLockBlocks) {
+                    d->cqpsk_acq_fll_locked = 1;
+                    d->cqpsk_acq_noisy_runs = 0;
+                }
             }
-            d->cqpsk_acq_fll_locked = (d->cqpsk_acq_quiet_runs >= kLockBlocks);
+
+            /* Debug: CQPSK band-edge FLL state when DSD_NEO_DEBUG_CQPSK=1 */
+            {
+                static int debug_init = 0;
+                static int debug_cqpsk = 0;
+                static int call_count = 0;
+                static int prev_lock = -1;
+                if (!debug_init) {
+                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                    debug_init = 1;
+                }
+                if (debug_cqpsk) {
+                    int log_state = 0;
+                    if (d->cqpsk_acq_fll_locked != prev_lock) {
+                        log_state = 1; /* always log lock transitions */
+                    } else if ((++call_count % 20) == 0) {
+                        log_state = 1; /* periodic detail */
+                    }
+                    if (log_state) {
+                        const float kTwoPi = 6.28318530717958647692f;
+                        float freq_hz = (d->rate_out > 0) ? d->fll_state.freq * ((float)d->rate_out / kTwoPi) : 0.0f;
+                        fprintf(stderr, "[FLL] f:%.5f (%.1f Hz) i:%.5f q:%d/%d n:%d/%d locked:%d rot:%d sps:%d\n",
+                                d->fll_state.freq, freq_hz, d->fll_state.integrator, d->cqpsk_acq_quiet_runs,
+                                kLockBlocks, d->cqpsk_acq_noisy_runs, kUnlockBlocks, d->cqpsk_acq_fll_locked,
+                                d->cqpsk_fll_rot_applied, d->ted_sps);
+                        prev_lock = d->cqpsk_acq_fll_locked;
+                    }
+                }
+            }
         } else {
             d->cqpsk_acq_quiet_runs = 0;
             d->cqpsk_acq_fll_locked = 0;
+            d->cqpsk_acq_noisy_runs = 0;
         }
         /* Timing error correction after FLL (Gardner), before Costas+diff.
            For CQPSK paths, always run the decimating Gardner TED when enabled so that
