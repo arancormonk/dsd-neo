@@ -376,6 +376,9 @@ struct dsd_state {
     int c4fm_clk_cooldown; /* cooldown countdown to avoid rapid flips */
 
     int rf_mod;
+    /* CQPSK dibit permutation index selected during sync detection (0..23).
+     * Applied during frame decoding to correct constellation rotation. */
+    int cqpsk_perm_idx;
     int numflips;
     int lastsynctype;
     int lastp25type;

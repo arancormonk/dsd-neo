@@ -35,6 +35,87 @@
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
 
+enum cqpsk_map_mode {
+    CQPSK_MAP_IDENT = 0,
+    CQPSK_MAP_INVERT = 1,
+    CQPSK_MAP_SWAP = 2,
+    CQPSK_MAP_ROT90 = 3,  /* 0->1->3->2->0 */
+    CQPSK_MAP_ROT270 = 4, /* inverse of ROT90 */
+    CQPSK_MAP_SWAP_ROT90 = 5,
+    CQPSK_MAP_SWAP_ROT270 = 6,
+};
+
+/* All 24 permutations of dibit mappings (0..3). */
+static const int kCqpskPerms[24][4] = {
+    {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, {0, 2, 3, 1}, {0, 3, 1, 2}, {0, 3, 2, 1}, {1, 0, 2, 3}, {1, 0, 3, 2},
+    {1, 2, 0, 3}, {1, 2, 3, 0}, {1, 3, 0, 2}, {1, 3, 2, 0}, {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 1, 0, 3}, {2, 1, 3, 0},
+    {2, 3, 0, 1}, {2, 3, 1, 0}, {3, 0, 1, 2}, {3, 0, 2, 1}, {3, 1, 0, 2}, {3, 1, 2, 0}, {3, 2, 0, 1}, {3, 2, 1, 0},
+};
+static int g_cqpsk_perm_idx = 0;
+static int g_cqpsk_best_ham = 1000;
+
+/* Local invert helper to avoid coupling to dsd_dibit.c internals. */
+static inline int
+invert_dibit_local(int dibit) {
+    switch (dibit & 0x3) {
+        case 0: return 2;
+        case 1: return 3;
+        case 2: return 0;
+        default: return 1; /* case 3 */
+    }
+}
+
+static inline int
+cqpsk_map_dibit(int mode, int d) {
+    if (mode >= 24) {
+        mode = g_cqpsk_perm_idx;
+    }
+    if (mode >= 0 && mode < 24) {
+        int v = d & 0x3;
+        return kCqpskPerms[mode][v];
+    }
+    int v = d & 0x3;
+    switch (mode) {
+        case CQPSK_MAP_INVERT: return invert_dibit_local(v);
+        case CQPSK_MAP_SWAP: return ((v & 1) << 1) | ((v & 2) >> 1); /* swap bit order */
+        case CQPSK_MAP_ROT90:
+            switch (v) {
+                case 0: return 1;
+                case 1: return 3;
+                case 2: return 0;
+                default: return 2;
+            }
+        case CQPSK_MAP_ROT270:
+            switch (v) {
+                case 0: return 2;
+                case 2: return 3;
+                case 3: return 1;
+                default: return 0; /* v==1 */
+            }
+        case CQPSK_MAP_SWAP_ROT90: {
+            /* Apply swap then rot90 */
+            int s = ((v & 1) << 1) | ((v & 2) >> 1);
+            switch (s) {
+                case 0: return 1;
+                case 1: return 3;
+                case 2: return 0;
+                default: return 2;
+            }
+        }
+        case CQPSK_MAP_SWAP_ROT270: {
+            int s = ((v & 1) << 1) | ((v & 2) >> 1);
+            switch (s) {
+                case 0: return 2;
+                case 2: return 3;
+                case 3: return 1;
+                default: return 0;
+            }
+        }
+        case CQPSK_MAP_IDENT:
+        default: return v;
+    }
+}
+
 void
 printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation) {
     UNUSED3(state, offset, modulation);
@@ -205,6 +286,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     char modulation[8];
     char* synctest_p;
     char synctest_buf[10240]; //what actually is assigned to this, can't find its use anywhere?
+    int* raw_synctest_p;
+    int raw_synctest_buf[10240];
     float lmin, lmax;
     int lidx;
 
@@ -249,6 +332,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     modulation[7] = 0; //not initialized or terminated (unsure if this would be an issue or not)
     synctest_pos = 0;
     synctest_p = synctest_buf + 10;
+    raw_synctest_p = raw_synctest_buf + 10;
     sync = 0;
     // lmin/lmax initialized later before use
     lidx = 0;
@@ -461,7 +545,81 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
         }
 #endif
-        if (symbol > 0) {
+        /* For CQPSK mode with TED active, use 4-level slicer matching OP25's fsk4_slicer_fb.
+         * The CQPSK demod outputs phase values scaled by 4/π, giving symbol levels at ±1, ±3.
+         * Using fixed ±2.0 thresholds produces all 4 dibit values needed for P25 sync detection. */
+        int cqpsk_4level = 0;
+#ifdef USE_RTLSDR
+        if (state->rf_mod == 1 && opts->audio_in_type == 3 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+            int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
+            rtl_stream_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
+            if (dsp_cqpsk && dsp_ted) {
+                cqpsk_4level = 1;
+            }
+        }
+#endif
+        if (cqpsk_4level) {
+            /* 4-level CQPSK slicer with fixed thresholds (same as cqpsk_slice in dsd_dibit.c):
+             *   sym >= +2.0  → dibit 1 (symbol +3, phase +135°)
+             *   0 <= sym < +2.0 → dibit 0 (symbol +1, phase +45°)
+             *   -2.0 <= sym < 0 → dibit 2 (symbol -1, phase -45°)
+             *   sym < -2.0  → dibit 3 (symbol -3, phase -135°) */
+            float sym = symbol;
+            /* Recenter CQPSK symbols using the running min/max midpoint to remove DC bias
+               before slicing. This helps keep the fixed ±2.0 thresholds aligned when the
+               differential phase output drifts slightly off zero. */
+            sym -= state->center;
+            int d;
+            if (sym >= 2.0f) {
+                d = 1;
+            } else if (sym >= 0.0f) {
+                d = 0;
+            } else if (sym >= -2.0f) {
+                d = 2;
+            } else {
+                d = 3;
+            }
+            /* Debug: log slicer input/output when DSD_NEO_DEBUG_CQPSK=1 */
+            {
+                static int debug_init = 0;
+                static int debug_cqpsk = 0;
+                static int sample_count = 0;
+                static int hist[4] = {0, 0, 0, 0};
+                static float sym_sum = 0.0f;
+                static float sym_min = 1000.0f, sym_max = -1000.0f;
+                if (!debug_init) {
+                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                    debug_init = 1;
+                }
+                if (debug_cqpsk) {
+                    hist[d]++;
+                    sym_sum += sym;
+                    if (sym < sym_min) {
+                        sym_min = sym;
+                    }
+                    if (sym > sym_max) {
+                        sym_max = sym;
+                    }
+                    if (++sample_count >= 4800) {
+                        float sym_avg = sym_sum / sample_count;
+                        fprintf(stderr,
+                                "[SLICER] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f range:[%.2f,%.2f] (n=%d)\n",
+                                100.0f * hist[0] / sample_count, 100.0f * hist[1] / sample_count,
+                                100.0f * hist[2] / sample_count, 100.0f * hist[3] / sample_count, sym_avg, sym_min,
+                                sym_max, sample_count);
+                        hist[0] = hist[1] = hist[2] = hist[3] = 0;
+                        sample_count = 0;
+                        sym_sum = 0.0f;
+                        sym_min = 1000.0f;
+                        sym_max = -1000.0f;
+                    }
+                }
+            }
+            *state->dibit_buf_p = d;
+            state->dibit_buf_p++;
+            dibit = '0' + d;
+        } else if (symbol > 0) {
             *state->dibit_buf_p = 1;
             state->dibit_buf_p++;
             dibit = 49; // '1'
@@ -472,12 +630,18 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->symbol_out_f && dibit != 0) {
-            int csymbol = 0;
-            if (dibit == 49) {
-                csymbol = 1; //1
-            }
-            if (dibit == 51) {
-                csymbol = 3; //3
+            int csymbol;
+            if (cqpsk_4level) {
+                /* For CQPSK 4-level, dibit is already '0'..'3' */
+                csymbol = dibit - '0';
+            } else {
+                csymbol = 0;
+                if (dibit == 49) {
+                    csymbol = 1; //1
+                }
+                if (dibit == 51) {
+                    csymbol = 3; //3
+                }
             }
             //fprintf (stderr, "%d", dibit);
             fputc(csymbol, opts->symbol_out_f);
@@ -492,7 +656,45 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             state->dmr_reliab_p = state->dmr_reliab_buf + 200;
         }
 
-        if (1 == 1) {
+        if (cqpsk_4level) {
+            float sym = symbol - state->center; /* recenter for CQPSK thresholding */
+            /* Use the same 4-level slicer for DMR payload buffer (CQPSK symbols at ±1, ±3) */
+            int d;
+            if (sym >= 2.0f) {
+                d = 1;
+            } else if (sym >= 0.0f) {
+                d = 0;
+            } else if (sym >= -2.0f) {
+                d = 2;
+            } else {
+                d = 3;
+            }
+            *state->dmr_payload_p = d;
+            /* Reliability for CQPSK: based on distance from threshold boundaries.
+             * Symbol levels are ±1, ±3 with thresholds at 0 and ±2. */
+            if (state->dmr_reliab_p) {
+                float dist;
+                if (sym >= 2.0f) {
+                    dist = sym - 2.0f; /* distance from +2 threshold */
+                } else if (sym >= 0.0f) {
+                    dist = fminf(sym, 2.0f - sym); /* distance to 0 or +2 */
+                } else if (sym >= -2.0f) {
+                    dist = fminf(-sym, sym + 2.0f); /* distance to 0 or -2 */
+                } else {
+                    dist = -2.0f - sym; /* distance from -2 threshold */
+                }
+                /* Scale to [0, 255]: max dist from threshold is ~2 (ideal symbol at ±1, ±3) */
+                int rel = (int)(dist * 127.5f);
+                if (rel < 0) {
+                    rel = 0;
+                }
+                if (rel > 255) {
+                    rel = 255;
+                }
+                *state->dmr_reliab_p = (uint8_t)rel;
+                state->dmr_reliab_p++;
+            }
+        } else if (1 == 1) {
             if (symbol > state->center) {
                 if (symbol > state->umid) {
                     *state->dmr_payload_p = 1; // +3
@@ -587,7 +789,52 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         state->dmr_payload_p++;
         // end digitize and dmr buffer testing
 
-        *synctest_p = dibit;
+        /* Store dibit into sync window as ASCII 0..3. For CQPSK/P25 paths,
+         * invert the dibit to match the expected sync pattern orientation. */
+        int sync_dibit = dibit;
+        int raw_dibit = dibit & 0x3;
+        /* Map CQPSK dibits for P25 targets using selected mapping permutation (24 options). */
+        if (state->rf_mod == 1 && opts->audio_in_type == 3 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+            raw_dibit = dibit & 0x3;
+            int mapped = cqpsk_map_dibit(g_cqpsk_perm_idx, raw_dibit);
+            dibit = mapped;
+            sync_dibit = mapped;
+            *raw_synctest_p = raw_dibit;
+            if (t >= t_max) {
+                int best_idx = g_cqpsk_perm_idx;
+                int best_ham = 1000;
+                for (int mode = 0; mode < 24; mode++) {
+                    int ham = 0;
+                    for (int k = 0; k < 24; k++) {
+                        int d = raw_synctest_p[-23 + k] & 0x3;
+                        int md = cqpsk_map_dibit(mode, d);
+                        int expect_n = P25P1_SYNC[k] - '0';
+                        if (md != expect_n) {
+                            ham++;
+                        }
+                    }
+                    if (ham < best_ham) {
+                        best_ham = ham;
+                        best_idx = mode;
+                    }
+                }
+                /* Only switch when we actually improve Hamming distance to avoid thrash. */
+                if (best_ham <= g_cqpsk_best_ham && best_idx != g_cqpsk_perm_idx) {
+                    g_cqpsk_perm_idx = best_idx;
+                    g_cqpsk_best_ham = best_ham;
+                    /* Propagate to state so frame decoder (digitize/cqpsk_slice) uses same mapping. */
+                    state->cqpsk_perm_idx = best_idx;
+                    fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d)\n", best_idx, best_ham);
+                    /* Update current dibit to the newly selected mapping */
+                    sync_dibit = cqpsk_map_dibit(g_cqpsk_perm_idx, raw_dibit);
+                    dibit = sync_dibit;
+                }
+            }
+            /* Always keep state->cqpsk_perm_idx in sync with global (even if not switched this pass). */
+            state->cqpsk_perm_idx = g_cqpsk_perm_idx;
+        }
+        *synctest_p = (char)('0' + (sync_dibit & 0x3));
+        *raw_synctest_p = raw_dibit;
         if (t >= t_max) //works excelent now with short sync patterns, and no issues with large ones!
         {
             for (i = 0; i < t_max; i++) //24
@@ -668,14 +915,131 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             {
                 static int debug_init = 0;
                 static int debug_sync = 0;
+                static int debug_cqpsk = 0;
                 static int debug_count = 0;
                 if (!debug_init) {
                     const char* env = getenv("DSD_NEO_DEBUG_SYNC");
                     debug_sync = (env && *env == '1') ? 1 : 0;
+                    const char* env_cq = getenv("DSD_NEO_DEBUG_CQPSK");
+                    debug_cqpsk = (env_cq && *env_cq == '1') ? 1 : 0;
                     debug_init = 1;
                 }
                 if (debug_sync && (++debug_count % 4800) == 0) {
                     fprintf(stderr, "[SYNC] pattern=%s expect=%s\n", synctest, P25P1_SYNC);
+                }
+                if (debug_cqpsk && state->rf_mod == 1) {
+                    /* Compute Hamming distance of current window vs P25 sync (normal/inverted). */
+                    int ham_norm = 0, ham_inv = 0;
+                    /* Evaluate alternate dibit remaps to spot polarity/bit-order/rotation issues. */
+                    int ham_ident = 0, ham_invert = 0, ham_swap = 0, ham_xor3 = 0, ham_rot = 0;
+                    for (int k = 0; k < 24; k++) {
+                        int d = synctest[k];
+                        if (d >= '0' && d <= '3') {
+                            d -= '0';
+                        }
+                        /* accept raw 0..3 values too */
+                        int expect_n = P25P1_SYNC[k] - '0';
+                        int expect_i = INV_P25P1_SYNC[k] - '0';
+                        if (d != expect_n) {
+                            ham_norm++;
+                        }
+                        if (d != expect_i) {
+                            ham_inv++;
+                        }
+                        /* Remaps */
+                        int d_inv = (d == 0) ? 2 : (d == 1) ? 3 : (d == 2) ? 0 : 1;
+                        int d_swap = ((d & 1) << 1) | ((d & 2) >> 1); /* swap bit order */
+                        int d_xor3 = d ^ 0x3;                         /* bitwise not in 2-bit space */
+                        /* 90° rotation (cyclic remap 0->1->3->2->0) */
+                        int d_rot;
+                        switch (d & 0x3) {
+                            case 0: d_rot = 1; break;
+                            case 1: d_rot = 3; break;
+                            case 2: d_rot = 0; break;
+                            default: d_rot = 2; break; /* d==3 */
+                        }
+                        if (d != expect_n) {
+                            ham_ident++;
+                        }
+                        if (d_inv != expect_n) {
+                            ham_invert++;
+                        }
+                        if (d_swap != expect_n) {
+                            ham_swap++;
+                        }
+                        if (d_xor3 != expect_n) {
+                            ham_xor3++;
+                        }
+                        if (d_rot != expect_n) {
+                            ham_rot++;
+                        }
+                    }
+                    /* Log sparsely to avoid spam; every ~1200 symbols (~0.25s at 4800 sps). */
+                    static int dbg_win = 0;
+                    if ((++dbg_win % 1200) == 0) {
+                        fprintf(stderr,
+                                "[SYNCDBG] ham(norm=%d inv=%d ident=%d inv2=%d swap=%d xor3=%d rot=%d) win=%.*s\n",
+                                ham_norm, ham_inv, ham_ident, ham_invert, ham_swap, ham_xor3, ham_rot, 24, synctest);
+                    }
+                    /* Deeper CQPSK mapping visibility: find the best permutation Hamming distance. */
+                    static int dbg_cq_win = 0;
+                    if ((++dbg_cq_win % 2400) == 0) {
+                        const int* raw_start = raw_synctest_p - 23;
+                        char raw_win[25];
+                        raw_win[24] = '\0';
+                        for (int k = 0; k < 24; k++) {
+                            raw_win[k] = (char)('0' + (raw_start[k] & 0x3));
+                        }
+                        int best_idx = 0, best_ham = 1000;
+                        int curr_ham = 1000;
+                        char mapped_best[25];
+                        mapped_best[24] = '\0';
+                        for (int mode = 0; mode < 24; mode++) {
+                            int ham = 0;
+                            for (int k = 0; k < 24; k++) {
+                                int d = raw_start[k] & 0x3;
+                                int md = kCqpskPerms[mode][d];
+                                int expect_n = P25P1_SYNC[k] - '0';
+                                if (md != expect_n) {
+                                    ham++;
+                                }
+                            }
+                            if (ham < best_ham) {
+                                best_ham = ham;
+                                best_idx = mode;
+                            }
+                        }
+                        /* Current permutation distance */
+                        {
+                            int ham = 0;
+                            int mode = g_cqpsk_perm_idx;
+                            if (mode < 0 || mode >= 24) {
+                                mode = 0;
+                            }
+                            for (int k = 0; k < 24; k++) {
+                                int d = raw_start[k] & 0x3;
+                                int md = kCqpskPerms[mode][d];
+                                int expect_n = P25P1_SYNC[k] - '0';
+                                if (md != expect_n) {
+                                    ham++;
+                                }
+                            }
+                            curr_ham = ham;
+                        }
+                        /* Build mapped window for best permutation */
+                        for (int k = 0; k < 24; k++) {
+                            int d = raw_start[k] & 0x3;
+                            int md = kCqpskPerms[best_idx][d];
+                            mapped_best[k] = (char)('0' + (md & 0x3));
+                        }
+                        int dsp_cq = 0, dsp_f = 0, dsp_t = 0;
+                        rtl_stream_dsp_get(&dsp_cq, &dsp_f, &dsp_t);
+                        fprintf(stderr,
+                                "[SYNC-CQ] best_ham=%d perm_best=%d curr_ham=%d curr_perm=%d dsp(cq=%d fll=%d "
+                                "ted=%d) raw=%.*s map=%s\n",
+                                best_ham, best_idx, curr_ham, g_cqpsk_perm_idx, dsp_cq, dsp_f, dsp_t, 24, raw_win,
+                                mapped_best);
+                    }
                 }
             }
 #endif
@@ -1577,11 +1941,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (synctest_pos < 10200) {
             synctest_pos++;
             synctest_p++;
+            raw_synctest_p++;
 
         } else {
             // buffer reset
             synctest_pos = 0;
             synctest_p = synctest_buf;
+            raw_synctest_p = raw_synctest_buf;
             noCarrier(opts, state);
         }
 

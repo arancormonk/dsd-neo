@@ -1191,7 +1191,7 @@ full_demod(struct demod_state* d) {
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
         /* OP25 CQPSK chain (gardner_costas_cc signal flow):
-           channel LPF (above) -> RMS AGC -> band-edge FLL -> Gardner -> [Costas+diff combined] -> arg/rescale -> slicer
+           channel LPF (above) -> DC block -> RMS AGC -> band-edge FLL -> Gardner -> [Costas+diff combined] -> arg/rescale -> slicer
 
            Key insight from OP25's gardner_costas_cc:
            - NCO rotation, differential decoding, and phase error detection happen
@@ -1199,6 +1199,11 @@ full_demod(struct demod_state* d) {
            - Each sample sees the loop correction from the previous sample
            - This is implemented in cqpsk_costas_diff_and_update()
         */
+        /* IQ DC block for CQPSK: removes any residual DC offset that biases the constellation.
+         * Without this, RTL-SDR DC spurs can cause systematic phase bias (~9° = -0.2 symbol offset).
+         * Uses the same iq_dc_block() as C4FM path. */
+        d->iq_dc_block_enable = 1;
+        iq_dc_block(d);
         cqpsk_rms_agc(d);
         /* Debug: Post-AGC magnitudes when DSD_NEO_DEBUG_CQPSK=1 */
         {
@@ -1393,6 +1398,33 @@ full_demod(struct demod_state* d) {
                         }
                         fprintf(stderr, "\n");
                     }
+                    /* Compute phase histogram from full IQ buffer to check for bias */
+                    if (d->lp_len >= 20) {
+                        int ph_hist[4] = {0, 0, 0, 0};
+                        float phase_sum = 0.0f;
+                        const float k4pi = 4.0f / 3.14159265f;
+                        const float* iq = d->lowpassed;
+                        int pairs = d->lp_len >> 1;
+                        for (int k = 0; k < pairs; k++) {
+                            float I = iq[(k << 1)];
+                            float Q = iq[(k << 1) + 1];
+                            float sym = atan2f(Q, I) * k4pi;
+                            phase_sum += sym;
+                            if (sym >= 2.0f) {
+                                ph_hist[1]++;
+                            } else if (sym >= 0.0f) {
+                                ph_hist[0]++;
+                            } else if (sym >= -2.0f) {
+                                ph_hist[2]++;
+                            } else {
+                                ph_hist[3]++;
+                            }
+                        }
+                        float avg = phase_sum / pairs;
+                        fprintf(stderr, "[IQ-HIST] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f (n=%d)\n",
+                                100.0f * ph_hist[0] / pairs, 100.0f * ph_hist[1] / pairs, 100.0f * ph_hist[2] / pairs,
+                                100.0f * ph_hist[3] / pairs, avg, pairs);
+                    }
                 }
             }
         } else {
@@ -1548,6 +1580,10 @@ full_demod(struct demod_state* d) {
             /* Accumulate histogram over multiple blocks for meaningful statistics */
             static int hist_p3 = 0, hist_p1 = 0, hist_m1 = 0, hist_m3 = 0, hist_other = 0;
             static int hist_samples = 0;
+            /* Track EVM/SNR across the same window to catch slicer health issues */
+            static double evm_err_acc = 0.0;
+            static double evm_ref_acc = 0.0;
+            static int evm_count = 0;
             if (!debug_init) {
                 const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
                 debug_cqpsk = (env && *env == '1') ? 1 : 0;
@@ -1557,24 +1593,46 @@ full_demod(struct demod_state* d) {
                 const float* syms = d->result;
                 for (int k = 0; k < d->result_len; k++) {
                     float s = syms[k];
+                    float ideal;
                     if (s > 2.0f) {
                         hist_p3++;
+                        ideal = 3.0f;
                     } else if (s > 0.0f) {
                         hist_p1++;
+                        ideal = 1.0f;
                     } else if (s > -2.0f) {
                         hist_m1++;
+                        ideal = -1.0f;
                     } else {
                         hist_m3++;
+                        ideal = -3.0f;
                     }
                     hist_samples++;
+                    double err = (double)s - (double)ideal;
+                    evm_err_acc += err * err;
+                    evm_ref_acc += (double)ideal * (double)ideal;
+                    evm_count++;
                 }
-                if ((++call_count % 100) == 0 && hist_samples > 0) {
+                if ((++call_count % 25) == 0 && hist_samples > 0) {
                     float total = (float)hist_samples;
                     fprintf(stderr, "[SYM] +3:%.1f%% +1:%.1f%% -1:%.1f%% -3:%.1f%% (n=%d)\n", 100.0f * hist_p3 / total,
                             100.0f * hist_p1 / total, 100.0f * hist_m1 / total, 100.0f * hist_m3 / total, hist_samples);
+                    if (evm_count > 0 && evm_ref_acc > 1e-9) {
+                        double mse = evm_err_acc / (double)evm_count;
+                        double ref_pwr = evm_ref_acc / (double)evm_count;
+                        double evm_rms = sqrt(mse);
+                        double ref_rms = sqrt(ref_pwr);
+                        double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
+                        double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) : 99.0;
+                        fprintf(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms,
+                                evm_count);
+                    }
                     /* Reset histogram */
                     hist_p3 = hist_p1 = hist_m1 = hist_m3 = hist_other = 0;
                     hist_samples = 0;
+                    evm_err_acc = 0.0;
+                    evm_ref_acc = 0.0;
+                    evm_count = 0;
                 }
             }
         }

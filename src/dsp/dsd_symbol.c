@@ -897,7 +897,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
         }
 
-        if (opts->use_cosine_filter) {
+        /* Skip legacy scalar matched filters when consuming symbol-rate CQPSK stream
+       from the RTL DSP path. The CQPSK pipeline already applied channel filtering
+       and timing recovery in complex baseband; additional FIRs here distort the
+       {-3,-1,+1,+3} levels and break the slicer. */
+        if (opts->use_cosine_filter && !cqpsk_symbol_rate) {
             if ((state->lastsynctype >= 10 && state->lastsynctype <= 13) || state->lastsynctype == 32
                 || state->lastsynctype == 33 || state->lastsynctype == 34 || state->lastsynctype == 30
                 || state->lastsynctype == 31) {

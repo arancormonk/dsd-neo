@@ -26,6 +26,14 @@
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
+/* All 24 permutations of dibit mappings (0..3), matching dsd_frame_sync.c.
+ * Used to correct constellation rotation discovered during sync detection. */
+static const int kCqpskPerms[24][4] = {
+    {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, {0, 2, 3, 1}, {0, 3, 1, 2}, {0, 3, 2, 1}, {1, 0, 2, 3}, {1, 0, 3, 2},
+    {1, 2, 0, 3}, {1, 2, 3, 0}, {1, 3, 0, 2}, {1, 3, 2, 0}, {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 1, 0, 3}, {2, 1, 3, 0},
+    {2, 3, 0, 1}, {2, 3, 1, 0}, {3, 0, 1, 2}, {3, 0, 2, 1}, {3, 1, 0, 2}, {3, 1, 2, 0}, {3, 2, 0, 1}, {3, 2, 1, 0},
+};
+
 static void
 print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {
     int i, j, o;
@@ -251,6 +259,69 @@ cqpsk_slice(float symbol) {
     return dibit;
 }
 
+/*
+ * CQPSK slicer with permutation mapping for frame decoding.
+ *
+ * Applies the constellation rotation correction discovered during sync detection.
+ * The permutation index (state->cqpsk_perm_idx) is set when sync search finds a
+ * mapping that minimizes Hamming distance to the expected P25 sync pattern.
+ *
+ * Without this mapping, frames decode incorrectly even with good constellation.
+ */
+static inline int
+cqpsk_slice_with_perm(float symbol, const dsd_state* state) {
+    static int init = 0;
+    static int inv = 0;
+    static int negate = 0;
+    if (!init) {
+        const char* e_inv = getenv("DSD_NEO_CQPSK_SYNC_INV");
+        const char* e_neg = getenv("DSD_NEO_CQPSK_SYNC_NEG");
+        if (e_inv && (*e_inv == '1' || *e_inv == 'y' || *e_inv == 'Y' || *e_inv == 't' || *e_inv == 'T')) {
+            inv = 1;
+        }
+        if (e_neg && (*e_neg == '1' || *e_neg == 'y' || *e_neg == 'Y' || *e_neg == 't' || *e_neg == 'T')) {
+            negate = 1;
+        }
+        init = 1;
+    }
+    float s = negate ? -symbol : symbol;
+    int raw_dibit = cqpsk_slice(s);
+    if (inv) {
+        raw_dibit = invert_dibit(raw_dibit);
+    }
+    /* Apply constellation rotation correction from sync detection. */
+    int perm_idx = state->cqpsk_perm_idx;
+    if (perm_idx >= 0 && perm_idx < 24) {
+        return kCqpskPerms[perm_idx][raw_dibit & 0x3];
+    }
+    return raw_dibit;
+}
+
+/* Legacy wrapper for backward compatibility (no permutation). */
+static inline int
+cqpsk_slice_with_debug(float symbol) {
+    static int init = 0;
+    static int inv = 0;
+    static int negate = 0;
+    if (!init) {
+        const char* e_inv = getenv("DSD_NEO_CQPSK_SYNC_INV");
+        const char* e_neg = getenv("DSD_NEO_CQPSK_SYNC_NEG");
+        if (e_inv && (*e_inv == '1' || *e_inv == 'y' || *e_inv == 'Y' || *e_inv == 't' || *e_inv == 'T')) {
+            inv = 1;
+        }
+        if (e_neg && (*e_neg == '1' || *e_neg == 'y' || *e_neg == 'Y' || *e_neg == 't' || *e_inv == 'T')) {
+            negate = 1;
+        }
+        init = 1;
+    }
+    float s = negate ? -symbol : symbol;
+    int dibit = cqpsk_slice(s);
+    if (inv) {
+        dibit = invert_dibit(dibit);
+    }
+    return dibit;
+}
+
 static inline uint8_t
 dmr_compute_reliability(const dsd_state* st, float sym) {
     const float eps = 1e-6f;
@@ -357,6 +428,57 @@ is_cqpsk_active(dsd_opts* opts) {
     return 0;
 }
 
+#ifdef USE_RTLSDR
+/* Optional histogram of CQPSK slicer output (post-permutation) when decoding. */
+static void
+debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
+    static int init = 0;
+    static int enabled = 0;
+    static int hist[4] = {0, 0, 0, 0};
+    static int sample_count = 0;
+    static float sym_min = 1e9f, sym_max = -1e9f, sym_sum = 0.0f;
+
+    if (!init) {
+        const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+        enabled = (env && *env == '1') ? 1 : 0;
+        init = 1;
+    }
+    if (!enabled) {
+        return;
+    }
+
+    int idx = dibit & 0x3;
+    if (idx >= 0 && idx < 4) {
+        hist[idx]++;
+    }
+    sym_sum += symbol;
+    if (symbol < sym_min) {
+        sym_min = symbol;
+    }
+    if (symbol > sym_max) {
+        sym_max = symbol;
+    }
+    if (++sample_count >= 4800) {
+        float n = (float)sample_count;
+        float avg = sym_sum / n;
+        fprintf(stderr,
+                "[SLICE-DECODE] perm=%d d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f range:[%.2f,%.2f] (n=%d)\n",
+                state ? state->cqpsk_perm_idx : -1, 100.0f * hist[0] / n, 100.0f * hist[1] / n, 100.0f * hist[2] / n,
+                100.0f * hist[3] / n, avg, sym_min, sym_max, sample_count);
+        hist[0] = hist[1] = hist[2] = hist[3] = 0;
+        sample_count = 0;
+        sym_sum = 0.0f;
+        sym_min = 1e9f;
+        sym_max = -1e9f;
+    }
+}
+#else
+static inline void
+debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
+    UNUSED3(dibit, symbol, state);
+}
+#endif
+
 int
 digitize(dsd_opts* opts, dsd_state* state, float symbol) {
     // determine dibit state
@@ -419,13 +541,17 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
         int dibit;
 
         valid = 0;
-
-        /* For P25 synctypes (1=P25p1, 36=P25p2), use CQPSK slicer when active.
-         * The CQPSK slicer uses fixed thresholds optimized for the scaled phase
-         * symbols output by qpsk_differential_demod(). */
-        if ((state->synctype == 1 || state->synctype == 36) && is_cqpsk_active(opts)) {
-            dibit = cqpsk_slice(symbol);
+        /* Prefer the fixed CQPSK slicer whenever the CQPSK DSP path is active and
+         * we are hunting/decoding P25 (Phase 1 or 2). This keeps the sync search
+         * aligned even before synctype is fully resolved. */
+        int want_cqpsk_slice = is_cqpsk_active(opts) && state->rf_mod == 1
+                               && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == 1
+                                   || state->synctype == 36 || state->lastsynctype == 1 || state->lastsynctype == 36);
+        if (want_cqpsk_slice) {
+            float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
+            dibit = cqpsk_slice_with_perm(sym, state);
             valid = 1;
+            debug_log_cqpsk_slice(dibit, symbol, state);
         }
 
         //testing again, either on Voice channels only (when tuned) or with trunk disabled
@@ -490,13 +616,17 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
         int dibit;
 
         valid = 0;
-
-        /* For P25 synctypes (0=P25p1, 35=P25p2), use CQPSK slicer when active.
-         * The CQPSK slicer uses fixed thresholds optimized for the scaled phase
-         * symbols output by qpsk_differential_demod(). */
-        if ((state->synctype == 0 || state->synctype == 35) && is_cqpsk_active(opts)) {
-            dibit = cqpsk_slice(symbol);
+        /* Prefer the fixed CQPSK slicer whenever the CQPSK DSP path is active and
+         * we are hunting/decoding P25 (Phase 1 or 2). This keeps the sync search
+         * aligned even before synctype is fully resolved. */
+        int want_cqpsk_slice = is_cqpsk_active(opts) && state->rf_mod == 1
+                               && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == 0
+                                   || state->synctype == 35 || state->lastsynctype == 0 || state->lastsynctype == 35);
+        if (want_cqpsk_slice) {
+            float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
+            dibit = cqpsk_slice_with_perm(sym, state);
             valid = 1;
+            debug_log_cqpsk_slice(dibit, symbol, state);
         }
 
         //testing again, either on Voice channels only (when tuned) or with trunk disabled
