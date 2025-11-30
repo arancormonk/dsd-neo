@@ -258,7 +258,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     // lmin/lmax initialized later before use
     lidx = 0;
     lastt = 0;
-    state->numflips = 0;
 
     //run here as well
     if (opts->use_ncurses_terminal == 1) {
@@ -283,6 +282,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     static int vote_qpsk = 0;
     static int vote_c4fm = 0;
     static int vote_gfsk = 0;
+
+    /* Hamming distance tracking for modulation switching. These track recent
+     * sync Hamming distances for each demod path. Lower = better sync quality.
+     * QPSK ham is obtained from cqpsk_perm_get_best_ham(); C4FM/GFSK ham is computed
+     * inline during sync search. We use exponential smoothing with fast attack
+     * (immediately accept better values) and slow decay (persist good state). */
+    static int ham_c4fm_recent = 24; /* worst case = full window length */
+    static int ham_qpsk_recent = 24;
+    static int ham_gfsk_recent = 24;
 
     while (sync == 0) {
 
@@ -314,20 +322,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             lastt = 0;
             /* Skip auto switching entirely if user locked demod (-m[c/g/q/2]). */
             if (!opts->mod_cli_lock) {
-                /* Decide preferred modulation for this window */
-                int want_mod; /* 0=C4FM, 1=QPSK, 2=GFSK */
-                if (state->numflips > opts->mod_threshold) {
-                    want_mod = 1; /* QPSK */
-                } else if (state->numflips > 18 && opts->mod_gfsk == 1) {
-                    want_mod = 2; /* GFSK */
-                } else {
-                    want_mod = 0; /* C4FM */
-                }
+                /* Start with current modulation; Hamming distance will override if
+                 * another modulation shows clearly better sync pattern matching. */
+                int want_mod = state->rf_mod; /* 0=C4FM, 1=QPSK, 2=GFSK */
 
                 /* Bias decision with demod SNR when available to avoid C4FM<->QPSK flapping
-               on P25 CQPSK. Prefer QPSK when its SNR clearly exceeds C4FM; conversely
-               prefer C4FM only when it exceeds QPSK by a larger margin. Also apply a small
-               stickiness when already in QPSK and SNRs are similar. */
+                   on P25 CQPSK. Compare normalized quality levels since the modulations have
+                   different typical SNR ranges:
+                   - C4FM: moderate quality at 4-10 dB, good at >10 dB
+                   - QPSK: moderate quality at 10-16 dB, good at >16 dB
+                   QPSK typically reads ~6 dB higher than C4FM for equivalent signal quality.
+                   Prefer QPSK when its normalized SNR clearly exceeds C4FM; conversely prefer
+                   C4FM only when it exceeds QPSK by a larger margin. Also apply a small
+                   stickiness when already in QPSK and SNRs are similar. */
 #ifdef USE_RTLSDR
                 do {
                     /* Pull smoothed SNR; fall back to lightweight estimators if needed */
@@ -346,14 +353,17 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (snr_c > -50.0 || snr_q > -50.0) {
                         /* Only apply bias when at least one metric is sane */
                         if (snr_q > -50.0 && snr_c > -50.0) {
-                            double delta = snr_q - snr_c;
+                            /* Normalize: QPSK typically reads 6 dB higher than C4FM for same quality.
+                               Compare (snr_q - 6) vs snr_c to account for this offset. */
+                            const double kQpskOffsetDb = 6.0;
+                            double normalized_delta = (snr_q - kQpskOffsetDb) - snr_c;
                             double nowm_bias = dsd_time_now_monotonic_s();
                             int in_qpsk_dwell = (state->rf_mod == 1 && qpsk_dwell_enter_m > 0.0
                                                  && (nowm_bias - qpsk_dwell_enter_m) < 2.0);
-                            if (delta >= 2.0) {
-                                want_mod = 1; /* clear QPSK advantage */
-                            } else if (delta <= -3.0 && !in_qpsk_dwell) {
-                                want_mod = 0; /* clear C4FM advantage (but not during dwell) */
+                            if (normalized_delta >= 2.0) {
+                                want_mod = 1; /* QPSK clearly better (normalized) */
+                            } else if (normalized_delta <= -3.0 && !in_qpsk_dwell) {
+                                want_mod = 0; /* C4FM clearly better (but not during dwell) */
                             } else {
                                 /* Within small margin: if currently QPSK, keep favoring it */
                                 if (state->rf_mod == 1) {
@@ -367,6 +377,55 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                 } while (0);
 #endif
+
+                /* Hamming distance-based override: sync pattern match quality is a much
+                 * stronger indicator than SNR for modulation correctness. A strong CQPSK
+                 * signal on the C4FM path still produces "decent" C4FM SNR, but the
+                 * Hamming distance to sync will be poor. Conversely, QPSK on correct
+                 * signal achieves ham ≤ 2 reliably. Same applies to GFSK vs C4FM. */
+                {
+                    int qpsk_ham = cqpsk_perm_get_best_ham();
+                    /* Decay recent ham values slowly (persist good state) */
+                    if (ham_qpsk_recent < 24) {
+                        ham_qpsk_recent++;
+                    }
+                    if (ham_c4fm_recent < 24) {
+                        ham_c4fm_recent++;
+                    }
+                    if (ham_gfsk_recent < 24) {
+                        ham_gfsk_recent++;
+                    }
+                    /* Fast attack: accept better ham immediately */
+                    if (qpsk_ham < ham_qpsk_recent) {
+                        ham_qpsk_recent = qpsk_ham;
+                    }
+
+                    /* Find best (lowest) ham across all modulations */
+                    int best_ham = ham_c4fm_recent;
+                    int best_mod = 0;
+                    if (ham_qpsk_recent < best_ham) {
+                        best_ham = ham_qpsk_recent;
+                        best_mod = 1;
+                    }
+                    if (ham_gfsk_recent < best_ham) {
+                        best_ham = ham_gfsk_recent;
+                        best_mod = 2;
+                    }
+
+                    /* Strong sync match (ham ≤ 3): use that modulation */
+                    if (best_ham <= 3) {
+                        want_mod = best_mod;
+                    }
+                    /* Clear winner with ≥4 ham advantage over current want_mod */
+                    else if (best_ham < 24) {
+                        int current_ham = (want_mod == 0)   ? ham_c4fm_recent
+                                          : (want_mod == 1) ? ham_qpsk_recent
+                                                            : ham_gfsk_recent;
+                        if (best_ham + 4 <= current_ham) {
+                            want_mod = best_mod;
+                        }
+                    }
+                }
 
                 /* Update votes (use hysteresis; be more eager for GFSK to avoid misclassification dwell) */
                 if (want_mod == 1) {
@@ -413,11 +472,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         qpsk_dwell_enter_m = 0.0;
                     }
                     state->rf_mod = do_switch;
+                    /* Reset Hamming distance trackers so new modulation starts fresh */
+                    ham_c4fm_recent = 24;
+                    ham_qpsk_recent = 24;
+                    ham_gfsk_recent = 24;
                     /* Manual-only DSP: avoid automatic toggling here. */
                 }
             } /* end !mod_cli_lock */
-
-            state->numflips = 0;
         } else {
             lastt++;
         }
@@ -957,6 +1018,96 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 }
             }
 #endif
+            /* Compute C4FM Hamming distance for modulation switching.
+             * Track best (lowest) ham between normal and inverted sync patterns.
+             * This runs on every window even if we don't get an exact match,
+             * so we have a quality metric for C4FM path. */
+            if (opts->frame_p25p1 == 1 && !opts->mod_cli_lock) {
+                int ham_norm = 0, ham_inv = 0;
+                for (int k = 0; k < 24; k++) {
+                    int d = (unsigned char)synctest[k] - '0';
+                    int expect_n = P25P1_SYNC[k] - '0';
+                    int expect_i = INV_P25P1_SYNC[k] - '0';
+                    if (d != expect_n) {
+                        ham_norm++;
+                    }
+                    if (d != expect_i) {
+                        ham_inv++;
+                    }
+                }
+                int c4fm_ham = (ham_norm < ham_inv) ? ham_norm : ham_inv;
+                if (c4fm_ham < ham_c4fm_recent) {
+                    ham_c4fm_recent = c4fm_ham;
+                }
+            }
+            /* Compute GFSK Hamming distance for modulation switching.
+             * Check DMR sync patterns (24-dibit, same length as P25) for fair comparison.
+             * Take minimum across voice/data and BS/MS variants. */
+            if ((opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1)
+                && !opts->mod_cli_lock) {
+                int best_gfsk_ham = 24;
+                /* DMR patterns (24 dibits) */
+                if (opts->frame_dmr == 1) {
+                    const char* dmr_patterns[] = {DMR_BS_DATA_SYNC, DMR_BS_VOICE_SYNC, DMR_MS_DATA_SYNC,
+                                                  DMR_MS_VOICE_SYNC};
+                    for (int p = 0; p < 4; p++) {
+                        int ham = 0;
+                        for (int k = 0; k < 24; k++) {
+                            int d = (unsigned char)synctest[k] - '0';
+                            int expect = dmr_patterns[p][k] - '0';
+                            if (d != expect) {
+                                ham++;
+                            }
+                        }
+                        if (ham < best_gfsk_ham) {
+                            best_gfsk_ham = ham;
+                        }
+                    }
+                }
+                /* dPMR patterns (24 dibits for FS1/FS4) */
+                if (opts->frame_dpmr == 1) {
+                    const char* dpmr_patterns[] = {DPMR_FRAME_SYNC_1, DPMR_FRAME_SYNC_4, INV_DPMR_FRAME_SYNC_1,
+                                                   INV_DPMR_FRAME_SYNC_4};
+                    for (int p = 0; p < 4; p++) {
+                        int ham = 0;
+                        for (int k = 0; k < 24; k++) {
+                            int d = (unsigned char)synctest[k] - '0';
+                            int expect = dpmr_patterns[p][k] - '0';
+                            if (d != expect) {
+                                ham++;
+                            }
+                        }
+                        if (ham < best_gfsk_ham) {
+                            best_gfsk_ham = ham;
+                        }
+                    }
+                }
+                /* NXDN uses 10-dibit FSW; scale to 24-dibit equivalent for fair comparison.
+                 * ham_scaled = ham_10 * 24 / 10 = ham_10 * 2.4 */
+                if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
+                    strncpy(synctest10, (synctest_p - 9), 10);
+                    /* Common NXDN FSW patterns */
+                    const char* nxdn_patterns[] = {"3131331131", "1313113313"};
+                    for (int p = 0; p < 2; p++) {
+                        int ham = 0;
+                        for (int k = 0; k < 10; k++) {
+                            int d = (unsigned char)synctest10[k] - '0';
+                            int expect = nxdn_patterns[p][k] - '0';
+                            if (d != expect) {
+                                ham++;
+                            }
+                        }
+                        /* Scale 10-dibit ham to 24-dibit equivalent */
+                        int scaled_ham = (ham * 24 + 9) / 10; /* round up */
+                        if (scaled_ham < best_gfsk_ham) {
+                            best_gfsk_ham = scaled_ham;
+                        }
+                    }
+                }
+                if (best_gfsk_ham < ham_gfsk_recent) {
+                    ham_gfsk_recent = best_gfsk_ham;
+                }
+            }
             if (opts->frame_p25p1 == 1) {
                 if (strcmp(synctest, P25P1_SYNC) == 0) {
                     state->carrier = 1;

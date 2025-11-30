@@ -218,6 +218,27 @@ double rtl_stream_get_snr_cqpsk(void);
 double rtl_stream_get_snr_gfsk(void);
 
 /**
+ * @brief Get the current C4FM (4-level FSK) SNR estimator bias in dB.
+ *
+ * This bias accounts for both the statistical estimator bias and the
+ * noise bandwidth correction based on current DSP settings (sample rate,
+ * samples per symbol, and channel LPF profile).
+ *
+ * @return Bias value in dB to subtract from raw SNR estimate.
+ */
+double rtl_stream_get_snr_bias_c4fm(void);
+
+/**
+ * @brief Get the current EVM/GFSK/QPSK SNR estimator bias in dB.
+ *
+ * This bias accounts for both the statistical estimator bias and the
+ * noise bandwidth correction based on current DSP settings.
+ *
+ * @return Bias value in dB to subtract from raw SNR estimate.
+ */
+double rtl_stream_get_snr_bias_evm(void);
+
+/**
  * @brief Estimate C4FM SNR from the eye buffer as a lightweight fallback.
  *
  * Uses quartile clustering over eye-diagram I-channel samples near symbol

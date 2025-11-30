@@ -27,6 +27,7 @@
 extern "C" {
 #ifdef __GNUC__
 __attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*);
+__attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
 #endif
 }
 #include <algorithm>
@@ -1628,7 +1629,9 @@ full_demod(struct demod_state* d) {
                         double evm_rms = sqrt(mse);
                         double ref_rms = sqrt(ref_pwr);
                         double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
-                        double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) : 99.0;
+                        /* Apply dynamic bias correction for consistency with main SNR display */
+                        double bias = rtl_stream_get_snr_bias_evm ? rtl_stream_get_snr_bias_evm() : 2.43;
+                        double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) - bias : 99.0;
                         fprintf(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms,
                                 evm_count);
                     }

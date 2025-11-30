@@ -51,6 +51,9 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
+/* SNR bias computation (dynamic, accounts for BW/sample rate) */
+double dsd_rtl_stream_get_snr_bias_c4fm(void);
+double dsd_rtl_stream_get_snr_bias_evm(void);
 /* Tuner autogain */
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
@@ -395,6 +398,17 @@ rtl_stream_get_auto_ppm(void) {
 extern "C" int
 rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
     return dsd_rtl_stream_eye_get(out, max_samples, out_sps);
+}
+
+/* -------- SNR bias computation (dynamic, accounts for BW/sample rate) -------- */
+extern "C" double
+rtl_stream_get_snr_bias_c4fm(void) {
+    return dsd_rtl_stream_get_snr_bias_c4fm();
+}
+
+extern "C" double
+rtl_stream_get_snr_bias_evm(void) {
+    return dsd_rtl_stream_get_snr_bias_evm();
 }
 
 /* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */

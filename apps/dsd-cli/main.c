@@ -1474,9 +1474,8 @@ initOpts(dsd_opts* opts) {
     opts->inverted_x2tdma = 1; // most transmitter + scanner + sound card combinations show inverted signals for this
     opts->inverted_dmr = 0; // most transmitter + scanner + sound card combinations show non-inverted signals for this
     opts->inverted_m17 = 0; //samples from M17_Education seem to all be positive polarity (same from m17-tools programs)
-    opts->mod_threshold = 26;
-    opts->ssize = 128;  //36 default, max is 128, much cleaner data decodes on Phase 2 cqpsk at max
-    opts->msize = 1024; //15 default, max is 1024, much cleaner data decodes on Phase 2 cqpsk at max
+    opts->ssize = 128;      //36 default, max is 128, much cleaner data decodes on Phase 2 cqpsk at max
+    opts->msize = 1024;     //15 default, max is 1024, much cleaner data decodes on Phase 2 cqpsk at max
     opts->playfiles = 0;
     opts->m17encoder = 0;
     opts->m17encoderbrt = 0;
@@ -1811,7 +1810,6 @@ initState(dsd_state* state) {
     state->symbolcnt = 0;
     state->symbolc = 0; //
     state->rf_mod = 0;
-    state->numflips = 0;
     state->lastsynctype = -1;
     state->lastp25type = 0;
     state->offset = 0;

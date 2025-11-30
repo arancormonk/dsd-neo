@@ -1035,9 +1035,13 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
                 }
                 double sig_var = ssum / (double)total;
                 if (noise_var > 1e-9 && sig_var > 1e-9) {
-                    /* Apply same unbiased C4FM calibration as radio path (approx 7.95 dB). */
-                    const double kC4fmSNRNoiseBiasDb_UI = 7.95;
-                    snr_db = 10.0 * log10(sig_var / noise_var) - kC4fmSNRNoiseBiasDb_UI;
+                    /* Apply same dynamic C4FM calibration as radio path (accounts for BW/rate). */
+#ifdef USE_RTLSDR
+                    double bias = rtl_stream_get_snr_bias_c4fm();
+#else
+                    double bias = 8.0; /* fallback: typical C4FM bias */
+#endif
+                    snr_db = 10.0 * log10(sig_var / noise_var) - bias;
                 }
             }
         }

@@ -652,8 +652,6 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     unsigned int l, r;
 #endif
 
-    state->numflips = 0;
-
 #ifdef TRACE_DSD
     l = state->debug_sample_index;
 #endif
@@ -755,7 +753,6 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
     float symbol;
     int dibit;
 
-    state->numflips = 0;
     symbol = getSymbol(opts, state, 1);
 
     // Store soft symbol in ring buffer

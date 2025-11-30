@@ -102,7 +102,6 @@ resetState(dsd_state* state) {
     state->c4fm_clk_run_len = 0;
     state->c4fm_clk_cooldown = 0;
 
-    state->numflips = 0;
     state->lastsynctype = -1;
     state->lastp25type = 0;
     state->offset = 0;

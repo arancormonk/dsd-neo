@@ -79,9 +79,85 @@ static int lcm_post[17] = {1, 1, 1, 3, 1, 5, 3, 7, 1, 9, 5, 11, 3, 13, 7, 15, 1}
 static int ACTUAL_BUF_LENGTH;
 
 static const double kPi = 3.14159265358979323846;
-static const double kC4fmSNRNoiseBiasDb = 7.95;
-/* Bias for EVM/2-level SNR on Gaussian noise (QPSK/GFSK): ~2.43 dB */
-static const double kEvmSNRNoiseBiasDb = 2.43;
+/* SNR estimator bias constants: these are the "pure" estimator biases for the
+ * variance-ratio method, independent of noise bandwidth. They correct for the
+ * statistical bias of the quartile/median-based clustering approach.
+ *
+ * The total SNR correction is:
+ *   bias_total = bias_estimator + 10*log10(Bn / Rs)
+ * where Bn = noise equivalent bandwidth of channel LPF, Rs = symbol rate.
+ *
+ * These estimator biases were derived by subtracting the nominal bandwidth
+ * term from the original empirical calibration values:
+ *   C4FM: 7.95 dB - 10*log10(8000/4800) = 7.95 - 2.22 = 5.73 dB
+ *   GFSK/QPSK: 2.43 dB - 10*log10(5400/4800) = 2.43 - 0.51 = 1.92 dB
+ */
+static const double kC4fmEstimatorBiasDb = 5.73;
+static const double kEvmEstimatorBiasDb = 1.92;
+
+/* Noise equivalent bandwidth (Hz) for each channel LPF profile at 24 kHz Fs.
+ * Computed as Bn = (Fs/2) * Σh² / (Σh)² for each filter.
+ * These scale linearly with actual sample rate: Bn_actual = Bn_ref * (rate_out / 24000). */
+static const double kNoiseBwWide24k = 8200.0;    /* Wide/analog profile (~8 kHz cutoff) */
+static const double kNoiseBwDigital24k = 5400.0; /* Digital-narrow profile (~5 kHz cutoff) */
+static const double kNoiseBwP25Hann24k = 7200.0; /* P25 Hann profile (~7 kHz cutoff) */
+
+/**
+ * @brief Get noise equivalent bandwidth for a given LPF profile and sample rate.
+ *
+ * @param lpf_profile Channel LPF profile (DSD_CH_LPF_PROFILE_*)
+ * @param rate_out    Output sample rate in Hz
+ * @return Noise equivalent bandwidth in Hz
+ */
+static double
+get_noise_bandwidth_hz(int lpf_profile, int rate_out) {
+    double bn_24k;
+    switch (lpf_profile) {
+        case 1: /* DSD_CH_LPF_PROFILE_DIGITAL */ bn_24k = kNoiseBwDigital24k; break;
+        case 2: /* DSD_CH_LPF_PROFILE_P25_HANN */ bn_24k = kNoiseBwP25Hann24k; break;
+        default: /* DSD_CH_LPF_PROFILE_WIDE or unknown */ bn_24k = kNoiseBwWide24k; break;
+    }
+    /* Scale by actual sample rate relative to 24 kHz reference */
+    return bn_24k * ((double)rate_out / 24000.0);
+}
+
+/**
+ * @brief Compute total SNR bias for C4FM (4-level FSK) given DSP parameters.
+ *
+ * @param rate_out    Output sample rate in Hz
+ * @param ted_sps     Samples per symbol
+ * @param lpf_profile Channel LPF profile
+ * @return Total bias in dB to subtract from raw SNR estimate
+ */
+static double
+compute_c4fm_snr_bias_db(int rate_out, int ted_sps, int lpf_profile) {
+    if (rate_out <= 0 || ted_sps <= 0) {
+        return kC4fmEstimatorBiasDb + 2.2; /* fallback to original ~7.95 dB */
+    }
+    double symbol_rate = (double)rate_out / (double)ted_sps;
+    double noise_bw = get_noise_bandwidth_hz(lpf_profile, rate_out);
+    /* Total bias = estimator bias + bandwidth penalty */
+    return kC4fmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
+}
+
+/**
+ * @brief Compute total SNR bias for GFSK/QPSK (2-level or EVM) given DSP parameters.
+ *
+ * @param rate_out    Output sample rate in Hz
+ * @param ted_sps     Samples per symbol
+ * @param lpf_profile Channel LPF profile
+ * @return Total bias in dB to subtract from raw SNR estimate
+ */
+static double
+compute_evm_snr_bias_db(int rate_out, int ted_sps, int lpf_profile) {
+    if (rate_out <= 0 || ted_sps <= 0) {
+        return kEvmEstimatorBiasDb + 0.5; /* fallback to original ~2.43 dB */
+    }
+    double symbol_rate = (double)rate_out / (double)ted_sps;
+    double noise_bw = get_noise_bandwidth_hz(lpf_profile, rate_out);
+    /* Total bias = estimator bias + bandwidth penalty */
+    return kEvmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
+}
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)
@@ -502,6 +578,25 @@ extern "C" double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 /* Fwd decl: QPSK and GFSK fallbacks */
 extern "C" double dsd_rtl_stream_estimate_snr_qpsk_const(void);
 extern "C" double dsd_rtl_stream_estimate_snr_gfsk_eye(void);
+
+/**
+ * @brief Get the current C4FM SNR estimator bias (exposed for UI/external use).
+ * @return Bias in dB, computed dynamically based on current DSP settings.
+ */
+extern "C" double
+dsd_rtl_stream_get_snr_bias_c4fm(void) {
+    return compute_c4fm_snr_bias_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+}
+
+/**
+ * @brief Get the current EVM/GFSK/QPSK SNR estimator bias (exposed for UI/external use).
+ * @return Bias in dB, computed dynamically based on current DSP settings.
+ */
+extern "C" double
+dsd_rtl_stream_get_snr_bias_evm(void) {
+    return compute_evm_snr_bias_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+}
+
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
 extern "C" int dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate);
 /* Tuner autogain runtime get/set (implemented in rtl_sdr_fm.cpp) */
@@ -914,7 +1009,9 @@ demod_thread_fn(void* arg) {
                                 }
                                 double sig_var = ssum / (double)total;
                                 if (sig_var > 1e-9) {
-                                    double snr = 10.0 * log10(sig_var / noise_var) - kC4fmSNRNoiseBiasDb;
+                                    double bias =
+                                        compute_c4fm_snr_bias_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+                                    double snr = 10.0 * log10(sig_var / noise_var) - bias;
                                     static double ema = -100.0;
                                     if (ema < -50.0) {
                                         ema = snr;
@@ -964,7 +1061,9 @@ demod_thread_fn(void* arg) {
                                                   + (double)cntH * (muH - mu_all) * (muH - mu_all);
                                     double sig_var = ssum / (double)total;
                                     if (sig_var > 1e-9) {
-                                        double snr = 10.0 * log10(sig_var / noise_var) - kEvmSNRNoiseBiasDb;
+                                        double bias =
+                                            compute_evm_snr_bias_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+                                        double snr = 10.0 * log10(sig_var / noise_var) - bias;
                                         static double ema = -100.0;
                                         if (ema < -50.0) {
                                             ema = snr;
@@ -1573,7 +1672,8 @@ dsd_rtl_stream_estimate_snr_c4fm_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    return 10.0 * log10(sig_var / noise_var) - kC4fmSNRNoiseBiasDb;
+    double bias = compute_c4fm_snr_bias_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
 /* ---------------- Constellation-based SNR estimation (QPSK fallback) ---------------- */
@@ -1638,7 +1738,8 @@ dsd_rtl_stream_estimate_snr_qpsk_const(void) {
             best_snr = snr_d;
         }
     }
-    return best_snr - kEvmSNRNoiseBiasDb;
+    double bias = compute_evm_snr_bias_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    return best_snr - bias;
 }
 
 /* ---------------- Eye-based SNR estimation (GFSK fallback, 2-level) ---------------- */
@@ -1722,7 +1823,8 @@ dsd_rtl_stream_estimate_snr_gfsk_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    return 10.0 * log10(sig_var / noise_var) - kEvmSNRNoiseBiasDb;
+    double bias = compute_evm_snr_bias_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
 /* Auto-PPM status (spectrum-based) is implemented in rtl_metrics.cpp. */

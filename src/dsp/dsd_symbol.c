@@ -949,13 +949,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         if (sample > state->center) {
-            if (state->lastsample < state->center) {
-                state->numflips += 1;
-            }
             if (sample > (state->maxref * 1.25)) {
-                if (state->lastsample < (state->maxref * 1.25)) {
-                    state->numflips += 1;
-                }
                 if ((state->jitter < 0) && (state->rf_mod == 1)) { // first spike out of place
                     state->jitter = i;
                 }
@@ -972,13 +966,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
             }
         } else { // sample < 0
-            if (state->lastsample > state->center) {
-                state->numflips += 1;
-            }
             if (sample < (state->minref * 1.25)) {
-                if (state->lastsample > (state->minref * 1.25)) {
-                    state->numflips += 1;
-                }
                 if ((state->jitter < 0) && (state->rf_mod == 1)) { // first spike out of place
                     state->jitter = i;
                 }

@@ -379,7 +379,6 @@ struct dsd_state {
     /* CQPSK dibit permutation index selected during sync detection (0..23).
      * Applied during frame decoding to correct constellation rotation. */
     int cqpsk_perm_idx;
-    int numflips;
     int lastsynctype;
     int lastp25type;
     int offset;

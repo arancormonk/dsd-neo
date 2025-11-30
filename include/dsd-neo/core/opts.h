@@ -101,7 +101,6 @@ struct dsd_opts {
     int uvquality;
     int inverted_x2tdma;
     int inverted_dmr;
-    int mod_threshold;
     int ssize;
     int msize;
     int playfiles;
