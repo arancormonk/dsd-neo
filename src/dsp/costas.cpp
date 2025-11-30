@@ -64,6 +64,19 @@ advance_loop(dsd_costas_loop_state_t* c, float err) {
     c->phase += c->freq + c->alpha * err;
 }
 
+/*
+ * Phase wrapping for Costas loop NCO.
+ *
+ * The phase accumulator must wrap modulo 2π (not clamp) so the NCO can
+ * continuously rotate to track carrier frequency offsets. Clamping would
+ * freeze the NCO rotation once the phase hits the limit, breaking carrier
+ * recovery on any signal with residual frequency error.
+ *
+ * Note: QPSK cycle slips (90° jumps between lock positions) are handled
+ * by the permutation search mechanism, not by phase limiting. With
+ * differential decoding, the data is in phase changes, so cycle slips
+ * don't corrupt data - they just change which permutation is correct.
+ */
 static inline void
 phase_wrap(dsd_costas_loop_state_t* c) {
     while (c->phase > kTwoPi) {

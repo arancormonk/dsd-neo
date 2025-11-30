@@ -32,6 +32,7 @@
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
+#include <stdlib.h>
 
 void
 printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation) {
@@ -720,28 +721,27 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             sync_dibit = mapped;
             *raw_synctest_p = raw_dibit;
             if (t >= t_max) {
-                int best_idx = cqpsk_perm_get_idx();
-                int best_ham = CQPSK_HAMMING_INIT;
-                for (int mode = 0; mode < CQPSK_PERM_COUNT; mode++) {
-                    int ham = 0;
-                    for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
-                        int d = raw_synctest_p[-(CQPSK_SYNC_LEN - 1) + k] & 0x3;
-                        int md = cqpsk_apply_perm(mode, d);
-                        int expect_n = P25P1_SYNC[k] - '0';
-                        if (md != expect_n) {
-                            ham++;
-                        }
-                    }
-                    if (ham < best_ham) {
-                        best_ham = ham;
-                        best_idx = mode;
-                    }
-                }
+                int best_idx, best_ham;
+                const int* raw_start = raw_synctest_p - (CQPSK_SYNC_LEN - 1);
+                int search_result = cqpsk_perm_search(raw_start, P25P1_SYNC, &best_idx, &best_ham);
                 /* Only switch when we actually improve Hamming distance to avoid thrash. */
                 if (cqpsk_perm_update(best_idx, best_ham)) {
                     /* Propagate to state so frame decoder (digitize/cqpsk_slice) uses same mapping. */
                     state->cqpsk_perm_idx = best_idx;
-                    fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d)\n", best_idx, best_ham);
+                    /* Debug: print permutation changes when DSD_NEO_DEBUG_SYNC=1 */
+                    {
+                        static int dbg_init = 0;
+                        static int dbg_sync = 0;
+                        if (!dbg_init) {
+                            const char* env = getenv("DSD_NEO_DEBUG_SYNC");
+                            dbg_sync = (env && *env == '1') ? 1 : 0;
+                            dbg_init = 1;
+                        }
+                        if (dbg_sync) {
+                            fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d search=%d)\n", best_idx, best_ham,
+                                    search_result);
+                        }
+                    }
                     /* Update current dibit to the newly selected mapping.
                      * Use best_idx directly since CAS succeeded with this value. */
                     sync_dibit = cqpsk_apply_perm(best_idx, raw_dibit);

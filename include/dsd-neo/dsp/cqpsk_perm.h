@@ -27,10 +27,19 @@ extern "C" {
 /* Initial Hamming distance threshold (effectively "no match found yet"). */
 #define CQPSK_HAMMING_INIT           1000
 
+/* Early accept threshold for smart search - if current/phase-rotation
+ * permutation gives ham <= this value, skip full 24-permutation search. */
+#define CQPSK_PERM_EARLY_ACCEPT      2
+
+/* Lock threshold - once we achieve ham <= this value, consider the permutation
+ * locked and don't search again until reset (sync loss). This prevents thrashing
+ * between equally-good permutations that can occur with noisy/drifting signals. */
+#define CQPSK_PERM_LOCK_THRESHOLD    1
+
 /* CQPSK symbol level thresholds for 4-level slicer.
  * Symbol levels are at +/-1, +/-3; thresholds at +/-2.0 and 0. */
-#define CQPSK_THRESH_UPPER           2.0f
-#define CQPSK_THRESH_LOWER           -2.0f
+#define CQPSK_THRESH_UPPER           (2.0f)
+#define CQPSK_THRESH_LOWER           (-2.0f)
 
 /* All 24 permutations of dibit mappings (0..3).
  * Each row maps input dibit [0,1,2,3] to output dibit.
@@ -66,6 +75,22 @@ int cqpsk_perm_get_best_ham(void);
 /* Update permutation state during sync search.
  * Returns 1 if permutation changed, 0 otherwise. */
 int cqpsk_perm_update(int new_idx, int new_ham);
+
+/* Smart permutation search with early exit and lock optimization.
+ * Searches for best dibit mapping in order:
+ *   0. Check lock state - if previously locked (ham <= LOCK_THRESHOLD), skip search
+ *   1. Current permutation (often still valid)
+ *   2. Four QPSK phase rotation candidates (most likely after carrier re-lock)
+ *   3. Remaining permutations (full search fallback)
+ * Early exits when ham <= CQPSK_PERM_EARLY_ACCEPT.
+ *
+ * @param raw_dibits     Pointer to CQPSK_SYNC_LEN raw dibits (0-3 values)
+ * @param expected_sync  Expected sync pattern as ASCII '0'-'3' string
+ * @param out_idx        Output: best permutation index found
+ * @param out_ham        Output: Hamming distance for best permutation
+ * @return -1 = locked (no search), 0 = current perm accepted,
+ *          1 = phase rotation hit, 2 = full search */
+int cqpsk_perm_search(const int* raw_dibits, const char* expected_sync, int* out_idx, int* out_ham);
 
 #ifdef __cplusplus
 }
