@@ -20,19 +20,12 @@
 #include <math.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/cqpsk_perm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
-
-/* All 24 permutations of dibit mappings (0..3), matching dsd_frame_sync.c.
- * Used to correct constellation rotation discovered during sync detection. */
-static const int kCqpskPerms[24][4] = {
-    {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, {0, 2, 3, 1}, {0, 3, 1, 2}, {0, 3, 2, 1}, {1, 0, 2, 3}, {1, 0, 3, 2},
-    {1, 2, 0, 3}, {1, 2, 3, 0}, {1, 3, 0, 2}, {1, 3, 2, 0}, {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 1, 0, 3}, {2, 1, 3, 0},
-    {2, 3, 0, 1}, {2, 3, 1, 0}, {3, 0, 1, 2}, {3, 0, 2, 1}, {3, 1, 0, 2}, {3, 1, 2, 0}, {3, 2, 0, 1}, {3, 2, 1, 0},
-};
 
 static void
 print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {
@@ -287,39 +280,10 @@ cqpsk_slice_with_perm(float symbol, const dsd_state* state) {
     float s = negate ? -symbol : symbol;
     int raw_dibit = cqpsk_slice(s);
     if (inv) {
-        raw_dibit = invert_dibit(raw_dibit);
+        raw_dibit = cqpsk_invert_dibit(raw_dibit);
     }
     /* Apply constellation rotation correction from sync detection. */
-    int perm_idx = state->cqpsk_perm_idx;
-    if (perm_idx >= 0 && perm_idx < 24) {
-        return kCqpskPerms[perm_idx][raw_dibit & 0x3];
-    }
-    return raw_dibit;
-}
-
-/* Legacy wrapper for backward compatibility (no permutation). */
-static inline int
-cqpsk_slice_with_debug(float symbol) {
-    static int init = 0;
-    static int inv = 0;
-    static int negate = 0;
-    if (!init) {
-        const char* e_inv = getenv("DSD_NEO_CQPSK_SYNC_INV");
-        const char* e_neg = getenv("DSD_NEO_CQPSK_SYNC_NEG");
-        if (e_inv && (*e_inv == '1' || *e_inv == 'y' || *e_inv == 'Y' || *e_inv == 't' || *e_inv == 'T')) {
-            inv = 1;
-        }
-        if (e_neg && (*e_neg == '1' || *e_neg == 'y' || *e_neg == 'Y' || *e_neg == 't' || *e_inv == 'T')) {
-            negate = 1;
-        }
-        init = 1;
-    }
-    float s = negate ? -symbol : symbol;
-    int dibit = cqpsk_slice(s);
-    if (inv) {
-        dibit = invert_dibit(dibit);
-    }
-    return dibit;
+    return cqpsk_apply_perm(state->cqpsk_perm_idx, raw_dibit);
 }
 
 static inline uint8_t

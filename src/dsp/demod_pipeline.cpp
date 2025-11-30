@@ -1405,25 +1405,30 @@ full_demod(struct demod_state* d) {
                         const float k4pi = 4.0f / 3.14159265f;
                         const float* iq = d->lowpassed;
                         int pairs = d->lp_len >> 1;
-                        for (int k = 0; k < pairs; k++) {
-                            float I = iq[(k << 1)];
-                            float Q = iq[(k << 1) + 1];
-                            float sym = atan2f(Q, I) * k4pi;
-                            phase_sum += sym;
-                            if (sym >= 2.0f) {
-                                ph_hist[1]++;
-                            } else if (sym >= 0.0f) {
-                                ph_hist[0]++;
-                            } else if (sym >= -2.0f) {
-                                ph_hist[2]++;
-                            } else {
-                                ph_hist[3]++;
+                        /* Guard against division by zero if pairs somehow ends up 0 */
+                        if (pairs > 0) {
+                            for (int k = 0; k < pairs; k++) {
+                                float I = iq[(k << 1)];
+                                float Q = iq[(k << 1) + 1];
+                                float sym = atan2f(Q, I) * k4pi;
+                                phase_sum += sym;
+                                if (sym >= 2.0f) {
+                                    ph_hist[1]++;
+                                } else if (sym >= 0.0f) {
+                                    ph_hist[0]++;
+                                } else if (sym >= -2.0f) {
+                                    ph_hist[2]++;
+                                } else {
+                                    ph_hist[3]++;
+                                }
                             }
+                            float avg = phase_sum / (float)pairs;
+                            fprintf(stderr, "[IQ-HIST] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f (n=%d)\n",
+                                    100.0f * (float)ph_hist[0] / (float)pairs,
+                                    100.0f * (float)ph_hist[1] / (float)pairs,
+                                    100.0f * (float)ph_hist[2] / (float)pairs,
+                                    100.0f * (float)ph_hist[3] / (float)pairs, avg, pairs);
                         }
-                        float avg = phase_sum / pairs;
-                        fprintf(stderr, "[IQ-HIST] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f (n=%d)\n",
-                                100.0f * ph_hist[0] / pairs, 100.0f * ph_hist[1] / pairs, 100.0f * ph_hist[2] / pairs,
-                                100.0f * ph_hist[3] / pairs, avg, pairs);
                     }
                 }
             }
@@ -1576,7 +1581,7 @@ full_demod(struct demod_state* d) {
         {
             static int debug_init = 0;
             static int debug_cqpsk = 0;
-            static int call_count = 0;
+            static unsigned int call_count = 0; /* unsigned to avoid signed overflow UB */
             /* Accumulate histogram over multiple blocks for meaningful statistics */
             static int hist_p3 = 0, hist_p1 = 0, hist_m1 = 0, hist_m3 = 0, hist_other = 0;
             static int hist_samples = 0;

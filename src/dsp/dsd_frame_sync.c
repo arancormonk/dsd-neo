@@ -23,98 +23,15 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
-#include <dsd-neo/runtime/config.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/dsp/cqpsk_perm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
-
-enum cqpsk_map_mode {
-    CQPSK_MAP_IDENT = 0,
-    CQPSK_MAP_INVERT = 1,
-    CQPSK_MAP_SWAP = 2,
-    CQPSK_MAP_ROT90 = 3,  /* 0->1->3->2->0 */
-    CQPSK_MAP_ROT270 = 4, /* inverse of ROT90 */
-    CQPSK_MAP_SWAP_ROT90 = 5,
-    CQPSK_MAP_SWAP_ROT270 = 6,
-};
-
-/* All 24 permutations of dibit mappings (0..3). */
-static const int kCqpskPerms[24][4] = {
-    {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, {0, 2, 3, 1}, {0, 3, 1, 2}, {0, 3, 2, 1}, {1, 0, 2, 3}, {1, 0, 3, 2},
-    {1, 2, 0, 3}, {1, 2, 3, 0}, {1, 3, 0, 2}, {1, 3, 2, 0}, {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 1, 0, 3}, {2, 1, 3, 0},
-    {2, 3, 0, 1}, {2, 3, 1, 0}, {3, 0, 1, 2}, {3, 0, 2, 1}, {3, 1, 0, 2}, {3, 1, 2, 0}, {3, 2, 0, 1}, {3, 2, 1, 0},
-};
-static int g_cqpsk_perm_idx = 0;
-static int g_cqpsk_best_ham = 1000;
-
-/* Local invert helper to avoid coupling to dsd_dibit.c internals. */
-static inline int
-invert_dibit_local(int dibit) {
-    switch (dibit & 0x3) {
-        case 0: return 2;
-        case 1: return 3;
-        case 2: return 0;
-        default: return 1; /* case 3 */
-    }
-}
-
-static inline int
-cqpsk_map_dibit(int mode, int d) {
-    if (mode >= 24) {
-        mode = g_cqpsk_perm_idx;
-    }
-    if (mode >= 0 && mode < 24) {
-        int v = d & 0x3;
-        return kCqpskPerms[mode][v];
-    }
-    int v = d & 0x3;
-    switch (mode) {
-        case CQPSK_MAP_INVERT: return invert_dibit_local(v);
-        case CQPSK_MAP_SWAP: return ((v & 1) << 1) | ((v & 2) >> 1); /* swap bit order */
-        case CQPSK_MAP_ROT90:
-            switch (v) {
-                case 0: return 1;
-                case 1: return 3;
-                case 2: return 0;
-                default: return 2;
-            }
-        case CQPSK_MAP_ROT270:
-            switch (v) {
-                case 0: return 2;
-                case 2: return 3;
-                case 3: return 1;
-                default: return 0; /* v==1 */
-            }
-        case CQPSK_MAP_SWAP_ROT90: {
-            /* Apply swap then rot90 */
-            int s = ((v & 1) << 1) | ((v & 2) >> 1);
-            switch (s) {
-                case 0: return 1;
-                case 1: return 3;
-                case 2: return 0;
-                default: return 2;
-            }
-        }
-        case CQPSK_MAP_SWAP_ROT270: {
-            int s = ((v & 1) << 1) | ((v & 2) >> 1);
-            switch (s) {
-                case 0: return 2;
-                case 2: return 3;
-                case 3: return 1;
-                default: return 0;
-            }
-        }
-        case CQPSK_MAP_IDENT:
-        default: return v;
-    }
-}
 
 void
 printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation) {
@@ -332,6 +249,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     modulation[7] = 0; //not initialized or terminated (unsure if this would be an issue or not)
     synctest_pos = 0;
     synctest_p = synctest_buf + 10;
+    /* Zero raw_synctest_buf to prevent undefined behavior when permutation search
+     * accesses raw_synctest_p[-23..0] before 24 samples have been collected. */
+    memset(raw_synctest_buf, 0, sizeof(raw_synctest_buf));
     raw_synctest_p = raw_synctest_buf + 10;
     sync = 0;
     // lmin/lmax initialized later before use
@@ -796,18 +716,17 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         /* Map CQPSK dibits for P25 targets using selected mapping permutation (24 options). */
         if (state->rf_mod == 1 && opts->audio_in_type == 3 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
             raw_dibit = dibit & 0x3;
-            int mapped = cqpsk_map_dibit(g_cqpsk_perm_idx, raw_dibit);
-            dibit = mapped;
+            int mapped = cqpsk_apply_perm(cqpsk_perm_get_idx(), raw_dibit);
             sync_dibit = mapped;
             *raw_synctest_p = raw_dibit;
             if (t >= t_max) {
-                int best_idx = g_cqpsk_perm_idx;
-                int best_ham = 1000;
-                for (int mode = 0; mode < 24; mode++) {
+                int best_idx = cqpsk_perm_get_idx();
+                int best_ham = CQPSK_HAMMING_INIT;
+                for (int mode = 0; mode < CQPSK_PERM_COUNT; mode++) {
                     int ham = 0;
-                    for (int k = 0; k < 24; k++) {
-                        int d = raw_synctest_p[-23 + k] & 0x3;
-                        int md = cqpsk_map_dibit(mode, d);
+                    for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
+                        int d = raw_synctest_p[-(CQPSK_SYNC_LEN - 1) + k] & 0x3;
+                        int md = cqpsk_apply_perm(mode, d);
                         int expect_n = P25P1_SYNC[k] - '0';
                         if (md != expect_n) {
                             ham++;
@@ -819,19 +738,17 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                 }
                 /* Only switch when we actually improve Hamming distance to avoid thrash. */
-                if (best_ham <= g_cqpsk_best_ham && best_idx != g_cqpsk_perm_idx) {
-                    g_cqpsk_perm_idx = best_idx;
-                    g_cqpsk_best_ham = best_ham;
+                if (cqpsk_perm_update(best_idx, best_ham)) {
                     /* Propagate to state so frame decoder (digitize/cqpsk_slice) uses same mapping. */
                     state->cqpsk_perm_idx = best_idx;
                     fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d)\n", best_idx, best_ham);
-                    /* Update current dibit to the newly selected mapping */
-                    sync_dibit = cqpsk_map_dibit(g_cqpsk_perm_idx, raw_dibit);
-                    dibit = sync_dibit;
+                    /* Update current dibit to the newly selected mapping.
+                     * Use best_idx directly since CAS succeeded with this value. */
+                    sync_dibit = cqpsk_apply_perm(best_idx, raw_dibit);
                 }
             }
             /* Always keep state->cqpsk_perm_idx in sync with global (even if not switched this pass). */
-            state->cqpsk_perm_idx = g_cqpsk_perm_idx;
+            state->cqpsk_perm_idx = cqpsk_perm_get_idx();
         }
         *synctest_p = (char)('0' + (sync_dibit & 0x3));
         *raw_synctest_p = raw_dibit;
@@ -933,7 +850,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     /* Evaluate alternate dibit remaps to spot polarity/bit-order/rotation issues. */
                     int ham_ident = 0, ham_invert = 0, ham_swap = 0, ham_xor3 = 0, ham_rot = 0;
                     for (int k = 0; k < 24; k++) {
-                        int d = synctest[k];
+                        int d = (unsigned char)synctest[k];
                         if (d >= '0' && d <= '3') {
                             d -= '0';
                         }
@@ -984,21 +901,21 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     /* Deeper CQPSK mapping visibility: find the best permutation Hamming distance. */
                     static int dbg_cq_win = 0;
                     if ((++dbg_cq_win % 2400) == 0) {
-                        const int* raw_start = raw_synctest_p - 23;
-                        char raw_win[25];
-                        raw_win[24] = '\0';
-                        for (int k = 0; k < 24; k++) {
+                        const int* raw_start = raw_synctest_p - (CQPSK_SYNC_LEN - 1);
+                        char raw_win[CQPSK_SYNC_LEN + 1];
+                        raw_win[CQPSK_SYNC_LEN] = '\0';
+                        for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
                             raw_win[k] = (char)('0' + (raw_start[k] & 0x3));
                         }
-                        int best_idx = 0, best_ham = 1000;
-                        int curr_ham = 1000;
-                        char mapped_best[25];
-                        mapped_best[24] = '\0';
-                        for (int mode = 0; mode < 24; mode++) {
+                        int best_idx = 0, best_ham = CQPSK_HAMMING_INIT;
+                        int curr_ham = CQPSK_HAMMING_INIT;
+                        char mapped_best[CQPSK_SYNC_LEN + 1];
+                        mapped_best[CQPSK_SYNC_LEN] = '\0';
+                        for (int mode = 0; mode < CQPSK_PERM_COUNT; mode++) {
                             int ham = 0;
-                            for (int k = 0; k < 24; k++) {
+                            for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
                                 int d = raw_start[k] & 0x3;
-                                int md = kCqpskPerms[mode][d];
+                                int md = cqpsk_apply_perm(mode, d);
                                 int expect_n = P25P1_SYNC[k] - '0';
                                 if (md != expect_n) {
                                     ham++;
@@ -1012,13 +929,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         /* Current permutation distance */
                         {
                             int ham = 0;
-                            int mode = g_cqpsk_perm_idx;
-                            if (mode < 0 || mode >= 24) {
-                                mode = 0;
-                            }
-                            for (int k = 0; k < 24; k++) {
+                            int mode = cqpsk_perm_get_idx();
+                            for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
                                 int d = raw_start[k] & 0x3;
-                                int md = kCqpskPerms[mode][d];
+                                int md = cqpsk_apply_perm(mode, d);
                                 int expect_n = P25P1_SYNC[k] - '0';
                                 if (md != expect_n) {
                                     ham++;
@@ -1027,9 +941,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             curr_ham = ham;
                         }
                         /* Build mapped window for best permutation */
-                        for (int k = 0; k < 24; k++) {
+                        for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
                             int d = raw_start[k] & 0x3;
-                            int md = kCqpskPerms[best_idx][d];
+                            int md = cqpsk_apply_perm(best_idx, d);
                             mapped_best[k] = (char)('0' + (md & 0x3));
                         }
                         int dsp_cq = 0, dsp_f = 0, dsp_t = 0;
@@ -1037,8 +951,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         fprintf(stderr,
                                 "[SYNC-CQ] best_ham=%d perm_best=%d curr_ham=%d curr_perm=%d dsp(cq=%d fll=%d "
                                 "ted=%d) raw=%.*s map=%s\n",
-                                best_ham, best_idx, curr_ham, g_cqpsk_perm_idx, dsp_cq, dsp_f, dsp_t, 24, raw_win,
-                                mapped_best);
+                                best_ham, best_idx, curr_ham, cqpsk_perm_get_idx(), dsp_cq, dsp_f, dsp_t,
+                                CQPSK_SYNC_LEN, raw_win, mapped_best);
                     }
                 }
             }

@@ -22,6 +22,7 @@
 #define _MAIN
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/cqpsk_perm.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
@@ -846,6 +847,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
         initialize_p25_heuristics(&state->p25_heuristics);
         initialize_p25_heuristics(&state->inv_p25_heuristics);
     }
+
+    /* Reset CQPSK permutation state so new signals start fresh.
+     * This prevents stale constellation rotation from a previous signal
+     * from corrupting sync detection on a new transmission. */
+    cqpsk_perm_reset();
 
 //only do it here on the tweaks
 #ifdef LIMAZULUTWEAKS
