@@ -189,46 +189,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (opts->mod_cli_lock) {
             int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
             state->rf_mod = forced;
-#ifdef USE_RTLSDR
-            /* Align RTL DSP path with forced demod. */
-            // Automatic DSP configuration DISABLED by user request.
-            // DSP blocks (FLL, TED, CQPSK, IQ Bal, etc) must be manually enabled via menu/CLI.
-            // do {
-            //     int cq = 0, f = 0, t = 0;
-            //     rtl_stream_dsp_get(&cq, &f, &t);
-            //     if (forced == 1) {
-            //         if (!cq) {
-            //             rtl_stream_toggle_iq_balance(0);
-            //             rtl_stream_toggle_cqpsk(1);
-            //             int ted_sps = rtl_stream_get_ted_sps();
-            //             int stride = (ted_sps >= 2 && ted_sps <= 16) ? ted_sps : 6;
-            //             int dfe_en = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? 1 : 0;
-            //             int dfe_taps = dfe_en ? 2 : 0;
-            //         }
-            //         if (!f) {
-            //             const char* fll_env = getenv("DSD_NEO_FLL");
-            //             if (!fll_env || fll_env[0] != '0') {
-            //                 rtl_stream_toggle_fll(1);
-            //             }
-            //         }
-            //         if (!t) {
-            //             const char* ted_env = getenv("DSD_NEO_TED");
-            //             if (!ted_env || ted_env[0] != '0') {
-            //                 rtl_stream_toggle_ted(1);
-            //             }
-            //         }
-            //     } else {
-            //         if (cq) {
-            //             rtl_stream_toggle_iq_balance(1);
-            //             rtl_stream_toggle_cqpsk(0);
-            //             if (forced == 2) {
-            //                 rtl_stream_toggle_fll(0);
-            //                 rtl_stream_toggle_ted(0);
-            //             }
-            //         }
-            //     }
-            // } while (0);
-#endif
         }
     }
 
