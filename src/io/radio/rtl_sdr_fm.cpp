@@ -3435,8 +3435,10 @@ rtl_stream_toggle_cqpsk(int onoff) {
     if (demod.cqpsk_enable) {
         extern void qpsk_differential_demod(struct demod_state*);
         demod.mode_demod = &qpsk_differential_demod;
-        demod.cqpsk_diff_prev_r = 0;
-        demod.cqpsk_diff_prev_j = 0;
+        /* Reset differential decode history to (1,0) not (0,0).
+         * See comment in rtl_stream_reset_demod_state for rationale. */
+        demod.cqpsk_diff_prev_r = 1.0f;
+        demod.cqpsk_diff_prev_j = 0.0f;
         demod.cqpsk_rms_agc_rms = 0.0f;
         demod.cqpsk_acq_fll_locked = 0;
         demod.cqpsk_acq_quiet_runs = 0;

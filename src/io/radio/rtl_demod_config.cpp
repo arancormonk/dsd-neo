@@ -367,9 +367,10 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         }
         extern void qpsk_differential_demod(struct demod_state*);
         demod->mode_demod = &qpsk_differential_demod;
-        /* Reset differential decode history */
-        demod->cqpsk_diff_prev_r = 0;
-        demod->cqpsk_diff_prev_j = 0;
+        /* Reset differential decode history to (1,0) not (0,0).
+         * See comment in demod_init_mode for rationale. */
+        demod->cqpsk_diff_prev_r = 1.0f;
+        demod->cqpsk_diff_prev_j = 0.0f;
         demod->cqpsk_rms_agc_rms = 0.0f;
         demod->cqpsk_acq_fll_locked = 0;
         demod->cqpsk_acq_quiet_runs = 0;
