@@ -862,6 +862,15 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     // causing premature switch to C4FM on P25 LSM CQPSK voice channels.
     dsd_frame_sync_reset_mod_state();
 
+    // Reset Costas loop state when tuning to a new channel. Without this, the
+    // carrier recovery loop starts with stale phase/freq estimates from the
+    // previous channel and must slew to the new carrier, delaying sync acquisition.
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == 3) {
+        rtl_stream_reset_costas();
+    }
+#endif
+
     // Update TED samples-per-symbol for the new channel's symbol rate.
     // p25_p2_active_slot is set by handle_grant before calling trunk_tune_to_freq.
     // At 24kHz DSP bandwidth: P25P1 (4800 sym/s) = 5 sps, P25P2 (6000 sym/s) = 4 sps.
@@ -921,6 +930,19 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
         return;
     }
+    // Reset CQPSK permutation state for fresh acquisition on CC hunt.
+    cqpsk_perm_reset();
+
+    // Reset modulation auto-detect state for fresh acquisition.
+    dsd_frame_sync_reset_mod_state();
+
+    // Reset Costas loop state for fresh carrier acquisition on the new CC candidate.
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == 3) {
+        rtl_stream_reset_costas();
+    }
+#endif
+
     // Ensure any queued audio tail plays before changing channels
     // Avoid blocking drain when invoked from SM tick context.
     if (!p25_sm_in_tick()) {

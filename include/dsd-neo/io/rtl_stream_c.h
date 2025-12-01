@@ -498,7 +498,16 @@ int rtl_stream_spectrum_set_size(int n);
 /** @brief Get current spectrum FFT size. */
 int rtl_stream_spectrum_get_size(void);
 
-/* Carrier/Costas diagnostics */
+/* Carrier/Costas diagnostics and control */
+/**
+ * @brief Reset Costas loop state for fresh carrier acquisition.
+ *
+ * Call on channel retunes to clear stale phase/frequency estimates from the
+ * previous channel. Without reset, the loop starts with the old frequency
+ * offset and must slew to the new carrier, delaying sync acquisition.
+ */
+void rtl_stream_reset_costas(void);
+
 /** Return current NCO frequency used for carrier rotation (Costas/FLL), in Hz. */
 double rtl_stream_get_cfo_hz(void);
 /** Return residual CFO estimated from the spectrum peak offset from DC, in Hz. */

@@ -161,6 +161,23 @@ prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
 } // namespace
 
 /*
+ * Reset Costas loop state for fresh carrier acquisition on retune.
+ *
+ * Clears phase/frequency estimates so the loop starts from zero on the new
+ * channel rather than slewing from the old channel's carrier offset.
+ */
+extern "C" void
+dsd_costas_reset(dsd_costas_loop_state_t* c) {
+    if (!c) {
+        return;
+    }
+    c->phase = 0.0f;
+    c->freq = 0.0f;
+    c->error = 0.0f;
+    c->initialized = 0; /* Force re-init on next prepare_costas() call */
+}
+
+/*
  * OP25-style CQPSK Costas loop with per-sample feedback.
  *
  * OP25's gardner_costas_cc processes each sample through a tight loop:

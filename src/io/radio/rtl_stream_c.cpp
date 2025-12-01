@@ -342,10 +342,16 @@ rtl_stream_spectrum_get_size(void) {
     return dsd_rtl_stream_spectrum_get_size();
 }
 
-/* Carrier/Costas diagnostics */
+/* Carrier/Costas diagnostics and control */
+extern "C" void dsd_rtl_stream_reset_costas(void);
 extern "C" double dsd_rtl_stream_get_cfo_hz(void);
 extern "C" double dsd_rtl_stream_get_residual_cfo_hz(void);
 extern "C" int dsd_rtl_stream_get_carrier_lock(void);
+
+extern "C" void
+rtl_stream_reset_costas(void) {
+    dsd_rtl_stream_reset_costas();
+}
 
 extern "C" double
 rtl_stream_get_cfo_hz(void) {

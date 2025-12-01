@@ -69,6 +69,17 @@ dsd_neo_costas_default_damping(void) {
 }
 
 /**
+ * @brief Reset Costas loop state for fresh carrier acquisition.
+ *
+ * Call this on channel retunes to clear stale phase/frequency estimates
+ * from the previous channel. Without reset, the loop starts with the old
+ * frequency offset and must slew to the new carrier, delaying sync acquisition.
+ *
+ * @param c Costas loop state to reset.
+ */
+void dsd_costas_reset(dsd_costas_loop_state_t* c);
+
+/**
  * @brief Combined Costas NCO + differential decode + loop update with per-sample feedback.
  *
  * OP25-style: Performs NCO rotation, differential decoding, phase error detection,

@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <string.h>
 
@@ -423,6 +424,21 @@ dsd_rtl_stream_get_demod_rate_hz(void) {
 extern "C" int
 dsd_rtl_stream_get_costas_err_q14(void) {
     return g_costas_err_avg_q14.load(std::memory_order_relaxed);
+}
+
+/**
+ * @brief Reset Costas loop state for fresh carrier acquisition on retune.
+ *
+ * Clears the Costas phase/frequency estimates and the differential phasor
+ * history so the loop starts clean on a new channel. Without this reset,
+ * the loop would start with stale frequency offset from the previous channel
+ * and must slew to the new carrier, delaying sync acquisition.
+ */
+extern "C" void
+dsd_rtl_stream_reset_costas(void) {
+    dsd_costas_reset(&demod.costas_state);
+    demod.cqpsk_diff_prev_r = 0.0f;
+    demod.cqpsk_diff_prev_j = 0.0f;
 }
 
 /* Smoothed SNR exports (for UI and protocol code). */
