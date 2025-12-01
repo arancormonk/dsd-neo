@@ -102,6 +102,13 @@ resetState(dsd_state* state) {
     state->c4fm_clk_run_len = 0;
     state->c4fm_clk_cooldown = 0;
 
+    /* Reset M17 polarity auto-detection: 0=unknown */
+    state->m17_polarity = 0;
+
+    /* Reset multi-rate SPS hunting state */
+    state->sps_hunt_counter = 0;
+    state->sps_hunt_idx = 0;
+
     state->lastsynctype = -1;
     state->lastp25type = 0;
     state->offset = 0;

@@ -34,6 +34,24 @@
 #include <locale.h>
 #include <stdlib.h>
 
+/**
+ * @brief Compute Hamming distance between a sync buffer and a pattern.
+ * @param buf  Pointer to the received dibit buffer (ASCII '0'-'3').
+ * @param pat  Pointer to the expected pattern (ASCII '0'-'3').
+ * @param len  Number of dibits to compare.
+ * @return Number of mismatched dibits (0 = perfect match).
+ */
+static inline int
+sync_hamming_distance(const char* buf, const char* pat, int len) {
+    int ham = 0;
+    for (int i = 0; i < len; i++) {
+        if (buf[i] != pat[i]) {
+            ham++;
+        }
+    }
+    return ham;
+}
+
 void
 printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation) {
     UNUSED3(state, offset, modulation);
@@ -320,6 +338,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         if (lastt == t_max) {
             lastt = 0;
+
+            /* Reset SPS hunt counter when carrier is detected (sync found).
+             * This locks the SPS at the rate that successfully found sync. */
+            if (state->carrier == 1) {
+                state->sps_hunt_counter = 0;
+            }
+
             /* Skip auto switching entirely if user locked demod (-m[c/g/q/2]). */
             if (!opts->mod_cli_lock) {
                 /* Start with current modulation; Hamming distance will override if
@@ -1240,65 +1265,92 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             //end YSF sync
 
-            //M17 Sync -- Just STR and LSF for now
+            //M17 Sync -- Hamming distance based with auto-polarity detection
             strncpy(synctest16, (synctest_p - 15), 16);
             strncpy(synctest8, (synctest_p - 7), 8);
             if (opts->frame_m17 == 1) {
-                //preambles will skip dibits in an attempt to prime the
-                //demodulator but not attempt any decoding
-                if (strcmp(synctest8, M17_PRE) == 0) {
-                    if (opts->inverted_m17 == 0) {
-                        printFrameSync(opts, state, "+M17 PREAMBLE", synctest_pos + 1, modulation);
-                        state->carrier = 1;
-                        state->offset = synctest_pos;
-                        state->max = ((state->max) + lmax) / 2;
-                        state->min = ((state->min) + lmin) / 2;
-                        state->lastsynctype = 98;
-                        fprintf(stderr, "\n");
-                        return (98);
+                /* Compute Hamming distance to all M17 8-dibit patterns.
+                 * M17_PRE/M17_PIV are preambles used to auto-detect polarity.
+                 * M17_LSF/M17_STR are data frames; their interpretation depends on polarity. */
+                int ham_pre = sync_hamming_distance(synctest8, M17_PRE, 8);
+                int ham_piv = sync_hamming_distance(synctest8, M17_PIV, 8);
+                int ham_lsf = sync_hamming_distance(synctest8, M17_LSF, 8);
+                int ham_str = sync_hamming_distance(synctest8, M17_STR, 8);
+                int ham_pkt = sync_hamming_distance(synctest8, M17_PKT, 8);
+                int ham_brt = sync_hamming_distance(synctest8, M17_BRT, 8);
+
+                /* Threshold for sync acceptance (allow 1 bit error in 8 dibits) */
+                const int M17_HAM_THRESH = 1;
+
+                /* Determine effective polarity: user override (-xz) takes precedence,
+                 * otherwise use auto-detected polarity from preamble, default to normal. */
+                int is_inverted = opts->inverted_m17;
+                if (!opts->inverted_m17 && state->m17_polarity == 2) {
+                    is_inverted = 1; /* Auto-detected inverted from preamble */
+                }
+
+                /* Preamble detection - use to auto-set polarity */
+                if (ham_pre <= M17_HAM_THRESH) {
+                    /* Normal polarity preamble detected */
+                    if (state->m17_polarity != 1) {
+                        state->m17_polarity = 1; /* Lock to normal */
                     }
-                } else if (strcmp(synctest8, M17_PIV) == 0) {
-                    if (opts->inverted_m17 == 1) {
-                        printFrameSync(opts, state, "-M17 PREAMBLE", synctest_pos + 1, modulation);
-                        state->carrier = 1;
-                        state->offset = synctest_pos;
-                        state->max = ((state->max) + lmax) / 2;
-                        state->min = ((state->min) + lmin) / 2;
-                        state->lastsynctype = 99;
-                        fprintf(stderr, "\n");
-                        return (99);
+                    printFrameSync(opts, state, "+M17 PREAMBLE", synctest_pos + 1, modulation);
+                    state->carrier = 1;
+                    state->offset = synctest_pos;
+                    state->max = ((state->max) + lmax) / 2;
+                    state->min = ((state->min) + lmin) / 2;
+                    state->lastsynctype = 98;
+                    fprintf(stderr, "\n");
+                    return (98);
+                } else if (ham_piv <= M17_HAM_THRESH) {
+                    /* Inverted polarity preamble detected */
+                    if (state->m17_polarity != 2) {
+                        state->m17_polarity = 2; /* Lock to inverted */
                     }
-                } else if (strcmp(synctest8, M17_PKT) == 0) {
-                    if (opts->inverted_m17 == 0) {
-                        printFrameSync(opts, state, "+M17 PKT", synctest_pos + 1, modulation);
-                        state->carrier = 1;
-                        state->offset = synctest_pos;
-                        state->max = ((state->max) + lmax) / 2;
-                        state->min = ((state->min) + lmin) / 2;
-                        if (state->lastsynctype == 86 || state->lastsynctype == 8) {
-                            state->lastsynctype = 86;
-                            return (86);
-                        }
+                    printFrameSync(opts, state, "-M17 PREAMBLE", synctest_pos + 1, modulation);
+                    state->carrier = 1;
+                    state->offset = synctest_pos;
+                    state->max = ((state->max) + lmax) / 2;
+                    state->min = ((state->min) + lmin) / 2;
+                    state->lastsynctype = 99;
+                    fprintf(stderr, "\n");
+                    return (99);
+                }
+
+                /* PKT frame detection */
+                if (ham_pkt <= M17_HAM_THRESH && !is_inverted) {
+                    printFrameSync(opts, state, "+M17 PKT", synctest_pos + 1, modulation);
+                    state->carrier = 1;
+                    state->offset = synctest_pos;
+                    state->max = ((state->max) + lmax) / 2;
+                    state->min = ((state->min) + lmin) / 2;
+                    if (state->lastsynctype == 86 || state->lastsynctype == 8) {
                         state->lastsynctype = 86;
-                        fprintf(stderr, "\n");
+                        return (86);
                     }
-                    // else //unknown, -BRT?
-                    // {
-                    //   printFrameSync (opts, state, "-M17 BRT", synctest_pos + 1, modulation);
-                    //   state->carrier = 1;
-                    //   state->offset = synctest_pos;
-                    //   state->max = ((state->max) + lmax) / 2;
-                    //   state->min = ((state->min) + lmin) / 2;
-                    //   if (state->lastsynctype == 77)
-                    //   {
-                    //     state->lastsynctype = 77;
-                    //     return (77);
-                    //   }
-                    //   state->lastsynctype = 77;
-                    //   fprintf (stderr, "\n");
-                    // }
-                } else if (strcmp(synctest8, M17_STR) == 0) {
-                    if (opts->inverted_m17 == 0) {
+                    state->lastsynctype = 86;
+                    fprintf(stderr, "\n");
+                } else if (ham_brt <= M17_HAM_THRESH && is_inverted) {
+                    /* BRT is inverse of PKT */
+                    printFrameSync(opts, state, "-M17 PKT", synctest_pos + 1, modulation);
+                    state->carrier = 1;
+                    state->offset = synctest_pos;
+                    state->max = ((state->max) + lmax) / 2;
+                    state->min = ((state->min) + lmin) / 2;
+                    if (state->lastsynctype == 87 || state->lastsynctype == 9) {
+                        state->lastsynctype = 87;
+                        return (87);
+                    }
+                    state->lastsynctype = 87;
+                    fprintf(stderr, "\n");
+                }
+
+                /* STR frame detection - note: M17_STR pattern = inverted M17_LSF
+                 * Normal polarity: STR pattern means stream frame
+                 * Inverted polarity: STR pattern means LSF (because it's the inverse) */
+                if (ham_str <= M17_HAM_THRESH) {
+                    if (!is_inverted) {
                         printFrameSync(opts, state, "+M17 STR", synctest_pos + 1, modulation);
                         state->carrier = 1;
                         state->offset = synctest_pos;
@@ -1311,6 +1363,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->lastsynctype = 16;
                         fprintf(stderr, "\n");
                     } else {
+                        /* Inverted: STR pattern is actually LSF */
                         printFrameSync(opts, state, "-M17 LSF", synctest_pos + 1, modulation);
                         state->carrier = 1;
                         state->offset = synctest_pos;
@@ -1323,20 +1376,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->lastsynctype = 9;
                         fprintf(stderr, "\n");
                     }
-                } else if (strcmp(synctest8, M17_LSF) == 0) {
-                    if (opts->inverted_m17 == 1) {
-                        printFrameSync(opts, state, "-M17 STR", synctest_pos + 1, modulation);
-                        state->carrier = 1;
-                        state->offset = synctest_pos;
-                        state->max = ((state->max) + lmax) / 2;
-                        state->min = ((state->min) + lmin) / 2;
-                        if (state->lastsynctype == 17 || state->lastsynctype == 9) {
-                            state->lastsynctype = 17;
-                            return (17);
-                        }
-                        state->lastsynctype = 17;
-                        fprintf(stderr, "\n");
-                    } else {
+                }
+
+                /* LSF frame detection - note: M17_LSF pattern = inverted M17_STR
+                 * Normal polarity: LSF pattern means link setup frame
+                 * Inverted polarity: LSF pattern means stream frame */
+                if (ham_lsf <= M17_HAM_THRESH) {
+                    if (!is_inverted) {
                         printFrameSync(opts, state, "+M17 LSF", synctest_pos + 1, modulation);
                         state->carrier = 1;
                         state->offset = synctest_pos;
@@ -1347,6 +1393,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             return (8);
                         }
                         state->lastsynctype = 8;
+                        fprintf(stderr, "\n");
+                    } else {
+                        /* Inverted: LSF pattern is actually STR */
+                        printFrameSync(opts, state, "-M17 STR", synctest_pos + 1, modulation);
+                        state->carrier = 1;
+                        state->offset = synctest_pos;
+                        state->max = ((state->max) + lmax) / 2;
+                        state->min = ((state->min) + lmin) / 2;
+                        if (state->lastsynctype == 17 || state->lastsynctype == 9) {
+                            state->lastsynctype = 17;
+                            return (17);
+                        }
+                        state->lastsynctype = 17;
                         fprintf(stderr, "\n");
                     }
                 }
@@ -2022,6 +2081,62 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 if ((opts->errorbars == 1) && (opts->verbose > 1) && (state->carrier == 1)) {
                     fprintf(stderr, "Sync: no sync\n");
                     // fprintf (stderr,"Press CTRL + C to close.\n");
+                }
+
+                /* Multi-rate SPS hunting: cycle through different symbol rates when no sync found.
+                 * This enables auto-detection of protocols with different baud rates:
+                 * - SPS=10 (4800 baud): P25p1, DMR, YSF, DSTAR, NXDN96, M17
+                 * - SPS=20 (2400 baud): NXDN48, dPMR
+                 * - SPS=5 (9600 baud): ProVoice/EDACS
+                 * - SPS=8 (6000 baud): P25p2, X2-TDMA
+                 * Only cycle if in auto mode and no carrier detected. */
+                if (state->carrier == 0 && !opts->mod_cli_lock) {
+                    state->sps_hunt_counter++;
+                    /* Cycle every ~3 buffer passes (~0.5 seconds at 4800 baud) */
+                    if (state->sps_hunt_counter >= 3) {
+                        state->sps_hunt_counter = 0;
+                        /* Determine which protocols are enabled to decide SPS options */
+                        int has_2400 = (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1);
+                        int has_9600 = (opts->frame_provoice == 1);
+                        int has_6000 = (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
+
+                        /* Cycle through SPS values based on enabled protocols */
+                        static const int sps_cycle[] = {10, 20, 5, 8};
+                        static const int sps_center[] = {5, 10, 2, 3};
+                        int next_idx = (state->sps_hunt_idx + 1) % 4;
+
+                        /* Skip SPS values for protocols not enabled */
+                        for (int tries = 0; tries < 4; tries++) {
+                            int sps = sps_cycle[next_idx];
+                            int skip = 0;
+                            if (sps == 20 && !has_2400) {
+                                skip = 1;
+                            }
+                            if (sps == 5 && !has_9600) {
+                                skip = 1;
+                            }
+                            if (sps == 8 && !has_6000) {
+                                skip = 1;
+                            }
+                            if (!skip) {
+                                break;
+                            }
+                            next_idx = (next_idx + 1) % 4;
+                        }
+
+                        if (next_idx != state->sps_hunt_idx) {
+                            state->sps_hunt_idx = next_idx;
+                            /* Scale by wav_interpolator to handle non-48kHz input rates.
+                             * At 96kHz input, wav_interpolator=2, so SPS values double. */
+                            int interp = opts->wav_interpolator > 0 ? opts->wav_interpolator : 1;
+                            state->samplesPerSymbol = sps_cycle[next_idx] * interp;
+                            state->symbolCenter = sps_center[next_idx] * interp;
+                            if (opts->verbose > 1) {
+                                fprintf(stderr, "SPS hunt: trying %d sps (base=%d, interp=%d)\n",
+                                        state->samplesPerSymbol, sps_cycle[next_idx], interp);
+                            }
+                        }
+                    }
                 }
                 // Defensive trunking fallback: if tuned to a P25 VC and voice
                 // activity is stale beyond hangtime, consider a safe return to

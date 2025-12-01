@@ -820,13 +820,13 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     opts->frame_p25p1 = 1;
                     opts->frame_p25p2 = 1;
                     opts->inverted_p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
+                    opts->frame_nxdn48 = 1;
+                    opts->frame_nxdn96 = 1;
                     opts->frame_dmr = 1;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
+                    opts->frame_dpmr = 1;
+                    opts->frame_provoice = 1;
                     opts->frame_ysf = 1;
-                    opts->frame_m17 = 0;
+                    opts->frame_m17 = 1;
                     opts->mod_c4fm = 1;
                     opts->mod_qpsk = 0;
                     state->rf_mod = 0;
@@ -835,7 +835,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     opts->pulse_digi_rate_out = 8000;
                     opts->pulse_digi_out_channels = 2;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
-                    LOG_NOTICE("Decoding AUTO P25, YSF, DSTAR, X2-TDMA, and DMR\n");
+                    LOG_NOTICE("Decoding AUTO: all digital modes with multi-rate SPS hunting\n");
                 } else if (optarg[0] == 'A') {
                     opts->frame_dstar = 0;
                     opts->frame_x2tdma = 0;
@@ -1325,9 +1325,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     opts->dmr_mono = 0;
                     state->dmr_stereo = 0;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17");
-                    fprintf(stderr,
-                            "Notice: M17 cannot autodetect polarity. \n Use -xz option if Inverted Signal expected.\n");
-                    LOG_NOTICE("Decoding only M17 frames.\n");
+                    LOG_NOTICE("Decoding only M17 frames (polarity auto-detected from preamble).\n");
                     opts->use_cosine_filter = 0;
                 } else if (optarg[0] == 'Z') {
                     opts->m17encoder = 1;

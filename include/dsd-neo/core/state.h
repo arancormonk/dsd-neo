@@ -376,6 +376,14 @@ struct dsd_state {
     int c4fm_clk_cooldown; /* cooldown countdown to avoid rapid flips */
 
     int rf_mod;
+    /* M17 polarity auto-detection: 0=unknown, 1=normal, 2=inverted.
+     * Set when preamble detected; overridden if user specifies -xz. */
+    int m17_polarity;
+    /* Multi-rate sync hunting: cycle through SPS values when no sync found.
+     * sps_hunt_counter: symbols searched without valid sync
+     * sps_hunt_idx: current SPS index in cycle (0=10, 1=20, 2=5, 3=8) */
+    int sps_hunt_counter;
+    int sps_hunt_idx;
     /* CQPSK dibit permutation index selected during sync detection (0..23).
      * Applied during frame decoding to correct constellation rotation. */
     int cqpsk_perm_idx;

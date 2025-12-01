@@ -1018,6 +1018,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->max = 15000;
     state->min = -15000;
     state->center = 0;
+    state->m17_polarity = 0; /* Reset M17 polarity so next transmission can auto-detect fresh */
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);
@@ -2466,31 +2467,32 @@ usage() {
     printf("  -fd           Decode only DSTAR\n");
     printf("  -fx           Decode only X2-TDMA\n");
     printf("  -fy           Decode only YSF\n");
-    printf("  -fz             Decode only M17*\n");
+    printf("  -fz             Decode only M17\n");
     printf("  -fU             Decode only M17 UDP/IP Frame***\n");
-    printf("  -fi             Decode only NXDN48* (6.25 kHz) / IDAS*\n");
-    printf("  -fn             Decode only NXDN96* (12.5 kHz)\n");
-    printf("  -fp             Decode only ProVoice*\n");
-    printf("  -fh             Decode only EDACS Standard/ProVoice*\n");
-    printf("  -fH             Decode only EDACS Standard/ProVoice with ESK 0xA0*\n");
+    printf("  -fi             Decode only NXDN48 (6.25 kHz) / IDAS\n");
+    printf("  -fn             Decode only NXDN96 (12.5 kHz)\n");
+    printf("  -fp             Decode only ProVoice\n");
+    printf("  -fh             Decode only EDACS Standard/ProVoice\n");
+    printf("  -fH             Decode only EDACS Standard/ProVoice with ESK 0xA0\n");
     printf(
-        "  -fh344          Decode only EDACS Standard/ProVoice and set AFS to 344 or similar custom 11-bit scheme*\n");
-    printf(
-        "  -fH434          Decode only EDACS Standard/ProVoice and set AFS to custom 11-bit scheme with ESK 0xA0*\n");
-    printf("  -fe             Decode only EDACS EA/ProVoice*\n");
-    printf("  -fE             Decode only EDACS EA/ProVoice with ESK 0xA0*\n");
-    printf("  -fm             Decode only dPMR*\n");
+        "  -fh344          Decode only EDACS Standard/ProVoice and set AFS to 344 or similar custom 11-bit scheme\n");
+    printf("  -fH434          Decode only EDACS Standard/ProVoice and set AFS to custom 11-bit scheme with ESK 0xA0\n");
+    printf("  -fe             Decode only EDACS EA/ProVoice\n");
+    printf("  -fE             Decode only EDACS EA/ProVoice with ESK 0xA0\n");
+    printf("  -fm             Decode only dPMR\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");
     printf("  -u <num>      Unvoiced speech quality (default=3)\n");
     printf("  -xx           Expect non-inverted X2-TDMA signal\n");
     printf("  -xr           Expect inverted DMR signal\n");
     printf("  -xd           Expect inverted ICOM dPMR signal\n");
-    printf("  -xz           Expect inverted M17 signal\n");
+    printf("  -xz           Force inverted M17 signal (polarity is auto-detected by default)\n");
     printf("\n");
-    printf("  * denotes frame types that cannot be auto-detected.\n");
     printf("  ** Phase 2 Single Frequency may require user to manually set WACN/SYSID/CC parameters if MAC_SIGNAL not "
            "present.\n");
     printf("  *** configure UDP Input with -i m17:127.0.0.1:17000 \n");
+    printf("\n");
+    printf("  NOTE: All frame types are now auto-detectable with -fa using multi-rate SPS hunting.\n");
+    printf("        M17 polarity is auto-detected from preamble; use -xz only to force inverted.\n");
     printf("\n");
     printf("Advanced Decoder options:\n");
     printf("  -X <hex>      Manually Set P2 Parameters (WACN, SYSID, CC/NAC)\n");
