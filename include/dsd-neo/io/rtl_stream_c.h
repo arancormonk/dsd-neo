@@ -155,6 +155,37 @@ int rtl_stream_ted_bias(const RtlSdrContext* ctx);
 int rtl_stream_get_ted_sps(void);
 
 /**
+ * @brief Set the Gardner TED samples-per-symbol.
+ *
+ * Use when switching between symbol rates (e.g., P25P1 4800 sym/s vs P25P2 6000 sym/s).
+ * The TED will reinitialize its internal state (omega bounds, delay line) on SPS change.
+ * Also sets an override flag that persists the value across rate-change refreshes.
+ *
+ * @param sps Nominal samples per symbol (clamped to [2, 64]).
+ */
+void rtl_stream_set_ted_sps(int sps);
+
+/**
+ * @brief Clear the TED SPS override.
+ *
+ * Call when returning to control channel to allow normal SPS calculation
+ * based on opts mode flags. Without clearing, the voice channel SPS would
+ * persist incorrectly.
+ */
+void rtl_stream_clear_ted_sps_override(void);
+
+/**
+ * @brief Set the Gardner TED SPS without asserting the override.
+ *
+ * Sets ted_sps but leaves ted_sps_override unchanged (typically 0 after
+ * clearing). Use when returning to CC or switching protocols where the
+ * rate-change refresh should be allowed to recalculate SPS later.
+ *
+ * @param sps Nominal samples per symbol (clamped to [2, 64]).
+ */
+void rtl_stream_set_ted_sps_no_override(int sps);
+
+/**
  * @brief Set the Gardner TED loop gain (native float).
  *
  * @param gain Loop gain; typical 0.01..0.1, default ~0.05.

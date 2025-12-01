@@ -733,7 +733,13 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     if (sps > 64) {
         sps = 64;
     }
-    demod->ted_sps = sps;
+    /* Respect manual override (e.g., from trunking P25P2 voice channel tune).
+       When ted_sps_override > 0, it takes precedence over calculated SPS. */
+    if (demod->ted_sps_override > 0) {
+        demod->ted_sps = demod->ted_sps_override;
+    } else {
+        demod->ted_sps = sps;
+    }
 }
 
 /**

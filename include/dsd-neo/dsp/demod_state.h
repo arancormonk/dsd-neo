@@ -177,10 +177,11 @@ struct demod_state {
 
     /* Timing error detector (Gardner) - native float */
     int ted_enabled;
-    int ted_force;  /* allow forcing TED even for FM/C4FM paths */
-    float ted_gain; /* loop gain, typically 0.01..0.1 */
-    int ted_sps;    /* nominal samples per symbol */
-    float ted_mu;   /* fractional phase [0.0, 1.0) */
+    int ted_force;        /* allow forcing TED even for FM/C4FM paths */
+    float ted_gain;       /* loop gain, typically 0.01..0.1 */
+    int ted_sps;          /* nominal samples per symbol */
+    int ted_sps_override; /* >0 = manual override (used during P25P2 VC tunes) */
+    float ted_mu;         /* fractional phase [0.0, 1.0) */
 
     /* Non-integer SPS detection: set when Fs/sym_rate doesn't divide evenly.
        Blocks like TED/FLL band-edge require integer SPS and auto-disable. */

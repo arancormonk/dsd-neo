@@ -806,6 +806,14 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
             if (g_rtl_ctx) {
                 rtl_stream_tune(g_rtl_ctx, (uint32_t)cc); // cached internally
             }
+            // Clear any P25P2 voice channel TED SPS override before setting CC rate.
+            // Use set_ted_sps_no_override to avoid re-asserting the override, allowing
+            // rate-change refresh to recalculate SPS if protocol changes later.
+            rtl_stream_clear_ted_sps_override();
+            // Update TED SPS for the control channel symbol rate.
+            // P25P1 CC (4800 sym/s) = 5 sps, P25P2 CC (6000 sym/s) = 4 sps at 24kHz.
+            int ted_sps = (state->p25_cc_is_tdma == 1) ? 4 : 5;
+            rtl_stream_set_ted_sps_no_override(ted_sps);
         }
 #endif
         state->last_cc_sync_time = now;
@@ -853,6 +861,17 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     // fresh acquisition on the new channel. Prevents stale QPSK ham values from
     // causing premature switch to C4FM on P25 LSM CQPSK voice channels.
     dsd_frame_sync_reset_mod_state();
+
+    // Update TED samples-per-symbol for the new channel's symbol rate.
+    // p25_p2_active_slot is set by handle_grant before calling trunk_tune_to_freq.
+    // At 24kHz DSP bandwidth: P25P1 (4800 sym/s) = 5 sps, P25P2 (6000 sym/s) = 4 sps.
+    // Gate on P25 trunking to avoid affecting DMR/NXDN which don't set p25_p2_active_slot.
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == 3 && opts->p25_trunk == 1) {
+        int ted_sps = (state->p25_p2_active_slot >= 0) ? 4 : 5;
+        rtl_stream_set_ted_sps(ted_sps);
+    }
+#endif
 
     // Ensure any queued audio tail plays before changing channels
     // Avoid blocking drain when invoked from SM tick context.

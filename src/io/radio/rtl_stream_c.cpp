@@ -25,6 +25,9 @@ double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_ted_bias(void);
 void dsd_rtl_stream_set_resampler_target(int target_hz);
 int dsd_rtl_stream_get_ted_sps(void);
+void dsd_rtl_stream_set_ted_sps(int sps);
+void dsd_rtl_stream_clear_ted_sps_override(void);
+void dsd_rtl_stream_set_ted_sps_no_override(int sps);
 void dsd_rtl_stream_set_ted_gain(float g);
 float dsd_rtl_stream_get_ted_gain(void);
 void dsd_rtl_stream_set_ted_force(int onoff);
@@ -255,6 +258,21 @@ rtl_stream_set_resampler_target(int target_hz) {
 extern "C" int
 rtl_stream_get_ted_sps(void) {
     return dsd_rtl_stream_get_ted_sps();
+}
+
+extern "C" void
+rtl_stream_set_ted_sps(int sps) {
+    dsd_rtl_stream_set_ted_sps(sps);
+}
+
+extern "C" void
+rtl_stream_clear_ted_sps_override(void) {
+    dsd_rtl_stream_clear_ted_sps_override();
+}
+
+extern "C" void
+rtl_stream_set_ted_sps_no_override(int sps) {
+    dsd_rtl_stream_set_ted_sps_no_override(sps);
 }
 
 extern "C" void

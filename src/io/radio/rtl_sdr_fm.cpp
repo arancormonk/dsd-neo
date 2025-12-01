@@ -3142,6 +3142,40 @@ dsd_rtl_stream_get_ted_sps(void) {
 }
 
 extern "C" void
+dsd_rtl_stream_set_ted_sps(int sps) {
+    if (sps < 2) {
+        sps = 2;
+    }
+    if (sps > 64) {
+        sps = 64;
+    }
+    demod.ted_sps = sps;
+    /* Set override to prevent rate-change refresh from overwriting.
+       This is crucial for P25P2 voice channel tunes where we need to
+       maintain the correct SPS even during retune rate adjustments. */
+    demod.ted_sps_override = sps;
+    /* TED will reinitialize omega bounds on next block when it detects SPS change */
+}
+
+extern "C" void
+dsd_rtl_stream_clear_ted_sps_override(void) {
+    demod.ted_sps_override = 0;
+}
+
+extern "C" void
+dsd_rtl_stream_set_ted_sps_no_override(int sps) {
+    if (sps < 2) {
+        sps = 2;
+    }
+    if (sps > 64) {
+        sps = 64;
+    }
+    demod.ted_sps = sps;
+    /* Does NOT set ted_sps_override, allowing rate-change refresh to
+       recalculate SPS later. Use when returning to CC or switching protocols. */
+}
+
+extern "C" void
 dsd_rtl_stream_set_ted_gain(float g) {
     if (g < 0.01f) {
         g = 0.01f;
