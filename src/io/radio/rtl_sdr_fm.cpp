@@ -495,9 +495,12 @@ demod_reset_on_retune(struct demod_state* s) {
     s->costas_state.beta = 0.0f;
     s->costas_state.error = 0.0f;
     s->costas_state.initialized = 0;
-    /* TED */
-    ted_init_state(&s->ted_state);
-    s->ted_mu = 0.0f;
+    /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
+     * The Gardner TED has multiple stable lock points and a full reset can cause
+     * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
+    ted_soft_reset(&s->ted_state);
+    /* Note: s->ted_mu is a legacy field used by the Farrow path; the OP25-style
+     * Gardner uses ted_state.mu internally. Don't reset it here. */
     /* Deemphasis / audio LPF / DC */
     s->deemph_avg = 0;
     s->audio_lpf_state = 0;

@@ -139,6 +139,39 @@ ted_init_state(ted_state_t* state) {
 }
 
 /**
+ * @brief Soft reset TED state, preserving mu and omega for phase continuity.
+ *
+ * This reset clears the delay line and error accumulators but preserves the
+ * timing phase (mu) and symbol period (omega). Use this on frequency retunes
+ * within the same system where the transmitter symbol clock is consistent,
+ * avoiding the non-deterministic re-acquisition that occurs when mu resets to 0.
+ *
+ * The Gardner TED has multiple stable lock points (one per sample within a
+ * symbol period). A full reset can cause convergence to a suboptimal phase,
+ * degrading constellation quality. Preserving mu avoids this.
+ *
+ * @param state TED state to soft-reset.
+ */
+void
+ted_soft_reset(ted_state_t* state) {
+    if (!state) {
+        return;
+    }
+    /* Preserve: mu, omega, omega_mid, omega_min, omega_max, sps, twice_sps */
+    /* Reset: accumulators, delay line, last sample values */
+    state->last_r = 0.0f;
+    state->last_j = 0.0f;
+    state->e_ema = 0.0f;
+    state->lock_accum = 0.0f;
+    state->lock_count = 0;
+    /* Clear delay line to remove stale samples from previous channel */
+    for (int i = 0; i < TED_DL_SIZE * 2 * 2; i++) {
+        state->dl[i] = 0.0f;
+    }
+    state->dl_index = 0;
+}
+
+/**
  * @brief 8-tap MMSE FIR interpolation matching GNU Radio's mmse_fir_interpolator.
  *
  * Uses pre-computed polyphase coefficients with linear interpolation between
@@ -441,8 +474,25 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         state->lock_count++;
 
         if (state->lock_count >= kLockAccumWindow) {
-            state->lock_accum *= 0.5f; /* normal decay */
-            state->lock_count = kLockAccumWindow / 2;
+            /* Check for persistently bad lock before decay.
+             * If lock is deeply negative (consistently sampling at wrong phase),
+             * kick mu by half a symbol to try finding a better timing phase.
+             * This handles the case where TED converges to the wrong local minimum
+             * during initial acquisition. */
+            float normalized_lock = state->lock_accum / (float)state->lock_count;
+            if (normalized_lock < -0.2f) {
+                /* Persistently bad lock - phase kick by half symbol */
+                mu += state->omega_mid / 2.0f;
+                if (mu >= state->omega_mid) {
+                    mu -= state->omega_mid;
+                }
+                /* Reset lock accumulator to give new phase a fair chance */
+                state->lock_accum = 0.0f;
+                state->lock_count = 0;
+            } else {
+                state->lock_accum *= 0.5f; /* normal decay */
+                state->lock_count = kLockAccumWindow / 2;
+            }
         }
 
         /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */

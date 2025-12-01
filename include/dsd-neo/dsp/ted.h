@@ -63,6 +63,16 @@ typedef struct {
 void ted_init_state(ted_state_t* state);
 
 /**
+ * @brief Soft reset TED state, preserving mu and omega for phase continuity.
+ *
+ * Use this on frequency retunes where the transmitter symbol clock is consistent.
+ * Avoids non-deterministic re-acquisition that occurs when mu resets to 0.
+ *
+ * @param state TED state to soft-reset.
+ */
+void ted_soft_reset(ted_state_t* state);
+
+/**
  * @brief OP25-compatible Gardner timing recovery with decimation to symbol rate.
  *
  * Uses 8-tap MMSE polyphase interpolation (matching GNU Radio's interpolator)
