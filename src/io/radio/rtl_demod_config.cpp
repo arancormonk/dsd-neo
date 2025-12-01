@@ -190,9 +190,12 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->cqpsk_acq_fll_locked = 0;
     s->cqpsk_acq_quiet_runs = 0;
     s->cqpsk_acq_noisy_runs = 0;
-    /* CQPSK differential history */
-    s->cqpsk_diff_prev_r = 0;
-    s->cqpsk_diff_prev_j = 0;
+    /* CQPSK differential history: Initialize to (1, 0) not (0, 0).
+     * When prev is (0, 0), the first diff decode produces zero output,
+     * which corrupts the Costas phase error and causes the loop to hunt.
+     * Using (1, 0) means the first sample's diff output equals raw input. */
+    s->cqpsk_diff_prev_r = 1.0f;
+    s->cqpsk_diff_prev_j = 0.0f;
 
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {

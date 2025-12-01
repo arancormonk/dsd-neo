@@ -485,9 +485,12 @@ demod_reset_on_retune(struct demod_state* s) {
     s->fll_phase = 0.0f;
     s->fll_prev_r = 0.0f;
     s->fll_prev_j = 0.0f;
-    /* CQPSK differential history */
-    s->cqpsk_diff_prev_r = 0;
-    s->cqpsk_diff_prev_j = 0;
+    /* CQPSK differential history: Initialize to (1, 0) not (0, 0).
+     * When prev is (0, 0), the first diff decode produces zero output,
+     * which corrupts the Costas phase error and causes the loop to hunt.
+     * Using (1, 0) means the first sample's diff output equals raw input. */
+    s->cqpsk_diff_prev_r = 1.0f;
+    s->cqpsk_diff_prev_j = 0.0f;
     s->costas_err_avg_q14 = 0;
     s->costas_state.phase = 0.0f;
     s->costas_state.freq = 0.0f;

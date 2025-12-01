@@ -36,7 +36,9 @@
 static const float kDefaultGainMu = 0.025f;
 static const float kDefaultGainOmega = 0.1f * kDefaultGainMu * kDefaultGainMu; /* 0.0000625 */
 static const float kDefaultOmegaRel = 0.002f;
-static const int kLockAccumWindow = 480; /* OP25 default: 480 symbols */
+static const int kLockAccumWindow = 480;  /* OP25 default: 480 symbols */
+static const int kFastAcqLockWindow = 48; /* Fast acquisition window: 48 symbols (~8ms @ 6k sym/s) */
+static const int kFastAcqPhaseKicks = 8;  /* Try up to 8 phase kicks (2 full rotations through 4 phases) */
 
 /*
  * GNU Radio MMSE 8-tap polyphase interpolator coefficients.
@@ -136,6 +138,7 @@ ted_init_state(ted_state_t* state) {
     state->dl_index = 0;
     state->twice_sps = 0;
     state->sps = 0;
+    state->fast_acq_kicks = 0;
 }
 
 /**
@@ -164,6 +167,7 @@ ted_soft_reset(ted_state_t* state) {
     state->e_ema = 0.0f;
     state->lock_accum = 0.0f;
     state->lock_count = 0;
+    state->fast_acq_kicks = 0; /* Clear fast acquisition state */
     /* Clear delay line to remove stale samples from previous channel */
     for (int i = 0; i < TED_DL_SIZE * 2 * 2; i++) {
         state->dl[i] = 0.0f;
@@ -288,9 +292,16 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
 
     /* Reset state when SPS changes so delay-line sizing and omega bounds
      * match the new symbol rate. This avoids running with stale twice_sps
-     * after a capture/output rate change. */
+     * after a capture/output rate change.
+     *
+     * When SPS changes (e.g., P25P1→P25P2 voice channel tune), we enable
+     * fast acquisition mode to quickly try different timing phases. Without
+     * this, the TED might converge to a suboptimal phase and the Costas loop
+     * (which depends on good symbol samples from TED) may never lock. */
     if (state->sps > 0 && state->sps != config->sps) {
         ted_init_state(state);
+        /* Enable fast acquisition mode: try multiple phases quickly */
+        state->fast_acq_kicks = kFastAcqPhaseKicks;
     }
 
     /* Get or initialize omega parameters */
@@ -473,25 +484,53 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         state->lock_accum += lock_contrib;
         state->lock_count++;
 
-        if (state->lock_count >= kLockAccumWindow) {
+        /* Use faster window during fast acquisition mode (after SPS change).
+         * This allows rapid phase searching to find correct timing before
+         * the Costas loop gives up. Normal operation uses the longer window. */
+        int lock_window = (state->fast_acq_kicks > 0) ? kFastAcqLockWindow : kLockAccumWindow;
+
+        if (state->lock_count >= lock_window) {
             /* Check for persistently bad lock before decay.
              * If lock is deeply negative (consistently sampling at wrong phase),
              * kick mu by half a symbol to try finding a better timing phase.
              * This handles the case where TED converges to the wrong local minimum
-             * during initial acquisition. */
+             * during initial acquisition.
+             *
+             * During fast acquisition, we're more aggressive: if lock isn't clearly
+             * positive (>+0.2), we try another phase. A lock near zero is ambiguous
+             * and could indicate wrong timing phase with signal-to-noise just masking it. */
             float normalized_lock = state->lock_accum / (float)state->lock_count;
-            if (normalized_lock < -0.2f) {
-                /* Persistently bad lock - phase kick by half symbol */
-                mu += state->omega_mid / 2.0f;
+            /* During fast acquisition: kick if lock < +0.2 (not just negative)
+             * During normal operation: kick only if lock < -0.2 (clearly bad) */
+            float lock_threshold = (state->fast_acq_kicks > 0) ? 0.2f : -0.2f;
+            int should_kick = (state->fast_acq_kicks > 0)
+                                  ? (normalized_lock < lock_threshold)  /* fast: not clearly good */
+                                  : (normalized_lock < lock_threshold); /* normal: clearly bad */
+            if (should_kick) {
+                /* Phase kick to try finding a better timing phase.
+                 * During fast acquisition, use quarter-symbol steps to try all 4 phases.
+                 * During normal operation, use half-symbol steps. */
+                float kick_amount = (state->fast_acq_kicks > 0)
+                                        ? state->omega_mid / 4.0f  /* quarter symbol in fast acq */
+                                        : state->omega_mid / 2.0f; /* half symbol normally */
+                mu += kick_amount;
                 if (mu >= state->omega_mid) {
                     mu -= state->omega_mid;
                 }
                 /* Reset lock accumulator to give new phase a fair chance */
                 state->lock_accum = 0.0f;
                 state->lock_count = 0;
+                /* Decrement fast acquisition kicks counter */
+                if (state->fast_acq_kicks > 0) {
+                    state->fast_acq_kicks--;
+                }
             } else {
+                /* Good lock - exit fast acquisition mode */
+                if (state->fast_acq_kicks > 0) {
+                    state->fast_acq_kicks = 0;
+                }
                 state->lock_accum *= 0.5f; /* normal decay */
-                state->lock_count = kLockAccumWindow / 2;
+                state->lock_count = lock_window / 2;
             }
         }
 

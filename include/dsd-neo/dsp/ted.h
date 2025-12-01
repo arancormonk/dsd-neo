@@ -53,6 +53,8 @@ typedef struct {
     int dl_index;                  /* current write position */
     int twice_sps;                 /* delay line wrap point: max(2*ceil(omega_max), ceil(omega_max/2)+9) */
     int sps;                       /* last initialized samples-per-symbol */
+    /* Fast acquisition state: used after SPS change to quickly try different phases */
+    int fast_acq_kicks; /* number of phase kicks remaining in fast acquisition */
 } ted_state_t;
 
 /**
