@@ -101,11 +101,12 @@ cqpsk_perm_update(int new_idx, int new_ham) {
  */
 static const int kPhaseRotationIndices[4] = {0, 9, 16, 18};
 
-/* Compute Hamming distance between mapped dibits and expected sync pattern. */
+/* Compute Hamming distance between mapped dibits and expected sync pattern.
+ * Variable-length version for supporting both P25P1 (24) and P25P2 (20) patterns. */
 static int
-compute_ham(int perm_idx, const int* raw_dibits, const char* expected_sync) {
+compute_ham_n(int perm_idx, const int* raw_dibits, const char* expected_sync, int sync_len) {
     int ham = 0;
-    for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
+    for (int k = 0; k < sync_len; k++) {
         int d = raw_dibits[k] & 0x3;
         int md = cqpsk_apply_perm(perm_idx, d);
         int expect_n = expected_sync[k] - '0';
@@ -114,6 +115,12 @@ compute_ham(int perm_idx, const int* raw_dibits, const char* expected_sync) {
         }
     }
     return ham;
+}
+
+/* Fixed-length Hamming distance for P25P1 (24 dibits) - backward compatibility. */
+static int
+compute_ham(int perm_idx, const int* raw_dibits, const char* expected_sync) {
+    return compute_ham_n(perm_idx, raw_dibits, expected_sync, CQPSK_P25P1_SYNC_LEN);
 }
 
 int
@@ -188,6 +195,86 @@ cqpsk_perm_search(const int* raw_dibits, const char* expected_sync, int* out_idx
             best_idx = mode;
         }
         /* Early exit on perfect match */
+        if (best_ham == 0) {
+            break;
+        }
+    }
+
+    *out_idx = best_idx;
+    *out_ham = best_ham;
+    return 2; /* full search performed */
+}
+
+int
+cqpsk_perm_search_n(const int* raw_dibits, const char* expected_sync, int sync_len, int* out_idx, int* out_ham) {
+    int best_idx = cqpsk_perm_get_idx();
+    int global_ham = cqpsk_perm_get_best_ham();
+
+    /* Scale thresholds proportionally for shorter sync patterns.
+     * P25P2 (20 dibits) should use ~83% of P25P1 (24 dibits) thresholds. */
+    int early_accept = (CQPSK_PERM_EARLY_ACCEPT * sync_len + CQPSK_P25P1_SYNC_LEN - 1) / CQPSK_P25P1_SYNC_LEN;
+    int lock_threshold = (CQPSK_PERM_LOCK_THRESHOLD * sync_len + CQPSK_P25P1_SYNC_LEN - 1) / CQPSK_P25P1_SYNC_LEN;
+
+    /* 0. Check lock state - if we previously achieved a very good ham, verify the
+     * current window still matches well before skipping search. */
+    if (global_ham <= lock_threshold) {
+        int current_ham = compute_ham_n(best_idx, raw_dibits, expected_sync, sync_len);
+        if (current_ham <= early_accept) {
+            *out_idx = best_idx;
+            *out_ham = current_ham;
+            return -1; /* locked - no search performed */
+        }
+    }
+
+    int best_ham = CQPSK_HAMMING_INIT;
+
+    /* 1. Try current permutation first - often still valid */
+    best_ham = compute_ham_n(best_idx, raw_dibits, expected_sync, sync_len);
+    if (best_ham <= early_accept) {
+        *out_idx = best_idx;
+        *out_ham = best_ham;
+        return 0; /* no search needed */
+    }
+
+    /* 2. Try the 4 phase rotation candidates - most likely after carrier re-lock */
+    for (int i = 0; i < 4; i++) {
+        int idx = kPhaseRotationIndices[i];
+        if (idx == best_idx) {
+            continue;
+        }
+        int ham = compute_ham_n(idx, raw_dibits, expected_sync, sync_len);
+        if (ham < best_ham) {
+            best_ham = ham;
+            best_idx = idx;
+        }
+        if (best_ham <= early_accept) {
+            *out_idx = best_idx;
+            *out_ham = best_ham;
+            return 1; /* found via phase rotation shortcut */
+        }
+    }
+
+    /* 3. Full search - check remaining permutations */
+    for (int mode = 0; mode < CQPSK_PERM_COUNT; mode++) {
+        if (mode == cqpsk_perm_get_idx()) {
+            continue;
+        }
+        int is_phase_rot = 0;
+        for (int i = 0; i < 4; i++) {
+            if (mode == kPhaseRotationIndices[i]) {
+                is_phase_rot = 1;
+                break;
+            }
+        }
+        if (is_phase_rot) {
+            continue;
+        }
+
+        int ham = compute_ham_n(mode, raw_dibits, expected_sync, sync_len);
+        if (ham < best_ham) {
+            best_ham = ham;
+            best_idx = mode;
+        }
         if (best_ham == 0) {
             break;
         }

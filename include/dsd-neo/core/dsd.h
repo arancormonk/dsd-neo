@@ -436,6 +436,9 @@ void processFrame(dsd_opts* opts, dsd_state* state);
 void printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation);
 /** @brief Scan for a valid frame sync pattern and return its type. */
 int getFrameSync(dsd_opts* opts, dsd_state* state);
+/** @brief Reset modulation auto-detect state for fresh channel acquisition.
+ *  Call when tuning to a new frequency to clear stale ham/vote tracking. */
+void dsd_frame_sync_reset_mod_state(void);
 /** @brief Comparator helper for qsort on symbol buffers. */
 int comp(const void* a, const void* b);
 /** @brief Handle carrier drop/reset conditions and clear state. */

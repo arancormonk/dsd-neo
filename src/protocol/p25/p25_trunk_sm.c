@@ -326,11 +326,14 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         ctx->slots[s].tg = 0;
     }
 
-    // Set symbol timing based on channel type
+    // Set symbol timing and modulation based on channel type
     if (ctx->vc_is_tdma) {
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
         state->p25_p2_active_slot = channel_slot(state, ev->channel);
+        // P25P2 TDMA always uses CQPSK modulation - force QPSK mode
+        // to prevent modulation auto-detect from flapping to C4FM
+        state->rf_mod = 1;
     } else {
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;

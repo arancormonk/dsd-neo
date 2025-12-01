@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/dsp/cqpsk_perm.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
@@ -842,6 +843,17 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
         return;
     }
+    // Reset CQPSK permutation state when tuning to a new voice channel.
+    // The constellation rotation from the previous channel (e.g., P25P1 CC)
+    // won't be valid for the new channel (e.g., P25P2 VC), and a stale
+    // "locked" permutation would cause sync detection to fail.
+    cqpsk_perm_reset();
+
+    // Reset modulation auto-detect state (ham tracking, vote counters) to ensure
+    // fresh acquisition on the new channel. Prevents stale QPSK ham values from
+    // causing premature switch to C4FM on P25 LSM CQPSK voice channels.
+    dsd_frame_sync_reset_mod_state();
+
     // Ensure any queued audio tail plays before changing channels
     // Avoid blocking drain when invoked from SM tick context.
     if (!p25_sm_in_tick()) {

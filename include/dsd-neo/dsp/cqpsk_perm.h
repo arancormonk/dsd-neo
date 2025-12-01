@@ -18,8 +18,11 @@ extern "C" {
 /* Number of possible dibit permutations (4! = 24). */
 #define CQPSK_PERM_COUNT             24
 
-/* Number of dibits in a P25 sync pattern. */
-#define CQPSK_SYNC_LEN               24
+/* Number of dibits in P25 Phase 1 sync pattern. */
+#define CQPSK_P25P1_SYNC_LEN         24
+
+/* Number of dibits in P25 Phase 2 sync pattern (shorter for TDMA). */
+#define CQPSK_P25P2_SYNC_LEN         20
 
 /* Debug histogram reset period in samples. */
 #define CQPSK_DEBUG_HISTOGRAM_PERIOD 4800
@@ -84,13 +87,25 @@ int cqpsk_perm_update(int new_idx, int new_ham);
  *   3. Remaining permutations (full search fallback)
  * Early exits when ham <= CQPSK_PERM_EARLY_ACCEPT.
  *
- * @param raw_dibits     Pointer to CQPSK_SYNC_LEN raw dibits (0-3 values)
+ * @param raw_dibits     Pointer to CQPSK_P25P1_SYNC_LEN raw dibits (0-3 values)
  * @param expected_sync  Expected sync pattern as ASCII '0'-'3' string
  * @param out_idx        Output: best permutation index found
  * @param out_ham        Output: Hamming distance for best permutation
  * @return -1 = locked (no search), 0 = current perm accepted,
  *          1 = phase rotation hit, 2 = full search */
 int cqpsk_perm_search(const int* raw_dibits, const char* expected_sync, int* out_idx, int* out_ham);
+
+/* Variable-length permutation search for P25P2 (20 dibits) or other patterns.
+ * Same algorithm as cqpsk_perm_search but with explicit sync_len parameter.
+ *
+ * @param raw_dibits     Pointer to sync_len raw dibits (0-3 values)
+ * @param expected_sync  Expected sync pattern as ASCII '0'-'3' string
+ * @param sync_len       Length of sync pattern (e.g., 20 for P25P2, 24 for P25P1)
+ * @param out_idx        Output: best permutation index found
+ * @param out_ham        Output: Hamming distance for best permutation
+ * @return -1 = locked (no search), 0 = current perm accepted,
+ *          1 = phase rotation hit, 2 = full search */
+int cqpsk_perm_search_n(const int* raw_dibits, const char* expected_sync, int sync_len, int* out_idx, int* out_ham);
 
 #ifdef __cplusplus
 }

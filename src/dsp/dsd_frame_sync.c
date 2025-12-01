@@ -32,7 +32,31 @@
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
+#include <stdatomic.h>
 #include <stdlib.h>
+
+/* Modulation auto-detect state (file scope for reset access).
+ * Vote counters and Hamming distance tracking for C4FM/QPSK/GFSK switching.
+ * These are atomic because trunk_tune_to_freq() resets them from the tuning
+ * thread while getFrameSync() reads/writes them on the DSP thread. */
+static _Atomic int g_vote_qpsk = 0;
+static _Atomic int g_vote_c4fm = 0;
+static _Atomic int g_vote_gfsk = 0;
+static _Atomic int g_ham_c4fm_recent = 24;
+static _Atomic int g_ham_qpsk_recent = 24;
+static _Atomic int g_ham_gfsk_recent = 24;
+static _Atomic double g_qpsk_dwell_enter_m = 0.0;
+
+void
+dsd_frame_sync_reset_mod_state(void) {
+    atomic_store(&g_vote_qpsk, 0);
+    atomic_store(&g_vote_c4fm, 0);
+    atomic_store(&g_vote_gfsk, 0);
+    atomic_store(&g_ham_c4fm_recent, 24);
+    atomic_store(&g_ham_qpsk_recent, 24);
+    atomic_store(&g_ham_gfsk_recent, 24);
+    atomic_store(&g_qpsk_dwell_enter_m, 0.0);
+}
 
 /**
  * @brief Compute Hamming distance between a sync buffer and a pattern.
@@ -83,8 +107,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    /* Dwell timer for CQPSK entry to prevent immediate fallback to C4FM. */
-    static double qpsk_dwell_enter_m = 0.0;
+    /* Dwell timer for CQPSK entry uses file-scope g_qpsk_dwell_enter_m. */
     const time_t now = time(NULL);
     // Periodic P25 trunk SM heartbeat (once per second) to enforce hangtime
     // fallbacks even if frame processing stalls due to signal loss.
@@ -241,8 +264,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         t_max = 20; //20 on YSF
     }
     //if Phase 2, then only 19
-    else if (state->lastsynctype == 35 || state->lastsynctype == 36) {
-        t_max = 19; //Phase 2 S-ISCH is only 19
+    else if (state->lastsynctype == 35 || state->lastsynctype == 36
+             || (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1)) {
+        t_max = 19; //Phase 2 S-ISCH and TDMA VC from trunk grant are only 19
     } else {
         t_max = 24; //24 for everything else
     }
@@ -294,21 +318,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         //fprintf (stderr,"\nSymbol Timing:\n");
         //printw("\nSymbol Timing:\n");
     }
-    /* Simple hysteresis for modulation auto-detect to avoid rapid flapping
-     * between C4FM/QPSK/GFSK when scanning for sync on marginal signals. The
-     * vote counters persist across calls to getFrameSync to carry momentum. */
-    static int vote_qpsk = 0;
-    static int vote_c4fm = 0;
-    static int vote_gfsk = 0;
-
-    /* Hamming distance tracking for modulation switching. These track recent
-     * sync Hamming distances for each demod path. Lower = better sync quality.
-     * QPSK ham is obtained from cqpsk_perm_get_best_ham(); C4FM/GFSK ham is computed
-     * inline during sync search. We use exponential smoothing with fast attack
-     * (immediately accept better values) and slow decay (persist good state). */
-    static int ham_c4fm_recent = 24; /* worst case = full window length */
-    static int ham_qpsk_recent = 24;
-    static int ham_gfsk_recent = 24;
+    /* Modulation auto-detect state uses file-scope globals (g_vote_*, g_ham_*_recent)
+     * so they can be reset by dsd_frame_sync_reset_mod_state() on channel tune. */
 
     while (sync == 0) {
 
@@ -383,8 +394,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             const double kQpskOffsetDb = 6.0;
                             double normalized_delta = (snr_q - kQpskOffsetDb) - snr_c;
                             double nowm_bias = dsd_time_now_monotonic_s();
-                            int in_qpsk_dwell = (state->rf_mod == 1 && qpsk_dwell_enter_m > 0.0
-                                                 && (nowm_bias - qpsk_dwell_enter_m) < 2.0);
+                            double dwell_bias = atomic_load(&g_qpsk_dwell_enter_m);
+                            int in_qpsk_dwell =
+                                (state->rf_mod == 1 && dwell_bias > 0.0 && (nowm_bias - dwell_bias) < 2.0);
                             if (normalized_delta >= 2.0) {
                                 want_mod = 1; /* QPSK clearly better (normalized) */
                             } else if (normalized_delta <= -3.0 && !in_qpsk_dwell) {
@@ -411,29 +423,36 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 {
                     int qpsk_ham = cqpsk_perm_get_best_ham();
                     /* Decay recent ham values slowly (persist good state) */
-                    if (ham_qpsk_recent < 24) {
-                        ham_qpsk_recent++;
+                    int ham_qpsk = atomic_load(&g_ham_qpsk_recent);
+                    int ham_c4fm = atomic_load(&g_ham_c4fm_recent);
+                    int ham_gfsk = atomic_load(&g_ham_gfsk_recent);
+                    if (ham_qpsk < 24) {
+                        atomic_store(&g_ham_qpsk_recent, ham_qpsk + 1);
+                        ham_qpsk++;
                     }
-                    if (ham_c4fm_recent < 24) {
-                        ham_c4fm_recent++;
+                    if (ham_c4fm < 24) {
+                        atomic_store(&g_ham_c4fm_recent, ham_c4fm + 1);
+                        ham_c4fm++;
                     }
-                    if (ham_gfsk_recent < 24) {
-                        ham_gfsk_recent++;
+                    if (ham_gfsk < 24) {
+                        atomic_store(&g_ham_gfsk_recent, ham_gfsk + 1);
+                        ham_gfsk++;
                     }
                     /* Fast attack: accept better ham immediately */
-                    if (qpsk_ham < ham_qpsk_recent) {
-                        ham_qpsk_recent = qpsk_ham;
+                    if (qpsk_ham < ham_qpsk) {
+                        atomic_store(&g_ham_qpsk_recent, qpsk_ham);
+                        ham_qpsk = qpsk_ham;
                     }
 
                     /* Find best (lowest) ham across all modulations */
-                    int best_ham = ham_c4fm_recent;
+                    int best_ham = ham_c4fm;
                     int best_mod = 0;
-                    if (ham_qpsk_recent < best_ham) {
-                        best_ham = ham_qpsk_recent;
+                    if (ham_qpsk < best_ham) {
+                        best_ham = ham_qpsk;
                         best_mod = 1;
                     }
-                    if (ham_gfsk_recent < best_ham) {
-                        best_ham = ham_gfsk_recent;
+                    if (ham_gfsk < best_ham) {
+                        best_ham = ham_gfsk;
                         best_mod = 2;
                     }
 
@@ -443,9 +462,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                     /* Clear winner with ≥4 ham advantage over current want_mod */
                     else if (best_ham < 24) {
-                        int current_ham = (want_mod == 0)   ? ham_c4fm_recent
-                                          : (want_mod == 1) ? ham_qpsk_recent
-                                                            : ham_gfsk_recent;
+                        int current_ham = (want_mod == 0) ? ham_c4fm : (want_mod == 1) ? ham_qpsk : ham_gfsk;
                         if (best_ham + 4 <= current_ham) {
                             want_mod = best_mod;
                         }
@@ -454,17 +471,17 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                 /* Update votes (use hysteresis; be more eager for GFSK to avoid misclassification dwell) */
                 if (want_mod == 1) {
-                    vote_qpsk++;
-                    vote_c4fm = 0;
-                    vote_gfsk = 0;
+                    atomic_fetch_add(&g_vote_qpsk, 1);
+                    atomic_store(&g_vote_c4fm, 0);
+                    atomic_store(&g_vote_gfsk, 0);
                 } else if (want_mod == 2) {
-                    vote_gfsk++;
-                    vote_qpsk = 0;
-                    vote_c4fm = 0;
+                    atomic_fetch_add(&g_vote_gfsk, 1);
+                    atomic_store(&g_vote_qpsk, 0);
+                    atomic_store(&g_vote_c4fm, 0);
                 } else {
-                    vote_c4fm++;
-                    vote_qpsk = 0;
-                    vote_gfsk = 0;
+                    atomic_fetch_add(&g_vote_c4fm, 1);
+                    atomic_store(&g_vote_qpsk, 0);
+                    atomic_store(&g_vote_gfsk, 0);
                 }
 
                 int do_switch = -1; /* -1=no-op, else new rf_mod */
@@ -476,9 +493,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
              */
                     /* Slightly increase hysteresis when leaving QPSK to avoid flip-flop */
                     double nowm_dwell = dsd_time_now_monotonic_s();
-                    int in_qpsk_dwell2 =
-                        (state->rf_mod == 1 && qpsk_dwell_enter_m > 0.0 && (nowm_dwell - qpsk_dwell_enter_m) < 2.0);
+                    double dwell_enter = atomic_load(&g_qpsk_dwell_enter_m);
+                    int in_qpsk_dwell2 = (state->rf_mod == 1 && dwell_enter > 0.0 && (nowm_dwell - dwell_enter) < 2.0);
                     int req_c4_votes = (state->rf_mod == 1) ? (in_qpsk_dwell2 ? 5 : 3) : 2;
+                    int vote_qpsk = atomic_load(&g_vote_qpsk);
+                    int vote_gfsk = atomic_load(&g_vote_gfsk);
+                    int vote_c4fm = atomic_load(&g_vote_c4fm);
                     if (want_mod == 1 && vote_qpsk >= 2 && state->rf_mod != 1) {
                         do_switch = 1;
                     } else if (want_mod == 2 && vote_gfsk >= 1 && state->rf_mod != 2) {
@@ -491,16 +511,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     /* Record entry time when switching into QPSK to add short dwell
                      * that resists immediate fallback to C4FM on marginal signals. */
                     if (do_switch == 1) {
-                        qpsk_dwell_enter_m = dsd_time_now_monotonic_s();
+                        atomic_store(&g_qpsk_dwell_enter_m, dsd_time_now_monotonic_s());
                     } else if (state->rf_mod == 1) {
                         /* Leaving QPSK: clear dwell marker */
-                        qpsk_dwell_enter_m = 0.0;
+                        atomic_store(&g_qpsk_dwell_enter_m, 0.0);
                     }
                     state->rf_mod = do_switch;
                     /* Reset Hamming distance trackers so new modulation starts fresh */
-                    ham_c4fm_recent = 24;
-                    ham_qpsk_recent = 24;
-                    ham_gfsk_recent = 24;
+                    atomic_store(&g_ham_c4fm_recent, 24);
+                    atomic_store(&g_ham_qpsk_recent, 24);
+                    atomic_store(&g_ham_gfsk_recent, 24);
                     /* Manual-only DSP: avoid automatic toggling here. */
                 }
             } /* end !mod_cli_lock */
@@ -808,8 +828,21 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             *raw_synctest_p = raw_dibit;
             if (t >= t_max) {
                 int best_idx, best_ham;
-                const int* raw_start = raw_synctest_p - (CQPSK_SYNC_LEN - 1);
-                int search_result = cqpsk_perm_search(raw_start, P25P1_SYNC, &best_idx, &best_ham);
+                int search_result;
+
+                /* Use P25P2 sync pattern (20 dibits) when tuned to TDMA voice channel,
+                 * otherwise use P25P1 sync pattern (24 dibits). */
+                if (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1) {
+                    /* P25P2 TDMA voice channel - use shorter 20-dibit sync pattern */
+                    const int* raw_start = raw_synctest_p - (CQPSK_P25P2_SYNC_LEN - 1);
+                    search_result =
+                        cqpsk_perm_search_n(raw_start, P25P2_SYNC, CQPSK_P25P2_SYNC_LEN, &best_idx, &best_ham);
+                } else {
+                    /* P25P1 or auto mode - use 24-dibit sync pattern */
+                    const int* raw_start = raw_synctest_p - (CQPSK_P25P1_SYNC_LEN - 1);
+                    search_result = cqpsk_perm_search(raw_start, P25P1_SYNC, &best_idx, &best_ham);
+                }
+
                 /* Only switch when we actually improve Hamming distance to avoid thrash. */
                 if (cqpsk_perm_update(best_idx, best_ham)) {
                     /* Propagate to state so frame decoder (digitize/cqpsk_slice) uses same mapping. */
@@ -824,8 +857,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             dbg_init = 1;
                         }
                         if (dbg_sync) {
-                            fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d search=%d)\n", best_idx, best_ham,
-                                    search_result);
+                            fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d search=%d p2slot=%d)\n", best_idx,
+                                    best_ham, search_result, state->p25_p2_active_slot);
                         }
                     }
                     /* Update current dibit to the newly selected mapping.
@@ -987,19 +1020,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     /* Deeper CQPSK mapping visibility: find the best permutation Hamming distance. */
                     static int dbg_cq_win = 0;
                     if ((++dbg_cq_win % 2400) == 0) {
-                        const int* raw_start = raw_synctest_p - (CQPSK_SYNC_LEN - 1);
-                        char raw_win[CQPSK_SYNC_LEN + 1];
-                        raw_win[CQPSK_SYNC_LEN] = '\0';
-                        for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
+                        const int* raw_start = raw_synctest_p - (CQPSK_P25P1_SYNC_LEN - 1);
+                        char raw_win[CQPSK_P25P1_SYNC_LEN + 1];
+                        raw_win[CQPSK_P25P1_SYNC_LEN] = '\0';
+                        for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
                             raw_win[k] = (char)('0' + (raw_start[k] & 0x3));
                         }
                         int best_idx = 0, best_ham = CQPSK_HAMMING_INIT;
                         int curr_ham = CQPSK_HAMMING_INIT;
-                        char mapped_best[CQPSK_SYNC_LEN + 1];
-                        mapped_best[CQPSK_SYNC_LEN] = '\0';
+                        char mapped_best[CQPSK_P25P1_SYNC_LEN + 1];
+                        mapped_best[CQPSK_P25P1_SYNC_LEN] = '\0';
                         for (int mode = 0; mode < CQPSK_PERM_COUNT; mode++) {
                             int ham = 0;
-                            for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
+                            for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
                                 int d = raw_start[k] & 0x3;
                                 int md = cqpsk_apply_perm(mode, d);
                                 int expect_n = P25P1_SYNC[k] - '0';
@@ -1016,7 +1049,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         {
                             int ham = 0;
                             int mode = cqpsk_perm_get_idx();
-                            for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
+                            for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
                                 int d = raw_start[k] & 0x3;
                                 int md = cqpsk_apply_perm(mode, d);
                                 int expect_n = P25P1_SYNC[k] - '0';
@@ -1027,7 +1060,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             curr_ham = ham;
                         }
                         /* Build mapped window for best permutation */
-                        for (int k = 0; k < CQPSK_SYNC_LEN; k++) {
+                        for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
                             int d = raw_start[k] & 0x3;
                             int md = cqpsk_apply_perm(best_idx, d);
                             mapped_best[k] = (char)('0' + (md & 0x3));
@@ -1038,7 +1071,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                                 "[SYNC-CQ] best_ham=%d perm_best=%d curr_ham=%d curr_perm=%d dsp(cq=%d fll=%d "
                                 "ted=%d) raw=%.*s map=%s\n",
                                 best_ham, best_idx, curr_ham, cqpsk_perm_get_idx(), dsp_cq, dsp_f, dsp_t,
-                                CQPSK_SYNC_LEN, raw_win, mapped_best);
+                                CQPSK_P25P1_SYNC_LEN, raw_win, mapped_best);
                     }
                 }
             }
@@ -1061,8 +1094,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                 }
                 int c4fm_ham = (ham_norm < ham_inv) ? ham_norm : ham_inv;
-                if (c4fm_ham < ham_c4fm_recent) {
-                    ham_c4fm_recent = c4fm_ham;
+                int ham_c4fm_cur = atomic_load(&g_ham_c4fm_recent);
+                if (c4fm_ham < ham_c4fm_cur) {
+                    atomic_store(&g_ham_c4fm_recent, c4fm_ham);
                 }
             }
             /* Compute GFSK Hamming distance for modulation switching.
@@ -1129,8 +1163,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                     }
                 }
-                if (best_gfsk_ham < ham_gfsk_recent) {
-                    ham_gfsk_recent = best_gfsk_ham;
+                int ham_gfsk_cur = atomic_load(&g_ham_gfsk_recent);
+                if (best_gfsk_ham < ham_gfsk_cur) {
+                    atomic_store(&g_ham_gfsk_recent, best_gfsk_ham);
                 }
             }
             if (opts->frame_p25p1 == 1) {
