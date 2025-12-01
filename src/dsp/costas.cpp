@@ -48,14 +48,26 @@ branchless_clip(float x, float clip) {
 }
 
 static void
-update_gains(dsd_costas_loop_state_t* c) {
-    float bw = c->loop_bw;
-    if (bw < 0.0f) {
-        bw = 0.0f;
+update_gains(dsd_costas_loop_state_t* c, bool use_op25_defaults) {
+    if (use_op25_defaults) {
+        /* OP25 uses direct alpha/beta values, not computed from loop_bw/damping.
+           alpha = 0.04, beta = 0.125 * alpha^2 = 0.0002 */
+        if (c->alpha <= 0.0f) {
+            c->alpha = dsd_neo_costas_default_alpha();
+        }
+        if (c->beta <= 0.0f) {
+            c->beta = dsd_neo_costas_default_beta();
+        }
+    } else {
+        /* Legacy: compute from loop_bw and damping */
+        float bw = c->loop_bw;
+        if (bw < 0.0f) {
+            bw = 0.0f;
+        }
+        const float denom = 1.0f + 2.0f * c->damping * bw + bw * bw;
+        c->alpha = (4.0f * c->damping * bw) / denom;
+        c->beta = (4.0f * bw * bw) / denom;
     }
-    const float denom = 1.0f + 2.0f * c->damping * bw + bw * bw;
-    c->alpha = (4.0f * c->damping * bw) / denom;
-    c->beta = (4.0f * bw * bw) / denom;
 }
 
 static inline void
@@ -98,26 +110,44 @@ frequency_limit(dsd_costas_loop_state_t* c) {
 
 static void
 prepare_costas(dsd_costas_loop_state_t* c, const demod_state* d) {
-    if (c->loop_bw <= 0.0f) {
-        c->loop_bw = dsd_neo_costas_default_loop_bw();
+    bool is_cqpsk = d && d->cqpsk_enable;
+
+    if (is_cqpsk) {
+        /* CQPSK: Use OP25's direct alpha/beta values and frequency limits.
+           OP25 does NOT use FLL band-edge - the Costas loop handles all carrier tracking.
+           Unconditionally override frequency limits to OP25's ±2400 Hz since the RTL config
+           initializes these to ±1.0 rad/sample (~±3.8 kHz) which is too wide. */
+        c->max_freq = dsd_neo_costas_default_max_freq(); /* ±2400 Hz @ 24 kHz */
+        c->min_freq = -c->max_freq;
+        update_gains(c, true); /* use OP25 defaults */
+    } else {
+        /* Non-CQPSK: Legacy behavior using loop_bw/damping */
+        if (c->loop_bw <= 0.0f) {
+            c->loop_bw = dsd_neo_costas_default_loop_bw();
+        }
+        if (c->damping <= 0.0f) {
+            c->damping = dsd_neo_costas_default_damping();
+        }
+        if (c->max_freq == 0.0f && c->min_freq == 0.0f) {
+            c->max_freq = 1.0f;
+            c->min_freq = -1.0f;
+        }
+        update_gains(c, false); /* compute from loop_bw/damping */
     }
-    if (c->damping <= 0.0f) {
-        c->damping = dsd_neo_costas_default_damping();
-    }
-    if (c->max_freq == 0.0f && c->min_freq == 0.0f) {
-        c->max_freq = 1.0f;
-        c->min_freq = -1.0f;
-    }
+
     if (c->max_freq < c->min_freq) {
         float tmp = c->max_freq;
         c->max_freq = c->min_freq;
         c->min_freq = tmp;
     }
-    update_gains(c);
 
     if (!c->initialized && d) {
-        if (d->cqpsk_fll_rot_applied) {
-            /* FLL already rotated the block; start Costas from zero to avoid double rotation. */
+        /* For CQPSK without FLL band-edge, start from zero - Costas will acquire.
+           For non-CQPSK, seed from FLL state if available. */
+        if (is_cqpsk) {
+            c->phase = 0.0f;
+            c->freq = 0.0f;
+        } else if (d->cqpsk_fll_rot_applied) {
             c->phase = 0.0f;
             c->freq = 0.0f;
         } else {

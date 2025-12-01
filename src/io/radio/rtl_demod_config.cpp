@@ -373,20 +373,21 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_acq_noisy_runs = 0;
     }
 
-    /* Optional: acquisition-only FLL for CQPSK (pre-Costas).
-       Default ON for CQPSK/P25/QPSK modes to mirror OP25 pull-in. */
-    int default_acq_fll =
-        (demod->cqpsk_enable || opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
-    demod->cqpsk_acq_fll_enable = default_acq_fll;
-    const char* af = getenv("DSD_NEO_CQPSK_ACQ_FLL");
-    if (af) {
-        if (*af == '1' || *af == 'y' || *af == 'Y' || *af == 't' || *af == 'T') {
-            demod->cqpsk_acq_fll_enable = 1;
-        }
-    }
+    /* CQPSK acquisition FLL: DISABLED.
+       OP25 does NOT use a band-edge FLL for CQPSK - it relies solely on the Costas loop
+       for carrier tracking. The band-edge FLL produces unstable frequency estimates.
+       The Costas loop with OP25 parameters (alpha=0.04, beta=0.0002) handles carrier
+       recovery correctly. See demod_pipeline.cpp CQPSK path for details. */
+    demod->cqpsk_acq_fll_enable = 0;
     demod->cqpsk_acq_fll_locked = 0;
     demod->cqpsk_acq_quiet_runs = 0;
     demod->cqpsk_acq_noisy_runs = 0;
+
+    /* For CQPSK mode, also disable the general FLL flag since we use Costas instead.
+       Non-CQPSK modes (FM/C4FM) still use their separate FLL path. */
+    if (demod->cqpsk_enable) {
+        demod->fll_enabled = 0;
+    }
 
     /* CQPSK RMS AGC (pre-FLL) to mirror OP25 rms_agc block */
     demod->cqpsk_rms_agc_enable = env_flag_default("DSD_NEO_CQPSK_RMS_AGC", 1);

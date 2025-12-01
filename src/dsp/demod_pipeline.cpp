@@ -1231,9 +1231,17 @@ full_demod(struct demod_state* d) {
                         d->cqpsk_rms_agc_rms, implied_gain, d->lp_len / 2);
             }
         }
-        /* Band-edge FLL (always active when enabled, OP25 style).
-           Requires integer SPS; skip band-edge if non-integer. */
-        if (d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2 && d->sps_is_integer) {
+        /* Band-edge FLL: DISABLED for CQPSK.
+           OP25 does NOT use FLL band-edge for CQPSK - it relies solely on the Costas loop
+           for carrier tracking. The band-edge FLL produces unstable frequency estimates
+           that oscillate wildly, causing sync loss. The Costas loop with OP25 parameters
+           (alpha=0.04, beta=0.0002, fmax=±2400Hz) handles carrier recovery correctly.
+
+           Note: This block is ONLY reached for CQPSK mode (we're inside if(d->cqpsk_enable)).
+           Non-CQPSK modes (FM, C4FM) use a separate FLL path at lines ~1460-1466 which
+           remains fully functional. */
+        if (0 /* disabled for CQPSK */ && d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2
+            && d->sps_is_integer) {
             /* Sync from demod_state into modular FLL state so that any
                external tweaks to fll_freq/phase (e.g., spectrum-assisted
                correction) are honored. */
@@ -1383,9 +1391,11 @@ full_demod(struct demod_state* d) {
                 }
                 if (debug_cqpsk && (++call_count % 50) == 0) {
                     dsd_costas_loop_state_t* c = &d->costas_state;
-                    fprintf(stderr,
-                            "[COSTAS] phase:%.3f freq:%.5f err:%.3f alpha:%.4f beta:%.5f | FLL freq:%.5f locked:%d\n",
-                            c->phase, c->freq, c->error, c->alpha, c->beta, d->fll_freq, d->cqpsk_acq_fll_locked);
+                    /* Show Costas freq in Hz for easier interpretation */
+                    const float kTwoPi = 6.28318530717958647692f;
+                    float costas_freq_hz = (d->rate_out > 0) ? c->freq * ((float)d->rate_out / kTwoPi) : 0.0f;
+                    fprintf(stderr, "[COSTAS] phase:%.3f freq:%.5f (%.1f Hz) err:%.3f alpha:%.4f beta:%.5f\n", c->phase,
+                            c->freq, costas_freq_hz, c->error, c->alpha, c->beta);
                     /* Log IQ constellation: first few symbols to check if on diagonals */
                     if (d->lp_len >= 8) {
                         const float* iq = d->lowpassed;

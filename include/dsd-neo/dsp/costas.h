@@ -34,13 +34,32 @@ typedef struct {
     int initialized;
 } dsd_costas_loop_state_t;
 
-/* Defaults tuned for symbol-rate operation (post-TED decimation).
-   Since we run at symbol rate (1 sample/symbol) instead of sample rate
-   (~5 samples/symbol), use WIDER bandwidth to track faster with fewer samples. */
-/** @brief Default Costas loop bandwidth (~2*pi/100). */
+/* OP25-compatible defaults for CQPSK carrier recovery.
+   OP25 uses alpha=0.04, beta=0.125*alpha^2=0.0002, fmax=2400Hz.
+   These are applied directly rather than computed from loop_bw/damping. */
+
+/** @brief Default Costas loop alpha (phase gain) - OP25 default. */
+static inline float
+dsd_neo_costas_default_alpha(void) {
+    return 0.04f;
+}
+
+/** @brief Default Costas loop beta (frequency gain) - OP25: 0.125 * alpha^2. */
+static inline float
+dsd_neo_costas_default_beta(void) {
+    return 0.125f * 0.04f * 0.04f; /* 0.0002 */
+}
+
+/** @brief Default max frequency (rad/sample) - OP25: 2400 Hz @ 24 kHz. */
+static inline float
+dsd_neo_costas_default_max_freq(void) {
+    return 6.28318530717958647692f * 2400.0f / 24000.0f; /* ~0.628 rad/sample */
+}
+
+/** @brief Default Costas loop bandwidth (legacy, for non-CQPSK modes). */
 static inline float
 dsd_neo_costas_default_loop_bw(void) {
-    return 6.28318530717958647692f / 100.0f; /* ~2*pi/100 (wider for symbol-rate tracking) */
+    return 6.28318530717958647692f / 100.0f;
 }
 
 /** @brief Default Costas loop damping factor (sqrt(2)/2). */
