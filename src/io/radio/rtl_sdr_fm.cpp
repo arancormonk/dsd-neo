@@ -3435,21 +3435,16 @@ rtl_stream_toggle_cqpsk(int onoff) {
     if (demod.cqpsk_enable) {
         extern void qpsk_differential_demod(struct demod_state*);
         demod.mode_demod = &qpsk_differential_demod;
-        /* Reset differential decode history to (1,0) not (0,0).
-         * See comment in rtl_stream_reset_demod_state for rationale. */
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
         demod.cqpsk_rms_agc_rms = 0.0f;
         demod.cqpsk_acq_fll_locked = 0;
-        demod.cqpsk_acq_quiet_runs = 0;
-        demod.cqpsk_acq_noisy_runs = 0;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
     }
 }
 
-/* CQPSK acquisition-only FLL toggle/get */
 extern "C" int
 dsd_rtl_stream_get_cqpsk_acq_fll(void) {
     return demod.cqpsk_acq_fll_enable ? 1 : 0;
@@ -3458,10 +3453,7 @@ dsd_rtl_stream_get_cqpsk_acq_fll(void) {
 extern "C" void
 dsd_rtl_stream_set_cqpsk_acq_fll(int onoff) {
     demod.cqpsk_acq_fll_enable = onoff ? 1 : 0;
-    /* Reset latch so it can re-acquire if re-enabled */
     demod.cqpsk_acq_fll_locked = 0;
-    demod.cqpsk_acq_quiet_runs = 0;
-    demod.cqpsk_acq_noisy_runs = 0;
 }
 
 extern "C" int

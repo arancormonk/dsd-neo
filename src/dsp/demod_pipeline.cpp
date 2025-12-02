@@ -836,7 +836,6 @@ fll_update_error(struct demod_state* d) {
     if (!d->fll_enabled) {
         return;
     }
-    /* Sync from demod_state to module state */
     d->fll_state.freq = d->fll_freq;
     d->fll_state.phase = d->fll_phase;
     d->fll_state.prev_r = d->fll_prev_r;
@@ -849,18 +848,8 @@ fll_update_error(struct demod_state* d) {
     cfg.deadband = d->fll_deadband;
     cfg.slew_max = d->fll_slew_max;
 
-    /* Use QPSK-friendly symbol-spaced update when CQPSK path is active.
-       Skip FLL band-edge if non-integer SPS detected (requires integer SPS). */
-    if (d->cqpsk_enable && d->ted_sps >= 2 && d->sps_is_integer) {
-        fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
-    } else if (d->cqpsk_enable && d->ted_sps >= 2 && !d->sps_is_integer) {
-        /* Non-integer SPS: fall back to standard FLL to avoid band-edge malfunction */
-        fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
-    } else {
-        fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
-    }
+    fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
 
-    /* Sync back to demod_state */
     d->fll_freq = d->fll_state.freq;
     d->fll_phase = d->fll_state.phase;
     d->fll_prev_r = d->fll_state.prev_r;
@@ -1180,8 +1169,6 @@ full_demod(struct demod_state* d) {
     }
     /* Bound channel noise when running at higher Fs (24 kHz default) */
     channel_lpf_apply(d);
-    /* Reset per-block CQPSK rotation marker; set inside CQPSK branch when FLL applies rotation. */
-    d->cqpsk_fll_rot_applied = 0;
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
         /*

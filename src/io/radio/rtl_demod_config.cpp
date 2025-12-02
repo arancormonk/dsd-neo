@@ -132,7 +132,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->ted_mu = 0.0f;
     s->sps_is_integer = 1; /* assume integer SPS until proven otherwise */
     s->cqpsk_rms_agc_rms = 0.0f;
-    s->cqpsk_fll_rot_applied = 0;
     /* Initialize FLL and TED module states */
     fll_init_state(&s->fll_state);
     ted_init_state(&s->ted_state);
@@ -184,12 +183,8 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* CQPSK path default (may be overridden by rtl_demod_config_from_env_and_opts
        based on mod_qpsk and DSD_NEO_CQPSK env). */
     s->cqpsk_enable = 0;
-
-    /* CQPSK acquisition FLL defaults */
     s->cqpsk_acq_fll_enable = 0;
     s->cqpsk_acq_fll_locked = 0;
-    s->cqpsk_acq_quiet_runs = 0;
-    s->cqpsk_acq_noisy_runs = 0;
     /* CQPSK differential history: Initialize to (1, 0) not (0, 0).
      * When prev is (0, 0), the first diff decode produces zero output,
      * which corrupts the Costas phase error and causes the loop to hunt.
@@ -381,29 +376,11 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_diff_prev_j = 0.0f;
         demod->cqpsk_rms_agc_rms = 0.0f;
         demod->cqpsk_acq_fll_locked = 0;
-        demod->cqpsk_acq_quiet_runs = 0;
-        demod->cqpsk_acq_noisy_runs = 0;
     }
 
-    /* CQPSK acquisition FLL: DISABLED (OP25-aligned).
-       OP25's combined gardner_costas_cc block handles ALL carrier and timing
-       recovery in a single integrated loop. There is no separate pre-TED FLL.
-       The Costas loop inside gardner_costas_cc handles frequency tracking.
-
-       Signal flow (from OP25 p25_demodulator.py):
-         if_out -> cutoff -> agc -> clock -> diffdec -> to_float -> rescale -> slicer
-                                   ^^^^^^^
-                                   gardner_costas_cc (combined Gardner TED + Costas)
-
-       For CQPSK, we disable the separate band-edge FLL since the Costas loop
-       inside op25_gardner_costas_cc provides all needed carrier tracking. */
     demod->cqpsk_acq_fll_enable = 0;
     demod->cqpsk_acq_fll_locked = 0;
-    demod->cqpsk_acq_quiet_runs = 0;
-    demod->cqpsk_acq_noisy_runs = 0;
 
-    /* For CQPSK mode, disable separate FLL since carrier tracking is done
-       by the Costas loop inside the combined gardner_costas_cc block. */
     if (demod->cqpsk_enable) {
         demod->fll_enabled = 0;
     }
@@ -496,7 +473,6 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
                         || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
                         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
-    int p25_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
     if (digital_mode) {
         /* For digital modes, never auto-enable FLL/TED.
            Leave on/off decisions to env/CLI/UI, but still derive sane defaults

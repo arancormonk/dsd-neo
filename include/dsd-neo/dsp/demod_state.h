@@ -240,12 +240,9 @@ struct demod_state {
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
 
-    /* CQPSK acquisition-only FLL helper (pre-Costas) */
-    int cqpsk_acq_fll_enable;  /* 0/1: allow pre-Costas FLL pull-in */
-    int cqpsk_acq_fll_locked;  /* 0/1: stop when locked */
-    int cqpsk_acq_quiet_runs;  /* consecutive quiet blocks for lock */
-    int cqpsk_acq_noisy_runs;  /* consecutive noisy blocks to force unlock */
-    int cqpsk_fll_rot_applied; /* 0/1: cqpsk branch applied FLL rotation this block */
+    /* Legacy CQPSK acquisition FLL state (kept for API compatibility, always 0) */
+    int cqpsk_acq_fll_enable;
+    int cqpsk_acq_fll_locked;
 
     /* Costas diagnostics (updated per block) */
     int costas_err_avg_q14; /* average |err| scaled to Q14 for UI/metrics */
