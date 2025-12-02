@@ -17,9 +17,10 @@
 static long g_last_tuned_cc = 0;
 
 void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
     g_last_tuned_cc = freq;
 }
 

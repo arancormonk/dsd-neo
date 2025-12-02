@@ -19,9 +19,10 @@ static long g_last_tuned_cc = 0;
 static int g_return_to_cc_called = 0;
 
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
     g_last_tuned_vc = freq;
 }
 
@@ -33,9 +34,10 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
     g_last_tuned_cc = freq;
 }
 

@@ -28,7 +28,8 @@
  * ============================================================================ */
 
 __attribute__((weak)) void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
     if (!opts || !state || freq <= 0) {
         return;
     }
@@ -49,8 +50,9 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 __attribute__((weak)) void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     UNUSED(opts);
+    (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
     if (!state || freq <= 0) {
         return;
     }
@@ -116,6 +118,13 @@ is_tdma_channel(const dsd_state* state, int channel) {
 static inline int
 channel_slot(const dsd_state* state, int channel) {
     return is_tdma_channel(state, channel) ? ((channel & 1) ? 1 : 0) : -1;
+}
+
+// Compute TED SPS for control channel based on CC type.
+// At 24kHz DSP bandwidth: P25P1 CC (4800 sym/s) = 5, P25P2 TDMA CC (6000 sym/s) = 4.
+static inline int
+cc_ted_sps(const dsd_state* state) {
+    return (state && state->p25_cc_is_tdma == 1) ? 4 : 5;
 }
 
 // Log status tag for debugging
@@ -326,7 +335,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         ctx->slots[s].tg = 0;
     }
 
-    // Set symbol timing and modulation based on channel type
+    // Set symbol timing and modulation based on channel type.
+    // TED SPS at 24kHz DSP bandwidth: P25P1 (4800 sym/s) = 5, P25P2 (6000 sym/s) = 4.
+    int ted_sps;
     if (ctx->vc_is_tdma) {
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
@@ -334,14 +345,16 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         // P25P2 TDMA always uses CQPSK modulation - force QPSK mode
         // to prevent modulation auto-detect from flapping to C4FM
         state->rf_mod = 1;
+        ted_sps = 4; // P25P2: 6000 sym/s @ 24kHz = 4 SPS
     } else {
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;
         state->p25_p2_active_slot = -1;
+        ted_sps = 5; // P25P1: 4800 sym/s @ 24kHz = 5 SPS
     }
 
-    // Tune to VC
-    trunk_tune_to_freq(opts, state, freq);
+    // Tune to VC with TED SPS determined by channel type
+    trunk_tune_to_freq(opts, state, freq, ted_sps);
     ctx->tune_count++;
     ctx->grant_count++;
 
@@ -356,10 +369,10 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         }
         if (debug_sync && ctx->vc_is_tdma) {
             fprintf(stderr,
-                    "[P25-SM] TDMA grant: ch=0x%04X freq=%ld slot=%d rf_mod=%d sps=%d center=%d "
+                    "[P25-SM] TDMA grant: ch=0x%04X freq=%ld slot=%d rf_mod=%d sps=%d center=%d ted_sps=%d "
                     "tune_count=%u grant_count=%u\n",
                     ev->channel & 0xFFFF, freq, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
-                    state->symbolCenter, ctx->tune_count, ctx->grant_count);
+                    state->symbolCenter, ted_sps, ctx->tune_count, ctx->grant_count);
         }
     }
 
@@ -647,10 +660,11 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         return;
     }
     long cand = 0;
+    int sps = cc_ted_sps(state);
 
     // First try discovered CC candidates (if preference enabled)
     if (opts && opts->p25_prefer_candidates == 1 && next_cc_candidate(state, &cand, now_m)) {
-        trunk_tune_to_cc(opts, state, cand);
+        trunk_tune_to_cc(opts, state, cand, sps);
         state->p25_cc_eval_freq = cand;
         state->p25_cc_eval_start_m = now_m;
         ctx->t_cc_sync_m = now_m; // Reset grace timer
@@ -661,7 +675,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
     // Fall back to user-provided LCN list
     if (next_lcn_freq(state, &cand)) {
-        trunk_tune_to_cc(opts, state, cand);
+        trunk_tune_to_cc(opts, state, cand, sps);
         ctx->t_cc_sync_m = now_m; // Reset grace timer
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-lcn");
         sm_log(opts, state, "hunt-lcn-tune");

@@ -15,8 +15,9 @@
 
 // Stubs
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)freq;
+    (void)ted_sps;
     if (opts) {
         opts->trunk_is_tuned = 1;
     }

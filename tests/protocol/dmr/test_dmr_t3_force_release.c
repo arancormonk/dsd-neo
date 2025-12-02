@@ -103,7 +103,8 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    (void)ted_sps;
     if (!opts || !state || freq <= 0) {
         return;
     }

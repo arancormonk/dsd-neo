@@ -738,15 +738,9 @@ udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
  */
 void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
-    const time_t now = time(NULL);
-    // Before moving away from the current VC, ensure any queued audio is
-    // played to completion to avoid carrying tail audio into the next call.
-    // When called from the P25 SM tick context, skip the blocking drain to
-    // avoid holding the SM tick lock on slow or stalled audio backends.
-    if (!p25_sm_in_tick()) {
-        dsd_drain_audio_output(opts);
-    }
-    //extra safeguards due to sync issues with NXDN
+    // Audio drain is handled by trunk_tune_to_cc() before the hardware retune.
+
+    // Extra safeguards due to sync issues with NXDN
     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
 
@@ -793,52 +787,21 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // pipeline at DC and delay CC hunting.
     long int cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
     if (opts->p25_trunk == 1 && cc != 0) {
-        // RIGCTL
-        if (opts->use_rigctl == 1) {
-            if (opts->setmod_bw != 0) {
-                SetModulation(opts->rigctl_sockfd, opts->setmod_bw); // cached internally
-            }
-            SetFreq(opts->rigctl_sockfd, cc); // cached internally
-        }
-// RTL
-#ifdef USE_RTLSDR
-        if (opts->audio_in_type == 3) {
-            if (g_rtl_ctx) {
-                rtl_stream_tune(g_rtl_ctx, (uint32_t)cc); // cached internally
-            }
-            // Clear the TED SPS override and set the correct SPS for the CC type.
-            // We clear the override so that subsequent non-P25 or non-trunking
-            // operations can have the correct SPS computed automatically by
-            // rtl_demod_maybe_refresh_ted_sps_after_rate_change().
-            //
-            // Using set_ted_sps_no_override sets ted_sps directly without leaving
-            // a stale override that would persist after trunking is disabled.
-            rtl_stream_clear_ted_sps_override();
-            if (state->p25_cc_is_tdma == 0) {
-                rtl_stream_set_ted_sps_no_override(5); // P25P1 CC: 4800 sym/s @ 24kHz = 5 SPS
-            } else {
-                rtl_stream_set_ted_sps_no_override(4); // P25P2 CC: 6000 sym/s @ 24kHz = 4 SPS
-            }
-        }
-#endif
-        state->last_cc_sync_time = now;
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-        state->trunk_cc_freq = cc;
+        // Compute CC TED SPS: P25P1 CC (4800 sym/s) = 5, P25P2 TDMA CC (6000 sym/s) = 4.
+        int cc_sps = (state->p25_cc_is_tdma == 1) ? 4 : 5;
+        trunk_tune_to_cc(opts, state, cc, cc_sps);
     }
 
-    //if P25p2 VCH and going back to P25p1 CC, flip symbolrate
+    // Set symbol timing for CC based on CC type.
     if (state->p25_cc_is_tdma == 0) {
+        // P25P1 CC: 4800 sym/s
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;
-    }
-
-    //if P25p1 Data Revert on P25p2 TDMA CC, flip symbolrate
-    if (state->p25_cc_is_tdma == 1) {
+    } else {
+        // P25P2 TDMA CC: 6000 sym/s
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
     }
-
-    // fprintf (stderr, "\n User Activated Return to CC; \n ");
 }
 
 /**
@@ -850,9 +813,10 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
  * @param opts Decoder options with tuning configuration.
  * @param state Decoder state to update.
  * @param freq Target frequency in Hz.
+ * @param ted_sps TED samples-per-symbol to set (0 = no override).
  */
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     if (!opts || !state || freq <= 0) {
         return;
     }
@@ -886,15 +850,13 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     // This matches OP25's architecture where configure_tdma/set_omega are called
     // synchronously with the frequency change, not asynchronously before it.
 
-    // Update TED samples-per-symbol for the new channel's symbol rate.
-    // p25_p2_active_slot is set by handle_grant before calling trunk_tune_to_freq.
+    // Set TED samples-per-symbol override if provided by caller.
     // At 24kHz DSP bandwidth: P25P1 (4800 sym/s) = 5 sps, P25P2 (6000 sym/s) = 4 sps.
-    // Gate on P25 trunking to avoid affecting DMR/NXDN which don't set p25_p2_active_slot.
+    // The state machine determines the correct SPS based on channel type and passes it directly.
 #ifdef USE_RTLSDR
-    if (opts->audio_in_type == 3 && opts->p25_trunk == 1) {
-        int ted_sps = (state->p25_p2_active_slot >= 0) ? 4 : 5;
+    if (opts->audio_in_type == 3 && ted_sps > 0) {
         rtl_stream_set_ted_sps(ted_sps);
-        // Optional debug: log P25 trunk VC tuning parameters when CQPSK debug is enabled.
+        // Optional debug: log VC tuning parameters when CQPSK debug is enabled.
         {
             static int debug_init = 0;
             static int debug_cqpsk = 0;
@@ -904,11 +866,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
                 debug_init = 1;
             }
             if (debug_cqpsk) {
-                int is_tdma_vc = (state->p25_p2_active_slot >= 0) ? 1 : 0;
-                fprintf(stderr,
-                        "[P25-TUNE] VC freq=%ld Hz tdma=%d slot=%d rf_mod=%d sps=%d center=%d ted_sps_override=%d\n",
-                        freq, is_tdma_vc, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
-                        state->symbolCenter, ted_sps);
+                fprintf(stderr, "[TUNE] VC freq=%ld Hz rf_mod=%d sps=%d center=%d ted_sps=%d\n", freq, state->rf_mod,
+                        state->samplesPerSymbol, state->symbolCenter, ted_sps);
             }
         }
     }
@@ -956,9 +915,11 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
  * @param opts Decoder options with tuning configuration.
  * @param state Decoder state to update.
  * @param freq Target control channel frequency in Hz.
+ * @param ted_sps TED samples-per-symbol to set (0 = no change). Caller should
+ *        pass the CC SPS (4 for P25P2 TDMA CC, 5 for P25P1 CC).
  */
 void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     if (!opts || !state || freq <= 0) {
         return;
     }
@@ -986,17 +947,12 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq) {
         if (g_rtl_ctx) {
             rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
         }
-        // Set TED SPS for control channel. P25P1 CC is always 4800 sym/s = 5 SPS at 24kHz.
-        // P25P2 TDMA CC is 6000 sym/s = 4 SPS. Use p25_cc_is_tdma to determine.
-        // This is critical when returning from P25P2 VC (4 SPS) to P25P1 CC (5 SPS).
+        // Set TED SPS for control channel if provided by caller.
         // Clear the override so non-P25 protocols can have SPS computed automatically.
-        if (opts->p25_trunk == 1) {
+        // Use no_override variant so rate-change refresh can recalculate SPS later.
+        if (ted_sps > 0) {
             rtl_stream_clear_ted_sps_override();
-            if (state->p25_cc_is_tdma == 1) {
-                rtl_stream_set_ted_sps_no_override(4); // P25P2 CC: 6000 sym/s @ 24kHz = 4 SPS
-            } else {
-                rtl_stream_set_ted_sps_no_override(5); // P25P1 CC: 4800 sym/s @ 24kHz = 5 SPS
-            }
+            rtl_stream_set_ted_sps_no_override(ted_sps);
         }
 #endif
     }

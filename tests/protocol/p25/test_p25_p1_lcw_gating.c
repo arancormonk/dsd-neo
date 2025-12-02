@@ -19,10 +19,11 @@
 static int g_tunes = 0;
 
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)opts;
     (void)state;
     (void)freq;
+    (void)ted_sps;
     g_tunes++;
 }
 

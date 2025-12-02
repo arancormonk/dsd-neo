@@ -46,8 +46,9 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)freq;
+    (void)ted_sps;
     g_vc_tunes++;
     if (opts) {
         opts->p25_is_tuned = 1;

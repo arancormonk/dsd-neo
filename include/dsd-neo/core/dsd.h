@@ -1217,12 +1217,24 @@ void eot_cc(dsd_opts* opts, dsd_state* state); //end of TX return to CC
 /** @brief Return to configured control channel after a voice call. */
 void return_to_cc(dsd_opts* opts, dsd_state* state);
 // Common VC tuning helper: performs rigctl/RTL tune and updates trunk/p25 fields.
-/** @brief Tune to a specific voice/control frequency via rigctl/RTL helper. */
-void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq);
+/**
+ * @brief Tune to a specific voice/control frequency via rigctl/RTL helper.
+ * @param opts Decoder options with tuning configuration.
+ * @param state Decoder state to update.
+ * @param freq Target frequency in Hz.
+ * @param ted_sps TED samples-per-symbol to set (0 = no override, let protocol layer compute).
+ */
+void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 // Control Channel tuning helper used by P25 state machine during CC hunt.
 // Tunes rigctl/RTL to the provided frequency without marking voice-tuned.
-/** @brief Tune to a control channel without flagging voice-follow state. */
-void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq);
+/**
+ * @brief Tune to a control channel without flagging voice-follow state.
+ * @param opts Decoder options with tuning configuration.
+ * @param state Decoder state to update.
+ * @param freq Target control channel frequency in Hz.
+ * @param ted_sps TED samples-per-symbol to set (0 = no override).
+ */
+void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 
 //initialize static float filter memory
 /** @brief Initialize static root-raised-cosine filter memory. */

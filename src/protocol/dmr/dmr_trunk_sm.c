@@ -15,7 +15,7 @@
 #include <string.h>
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
-void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq);
+void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 void return_to_cc(dsd_opts* opts, dsd_state* state);
 
 #ifdef USE_RTLSDR
@@ -168,7 +168,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     }
 
     dmr_reset_blocks(opts, state);
-    trunk_tune_to_freq(opts, state, freq);
+    trunk_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
 
     state->last_t3_tune_time_m = now_m;
     state->p25_sm_tune_count++;
