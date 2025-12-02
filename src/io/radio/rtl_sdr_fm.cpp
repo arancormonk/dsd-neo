@@ -485,19 +485,24 @@ demod_reset_on_retune(struct demod_state* s) {
     s->fll_phase = 0.0f;
     s->fll_prev_r = 0.0f;
     s->fll_prev_j = 0.0f;
-    /* CQPSK differential history: Initialize to (1, 0) not (0, 0).
-     * When prev is (0, 0), the first diff decode produces zero output,
-     * which corrupts the Costas phase error and causes the loop to hunt.
-     * Using (1, 0) means the first sample's diff output equals raw input. */
+    /* CQPSK: Initialize differential phasor state for clean acquisition on new signal.
+     *
+     * Unlike OP25's continuous sample flow where set_omega() only clears the delay line,
+     * dsd-neo has discrete retune events with muting. When samples resume after retune,
+     * they're from a NEW signal - the old diff_prev is completely stale.
+     *
+     * Reset diff_prev to (1,0) so the first symbol's differential decode produces:
+     *   y[0] = x[0] * conj(1+j0) = x[0]
+     * This means the first symbol is passed through unchanged, avoiding garbage output
+     * that would cascade through subsequent differential decodes.
+     *
+     * We PRESERVE Costas phase/freq because the carrier offset is typically similar
+     * between CC and VC of the same site. This allows faster lock acquisition.
+     */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
     s->costas_err_avg_q14 = 0;
-    s->costas_state.phase = 0.0f;
-    s->costas_state.freq = 0.0f;
-    s->costas_state.alpha = 0.0f;
-    s->costas_state.beta = 0.0f;
     s->costas_state.error = 0.0f;
-    s->costas_state.initialized = 0;
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
      * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
@@ -3155,12 +3160,21 @@ dsd_rtl_stream_set_ted_sps(int sps) {
     if (sps > 64) {
         sps = 64;
     }
-    demod.ted_sps = sps;
-    /* Set override to prevent rate-change refresh from overwriting.
-       This is crucial for P25P2 voice channel tunes where we need to
-       maintain the correct SPS even during retune rate adjustments. */
+    /* Only set the override here, NOT ted_sps itself.
+     *
+     * This fixes a race condition where trunk_tune_to_freq() sets ted_sps
+     * before the hardware retune completes, causing the DSP thread to
+     * process stale samples (from the old frequency) with the new SPS.
+     *
+     * By only setting the override, the DSP continues with the current
+     * (correct for current signal) SPS until the controller thread applies
+     * the hardware retune and calls rtl_demod_maybe_refresh_ted_sps_after_rate_change,
+     * which will see the override and apply it at the right time.
+     *
+     * This matches OP25's behavior where set_omega() is called AFTER the
+     * frequency change, not before.
+     */
     demod.ted_sps_override = sps;
-    /* TED will reinitialize omega bounds on next block when it detects SPS change */
 }
 
 extern "C" void

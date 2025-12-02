@@ -244,7 +244,15 @@ op25_gardner_costas_cc(struct demod_state* d) {
         return;
     }
 
-    /* Initialize Costas state if needed */
+    /* Initialize Costas loop parameters if not already set.
+     *
+     * IMPORTANT: We do NOT reset phase/freq here! OP25's set_omega() preserves
+     * d_phase and d_freq across frequency changes, allowing the Costas loop to
+     * continue tracking without re-acquisition slew.
+     *
+     * The phase/freq are initialized to 0 only at startup (in rtl_demod_config.cpp
+     * or via dsd_costas_reset). On retunes, they should be preserved.
+     */
     if (!c->initialized) {
         /* OP25 defaults: alpha=0.04, beta=0.125*alpha^2=0.0002 */
         if (c->alpha <= 0.0f) {
@@ -258,8 +266,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
             c->max_freq = kTwoPi * 2400.0f / 24000.0f;
         }
         c->min_freq = -c->max_freq;
-        c->phase = 0.0f;
-        c->freq = 0.0f;
+        /* DO NOT reset c->phase or c->freq here - preserve carrier recovery state */
         c->initialized = 1;
     }
 
@@ -305,8 +312,17 @@ op25_gardner_costas_cc(struct demod_state* d) {
             ted->dl[i] = 0.0f;
         }
 
-        /* Reset mu to avoid starting with a stale timing phase from the
-         * previous symbol rate. Fresh acquisition is more reliable. */
+        /* Reset TED timing state on SPS change.
+         *
+         * Unlike OP25's continuous sample flow where set_omega() preserves all state,
+         * dsd-neo's SPS change happens during a retune with sample gap. The old timing
+         * state is from a different symbol rate:
+         *   - mu: fractional phase scaled to old SPS, not valid for new SPS
+         *   - last_r/j: last symbol from old rate, will corrupt first Gardner error
+         *
+         * Reset to clean state for fresh acquisition on new symbol rate.
+         * Costas phase/freq are preserved - carrier offset is similar between CC and VC.
+         */
         ted->mu = 0.0f;
         ted->last_r = 0.0f;
         ted->last_j = 0.0f;
