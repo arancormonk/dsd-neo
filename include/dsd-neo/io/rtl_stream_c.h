@@ -372,25 +372,6 @@ void rtl_stream_set_auto_ppm(int onoff);
 int rtl_stream_get_auto_ppm(void);
 
 /**
- * @brief Get CQPSK acquisition-only pre-Costas FLL enable flag (0/1).
- *
- * @return 1 when enabled; 0 when disabled.
- */
-int rtl_stream_get_cqpsk_acq_fll(void);
-/**
- * @brief Enable or disable the CQPSK acquisition-only pre-Costas FLL.
- * @param onoff Non-zero to enable; zero to disable.
- */
-void rtl_stream_set_cqpsk_acq_fll(int onoff);
-
-/**
- * @brief Get CQPSK acquisition FLL lock status.
- *
- * @return 1 when locked; 0 when not locked or unavailable.
- */
-int rtl_stream_get_cqpsk_acq_fll_locked(void);
-
-/**
  * @brief Toggle generic IQ balance prefilter (mode-aware image cancel).
  *
  * @param onoff Non-zero to enable; zero to disable.

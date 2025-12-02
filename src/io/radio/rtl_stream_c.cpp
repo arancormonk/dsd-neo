@@ -302,26 +302,6 @@ rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, i
                                     voice_err_delta);
 }
 
-/* CQPSK acquisition-only FLL (pre-Costas) */
-extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll(void);
-extern "C" void dsd_rtl_stream_set_cqpsk_acq_fll(int onoff);
-extern "C" int dsd_rtl_stream_get_cqpsk_acq_fll_locked(void);
-
-extern "C" int
-rtl_stream_get_cqpsk_acq_fll(void) {
-    return dsd_rtl_stream_get_cqpsk_acq_fll();
-}
-
-extern "C" void
-rtl_stream_set_cqpsk_acq_fll(int onoff) {
-    dsd_rtl_stream_set_cqpsk_acq_fll(onoff);
-}
-
-extern "C" int
-rtl_stream_get_cqpsk_acq_fll_locked(void) {
-    return dsd_rtl_stream_get_cqpsk_acq_fll_locked();
-}
-
 extern "C" int
 rtl_stream_constellation_get(float* out_xy, int max_points) {
     return dsd_rtl_stream_constellation_get(out_xy, max_points);

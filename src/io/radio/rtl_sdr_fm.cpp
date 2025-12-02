@@ -3438,27 +3438,10 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
         demod.cqpsk_rms_agc_rms = 0.0f;
-        demod.cqpsk_acq_fll_locked = 0;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
     }
-}
-
-extern "C" int
-dsd_rtl_stream_get_cqpsk_acq_fll(void) {
-    return demod.cqpsk_acq_fll_enable ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_cqpsk_acq_fll(int onoff) {
-    demod.cqpsk_acq_fll_enable = onoff ? 1 : 0;
-    demod.cqpsk_acq_fll_locked = 0;
-}
-
-extern "C" int
-dsd_rtl_stream_get_cqpsk_acq_fll_locked(void) {
-    return demod.cqpsk_acq_fll_locked ? 1 : 0;
 }
 
 extern "C" void

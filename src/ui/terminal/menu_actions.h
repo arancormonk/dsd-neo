@@ -202,7 +202,6 @@ void act_iq_dc_k_dn(void* v);
 void act_ted_gain_up(void* v);
 void act_ted_gain_dn(void* v);
 void act_ted_force_toggle(void* v);
-void act_toggle_cqpsk_acq_fll(void* v);
 void act_c4fm_clk_cycle(void* v);
 void act_c4fm_clk_sync_toggle(void* v);
 void act_toggle_dsp_panel(void* v);

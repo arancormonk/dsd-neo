@@ -1319,13 +1319,6 @@ act_ted_force_toggle(void* v) {
 }
 
 void
-act_toggle_cqpsk_acq_fll(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
 act_c4fm_clk_cycle(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_C4FM_CLK_CYCLE};

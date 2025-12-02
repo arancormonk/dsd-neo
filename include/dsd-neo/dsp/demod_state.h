@@ -240,10 +240,6 @@ struct demod_state {
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
 
-    /* Legacy CQPSK acquisition FLL state (kept for API compatibility, always 0) */
-    int cqpsk_acq_fll_enable;
-    int cqpsk_acq_fll_locked;
-
     /* Costas diagnostics (updated per block) */
     int costas_err_avg_q14; /* average |err| scaled to Q14 for UI/metrics */
 };

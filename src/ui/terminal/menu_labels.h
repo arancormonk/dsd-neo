@@ -137,7 +137,6 @@ const char* lbl_ted_gain(void* v, char* b, size_t n);
 const char* lbl_ted_force(void* v, char* b, size_t n);
 const char* lbl_ted_bias(void* v, char* b, size_t n);
 const char* lbl_dsp_panel(void* v, char* b, size_t n);
-const char* lbl_cqpsk_acq_fll(void* v, char* b, size_t n);
 const char* lbl_c4fm_clk(void* v, char* b, size_t n);
 const char* lbl_c4fm_clk_sync(void* v, char* b, size_t n);
 const char* lbl_rtl_bias(void* v, char* b, size_t n);

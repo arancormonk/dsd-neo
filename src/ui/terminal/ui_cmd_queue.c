@@ -1633,11 +1633,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     rtl_stream_set_tuner_autogain(on ? 0 : 1);
                     break;
                 }
-                case UI_DSP_OP_CQPSK_ACQ_FLL_TOGGLE: {
-                    int on = rtl_stream_get_cqpsk_acq_fll();
-                    rtl_stream_set_cqpsk_acq_fll(on ? 0 : 1);
-                    break;
-                }
                 default: break;
             }
             break;

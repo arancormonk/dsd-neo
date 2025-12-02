@@ -959,14 +959,6 @@ lbl_dsp_panel(void* v, char* b, size_t n) {
 }
 
 const char*
-lbl_cqpsk_acq_fll(void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_cqpsk_acq_fll();
-    snprintf(b, n, "CQPSK Acquisition FLL [%s]", on ? "On" : "Off");
-    return b;
-}
-
-const char*
 lbl_c4fm_clk(void* v, char* b, size_t n) {
     UNUSED(v);
     int mode = rtl_stream_get_c4fm_clk();

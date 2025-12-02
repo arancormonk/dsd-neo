@@ -104,14 +104,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     }
 
     if (cq) {
-        int acq = rtl_stream_get_cqpsk_acq_fll();
-        int lck = 0;
-#ifdef USE_RTLSDR
-        extern int rtl_stream_get_cqpsk_acq_fll_locked(void);
-        lck = rtl_stream_get_cqpsk_acq_fll_locked();
-#endif
-        ui_print_kv_line("Acq FLL", "[%s]", acq ? (lck ? "On (Locked)" : "On (Acq)") : "Off");
-
 #ifdef USE_RTLSDR
         extern double rtl_stream_get_cfo_hz(void);
         extern double rtl_stream_get_residual_cfo_hz(void);

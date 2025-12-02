@@ -240,24 +240,21 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
      * When CQPSK path and FLL are enabled, and we see a reasonably strong
      * QPSK signal, use the residual CFO estimate from the spectrum to gently
      * nudge the FLL NCO toward zero residual. This acts as a slow outer loop
-     * around the symbol-domain FLL/Costas, improving pull-in when residual
-     * CFO is outside their comfort zone.
+     * around the symbol-domain Costas, improving pull-in when residual
+     * CFO is outside its comfort zone.
      *
-     * To avoid loop fighting and NCO oscillation when the inner Costas/FLL
-     * combination is already close to lock, we:
-     *   - Require the CQPSK acquisition FLL (when enabled) to report locked.
+     * To avoid loop fighting and NCO oscillation when the inner Costas
+     * is already close to lock, we:
      *   - Ignore very small residuals near DC.
      *   - Use a conservative outer-loop gain.
      */
     if (demod.cqpsk_enable && demod.fll_enabled && out_rate_hz > 0) {
         double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
         double abs_df = fabs(df_spec_hz);
-        int acq_ok = (!demod.cqpsk_acq_fll_enable) || demod.cqpsk_acq_fll_locked;
-        /* Gate: require reasonable SNR, acquisition FLL lock (when used),
-         * and ignore both wildly off and tiny residual estimates. */
+        /* Gate: require reasonable SNR and ignore wildly off/tiny residuals. */
         const double k_df_min = 150.0; /* Hz: ignore residuals below ~150 Hz to reduce jitter */
         const double k_df_max = 2500.0;
-        if (acq_ok && snr_qpsk > -3.0 && abs_df > k_df_min && abs_df < k_df_max) {
+        if (snr_qpsk > -3.0 && abs_df > k_df_min && abs_df < k_df_max) {
             /* Outer-loop gain: fraction of residual per update. */
             const double k_outer = 0.05;
             /* Residual is after NCO; increase NCO CFO toward signal CFO.
@@ -274,7 +271,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
                     f_new = -F_CLAMP;
                 }
                 float delta_applied = f_new - f_old;
-                /* Mirror the outer-loop nudge into the acquisition FLL integrator so that
+                /* Mirror the outer-loop nudge into the FLL integrator so that
                  * the PI controller's internal state tracks the new target and does not
                  * immediately pull freq back toward the old integrator value. */
                 float i_old = demod.fll_state.integrator;
@@ -437,7 +434,11 @@ dsd_rtl_stream_get_costas_err_q14(void) {
 extern "C" void
 dsd_rtl_stream_reset_costas(void) {
     dsd_costas_reset(&demod.costas_state);
-    demod.cqpsk_diff_prev_r = 0.0f;
+    /* Reset differential decode history to (1,0) not (0,0).
+     * When prev is (0,0), the first diff decode produces zero output,
+     * which corrupts the Costas phase error and causes the loop to hunt.
+     * Using (1,0) means the first sample's diff output equals raw input. */
+    demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
 }
 

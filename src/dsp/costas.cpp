@@ -267,8 +267,20 @@ op25_gardner_costas_cc(struct demod_state* d) {
     const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
     float omega = ted->omega;
 
-    /* Initialize TED state if needed */
-    if (ted->omega_mid == 0.0f || ted->twice_sps < 2) {
+    /*
+     * Reinitialize TED state when SPS changes (e.g., P25P1 CC 5 sps -> P25P2 VC 4 sps).
+     *
+     * This mirrors OP25's set_omega() behavior which is called from configure_tdma()
+     * when TDMA state changes. Without this, the delay line contains stale samples
+     * from the previous symbol rate and the omega bounds are wrong, causing the
+     * Gardner loop to malfunction on P25P2 voice channels.
+     */
+    int need_reinit = (ted->omega_mid == 0.0f || ted->twice_sps < 2);
+    if (!need_reinit && ted->sps > 0 && ted->sps != sps) {
+        need_reinit = 1;
+    }
+
+    if (need_reinit) {
         omega = (float)sps;
         ted->omega = omega;
         float omega_rel = 0.005f; /* OP25 default */
@@ -288,10 +300,16 @@ op25_gardner_costas_cc(struct demod_state* d) {
         ted->dl_index = 0;
         ted->sps = sps;
 
-        /* Clear delay line */
+        /* Clear delay line (OP25's set_omega does memset(d_dl, 0, ...)) */
         for (int i = 0; i < TED_DL_SIZE * 2 * 2; i++) {
             ted->dl[i] = 0.0f;
         }
+
+        /* Reset mu to avoid starting with a stale timing phase from the
+         * previous symbol rate. Fresh acquisition is more reliable. */
+        ted->mu = 0.0f;
+        ted->last_r = 0.0f;
+        ted->last_j = 0.0f;
     }
 
     /* OP25 gains: gain_mu=0.025, gain_omega=0.1*gain_mu^2 */

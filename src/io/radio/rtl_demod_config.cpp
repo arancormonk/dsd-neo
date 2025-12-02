@@ -183,8 +183,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* CQPSK path default (may be overridden by rtl_demod_config_from_env_and_opts
        based on mod_qpsk and DSD_NEO_CQPSK env). */
     s->cqpsk_enable = 0;
-    s->cqpsk_acq_fll_enable = 0;
-    s->cqpsk_acq_fll_locked = 0;
     /* CQPSK differential history: Initialize to (1, 0) not (0, 0).
      * When prev is (0, 0), the first diff decode produces zero output,
      * which corrupts the Costas phase error and causes the loop to hunt.
@@ -375,11 +373,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_diff_prev_r = 1.0f;
         demod->cqpsk_diff_prev_j = 0.0f;
         demod->cqpsk_rms_agc_rms = 0.0f;
-        demod->cqpsk_acq_fll_locked = 0;
     }
-
-    demod->cqpsk_acq_fll_enable = 0;
-    demod->cqpsk_acq_fll_locked = 0;
 
     if (demod->cqpsk_enable) {
         demod->fll_enabled = 0;
