@@ -2710,7 +2710,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             }
         }
 
-        //network status broadcast, abbreviated
+        //network status broadcast, abbreviated (TDMA NET_STS)
         if (MAC[1 + len_a] == 0x7B) {
             int lra = MAC[2 + len_a];
             int lwacn = (MAC[3 + len_a] << 12) | (MAC[4 + len_a] << 4) | ((MAC[5 + len_a] & 0xF0) >> 4);
@@ -2728,6 +2728,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 long neigh_a[1] = {state->p25_cc_freq};
                 p25_sm_on_neighbor_update(opts, state, neigh_a, 1);
                 state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
+                state->p25_cc_is_tdma = 1;  // TDMA control channel (QPSK, 6000 sym/s)
 
                 // Only update system identity and potentially reset IDEN tables when
                 // values are sane (non-zero) and we have a valid frequency mapping.
@@ -2757,7 +2758,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 fprintf(stderr, "\n  P25 NSB: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
             }
         }
-        //network status broadcast, extended
+        //network status broadcast, extended (TDMA NET_STS-EXT)
         if (MAC[1 + len_a] == 0xFB) {
             int lra = MAC[2 + len_a];
             int lwacn = (MAC[3 + len_a] << 12) | (MAC[4 + len_a] << 4) | ((MAC[5 + len_a] & 0xF0) >> 4);
@@ -2777,6 +2778,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 long neigh_b[2] = {nf1, nf2};
                 p25_sm_on_neighbor_update(opts, state, neigh_b, 2);
                 state->p25_sys_is_tdma = 1;   // system carries Phase 2 voice (TDMA present)
+                state->p25_cc_is_tdma = 1;    // TDMA control channel (QPSK, 6000 sym/s)
                 if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
                     if ((lwacn != 0 || lsysid != 0)
                         && ((state->p2_wacn != 0 || state->p2_sysid != 0)
