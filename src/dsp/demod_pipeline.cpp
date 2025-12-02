@@ -681,21 +681,19 @@ qpsk_differential_demod(struct demod_state* fm) {
     fm->result_len = pairs;
 }
 
-/* RMS AGC for CQPSK paths (mirrors OP25 rms_agc placement/behavior). */
+/* RMS AGC for CQPSK paths (mirrors OP25 rms_agc placement/behavior).
+ * OP25 parameters: alpha=0.45, reference=0.85, no gain clamping.
+ * Output = input / (rms / reference) with no bounds checking. */
 static inline void
 cqpsk_rms_agc(struct demod_state* d) {
     if (!d || !d->cqpsk_rms_agc_enable || !d->lowpassed || d->lp_len < 2) {
         return;
     }
     const int pairs = d->lp_len >> 1;
-    const float kAlpha = 0.45f; /* OP25 default */
-    const float kRef = 0.85f;   /* target RMS (normalized) */
+    const float kAlpha = 0.45f; /* OP25 AGC_ALPHA */
+    const float kRef = 0.85f;   /* OP25 AGC_REFERENCE */
     const float kEps = 1e-6f;
-    /* Gain limits: increased max from 8.0 to 64.0 to handle weak RTL signals.
-       RTL-SDR with low input levels can produce very weak baseband that needs
-       significant gain to reach the 0.85 target for proper Costas/TED operation. */
-    const float kGainMax = 64.0f;
-    const float kGainMin = 0.0625f;
+    /* OP25 does NOT clamp AGC gain - removed min/max limits for alignment. */
 
     float rms = d->cqpsk_rms_agc_rms;
     if (rms <= 0.0f) {
@@ -711,12 +709,7 @@ cqpsk_rms_agc(struct demod_state* d) {
         rms2 = (1.0f - kAlpha) * rms2 + kAlpha * mag2;
         rms = sqrtf(rms2);
         float g = kRef / (rms + kEps);
-        if (g > kGainMax) {
-            g = kGainMax;
-        }
-        if (g < kGainMin) {
-            g = kGainMin;
-        }
+        /* No gain clamping - OP25 compatibility */
         out[(size_t)(n << 1)] = I * g;
         out[(size_t)(n << 1) + 1] = Q * g;
     }
@@ -1191,21 +1184,27 @@ full_demod(struct demod_state* d) {
     d->cqpsk_fll_rot_applied = 0;
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
-        /* OP25 CQPSK chain (gardner_costas_cc signal flow):
-           channel LPF (above) -> DC block -> RMS AGC -> band-edge FLL -> Gardner -> [Costas+diff combined] -> arg/rescale -> slicer
+        /*
+         * OP25-aligned CQPSK signal flow (matches p25_demodulator.py lines 406-407):
+         *
+         *   if_out -> cutoff -> agc -> clock -> diffdec -> to_float -> rescale -> slicer
+         *                             ^^^^^^^
+         *                             gardner_costas_cc (COMBINED Gardner TED + Costas)
+         *
+         * Key architecture from OP25's gardner_costas_cc_impl.cc:
+         *   1. NCO rotation is applied to each sample BEFORE the delay line
+         *   2. Gardner TED and Costas loop operate in a single combined block
+         *   3. Output is RAW NCO-corrected symbols (not differential)
+         *   4. External diff_phasor_cc is applied AFTER the combined block
+         *
+         * This matches OP25 exactly - no separate FLL, no separate TED call.
+         * All timing recovery and carrier tracking happens inside op25_gardner_costas_cc().
+         */
 
-           Key insight from OP25's gardner_costas_cc:
-           - NCO rotation, differential decoding, and phase error detection happen
-             in a SINGLE per-sample loop with immediate feedback
-           - Each sample sees the loop correction from the previous sample
-           - This is implemented in cqpsk_costas_diff_and_update()
-        */
-        /* IQ DC block for CQPSK: removes any residual DC offset that biases the constellation.
-         * Without this, RTL-SDR DC spurs can cause systematic phase bias (~9° = -0.2 symbol offset).
-         * Uses the same iq_dc_block() as C4FM path. */
-        d->iq_dc_block_enable = 1;
-        iq_dc_block(d);
+        /* OP25: analog.feedforward_agc_cc(16, 1.0)
+         * We use RMS AGC which is similar in purpose (normalize signal amplitude). */
         cqpsk_rms_agc(d);
+
         /* Debug: Post-AGC magnitudes when DSD_NEO_DEBUG_CQPSK=1 */
         {
             static int debug_init = 0;
@@ -1231,155 +1230,30 @@ full_demod(struct demod_state* d) {
                         d->cqpsk_rms_agc_rms, implied_gain, d->lp_len / 2);
             }
         }
-        /* Band-edge FLL: DISABLED for CQPSK.
-           OP25 does NOT use FLL band-edge for CQPSK - it relies solely on the Costas loop
-           for carrier tracking. The band-edge FLL produces unstable frequency estimates
-           that oscillate wildly, causing sync loss. The Costas loop with OP25 parameters
-           (alpha=0.04, beta=0.0002, fmax=±2400Hz) handles carrier recovery correctly.
 
-           Note: This block is ONLY reached for CQPSK mode (we're inside if(d->cqpsk_enable)).
-           Non-CQPSK modes (FM, C4FM) use a separate FLL path at lines ~1460-1466 which
-           remains fully functional. */
-        if (0 /* disabled for CQPSK */ && d->fll_enabled && d->cqpsk_acq_fll_enable && d->ted_sps >= 2
-            && d->sps_is_integer) {
-            /* Sync from demod_state into modular FLL state so that any
-               external tweaks to fll_freq/phase (e.g., spectrum-assisted
-               correction) are honored. */
-            float prev_freq = d->fll_state.freq;
-            d->fll_state.freq = d->fll_freq;
-            d->fll_state.phase = d->fll_phase;
-            d->fll_state.prev_r = d->fll_prev_r;
-            d->fll_state.prev_j = d->fll_prev_j;
-            if (prev_freq != d->fll_freq) {
-                d->fll_state.integrator = d->fll_freq;
-            }
-
-            fll_config_t cfg;
-            cfg.enabled = 1;
-            /* OP25 default gains converted to native float (rad/sample units) */
-            cfg.alpha = (d->fll_alpha > 0.0f) ? d->fll_alpha : 0.0046f;          /* ~150/32768 */
-            cfg.beta = (d->fll_beta > 0.0f) ? d->fll_beta : 0.00046f;            /* ~15/32768 */
-            cfg.deadband = (d->fll_deadband > 0.0f) ? d->fll_deadband : 0.0086f; /* ~45/16384 * pi */
-            cfg.slew_max = (d->fll_slew_max > 0.0f) ? d->fll_slew_max : 0.012f;  /* ~64/32768 * 2pi */
-
-            /* Band-edge FLL (OP25 settings): updates loop and rotates in-place. */
-            fll_update_error_qpsk(&cfg, &d->fll_state, d->lowpassed, d->lp_len, d->ted_sps);
-            d->cqpsk_fll_rot_applied = 1;
-
-            /* Sync back minimal state */
-            d->fll_freq = d->fll_state.freq;
-            d->fll_phase = d->fll_state.phase;
-            d->fll_prev_r = d->fll_state.prev_r;
-            d->fll_prev_j = d->fll_state.prev_j;
-
-            /* Lock detector with hysteresis: tolerate small residual CFO jitter before declaring lock. */
-            float fmag = fabsf(d->fll_state.freq);
-            const float kLockFreqEnter = 0.08f; /* ~300 Hz @ 24 kHz */
-            const float kLockFreqExit = 0.18f;  /* release threshold */
-            const int kLockBlocks = 6;          /* consecutive blocks to declare lock */
-            const int kUnlockBlocks = 5;        /* consecutive noisy blocks to drop lock */
-            if (d->cqpsk_acq_fll_locked) {
-                if (fmag > kLockFreqExit) {
-                    d->cqpsk_acq_noisy_runs++;
-                    if (d->cqpsk_acq_noisy_runs >= kUnlockBlocks) {
-                        d->cqpsk_acq_quiet_runs = 0;
-                        d->cqpsk_acq_fll_locked = 0;
-                        d->cqpsk_acq_noisy_runs = 0;
-                    }
-                } else {
-                    d->cqpsk_acq_noisy_runs = 0;
-                }
-            } else {
-                if (fmag <= kLockFreqEnter) {
-                    if (d->cqpsk_acq_quiet_runs < kLockBlocks) {
-                        d->cqpsk_acq_quiet_runs++;
-                    }
-                } else if (d->cqpsk_acq_quiet_runs > 0) {
-                    d->cqpsk_acq_quiet_runs--;
-                }
-                if (d->cqpsk_acq_quiet_runs >= kLockBlocks) {
-                    d->cqpsk_acq_fll_locked = 1;
-                    d->cqpsk_acq_noisy_runs = 0;
-                }
-            }
-
-            /* Debug: CQPSK band-edge FLL state when DSD_NEO_DEBUG_CQPSK=1 */
-            {
-                static int debug_init = 0;
-                static int debug_cqpsk = 0;
-                static int call_count = 0;
-                static int prev_lock = -1;
-                if (!debug_init) {
-                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                    debug_init = 1;
-                }
-                if (debug_cqpsk) {
-                    int log_state = 0;
-                    if (d->cqpsk_acq_fll_locked != prev_lock) {
-                        log_state = 1; /* always log lock transitions */
-                    } else if ((++call_count % 20) == 0) {
-                        log_state = 1; /* periodic detail */
-                    }
-                    if (log_state) {
-                        const float kTwoPi = 6.28318530717958647692f;
-                        float freq_hz = (d->rate_out > 0) ? d->fll_state.freq * ((float)d->rate_out / kTwoPi) : 0.0f;
-                        fprintf(stderr, "[FLL] f:%.5f (%.1f Hz) i:%.5f q:%d/%d n:%d/%d locked:%d rot:%d sps:%d\n",
-                                d->fll_state.freq, freq_hz, d->fll_state.integrator, d->cqpsk_acq_quiet_runs,
-                                kLockBlocks, d->cqpsk_acq_noisy_runs, kUnlockBlocks, d->cqpsk_acq_fll_locked,
-                                d->cqpsk_fll_rot_applied, d->ted_sps);
-                        prev_lock = d->cqpsk_acq_fll_locked;
-                    }
-                }
-            }
-        } else {
-            d->cqpsk_acq_quiet_runs = 0;
-            d->cqpsk_acq_fll_locked = 0;
-            d->cqpsk_acq_noisy_runs = 0;
-        }
-        /* Timing error correction after FLL (Gardner), before Costas+diff.
-           For CQPSK paths, always run the decimating Gardner TED when enabled so that
-           cqpsk_costas_diff_and_update() sees symbol-rate samples, even when SPS is
-           not an exact integer. Non-CQPSK paths retain the integer-SPS guard. */
-        if (d->ted_enabled && d->ted_sps >= 2 && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
-            int pre_ted_len = d->lp_len;
-            gardner_timing_adjust(d);
-            /* Debug: Pre-Costas IQ (after TED) when DSD_NEO_DEBUG_CQPSK=1 */
-            {
-                static int debug_init = 0;
-                static int debug_cqpsk = 0;
-                static int call_count = 0;
-                if (!debug_init) {
-                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                    debug_init = 1;
-                }
-                if (debug_cqpsk && (++call_count % 50) == 0) {
-                    fprintf(stderr, "[PRE-COSTAS] in_samples:%d out_symbols:%d\n", pre_ted_len / 2, d->lp_len / 2);
-                    /* Log first few raw IQ symbols before Costas/diff decode */
-                    if (d->lp_len >= 8) {
-                        const float* iq = d->lowpassed;
-                        fprintf(stderr, "[RAW-IQ] ");
-                        for (int k = 0; k < 4 && k < (d->lp_len >> 1); k++) {
-                            float I = iq[(k << 1)];
-                            float Q = iq[(k << 1) + 1];
-                            float phase_deg = atan2f(Q, I) * 57.2957795f;
-                            float mag = sqrtf(I * I + Q * Q);
-                            fprintf(stderr, "(%.2f,%.2f|%.0f°,%.2f) ", I, Q, phase_deg, mag);
-                        }
-                        fprintf(stderr, "\n");
-                    }
-                }
-            }
-        }
-        /* OP25-style combined differential decode + Costas with per-sample feedback.
-           This performs diff decode -> NCO rotation -> phase error -> loop update
-           in a single pass, matching OP25's signal flow where diff_phasor_cc comes
-           before costas_loop_cc. Output is carrier-corrected differential phasors
-           ready for phase extraction. Skip during unit tests that use raw_demod. */
+        /*
+         * OP25-aligned combined Gardner + Costas block.
+         *
+         * This is a direct port of OP25's gardner_costas_cc_impl::general_work().
+         * It combines:
+         *   - NCO rotation (applied per-sample BEFORE delay line)
+         *   - Gardner timing recovery (MMSE interpolation)
+         *   - Costas carrier tracking (phase error from internal diffdec * PT_45)
+         *
+         * Output: Symbol-rate NCO-corrected samples (NOT differential)
+         *
+         * Skip during unit tests that use raw_demod.
+         */
         if (d->mode_demod != &raw_demod) {
-            cqpsk_costas_diff_and_update(d);
-            /* Debug: Costas loop state when DSD_NEO_DEBUG_CQPSK=1 */
+            int pre_len = d->lp_len;
+
+            /* Combined Gardner + Costas (OP25's clock block) */
+            op25_gardner_costas_cc(d);
+
+            /* External diff_phasor_cc (OP25's diffdec block) */
+            op25_diff_phasor_cc(d);
+
+            /* Debug: Post-processing state when DSD_NEO_DEBUG_CQPSK=1 */
             {
                 static int debug_init = 0;
                 static int debug_cqpsk = 0;
@@ -1391,11 +1265,11 @@ full_demod(struct demod_state* d) {
                 }
                 if (debug_cqpsk && (++call_count % 50) == 0) {
                     dsd_costas_loop_state_t* c = &d->costas_state;
-                    /* Show Costas freq in Hz for easier interpretation */
+                    ted_state_t* ted = &d->ted_state;
                     const float kTwoPi = 6.28318530717958647692f;
                     float costas_freq_hz = (d->rate_out > 0) ? c->freq * ((float)d->rate_out / kTwoPi) : 0.0f;
-                    fprintf(stderr, "[COSTAS] phase:%.3f freq:%.5f (%.1f Hz) err:%.3f alpha:%.4f beta:%.5f\n", c->phase,
-                            c->freq, costas_freq_hz, c->error, c->alpha, c->beta);
+                    fprintf(stderr, "[OP25] in:%d out:%d omega:%.3f mu:%.3f costas_freq:%.1fHz phase:%.3f err:%.3f\n",
+                            pre_len / 2, d->lp_len / 2, ted->omega, ted->mu, costas_freq_hz, c->phase, c->error);
                     /* Log IQ constellation: first few symbols to check if on diagonals */
                     if (d->lp_len >= 8) {
                         const float* iq = d->lowpassed;
@@ -1408,38 +1282,6 @@ full_demod(struct demod_state* d) {
                             fprintf(stderr, "(%.2f,%.2f|%.0f°,%.2f) ", I, Q, phase_deg, mag);
                         }
                         fprintf(stderr, "\n");
-                    }
-                    /* Compute phase histogram from full IQ buffer to check for bias */
-                    if (d->lp_len >= 20) {
-                        int ph_hist[4] = {0, 0, 0, 0};
-                        float phase_sum = 0.0f;
-                        const float k4pi = 4.0f / 3.14159265f;
-                        const float* iq = d->lowpassed;
-                        int pairs = d->lp_len >> 1;
-                        /* Guard against division by zero if pairs somehow ends up 0 */
-                        if (pairs > 0) {
-                            for (int k = 0; k < pairs; k++) {
-                                float I = iq[(k << 1)];
-                                float Q = iq[(k << 1) + 1];
-                                float sym = atan2f(Q, I) * k4pi;
-                                phase_sum += sym;
-                                if (sym >= 2.0f) {
-                                    ph_hist[1]++;
-                                } else if (sym >= 0.0f) {
-                                    ph_hist[0]++;
-                                } else if (sym >= -2.0f) {
-                                    ph_hist[2]++;
-                                } else {
-                                    ph_hist[3]++;
-                                }
-                            }
-                            float avg = phase_sum / (float)pairs;
-                            fprintf(stderr, "[IQ-HIST] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f (n=%d)\n",
-                                    100.0f * (float)ph_hist[0] / (float)pairs,
-                                    100.0f * (float)ph_hist[1] / (float)pairs,
-                                    100.0f * (float)ph_hist[2] / (float)pairs,
-                                    100.0f * (float)ph_hist[3] / (float)pairs, avg, pairs);
-                        }
                     }
                 }
             }

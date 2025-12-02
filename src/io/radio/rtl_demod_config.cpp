@@ -323,24 +323,32 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->fll_freq = 0.0f;
     demod->fll_phase = 0.0f;
     demod->fll_prev_r = demod->fll_prev_j = 0.0f;
-    /* Costas loop state (GNU Radio control loop derivative) */
+    /* Costas loop state (OP25-aligned control loop)
+       OP25 defaults from gardner_costas_cc.make():
+         alpha = costas_alpha = 0.04
+         beta = 0.125 * alpha * alpha = 0.0002
+         fmax = 2*pi * 2400 / if_rate; for 24kHz: ~0.628 rad/sample */
     dsd_costas_loop_state_t* cl = &demod->costas_state;
     cl->phase = 0.0f;
     cl->freq = 0.0f;
-    cl->max_freq = 1.0f;
-    cl->min_freq = -1.0f;
-    cl->loop_bw = cfg->costas_bw_is_set ? (float)cfg->costas_loop_bw : dsd_neo_costas_default_loop_bw();
+    /* OP25: fmax = 2*pi * 2400 / if_rate; for 24kHz IF: ~0.628 rad/sample */
+    const float kTwoPi = 6.28318530717958647692f;
+    cl->max_freq = kTwoPi * 2400.0f / 24000.0f; /* ~0.628 rad/sample */
+    cl->min_freq = -cl->max_freq;
+    cl->loop_bw = cfg->costas_bw_is_set ? (float)cfg->costas_loop_bw : 0.008f; /* OP25 default (not used directly) */
     cl->damping = cfg->costas_damping_is_set ? (float)cfg->costas_damping : dsd_neo_costas_default_damping();
-    cl->alpha = 0.0f;
-    cl->beta = 0.0f;
+    /* OP25 direct parameters: alpha=0.04, beta=0.125*alpha^2=0.0002 */
+    cl->alpha = 0.04f;
+    cl->beta = 0.125f * cl->alpha * cl->alpha; /* 0.0002 */
     cl->error = 0.0f;
     cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
 
     int ted_default = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
     demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : ted_default;
-    /* Native float TED gain (controls tracking aggressiveness, bounded internally) */
-    demod->ted_gain = cfg->ted_gain_is_set ? cfg->ted_gain : 0.05f;
+    /* Native float TED gain (controls tracking aggressiveness, bounded internally)
+       OP25 default: gain_mu = 0.025 */
+    demod->ted_gain = cfg->ted_gain_is_set ? cfg->ted_gain : 0.025f;
     demod->ted_sps = 10;
     demod->ted_mu = 0.0f;
     demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
@@ -377,18 +385,25 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         demod->cqpsk_acq_noisy_runs = 0;
     }
 
-    /* CQPSK acquisition FLL: DISABLED.
-       OP25 does NOT use a band-edge FLL for CQPSK - it relies solely on the Costas loop
-       for carrier tracking. The band-edge FLL produces unstable frequency estimates.
-       The Costas loop with OP25 parameters (alpha=0.04, beta=0.0002) handles carrier
-       recovery correctly. See demod_pipeline.cpp CQPSK path for details. */
+    /* CQPSK acquisition FLL: DISABLED (OP25-aligned).
+       OP25's combined gardner_costas_cc block handles ALL carrier and timing
+       recovery in a single integrated loop. There is no separate pre-TED FLL.
+       The Costas loop inside gardner_costas_cc handles frequency tracking.
+
+       Signal flow (from OP25 p25_demodulator.py):
+         if_out -> cutoff -> agc -> clock -> diffdec -> to_float -> rescale -> slicer
+                                   ^^^^^^^
+                                   gardner_costas_cc (combined Gardner TED + Costas)
+
+       For CQPSK, we disable the separate band-edge FLL since the Costas loop
+       inside op25_gardner_costas_cc provides all needed carrier tracking. */
     demod->cqpsk_acq_fll_enable = 0;
     demod->cqpsk_acq_fll_locked = 0;
     demod->cqpsk_acq_quiet_runs = 0;
     demod->cqpsk_acq_noisy_runs = 0;
 
-    /* For CQPSK mode, also disable the general FLL flag since we use Costas instead.
-       Non-CQPSK modes (FM/C4FM) still use their separate FLL path. */
+    /* For CQPSK mode, disable separate FLL since carrier tracking is done
+       by the Costas loop inside the combined gardner_costas_cc block. */
     if (demod->cqpsk_enable) {
         demod->fll_enabled = 0;
     }
@@ -549,13 +564,8 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             }
         }
         if (!env_ted_gain_set) {
-            float base_gain = 0.05f;
-            /* For P25 at low SPS (e.g., 12 kHz / 4800 or 6000 sym/s),
-               use a slightly stronger default Gardner gain. */
-            if (p25_mode && demod->ted_sps > 0 && demod->ted_sps <= 4) {
-                base_gain = 0.075f;
-            }
-            demod->ted_gain = base_gain;
+            /* OP25 TED defaults: gain_mu = 0.025, gain_omega = 0.1 * gain_mu^2 = 0.0000625 */
+            demod->ted_gain = 0.025f;
         }
         /* Digital defaults: slightly stronger, lower-deadband FLL for CQPSK/FM. */
         if (!env_fll_alpha_set) {
