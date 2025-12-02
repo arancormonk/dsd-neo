@@ -344,6 +344,25 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     trunk_tune_to_freq(opts, state, freq);
     ctx->tune_count++;
     ctx->grant_count++;
+
+    // Optional debug: log TDMA grant context when sync debug is enabled.
+    {
+        static int debug_init = 0;
+        static int debug_sync = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_SYNC");
+            debug_sync = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_sync && ctx->vc_is_tdma) {
+            fprintf(stderr,
+                    "[P25-SM] TDMA grant: ch=0x%04X freq=%ld slot=%d rf_mod=%d sps=%d center=%d "
+                    "tune_count=%u grant_count=%u\n",
+                    ev->channel & 0xFFFF, freq, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
+                    state->symbolCenter, ctx->tune_count, ctx->grant_count);
+        }
+    }
+
     if (state) {
         state->p25_sm_tune_count++;
     }

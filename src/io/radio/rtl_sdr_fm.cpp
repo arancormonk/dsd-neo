@@ -17,6 +17,7 @@
 #include <chrono>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fll.h>
@@ -495,18 +496,36 @@ demod_reset_on_retune(struct demod_state* s) {
      *   y[0] = x[0] * conj(1+j0) = x[0]
      * This means the first symbol is passed through unchanged, avoiding garbage output
      * that would cascade through subsequent differential decodes.
-     *
-     * We PRESERVE Costas phase/freq because the carrier offset is typically similar
-     * between CC and VC of the same site. This allows faster lock acquisition.
      */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
     s->costas_err_avg_q14 = 0;
-    s->costas_state.error = 0.0f;
+    /* Full Costas reset: clear phase, freq, and error for fresh acquisition.
+     *
+     * Previously we preserved phase/freq assuming carrier offset is similar between
+     * CC and VC. However, when retuning to a different physical RF frequency, the
+     * carrier phase relationship is completely different and the old phase causes
+     * the Costas loop to start with large error, preventing proper lock acquisition.
+     *
+     * A full reset lets the loop acquire from scratch, which is safer for retunes
+     * to different frequencies. The loop bandwidth (alpha~0.04) allows acquisition
+     * within a few hundred symbols.
+     */
+    dsd_costas_reset(&s->costas_state);
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
      * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
     ted_soft_reset(&s->ted_state);
+    /* Apply any pending TED SPS override NOW, after hardware retune completes.
+     *
+     * The override is set by trunking code BEFORE retune (when the new channel's
+     * symbol rate is known), but must not be applied until AFTER retune when new
+     * samples arrive. Applying it earlier would process stale samples (old freq)
+     * with the wrong SPS. This function runs after hardware retune completes,
+     * so it's safe to apply the override here. */
+    if (s->ted_sps_override > 0 && s->ted_sps != s->ted_sps_override) {
+        s->ted_sps = s->ted_sps_override;
+    }
     /* Note: s->ted_mu is a legacy field used by the Farrow path; the OP25-style
      * Gardner uses ted_state.mu internally. Don't reset it here. */
     /* Deemphasis / audio LPF / DC */
@@ -535,6 +554,25 @@ demod_reset_on_retune(struct demod_state* s) {
     for (int k = 0; k < 64; k++) {
         s->channel_lpf_hist_i[k] = 0;
         s->channel_lpf_hist_q[k] = 0;
+    }
+
+    /* Debug: summarize key CQPSK/TED state after retune when DSD_NEO_DEBUG_CQPSK=1.
+       This runs in the controller thread after hardware retune and SPS refresh. */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk) {
+            fprintf(stderr,
+                    "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_freq=%.3f fll_phase=%.3f gardner_omega=%.3f "
+                    "gardner_mu=%.3f\n",
+                    s->ted_sps, s->ted_sps_override, s->cqpsk_enable, s->fll_freq, s->fll_phase, s->ted_state.omega,
+                    s->ted_state.mu);
+        }
     }
 }
 

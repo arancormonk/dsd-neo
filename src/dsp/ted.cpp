@@ -162,7 +162,10 @@ ted_soft_reset(ted_state_t* state) {
     }
     /* Preserve: mu, omega, omega_mid, omega_min, omega_max, sps, twice_sps */
     /* Reset: accumulators, delay line, last sample values */
-    state->last_r = 0.0f;
+    /* Reset last_r/j to (1,0) NOT (0,0) - see costas.cpp comment for rationale.
+     * With (0,0), first Gardner error is spurious and first diffdec is zero.
+     * With (1,0), first diffdec = sym (passthrough), matching external diff_prev. */
+    state->last_r = 1.0f;
     state->last_j = 0.0f;
     state->e_ema = 0.0f;
     state->lock_accum = 0.0f;
@@ -349,6 +352,15 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         state->twice_sps = twice_sps_required;
         state->dl_index = 0;
         state->sps = config->sps;
+        /* CRITICAL: Initialize mu to a value > twice_sps so the inner sample-consumption
+         * loop runs first, filling the delay line with valid samples before any symbol
+         * output. Without this, the first symbols are interpolated from the zeroed delay
+         * line (cleared by ted_init_state), producing garbage.
+         *
+         * In OP25's continuous flow, the delay line is always populated with recent samples.
+         * But dsd-neo has discrete retune events with sample gaps - we must explicitly
+         * pre-fill the delay line before interpolating. */
+        state->mu = (float)(twice_sps_required + 1);
     }
 
     /* Get gains with OP25 defaults */

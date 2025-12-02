@@ -322,9 +322,26 @@ op25_gardner_costas_cc(struct demod_state* d) {
          *
          * Reset to clean state for fresh acquisition on new symbol rate.
          * Costas phase/freq are preserved - carrier offset is similar between CC and VC.
+         *
+         * IMPORTANT: Reset last_r/j to (1,0) NOT (0,0). With (0,0):
+         *   - First Gardner error = (0-sym)*mid = -sym*mid (large spurious error)
+         *   - First diffdec = sym*conj(0) = 0 (no Costas phase correction!)
+         * With (1,0):
+         *   - First Gardner error = (1-sym)*mid (bounded, reasonable)
+         *   - First diffdec = sym*conj(1) = sym (passthrough, like external diff_prev)
+         * This matches the external cqpsk_diff_prev reset behavior.
+         *
+         * CRITICAL: Initialize mu to a value > twice_sps so the inner sample-consumption
+         * loop runs first, filling the delay line with valid samples before any symbol
+         * output. Without this, the first symbols are interpolated from the zeroed delay
+         * line, producing garbage that corrupts the Costas loop.
+         *
+         * In OP25's continuous flow, the delay line is always populated with recent samples.
+         * But dsd-neo has discrete retune events with sample gaps - we must explicitly
+         * pre-fill the delay line before interpolating.
          */
-        ted->mu = 0.0f;
-        ted->last_r = 0.0f;
+        ted->mu = (float)(twice_sps_required + 1);
+        ted->last_r = 1.0f;
         ted->last_j = 0.0f;
     }
 

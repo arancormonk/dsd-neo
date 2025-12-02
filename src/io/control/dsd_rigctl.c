@@ -856,6 +856,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || freq <= 0) {
         return;
     }
+
     // Reset CQPSK permutation state when tuning to a new voice channel.
     // The constellation rotation from the previous channel (e.g., P25P1 CC)
     // won't be valid for the new channel (e.g., P25P2 VC), and a stale
@@ -893,6 +894,23 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (opts->audio_in_type == 3 && opts->p25_trunk == 1) {
         int ted_sps = (state->p25_p2_active_slot >= 0) ? 4 : 5;
         rtl_stream_set_ted_sps(ted_sps);
+        // Optional debug: log P25 trunk VC tuning parameters when CQPSK debug is enabled.
+        {
+            static int debug_init = 0;
+            static int debug_cqpsk = 0;
+            if (!debug_init) {
+                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                debug_init = 1;
+            }
+            if (debug_cqpsk) {
+                int is_tdma_vc = (state->p25_p2_active_slot >= 0) ? 1 : 0;
+                fprintf(stderr,
+                        "[P25-TUNE] VC freq=%ld Hz tdma=%d slot=%d rf_mod=%d sps=%d center=%d ted_sps_override=%d\n",
+                        freq, is_tdma_vc, state->p25_p2_active_slot, state->rf_mod, state->samplesPerSymbol,
+                        state->symbolCenter, ted_sps);
+            }
+        }
     }
 #endif
 

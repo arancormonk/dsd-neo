@@ -791,8 +791,40 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 int search_result;
 
                 /* Use P25P2 sync pattern (20 dibits) when tuned to TDMA voice channel,
-                 * otherwise use P25P1 sync pattern (24 dibits). */
-                if (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1) {
+                 * otherwise use P25P1 sync pattern (24 dibits).
+                 *
+                 * Additionally verify TED is configured for TDMA rate (4 SPS at 24kHz).
+                 * This avoids searching for P25P2 patterns while the TED is still at
+                 * P25P1 rate during the retune transition, which would produce symbols
+                 * at the wrong timing for sync detection. When TED SPS is unavailable
+                 * (non-RTL frontends), fall back to always searching to preserve TDMA
+                 * detection. */
+                int ted_ready_for_p2 = 1;
+#ifdef USE_RTLSDR
+                int ted_sps_now = rtl_stream_get_ted_sps();
+                if (ted_sps_now > 0) {
+                    ted_ready_for_p2 = (ted_sps_now == 4); /* 4 SPS = 6000 sym/s at 24kHz */
+                }
+                /* Optional debug: when on a TDMA VC but TED is not yet at 4 SPS,
+                   log the gate decision under DSD_NEO_DEBUG_SYNC to help diagnose
+                   early-retune timing issues. */
+                if (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1 && !ted_ready_for_p2) {
+                    static int debug_init_gate = 0;
+                    static int debug_sync_gate = 0;
+                    if (!debug_init_gate) {
+                        const char* env = getenv("DSD_NEO_DEBUG_SYNC");
+                        debug_sync_gate = (env && *env == '1') ? 1 : 0;
+                        debug_init_gate = 1;
+                    }
+                    if (debug_sync_gate && (t % 200) == 0) {
+                        fprintf(stderr,
+                                "[SYNCDBG] P25p2 sync gate: slot=%d ted_sps=%d ready=%d t_max=%d "
+                                "(skipping P2 pattern)\n",
+                                state->p25_p2_active_slot, ted_sps_now, ted_ready_for_p2, t_max);
+                    }
+                }
+#endif
+                if (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1 && ted_ready_for_p2) {
                     /* P25P2 TDMA voice channel - use shorter 20-dibit sync pattern */
                     const int* raw_start = raw_synctest_p - (CQPSK_P25P2_SYNC_LEN - 1);
                     search_result =
