@@ -194,6 +194,15 @@ phase_error_detector_qpsk(float real, float imag) {
 
 /*
  * Reset Costas loop state for fresh carrier acquisition on retune.
+ *
+ * IMPORTANT: We preserve c->freq (carrier frequency estimate) because the
+ * local oscillator offset is a property of the RTL-SDR hardware, not the
+ * channel. When retuning from CC to VC on the same system, the carrier
+ * offset should be similar. Preserving freq allows faster re-acquisition.
+ *
+ * We DO reset phase because the phase relationship changes with frequency.
+ * We also reset error accumulator and initialized flag to trigger fresh
+ * gain initialization.
  */
 extern "C" void
 dsd_costas_reset(dsd_costas_loop_state_t* c) {
@@ -201,7 +210,7 @@ dsd_costas_reset(dsd_costas_loop_state_t* c) {
         return;
     }
     c->phase = 0.0f;
-    c->freq = 0.0f;
+    /* Preserve c->freq - oscillator offset is hardware property, similar across channels */
     c->error = 0.0f;
     c->initialized = 0;
 }
@@ -288,6 +297,24 @@ op25_gardner_costas_cc(struct demod_state* d) {
     }
 
     if (need_reinit) {
+        /* Debug: log TED SPS change when DSD_NEO_DEBUG_CQPSK=1 */
+        {
+            static int debug_init = 0;
+            static int debug_cqpsk = 0;
+            if (!debug_init) {
+                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                debug_init = 1;
+            }
+            if (debug_cqpsk) {
+                /* Note: freq is preserved from previous channel to speed acquisition */
+                float freq_hz = c->freq * (24000.0f / kTwoPi);
+                fprintf(stderr,
+                        "[COSTAS] TED reinit: old_sps=%d new_sps=%d old_omega=%.3f costas_phase=%.3f freq=%.1fHz "
+                        "(preserved)\n",
+                        ted->sps, sps, ted->omega, c->phase, freq_hz);
+            }
+        }
         omega = (float)sps;
         ted->omega = omega;
         float omega_rel = 0.005f; /* OP25 default */

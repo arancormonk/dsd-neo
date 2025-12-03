@@ -185,15 +185,26 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
     if (!ctx) {
         return;
     }
-    if (s->mute) {
-        /* Clamp mute length to buffer size to avoid overwrite; carry remainder */
+    /* Handle muting: skip (discard) muted samples entirely instead of zero-filling.
+     *
+     * Previously we set muted samples to 127 (midpoint), which after bias subtraction
+     * becomes 0.0. These zero-magnitude samples corrupt the Costas loop and TED when
+     * they're processed after the retune gate opens. By discarding them entirely,
+     * the demod thread never sees transient samples.
+     *
+     * Advance buf pointer and reduce len to skip the muted portion. */
+    if (s->mute.load(std::memory_order_relaxed) > 0) {
         int old = s->mute.load(std::memory_order_relaxed);
         if (old > 0) {
             uint32_t m = (uint32_t)old;
-            if (m > len) {
-                m = len;
+            if (m >= len) {
+                /* Entire buffer is muted - discard all and update counter */
+                s->mute.fetch_sub((int)len, std::memory_order_relaxed);
+                return; /* Nothing to process */
             }
-            memset(buf, 127, m);
+            /* Partial mute: skip first m bytes, process remainder */
+            buf += m;
+            len -= m;
             s->mute.fetch_sub((int)m, std::memory_order_relaxed);
         }
     }
@@ -593,6 +604,23 @@ tcp_thread_fn(void* arg) {
         /* Successful read: reset timeout counter */
         consec_timeouts = 0;
         uint32_t len = (uint32_t)r;
+        /* Handle muting: discard muted samples for rtl_tcp backend.
+         * Same logic as USB callback - skip samples entirely instead of processing. */
+        if (s->mute.load(std::memory_order_relaxed) > 0) {
+            int old = s->mute.load(std::memory_order_relaxed);
+            if (old > 0) {
+                uint32_t m = (uint32_t)old;
+                if (m >= len) {
+                    /* Entire buffer is muted - discard all */
+                    s->mute.fetch_sub((int)len, std::memory_order_relaxed);
+                    continue; /* Skip processing, get next recv */
+                }
+                /* Partial mute: skip first m bytes, process remainder */
+                memmove(u8, u8 + m, len - m);
+                len -= m;
+                s->mute.fetch_sub((int)m, std::memory_order_relaxed);
+            }
+        }
         /* Stats: bytes in */
         if (s->stats_enabled) {
             s->tcp_bytes_total += (uint64_t)len;

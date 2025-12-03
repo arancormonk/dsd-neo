@@ -270,6 +270,20 @@ struct controller_state {
     /* Marshalled retune request from external threads (UDP/API). */
     std::atomic<int> manual_retune_pending;
     uint32_t manual_retune_freq;
+    /* Cold start gate: demod thread skips CQPSK until controller signals ready.
+     * This prevents the race where demod processes samples with uninitialized
+     * TED/Costas state before the controller finishes cold start configuration. */
+    std::atomic<int> cold_start_ready;
+    /* Retune gate: demod thread skips processing while retune is in progress.
+     * This prevents the race where demod processes transient/stale samples
+     * during hardware retune before TED/Costas/AGC are reset. Set to 1 at
+     * start of retune, cleared to 0 after reset and mute complete. */
+    std::atomic<int> retune_in_progress;
+    /* Post-retune warmup: number of sample blocks to discard after retune gate opens.
+     * This handles USB-buffered samples that were captured BEFORE the mute took effect
+     * but arrive AFTER the gate opens. Set by controller after retune, decremented by
+     * demod thread until zero. Samples during warmup are discarded (not processed). */
+    std::atomic<int> warmup_blocks_remaining;
 };
 
 struct rtl_device* rtl_device_handle = NULL;
@@ -499,17 +513,23 @@ demod_reset_on_retune(struct demod_state* s) {
      */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
+    /* Reset RMS AGC estimate so it re-initializes to reference (0.85) on first block.
+     * Without this, a bad AGC state from startup transients or noise persists and
+     * causes the Costas loop to see collapsed/weak symbols, preventing lock. */
+    s->cqpsk_rms_agc_rms = 0.0f;
     s->costas_err_avg_q14 = 0;
-    /* Full Costas reset: clear phase, freq, and error for fresh acquisition.
+    /* Costas reset: clear phase and error, but PRESERVE freq estimate.
      *
-     * Previously we preserved phase/freq assuming carrier offset is similar between
-     * CC and VC. However, when retuning to a different physical RF frequency, the
-     * carrier phase relationship is completely different and the old phase causes
-     * the Costas loop to start with large error, preventing proper lock acquisition.
+     * The carrier frequency offset (c->freq) is primarily a property of the RTL-SDR
+     * local oscillator, not the channel. When retuning from CC to VC on the same
+     * system, the oscillator offset should be similar (~50-100 Hz typically).
      *
-     * A full reset lets the loop acquire from scratch, which is safer for retunes
-     * to different frequencies. The loop bandwidth (alpha~0.04) allows acquisition
-     * within a few hundred symbols.
+     * Preserving freq allows the Costas loop to start tracking immediately rather
+     * than needing to slew from 0 Hz to the actual offset. This is critical for
+     * P25p2 HDQPSK where the loop must acquire quickly to decode the first TDMA
+     * superframe.
+     *
+     * We DO reset phase because the phase relationship changes with RF frequency.
      */
     dsd_costas_reset(&s->costas_state);
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
@@ -691,7 +711,13 @@ demod_thread_fn(void* arg) {
     static int s_ag_up_persist = 2;         /* require consecutive passes before stepping up */
     static int ag_spec_pass = 0;            /* persistence counter for spectral gate */
     int logged_once = 0;
+    const int is_rtltcp_input = (g_stream && g_stream->opts && g_stream->opts->rtltcp_enabled) ? 1 : 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
+        /* Preserve rtltcp prebuffer: hold the consumer until cold start finishes. */
+        if (is_rtltcp_input && !controller.cold_start_ready.load(std::memory_order_acquire)) {
+            usleep(1000); /* short sleep to avoid busy spinning */
+            continue;
+        }
         /* Read a block from input ring */
         int got = input_ring_read_block(&input_ring, d->input_cb_buf, MAXIMUM_BUF_LENGTH);
         if (got <= 0) {
@@ -967,6 +993,46 @@ demod_thread_fn(void* arg) {
         }
         d->lowpassed = d->input_cb_buf;
         d->lp_len = got;
+        /* Gate: skip demod processing until controller signals cold start complete.
+         * This prevents the race where we process samples with uninitialized
+         * TED/AGC/filter state, causing symbol timing or gain to lock incorrectly.
+         * Applies to all modulations (C4FM, GFSK, QPSK, etc). */
+        if (!controller.cold_start_ready.load(std::memory_order_acquire)) {
+            continue;
+        }
+        /* Gate: skip demod processing while a retune is in progress.
+         * This prevents the race where we process transient/stale samples during
+         * hardware retune before TED/AGC/filters are reset for the new frequency.
+         * Applies to all modulations (C4FM, GFSK, QPSK, etc). */
+        if (controller.retune_in_progress.load(std::memory_order_acquire)) {
+            continue;
+        }
+        /* Post-retune warmup: discard initial blocks after gate opens.
+         * USB/librtlsdr buffers ~20-50ms of samples that were captured BEFORE the
+         * mute took effect. These transient samples corrupt the freshly-reset
+         * Costas/TED state. Discard them until warmup completes.
+         *
+         * We still run demod_reset_on_retune() implicitly by discarding - the DSP
+         * state was reset by the controller thread, and we simply don't feed it
+         * garbage samples during the warmup window. */
+        {
+            int warmup = controller.warmup_blocks_remaining.load(std::memory_order_acquire);
+            if (warmup > 0) {
+                controller.warmup_blocks_remaining.fetch_sub(1, std::memory_order_acq_rel);
+                /* Optionally log warmup progress for debugging */
+                static int debug_init = 0;
+                static int debug_warmup = 0;
+                if (!debug_init) {
+                    const char* env = getenv("DSD_NEO_DEBUG_WARMUP");
+                    debug_warmup = (env && *env == '1') ? 1 : 0;
+                    debug_init = 1;
+                }
+                if (debug_warmup) {
+                    fprintf(stderr, "[WARMUP] discarding block %d remaining\n", warmup - 1);
+                }
+                continue;
+            }
+        }
         full_demod(d);
         /* Capture decimated I/Q for constellation view after DSP. */
         extern void constellation_ring_append(const float* iq, int len, int sps_hint);
@@ -1475,6 +1541,56 @@ controller_thread_fn(void* arg) {
     rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(dongle.rate, (uint32_t)rtl_dsp_bw_hz));
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
 
+    /* Cold start initialization: apply the same reset sequence used on retunes.
+     *
+     * Without this, the CQPSK chain has inconsistent startup behavior:
+     *   1. TED SPS stays at init default (10) instead of correct value for rate/mode
+     *   2. Costas loop and TED have stale/zero state instead of clean acquisition state
+     *   3. RTL-SDR startup transients (~10-50ms of garbage) flow into demod
+     *
+     * These issues cause the Gardner TED to converge to wrong timing phase or the
+     * Costas loop to fail acquisition on first run, while subsequent retunes work
+     * because they go through demod_reset_on_retune(). */
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
+    demod_reset_on_retune(&demod);
+    /* For USB sources: clear ring and mute startup transients.
+     * For rtltcp: skip ring clear and mute to preserve the prebuffer that was
+     * carefully accumulated before launching threads. The prebuffer smooths
+     * initial jitter and prevents underruns; wiping it defeats its purpose.
+     * Network samples don't have USB/tuner transients so muting isn't needed. */
+    int is_rtltcp = (g_stream && g_stream->opts && g_stream->opts->rtltcp_enabled);
+    if (!is_rtltcp) {
+        input_ring_clear(&input_ring);
+        /* Mute startup transients - RTL-SDR devices output noise/garbage on initial
+         * streaming. Use longer mute for cold start since device is fully cold and
+         * PLL/AGC need time to stabilize. */
+        int mute_ms = 100;  /* longer than retune (50ms) for cold device */
+        int settle_ms = 50; /* additional settling after mute */
+        int64_t bytes = ((int64_t)dongle.rate * 2LL * (int64_t)mute_ms) / 1000LL;
+        if (bytes < BUFFER_DUMP) {
+            bytes = BUFFER_DUMP;
+        }
+        if (bytes > INT32_MAX) {
+            bytes = INT32_MAX;
+        }
+        rtl_device_mute(rtl_device_handle, (int)bytes);
+        /* Wait for mute period + settling time before allowing demod to start.
+         * This is critical: the USB callback is already running and buffering
+         * samples. We need to wait for the muted samples to flow through and
+         * for the tuner to stabilize before demod processes anything. */
+        usleep((unsigned)(mute_ms * 1000) + (unsigned)(settle_ms * 1000));
+    }
+    /* Set post-cold-start warmup: discard first N blocks after demod starts.
+     * Even after mute+settle, some USB-buffered samples from before the mute
+     * may still arrive. Use more warmup blocks than retune since cold start
+     * has more USB buffer depth to flush. */
+    s->warmup_blocks_remaining.store(12, std::memory_order_release);
+
+    /* Signal demod thread that cold start initialization is complete.
+     * The demod thread gates CQPSK processing on this flag to prevent the race
+     * where it processes samples before TED SPS/Costas/AGC are properly reset. */
+    s->cold_start_ready.store(1, std::memory_order_release);
+
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Wait for a hop signal or a pending retune, with proper predicate guard */
         pthread_mutex_lock(&s->hop_m);
@@ -1489,15 +1605,24 @@ controller_thread_fn(void* arg) {
         if (s->manual_retune_pending.load()) {
             uint32_t tgt = s->manual_retune_freq;
             s->manual_retune_pending.store(0);
+            /* Gate demod thread: prevent processing transient samples during retune */
+            s->retune_in_progress.store(1, std::memory_order_release);
             apply_capture_settings((uint32_t)tgt);
             rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
             rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
             /* Reset demod/FLL/TED and clear any stale buffers on retune */
             demod_reset_on_retune(&demod);
             input_ring_clear(&input_ring);
-            /* Dynamically mute a short slice of incoming bytes to flush tuner/transient tail. */
+            /* Dynamically mute a short slice of incoming bytes to flush tuner/transient tail.
+             * The mute only applies to samples that arrive AFTER this call - samples already
+             * in flight (USB buffers, librtlsdr internal buffers) will arrive unmuted.
+             * We must wait for the muted samples to flow through before resuming demod.
+             *
+             * Use longer mute/settle for trunking retunes where signal quality is critical.
+             * USB buffer depth is typically 20-50ms, so 50ms mute + 30ms settle gives margin. */
             {
-                int mute_ms = 10; /* ~10ms default */
+                int mute_ms = 50;   /* increased from 10ms for better transient rejection */
+                int settle_ms = 30; /* additional settling after mute */
                 int64_t bytes = ((int64_t)dongle.rate * 2LL * (int64_t)mute_ms) / 1000LL;
                 if (bytes < BUFFER_DUMP) {
                     bytes = BUFFER_DUMP; /* keep previous minimum */
@@ -1506,7 +1631,23 @@ controller_thread_fn(void* arg) {
                     bytes = INT32_MAX;
                 }
                 rtl_device_mute(rtl_device_handle, (int)bytes);
+                /* Wait for muted samples to flow through. USB/librtlsdr has ~20-50ms of
+                 * buffered samples that were captured before the mute took effect. Add
+                 * settling time to ensure transients have cleared before demod resumes. */
+                usleep((unsigned)(mute_ms * 1000) + (unsigned)(settle_ms * 1000));
             }
+            /* Set post-retune warmup: discard first N blocks after gate opens.
+             * Even after mute+settle, some USB-buffered samples from before the mute
+             * may still arrive. These transient samples corrupt the freshly-reset
+             * Costas/TED state, causing poor initial EVM that degrades over time.
+             *
+             * At 1536kHz sample rate with 16384-byte blocks (~5.3ms/block), discard
+             * ~16 blocks (~85ms) to cover the USB buffer depth with margin AND give
+             * the Costas loop time to acquire on clean samples before we start
+             * decoding. P25p2 HDQPSK is particularly sensitive to initial conditions. */
+            s->warmup_blocks_remaining.store(16, std::memory_order_release);
+            /* Retune complete: allow demod thread to resume processing */
+            s->retune_in_progress.store(0, std::memory_order_release);
             drain_output_on_retune();
             LOG_INFO("Retune applied: %u Hz.\n", tgt);
             continue;
@@ -1515,15 +1656,24 @@ controller_thread_fn(void* arg) {
             continue;
         }
         s->freq_now = (s->freq_now + 1) % s->freq_len;
+        /* Gate demod thread: prevent processing transient samples during hop */
+        s->retune_in_progress.store(1, std::memory_order_release);
         apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
         rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
         rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
         /* Reset demod/FLL/TED and clear any stale buffers on hop */
         demod_reset_on_retune(&demod);
         input_ring_clear(&input_ring);
-        /* Dynamically mute a short slice of incoming bytes to flush tuner/transient tail. */
+        /* Dynamically mute a short slice of incoming bytes to flush tuner/transient tail.
+         * The mute only applies to samples that arrive AFTER this call - samples already
+         * in flight (USB buffers, librtlsdr internal buffers) will arrive unmuted.
+         * We must wait for the muted samples to flow through before resuming demod.
+         *
+         * Use longer mute/settle for frequency hops where signal quality is critical.
+         * USB buffer depth is typically 20-50ms, so 50ms mute + 30ms settle gives margin. */
         {
-            int mute_ms = 10; /* ~10ms default */
+            int mute_ms = 50;   /* increased from 10ms for better transient rejection */
+            int settle_ms = 30; /* additional settling after mute */
             int64_t bytes = ((int64_t)dongle.rate * 2LL * (int64_t)mute_ms) / 1000LL;
             if (bytes < BUFFER_DUMP) {
                 bytes = BUFFER_DUMP; /* keep previous minimum */
@@ -1532,7 +1682,23 @@ controller_thread_fn(void* arg) {
                 bytes = INT32_MAX;
             }
             rtl_device_mute(rtl_device_handle, (int)bytes);
+            /* Wait for muted samples to flow through. USB/librtlsdr has ~20-50ms of
+             * buffered samples that were captured before the mute took effect. Add
+             * settling time to ensure transients have cleared before demod resumes. */
+            usleep((unsigned)(mute_ms * 1000) + (unsigned)(settle_ms * 1000));
         }
+        /* Set post-retune warmup: discard first N blocks after gate opens.
+         * Even after mute+settle, some USB-buffered samples from before the mute
+         * may still arrive. These transient samples corrupt the freshly-reset
+         * Costas/TED state, causing poor initial EVM that degrades over time.
+         *
+         * At 1536kHz sample rate with 16384-byte blocks (~5.3ms/block), discard
+         * ~16 blocks (~85ms) to cover the USB buffer depth with margin AND give
+         * the Costas loop time to acquire on clean samples before we start
+         * decoding. P25p2 HDQPSK is particularly sensitive to initial conditions. */
+        s->warmup_blocks_remaining.store(16, std::memory_order_release);
+        /* Hop complete: allow demod thread to resume processing */
+        s->retune_in_progress.store(0, std::memory_order_release);
         drain_output_on_retune();
     }
     return 0;
@@ -1969,6 +2135,8 @@ controller_init(struct controller_state* s) {
     pthread_mutex_init(&s->hop_m, NULL);
     s->manual_retune_pending.store(0);
     s->manual_retune_freq = 0;
+    s->cold_start_ready.store(0); /* Demod will wait for controller to signal ready */
+    s->retune_in_progress.store(0);
 }
 
 /**
