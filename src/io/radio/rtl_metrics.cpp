@@ -294,12 +294,14 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         }
     }
 
-    /* Simple lock heuristic for CQPSK: small residual df and reasonable SNR */
+    /* Lock heuristic for CQPSK: based on SNR (Costas loop doesn't expose a direct lock flag).
+     * The spectrum-based df_spec_hz is not meaningful for CQPSK since the Costas NCO
+     * corrects carrier offset internally. Use SNR threshold instead. */
     int locked = 0;
     if (demod.cqpsk_enable) {
         double snr = g_snr_qpsk_db.load(std::memory_order_relaxed);
-        double thr_df = 120.0;
-        if (fabs(df_spec_hz) < thr_df && snr > 8.0) {
+        /* Lock when SNR indicates good signal quality */
+        if (snr > 6.0) {
             locked = 1;
         }
     }

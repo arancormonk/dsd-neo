@@ -112,12 +112,12 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         extern int rtl_stream_get_nco_q15(void);
         extern int rtl_stream_get_demod_rate_hz(void);
         double cfo = rtl_stream_get_cfo_hz();
-        double rcf = rtl_stream_get_residual_cfo_hz();
         int clk = rtl_stream_get_carrier_lock();
         int e14 = rtl_stream_get_costas_err_q14();
         int nco_q15 = rtl_stream_get_nco_q15();
         int Fs = rtl_stream_get_demod_rate_hz();
-        ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  Residual=%+0.1f Hz  %s", cfo, rcf, clk ? "Locked" : "Acq");
+        /* Residual CFO is from FM discriminator, not meaningful for CQPSK - hide it */
+        ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  %s", cfo, clk ? "Locked" : "Acq");
         /* Convert average Costas error from Q14 (pi == 1<<14) into degrees
          * for easier interpretation. */
         double e_deg = 0.0;

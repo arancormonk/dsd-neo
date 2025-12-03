@@ -1224,12 +1224,13 @@ demod_thread_fn(void* arg) {
             }
             /* If no QPSK update, synthesize from the constellation snapshot */
             if (!qpsk_updated) {
-                if (++qpsk_missed >= 50) {
+                if (++qpsk_missed >= 10) {
                     double fb = dsd_rtl_stream_estimate_snr_qpsk_const();
                     if (fb > -50.0) {
                         double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
-                        /* Slightly quicker fallback blending to avoid long stalls */
-                        double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
+                        /* Fast initial acquisition, then slower tracking for stability */
+                        double alpha = (prev < -50.0) ? 1.0 : 0.5;
+                        double blended = alpha * fb + (1.0 - alpha) * prev;
                         g_snr_qpsk_db.store(blended, std::memory_order_relaxed);
                         g_snr_qpsk_src.store(2, std::memory_order_relaxed);
                         auto now = std::chrono::steady_clock::now();
