@@ -48,13 +48,13 @@ typedef struct {
     /* Lock detector accumulator (Yair Linn method, like OP25) */
     float lock_accum;
     int lock_count;
+    /* Event counter for lock statistics (reset on unmute transition, like OP25) */
+    int event_count;
     /* Circular delay line for MMSE interpolation (OP25-style) */
     float dl[TED_DL_SIZE * 2 * 2]; /* interleaved I/Q, doubled for wrap-free access */
     int dl_index;                  /* current write position */
     int twice_sps;                 /* delay line wrap point: max(2*ceil(omega_max), ceil(omega_max/2)+9) */
     int sps;                       /* last initialized samples-per-symbol */
-    /* Fast acquisition state: used after SPS change to quickly try different phases */
-    int fast_acq_kicks; /* number of phase kicks remaining in fast acquisition */
 } ted_state_t;
 
 /**

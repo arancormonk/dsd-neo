@@ -39,23 +39,6 @@ int upsample_fixedpoint_enabled = 1; /* DSD_NEO_UPSAMPLE_FP (1 default) */
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
 
-/* Parse a simple boolean env value with a default.
-   Accepts 1/y/t (case-insensitive) for true, 0/n/f for false; falls back to default otherwise. */
-static int
-env_flag_default(const char* name, int default_value) {
-    const char* v = getenv(name);
-    if (!v) {
-        return default_value;
-    }
-    if (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T') {
-        return 1;
-    }
-    if (*v == '0' || *v == 'n' || *v == 'N' || *v == 'f' || *v == 'F') {
-        return 0;
-    }
-    return default_value;
-}
-
 namespace {
 
 enum DemodMode { DEMOD_DIGITAL = 0, DEMOD_ANALOG = 1, DEMOD_RO2 = 2 };
@@ -131,7 +114,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->ted_sps = 0;
     s->ted_mu = 0.0f;
     s->sps_is_integer = 1; /* assume integer SPS until proven otherwise */
-    s->cqpsk_rms_agc_rms = 0.0f;
     /* Initialize FLL and TED module states */
     fll_init_state(&s->fll_state);
     ted_init_state(&s->ted_state);
@@ -372,16 +354,11 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
          * See comment in demod_init_mode for rationale. */
         demod->cqpsk_diff_prev_r = 1.0f;
         demod->cqpsk_diff_prev_j = 0.0f;
-        demod->cqpsk_rms_agc_rms = 0.0f;
     }
 
     if (demod->cqpsk_enable) {
         demod->fll_enabled = 0;
     }
-
-    /* CQPSK RMS AGC (pre-FLL) to mirror OP25 rms_agc block */
-    demod->cqpsk_rms_agc_enable = env_flag_default("DSD_NEO_CQPSK_RMS_AGC", 1);
-    demod->cqpsk_rms_agc_rms = 0.0f;
 
     /* FM/C4FM amplitude AGC (pre-discriminator): default OFF for all modes.
        Users can enable via env `DSD_NEO_FM_AGC=1` or the UI toggle. */

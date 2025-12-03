@@ -200,14 +200,19 @@ struct demod_state {
     int mt_posted_count;
     int mt_worker_id[2];
 
-    /* Experimental CQPSK pre-processing */
+    /* CQPSK (H-DQPSK) path enable for P25 LSM/TDMA */
     int cqpsk_enable;
-    int cqpsk_rms_agc_enable; /* 0/1: block RMS AGC before CQPSK acquisition FLL */
-    float cqpsk_rms_agc_rms;  /* normalized RMS estimate for CQPSK AGC */
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;
     float cqpsk_diff_prev_j;
+
+    /* OP25-style RMS AGC state for CQPSK path.
+     * Algorithm from op25/gr-op25_repeater/apps/rms_agc.py:
+     *   rms = sqrt(alpha * mag_sqrd + (1-alpha) * rms_prev^2)
+     *   out = in * (reference / rms)
+     * OP25 uses: rms_agc.rms_agc(alpha=0.45, reference=0.85) */
+    float cqpsk_agc_avg; /* running average of mag^2 (d_avg in op25) */
 
     /* Generic mode-aware IQ balance (image suppression) */
     int iqbal_enable;        /* 0/1 gate */

@@ -310,8 +310,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
                 /* Note: freq is preserved from previous channel to speed acquisition */
                 float freq_hz = c->freq * (24000.0f / kTwoPi);
                 fprintf(stderr,
-                        "[COSTAS] TED reinit: old_sps=%d new_sps=%d old_omega=%.3f costas_phase=%.3f freq=%.1fHz "
-                        "(preserved)\n",
+                        "[COSTAS] TED reinit: sps=%d->%d old_omega=%.3f costas_phase=%.3f freq=%.1fHz (preserved)\n",
                         ted->sps, sps, ted->omega, c->phase, freq_hz);
             }
         }
@@ -367,9 +366,9 @@ op25_gardner_costas_cc(struct demod_state* d) {
          * But dsd-neo has discrete retune events with sample gaps - we must explicitly
          * pre-fill the delay line before interpolating.
          */
-        ted->mu = (float)(twice_sps_required + 1);
-        ted->last_r = 1.0f;
-        ted->last_j = 0.0f;
+        /* OP25: Does NOT touch d_mu or d_last_sample in set_omega().
+         * We preserve mu (timing phase) and don't reset last_sample.
+         * This matches OP25's continuous sample flow behavior. */
     }
 
     /* OP25 gains: gain_mu=0.025, gain_omega=0.1*gain_mu^2 */
@@ -398,6 +397,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
 
     /*
      * Main loop: OP25's general_work() structure
+     * Note: OP25 has NO mute logic - samples are processed immediately.
      */
     while (o < buf_len && i < nc) {
         /*
@@ -488,7 +488,8 @@ op25_gardner_costas_cc(struct demod_state* d) {
         float sym_r, sym_j;
         mmse_interp_cc(&dl[(dl_index + half_sps) * 2], half_mu, &sym_r, &sym_j);
 
-        /* OP25 Gardner error: (last - current) * mid */
+        /* OP25 Gardner error: (last - current) * mid
+         * Note: OP25 has NO mute logic - always process samples. */
         float error_real = (last_r - sym_r) * mid_r;
         float error_imag = (last_j - sym_j) * mid_j;
         float symbol_error = error_real + error_imag;
@@ -503,6 +504,13 @@ op25_gardner_costas_cc(struct demod_state* d) {
             symbol_error = 1.0f;
         }
 
+        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */
+        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
+        omega = omega + gain_omega * symbol_error * sym_mag;
+
+        /* Clip omega to valid range */
+        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_max - ted->omega_mid);
+
         /*
          * OP25: diffdec = interp_samp * conj(d_last_sample)
          * This is used for Costas phase error (internal only, not output)
@@ -513,13 +521,6 @@ op25_gardner_costas_cc(struct demod_state* d) {
         /* Save current symbol as last for next iteration */
         last_r = sym_r;
         last_j = sym_j;
-
-        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */
-        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
-        omega = omega + gain_omega * symbol_error * sym_mag;
-
-        /* Clip omega to valid range */
-        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_max - ted->omega_mid);
 
         /* OP25 mu update: d_mu += d_omega + d_gain_mu * symbol_error */
         mu += omega + gain_mu * symbol_error;
@@ -557,10 +558,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
         /* Store error for diagnostics */
         c->error = phase_error;
 
-        /*
-         * OP25: out[o++] = interp_samp
-         * Output the RAW NCO-corrected interpolated symbol, NOT diffdec
-         */
+        /* Output interpolated sample (OP25 has no mute - always output) */
         iq_out[o++] = sym_r;
         iq_out[o++] = sym_j;
     }

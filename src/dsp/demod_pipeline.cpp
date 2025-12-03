@@ -224,72 +224,83 @@ static const float channel_lpf_digital[kChannelLpfTaps] = {
     0.0f,
 };
 
-/* P25 Hann LPF (≈7 kHz cutoff @ 24 kHz Fs, 63 taps). Hann-windowed sinc
-   inspired by OP25 channel filter: ~0 dB through ~6.25 kHz, ~-6 dB near 7 kHz,
-   >60 dB attenuation by ~8 kHz. */
+/* OP25-matched P25 Hann LPF (fc=6562.5 Hz @ 24 kHz Fs, 63 taps).
+ * Matches OP25's p25_demodulator.py cutoff filter exactly:
+ *   fa = 6250 Hz (passband edge)
+ *   fb = 6875 Hz (stopband edge)
+ *   fc = (fa + fb) / 2 = 6562.5 Hz (cutoff)
+ *   filter.firdes.low_pass(1.0, if_rate, fc, fb-fa, filter.firdes.WIN_HANN)
+ *
+ * Frequency response:
+ *   6250 Hz: -1.35 dB (passband edge)
+ *   6562 Hz: -5.89 dB (cutoff, -6 dB point)
+ *   6875 Hz: -16.5 dB (stopband edge)
+ *   7500 Hz: -53 dB
+ *   8000 Hz: -68 dB
+ */
 static const float channel_lpf_p25_hann[kChannelLpfTaps] = {
     0.0f,
-    -1.0f / 32768.0f,
     1.0f / 32768.0f,
-    7.0f / 32768.0f,
-    -11.0f / 32768.0f,
-    -13.0f / 32768.0f,
-    36.0f / 32768.0f,
-    0.0f,
-    -68.0f / 32768.0f,
-    46.0f / 32768.0f,
-    83.0f / 32768.0f,
-    -126.0f / 32768.0f,
-    -46.0f / 32768.0f,
-    217.0f / 32768.0f,
-    -67.0f / 32768.0f,
-    -268.0f / 32768.0f,
-    258.0f / 32768.0f,
-    214.0f / 32768.0f,
-    -485.0f / 32768.0f,
-    0.0f,
-    660.0f / 32768.0f,
-    -399.0f / 32768.0f,
-    -661.0f / 32768.0f,
-    954.0f / 32768.0f,
-    339.0f / 32768.0f,
-    -1583.0f / 32768.0f,
-    506.0f / 32768.0f,
-    2167.0f / 32768.0f,
-    -2402.0f / 32768.0f,
-    -2581.0f / 32768.0f,
-    10049.0f / 32768.0f,
-    19114.0f / 32768.0f,
-    10049.0f / 32768.0f,
-    -2581.0f / 32768.0f,
-    -2402.0f / 32768.0f,
-    2167.0f / 32768.0f,
-    506.0f / 32768.0f,
-    -1583.0f / 32768.0f,
-    339.0f / 32768.0f,
-    954.0f / 32768.0f,
-    -661.0f / 32768.0f,
-    -399.0f / 32768.0f,
-    660.0f / 32768.0f,
-    0.0f,
-    -485.0f / 32768.0f,
-    214.0f / 32768.0f,
-    258.0f / 32768.0f,
-    -268.0f / 32768.0f,
-    -67.0f / 32768.0f,
-    217.0f / 32768.0f,
-    -46.0f / 32768.0f,
-    -126.0f / 32768.0f,
-    83.0f / 32768.0f,
-    46.0f / 32768.0f,
-    -68.0f / 32768.0f,
-    0.0f,
-    36.0f / 32768.0f,
-    -13.0f / 32768.0f,
-    -11.0f / 32768.0f,
-    7.0f / 32768.0f,
+    -2.0f / 32768.0f,
+    -7.0f / 32768.0f,
+    11.0f / 32768.0f,
+    16.0f / 32768.0f,
+    -32.0f / 32768.0f,
+    -20.0f / 32768.0f,
+    68.0f / 32768.0f,
+    9.0f / 32768.0f,
+    -117.0f / 32768.0f,
+    28.0f / 32768.0f,
+    169.0f / 32768.0f,
+    -102.0f / 32768.0f,
+    -209.0f / 32768.0f,
+    219.0f / 32768.0f,
+    218.0f / 32768.0f,
+    -378.0f / 32768.0f,
+    -169.0f / 32768.0f,
+    574.0f / 32768.0f,
+    34.0f / 32768.0f,
+    -794.0f / 32768.0f,
+    227.0f / 32768.0f,
+    1017.0f / 32768.0f,
+    -674.0f / 32768.0f,
+    -1223.0f / 32768.0f,
+    1449.0f / 32768.0f,
+    1390.0f / 32768.0f,
+    -3071.0f / 32768.0f,
+    -1498.0f / 32768.0f,
+    10291.0f / 32768.0f,
+    17920.0f / 32768.0f,
+    10291.0f / 32768.0f,
+    -1498.0f / 32768.0f,
+    -3071.0f / 32768.0f,
+    1390.0f / 32768.0f,
+    1449.0f / 32768.0f,
+    -1223.0f / 32768.0f,
+    -674.0f / 32768.0f,
+    1017.0f / 32768.0f,
+    227.0f / 32768.0f,
+    -794.0f / 32768.0f,
+    34.0f / 32768.0f,
+    574.0f / 32768.0f,
+    -169.0f / 32768.0f,
+    -378.0f / 32768.0f,
+    218.0f / 32768.0f,
+    219.0f / 32768.0f,
+    -209.0f / 32768.0f,
+    -102.0f / 32768.0f,
+    169.0f / 32768.0f,
+    28.0f / 32768.0f,
+    -117.0f / 32768.0f,
+    9.0f / 32768.0f,
+    68.0f / 32768.0f,
+    -20.0f / 32768.0f,
+    -32.0f / 32768.0f,
+    16.0f / 32768.0f,
+    11.0f / 32768.0f,
+    -7.0f / 32768.0f,
+    -2.0f / 32768.0f,
     1.0f / 32768.0f,
-    -1.0f / 32768.0f,
     0.0f,
 };
 
@@ -681,40 +692,82 @@ qpsk_differential_demod(struct demod_state* fm) {
     fm->result_len = pairs;
 }
 
-/* RMS AGC for CQPSK paths (mirrors OP25 rms_agc placement/behavior).
- * OP25 parameters: alpha=0.45, reference=0.85, no gain clamping.
- * Output = input / (rms / reference) with no bounds checking. */
+/*
+ * OP25-style RMS AGC for CQPSK path.
+ *
+ * Direct port of op25/gr-op25_repeater/apps/rms_agc.py which uses:
+ *   rms_agc.rms_agc(alpha=0.45, reference=0.85)
+ *
+ * The rms_agc.py algorithm (from Daniel Estevez):
+ *   1. Compute RMS of input: rms = blocks.rms_cf(alpha)
+ *   2. Scale: scaled_rms = rms / reference
+ *   3. Add epsilon to avoid division by zero: scaled_rms += 1e-18
+ *   4. Divide input by scaled_rms: out = in / scaled_rms
+ *
+ * The underlying blocks.rms_cf computes:
+ *   d_avg = d_beta * d_avg + d_alpha * mag_sqrd
+ *   rms = sqrt(d_avg)
+ * where d_beta = 1 - d_alpha
+ *
+ * OP25 parameters: alpha=0.45, reference=0.85
+ *
+ * This matches op25/gr-op25_repeater/lib/rmsagc_ff_impl.cc exactly:
+ *   d_avg = d_beta*d_avg + d_alpha*mag_sqrd;
+ *   if (d_avg > 0)
+ *       out[i] = d_gain * in[i] / sqrt(d_avg);
+ *   else
+ *       out[i] = d_gain * in[i];
+ *
+ * Copyright 2005,2010,2013 Free Software Foundation, Inc.
+ * Copyright 2020 Graham J. Norbury, gnorbury@bondcar.com
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
 static inline void
 cqpsk_rms_agc(struct demod_state* d) {
-    if (!d || !d->cqpsk_rms_agc_enable || !d->lowpassed || d->lp_len < 2) {
+    if (!d || !d->lowpassed || d->lp_len < 2) {
         return;
     }
+
+    /* OP25 parameters from p25_demodulator.py line 409:
+     *   self.agc = rms_agc.rms_agc(0.45, 0.85)
+     * where alpha=0.45, reference=0.85 */
+    const float alpha = 0.45f;
+    const float beta = 1.0f - alpha; /* 0.55 */
+    const float gain = 0.85f;        /* reference/k parameter */
+
+    float* iq = d->lowpassed;
     const int pairs = d->lp_len >> 1;
-    const float kAlpha = 0.45f; /* OP25 AGC_ALPHA */
-    const float kRef = 0.85f;   /* OP25 AGC_REFERENCE */
-    const float kEps = 1e-6f;
-    /* OP25 does NOT clamp AGC gain - removed min/max limits for alignment. */
 
-    float rms = d->cqpsk_rms_agc_rms;
-    if (rms <= 0.0f) {
-        rms = kRef;
+    /* Get running average from state (initialized to 1.0 to avoid startup spike) */
+    float avg = d->cqpsk_agc_avg;
+    if (avg <= 0.0f) {
+        avg = 1.0f; /* OP25 rmsagc_ff_impl.cc: set_alpha sets d_avg = 1.0 */
     }
 
-    float* out = d->lowpassed;
-    for (int n = 0; n < pairs; n++) {
-        float I = out[(size_t)(n << 1)];
-        float Q = out[(size_t)(n << 1) + 1];
-        float mag2 = I * I + Q * Q;
-        float rms2 = rms * rms;
-        rms2 = (1.0f - kAlpha) * rms2 + kAlpha * mag2;
-        rms = sqrtf(rms2);
-        float g = kRef / (rms + kEps);
-        /* No gain clamping - OP25 compatibility */
-        out[(size_t)(n << 1)] = I * g;
-        out[(size_t)(n << 1) + 1] = Q * g;
+    /* Process each complex sample exactly as op25's rmsagc_ff_impl.cc:
+     *   d_avg = d_beta*d_avg + d_alpha*mag_sqrd;
+     *   out = d_gain * in / sqrt(d_avg); */
+    for (int i = 0; i < pairs; i++) {
+        float I = iq[(size_t)(i << 1)];
+        float Q = iq[(size_t)(i << 1) + 1];
+
+        /* mag_sqrd = I*I + Q*Q (complex magnitude squared) */
+        float mag_sqrd = I * I + Q * Q;
+
+        /* Update running average: d_avg = d_beta*d_avg + d_alpha*mag_sqrd */
+        avg = beta * avg + alpha * mag_sqrd;
+
+        /* Compute gain and apply: out = gain * in / sqrt(avg) */
+        if (avg > 0.0f) {
+            float scale = gain / sqrtf(avg);
+            iq[(size_t)(i << 1)] = I * scale;
+            iq[(size_t)(i << 1) + 1] = Q * scale;
+        }
+        /* else: pass through unchanged (matches op25 behavior) */
     }
 
-    d->cqpsk_rms_agc_rms = rms;
+    /* Save state for next block */
+    d->cqpsk_agc_avg = avg;
 }
 
 /**
@@ -1188,8 +1241,8 @@ full_demod(struct demod_state* d) {
          * All timing recovery and carrier tracking happens inside op25_gardner_costas_cc().
          */
 
-        /* OP25: analog.feedforward_agc_cc(16, 1.0)
-         * We use RMS AGC which is similar in purpose (normalize signal amplitude). */
+        /* OP25: rms_agc.rms_agc(0.45, 0.85)
+         * RMS AGC normalizes amplitude using running RMS estimate. */
         cqpsk_rms_agc(d);
 
         /* Debug: Post-AGC magnitudes when DSD_NEO_DEBUG_CQPSK=1 */
@@ -1205,16 +1258,19 @@ full_demod(struct demod_state* d) {
             if (debug_cqpsk && (++call_count % 50) == 0 && d->lp_len >= 8) {
                 const float* iq = d->lowpassed;
                 float mag_sum = 0.0f;
+                float max_env = 0.0f;
                 int pairs = d->lp_len >> 1;
                 for (int k = 0; k < pairs && k < 100; k++) {
                     float I = iq[(k << 1)];
                     float Q = iq[(k << 1) + 1];
-                    mag_sum += sqrtf(I * I + Q * Q);
+                    float mag = sqrtf(I * I + Q * Q);
+                    mag_sum += mag;
+                    if (mag > max_env) {
+                        max_env = mag;
+                    }
                 }
                 float avg_mag = mag_sum / (pairs < 100 ? pairs : 100);
-                float implied_gain = (d->cqpsk_rms_agc_rms > 1e-6f) ? 0.85f / d->cqpsk_rms_agc_rms : 0.0f;
-                fprintf(stderr, "[POST-AGC] avg_mag:%.3f rms_est:%.3f implied_gain:%.1f samples:%d\n", avg_mag,
-                        d->cqpsk_rms_agc_rms, implied_gain, d->lp_len / 2);
+                fprintf(stderr, "[POST-AGC] avg_mag:%.3f max_env:%.3f samples:%d\n", avg_mag, max_env, d->lp_len / 2);
             }
         }
 

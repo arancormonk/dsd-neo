@@ -513,11 +513,10 @@ demod_reset_on_retune(struct demod_state* s) {
      */
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
-    /* Reset RMS AGC estimate so it re-initializes to reference (0.85) on first block.
-     * Without this, a bad AGC state from startup transients or noise persists and
-     * causes the Costas loop to see collapsed/weak symbols, preventing lock. */
-    s->cqpsk_rms_agc_rms = 0.0f;
     s->costas_err_avg_q14 = 0;
+    /* OP25 RMS AGC: reset running average to 1.0 for clean acquisition.
+     * This matches rmsagc_ff_impl.cc set_alpha() which sets d_avg = 1.0 */
+    s->cqpsk_agc_avg = 1.0f;
     /* Costas reset: clear phase and error, but PRESERVE freq estimate.
      *
      * The carrier frequency offset (c->freq) is primarily a property of the RTL-SDR
@@ -3657,7 +3656,6 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.mode_demod = &qpsk_differential_demod;
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
-        demod.cqpsk_rms_agc_rms = 0.0f;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;

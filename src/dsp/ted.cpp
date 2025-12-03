@@ -36,9 +36,7 @@
 static const float kDefaultGainMu = 0.025f;
 static const float kDefaultGainOmega = 0.1f * kDefaultGainMu * kDefaultGainMu; /* 0.0000625 */
 static const float kDefaultOmegaRel = 0.002f;
-static const int kLockAccumWindow = 480;  /* OP25 default: 480 symbols */
-static const int kFastAcqLockWindow = 48; /* Fast acquisition window: 48 symbols (~8ms @ 6k sym/s) */
-static const int kFastAcqPhaseKicks = 8;  /* Try up to 8 phase kicks (2 full rotations through 4 phases) */
+static const int kLockAccumWindow = 480; /* OP25 default: 480 symbols */
 
 /*
  * GNU Radio MMSE 8-tap polyphase interpolator coefficients.
@@ -131,6 +129,7 @@ ted_init_state(ted_state_t* state) {
     state->e_ema = 0.0f;
     state->lock_accum = 0.0f;
     state->lock_count = 0;
+    state->event_count = 0;
     /* Initialize delay line */
     for (int i = 0; i < TED_DL_SIZE * 2 * 2; i++) {
         state->dl[i] = 0.0f;
@@ -138,20 +137,19 @@ ted_init_state(ted_state_t* state) {
     state->dl_index = 0;
     state->twice_sps = 0;
     state->sps = 0;
-    state->fast_acq_kicks = 0;
 }
 
 /**
  * @brief Soft reset TED state, preserving mu and omega for phase continuity.
  *
- * This reset clears the delay line and error accumulators but preserves the
- * timing phase (mu) and symbol period (omega). Use this on frequency retunes
- * within the same system where the transmitter symbol clock is consistent,
- * avoiding the non-deterministic re-acquisition that occurs when mu resets to 0.
+ * This reset matches OP25's reset() behavior in gardner_cc_impl.cc:
+ *   - Resets d_phase = 0 (we don't have this, it's Costas-side)
+ *   - Resets d_update_request = 0 (not applicable)
+ *   - Resets d_last_sample = 0 (we reset to 0+0j to match)
+ *   - Resets d_lock_accum.reset()
  *
- * The Gardner TED has multiple stable lock points (one per sample within a
- * symbol period). A full reset can cause convergence to a suboptimal phase,
- * degrading constellation quality. Preserving mu avoids this.
+ * Note: OP25's set_omega() does NOT reset d_last_sample, only the delay line.
+ * This function is for explicit reset() calls, not SPS changes.
  *
  * @param state TED state to soft-reset.
  */
@@ -160,22 +158,19 @@ ted_soft_reset(ted_state_t* state) {
     if (!state) {
         return;
     }
-    /* Preserve: mu, omega, omega_mid, omega_min, omega_max, sps, twice_sps */
-    /* Reset: accumulators, delay line, last sample values */
-    /* Reset last_r/j to (1,0) NOT (0,0) - see costas.cpp comment for rationale.
-     * With (0,0), first Gardner error is spurious and first diffdec is zero.
-     * With (1,0), first diffdec = sym (passthrough), matching external diff_prev. */
-    state->last_r = 1.0f;
+    /* OP25 reset() in gardner_cc_impl.cc:
+     *   d_phase = 0;           // Costas-side, not applicable here
+     *   d_update_request = 0;  // Not applicable
+     *   d_last_sample = 0;     // Complex zero
+     *   d_lock_accum.reset();  // Clear deque and accumulator
+     */
+    state->last_r = 0.0f;
     state->last_j = 0.0f;
     state->e_ema = 0.0f;
     state->lock_accum = 0.0f;
     state->lock_count = 0;
-    state->fast_acq_kicks = 0; /* Clear fast acquisition state */
-    /* Clear delay line to remove stale samples from previous channel */
-    for (int i = 0; i < TED_DL_SIZE * 2 * 2; i++) {
-        state->dl[i] = 0.0f;
-    }
-    state->dl_index = 0;
+    state->event_count = 0;
+    /* OP25 reset() does NOT clear the delay line or dl_index */
 }
 
 /**
@@ -293,32 +288,66 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         return;
     }
 
-    /* Reset state when SPS changes so delay-line sizing and omega bounds
-     * match the new symbol rate. This avoids running with stale twice_sps
-     * after a capture/output rate change.
+    /* Handle SPS change (e.g., P25P1 CC @ 4800 sps → P25P2 VC @ 6000 sps).
      *
-     * When SPS changes (e.g., P25P1→P25P2 voice channel tune), we enable
-     * fast acquisition mode to quickly try different timing phases. Without
-     * this, the TED might converge to a suboptimal phase and the Costas loop
-     * (which depends on good symbol samples from TED) may never lock. */
+     * This matches OP25's set_omega() in gardner_cc_impl.cc exactly:
+     *   - Preserves d_mu (timing phase) - OP25 doesn't touch it
+     *   - Preserves d_last_sample - OP25 doesn't touch it in set_omega
+     *   - Clears only first element of delay line: *d_dl = gr_complex(0,0)
+     *   - Updates omega bounds and twice_sps
+     *
+     * OP25's set_omega() code:
+     *   d_omega = omega;
+     *   d_min_omega = omega*(1.0 - d_omega_rel);
+     *   d_max_omega = omega*(1.0 + d_omega_rel);
+     *   d_omega_mid = 0.5*(d_min_omega+d_max_omega);
+     *   d_twice_sps = 2 * (int) ceilf(d_omega);
+     *   *d_dl = gr_complex(0,0);  // Only first element!
+     */
+    const float sps_f = (float)config->sps;
+    float omega_rel = config->omega_rel > 0.0f ? config->omega_rel : kDefaultOmegaRel;
+
     if (state->sps > 0 && state->sps != config->sps) {
-        ted_init_state(state);
-        /* Enable fast acquisition mode: try multiple phases quickly */
-        state->fast_acq_kicks = kFastAcqPhaseKicks;
+        /* OP25 set_omega(): update omega to new value */
+        state->omega = sps_f;
+        state->omega_min = sps_f * (1.0f - omega_rel);
+        state->omega_max = sps_f * (1.0f + omega_rel);
+        state->omega_mid = 0.5f * (state->omega_min + state->omega_max);
+
+        /* OP25: d_twice_sps = 2 * (int) ceilf(d_omega) */
+        int twice_sps_op25 = 2 * (int)ceilf(state->omega);
+        /* We also need space for MMSE interpolation */
+        int twice_sps_mmse = (int)ceilf(state->omega_max / 2.0f) + MMSE_NTAPS + 1;
+        int twice_sps_required = (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
+
+        if (twice_sps_required > TED_DL_SIZE) {
+            *N = 0;
+            return;
+        }
+        state->twice_sps = twice_sps_required;
+        state->sps = config->sps;
+
+        /* OP25: *d_dl = gr_complex(0,0) - ONLY first element cleared!
+         * This is critical - OP25 does NOT clear the entire delay line.
+         * The existing samples from the previous channel remain, allowing
+         * immediate symbol output without warmup delay. */
+        state->dl[0] = 0.0f;
+        state->dl[1] = 0.0f;
+
+        /* OP25: Does NOT reset dl_index, mu, or last_sample in set_omega() */
+        /* OP25: Does NOT have any mute logic */
     }
 
-    /* Get or initialize omega parameters */
+    /* Get or initialize omega parameters for first-time setup */
     float omega = state->omega;
-    const float sps_f = (float)config->sps;
 
     /* Initialize if state has never been set up (omega_mid == 0 means uninitialized).
      * Note: We check omega_mid rather than omega because omega can legitimately
      * drift to low values for sps=2, but omega_mid is only zero before first init. */
     if (state->omega_mid == 0.0f || state->twice_sps < 2) {
-        /* First call or reset - initialize omega from config */
+        /* First call - initialize omega from config */
         omega = sps_f;
         state->omega = omega;
-        float omega_rel = config->omega_rel > 0.0f ? config->omega_rel : kDefaultOmegaRel;
         state->omega_mid = omega;
         state->omega_min = omega * (1.0f - omega_rel);
         state->omega_max = omega * (1.0f + omega_rel);
@@ -378,7 +407,8 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
     int o = 0;                 /* output index (interleaved floats) */
     int bounds_skip_count = 0; /* counter for repeated bounds check failures */
 
-    /* Process samples using OP25 algorithm */
+    /* Process samples using OP25 algorithm.
+     * Note: OP25 has NO mute logic - it processes all samples immediately. */
     while (o < buf_len && i < nc) {
         /* Consume samples while mu > 1, filling the delay line (OP25 style) */
         while (mu > 1.0f && i < nc) {
@@ -456,7 +486,8 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         float sym_r, sym_j;
         mmse_interp_cc_8tap(&dl[(dl_index + half_sps) * 2], half_mu, &sym_r, &sym_j);
 
-        /* OP25 Gardner error: (last - current) * mid */
+        /* OP25 Gardner error: (last - current) * mid
+         * Note: OP25 has NO mute logic - always compute error and update tracking. */
         float error_real = (last_r - sym_r) * mid_r;
         float error_imag = (last_j - sym_j) * mid_j;
         float symbol_error = error_real + error_imag;
@@ -472,9 +503,19 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
             symbol_error = 1.0f;
         }
 
+        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */
+        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
+        omega = omega + gain_omega * symbol_error * sym_mag;
+
+        /* Clip omega to valid range (OP25: d_omega_mid + branchless_clip(...)) */
+        omega = state->omega_mid + branchless_clip(omega - state->omega_mid, state->omega_max - state->omega_mid);
+
         /* Save current symbol as last for next iteration */
         last_r = sym_r;
         last_j = sym_j;
+
+        /* OP25: d_mu += d_omega + d_gain_mu * symbol_error */
+        mu += omega + gain_mu * symbol_error;
 
         /* OP25 Lock detector (Yair Linn method).
          * Use a minimum threshold to avoid division by very small numbers.
@@ -488,81 +529,23 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         float yq = (qe2 + qo2 > kLockEps) ? (qe2 - qo2) / (qe2 + qo2) : 0.0f;
         float lock_contrib = yi + yq;
 
-        /* Apply faster decay when unlocked (negative contribution) to clear stale
-         * positive accumulator values quickly after signal loss. */
-        if (lock_contrib < 0.0f && state->lock_accum > 0.0f) {
-            state->lock_accum *= 0.95f; /* fast decay when unlocked */
-        }
+        /* OP25: d_lock_accum.add(yi + yq) */
         state->lock_accum += lock_contrib;
         state->lock_count++;
 
-        /* Use faster window during fast acquisition mode (after SPS change).
-         * This allows rapid phase searching to find correct timing before
-         * the Costas loop gives up. Normal operation uses the longer window. */
-        int lock_window = (state->fast_acq_kicks > 0) ? kFastAcqLockWindow : kLockAccumWindow;
-
-        if (state->lock_count >= lock_window) {
-            /* Check for persistently bad lock before decay.
-             * If lock is deeply negative (consistently sampling at wrong phase),
-             * kick mu by half a symbol to try finding a better timing phase.
-             * This handles the case where TED converges to the wrong local minimum
-             * during initial acquisition.
-             *
-             * During fast acquisition, we're more aggressive: if lock isn't clearly
-             * positive (>+0.2), we try another phase. A lock near zero is ambiguous
-             * and could indicate wrong timing phase with signal-to-noise just masking it. */
-            float normalized_lock = state->lock_accum / (float)state->lock_count;
-            /* During fast acquisition: kick if lock < +0.2 (not just negative)
-             * During normal operation: kick only if lock < -0.2 (clearly bad) */
-            float lock_threshold = (state->fast_acq_kicks > 0) ? 0.2f : -0.2f;
-            int should_kick = (state->fast_acq_kicks > 0)
-                                  ? (normalized_lock < lock_threshold)  /* fast: not clearly good */
-                                  : (normalized_lock < lock_threshold); /* normal: clearly bad */
-            if (should_kick) {
-                /* Phase kick to try finding a better timing phase.
-                 * During fast acquisition, use quarter-symbol steps to try all 4 phases.
-                 * During normal operation, use half-symbol steps. */
-                float kick_amount = (state->fast_acq_kicks > 0)
-                                        ? state->omega_mid / 4.0f  /* quarter symbol in fast acq */
-                                        : state->omega_mid / 2.0f; /* half symbol normally */
-                mu += kick_amount;
-                if (mu >= state->omega_mid) {
-                    mu -= state->omega_mid;
-                }
-                /* Reset lock accumulator to give new phase a fair chance */
-                state->lock_accum = 0.0f;
-                state->lock_count = 0;
-                /* Decrement fast acquisition kicks counter */
-                if (state->fast_acq_kicks > 0) {
-                    state->fast_acq_kicks--;
-                }
-            } else {
-                /* Good lock - exit fast acquisition mode */
-                if (state->fast_acq_kicks > 0) {
-                    state->fast_acq_kicks = 0;
-                }
-                state->lock_accum *= 0.5f; /* normal decay */
-                state->lock_count = lock_window / 2;
-            }
+        /* OP25 window-based accumulator decay (simplified from id_avg class) */
+        if (state->lock_count >= kLockAccumWindow) {
+            state->lock_accum *= 0.5f;
+            state->lock_count = kLockAccumWindow / 2;
         }
-
-        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */
-        float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
-        omega = omega + gain_omega * symbol_error * sym_mag;
-
-        /* Clip omega to valid range */
-        omega = state->omega_mid + branchless_clip(omega - state->omega_mid, state->omega_max - state->omega_mid);
-
-        /* OP25 mu update: d_mu += d_omega + d_gain_mu * symbol_error */
-        mu += omega + gain_mu * symbol_error;
-
-        /* Output the symbol sample */
-        y[o++] = sym_r;
-        y[o++] = sym_j;
 
         /* Update EMA of error for diagnostics */
         const float kEmaAlpha = 1.0f / 64.0f;
         state->e_ema = state->e_ema + kEmaAlpha * (symbol_error - state->e_ema);
+
+        /* Output interpolated sample (OP25 has no mute - always output) */
+        y[o++] = sym_r;
+        y[o++] = sym_j;
     }
 
     /* Save state for next block */
