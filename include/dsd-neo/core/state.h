@@ -376,9 +376,6 @@ struct dsd_state {
     int c4fm_clk_cooldown; /* cooldown countdown to avoid rapid flips */
 
     int rf_mod;
-    /* CQPSK dibit permutation selected from P25 frame sync (rotation/bit-order). */
-    int p25_cqpsk_map_idx;
-    uint8_t p25_cqpsk_map[4];
     /* M17 polarity auto-detection: 0=unknown, 1=normal, 2=inverted.
      * Set when preamble detected; overridden if user specifies -xz. */
     int m17_polarity;

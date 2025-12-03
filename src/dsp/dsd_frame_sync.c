@@ -146,72 +146,18 @@ qpsk_sync_hamming_with_remaps(const char* buf, const char* pat_norm, const char*
     return best;
 }
 
-/* P25 CQPSK dibit maps keyed to detected frame sync permutation (parity with OP25). */
-static const uint64_t g_p25_fs_table[] = {0x5575F5FF77FFULL, 0x575D57F7FFULL, 0xFFDF5F55DD55ULL, 0xFDF7FD5D55ULL,
-                                          0xAA8A0A008800ULL, 0xA8A2A80800ULL, 0x001050551155ULL, 0x0104015155ULL,
-                                          0xFFEFAFAAEEAAULL, 0xFEFBFEAEAAULL};
-static const uint8_t g_p25_fs_len[] = {24, 20, 24, 20, 24, 20, 24, 20, 24, 20};
-static const uint8_t g_p25_fs_dibit_map[][4] = {{0, 1, 2, 3}, {0, 1, 2, 3}, {2, 3, 0, 1}, {2, 3, 0, 1}, {3, 2, 1, 0},
-                                                {3, 2, 1, 0}, {1, 3, 0, 2}, {1, 3, 0, 2}, {2, 0, 3, 1}, {2, 0, 3, 1}};
-
-static uint64_t
-p25_sync_word_from_ascii(const char* buf, int len) {
-    uint64_t word = 0;
-    for (int i = 0; i < len; i++) {
-        int d = (unsigned char)buf[i];
-        if (d >= '0' && d <= '3') {
-            d -= '0';
-        }
-        word = (word << 2) | (uint64_t)(d & 0x3);
-    }
-    return word;
-}
-
-static int
-p25_detect_cqpsk_fs_map(const char* buf24, const char* buf20) {
-    uint64_t word24 = p25_sync_word_from_ascii(buf24, 24);
-    uint64_t word20 = p25_sync_word_from_ascii(buf20, 20);
-    int table_len = (int)(sizeof(g_p25_fs_len) / sizeof(g_p25_fs_len[0]));
-    for (int i = 0; i < table_len; i++) {
-        uint64_t word = (g_p25_fs_len[i] == 24) ? word24 : word20;
-        if (word == g_p25_fs_table[i]) {
-            return i;
-        }
-    }
-    return 0; /* identity map */
-}
-
-static void
-p25_apply_cqpsk_dibit_map(char* dst, const char* src, int len, int map_idx) {
-    int table_len = (int)(sizeof(g_p25_fs_len) / sizeof(g_p25_fs_len[0]));
-    if (map_idx < 0 || map_idx >= table_len) {
-        map_idx = 0;
-    }
-    const uint8_t* map = g_p25_fs_dibit_map[map_idx];
-    for (int i = 0; i < len; i++) {
-        int d = (unsigned char)src[i];
-        if (d >= '0' && d <= '3') {
-            d -= '0';
-        }
-        dst[i] = (char)('0' + (map[d & 0x3] & 0x3));
-    }
-    dst[len] = 0;
-}
-
-static void
-p25_set_cqpsk_map(dsd_state* state, int map_idx) {
-    if (!state) {
-        return;
-    }
-    int table_len = (int)(sizeof(g_p25_fs_len) / sizeof(g_p25_fs_len[0]));
-    if (map_idx < 0 || map_idx >= table_len) {
-        map_idx = 0;
-    }
-    state->p25_cqpsk_map_idx = map_idx;
-    for (int i = 0; i < 4; i++) {
-        state->p25_cqpsk_map[i] = g_p25_fs_dibit_map[map_idx][i];
-    }
-}
+/*
+ * P25 CQPSK handling - matches OP25 exactly.
+ *
+ * OP25 does NOT use constellation permutation tables. It only uses:
+ * 1. Normal sync detection (P25_FRAME_SYNC_MAGIC)
+ * 2. Polarity reversal detection (reverse_p ^= 0x02)
+ * 3. Tuning error detection (log only, no dibit remapping)
+ *
+ * The Costas loop handles legitimate 90° phase ambiguity via PT_45 rotation.
+ * Tuning errors (±1200Hz, ±2400Hz) cannot be fixed by dibit remapping - they
+ * require RF correction.
+ */
 
 void
 printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation) {
@@ -335,12 +281,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     char synctest12[13]; //dPMR
     char synctest10[11]; //NXDN FSW only
     char synctest32[33];
-    char synctest20[21];        //YSF
-    char synctest_mapped[25];   // CQPSK rotation-normalized P25 sync
-    char synctest20_mapped[21]; // CQPSK rotation-normalized P25P2 sync
-    char synctest48[49];        //EDACS
-    char synctest8[9];          //M17
-    char synctest16[17];        //M17 Preamble
+    char synctest20[21]; //YSF, P25P2
+    char synctest48[49]; //EDACS
+    char synctest8[9];   //M17
+    char synctest16[17]; //M17 Preamble
     char modulation[8];
     char* synctest_p;
     char synctest_buf[10240]; //what actually is assigned to this, can't find its use anywhere?
@@ -386,8 +330,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     synctest48[48] = 0;
     synctest32[32] = 0;
     synctest20[20] = 0;
-    synctest_mapped[24] = 0;
-    synctest20_mapped[20] = 0;
     modulation[7] = 0; //not initialized or terminated (unsure if this would be an issue or not)
     synctest_pos = 0;
     synctest_p = synctest_buf + 10;
@@ -989,14 +931,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
             strncpy(synctest, (synctest_p - 23), 24);
             strncpy(synctest20, (synctest_p - 19), 20);
+            /* OP25 compatibility: no dibit remapping based on sync pattern.
+             * The Costas loop handles phase ambiguity; tuning errors need RF correction. */
             const char* p25_sync_window = synctest;
-            int p25_map_idx = 0;
-            if (state->rf_mod == 1 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
-                p25_map_idx = p25_detect_cqpsk_fs_map(synctest, synctest20);
-                p25_apply_cqpsk_dibit_map(synctest_mapped, synctest, 24, p25_map_idx);
-                p25_apply_cqpsk_dibit_map(synctest20_mapped, synctest20, 20, p25_map_idx);
-                p25_sync_window = synctest_mapped;
-            }
 #ifdef USE_RTLSDR
             /* Debug: print sync pattern when DSD_NEO_DEBUG_SYNC=1 */
             {
@@ -1187,7 +1124,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             if (opts->frame_p25p1 == 1) {
                 if (strcmp(p25_sync_window, P25P1_SYNC) == 0) {
-                    p25_set_cqpsk_map(state, p25_map_idx);
                     state->carrier = 1;
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
@@ -1205,7 +1141,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     return (0);
                 }
                 if (strcmp(p25_sync_window, INV_P25P1_SYNC) == 0) {
-                    p25_set_cqpsk_map(state, p25_map_idx);
                     state->carrier = 1;
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
@@ -1467,19 +1402,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             //end M17
 
             //P25 P2 sync S-ISCH VCH
-            const char* p25p2_sync_window;
+            /* OP25 compatibility: no dibit remapping for P25P2 either */
             strncpy(synctest20, (synctest_p - 19), 20);
-            if (state->rf_mod == 1 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
-                p25_map_idx = p25_detect_cqpsk_fs_map(synctest, synctest20);
-                p25_apply_cqpsk_dibit_map(synctest20_mapped, synctest20, 20, p25_map_idx);
-                p25p2_sync_window = synctest20_mapped;
-            } else {
-                p25p2_sync_window = synctest20;
-            }
+            const char* p25p2_sync_window = synctest20;
             if (opts->frame_p25p2 == 1) {
                 if (0 == 0) {
                     if (strcmp(p25p2_sync_window, P25P2_SYNC) == 0) {
-                        p25_set_cqpsk_map(state, p25_map_idx);
                         state->carrier = 1;
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
@@ -1505,7 +1433,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 if (0 == 0) {
                     //S-ISCH VCH
                     if (strcmp(p25p2_sync_window, INV_P25P2_SYNC) == 0) {
-                        p25_set_cqpsk_map(state, p25_map_idx);
                         state->carrier = 1;
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;

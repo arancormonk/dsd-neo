@@ -847,13 +847,6 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
         initialize_p25_heuristics(&state->inv_p25_heuristics);
     }
 
-    /* Reset CQPSK dibit map to identity when losing carrier. */
-    state->p25_cqpsk_map_idx = 0;
-    state->p25_cqpsk_map[0] = 0;
-    state->p25_cqpsk_map[1] = 1;
-    state->p25_cqpsk_map[2] = 2;
-    state->p25_cqpsk_map[3] = 3;
-
 //only do it here on the tweaks
 #ifdef LIMAZULUTWEAKS
     state->nxdn_last_ran = -1;
@@ -1724,11 +1717,6 @@ initState(dsd_state* state) {
     int i, j;
     // state->testcounter = 0;
     state->last_dibit = 0;
-    state->p25_cqpsk_map_idx = 0;
-    state->p25_cqpsk_map[0] = 0;
-    state->p25_cqpsk_map[1] = 1;
-    state->p25_cqpsk_map[2] = 2;
-    state->p25_cqpsk_map[3] = 3;
     state->dibit_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dibit_buf_p = state->dibit_buf + 200;
     memset(state->dibit_buf, 0, sizeof(int) * 200);

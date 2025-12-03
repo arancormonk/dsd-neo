@@ -213,18 +213,6 @@ invert_dibit(int dibit) {
     return -1;
 }
 
-static inline int
-apply_p25_cqpsk_map(const dsd_state* state, int dibit) {
-    if (!state || state->rf_mod != 1) {
-        return dibit;
-    }
-    int idx = dibit & 0x3;
-    if (idx < 0 || idx > 3) {
-        return dibit;
-    }
-    return (int)(state->p25_cqpsk_map[idx] & 0x3);
-}
-
 /**
  * @brief CQPSK 4-level slicer matching OP25's fsk4_slicer_fb.
  *
@@ -550,7 +538,6 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             }
         }
 
-        dibit = apply_p25_cqpsk_map(state, dibit);
         int out_dibit = invert_dibit(dibit);
 
         state->last_dibit = dibit;
@@ -627,8 +614,6 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
                 }
             }
         }
-
-        dibit = apply_p25_cqpsk_map(state, dibit);
 
         state->last_dibit = dibit;
 
