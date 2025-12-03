@@ -107,8 +107,13 @@ is_tdma_channel(const dsd_state* state, int channel) {
     int iden = (channel >> 12) & 0xF;
     if (iden >= 0 && iden < 16) {
         int is_tdma = (state->p25_chan_tdma[iden] & 0x1) ? 1 : 0;
-        if (!is_tdma && state->p25_sys_is_tdma == 1) {
-            is_tdma = 1; // Fallback until IDEN_UP_TDMA arrives
+        // Only fall back to p25_sys_is_tdma when IDEN data is untrusted (trust < 2).
+        // This prevents incorrect TDMA classification on LSM systems where the CC
+        // may be P25P1 but voice channels can be either P25P1 or P25P2. Once we
+        // receive an IDEN_UP or IDEN_UP_TDMA for this IDEN (trust >= 2), we rely
+        // solely on p25_chan_tdma[iden] which explicitly indicates TDMA capability.
+        if (!is_tdma && state->p25_sys_is_tdma == 1 && state->p25_iden_trust[iden] < 2) {
+            is_tdma = 1;
         }
         return is_tdma;
     }
