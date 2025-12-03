@@ -20,7 +20,6 @@
 #include <math.h>
 
 #include <dsd-neo/core/dsd.h>
-#include <dsd-neo/dsp/cqpsk_perm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -214,6 +213,18 @@ invert_dibit(int dibit) {
     return -1;
 }
 
+static inline int
+apply_p25_cqpsk_map(const dsd_state* state, int dibit) {
+    if (!state || state->rf_mod != 1) {
+        return dibit;
+    }
+    int idx = dibit & 0x3;
+    if (idx < 0 || idx > 3) {
+        return dibit;
+    }
+    return (int)(state->p25_cqpsk_map[idx] & 0x3);
+}
+
 /**
  * @brief CQPSK 4-level slicer matching OP25's fsk4_slicer_fb.
  *
@@ -253,16 +264,13 @@ cqpsk_slice(float symbol) {
 }
 
 /*
- * CQPSK slicer with permutation mapping for frame decoding.
+ * CQPSK slicer with optional debug inversion for sync alignment.
  *
- * Applies the constellation rotation correction discovered during sync detection.
- * The permutation index (state->cqpsk_perm_idx) is set when sync search finds a
- * mapping that minimizes Hamming distance to the expected P25 sync pattern.
- *
- * Without this mapping, frames decode incorrectly even with good constellation.
+ * The CQPSK DSP path mirrors OP25, so constellation rotation is already resolved
+ * by the differential Costas loop.
  */
 static inline int
-cqpsk_slice_with_perm(float symbol, const dsd_state* state) {
+cqpsk_slice_aligned(float symbol) {
     static int init = 0;
     static int inv = 0;
     static int negate = 0;
@@ -280,10 +288,9 @@ cqpsk_slice_with_perm(float symbol, const dsd_state* state) {
     float s = negate ? -symbol : symbol;
     int raw_dibit = cqpsk_slice(s);
     if (inv) {
-        raw_dibit = cqpsk_invert_dibit(raw_dibit);
+        raw_dibit = invert_dibit(raw_dibit);
     }
-    /* Apply constellation rotation correction from sync detection. */
-    return cqpsk_apply_perm(state->cqpsk_perm_idx, raw_dibit);
+    return raw_dibit;
 }
 
 static inline uint8_t
@@ -393,7 +400,7 @@ is_cqpsk_active(dsd_opts* opts) {
 }
 
 #ifdef USE_RTLSDR
-/* Optional histogram of CQPSK slicer output (post-permutation) when decoding. */
+/* Optional histogram of CQPSK slicer output during decoding. */
 static void
 debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     static int init = 0;
@@ -401,6 +408,7 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     static int hist[4] = {0, 0, 0, 0};
     static int sample_count = 0;
     static float sym_min = 1e9f, sym_max = -1e9f, sym_sum = 0.0f;
+    (void)state;
 
     if (!init) {
         const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
@@ -425,10 +433,9 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
     if (++sample_count >= 4800) {
         float n = (float)sample_count;
         float avg = sym_sum / n;
-        fprintf(stderr,
-                "[SLICE-DECODE] perm=%d d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f range:[%.2f,%.2f] (n=%d)\n",
-                state ? state->cqpsk_perm_idx : -1, 100.0f * hist[0] / n, 100.0f * hist[1] / n, 100.0f * hist[2] / n,
-                100.0f * hist[3] / n, avg, sym_min, sym_max, sample_count);
+        fprintf(stderr, "[SLICE-DECODE] d0:%.1f%% d1:%.1f%% d2:%.1f%% d3:%.1f%% avg:%.2f range:[%.2f,%.2f] (n=%d)\n",
+                100.0f * hist[0] / n, 100.0f * hist[1] / n, 100.0f * hist[2] / n, 100.0f * hist[3] / n, avg, sym_min,
+                sym_max, sample_count);
         hist[0] = hist[1] = hist[2] = hist[3] = 0;
         sample_count = 0;
         sym_sum = 0.0f;
@@ -513,7 +520,7 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
                                    || state->synctype == 36 || state->lastsynctype == 1 || state->lastsynctype == 36);
         if (want_cqpsk_slice) {
             float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
-            dibit = cqpsk_slice_with_perm(sym, state);
+            dibit = cqpsk_slice_aligned(sym);
             valid = 1;
             debug_log_cqpsk_slice(dibit, symbol, state);
         }
@@ -543,13 +550,16 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             }
         }
 
+        dibit = apply_p25_cqpsk_map(state, dibit);
+        int out_dibit = invert_dibit(dibit);
+
         state->last_dibit = dibit;
 
-        *state->dibit_buf_p = invert_dibit(dibit);
+        *state->dibit_buf_p = out_dibit;
         state->dibit_buf_p++;
 
         //dmr buffer
-        *state->dmr_payload_p = invert_dibit(dibit);
+        *state->dmr_payload_p = out_dibit;
         if (state->dmr_reliab_p) {
             if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
                 state->dmr_reliab_p = state->dmr_reliab_buf + 200;
@@ -588,7 +598,7 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
                                    || state->synctype == 35 || state->lastsynctype == 0 || state->lastsynctype == 35);
         if (want_cqpsk_slice) {
             float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
-            dibit = cqpsk_slice_with_perm(sym, state);
+            dibit = cqpsk_slice_aligned(sym);
             valid = 1;
             debug_log_cqpsk_slice(dibit, symbol, state);
         }
@@ -617,6 +627,8 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
                 }
             }
         }
+
+        dibit = apply_p25_cqpsk_map(state, dibit);
 
         state->last_dibit = dibit;
 

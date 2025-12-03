@@ -24,7 +24,6 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/dsp/cqpsk_perm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -33,6 +32,7 @@
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 /* Modulation auto-detect state (file scope for reset access).
@@ -74,6 +74,143 @@ sync_hamming_distance(const char* buf, const char* pat, int len) {
         }
     }
     return ham;
+}
+
+/* Compute best-case CQPSK Hamming distance to a sync pattern, accounting for
+ * common dibit remaps (inversion, bit swap, XOR, 90° rotation) that arise from
+ * differing slicer conventions. */
+static int
+qpsk_sync_hamming_with_remaps(const char* buf, const char* pat_norm, const char* pat_inv, int len) {
+    int ham_ident_n = 0, ham_ident_i = 0;
+    int ham_invert_n = 0, ham_invert_i = 0;
+    int ham_swap_n = 0, ham_swap_i = 0;
+    int ham_xor3_n = 0, ham_xor3_i = 0;
+    int ham_rot_n = 0, ham_rot_i = 0;
+    for (int k = 0; k < len; k++) {
+        int d = (unsigned char)buf[k];
+        if (d >= '0' && d <= '3') {
+            d -= '0';
+        }
+        int expect_n = pat_norm[k] - '0';
+        int expect_i = pat_inv[k] - '0';
+        int d_inv = (d == 0) ? 2 : (d == 1) ? 3 : (d == 2) ? 0 : 1;
+        int d_swap = ((d & 1) << 1) | ((d & 2) >> 1); /* swap bit order */
+        int d_xor3 = d ^ 0x3;                         /* bitwise not in 2-bit space */
+        /* 90° rotation (cyclic remap 0->1->3->2->0) */
+        int d_rot;
+        switch (d & 0x3) {
+            case 0: d_rot = 1; break;
+            case 1: d_rot = 3; break;
+            case 2: d_rot = 0; break;
+            default: d_rot = 2; break; /* d==3 */
+        }
+        if (d != expect_n) {
+            ham_ident_n++;
+        }
+        if (d != expect_i) {
+            ham_ident_i++;
+        }
+        if (d_inv != expect_n) {
+            ham_invert_n++;
+        }
+        if (d_inv != expect_i) {
+            ham_invert_i++;
+        }
+        if (d_swap != expect_n) {
+            ham_swap_n++;
+        }
+        if (d_swap != expect_i) {
+            ham_swap_i++;
+        }
+        if (d_xor3 != expect_n) {
+            ham_xor3_n++;
+        }
+        if (d_xor3 != expect_i) {
+            ham_xor3_i++;
+        }
+        if (d_rot != expect_n) {
+            ham_rot_n++;
+        }
+        if (d_rot != expect_i) {
+            ham_rot_i++;
+        }
+    }
+    int best = ham_ident_n;
+    int ham_candidates[] = {ham_ident_i, ham_invert_n, ham_invert_i, ham_swap_n, ham_swap_i,
+                            ham_xor3_n,  ham_xor3_i,   ham_rot_n,    ham_rot_i};
+    for (size_t idx = 0; idx < sizeof(ham_candidates) / sizeof(ham_candidates[0]); idx++) {
+        if (ham_candidates[idx] < best) {
+            best = ham_candidates[idx];
+        }
+    }
+    return best;
+}
+
+/* P25 CQPSK dibit maps keyed to detected frame sync permutation (parity with OP25). */
+static const uint64_t g_p25_fs_table[] = {0x5575F5FF77FFULL, 0x575D57F7FFULL, 0xFFDF5F55DD55ULL, 0xFDF7FD5D55ULL,
+                                          0xAA8A0A008800ULL, 0xA8A2A80800ULL, 0x001050551155ULL, 0x0104015155ULL,
+                                          0xFFEFAFAAEEAAULL, 0xFEFBFEAEAAULL};
+static const uint8_t g_p25_fs_len[] = {24, 20, 24, 20, 24, 20, 24, 20, 24, 20};
+static const uint8_t g_p25_fs_dibit_map[][4] = {{0, 1, 2, 3}, {0, 1, 2, 3}, {2, 3, 0, 1}, {2, 3, 0, 1}, {3, 2, 1, 0},
+                                                {3, 2, 1, 0}, {1, 3, 0, 2}, {1, 3, 0, 2}, {2, 0, 3, 1}, {2, 0, 3, 1}};
+
+static uint64_t
+p25_sync_word_from_ascii(const char* buf, int len) {
+    uint64_t word = 0;
+    for (int i = 0; i < len; i++) {
+        int d = (unsigned char)buf[i];
+        if (d >= '0' && d <= '3') {
+            d -= '0';
+        }
+        word = (word << 2) | (uint64_t)(d & 0x3);
+    }
+    return word;
+}
+
+static int
+p25_detect_cqpsk_fs_map(const char* buf24, const char* buf20) {
+    uint64_t word24 = p25_sync_word_from_ascii(buf24, 24);
+    uint64_t word20 = p25_sync_word_from_ascii(buf20, 20);
+    int table_len = (int)(sizeof(g_p25_fs_len) / sizeof(g_p25_fs_len[0]));
+    for (int i = 0; i < table_len; i++) {
+        uint64_t word = (g_p25_fs_len[i] == 24) ? word24 : word20;
+        if (word == g_p25_fs_table[i]) {
+            return i;
+        }
+    }
+    return 0; /* identity map */
+}
+
+static void
+p25_apply_cqpsk_dibit_map(char* dst, const char* src, int len, int map_idx) {
+    int table_len = (int)(sizeof(g_p25_fs_len) / sizeof(g_p25_fs_len[0]));
+    if (map_idx < 0 || map_idx >= table_len) {
+        map_idx = 0;
+    }
+    const uint8_t* map = g_p25_fs_dibit_map[map_idx];
+    for (int i = 0; i < len; i++) {
+        int d = (unsigned char)src[i];
+        if (d >= '0' && d <= '3') {
+            d -= '0';
+        }
+        dst[i] = (char)('0' + (map[d & 0x3] & 0x3));
+    }
+    dst[len] = 0;
+}
+
+static void
+p25_set_cqpsk_map(dsd_state* state, int map_idx) {
+    if (!state) {
+        return;
+    }
+    int table_len = (int)(sizeof(g_p25_fs_len) / sizeof(g_p25_fs_len[0]));
+    if (map_idx < 0 || map_idx >= table_len) {
+        map_idx = 0;
+    }
+    state->p25_cqpsk_map_idx = map_idx;
+    for (int i = 0; i < 4; i++) {
+        state->p25_cqpsk_map[i] = g_p25_fs_dibit_map[map_idx][i];
+    }
 }
 
 void
@@ -198,15 +335,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     char synctest12[13]; //dPMR
     char synctest10[11]; //NXDN FSW only
     char synctest32[33];
-    char synctest20[21]; //YSF
-    char synctest48[49]; //EDACS
-    char synctest8[9];   //M17
-    char synctest16[17]; //M17 Preamble
+    char synctest20[21];        //YSF
+    char synctest_mapped[25];   // CQPSK rotation-normalized P25 sync
+    char synctest20_mapped[21]; // CQPSK rotation-normalized P25P2 sync
+    char synctest48[49];        //EDACS
+    char synctest8[9];          //M17
+    char synctest16[17];        //M17 Preamble
     char modulation[8];
     char* synctest_p;
     char synctest_buf[10240]; //what actually is assigned to this, can't find its use anywhere?
-    int* raw_synctest_p;
-    int raw_synctest_buf[10240];
     float lmin, lmax;
     int lidx;
 
@@ -249,13 +386,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     synctest48[48] = 0;
     synctest32[32] = 0;
     synctest20[20] = 0;
+    synctest_mapped[24] = 0;
+    synctest20_mapped[20] = 0;
     modulation[7] = 0; //not initialized or terminated (unsure if this would be an issue or not)
     synctest_pos = 0;
     synctest_p = synctest_buf + 10;
-    /* Zero raw_synctest_buf to prevent undefined behavior when permutation search
-     * accesses raw_synctest_p[-23..0] before 24 samples have been collected. */
-    memset(raw_synctest_buf, 0, sizeof(raw_synctest_buf));
-    raw_synctest_p = raw_synctest_buf + 10;
     sync = 0;
     // lmin/lmax initialized later before use
     lidx = 0;
@@ -381,33 +516,32 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                  * Hamming distance to sync will be poor. Conversely, QPSK on correct
                  * signal achieves ham ≤ 2 reliably. Same applies to GFSK vs C4FM. */
                 {
-                    int qpsk_ham = cqpsk_perm_get_best_ham();
                     /* Decay recent ham values slowly (persist good state) */
-                    int ham_qpsk = atomic_load(&g_ham_qpsk_recent);
                     int ham_c4fm = atomic_load(&g_ham_c4fm_recent);
+                    int ham_qpsk = atomic_load(&g_ham_qpsk_recent);
                     int ham_gfsk = atomic_load(&g_ham_gfsk_recent);
-                    if (ham_qpsk < 24) {
-                        atomic_store(&g_ham_qpsk_recent, ham_qpsk + 1);
-                        ham_qpsk++;
-                    }
                     if (ham_c4fm < 24) {
                         atomic_store(&g_ham_c4fm_recent, ham_c4fm + 1);
                         ham_c4fm++;
+                    }
+                    if (ham_qpsk < 24) {
+                        atomic_store(&g_ham_qpsk_recent, ham_qpsk + 1);
+                        ham_qpsk++;
                     }
                     if (ham_gfsk < 24) {
                         atomic_store(&g_ham_gfsk_recent, ham_gfsk + 1);
                         ham_gfsk++;
                     }
-                    /* Fast attack: accept better ham immediately */
-                    if (qpsk_ham < ham_qpsk) {
-                        atomic_store(&g_ham_qpsk_recent, qpsk_ham);
-                        ham_qpsk = qpsk_ham;
-                    }
 
-                    /* Find best (lowest) ham across all modulations */
-                    int best_ham = ham_c4fm;
-                    int best_mod = 0;
-                    if (ham_qpsk < best_ham) {
+                    /* Pick modulation with lowest recent Hamming distance; ties keep current. */
+                    int best_mod = want_mod;
+                    int best_ham = (want_mod == 1) ? ham_qpsk : (want_mod == 2) ? ham_gfsk : ham_c4fm;
+                    if (ham_c4fm < best_ham) {
+                        best_ham = ham_c4fm;
+                        best_mod = 0;
+                    }
+                    int qpsk_enabled = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
+                    if (qpsk_enabled && ham_qpsk < best_ham) {
                         best_ham = ham_qpsk;
                         best_mod = 1;
                     }
@@ -422,8 +556,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                     /* Clear winner with ≥4 ham advantage over current want_mod */
                     else if (best_ham < 24) {
-                        int current_ham = (want_mod == 0) ? ham_c4fm : (want_mod == 1) ? ham_qpsk : ham_gfsk;
-                        if (best_ham + 4 <= current_ham) {
+                        int current_ham = (want_mod == 2) ? ham_gfsk : (want_mod == 1) ? ham_qpsk : ham_c4fm;
+                        if (current_ham >= 24 || best_ham + 4 <= current_ham) {
                             want_mod = best_mod;
                         }
                     }
@@ -776,93 +910,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         state->dmr_payload_p++;
         // end digitize and dmr buffer testing
 
-        /* Store dibit into sync window as ASCII 0..3. For CQPSK/P25 paths,
-         * invert the dibit to match the expected sync pattern orientation. */
-        int sync_dibit = dibit;
-        int raw_dibit = dibit & 0x3;
-        /* Map CQPSK dibits for P25 targets using selected mapping permutation (24 options). */
-        if (state->rf_mod == 1 && opts->audio_in_type == 3 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
-            raw_dibit = dibit & 0x3;
-            int mapped = cqpsk_apply_perm(cqpsk_perm_get_idx(), raw_dibit);
-            sync_dibit = mapped;
-            *raw_synctest_p = raw_dibit;
-            if (t >= t_max) {
-                int best_idx, best_ham;
-                int search_result;
-
-                /* Use P25P2 sync pattern (20 dibits) when tuned to TDMA voice channel,
-                 * otherwise use P25P1 sync pattern (24 dibits).
-                 *
-                 * Additionally verify TED is configured for TDMA rate (4 SPS at 24kHz).
-                 * This avoids searching for P25P2 patterns while the TED is still at
-                 * P25P1 rate during the retune transition, which would produce symbols
-                 * at the wrong timing for sync detection. When TED SPS is unavailable
-                 * (non-RTL frontends), fall back to always searching to preserve TDMA
-                 * detection. */
-                int ted_ready_for_p2 = 1;
-#ifdef USE_RTLSDR
-                int ted_sps_now = rtl_stream_get_ted_sps();
-                if (ted_sps_now > 0) {
-                    ted_ready_for_p2 = (ted_sps_now == 4); /* 4 SPS = 6000 sym/s at 24kHz */
-                }
-                /* Optional debug: when on a TDMA VC but TED is not yet at 4 SPS,
-                   log the gate decision under DSD_NEO_DEBUG_SYNC to help diagnose
-                   early-retune timing issues. */
-                if (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1 && !ted_ready_for_p2) {
-                    static int debug_init_gate = 0;
-                    static int debug_sync_gate = 0;
-                    if (!debug_init_gate) {
-                        const char* env = getenv("DSD_NEO_DEBUG_SYNC");
-                        debug_sync_gate = (env && *env == '1') ? 1 : 0;
-                        debug_init_gate = 1;
-                    }
-                    if (debug_sync_gate && (t % 200) == 0) {
-                        fprintf(stderr,
-                                "[SYNCDBG] P25p2 sync gate: slot=%d ted_sps=%d ready=%d t_max=%d "
-                                "(skipping P2 pattern)\n",
-                                state->p25_p2_active_slot, ted_sps_now, ted_ready_for_p2, t_max);
-                    }
-                }
-#endif
-                if (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1 && ted_ready_for_p2) {
-                    /* P25P2 TDMA voice channel - use shorter 20-dibit sync pattern */
-                    const int* raw_start = raw_synctest_p - (CQPSK_P25P2_SYNC_LEN - 1);
-                    search_result =
-                        cqpsk_perm_search_n(raw_start, P25P2_SYNC, CQPSK_P25P2_SYNC_LEN, &best_idx, &best_ham);
-                } else {
-                    /* P25P1 or auto mode - use 24-dibit sync pattern */
-                    const int* raw_start = raw_synctest_p - (CQPSK_P25P1_SYNC_LEN - 1);
-                    search_result = cqpsk_perm_search(raw_start, P25P1_SYNC, &best_idx, &best_ham);
-                }
-
-                /* Only switch when we actually improve Hamming distance to avoid thrash. */
-                if (cqpsk_perm_update(best_idx, best_ham)) {
-                    /* Propagate to state so frame decoder (digitize/cqpsk_slice) uses same mapping. */
-                    state->cqpsk_perm_idx = best_idx;
-                    /* Debug: print permutation changes when DSD_NEO_DEBUG_SYNC=1 */
-                    {
-                        static int dbg_init = 0;
-                        static int dbg_sync = 0;
-                        if (!dbg_init) {
-                            const char* env = getenv("DSD_NEO_DEBUG_SYNC");
-                            dbg_sync = (env && *env == '1') ? 1 : 0;
-                            dbg_init = 1;
-                        }
-                        if (dbg_sync) {
-                            fprintf(stderr, "[SYNCDBG] selecting CQPSK map=%d (ham=%d search=%d p2slot=%d)\n", best_idx,
-                                    best_ham, search_result, state->p25_p2_active_slot);
-                        }
-                    }
-                    /* Update current dibit to the newly selected mapping.
-                     * Use best_idx directly since CAS succeeded with this value. */
-                    sync_dibit = cqpsk_apply_perm(best_idx, raw_dibit);
-                }
-            }
-            /* Always keep state->cqpsk_perm_idx in sync with global (even if not switched this pass). */
-            state->cqpsk_perm_idx = cqpsk_perm_get_idx();
-        }
+        /* Store dibit into sync window as ASCII 0..3. */
+        int sync_dibit = dibit & 0x3;
         *synctest_p = (char)('0' + (sync_dibit & 0x3));
-        *raw_synctest_p = raw_dibit;
         if (t >= t_max) //works excelent now with short sync patterns, and no issues with large ones!
         {
             for (i = 0; i < t_max; i++) //24
@@ -938,6 +988,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
 
             strncpy(synctest, (synctest_p - 23), 24);
+            strncpy(synctest20, (synctest_p - 19), 20);
+            const char* p25_sync_window = synctest;
+            int p25_map_idx = 0;
+            if (state->rf_mod == 1 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+                p25_map_idx = p25_detect_cqpsk_fs_map(synctest, synctest20);
+                p25_apply_cqpsk_dibit_map(synctest_mapped, synctest, 24, p25_map_idx);
+                p25_apply_cqpsk_dibit_map(synctest20_mapped, synctest20, 20, p25_map_idx);
+                p25_sync_window = synctest_mapped;
+            }
 #ifdef USE_RTLSDR
             /* Debug: print sync pattern when DSD_NEO_DEBUG_SYNC=1 */
             {
@@ -1009,62 +1068,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                                 "[SYNCDBG] ham(norm=%d inv=%d ident=%d inv2=%d swap=%d xor3=%d rot=%d) win=%.*s\n",
                                 ham_norm, ham_inv, ham_ident, ham_invert, ham_swap, ham_xor3, ham_rot, 24, synctest);
                     }
-                    /* Deeper CQPSK mapping visibility: find the best permutation Hamming distance. */
-                    static int dbg_cq_win = 0;
-                    if ((++dbg_cq_win % 2400) == 0) {
-                        const int* raw_start = raw_synctest_p - (CQPSK_P25P1_SYNC_LEN - 1);
-                        char raw_win[CQPSK_P25P1_SYNC_LEN + 1];
-                        raw_win[CQPSK_P25P1_SYNC_LEN] = '\0';
-                        for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
-                            raw_win[k] = (char)('0' + (raw_start[k] & 0x3));
-                        }
-                        int best_idx = 0, best_ham = CQPSK_HAMMING_INIT;
-                        int curr_ham = CQPSK_HAMMING_INIT;
-                        char mapped_best[CQPSK_P25P1_SYNC_LEN + 1];
-                        mapped_best[CQPSK_P25P1_SYNC_LEN] = '\0';
-                        for (int mode = 0; mode < CQPSK_PERM_COUNT; mode++) {
-                            int ham = 0;
-                            for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
-                                int d = raw_start[k] & 0x3;
-                                int md = cqpsk_apply_perm(mode, d);
-                                int expect_n = P25P1_SYNC[k] - '0';
-                                if (md != expect_n) {
-                                    ham++;
-                                }
-                            }
-                            if (ham < best_ham) {
-                                best_ham = ham;
-                                best_idx = mode;
-                            }
-                        }
-                        /* Current permutation distance */
-                        {
-                            int ham = 0;
-                            int mode = cqpsk_perm_get_idx();
-                            for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
-                                int d = raw_start[k] & 0x3;
-                                int md = cqpsk_apply_perm(mode, d);
-                                int expect_n = P25P1_SYNC[k] - '0';
-                                if (md != expect_n) {
-                                    ham++;
-                                }
-                            }
-                            curr_ham = ham;
-                        }
-                        /* Build mapped window for best permutation */
-                        for (int k = 0; k < CQPSK_P25P1_SYNC_LEN; k++) {
-                            int d = raw_start[k] & 0x3;
-                            int md = cqpsk_apply_perm(best_idx, d);
-                            mapped_best[k] = (char)('0' + (md & 0x3));
-                        }
-                        int dsp_cq = 0, dsp_f = 0, dsp_t = 0;
-                        rtl_stream_dsp_get(&dsp_cq, &dsp_f, &dsp_t);
-                        fprintf(stderr,
-                                "[SYNC-CQ] best_ham=%d perm_best=%d curr_ham=%d curr_perm=%d dsp(cq=%d fll=%d "
-                                "ted=%d) raw=%.*s map=%s\n",
-                                best_ham, best_idx, curr_ham, cqpsk_perm_get_idx(), dsp_cq, dsp_f, dsp_t,
-                                CQPSK_P25P1_SYNC_LEN, raw_win, mapped_best);
-                    }
                 }
             }
 #endif
@@ -1089,6 +1092,28 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 int ham_c4fm_cur = atomic_load(&g_ham_c4fm_recent);
                 if (c4fm_ham < ham_c4fm_cur) {
                     atomic_store(&g_ham_c4fm_recent, c4fm_ham);
+                }
+            }
+            /* Compute CQPSK Hamming distance (with common dibit remaps) for modulation switching.
+             * Remaps cover phase rotations/inversions that appear when CQPSK is sliced with a
+             * different dibit ordering. This keeps QPSK candidates in the vote even without
+             * RTL-specific SNR metrics. */
+            if ((opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) && !opts->mod_cli_lock) {
+                int best_qpsk_ham = 24;
+                if (opts->frame_p25p1 == 1) {
+                    best_qpsk_ham = qpsk_sync_hamming_with_remaps(synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
+                }
+                if (opts->frame_p25p2 == 1) {
+                    int ham_p2 = qpsk_sync_hamming_with_remaps(synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
+                    /* Scale 20-dibit ham to 24-dibit baseline for fair comparison. */
+                    int ham_p2_scaled = (ham_p2 * 24 + 19) / 20;
+                    if (ham_p2_scaled < best_qpsk_ham || opts->frame_p25p1 == 0) {
+                        best_qpsk_ham = ham_p2_scaled;
+                    }
+                }
+                int ham_qpsk_cur = atomic_load(&g_ham_qpsk_recent);
+                if (best_qpsk_ham < ham_qpsk_cur) {
+                    atomic_store(&g_ham_qpsk_recent, best_qpsk_ham);
                 }
             }
             /* Compute GFSK Hamming distance for modulation switching.
@@ -1161,7 +1186,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 }
             }
             if (opts->frame_p25p1 == 1) {
-                if (strcmp(synctest, P25P1_SYNC) == 0) {
+                if (strcmp(p25_sync_window, P25P1_SYNC) == 0) {
+                    p25_set_cqpsk_map(state, p25_map_idx);
                     state->carrier = 1;
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
@@ -1178,7 +1204,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->last_cc_sync_time = now;
                     return (0);
                 }
-                if (strcmp(synctest, INV_P25P1_SYNC) == 0) {
+                if (strcmp(p25_sync_window, INV_P25P1_SYNC) == 0) {
+                    p25_set_cqpsk_map(state, p25_map_idx);
                     state->carrier = 1;
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
@@ -1440,10 +1467,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             //end M17
 
             //P25 P2 sync S-ISCH VCH
+            const char* p25p2_sync_window;
             strncpy(synctest20, (synctest_p - 19), 20);
+            if (state->rf_mod == 1 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+                p25_map_idx = p25_detect_cqpsk_fs_map(synctest, synctest20);
+                p25_apply_cqpsk_dibit_map(synctest20_mapped, synctest20, 20, p25_map_idx);
+                p25p2_sync_window = synctest20_mapped;
+            } else {
+                p25p2_sync_window = synctest20;
+            }
             if (opts->frame_p25p2 == 1) {
                 if (0 == 0) {
-                    if (strcmp(synctest20, P25P2_SYNC) == 0) {
+                    if (strcmp(p25p2_sync_window, P25P2_SYNC) == 0) {
+                        p25_set_cqpsk_map(state, p25_map_idx);
                         state->carrier = 1;
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
@@ -1468,7 +1504,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             if (opts->frame_p25p2 == 1) {
                 if (0 == 0) {
                     //S-ISCH VCH
-                    if (strcmp(synctest20, INV_P25P2_SYNC) == 0) {
+                    if (strcmp(p25p2_sync_window, INV_P25P2_SYNC) == 0) {
+                        p25_set_cqpsk_map(state, p25_map_idx);
                         state->carrier = 1;
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
@@ -2092,13 +2129,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (synctest_pos < 10200) {
             synctest_pos++;
             synctest_p++;
-            raw_synctest_p++;
 
         } else {
             // buffer reset
             synctest_pos = 0;
             synctest_p = synctest_buf;
-            raw_synctest_p = raw_synctest_buf;
             noCarrier(opts, state);
         }
 

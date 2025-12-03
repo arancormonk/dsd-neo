@@ -14,7 +14,6 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/dsp/cqpsk_perm.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
@@ -821,15 +820,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
         return;
     }
 
-    // Reset CQPSK permutation state when tuning to a new voice channel.
-    // The constellation rotation from the previous channel (e.g., P25P1 CC)
-    // won't be valid for the new channel (e.g., P25P2 VC), and a stale
-    // "locked" permutation would cause sync detection to fail.
-    cqpsk_perm_reset();
-
     // Reset modulation auto-detect state (ham tracking, vote counters) to ensure
-    // fresh acquisition on the new channel. Prevents stale QPSK ham values from
-    // causing premature switch to C4FM on P25 LSM CQPSK voice channels.
+    // fresh acquisition on the new channel and avoid carrying stale decisions.
     dsd_frame_sync_reset_mod_state();
 
     // NOTE: We intentionally do NOT call rtl_stream_reset_costas() here.
@@ -923,9 +915,6 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     if (!opts || !state || freq <= 0) {
         return;
     }
-    // Reset CQPSK permutation state for fresh acquisition on CC hunt.
-    cqpsk_perm_reset();
-
     // Reset modulation auto-detect state for fresh acquisition.
     dsd_frame_sync_reset_mod_state();
 

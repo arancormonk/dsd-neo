@@ -376,6 +376,9 @@ struct dsd_state {
     int c4fm_clk_cooldown; /* cooldown countdown to avoid rapid flips */
 
     int rf_mod;
+    /* CQPSK dibit permutation selected from P25 frame sync (rotation/bit-order). */
+    int p25_cqpsk_map_idx;
+    uint8_t p25_cqpsk_map[4];
     /* M17 polarity auto-detection: 0=unknown, 1=normal, 2=inverted.
      * Set when preamble detected; overridden if user specifies -xz. */
     int m17_polarity;
@@ -384,9 +387,6 @@ struct dsd_state {
      * sps_hunt_idx: current SPS index in cycle (0=10, 1=20, 2=5, 3=8) */
     int sps_hunt_counter;
     int sps_hunt_idx;
-    /* CQPSK dibit permutation index selected during sync detection (0..23).
-     * Applied during frame decoding to correct constellation rotation. */
-    int cqpsk_perm_idx;
     int lastsynctype;
     int lastp25type;
     int offset;
