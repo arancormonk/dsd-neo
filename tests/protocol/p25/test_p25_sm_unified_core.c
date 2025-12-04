@@ -24,7 +24,7 @@ reset_test_state(void) {
     memset(&g_state, 0, sizeof(g_state));
     g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
-    g_opts.trunk_hangtime = 0.75f;
+    g_opts.trunk_hangtime = 2.0f; // op25 TGID_HOLD_TIME
     g_opts.trunk_tune_group_calls = 1;
     g_opts.verbose = 0;
     g_state.p25_cc_freq = 851000000; // Fake CC freq
@@ -183,17 +183,18 @@ test_config_defaults(void) {
     p25_sm_ctx_t ctx;
     p25_sm_init_ctx(&ctx, &g_opts, &g_state);
 
-    // Check defaults (hangtime from opts, others from code defaults)
-    if (ctx.config.hangtime_s != 0.75) {
-        fprintf(stderr, "FAIL: Expected hangtime_s=0.75, got %.2f\n", ctx.config.hangtime_s);
+    // Check defaults (aligned with op25 timing parameters)
+    if (ctx.config.hangtime_s != 2.0) {
+        fprintf(stderr, "FAIL: Expected hangtime_s=2.0 (op25 TGID_HOLD_TIME), got %.2f\n", ctx.config.hangtime_s);
         return 1;
     }
-    if (ctx.config.grant_timeout_s != 4.0) {
-        fprintf(stderr, "FAIL: Expected grant_timeout_s=4.0, got %.2f\n", ctx.config.grant_timeout_s);
+    if (ctx.config.grant_timeout_s != 3.0) {
+        fprintf(stderr, "FAIL: Expected grant_timeout_s=3.0 (op25 TSYS_HOLD_TIME), got %.2f\n",
+                ctx.config.grant_timeout_s);
         return 1;
     }
-    if (ctx.config.cc_grace_s != 2.0) {
-        fprintf(stderr, "FAIL: Expected cc_grace_s=2.0, got %.2f\n", ctx.config.cc_grace_s);
+    if (ctx.config.cc_grace_s != 5.0) {
+        fprintf(stderr, "FAIL: Expected cc_grace_s=5.0 (op25 CC_HUNT_TIME), got %.2f\n", ctx.config.cc_grace_s);
         return 1;
     }
     return 0;

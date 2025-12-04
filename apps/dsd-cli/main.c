@@ -1595,9 +1595,8 @@ initOpts(dsd_opts* opts) {
     opts->p25_trunk = 0;                  //0 disabled, 1 is enabled
     opts->trunk_enable = opts->p25_trunk; // keep alias in sync
     opts->p25_is_tuned = 0;               //set to 1 if currently on VC, set back to 0 on carrier drop
-    // Short default hangtime to drop back to CC quickly after calls end
-    // while still giving a brief buffer for follow-on bursts.
-    opts->trunk_hangtime = 0.75f;
+    // Default hangtime aligned with OP25 (2s) while still releasing promptly after calls.
+    opts->trunk_hangtime = 2.0f;
 
     opts->scanner_mode = 0; //0 disabled, 1 is enabled
     opts->trunk_cli_seen = 0;
@@ -2595,7 +2594,7 @@ usage() {
     printf(
         "                 P25 - 12000; NXDN48 - 7000; NXDN96: 12000; DMR - 7000-12000; EDACS/PV - 12000-24000;\n"); //redo this, or check work, or whatever
     printf("                 May vary based on system stregnth, etc.\n");
-    printf("  -t <secs>     Set Trunking or Scan Speed VC/sync loss hangtime in seconds. (default = 1 second)\n");
+    printf("  -t <secs>     Set Trunking or Scan Speed VC/sync loss hangtime in seconds. (default = 2 seconds)\n");
     printf("\n");
     printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N 2> log.txt\n");
     printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> "

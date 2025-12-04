@@ -126,9 +126,10 @@ main(void) {
     rc |= expect_true("details compact WG", strstr(det, "WG:4(0837,1929+") != NULL);
 
     // TTL sweep: mark SG142 stale, ensure it disappears from summary/details
+    // (op25 uses 20s PATCH_EXPIRY_TIME)
     int idx142 = find_idx(&st, 142);
     if (idx142 >= 0) {
-        st.p25_patch_last_update[idx142] = time(NULL) - 601; // >600s ago
+        st.p25_patch_last_update[idx142] = time(NULL) - 21; // >20s ago (op25 aligned)
     }
     (void)p25_patch_compose_summary(&st, sum, sizeof sum);
     rc |= expect_eq_str("summary after TTL", sum, "P: 069");

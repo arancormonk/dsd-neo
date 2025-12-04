@@ -287,7 +287,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     memset(ctx, 0, sizeof(*ctx));
 
-    ctx->hangtime_s = 0.75;
+    ctx->hangtime_s = 2.0;
     ctx->grant_timeout_s = 4.0;
     ctx->cc_grace_s = 2.0;
 

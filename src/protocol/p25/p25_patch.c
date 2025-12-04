@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <time.h>
 
-#define P25_PATCH_TTL_SECONDS 600
+#define P25_PATCH_TTL_SECONDS 20
 
 static int
 find_patch_idx(dsd_state* state, uint16_t sgid) {

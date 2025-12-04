@@ -600,8 +600,8 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
  * CC Hunting Helpers
  * ============================================================================ */
 
-// Default hunting interval: try a new candidate every 2 seconds
-#define CC_HUNT_INTERVAL_S 2.0
+// Default hunting interval: try a new candidate every 5 seconds (aligned with op25 CC_HUNT_TIME)
+#define CC_HUNT_INTERVAL_S 5.0
 
 // Get next CC candidate (with cooldown check)
 static int
@@ -713,10 +713,10 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     memset(ctx, 0, sizeof(*ctx));
 
-    // Set defaults
-    ctx->config.hangtime_s = 0.75;
-    ctx->config.grant_timeout_s = 4.0;
-    ctx->config.cc_grace_s = 2.0;
+    // Set defaults (aligned with op25 timing parameters)
+    ctx->config.hangtime_s = 2.0;      // op25: TGID_HOLD_TIME = 2.0s
+    ctx->config.grant_timeout_s = 3.0; // op25: TSYS_HOLD_TIME = 3.0s
+    ctx->config.cc_grace_s = 5.0;      // op25: CC_HUNT_TIME = 5.0s
 
     // Override from opts if available (including zero for immediate release)
     if (opts) {

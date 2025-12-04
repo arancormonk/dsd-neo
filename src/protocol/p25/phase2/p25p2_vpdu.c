@@ -2863,6 +2863,104 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             p25_sm_on_neighbor_update(opts, state, neigh_d, 2);
         }
 
+        // Adjacent Status Broadcast - Extended Explicit (op25 parity: 0xFE)
+        // Layout: LRA(8), CFVA(4), SYSID(12), RFSSID(8), SITEID(8), CHAN-T(16), CHAN-R(16), SSC(8)
+        if (MAC[1 + len_a] == 0xFE) {
+            int lra = MAC[2 + len_a];
+            int cfva = MAC[3 + len_a] >> 4;
+            int lsysid = ((MAC[3 + len_a] & 0xF) << 8) | MAC[4 + len_a];
+            int rfssid = MAC[5 + len_a];
+            int siteid = MAC[6 + len_a];
+            int channelt = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
+            int channelr = (MAC[9 + len_a] << 8) | MAC[10 + len_a];
+            int sysclass = MAC[11 + len_a];
+            fprintf(stderr, "\n Adjacent Status Broadcast - Extended Explicit\n");
+            fprintf(stderr,
+                    "  LRA [%02X] RFSS[%03d] SITE [%03d] SYSID [%03X] CHAN-T [%04X] CHAN-R [%04X] SSC [%02X]\n  ", lra,
+                    rfssid, siteid, lsysid, channelt, channelr, sysclass);
+            if (cfva & 0x8) {
+                fprintf(stderr, " Conventional");
+            }
+            if (cfva & 0x4) {
+                fprintf(stderr, " Failure Condition");
+            }
+            if (cfva & 0x2) {
+                fprintf(stderr, " Up to Date (Correct)");
+            } else {
+                fprintf(stderr, " Last Known");
+            }
+            if (cfva & 0x1) {
+                fprintf(stderr, " Valid RFSS Connection Active");
+            }
+            long int af4 = process_channel_to_freq(opts, state, channelt);
+            long int af5 = process_channel_to_freq(opts, state, channelr);
+            long neigh_e[2] = {af4, af5};
+            p25_sm_on_neighbor_update(opts, state, neigh_e, 2);
+        }
+
+        // Group Affiliation Response (op25 parity: TSBK 0x28 -> MAC 0x68)
+        // Layout: LG(1), GAV(2), AGA(16), GA(16), TA(24)
+        if (MAC[1 + len_a] == 0x68) {
+            int k = 1; // vPDU offset
+            if (MAC[len_a] == 0x07) {
+                k = 0; // TSBK offset
+            }
+            int lg = (MAC[2 + len_a + k] >> 7) & 0x1;
+            int gav = (MAC[2 + len_a + k] >> 5) & 0x3;
+            int aga = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
+            int ga = (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
+            int ta = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
+            fprintf(stderr, "\n Group Affiliation Response");
+            fprintf(stderr, "\n  LG: %d GAV: %d AGA: %d GA: %d TA: %d", lg, gav, aga, ga, ta);
+            // Track RID affiliation (TA is the target address / unit ID)
+            if (gav == 0) { // Accepted
+                p25_aff_register(state, (uint32_t)ta);
+                // Also track group affiliation (RID -> TG mapping)
+                p25_ga_add(state, (uint32_t)ta, (uint32_t)ga);
+            }
+        }
+
+        // Secondary Control Channel Broadcast - Explicit (from P1 TSBK 0x29 -> MAC 0x69)
+        // Layout: RFSSID(8), SITEID(8), CHAN-T1(16), CHAN-R1(16), SSC(8)
+        if (MAC[1 + len_a] == 0x69) {
+            int rfssid = MAC[2 + len_a];
+            int siteid = MAC[3 + len_a];
+            int channelt = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+            int channelr = (MAC[6 + len_a] << 8) | MAC[7 + len_a];
+            int sysclass = MAC[8 + len_a];
+            fprintf(stderr, "\n Secondary Control Channel Broadcast - Explicit (from P1 TSBK)\n");
+            fprintf(stderr, "  RFSS [%03d] SITE ID [%03d] CHAN-T [%04X] CHAN-R [%04X] SSC [%02X]", rfssid, siteid,
+                    channelt, channelr, sysclass);
+            long int sccf = process_channel_to_freq(opts, state, channelt);
+            long int sccfr = process_channel_to_freq(opts, state, channelr);
+            // Add to CC candidate list for hunting
+            if (sccf > 0 && state->trunk_lcn_freq[1] == 0) {
+                state->trunk_lcn_freq[1] = sccf;
+                state->lcn_freq_count = 2;
+            } else if (sccf > 0 && state->trunk_lcn_freq[2] == 0 && sccf != state->trunk_lcn_freq[1]) {
+                state->trunk_lcn_freq[2] = sccf;
+                state->lcn_freq_count = 3;
+            }
+            // Notify state machine of neighbor CC
+            if (sccf > 0) {
+                long neigh_scc[2] = {sccf, sccfr};
+                p25_sm_on_neighbor_update(opts, state, neigh_scc, (sccfr > 0) ? 2 : 1);
+            }
+            state->p2_siteid = siteid;
+            state->p2_rfssid = rfssid;
+        }
+
+        // Power Control Signal Quality (op25 parity: MAC 0x30)
+        // Layout: TA(24), RF(4), BER(4)
+        if (MAC[1 + len_a] == 0x30 && MAC[2 + len_a] != 0xA4 && MAC[2 + len_a] != 0x90) {
+            // Exclude MFID messages (0xA4 = Harris, 0x90 = Moto) which use same opcode
+            int ta = (MAC[2 + len_a] << 16) | (MAC[3 + len_a] << 8) | MAC[4 + len_a];
+            int rf = (MAC[5 + len_a] >> 4) & 0xF;
+            int ber = MAC[5 + len_a] & 0xF;
+            fprintf(stderr, "\n Power Control Signal Quality");
+            fprintf(stderr, "\n  Target Address: %d RF: 0x%X BER: 0x%X", ta, rf, ber);
+        }
+
     SKIPCALL:; //do nothing
 
         if ((len_b + len_c) < 24 && len_c != 0) {
