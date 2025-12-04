@@ -367,6 +367,13 @@ rtl_stream_get_costas_err_q14(void) {
     return dsd_rtl_stream_get_costas_err_q14();
 }
 
+extern "C" double dsd_rtl_stream_get_fll_band_edge_freq_hz(void);
+
+extern "C" double
+rtl_stream_get_fll_band_edge_freq_hz(void) {
+    return dsd_rtl_stream_get_fll_band_edge_freq_hz();
+}
+
 /* Auto-PPM status snapshot */
 extern "C" int dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm,
                                                   int* last_dir, int* cooldown, int* locked);

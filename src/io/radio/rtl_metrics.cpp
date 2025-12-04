@@ -33,6 +33,7 @@ static std::atomic<int> g_carrier_lock{0};
 static std::atomic<int> g_nco_q15{0};
 static std::atomic<int> g_demod_rate_hz{0};
 static std::atomic<int> g_costas_err_avg_q14{0};
+static std::atomic<double> g_fll_band_edge_freq_rad{0.0}; /* FLL band-edge NCO freq (rad/sample) */
 
 /* Demodulator state (defined in rtl_sdr_fm.cpp) used for CFO/Costas metrics. */
 extern demod_state demod;
@@ -223,18 +224,52 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     }
     g_resid_cfo_spec_hz.store(df_spec_hz, std::memory_order_relaxed);
 
-    /* NCO CFO from Costas/FLL (native float freq in rad/sample, scaled by Fs/(2π)) */
+    /* NCO CFO from Costas/FLL (native float freq in rad/sample, scaled by Fs/(2π))
+     *
+     * For CQPSK (OP25-compatible flow), the total CFO is the sum of:
+     *   1. FLL band-edge frequency (coarse, at sample rate) - fll_band_edge_state.freq
+     *   2. Costas frequency (fine, at symbol rate) - costas_state.freq
+     *
+     * The Costas operates at symbol rate (Fs/sps), so its frequency must be scaled
+     * by (1/sps) to convert to sample-rate equivalent before adding to FLL freq.
+     *
+     * For non-CQPSK modes, we use the legacy fll_freq field.
+     */
     double cfo_hz = 0.0;
+    float total_freq_rad = 0.0f; /* Total NCO freq in rad/sample for legacy Q15 metric */
     if (out_rate_hz > 0) {
-        /* fll_freq is in radians/sample; convert to Hz: f_hz = freq * Fs / (2π) */
-        cfo_hz = static_cast<double>(demod.fll_freq) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
+        if (demod.cqpsk_enable) {
+            /* CQPSK: Combine FLL band-edge and Costas frequencies.
+             * FLL freq is at sample rate, Costas freq is at symbol rate.
+             * Costas freq (rad/symbol) * (1/sps) = rad/sample equivalent.
+             */
+            float fll_freq = demod.fll_band_edge_state.freq; /* rad/sample */
+            float costas_freq = demod.costas_state.freq;     /* rad/symbol */
+            int sps = demod.ted_sps > 0 ? demod.ted_sps : 5;
+
+            /* Convert Costas freq from rad/symbol to rad/sample */
+            float costas_freq_sample_rate = costas_freq / static_cast<float>(sps);
+
+            total_freq_rad = fll_freq + costas_freq_sample_rate;
+            cfo_hz = static_cast<double>(total_freq_rad) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
+
+            /* Also update legacy fll_freq/fll_phase for any code that still reads them */
+            demod.fll_freq = total_freq_rad;
+            demod.fll_phase = demod.fll_band_edge_state.phase + demod.costas_state.phase;
+        } else {
+            /* Non-CQPSK: Use legacy FLL state */
+            total_freq_rad = demod.fll_freq;
+            cfo_hz = static_cast<double>(demod.fll_freq) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
+        }
     }
     g_cfo_nco_hz.store(cfo_hz, std::memory_order_relaxed);
     /* Store native float freq as legacy Q15 for backwards-compatible metrics */
-    int fll_freq_q15_compat = static_cast<int>(lrint(demod.fll_freq * (32768.0 / (2.0 * M_PI))));
+    int fll_freq_q15_compat = static_cast<int>(lrint(total_freq_rad * (32768.0 / (2.0 * M_PI))));
     g_nco_q15.store(fll_freq_q15_compat, std::memory_order_relaxed);
     g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
+    /* Store FLL band-edge freq for UI access (avoid data race on demod state) */
+    g_fll_band_edge_freq_rad.store(static_cast<double>(demod.fll_band_edge_state.freq), std::memory_order_relaxed);
 
     /* Spectrum-assisted CFO correction for CQPSK:
      * When CQPSK path and FLL are enabled, and we see a reasonably strong
@@ -247,6 +282,10 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
      * is already close to lock, we:
      *   - Ignore very small residuals near DC.
      *   - Use a conservative outer-loop gain.
+     *
+     * For the OP25-compatible flow, we nudge fll_band_edge_state.freq (the coarse
+     * frequency at sample rate). The legacy fll_freq is updated as a side effect
+     * for backwards compatibility with any code that reads it directly.
      */
     if (demod.cqpsk_enable && demod.fll_enabled && out_rate_hz > 0) {
         double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
@@ -262,7 +301,9 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
             double delta_rad = k_outer * df_spec_hz * 2.0 * M_PI / static_cast<double>(out_rate_hz);
             if (fabs(delta_rad) > 1e-9) {
                 const float F_CLAMP = 0.25f; /* ~±0.25 rad/sample max CFO */
-                float f_old = demod.fll_freq;
+
+                /* For OP25 flow, nudge the FLL band-edge state directly */
+                float f_old = demod.fll_band_edge_state.freq;
                 float f_new = f_old + static_cast<float>(delta_rad);
                 if (f_new > F_CLAMP) {
                     f_new = F_CLAMP;
@@ -270,10 +311,17 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
                 if (f_new < -F_CLAMP) {
                     f_new = -F_CLAMP;
                 }
+                demod.fll_band_edge_state.freq = f_new;
+
+                /* Also update legacy fll_freq for backwards compatibility.
+                 * Combine FLL band-edge + Costas (scaled to sample rate). */
+                int sps = demod.ted_sps > 0 ? demod.ted_sps : 5;
+                float costas_freq_sample_rate = demod.costas_state.freq / static_cast<float>(sps);
+                total_freq_rad = f_new + costas_freq_sample_rate;
+                demod.fll_freq = total_freq_rad;
+
+                /* Also nudge legacy fll_state for non-OP25 paths that may read it */
                 float delta_applied = f_new - f_old;
-                /* Mirror the outer-loop nudge into the FLL integrator so that
-                 * the PI controller's internal state tracks the new target and does not
-                 * immediately pull freq back toward the old integrator value. */
                 float i_old = demod.fll_state.integrator;
                 float i_new = i_old + delta_applied;
                 if (i_new > F_CLAMP) {
@@ -282,13 +330,13 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
                 if (i_new < -F_CLAMP) {
                     i_new = -F_CLAMP;
                 }
-                demod.fll_freq = f_new;
                 demod.fll_state.integrator = i_new;
+
                 /* Store native float freq as legacy Q15 for backwards-compatible metrics */
-                int fll_q15_compat = static_cast<int>(lrint(f_new * (32768.0 / (2.0 * M_PI))));
+                int fll_q15_compat = static_cast<int>(lrint(total_freq_rad * (32768.0 / (2.0 * M_PI))));
                 g_nco_q15.store(fll_q15_compat, std::memory_order_relaxed);
                 /* Recompute NCO CFO export after adjustment */
-                cfo_hz = static_cast<double>(f_new) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
+                cfo_hz = static_cast<double>(total_freq_rad) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
                 g_cfo_nco_hz.store(cfo_hz, std::memory_order_relaxed);
             }
         }
@@ -425,17 +473,37 @@ dsd_rtl_stream_get_costas_err_q14(void) {
     return g_costas_err_avg_q14.load(std::memory_order_relaxed);
 }
 
+/** @brief Return the FLL band-edge frequency estimate in Hz. */
+extern "C" double
+dsd_rtl_stream_get_fll_band_edge_freq_hz(void) {
+    int Fs = g_demod_rate_hz.load(std::memory_order_relaxed);
+    if (Fs <= 0) {
+        return 0.0;
+    }
+    /* FLL band-edge freq is in rad/sample; convert to Hz: f_hz = freq * Fs / (2π).
+     * Read from atomic to avoid data race with demod thread. */
+    double freq_rad = g_fll_band_edge_freq_rad.load(std::memory_order_relaxed);
+    return freq_rad * static_cast<double>(Fs) / (2.0 * M_PI);
+}
+
 /**
  * @brief Reset Costas loop state for fresh carrier acquisition on retune.
  *
- * Clears the Costas phase/frequency estimates and the differential phasor
- * history so the loop starts clean on a new channel. Without this reset,
- * the loop would start with stale frequency offset from the previous channel
- * and must slew to the new carrier, delaying sync acquisition.
+ * Clears the Costas phase and error estimates, but PRESERVES the frequency
+ * estimate. The carrier frequency offset is primarily a property of the RTL-SDR
+ * local oscillator, not the channel. Preserving freq allows immediate tracking
+ * on channel changes rather than slewing from 0 Hz.
+ *
+ * Also resets the differential phasor history to (1,0) so the first sample's
+ * diff output equals raw input.
  */
 extern "C" void
 dsd_rtl_stream_reset_costas(void) {
-    dsd_costas_reset(&demod.costas_state);
+    /* Reset phase and error, but preserve frequency estimate */
+    demod.costas_state.phase = 0.0f;
+    demod.costas_state.error = 0.0f;
+    /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
+
     /* Reset differential decode history to (1,0) not (0,0).
      * When prev is (0,0), the first diff decode produces zero output,
      * which corrupts the Costas phase error and causes the loop to hunt.

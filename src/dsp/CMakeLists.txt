@@ -8,6 +8,7 @@ target_sources(dsd-neo_dsp PRIVATE
   halfband.cpp
   fll.cpp
   ted.cpp
+  firdes.cpp
   simd_widen.cpp
   simd_fir.cpp
   dsd_filters.c

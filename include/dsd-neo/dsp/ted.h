@@ -39,6 +39,7 @@ typedef struct {
     float omega_mid; /* nominal omega center */
     float omega_min; /* minimum omega (omega_mid * (1 - omega_rel)) */
     float omega_max; /* maximum omega (omega_mid * (1 + omega_rel)) */
+    float omega_rel; /* relative omega limit for clipping (OP25: 0.002 = ±0.2%) */
     /* Last symbol sample for OP25 Gardner error computation */
     float last_r;
     float last_j;

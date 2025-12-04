@@ -99,9 +99,10 @@ static const double kEvmEstimatorBiasDb = 1.92;
 /* Noise equivalent bandwidth (Hz) for each channel LPF profile at 24 kHz Fs.
  * Computed as Bn = (Fs/2) * Σh² / (Σh)² for each filter.
  * These scale linearly with actual sample rate: Bn_actual = Bn_ref * (rate_out / 24000). */
-static const double kNoiseBwWide24k = 8200.0;    /* Wide/analog profile (~8 kHz cutoff) */
-static const double kNoiseBwDigital24k = 5400.0; /* Digital-narrow profile (~5 kHz cutoff) */
-static const double kNoiseBwP25Hann24k = 7200.0; /* P25 Hann profile (~7 kHz cutoff) */
+static const double kNoiseBwWide24k = 8200.0;     /* Wide/analog profile (~8 kHz cutoff) */
+static const double kNoiseBwDigital24k = 5400.0;  /* Digital-narrow profile (~5 kHz cutoff) */
+static const double kNoiseBwOp25Tdma24k = 9800.0; /* OP25 TDMA Hamming (9600 Hz cutoff) */
+static const double kNoiseBwOp25Fdma24k = 7200.0; /* OP25 FDMA Hamming (7000 Hz cutoff) */
 
 /**
  * @brief Get noise equivalent bandwidth for a given LPF profile and sample rate.
@@ -115,7 +116,8 @@ get_noise_bandwidth_hz(int lpf_profile, int rate_out) {
     double bn_24k;
     switch (lpf_profile) {
         case 1: /* DSD_CH_LPF_PROFILE_DIGITAL */ bn_24k = kNoiseBwDigital24k; break;
-        case 2: /* DSD_CH_LPF_PROFILE_P25_HANN */ bn_24k = kNoiseBwP25Hann24k; break;
+        case 2: /* DSD_CH_LPF_PROFILE_OP25_TDMA */ bn_24k = kNoiseBwOp25Tdma24k; break;
+        case 3: /* DSD_CH_LPF_PROFILE_OP25_FDMA */ bn_24k = kNoiseBwOp25Fdma24k; break;
         default: /* DSD_CH_LPF_PROFILE_WIDE or unknown */ bn_24k = kNoiseBwWide24k; break;
     }
     /* Scale by actual sample rate relative to 24 kHz reference */
@@ -530,7 +532,30 @@ demod_reset_on_retune(struct demod_state* s) {
      *
      * We DO reset phase because the phase relationship changes with RF frequency.
      */
-    dsd_costas_reset(&s->costas_state);
+    /* Costas: Reset phase but preserve frequency estimate.
+     * The carrier frequency offset is primarily a property of the RTL-SDR
+     * local oscillator, not the channel. Preserving freq allows immediate
+     * tracking on channel changes rather than slewing from 0 Hz. */
+    s->costas_state.phase = 0.0f;
+    s->costas_state.error = 0.0f;
+    /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
+
+    /* FLL: Reset phase and delay line but preserve frequency estimate.
+     * The FLL frequency offset (rad/sample) is primarily a property of the RTL-SDR
+     * local oscillator, not the channel. Since the FLL operates at sample rate
+     * (before TED), the frequency estimate remains valid when switching between
+     * P25p1 (5 sps) and P25p2 (4 sps) on the same system.
+     *
+     * Preserving freq allows immediate tracking on channel changes instead of
+     * slewing from 0 Hz to the actual offset (~50-200 Hz typically). This is
+     * critical for P25p2 TDMA where the first superframe must be decoded quickly. */
+    s->fll_band_edge_state.phase = 0.0f;
+    s->fll_band_edge_state.delay_idx = 0;
+    for (int k = 0; k < FLL_BAND_EDGE_MAX_TAPS; k++) {
+        s->fll_band_edge_state.delay_r[k] = 0.0f;
+        s->fll_band_edge_state.delay_i[k] = 0.0f;
+    }
+    /* Note: deliberately NOT zeroing fll_band_edge_state.freq - preserve it! */
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
      * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
@@ -586,11 +611,17 @@ demod_reset_on_retune(struct demod_state* s) {
             debug_init = 1;
         }
         if (debug_cqpsk) {
+            /* Use the OP25-compatible FLL band-edge state, not legacy fll_freq.
+             * Convert rad/sample to Hz for readability. */
+            float fll_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
+            float costas_freq_hz =
+                s->costas_state.freq
+                * ((float)(s->rate_out / (s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
             fprintf(stderr,
-                    "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_freq=%.3f fll_phase=%.3f gardner_omega=%.3f "
-                    "gardner_mu=%.3f\n",
-                    s->ted_sps, s->ted_sps_override, s->cqpsk_enable, s->fll_freq, s->fll_phase, s->ted_state.omega,
-                    s->ted_state.mu);
+                    "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_freq=%.1fHz fll_phase=%.3f costas_freq=%.1fHz "
+                    "costas_phase=%.3f gardner_omega=%.3f gardner_mu=%.3f\n",
+                    s->ted_sps, s->ted_sps_override, s->cqpsk_enable, fll_freq_hz, s->fll_band_edge_state.phase,
+                    costas_freq_hz, s->costas_state.phase, s->ted_state.omega, s->ted_state.mu);
         }
     }
 }

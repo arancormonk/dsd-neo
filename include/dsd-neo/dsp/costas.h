@@ -5,10 +5,18 @@
 
 /**
  * @file
- * @brief QPSK Costas loop (carrier recovery) interface.
+ * @brief OP25-compatible CQPSK signal chain interface.
  *
- * Ports the GNU Radio `costas_loop_cc` control loop and phase detectors.
- * State is tracked in `dsd_costas_loop_state_t` and updated in-place on each block.
+ * Direct port of OP25's CQPSK demodulator signal chain:
+ *   AGC -> Gardner (timing) -> diff_phasor -> Costas (carrier)
+ *
+ * From OP25's p25_demodulator_dev.py line 486:
+ *   self.connect(self.if_out, self.agc, self.fll, self.clock, self.diffdec, self.costas, ...)
+ *
+ * Where:
+ *   - clock = op25_repeater.gardner_cc (timing recovery only)
+ *   - diffdec = digital.diff_phasor_cc (differential decoding at symbol rate)
+ *   - costas = op25_repeater.costas_loop_cc (carrier tracking at symbol rate)
  */
 
 #pragma once
@@ -34,13 +42,56 @@ typedef struct {
     int initialized;
 } dsd_costas_loop_state_t;
 
+/**
+ * @brief OP25-compatible FLL band-edge filter state.
+ *
+ * Direct port of GNU Radio's digital.fll_band_edge_cc used in OP25:
+ *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+ *
+ * The FLL uses band-edge filters to estimate frequency error before timing recovery.
+ * This is critical for initial frequency acquisition on channel retunes.
+ */
+#define FLL_BAND_EDGE_MAX_TAPS 32
+
+typedef struct {
+    float phase;    /* NCO phase accumulator (radians) */
+    float freq;     /* NCO frequency (rad/sample) */
+    float max_freq; /* Max frequency limit (rad/sample) */
+    float min_freq; /* Min frequency limit (rad/sample) */
+    float loop_bw;  /* Loop bandwidth */
+    float alpha;    /* Loop filter gain (phase/proportional) - from control_loop */
+    float beta;     /* Loop filter gain (frequency/integral) - from control_loop */
+
+    /* Band-edge filter taps (upper and lower) */
+    float taps_lower_r[FLL_BAND_EDGE_MAX_TAPS];
+    float taps_lower_i[FLL_BAND_EDGE_MAX_TAPS];
+    float taps_upper_r[FLL_BAND_EDGE_MAX_TAPS];
+    float taps_upper_i[FLL_BAND_EDGE_MAX_TAPS];
+    int n_taps;
+
+    /* Filter delay line */
+    float delay_r[FLL_BAND_EDGE_MAX_TAPS];
+    float delay_i[FLL_BAND_EDGE_MAX_TAPS];
+    int delay_idx;
+
+    int sps; /* Samples per symbol (for reinit detection) */
+    int initialized;
+} dsd_fll_band_edge_state_t;
+
 /* OP25-compatible defaults for CQPSK carrier recovery.
-   OP25 uses loop_bw=0.008, damping=sqrt(2)/2, computed alpha/beta:
-     denom = 1.0 + 2.0 * damping * loop_bw + loop_bw * loop_bw
-     alpha = (4 * damping * loop_bw) / denom  ≈ 0.0221
-     beta  = (4 * loop_bw * loop_bw) / denom  ≈ 0.000253
-   Frequency limits: ±1.0 rad/sample
-   Phase limits: ±π/2 (clamped, not wrapped) */
+ *
+ * OP25 uses loop_bw=0.008, damping=sqrt(2)/2, computed alpha/beta:
+ *   denom = 1.0 + 2.0 * damping * loop_bw + loop_bw * loop_bw
+ *   alpha = (4 * damping * loop_bw) / denom  ≈ 0.0223
+ *   beta  = (4 * loop_bw * loop_bw) / denom  ≈ 0.000253
+ *
+ * From p25_demodulator_dev.py:
+ *   costas_alpha = 0.008 (this is loop_bw, NOT alpha)
+ *   costas = op25_repeater.costas_loop_cc(costas_alpha, 4, TWO_PI/4)
+ *
+ * Frequency limits: ±1.0 rad/sample
+ * Phase limits: ±π/2 (clamped, not wrapped)
+ */
 
 /** @brief OP25 Costas loop bandwidth. */
 static inline float
@@ -53,8 +104,8 @@ static inline float
 dsd_neo_costas_default_alpha(void) {
     /* loop_bw=0.008, damping=sqrt(2)/2
        denom = 1.0 + 2.0 * 0.7071 * 0.008 + 0.008^2 ≈ 1.01137
-       alpha = (4 * 0.7071 * 0.008) / 1.01137 ≈ 0.0221 */
-    return 0.0221f;
+       alpha = (4 * 0.7071 * 0.008) / 1.01137 ≈ 0.0223 */
+    return 0.0223f;
 }
 
 /** @brief Default Costas loop beta (frequency gain) - computed from OP25 loop_bw/damping. */
@@ -67,7 +118,7 @@ dsd_neo_costas_default_beta(void) {
 /** @brief Default max frequency (rad/sample) - OP25: ±1.0 rad/sample. */
 static inline float
 dsd_neo_costas_default_max_freq(void) {
-    return 1.0f; /* OP25: COSTAS_MAX_FREQ = 1.0 rad/sample */
+    return 1.0f;
 }
 
 /** @brief Default Costas loop bandwidth (legacy, for non-CQPSK modes). */
@@ -85,51 +136,148 @@ dsd_neo_costas_default_damping(void) {
 /**
  * @brief Reset Costas loop state for fresh carrier acquisition.
  *
+ * Per OP25's costas_reset() in p25_demodulator_dev.py:574-576:
+ *   self.costas.set_frequency(0)
+ *   self.costas.set_phase(0)
+ *
  * Call this on channel retunes to clear stale phase/frequency estimates
- * from the previous channel. Without reset, the loop starts with the old
- * frequency offset and must slew to the new carrier, delaying sync acquisition.
+ * from the previous channel.
  *
  * @param c Costas loop state to reset.
  */
 void dsd_costas_reset(dsd_costas_loop_state_t* c);
 
 /**
- * @brief OP25-compatible Gardner + Costas combined block.
+ * @brief OP25-compatible Gardner timing recovery block.
  *
- * Direct port of OP25's gardner_costas_cc_impl::general_work().
+ * Direct port of OP25's gardner_cc_impl::general_work() from:
+ *   op25/gr-op25_repeater/lib/gardner_cc_impl.cc
+ *
+ * This is PURE timing recovery - NO carrier tracking, NO NCO rotation.
+ * The carrier is tracked separately by the downstream Costas loop.
+ *
  * Signal flow:
- *   1. Per input sample: NCO rotation, push to delay line
- *   2. Per output symbol: MMSE interpolation, Gardner TED, Costas phase tracking
- *   3. Output: RAW NCO-corrected symbols (NOT differential)
+ *   Input: AGC'd complex samples at sample rate
+ *   Processing:
+ *     1. Push samples to circular delay line
+ *     2. When mu accumulates past 1.0, interpolate symbol and mid-symbol
+ *     3. Compute Gardner error: (last - current) * mid
+ *     4. Update omega and mu
+ *     5. Update lock detector (Yair Linn method)
+ *   Output: Symbol-rate complex samples (timing corrected, NOT carrier corrected)
  *
- * The Gardner TED and Costas loop operate together in a single processing block,
- * exactly matching OP25's combined implementation. The NCO correction is applied
- * BEFORE the delay line, and phase error is computed from the internal diffdec.
+ * Key OP25 parameters (from p25_demodulator_dev.py and gardner_cc_impl.cc):
+ *   - gain_mu = 0.025
+ *   - gain_omega = 0.1 * gain_mu^2 = 0.0000625
+ *   - omega_rel = 0.002 (±0.2%)
  *
  * @param d Demodulator state. Input: lowpassed (sample-rate IQ after AGC).
- *          Output: lowpassed (symbol-rate NCO-corrected samples).
+ *          Output: lowpassed (symbol-rate samples).
  */
-void op25_gardner_costas_cc(struct demod_state* d);
+void op25_gardner_cc(struct demod_state* d);
 
 /**
  * @brief External differential phasor decoder (matches GNU Radio diff_phasor_cc).
  *
  * Computes y[n] = x[n] * conj(x[n-1]) to produce differential phase output.
- * This is applied AFTER op25_gardner_costas_cc, matching OP25's Python flow:
- *   clock -> diffdec -> to_float -> rescale -> slicer
+ *
+ * From OP25's p25_demodulator_dev.py line 408:
+ *   self.diffdec = digital.diff_phasor_cc()
+ *
+ * This is applied AFTER Gardner timing recovery, producing differential
+ * phase symbols for the Costas loop.
  *
  * @param d Demodulator state. Modifies lowpassed in-place to differential phasors.
  */
 void op25_diff_phasor_cc(struct demod_state* d);
 
 /**
- * @brief Legacy wrapper: calls op25_gardner_costas_cc then op25_diff_phasor_cc.
+ * @brief OP25-compatible Costas loop at symbol rate.
  *
- * Kept for API compatibility. New code should call the individual functions.
+ * Direct port of OP25's costas_loop_cc_impl::work() from:
+ *   op25/gr-op25_repeater/lib/costas_loop_cc_impl.cc
+ *
+ * This operates on DIFFERENTIALLY DECODED symbols (after diff_phasor_cc).
+ * The phase detector expects symbols at axis-aligned positions.
+ *
+ * Signal flow:
+ *   Input: Symbol-rate differential phasors from diff_phasor_cc
+ *   Processing:
+ *     1. NCO rotation: out = in * exp(-j*phase)
+ *     2. Phase error detection (QPSK detector)
+ *     3. Loop filter update (PI controller)
+ *     4. Phase limiting to ±π/2
+ *   Output: Carrier-corrected differential phasors
+ *
+ * Key OP25 parameters (from p25_demodulator_dev.py and costas_loop_cc_impl.cc):
+ *   - loop_bw = 0.008 (called "costas_alpha" in p25_demodulator_dev.py)
+ *   - damping = sqrt(2)/2 (critically damped)
+ *   - max_phase = π/2
+ *   - Computed: alpha ≈ 0.0223, beta ≈ 0.000253
+ *
+ * @param d Demodulator state. Modifies lowpassed in-place with carrier correction.
+ */
+void op25_costas_loop_cc(struct demod_state* d);
+
+/**
+ * @brief Legacy combined Gardner + Costas block (redirects to separated flow).
+ *
+ * This function is kept for backward compatibility. It now calls op25_gardner_cc
+ * only. The diff_phasor and Costas are called separately in demod_pipeline.cpp.
+ *
+ * New code should use the separated functions directly.
+ *
+ * @param d Demodulator state.
+ */
+void op25_gardner_costas_cc(struct demod_state* d);
+
+/**
+ * @brief Legacy wrapper: calls op25_gardner_cc, op25_diff_phasor_cc, op25_costas_loop_cc.
+ *
+ * Kept for API compatibility. New code should call the individual functions
+ * for better control over the signal flow.
  *
  * @param d Demodulator state.
  */
 void cqpsk_costas_diff_and_update(struct demod_state* d);
+
+/**
+ * @brief Reset FLL band-edge state for fresh frequency acquisition.
+ *
+ * Call this on channel retunes to clear stale frequency estimates.
+ *
+ * @param f FLL state to reset.
+ */
+void dsd_fll_band_edge_reset(dsd_fll_band_edge_state_t* f);
+
+/**
+ * @brief OP25-compatible FLL band-edge frequency lock loop.
+ *
+ * Direct port of GNU Radio's digital.fll_band_edge_cc as used in OP25:
+ *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+ *
+ * This FLL uses band-edge filters to detect and correct frequency offset
+ * before timing recovery. The error signal is derived from the difference
+ * in power between upper and lower band-edge filter outputs.
+ *
+ * Signal flow:
+ *   Input: AGC'd complex samples at sample rate
+ *   Processing:
+ *     1. NCO rotation: out = in * exp(-j*phase)
+ *     2. Band-edge filtering (upper and lower)
+ *     3. Error computation: |x_lower|^2 - |x_upper|^2
+ *     4. Loop filter update (frequency only, no phase term)
+ *   Output: Frequency-corrected complex samples
+ *
+ * Key OP25 parameters (from p25_demodulator_dev.py line 403):
+ *   - sps = samples per symbol (5 for P25p1, 4 for P25p2)
+ *   - excess_bw = 0.2 (rolloff factor)
+ *   - filter_size = 2*sps+1
+ *   - loop_bw = TWO_PI/sps/350
+ *
+ * @param d Demodulator state. Modifies lowpassed in-place with frequency correction.
+ */
+void op25_fll_band_edge_cc(struct demod_state* d);
 
 #ifdef __cplusplus
 }

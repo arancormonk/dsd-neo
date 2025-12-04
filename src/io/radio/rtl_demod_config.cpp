@@ -404,7 +404,8 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
         if (high_fs) {
             channel_lpf = 1;
             if (p25_mode) {
-                channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_HANN;
+                /* Use OP25-compatible TDMA filter for P25 (works for both P1 and P2) */
+                channel_lpf_profile = DSD_CH_LPF_PROFILE_OP25_TDMA;
             } else {
                 channel_lpf_profile = digital_mode ? DSD_CH_LPF_PROFILE_DIGITAL : DSD_CH_LPF_PROFILE_WIDE;
             }

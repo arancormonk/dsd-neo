@@ -502,6 +502,9 @@ int rtl_stream_get_nco_q15(void);
 /** Return current demod output sample rate (Hz). */
 int rtl_stream_get_demod_rate_hz(void);
 
+/** Return FLL band-edge frequency estimate in Hz (coarse freq offset for CQPSK). */
+double rtl_stream_get_fll_band_edge_freq_hz(void);
+
 /* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
 /** Get FM AGC enable state (1 on, 0 off). */
 int rtl_stream_get_fm_agc(void);

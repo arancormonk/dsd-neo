@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
@@ -224,86 +225,6 @@ static const float channel_lpf_digital[kChannelLpfTaps] = {
     0.0f,
 };
 
-/* OP25-matched P25 Hann LPF (fc=6562.5 Hz @ 24 kHz Fs, 63 taps).
- * Matches OP25's p25_demodulator.py cutoff filter exactly:
- *   fa = 6250 Hz (passband edge)
- *   fb = 6875 Hz (stopband edge)
- *   fc = (fa + fb) / 2 = 6562.5 Hz (cutoff)
- *   filter.firdes.low_pass(1.0, if_rate, fc, fb-fa, filter.firdes.WIN_HANN)
- *
- * Frequency response:
- *   6250 Hz: -1.35 dB (passband edge)
- *   6562 Hz: -5.89 dB (cutoff, -6 dB point)
- *   6875 Hz: -16.5 dB (stopband edge)
- *   7500 Hz: -53 dB
- *   8000 Hz: -68 dB
- */
-static const float channel_lpf_p25_hann[kChannelLpfTaps] = {
-    0.0f,
-    1.0f / 32768.0f,
-    -2.0f / 32768.0f,
-    -7.0f / 32768.0f,
-    11.0f / 32768.0f,
-    16.0f / 32768.0f,
-    -32.0f / 32768.0f,
-    -20.0f / 32768.0f,
-    68.0f / 32768.0f,
-    9.0f / 32768.0f,
-    -117.0f / 32768.0f,
-    28.0f / 32768.0f,
-    169.0f / 32768.0f,
-    -102.0f / 32768.0f,
-    -209.0f / 32768.0f,
-    219.0f / 32768.0f,
-    218.0f / 32768.0f,
-    -378.0f / 32768.0f,
-    -169.0f / 32768.0f,
-    574.0f / 32768.0f,
-    34.0f / 32768.0f,
-    -794.0f / 32768.0f,
-    227.0f / 32768.0f,
-    1017.0f / 32768.0f,
-    -674.0f / 32768.0f,
-    -1223.0f / 32768.0f,
-    1449.0f / 32768.0f,
-    1390.0f / 32768.0f,
-    -3071.0f / 32768.0f,
-    -1498.0f / 32768.0f,
-    10291.0f / 32768.0f,
-    17920.0f / 32768.0f,
-    10291.0f / 32768.0f,
-    -1498.0f / 32768.0f,
-    -3071.0f / 32768.0f,
-    1390.0f / 32768.0f,
-    1449.0f / 32768.0f,
-    -1223.0f / 32768.0f,
-    -674.0f / 32768.0f,
-    1017.0f / 32768.0f,
-    227.0f / 32768.0f,
-    -794.0f / 32768.0f,
-    34.0f / 32768.0f,
-    574.0f / 32768.0f,
-    -169.0f / 32768.0f,
-    -378.0f / 32768.0f,
-    218.0f / 32768.0f,
-    219.0f / 32768.0f,
-    -209.0f / 32768.0f,
-    -102.0f / 32768.0f,
-    169.0f / 32768.0f,
-    28.0f / 32768.0f,
-    -117.0f / 32768.0f,
-    9.0f / 32768.0f,
-    68.0f / 32768.0f,
-    -20.0f / 32768.0f,
-    -32.0f / 32768.0f,
-    16.0f / 32768.0f,
-    11.0f / 32768.0f,
-    -7.0f / 32768.0f,
-    -2.0f / 32768.0f,
-    1.0f / 32768.0f,
-    0.0f,
-};
-
 /* ---------------- Post-demod audio polyphase decimator (M > 2) -------------- */
 /*
  * Lightweight 1/M polyphase decimator for audio. Designs a windowed-sinc
@@ -431,23 +352,109 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
 }
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
+
+/* OP25-compatible dynamically generated filter taps (cached).
+ * Generated once per sample rate using GNU Radio's firdes.low_pass() algorithm.
+ * Max tap count for Hamming window at 24kHz with 1200Hz transition: 49 taps. */
+static float s_op25_tdma_taps[128];
+static float s_op25_fdma_taps[128];
+static int s_op25_tdma_ntaps = 0;
+static int s_op25_fdma_ntaps = 0;
+static double s_op25_taps_sample_rate = 0.0;
+
+/**
+ * @brief Ensure OP25 filter taps are generated for the given sample rate.
+ *
+ * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
+ * OP25 parameters from p25_demodulator_dev.py:
+ *   tdma_cutoff = 9600 Hz
+ *   fdma_cutoff = 7000 Hz
+ *   trans_width = 1200 Hz
+ *   window = WIN_HAMMING
+ */
+static void
+channel_lpf_ensure_op25_taps(double sample_rate) {
+    if (sample_rate == s_op25_taps_sample_rate && s_op25_tdma_ntaps > 0 && s_op25_fdma_ntaps > 0) {
+        return; /* Already generated for this sample rate */
+    }
+
+    /* Generate TDMA filter: firdes.low_pass(1.0, sample_rate, 9600, 1200, WIN_HAMMING) */
+    s_op25_tdma_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 9600.0, 1200.0, DSD_WIN_HAMMING, s_op25_tdma_taps, 128);
+    if (s_op25_tdma_ntaps < 0) {
+        s_op25_tdma_ntaps = 0;
+        fprintf(stderr, "[channel_lpf] Failed to generate OP25 TDMA filter for Fs=%.0f\n", sample_rate);
+    }
+
+    /* Generate FDMA filter: firdes.low_pass(1.0, sample_rate, 7000, 1200, WIN_HAMMING) */
+    s_op25_fdma_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 7000.0, 1200.0, DSD_WIN_HAMMING, s_op25_fdma_taps, 128);
+    if (s_op25_fdma_ntaps < 0) {
+        s_op25_fdma_ntaps = 0;
+        fprintf(stderr, "[channel_lpf] Failed to generate OP25 FDMA filter for Fs=%.0f\n", sample_rate);
+    }
+
+    s_op25_taps_sample_rate = sample_rate;
+
+    /* Debug: log filter parameters */
+    static int logged = 0;
+    if (!logged && (s_op25_tdma_ntaps > 0 || s_op25_fdma_ntaps > 0)) {
+        fprintf(stderr, "[channel_lpf] Generated OP25 filters for Fs=%.0f: TDMA=%d taps, FDMA=%d taps\n", sample_rate,
+                s_op25_tdma_ntaps, s_op25_fdma_ntaps);
+        logged = 1;
+    }
+}
+
 static void
 channel_lpf_apply(struct demod_state* d) {
     if (!d || !d->channel_lpf_enable || d->lp_len < 2) {
         return;
     }
-    const int taps_len = kChannelLpfTaps;
-    const int hist_len = kChannelLpfHistLen;
+
+    const float* taps = NULL;
+    int taps_len = 0;
+
+    /* Select filter taps based on profile */
+    switch (d->channel_lpf_profile) {
+        case DSD_CH_LPF_PROFILE_DIGITAL:
+            taps = channel_lpf_digital;
+            taps_len = kChannelLpfTaps;
+            break;
+        case DSD_CH_LPF_PROFILE_OP25_TDMA:
+            /* OP25-compatible TDMA filter: 9600 Hz cutoff, 1200 Hz transition, Hamming */
+            channel_lpf_ensure_op25_taps((double)d->rate_out);
+            if (s_op25_tdma_ntaps > 0) {
+                taps = s_op25_tdma_taps;
+                taps_len = s_op25_tdma_ntaps;
+            } else {
+                /* Fallback to wide if generation failed */
+                taps = channel_lpf_wide;
+                taps_len = kChannelLpfTaps;
+            }
+            break;
+        case DSD_CH_LPF_PROFILE_OP25_FDMA:
+            /* OP25-compatible FDMA filter: 7000 Hz cutoff, 1200 Hz transition, Hamming */
+            channel_lpf_ensure_op25_taps((double)d->rate_out);
+            if (s_op25_fdma_ntaps > 0) {
+                taps = s_op25_fdma_taps;
+                taps_len = s_op25_fdma_ntaps;
+            } else {
+                /* Fallback to wide if generation failed */
+                taps = channel_lpf_wide;
+                taps_len = kChannelLpfTaps;
+            }
+            break;
+        case DSD_CH_LPF_PROFILE_WIDE:
+        default:
+            taps = channel_lpf_wide;
+            taps_len = kChannelLpfTaps;
+            break;
+    }
+
+    const int hist_len = taps_len - 1;
     const int N = d->lp_len >> 1; /* complex samples */
     if (hist_len > d->channel_lpf_hist_len) {
         d->channel_lpf_hist_len = hist_len;
     }
-    const float* taps = channel_lpf_wide;
-    switch (d->channel_lpf_profile) {
-        case DSD_CH_LPF_PROFILE_DIGITAL: taps = channel_lpf_digital; break;
-        case DSD_CH_LPF_PROFILE_P25_HANN: taps = channel_lpf_p25_hann; break;
-        default: break;
-    }
+
     const float* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
     float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     float* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
@@ -1275,26 +1282,47 @@ full_demod(struct demod_state* d) {
         }
 
         /*
-         * OP25-aligned combined Gardner + Costas block.
+         * OP25-aligned CQPSK signal chain (matches p25_demodulator_dev.py line 486):
          *
-         * This is a direct port of OP25's gardner_costas_cc_impl::general_work().
-         * It combines:
-         *   - NCO rotation (applied per-sample BEFORE delay line)
-         *   - Gardner timing recovery (MMSE interpolation)
-         *   - Costas carrier tracking (phase error from internal diffdec * PT_45)
+         *   AGC -> FLL -> Gardner (timing) -> diff_phasor -> Costas (carrier)
          *
-         * Output: Symbol-rate NCO-corrected samples (NOT differential)
+         * This is the CORRECT OP25 flow where:
+         *   0. FLL band-edge does coarse frequency acquisition (BEFORE timing recovery)
+         *   1. Gardner does ONLY timing recovery (no NCO rotation)
+         *   2. diff_phasor is applied at symbol rate after Gardner
+         *   3. Costas loop operates at symbol rate on differential symbols
+         *
+         * Key differences from old combined block:
+         *   - FLL for coarse frequency correction before timing recovery
+         *   - No NCO rotation in Gardner
+         *   - Costas operates at symbol rate (not sample rate)
+         *   - Costas uses loop_bw=0.008, computed alpha≈0.0223, beta≈0.000253
+         *   - Phase limited to ±π/2 (not wrapped)
          *
          * Skip during unit tests that use raw_demod.
          */
         if (d->mode_demod != &raw_demod) {
             int pre_len = d->lp_len;
 
-            /* Combined Gardner + Costas (OP25's clock block) */
-            op25_gardner_costas_cc(d);
+            /* 0. FLL band-edge frequency acquisition (OP25's fll block)
+             *    This corrects coarse frequency offset BEFORE timing recovery.
+             *    Critical for initial acquisition after channel retunes.
+             *    From p25_demodulator_dev.py line 403:
+             *      self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+             */
+            op25_fll_band_edge_cc(d);
 
-            /* External diff_phasor_cc (OP25's diffdec block) */
+            /* 1. Gardner timing recovery (OP25's clock block)
+             *    Output: symbol-rate samples, NOT carrier corrected */
+            op25_gardner_cc(d);
+
+            /* 2. Differential phasor (OP25's diffdec block)
+             *    Output: differential phase symbols */
             op25_diff_phasor_cc(d);
+
+            /* 3. Costas carrier recovery at symbol rate (OP25's costas block)
+             *    Output: carrier-corrected differential symbols */
+            op25_costas_loop_cc(d);
 
             /* Debug: Post-processing state when DSD_NEO_DEBUG_CQPSK=1 */
             {
@@ -1308,12 +1336,17 @@ full_demod(struct demod_state* d) {
                 }
                 if (debug_cqpsk && (++call_count % 50) == 0) {
                     dsd_costas_loop_state_t* c = &d->costas_state;
+                    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
                     ted_state_t* ted = &d->ted_state;
                     const float kTwoPi = 6.28318530717958647692f;
-                    float costas_freq_hz = (d->rate_out > 0) ? c->freq * ((float)d->rate_out / kTwoPi) : 0.0f;
-                    fprintf(stderr, "[OP25] in:%d out:%d omega:%.3f mu:%.3f costas_freq:%.1fHz phase:%.3f err:%.3f\n",
-                            pre_len / 2, d->lp_len / 2, ted->omega, ted->mu, costas_freq_hz, c->phase, c->error);
-                    /* Log IQ constellation: first few symbols to check if on diagonals */
+                    /* FLL freq at sample rate */
+                    float fll_freq_hz = f->freq * ((float)d->rate_out / kTwoPi);
+                    /* Costas freq at symbol rate (not sample rate) */
+                    int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
+                    float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
+                    fprintf(stderr, "[OP25] in:%d out:%d omega:%.3f fll_freq:%.1fHz costas_freq:%.1fHz phase:%.3f\n",
+                            pre_len / 2, d->lp_len / 2, ted->omega, fll_freq_hz, costas_freq_hz, c->phase);
+                    /* Log IQ constellation: first few symbols to check positioning */
                     if (d->lp_len >= 8) {
                         const float* iq = d->lowpassed;
                         fprintf(stderr, "[IQ] ");

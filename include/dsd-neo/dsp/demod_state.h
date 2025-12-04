@@ -47,7 +47,8 @@
 enum {
     DSD_CH_LPF_PROFILE_WIDE = 0,
     DSD_CH_LPF_PROFILE_DIGITAL = 1,
-    DSD_CH_LPF_PROFILE_P25_HANN = 2,
+    DSD_CH_LPF_PROFILE_OP25_TDMA = 2, /* OP25: 9600 Hz cutoff, 1200 Hz trans, Hamming */
+    DSD_CH_LPF_PROFILE_OP25_FDMA = 3, /* OP25: 7000 Hz cutoff, 1200 Hz trans, Hamming */
 };
 
 /* Forward declaration to avoid heavy dependencies here */
@@ -161,19 +162,24 @@ struct demod_state {
     int resamp_taps_per_phase; /* K = ceil(taps_len/L) */
     int resamp_hist_head;      /* head index into circular history [0..K-1] */
 
-    /* Residual CFO FLL state (GNU Radio-style native float) */
+    /* Legacy FM FLL state (for non-CQPSK FM/C4FM paths).
+     * Used by fll_update_error() and fll_mix_and_update() in demod_pipeline.cpp.
+     * For CQPSK paths, use fll_band_edge_state and costas_state instead. */
     int fll_enabled;
     float fll_alpha;    /* proportional gain (native float, ~0.002..0.02) */
     float fll_beta;     /* integral gain (native float, ~0.0002..0.002) */
-    float fll_freq;     /* NCO frequency increment (rad/sample) */
-    float fll_phase;    /* NCO phase accumulator (radians) */
+    float fll_freq;     /* NCO frequency increment (rad/sample) - FM path only */
+    float fll_phase;    /* NCO phase accumulator (radians) - FM path only */
     float fll_deadband; /* ignore small phase errors |err| <= deadband (radians) */
     float fll_slew_max; /* max |delta freq| per update (rad/sample) */
     float fll_prev_r;
     float fll_prev_j;
 
-    /* CQPSK Costas loop tuning (separate from FLL) */
-    dsd_costas_loop_state_t costas_state;
+    /* OP25-compatible CQPSK carrier recovery (used instead of legacy FLL above).
+     * Signal flow: FLL band-edge (coarse freq) -> Gardner TED -> diff_phasor -> Costas (fine freq)
+     * Total CFO for metrics = fll_band_edge_state.freq + costas_state.freq/sps */
+    dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
+    dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
 
     /* Timing error detector (Gardner) - native float */
     int ted_enabled;

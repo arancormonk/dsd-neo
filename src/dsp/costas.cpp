@@ -1,30 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright 2006,2010-2012 Free Software Foundation, Inc.
- * Copyright 2010-2015 KA1RBI (OP25 gardner_costas_cc)
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
- */
-
-/*
- * OP25-compatible Gardner + Costas combined block.
+ * Gardner symbol recovery block for GR - Copyright 2010, 2011, 2012, 2013, 2014, 2015 KA1RBI
+ * Costas loop for carrier recovery - Copyright 2006,2010-2012 Free Software Foundation, Inc.
+ * Lock detector based on Yair Linn's research - Copyright 2022 gnorbury@bondcar.com
+ * Port to dsd-neo - Copyright (C) 2025 by arancormonk
  *
- * This is a direct port of OP25's gardner_costas_cc_impl.cc signal flow.
- * The algorithm:
- *   1. Per input sample: advance NCO phase, rotate sample, push to delay line
- *   2. Per output symbol (when mu < 1):
- *      a. MMSE interpolate at symbol and mid-symbol points
- *      b. Compute Gardner timing error: (last - current) * mid
- *      c. Compute diffdec for Costas: interp_samp * conj(last_sample)
- *      d. Update Costas phase tracking: phase_error_tracking(diffdec * PT_45)
- *      e. Output the RAW NCO-corrected interpolated symbol (NOT diffdec)
- *   3. External diff_phasor_cc is applied after this block
+ * This is a direct port of OP25's CQPSK signal chain:
+ *   AGC -> Gardner (timing only) -> diff_phasor -> Costas (at symbol rate)
+ *
+ * The key insight from OP25 (p25_demodulator_dev.py line 486):
+ *   self.connect(self.if_out, self.agc, self.fll, self.clock, self.diffdec, self.costas, ...)
+ *
+ * Where:
+ *   - clock = op25_repeater.gardner_cc (timing recovery only, NO carrier tracking)
+ *   - diffdec = digital.diff_phasor_cc (differential decoding at symbol rate)
+ *   - costas = op25_repeater.costas_loop_cc (carrier tracking at symbol rate)
  */
 
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
 
 #include <cmath>
-#include <complex>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -153,38 +152,15 @@ branchless_clip(float x, float limit) {
 /*
  * OP25 QPSK phase error detector.
  *
- * From gardner_costas_cc_impl.cc phase_error_detector_qpsk():
- *   if(fabsf(sample.real()) > fabsf(sample.imag())) {
- *     if(sample.real() > 0)
- *       phase_error = -sample.imag();
- *     else
- *       phase_error = sample.imag();
- *   } else {
- *     if(sample.imag() > 0)
- *       phase_error = sample.real();
- *     else
- *       phase_error = -sample.real();
- *   }
+ * From costas_loop_cc_impl.cc phase_detector_4():
+ *   return ((sample.real() > 0 ? 1.0 : -1.0) * sample.imag() -
+ *           (sample.imag() > 0 ? 1.0 : -1.0) * sample.real());
  *
- * This expects symbols rotated to axis-aligned positions (0°, 90°, 180°, 270°).
+ * This expects symbols at axis-aligned positions (0°, 90°, 180°, 270°).
  */
 static inline float
-phase_error_detector_qpsk(float real, float imag) {
-    float phase_error = 0.0f;
-    if (fabsf(real) > fabsf(imag)) {
-        if (real > 0.0f) {
-            phase_error = -imag;
-        } else {
-            phase_error = imag;
-        }
-    } else {
-        if (imag > 0.0f) {
-            phase_error = real;
-        } else {
-            phase_error = -real;
-        }
-    }
-    return phase_error;
+phase_detector_4(float real, float imag) {
+    return ((real > 0.0f ? 1.0f : -1.0f) * imag - (imag > 0.0f ? 1.0f : -1.0f) * real);
 }
 
 /* NaN check helper */
@@ -195,14 +171,13 @@ phase_error_detector_qpsk(float real, float imag) {
 /*
  * Reset Costas loop state for fresh carrier acquisition on retune.
  *
- * IMPORTANT: We preserve c->freq (carrier frequency estimate) because the
- * local oscillator offset is a property of the RTL-SDR hardware, not the
- * channel. When retuning from CC to VC on the same system, the carrier
- * offset should be similar. Preserving freq allows faster re-acquisition.
+ * Per OP25's costas_reset() in p25_demodulator_dev.py:574-576:
+ *   self.costas.set_frequency(0)
+ *   self.costas.set_phase(0)
  *
- * We DO reset phase because the phase relationship changes with frequency.
- * We also reset error accumulator and initialized flag to trigger fresh
- * gain initialization.
+ * Unlike the old combined block, we now reset BOTH phase and frequency
+ * because the Costas loop operates at symbol rate after diff_phasor,
+ * and there's no shared state with Gardner.
  */
 extern "C" void
 dsd_costas_reset(dsd_costas_loop_state_t* c) {
@@ -210,33 +185,37 @@ dsd_costas_reset(dsd_costas_loop_state_t* c) {
         return;
     }
     c->phase = 0.0f;
-    /* Preserve c->freq - oscillator offset is hardware property, similar across channels */
+    c->freq = 0.0f;
     c->error = 0.0f;
     c->initialized = 0;
 }
 
 /*
- * OP25-compatible Gardner + Costas combined block.
+ * OP25-compatible Gardner timing recovery block.
  *
- * This is a direct port of OP25's gardner_costas_cc_impl::general_work().
+ * Direct port of OP25's gardner_cc_impl::general_work() from:
+ *   op25/gr-op25_repeater/lib/gardner_cc_impl.cc
+ *
+ * This is PURE timing recovery - NO carrier tracking, NO NCO rotation.
+ * The carrier is tracked separately by the downstream Costas loop.
  *
  * Signal flow:
  *   Input: AGC'd complex samples at sample rate
- *   Processing per sample:
- *     1. Advance NCO: phase += freq
- *     2. Rotate input: sample = input * exp(j*(phase+theta))
- *     3. Push rotated sample to delay line
- *   Processing per symbol (when mu accumulates past 1.0):
- *     4. MMSE interpolate at mid-symbol and symbol points
- *     5. Compute Gardner error: (last - current) * mid
- *     6. Compute diffdec for Costas: interp * conj(last)
- *     7. Costas phase error tracking on diffdec * PT_45
- *     8. Update omega and mu
- *     9. Output RAW interpolated symbol (NOT diffdec)
- *   Output: Symbol-rate NCO-corrected samples (external diff_phasor applied later)
+ *   Processing:
+ *     1. Push samples to circular delay line
+ *     2. When mu accumulates past 1.0, interpolate symbol and mid-symbol
+ *     3. Compute Gardner error: (last - current) * mid
+ *     4. Update omega and mu
+ *     5. Update lock detector (Yair Linn method)
+ *   Output: Symbol-rate complex samples (timing corrected, NOT carrier corrected)
+ *
+ * Key differences from old combined block:
+ *   - NO NCO rotation applied to input samples
+ *   - NO phase error computation or Costas tracking
+ *   - Output is raw symbols, not carrier-corrected
  */
 extern "C" void
-op25_gardner_costas_cc(struct demod_state* d) {
+op25_gardner_cc(struct demod_state* d) {
     if (!d || !d->lowpassed || d->lp_len < 2) {
         return;
     }
@@ -244,39 +223,12 @@ op25_gardner_costas_cc(struct demod_state* d) {
         return;
     }
 
-    dsd_costas_loop_state_t* c = &d->costas_state;
     ted_state_t* ted = &d->ted_state;
 
     const int buf_len = d->lp_len;
     const int nc = buf_len >> 1; /* input complex samples */
     if (nc < 4) {
         return;
-    }
-
-    /* Initialize Costas loop parameters if not already set.
-     *
-     * IMPORTANT: We do NOT reset phase/freq here! OP25's set_omega() preserves
-     * d_phase and d_freq across frequency changes, allowing the Costas loop to
-     * continue tracking without re-acquisition slew.
-     *
-     * The phase/freq are initialized to 0 only at startup (in rtl_demod_config.cpp
-     * or via dsd_costas_reset). On retunes, they should be preserved.
-     */
-    if (!c->initialized) {
-        /* OP25 defaults: alpha=0.04, beta=0.125*alpha^2=0.0002 */
-        if (c->alpha <= 0.0f) {
-            c->alpha = 0.04f;
-        }
-        if (c->beta <= 0.0f) {
-            c->beta = 0.125f * c->alpha * c->alpha;
-        }
-        if (c->max_freq <= 0.0f) {
-            /* OP25: fmax = 2*pi * 2400 / if_rate; for 24kHz: ~0.628 rad/sample */
-            c->max_freq = kTwoPi * 2400.0f / 24000.0f;
-        }
-        c->min_freq = -c->max_freq;
-        /* DO NOT reset c->phase or c->freq here - preserve carrier recovery state */
-        c->initialized = 1;
     }
 
     /* Get TED parameters */
@@ -286,10 +238,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
     /*
      * Reinitialize TED state when SPS changes (e.g., P25P1 CC 5 sps -> P25P2 VC 4 sps).
      *
-     * This mirrors OP25's set_omega() behavior which is called from configure_tdma()
-     * when TDMA state changes. Without this, the delay line contains stale samples
-     * from the previous symbol rate and the omega bounds are wrong, causing the
-     * Gardner loop to malfunction on P25P2 voice channels.
+     * This mirrors OP25's set_omega() behavior.
      */
     int need_reinit = (ted->omega_mid == 0.0f || ted->twice_sps < 2);
     if (!need_reinit && ted->sps > 0 && ted->sps != sps) {
@@ -307,19 +256,19 @@ op25_gardner_costas_cc(struct demod_state* d) {
                 debug_init = 1;
             }
             if (debug_cqpsk) {
-                /* Note: freq is preserved from previous channel to speed acquisition */
-                float freq_hz = c->freq * (24000.0f / kTwoPi);
-                fprintf(stderr,
-                        "[COSTAS] TED reinit: sps=%d->%d old_omega=%.3f costas_phase=%.3f freq=%.1fHz (preserved)\n",
-                        ted->sps, sps, ted->omega, c->phase, freq_hz);
+                fprintf(stderr, "[GARDNER] TED reinit: sps=%d->%d old_omega=%.3f\n", ted->sps, sps, ted->omega);
             }
         }
+
         omega = (float)sps;
         ted->omega = omega;
-        float omega_rel = 0.005f; /* OP25 default */
+
+        /* OP25 uses d_omega_rel = 0.002 (±0.2%) - from gardner_cc_impl.cc line 73.
+         * Store omega_rel in state for use in clipping formula. */
+        ted->omega_rel = 0.002f;
         ted->omega_mid = omega;
-        ted->omega_min = omega * (1.0f - omega_rel);
-        ted->omega_max = omega * (1.0f + omega_rel);
+        ted->omega_min = omega * (1.0f - ted->omega_rel);
+        ted->omega_max = omega * (1.0f + ted->omega_rel);
 
         int twice_sps_op25 = 2 * (int)ceilf(ted->omega_max);
         int twice_sps_mmse = (int)ceilf(ted->omega_max / 2.0f) + MMSE_NTAPS + 1;
@@ -333,99 +282,63 @@ op25_gardner_costas_cc(struct demod_state* d) {
         ted->dl_index = 0;
         ted->sps = sps;
 
-        /* Clear delay line (OP25's set_omega does memset(d_dl, 0, ...)) */
-        for (int i = 0; i < TED_DL_SIZE * 2 * 2; i++) {
-            ted->dl[i] = 0.0f;
-        }
+        /* OP25's set_omega() only clears the FIRST element of the delay line:
+         *   *d_dl = gr_complex(0,0);  // NOT memset for entire buffer!
+         *
+         * This preserves existing samples in the delay line, allowing immediate
+         * symbol output without warmup delay. The old samples may be from a
+         * different channel, but they provide valid timing phase continuity.
+         *
+         * Clearing the entire buffer forces the TED to wait for the delay line
+         * to fill before producing valid symbols, wasting the first ~sps samples
+         * after each channel change. */
+        ted->dl[0] = 0.0f;
+        ted->dl[1] = 0.0f;
 
-        /* Reset TED timing state on SPS change.
-         *
-         * Unlike OP25's continuous sample flow where set_omega() preserves all state,
-         * dsd-neo's SPS change happens during a retune with sample gap. The old timing
-         * state is from a different symbol rate:
-         *   - mu: fractional phase scaled to old SPS, not valid for new SPS
-         *   - last_r/j: last symbol from old rate, will corrupt first Gardner error
-         *
-         * Reset to clean state for fresh acquisition on new symbol rate.
-         * Costas phase/freq are preserved - carrier offset is similar between CC and VC.
-         *
-         * IMPORTANT: Reset last_r/j to (1,0) NOT (0,0). With (0,0):
-         *   - First Gardner error = (0-sym)*mid = -sym*mid (large spurious error)
-         *   - First diffdec = sym*conj(0) = 0 (no Costas phase correction!)
-         * With (1,0):
-         *   - First Gardner error = (1-sym)*mid (bounded, reasonable)
-         *   - First diffdec = sym*conj(1) = sym (passthrough, like external diff_prev)
-         * This matches the external cqpsk_diff_prev reset behavior.
-         *
-         * CRITICAL: Initialize mu to a value > twice_sps so the inner sample-consumption
-         * loop runs first, filling the delay line with valid samples before any symbol
-         * output. Without this, the first symbols are interpolated from the zeroed delay
-         * line, producing garbage that corrupts the Costas loop.
-         *
-         * In OP25's continuous flow, the delay line is always populated with recent samples.
-         * But dsd-neo has discrete retune events with sample gaps - we must explicitly
-         * pre-fill the delay line before interpolating.
-         */
-        /* OP25: Does NOT touch d_mu or d_last_sample in set_omega().
-         * We preserve mu (timing phase) and don't reset last_sample.
-         * This matches OP25's continuous sample flow behavior. */
+        /* OP25's set_omega() does NOT reset last_sample or lock accumulator.
+         * Preserve these for phase continuity across SPS changes. */
     }
 
-    /* OP25 gains: gain_mu=0.025, gain_omega=0.1*gain_mu^2 */
+    /* OP25 gains: gain_mu=0.025, gain_omega=0.1*gain_mu^2
+     * From p25_demodulator_dev.py lines 58, 398 */
     float gain_mu = d->ted_gain > 0.0f ? d->ted_gain : 0.025f;
     float gain_omega = 0.1f * gain_mu * gain_mu;
-
-    /* Costas theta: OP25 uses M_PI/4.0 (45 degrees) */
-    const float theta = kPi / 4.0f;
 
     float* iq_in = d->lowpassed;
     float* iq_out = d->timing_buf;
 
-    float phase = c->phase;
-    float freq = c->freq;
     float mu = ted->mu;
     int dl_index = ted->dl_index;
     int twice_sps = ted->twice_sps;
     float* dl = ted->dl;
 
-    /* Last sample for Gardner and diffdec (OP25: d_last_sample) */
+    /* Last sample for Gardner (OP25: d_last_sample) */
     float last_r = ted->last_r;
     float last_j = ted->last_j;
+
+    /* Lock detector accumulator */
+    float lock_accum = ted->lock_accum;
+    int lock_count = ted->lock_count;
 
     int i = 0; /* input index */
     int o = 0; /* output index (interleaved floats) */
 
     /*
-     * Main loop: OP25's general_work() structure
-     * Note: OP25 has NO mute logic - samples are processed immediately.
+     * Main loop: OP25's gardner_cc_impl::general_work() structure
      */
     while (o < buf_len && i < nc) {
         /*
          * Inner loop: consume samples while mu > 1.0, filling delay line
-         * This is the per-sample NCO rotation from OP25 lines 428-464
+         * OP25 lines 145-152: push to delay line, no rotation
          */
         while (mu > 1.0f && i < nc) {
             mu -= 1.0f;
 
-            /* OP25: d_phase += d_freq */
-            phase += freq;
-
-            /* Keep phase in [-pi, pi] */
-            while (phase > kPi) {
-                phase -= kTwoPi;
-            }
-            while (phase < -kPi) {
-                phase += kTwoPi;
-            }
-
-            /* OP25: nco = gr_expj(d_phase + d_theta) */
-            float nco_angle = phase + theta;
-            float nco_r = cosf(nco_angle);
-            float nco_j = sinf(nco_angle);
-
-            /* Get input sample */
+            /* Get input sample - NO NCO rotation */
             float in_r = iq_in[i * 2];
             float in_j = iq_in[i * 2 + 1];
+
+            /* NaN check (matches OP25) */
             if (IS_NAN(in_r)) {
                 in_r = 0.0f;
             }
@@ -433,15 +346,12 @@ op25_gardner_costas_cc(struct demod_state* d) {
                 in_j = 0.0f;
             }
 
-            /* OP25: sample = nco * symbol (complex multiply) */
-            float sample_r = nco_r * in_r - nco_j * in_j;
-            float sample_j = nco_r * in_j + nco_j * in_r;
-
-            /* OP25: push to delay line at both dl_index and dl_index + twice_sps */
-            dl[dl_index * 2] = sample_r;
-            dl[dl_index * 2 + 1] = sample_j;
-            dl[(dl_index + twice_sps) * 2] = sample_r;
-            dl[(dl_index + twice_sps) * 2 + 1] = sample_j;
+            /* Push to delay line at both dl_index and dl_index + twice_sps
+             * This is OP25's circular buffer trick for wrap-free interpolation */
+            dl[dl_index * 2] = in_r;
+            dl[dl_index * 2 + 1] = in_j;
+            dl[(dl_index + twice_sps) * 2] = in_r;
+            dl[(dl_index + twice_sps) * 2 + 1] = in_j;
 
             dl_index++;
             if (dl_index >= twice_sps) {
@@ -456,8 +366,8 @@ op25_gardner_costas_cc(struct demod_state* d) {
         }
 
         /*
-         * Symbol output: OP25 lines 466-517
-         * Interpolate, compute Gardner error, Costas tracking, output
+         * Symbol output: OP25 lines 154-194
+         * Interpolate, compute Gardner error, output
          */
 
         /* Compute half-omega parameters (OP25 style) */
@@ -480,7 +390,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
             continue;
         }
 
-        /* OP25: interp_samp_mid at dl_index (mid-symbol) */
+        /* OP25: interp_samp_mid at dl_index (mid-symbol point) */
         float mid_r, mid_j;
         mmse_interp_cc(&dl[dl_index * 2], mu, &mid_r, &mid_j);
 
@@ -489,7 +399,7 @@ op25_gardner_costas_cc(struct demod_state* d) {
         mmse_interp_cc(&dl[(dl_index + half_sps) * 2], half_mu, &sym_r, &sym_j);
 
         /* OP25 Gardner error: (last - current) * mid
-         * Note: OP25 has NO mute logic - always process samples. */
+         * From gardner_cc_impl.cc lines 169-172 */
         float error_real = (last_r - sym_r) * mid_r;
         float error_imag = (last_j - sym_j) * mid_j;
         float symbol_error = error_real + error_imag;
@@ -504,73 +414,55 @@ op25_gardner_costas_cc(struct demod_state* d) {
             symbol_error = 1.0f;
         }
 
-        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp) */
+        /*
+         * OP25 Lock detector (Yair Linn method)
+         * From gardner_cc_impl.cc lines 177-185
+         *
+         * IEEE Transactions on Wireless Communications Vol 5, No 2, Feb 2006
+         */
+        float ie2 = sym_r * sym_r;
+        float io2 = mid_r * mid_r;
+        float qe2 = sym_j * sym_j;
+        float qo2 = mid_j * mid_j;
+        float yi = ((ie2 + io2) != 0.0f) ? (ie2 - io2) / (ie2 + io2) : 0.0f;
+        float yq = ((qe2 + qo2) != 0.0f) ? (qe2 - qo2) / (qe2 + qo2) : 0.0f;
+        lock_accum += yi + yq;
+        lock_count++;
+
+        /* OP25 omega update: d_omega += d_gain_omega * symbol_error * abs(interp_samp)
+         * From gardner_cc_impl.cc line 187 */
         float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
         omega = omega + gain_omega * symbol_error * sym_mag;
 
-        /* Clip omega to valid range */
-        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_max - ted->omega_mid);
-
-        /*
-         * OP25: diffdec = interp_samp * conj(d_last_sample)
-         * This is used for Costas phase error (internal only, not output)
-         */
-        float diffdec_r = sym_r * last_r + sym_j * last_j;
-        float diffdec_j = sym_j * last_r - sym_r * last_j;
+        /* Clip omega to valid range using branchless_clip
+         * From gardner_cc_impl.cc line 188:
+         *   d_omega = d_omega_mid + gr::branchless_clip(d_omega-d_omega_mid, d_omega_rel);
+         * OP25 passes d_omega_rel directly, but the intended range is [omega_min, omega_max]
+         * which equals omega_mid ± (omega_mid * omega_rel). We must scale by omega_mid
+         * to get the correct ±0.2% tolerance (e.g., ±0.01 samples at 5 sps). */
+        omega = ted->omega_mid + branchless_clip(omega - ted->omega_mid, ted->omega_mid * ted->omega_rel);
 
         /* Save current symbol as last for next iteration */
         last_r = sym_r;
         last_j = sym_j;
 
-        /* OP25 mu update: d_mu += d_omega + d_gain_mu * symbol_error */
+        /* OP25 mu update: d_mu += d_omega + d_gain_mu * symbol_error
+         * From gardner_cc_impl.cc line 190 */
         mu += omega + gain_mu * symbol_error;
 
-        /*
-         * OP25 Costas phase error tracking: phase_error_tracking(diffdec * PT_45)
-         *
-         * PT_45 rotates by +45 degrees to move diagonal constellation to axes.
-         * diffdec * PT_45 = (diffdec_r + j*diffdec_j) * (kPT45_r + j*kPT45_j)
-         */
-        float rotated_r = diffdec_r * kPT45_r - diffdec_j * kPT45_j;
-        float rotated_j = diffdec_r * kPT45_j + diffdec_j * kPT45_r;
-
-        /* OP25 phase error detector for QPSK (axis-aligned after PT_45 rotation) */
-        float phase_error = phase_error_detector_qpsk(rotated_r, rotated_j);
-
-        /* OP25: d_freq += d_beta * phase_error * abs(sample)
-         *       d_phase += d_alpha * phase_error * abs(sample)
-         * Note: OP25 uses magnitude weighting */
-        float rotated_mag = sqrtf(rotated_r * rotated_r + rotated_j * rotated_j);
-        freq += c->beta * phase_error * rotated_mag;
-        phase += c->alpha * phase_error * rotated_mag;
-
-        /* Keep phase in [-pi, pi] */
-        while (phase > kPi) {
-            phase -= kTwoPi;
-        }
-        while (phase < -kPi) {
-            phase += kTwoPi;
-        }
-
-        /* Limit frequency */
-        freq = branchless_clip(freq, c->max_freq);
-
-        /* Store error for diagnostics */
-        c->error = phase_error;
-
-        /* Output interpolated sample (OP25 has no mute - always output) */
+        /* Output interpolated sample - NO carrier correction, just timing */
         iq_out[o++] = sym_r;
         iq_out[o++] = sym_j;
     }
 
     /* Save state */
-    c->phase = phase;
-    c->freq = freq;
     ted->mu = mu;
     ted->omega = omega;
     ted->dl_index = dl_index;
     ted->last_r = last_r;
     ted->last_j = last_j;
+    ted->lock_accum = lock_accum;
+    ted->lock_count = lock_count;
 
     /* Copy output back to lowpassed buffer and update length */
     if (o >= 2) {
@@ -581,10 +473,6 @@ op25_gardner_costas_cc(struct demod_state* d) {
     } else {
         d->lp_len = 0;
     }
-
-    /* Update diagnostic */
-    d->fll_freq = freq;
-    d->fll_phase = phase;
 }
 
 /*
@@ -592,8 +480,11 @@ op25_gardner_costas_cc(struct demod_state* d) {
  *
  * y[n] = x[n] * conj(x[n-1])
  *
- * This is applied AFTER op25_gardner_costas_cc to produce the final
- * differential output for phase extraction.
+ * From OP25's p25_demodulator_dev.py line 408:
+ *   self.diffdec = digital.diff_phasor_cc()
+ *
+ * This is applied AFTER Gardner timing recovery, producing differential
+ * phase symbols for the Costas loop.
  */
 extern "C" void
 op25_diff_phasor_cc(struct demod_state* d) {
@@ -627,15 +518,570 @@ op25_diff_phasor_cc(struct demod_state* d) {
 }
 
 /*
- * Legacy function - redirect to new implementation.
- * Kept for API compatibility during transition.
+ * OP25-compatible Costas loop at symbol rate.
+ *
+ * Direct port of OP25's costas_loop_cc_impl::work() from:
+ *   op25/gr-op25_repeater/lib/costas_loop_cc_impl.cc
+ *
+ * This operates on DIFFERENTIALLY DECODED symbols (after diff_phasor_cc).
+ * The phase detector expects symbols at axis-aligned positions.
+ *
+ * Signal flow:
+ *   Input: Symbol-rate differential phasors from diff_phasor_cc
+ *   Processing:
+ *     1. NCO rotation: out = in * exp(-j*phase)
+ *     2. Phase error detection (QPSK detector)
+ *     3. Loop filter update (PI controller)
+ *     4. Phase limiting to ±π/2
+ *   Output: Carrier-corrected differential phasors
+ *
+ * Loop parameters from OP25:
+ *   loop_bw = 0.008 (from p25_demodulator_dev.py line 59: _def_costas_alpha)
+ *   damping = sqrt(2)/2 (critically damped)
+ *   max_phase = π/2 (from p25_demodulator_dev.py line 405: TWO_PI/4)
+ *
+ * The update_gains() formula from costas_loop_cc_impl.cc:162-167:
+ *   denom = 1.0 + 2.0*damping*loop_bw + loop_bw*loop_bw
+ *   alpha = (4*damping*loop_bw) / denom
+ *   beta = (4*loop_bw*loop_bw) / denom
+ */
+extern "C" void
+op25_costas_loop_cc(struct demod_state* d) {
+    if (!d || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    if (!d->cqpsk_enable) {
+        return;
+    }
+
+    dsd_costas_loop_state_t* c = &d->costas_state;
+
+    /* Initialize Costas loop parameters if not already set.
+     *
+     * OP25 parameters from p25_demodulator_dev.py:
+     *   costas_alpha = 0.008 (this is loop_bw, NOT alpha!)
+     *   costas = op25_repeater.costas_loop_cc(costas_alpha, 4, TWO_PI/4)
+     *
+     * The third argument (TWO_PI/4 = π/2) is max_phase.
+     *
+     * In costas_loop_cc_impl constructor:
+     *   set_loop_bandwidth(loop_bw) calls update_gains():
+     *     denom = 1.0 + 2.0*damping*loop_bw + loop_bw^2
+     *     alpha = (4*damping*loop_bw) / denom
+     *     beta = (4*loop_bw^2) / denom
+     *
+     * With loop_bw=0.008, damping=sqrt(2)/2=0.7071:
+     *   denom = 1.0 + 2.0*0.7071*0.008 + 0.008^2 = 1.01137
+     *   alpha = (4*0.7071*0.008) / 1.01137 = 0.0223
+     *   beta = (4*0.008^2) / 1.01137 = 0.000253
+     */
+    if (!c->initialized) {
+        float loop_bw = 0.008f;
+        float damping = 0.70710678118654752440f; /* sqrt(2)/2 */
+        float denom = 1.0f + 2.0f * damping * loop_bw + loop_bw * loop_bw;
+        c->alpha = (4.0f * damping * loop_bw) / denom;
+        c->beta = (4.0f * loop_bw * loop_bw) / denom;
+        c->max_freq = 1.0f; /* OP25 default */
+        c->min_freq = -1.0f;
+        c->damping = damping;
+        c->loop_bw = loop_bw;
+        /* Phase/freq already reset by dsd_costas_reset or zero-init */
+        c->initialized = 1;
+    }
+
+    const int pairs = d->lp_len >> 1;
+    float* iq = d->lowpassed;
+
+    float phase = c->phase;
+    float freq = c->freq;
+    const float alpha = c->alpha;
+    const float beta = c->beta;
+    const float max_freq = c->max_freq;
+    const float min_freq = c->min_freq;
+
+    /* OP25 max_phase = TWO_PI/4 = π/2 */
+    const float max_phase = kPi / 2.0f;
+    const float min_phase = -max_phase;
+
+    for (int n = 0; n < pairs; n++) {
+        float in_r = iq[n * 2];
+        float in_j = iq[n * 2 + 1];
+
+        /* OP25: nco_out = gr_expj(-d_phase)
+         * From costas_loop_cc_impl.cc line 146 */
+        float nco_r = cosf(-phase);
+        float nco_j = sinf(-phase);
+
+        /* OP25: optr[i] = iptr[i] * nco_out
+         * Complex multiply: out = in * nco */
+        float out_r = in_r * nco_r - in_j * nco_j;
+        float out_j = in_r * nco_j + in_j * nco_r;
+
+        /* OP25 phase error detector for QPSK (order=4)
+         * From costas_loop_cc_impl.cc line 150:
+         *   d_error = (*this.*d_phase_detector)(optr[i]);
+         *
+         * Note: OP25 does NOT apply PT_45 rotation here (line 149 is commented out).
+         * The phase detector expects axis-aligned symbols. */
+        float error = phase_detector_4(out_r, out_j);
+        error = branchless_clip(error, 1.0f);
+
+        /* OP25 advance_loop (PI controller)
+         * From costas_loop_cc_impl.cc lines 169-173:
+         *   d_freq = d_freq + d_beta * error
+         *   d_phase = d_phase + d_freq + d_alpha * error */
+        freq = freq + beta * error;
+        phase = phase + freq + alpha * error;
+
+        /* OP25 phase_limit (clamp to ±max_phase, NOT wrap)
+         * From costas_loop_cc_impl.cc lines 183-188 */
+        if (phase > max_phase) {
+            phase = max_phase;
+        } else if (phase < min_phase) {
+            phase = min_phase;
+        }
+
+        /* OP25 frequency_limit
+         * From costas_loop_cc_impl.cc lines 191-196 */
+        if (freq > max_freq) {
+            freq = max_freq;
+        } else if (freq < min_freq) {
+            freq = min_freq;
+        }
+
+        /* Write carrier-corrected output */
+        iq[n * 2] = out_r;
+        iq[n * 2 + 1] = out_j;
+    }
+
+    /* Save state */
+    c->phase = phase;
+    c->freq = freq;
+    c->error = 0.0f; /* Last error not particularly useful at symbol rate */
+}
+
+/*
+ * Legacy wrapper for API compatibility.
+ *
+ * Old code called cqpsk_costas_diff_and_update() which was a combined block.
+ * Now we have the proper OP25 flow:
+ *   Gardner (timing) -> diff_phasor -> Costas (carrier)
  */
 extern "C" void
 cqpsk_costas_diff_and_update(struct demod_state* d) {
     if (!d || !d->cqpsk_enable) {
         return;
     }
-    /* Call the OP25-aligned combined block, then external diff_phasor */
-    op25_gardner_costas_cc(d);
+    /* This function is kept for backward compatibility but the actual
+     * processing is now done separately in demod_pipeline.cpp:
+     *   1. op25_gardner_cc (timing recovery)
+     *   2. op25_diff_phasor_cc (differential decoding)
+     *   3. op25_costas_loop_cc (carrier recovery)
+     */
+    op25_gardner_cc(d);
     op25_diff_phasor_cc(d);
+    op25_costas_loop_cc(d);
+}
+
+/*
+ * Legacy combined Gardner + Costas block.
+ *
+ * This is the OLD implementation kept here temporarily for reference.
+ * It will be removed once the new separated flow is verified working.
+ *
+ * The main issue with this combined block was:
+ *   1. NCO rotation applied at sample rate BEFORE delay line
+ *   2. Phase error computed from internal diffdec, not from diff_phasor output
+ *   3. Costas parameters were wrong (alpha=0.04 instead of 0.0223)
+ *
+ * The correct OP25 flow is:
+ *   Gardner (no NCO) -> diff_phasor -> Costas (at symbol rate)
+ */
+extern "C" void
+op25_gardner_costas_cc(struct demod_state* d) {
+    /* Redirect to the new separated implementation */
+    if (!d || !d->cqpsk_enable) {
+        return;
+    }
+    op25_gardner_cc(d);
+    /* Note: diff_phasor and Costas are called separately in demod_pipeline.cpp */
+}
+
+/*
+ * Reset FLL band-edge state for fresh frequency acquisition.
+ */
+extern "C" void
+dsd_fll_band_edge_reset(dsd_fll_band_edge_state_t* f) {
+    if (!f) {
+        return;
+    }
+    f->phase = 0.0f;
+    f->freq = 0.0f;
+    /* Clear delay line */
+    for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
+        f->delay_r[i] = 0.0f;
+        f->delay_i[i] = 0.0f;
+    }
+    f->delay_idx = 0;
+    /* Don't clear initialized or taps - they can be reused */
+}
+
+/*
+ * Design band-edge filters for FLL.
+ *
+ * Direct port of GNU Radio's fll_band_edge_cc_impl::design_filter().
+ *
+ * The band-edge filters are the derivatives of the pulse shaping filter
+ * at the band edges. For raised-cosine, this is a sine wave at the rolloff
+ * transition, extended to a half-wave which is equivalent to the sum of
+ * two sinc functions in time.
+ *
+ * Parameters:
+ *   sps: samples per symbol
+ *   rolloff: excess bandwidth (0.0 to 1.0, typically 0.2 for P25)
+ *   n_taps: number of filter taps (OP25 uses 2*sps+1)
+ */
+static void
+fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff, int n_taps) {
+    if (n_taps > FLL_BAND_EDGE_MAX_TAPS) {
+        n_taps = FLL_BAND_EDGE_MAX_TAPS;
+    }
+    if (n_taps < 3) {
+        n_taps = 3;
+    }
+
+    f->n_taps = n_taps;
+    f->sps = sps;
+
+    /* GNU Radio fll_band_edge_cc_impl::design_filter() exact port:
+     *
+     * The baseband filter is built using:
+     *   M = round(filter_size / samps_per_sym)
+     *   k = -M + i * 2.0 / samps_per_sym
+     *   tap = sinc(rolloff * k - 0.5) + sinc(rolloff * k + 0.5)
+     *
+     * Then normalized by power, and modulated to band edges:
+     *   freq = (-N + i) / (2.0 * samps_per_sym) where N = (filter_size - 1) / 2
+     *   lower = tap * exp(-j * 2π * (1 + rolloff) * freq)
+     *   upper = tap * exp(+j * 2π * (1 + rolloff) * freq)
+     *
+     * Taps are stored in REVERSE order for the FIR implementation.
+     */
+
+    float M = roundf((float)n_taps / (float)sps);
+    int N = (n_taps - 1) / 2;
+
+    /* Build baseband filter taps */
+    float* bb = (float*)alloca((size_t)n_taps * sizeof(float));
+    float power = 0.0f;
+
+    for (int i = 0; i < n_taps; i++) {
+        /* k = -M + i * 2.0 / samps_per_sym */
+        float k = -M + (float)i * 2.0f / (float)sps;
+
+        /* sinc(rolloff * k - 0.5) + sinc(rolloff * k + 0.5) */
+        float arg_m = rolloff * k - 0.5f;
+        float arg_p = rolloff * k + 0.5f;
+
+        float sinc_m, sinc_p;
+        if (fabsf(arg_m) < 1e-6f) {
+            sinc_m = 1.0f;
+        } else {
+            sinc_m = sinf(kPi * arg_m) / (kPi * arg_m);
+        }
+        if (fabsf(arg_p) < 1e-6f) {
+            sinc_p = 1.0f;
+        } else {
+            sinc_p = sinf(kPi * arg_p) / (kPi * arg_p);
+        }
+
+        bb[i] = sinc_m + sinc_p;
+        power += bb[i] * bb[i];
+    }
+
+    /* Normalize by power */
+    if (power > 0.0f) {
+        float norm = 1.0f / sqrtf(power);
+        for (int i = 0; i < n_taps; i++) {
+            bb[i] *= norm;
+        }
+    }
+
+    /* Create band-edge filters by modulating to upper and lower band edges.
+     * GNU Radio stores taps in REVERSE order, so we do the same.
+     * freq = (-N + i) / (2.0 * samps_per_sym)
+     * phase = 2π * (1 + rolloff) * freq
+     */
+    for (int i = 0; i < n_taps; i++) {
+        float freq = (float)(-N + i) / (2.0f * (float)sps);
+        float phase = kTwoPi * (1.0f + rolloff) * freq;
+
+        /* Lower band edge: exp(-j * phase) - store in reverse order */
+        int rev_idx = n_taps - 1 - i;
+        f->taps_lower_r[rev_idx] = bb[i] * cosf(-phase);
+        f->taps_lower_i[rev_idx] = bb[i] * sinf(-phase);
+
+        /* Upper band edge: exp(+j * phase) - store in reverse order */
+        f->taps_upper_r[rev_idx] = bb[i] * cosf(phase);
+        f->taps_upper_i[rev_idx] = bb[i] * sinf(phase);
+    }
+
+    f->initialized = 1;
+}
+
+/*
+ * OP25-compatible FLL band-edge frequency lock loop.
+ *
+ * Direct port of GNU Radio's digital.fll_band_edge_cc as used in OP25:
+ *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+ *
+ * The FLL operates BEFORE timing recovery to correct coarse frequency offset.
+ * This is critical for initial acquisition after channel retunes.
+ */
+extern "C" void
+op25_fll_band_edge_cc(struct demod_state* d) {
+    if (!d || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    if (!d->cqpsk_enable) {
+        return;
+    }
+
+    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
+
+    /* Get SPS from TED state or default */
+    int sps = d->ted_sps > 0 ? d->ted_sps : 5;
+
+    /* Initialize or reinitialize on SPS change */
+    if (!f->initialized || f->sps != sps) {
+        /* Save state BEFORE calling fll_band_edge_design_filter() which sets initialized=1.
+         * This is needed to correctly distinguish first-time init from SPS change. */
+        int was_initialized = f->initialized;
+        float saved_freq = f->freq; /* Preserve frequency lock across SPS changes */
+
+        /* OP25 parameters from p25_demodulator_dev.py line 403:
+         *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+         *
+         * excess_bw = 0.2 (from line ~60: _def_excess_bw = 0.2)
+         * filter_size = 2*sps+1 = 11 for sps=5, 9 for sps=4
+         * loop_bw = TWO_PI / sps / 350
+         */
+        float excess_bw = 0.2f;
+        int filter_size = 2 * sps + 1;
+        float loop_bw = kTwoPi / (float)sps / 350.0f;
+
+        /* Design the band-edge filters (sets f->initialized = 1) */
+        fll_band_edge_design_filter(f, sps, excess_bw, filter_size);
+
+        /* Set loop parameters using GNU Radio's control_loop update_gains() formula.
+         *
+         * From gr-blocks/lib/control_loop.cc:
+         *   d_damping = sqrt(2)/2  (critically damped)
+         *   denom = 1.0 + 2.0 * d_damping * d_loop_bw + d_loop_bw * d_loop_bw
+         *   d_alpha = (4 * d_damping * d_loop_bw) / denom
+         *   d_beta = (4 * d_loop_bw * d_loop_bw) / denom
+         *
+         * And from control_loop.h advance_loop():
+         *   d_freq = d_freq + d_beta * error
+         *   d_phase = d_phase + d_freq + d_alpha * error
+         *
+         * Both alpha (proportional) and beta (integral) are needed for proper
+         * second-order loop dynamics. The alpha term provides fast transient
+         * response while beta provides steady-state tracking.
+         */
+        f->loop_bw = loop_bw;
+        float damping = 0.70710678118654752440f; /* sqrt(2)/2 - critically damped */
+        float denom = 1.0f + 2.0f * damping * loop_bw + loop_bw * loop_bw;
+        f->alpha = (4.0f * damping * loop_bw) / denom;
+        f->beta = (4.0f * loop_bw * loop_bw) / denom;
+        f->max_freq = 1.0f; /* rad/sample limit */
+        f->min_freq = -1.0f;
+
+        /* Preserve frequency estimate across SPS changes.
+         *
+         * The FLL frequency offset (rad/sample) is primarily a property of the
+         * RTL-SDR local oscillator, not the channel or symbol rate. Since the
+         * FLL operates at sample rate (before TED), the frequency estimate
+         * remains valid when switching between P25p1 (5 sps) and P25p2 (4 sps)
+         * on the same system.
+         *
+         * Preserving freq allows immediate tracking on channel changes instead
+         * of slewing from 0 Hz to the actual offset (~50-200 Hz typically).
+         * This is critical for P25p2 TDMA where the first superframe must be
+         * decoded quickly.
+         *
+         * We DO reset phase because the phase relationship changes with RF
+         * frequency and filter redesign. We also clear the delay line because
+         * the filter taps changed. */
+        f->phase = 0.0f;
+        f->freq = was_initialized ? saved_freq : 0.0f; /* Keep freq if previously locked */
+        f->delay_idx = 0;
+        for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
+            f->delay_r[i] = 0.0f;
+            f->delay_i[i] = 0.0f;
+        }
+
+        /* Debug: log FLL init when DSD_NEO_DEBUG_CQPSK=1 */
+        {
+            static int debug_init = 0;
+            static int debug_cqpsk = 0;
+            if (!debug_init) {
+                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                debug_cqpsk = (env && *env == '1') ? 1 : 0;
+                debug_init = 1;
+            }
+            if (debug_cqpsk) {
+                float freq_hz = f->freq * ((float)(d->rate_out > 0 ? d->rate_out : 24000) / kTwoPi);
+                fprintf(stderr,
+                        "[FLL] init: sps=%d excess_bw=%.2f filter_size=%d loop_bw=%.6f alpha=%.6f beta=%.9f "
+                        "preserved_freq=%.1fHz\n",
+                        sps, excess_bw, filter_size, loop_bw, f->alpha, f->beta, freq_hz);
+            }
+        }
+    }
+
+    const int pairs = d->lp_len >> 1;
+    float* iq = d->lowpassed;
+
+    float phase = f->phase;
+    float freq = f->freq;
+    const float alpha = f->alpha;
+    const float beta = f->beta;
+    const float max_freq = f->max_freq;
+    const float min_freq = f->min_freq;
+    const int n_taps = f->n_taps;
+
+    float* delay_r = f->delay_r;
+    float* delay_i = f->delay_i;
+    int delay_idx = f->delay_idx;
+
+    for (int n = 0; n < pairs; n++) {
+        float in_r = iq[n * 2];
+        float in_i = iq[n * 2 + 1];
+
+        /* NCO rotation: out = in * exp(+j*phase)
+         * From GNU Radio fll_band_edge_cc_impl.cc:
+         *   nco_out = gr_expj(d_phase)  // Note: POSITIVE phase!
+         *   out[i] = in[i] * nco_out
+         */
+        float nco_r = cosf(phase);
+        float nco_i = sinf(phase);
+        float out_r = in_r * nco_r - in_i * nco_i;
+        float out_i = in_r * nco_i + in_i * nco_r;
+
+        /* Update delay line */
+        delay_r[delay_idx] = out_r;
+        delay_i[delay_idx] = out_i;
+
+        /* Compute band-edge filter outputs */
+        float lower_r = 0.0f, lower_i = 0.0f;
+        float upper_r = 0.0f, upper_i = 0.0f;
+
+        for (int k = 0; k < n_taps; k++) {
+            int idx = (delay_idx - k + n_taps) % n_taps;
+            float dr = delay_r[idx];
+            float di = delay_i[idx];
+
+            /* Lower band-edge filter: complex multiply */
+            lower_r += dr * f->taps_lower_r[k] - di * f->taps_lower_i[k];
+            lower_i += dr * f->taps_lower_i[k] + di * f->taps_lower_r[k];
+
+            /* Upper band-edge filter: complex multiply */
+            upper_r += dr * f->taps_upper_r[k] - di * f->taps_upper_i[k];
+            upper_i += dr * f->taps_upper_i[k] + di * f->taps_upper_r[k];
+        }
+
+        /* Advance delay line index */
+        delay_idx = (delay_idx + 1) % n_taps;
+
+        /* Compute frequency error: |upper|^2 - |lower|^2
+         *
+         * From GNU Radio fll_band_edge_cc_impl.cc:
+         *   out_upper = d_filter_lower->filter(out[i]);  // Note: SWAPPED!
+         *   out_lower = d_filter_upper->filter(out[i]);  // Note: SWAPPED!
+         *   error = norm(out_lower) - norm(out_upper);
+         *
+         * GNU Radio swaps the filter outputs - d_filter_lower produces out_upper
+         * and d_filter_upper produces out_lower. This is intentional: the "lower"
+         * band-edge filter detects energy that appears in the upper sideband when
+         * there's a positive frequency offset.
+         *
+         * In dsd-neo, we use taps_lower to compute lower_* and taps_upper to compute
+         * upper_*, so we need to swap the error formula to match GNU Radio's behavior:
+         *   error = norm(upper) - norm(lower)  (equivalent to their swapped version)
+         */
+        float lower_mag2 = lower_r * lower_r + lower_i * lower_i;
+        float upper_mag2 = upper_r * upper_r + upper_i * upper_i;
+        float error = upper_mag2 - lower_mag2;
+
+        /* Clamp error */
+        if (error > 1.0f) {
+            error = 1.0f;
+        }
+        if (error < -1.0f) {
+            error = -1.0f;
+        }
+
+        /* GNU Radio control_loop advance_loop() - second-order loop filter.
+         * From gr-blocks/include/gnuradio/blocks/control_loop.h:
+         *   d_freq = d_freq + d_beta * error    (integral path)
+         *   d_phase = d_phase + d_freq + d_alpha * error  (phase with proportional term)
+         *
+         * The alpha*error term provides the proportional path for fast transient
+         * response. Without it, the loop is sluggish and may not track properly.
+         */
+        freq = freq + beta * error;
+
+        /* Frequency limit (control_loop::frequency_limit) */
+        if (freq > max_freq) {
+            freq = max_freq;
+        } else if (freq < min_freq) {
+            freq = min_freq;
+        }
+
+        /* Phase advance with proportional term (the key fix!) */
+        phase = phase + freq + alpha * error;
+
+        /* Phase wrap to [-2pi, 2pi] (control_loop::phase_wrap)
+         * GNU Radio wraps to ±2π, not ±π */
+        while (phase > kTwoPi) {
+            phase -= kTwoPi;
+        }
+        while (phase < -kTwoPi) {
+            phase += kTwoPi;
+        }
+
+        /* Write output */
+        iq[n * 2] = out_r;
+        iq[n * 2 + 1] = out_i;
+    }
+
+    /* Save state */
+    f->phase = phase;
+    f->freq = freq;
+    f->delay_idx = delay_idx;
+
+    /* Debug: Log FLL band-edge state when DSD_NEO_DEBUG_CQPSK=1 */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        static int call_count = 0;
+        static float prev_freq = 0.0f;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk && (++call_count % 50) == 0) {
+            /* Convert freq rad/sample to Hz: f_hz = freq * Fs / (2π) */
+            float Fs = (float)d->rate_out;
+            float freq_hz = freq * Fs / kTwoPi;
+            float delta_freq_hz = (freq - prev_freq) * Fs / kTwoPi;
+            prev_freq = freq;
+            /* Estimate "locked" heuristic: freq change is small */
+            const char* lock_status = (fabsf(delta_freq_hz) < 10.0f) ? "locked" : "tracking";
+            fprintf(stderr, "[FLL-BE] freq:%.1fHz delta:%.2fHz phase:%.3f alpha:%.6f beta:%.9f (%s)\n", freq_hz,
+                    delta_freq_hz, phase, f->alpha, f->beta, lock_status);
+        }
+    }
 }

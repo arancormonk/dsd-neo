@@ -310,6 +310,7 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
     if (state->sps > 0 && state->sps != config->sps) {
         /* OP25 set_omega(): update omega to new value */
         state->omega = sps_f;
+        state->omega_rel = omega_rel; /* Store for clipping formula */
         state->omega_min = sps_f * (1.0f - omega_rel);
         state->omega_max = sps_f * (1.0f + omega_rel);
         state->omega_mid = 0.5f * (state->omega_min + state->omega_max);
@@ -348,6 +349,7 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         /* First call - initialize omega from config */
         omega = sps_f;
         state->omega = omega;
+        state->omega_rel = omega_rel; /* Store for clipping formula */
         state->omega_mid = omega;
         state->omega_min = omega * (1.0f - omega_rel);
         state->omega_max = omega * (1.0f + omega_rel);
@@ -507,8 +509,10 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         float sym_mag = sqrtf(sym_r * sym_r + sym_j * sym_j);
         omega = omega + gain_omega * symbol_error * sym_mag;
 
-        /* Clip omega to valid range (OP25: d_omega_mid + branchless_clip(...)) */
-        omega = state->omega_mid + branchless_clip(omega - state->omega_mid, state->omega_max - state->omega_mid);
+        /* Clip omega to valid range (OP25: d_omega_mid + branchless_clip(..., d_omega_rel))
+         * OP25 passes d_omega_rel directly, but the intended range is [omega_min, omega_max]
+         * which equals omega_mid ± (omega_mid * omega_rel). Scale by omega_mid for ±0.2%. */
+        omega = state->omega_mid + branchless_clip(omega - state->omega_mid, state->omega_mid * state->omega_rel);
 
         /* Save current symbol as last for next iteration */
         last_r = sym_r;
