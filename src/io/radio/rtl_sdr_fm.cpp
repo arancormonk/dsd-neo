@@ -1339,10 +1339,17 @@ demod_thread_fn(void* arg) {
         if (d->exit_flag) {
             exitflag = 1;
         }
-        if (d->squelch_level && d->squelch_hits > d->conseq_squelch) {
-            d->squelch_hits = d->conseq_squelch + 1; /* hair trigger */
-            safe_cond_signal(&controller.hop, &controller.hop_m);
-            continue;
+        /* Frequency hop on squelch: when channel power is below threshold, signal
+         * the controller to try the next frequency in a scan list. */
+        if (d->channel_squelch_level > 0.0f && d->channel_squelched) {
+            d->squelch_hits++;
+            if (d->squelch_hits > d->conseq_squelch) {
+                d->squelch_hits = d->conseq_squelch + 1; /* hair trigger */
+                safe_cond_signal(&controller.hop, &controller.hop_m);
+                continue;
+            }
+        } else {
+            d->squelch_hits = 0;
         }
         /* For CQPSK mode, bypass the resampler entirely. The TED already decimates
          * to symbol rate, and the symbol stream should go directly to the ring buffer
@@ -2418,7 +2425,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             LOG_ERROR("Too many channels, maximum %i.\n", FREQUENCIES_LIMIT);
             return -1;
         }
-        if (controller.freq_len > 1 && demod.squelch_level == 0) {
+        if (controller.freq_len > 1 && demod.channel_squelch_level == 0.0f) {
             LOG_ERROR("Please specify a squelch level.  Required for scanning multiple frequencies.\n");
             return -1;
         }
@@ -3872,22 +3879,21 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
 
 /**
  * @brief Return mean power approximation (RMS^2 proxy) for soft squelch decisions.
- * Uses a small fixed sample window for efficiency.
+ * Returns the post-channel-filter power computed in full_demod().
  *
- * @return Mean power value (approximate RMS squared).
+ * @return Mean power value (approximate RMS squared) after channel filtering.
  */
 extern "C" double
 dsd_rtl_stream_return_pwr(void) {
-    int n = demod.lp_len;
-    /* Use a slightly longer window for a more stable estimate. */
-    if (n > 512) {
-        n = 512;
-    }
-    if (n < 0) {
-        n = 0;
-    }
-    float pwr_f = mean_power(demod.lowpassed, n, 1);
-    return (double)pwr_f;
+    return (double)demod.channel_pwr;
+}
+
+/**
+ * @brief Set the channel squelch level in the demod state.
+ */
+extern "C" void
+dsd_rtl_stream_set_channel_squelch(float level) {
+    demod.channel_squelch_level = level;
 }
 
 /**

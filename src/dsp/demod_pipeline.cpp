@@ -1229,6 +1229,28 @@ full_demod(struct demod_state* d) {
     }
     /* Bound channel noise when running at higher Fs (24 kHz default) */
     channel_lpf_apply(d);
+    /* Update channel power measurement (post-channel-filter) for UI/squelch */
+    if (d->lowpassed && d->lp_len >= 2) {
+        int n = d->lp_len;
+        if (n > 512) {
+            n = 512;
+        }
+        d->channel_pwr = mean_power(d->lowpassed, n, 1);
+    }
+    /* Channel-based squelch: if power below threshold, zero buffer and skip processing */
+    if (d->channel_squelch_level > 0.0f && d->channel_pwr < d->channel_squelch_level) {
+        d->channel_squelched = 1;
+        d->squelch_gate_open = 0;
+        /* Zero the buffer so downstream sees silence */
+        for (int k = 0; k < d->lp_len; k++) {
+            d->lowpassed[k] = 0.0f;
+        }
+        /* Produce zero output and return early - skip all downstream processing */
+        d->result_len = 0;
+        return;
+    }
+    d->channel_squelched = 0;
+    d->squelch_gate_open = 1;
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
         /*
@@ -1435,68 +1457,6 @@ full_demod(struct demod_state* d) {
        SPS; analog FM remains excluded unless explicitly forced. */
     if (d->ted_enabled && !d->cqpsk_enable && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
-    }
-    /* Power squelch (sqrt-free): compare pair power mean (I^2+Q^2) against a threshold.
-	   Threshold is specified as per-component mean power on normalized float samples.
-	   Since block_mean estimates E[I^2+Q^2], the equivalent threshold in this
-	   domain is 2 * squelch_level. Samples are decimated by `squelch_decim_stride`;
-	   an EMA smooths block power. The sampling phase advances by lp_len % stride
-	   per block to cover all offsets. */
-    if (d->squelch_level > 0.0f) {
-        /* Decimated block power estimate (no DC correction; EMA smooths) */
-        int stride = (d->squelch_decim_stride > 0) ? d->squelch_decim_stride : 16;
-        int phase = d->squelch_decim_phase;
-        double p = 0.0;
-        int count = 0;
-        /* Ensure even I/Q alignment and accumulate pair power I^2+Q^2 */
-        int start = phase & ~1;
-        for (int j = start; j + 1 < d->lp_len; j += stride) {
-            double ir = (double)d->lowpassed[j];
-            double jq = (double)d->lowpassed[j + 1];
-            p += ir * ir + jq * jq;
-            count++;
-        }
-        /* Advance phase to sample different positions next block */
-        if (stride > 0) {
-            int adv = d->lp_len % stride;
-            /* keep even alignment for I/Q pairing */
-            if (adv & 1) {
-                adv++;
-            }
-            if (adv >= stride) {
-                adv %= stride;
-            }
-            d->squelch_decim_phase = (phase + adv) % stride;
-        }
-        if (count > 0) {
-            double block_mean = p / (double)count; /* mean of I^2+Q^2 per complex sample */
-            if (d->squelch_running_power == 0.0) {
-                /* Initialize on first measurement to avoid long ramp */
-                d->squelch_running_power = block_mean;
-            } else {
-                /* EMA: running += (block_mean - running) / window, window ~ 2^shift */
-                int w = (d->squelch_window > 0) ? d->squelch_window : 2048;
-                int shift = 0;
-                /* approximate log2(window), prefer power-of-two windows */
-                while ((1 << shift) < w && shift < 30) {
-                    shift++;
-                }
-                double delta = (block_mean - d->squelch_running_power);
-                d->squelch_running_power += delta / (double)(1 << shift);
-            }
-        }
-        /* Convert per-component mean power threshold -> pair domain */
-        double thr_pair = 2.0 * (double)d->squelch_level;
-        if (d->squelch_running_power < thr_pair) {
-            d->squelch_hits++;
-            for (i = 0; i < d->lp_len; i++) {
-                d->lowpassed[i] = 0.0f;
-            }
-            d->squelch_gate_open = 0;
-        } else {
-            d->squelch_hits = 0;
-            d->squelch_gate_open = 1;
-        }
     }
     /*
      * For CQPSK, produce a single real stream of differential phase symbols

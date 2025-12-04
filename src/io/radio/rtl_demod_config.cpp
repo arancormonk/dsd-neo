@@ -75,6 +75,9 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
         s->channel_lpf_hist_i[k] = 0;
         s->channel_lpf_hist_q[k] = 0;
     }
+    s->channel_pwr = 0.0f;
+    s->channel_squelch_level = 0.0f; /* 0 = disabled; set from opts later */
+    s->channel_squelched = 0;
     /* Audio LPF defaults */
     s->audio_lpf_enable = 0;
     s->audio_lpf_alpha = 0.0f;
@@ -415,6 +418,9 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = channel_lpf_profile;
+
+    /* Copy RTL squelch level to demod state for channel-based squelch */
+    demod->channel_squelch_level = (float)opts->rtl_squelch_level;
 }
 
 /**

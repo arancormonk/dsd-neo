@@ -808,6 +808,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                                 sql /= (32768.0 * 32768.0);
                             }
                             opts->rtl_squelch_level = sql;
+                            rtl_stream_set_channel_squelch((float)sql);
                         }
                         if (cfg.rtl_gain) {
                             opts->rtl_gain_value = cfg.rtl_gain;
@@ -841,6 +842,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                                 sql /= (32768.0 * 32768.0);
                             }
                             opts->rtl_squelch_level = sql;
+                            rtl_stream_set_channel_squelch((float)sql);
                         }
                         if (cfg.rtl_gain) {
                             opts->rtl_gain_value = cfg.rtl_gain;

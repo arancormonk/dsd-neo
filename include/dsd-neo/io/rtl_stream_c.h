@@ -106,6 +106,16 @@ void rtl_stream_clear_output(RtlSdrContext* ctx);
 double rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
 /**
+ * @brief Set the channel squelch level in the demod state.
+ *
+ * Call this whenever opts->rtl_squelch_level changes to keep the demod
+ * state in sync for channel-based squelching.
+ *
+ * @param level Linear power threshold (same units as rtl_squelch_level).
+ */
+void rtl_stream_set_channel_squelch(float level);
+
+/**
  * @brief Enable or disable RTL-SDR bias tee at runtime.
  *
  * Applies to the active device if present. For rtl_tcp sources, forwards the

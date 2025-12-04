@@ -3280,9 +3280,9 @@ main(int argc, char** argv) {
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
-                opts.rtl_squelch_level = (int)dB_to_pwr(sq_val);
+                opts.rtl_squelch_level = dB_to_pwr(sq_val);
             } else {
-                opts.rtl_squelch_level = (int)sq_val;
+                opts.rtl_squelch_level = sq_val;
             }
         } else {
             goto RTLTCPEND;
@@ -3398,9 +3398,9 @@ main(int argc, char** argv) {
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
-                opts.rtl_squelch_level = (int)dB_to_pwr(sq_val);
+                opts.rtl_squelch_level = dB_to_pwr(sq_val);
             } else {
-                opts.rtl_squelch_level = (int)sq_val;
+                opts.rtl_squelch_level = sq_val;
             }
         } else {
             goto RTLEND;

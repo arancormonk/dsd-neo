@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/menu_services.h>
 
 #include <dsd-neo/runtime/log.h>
@@ -737,6 +738,8 @@ svc_rtl_set_sql_db(dsd_opts* opts, double dB) {
         return -1;
     }
     opts->rtl_squelch_level = dB_to_pwr(dB);
+    /* Sync the demod state for channel-based squelching */
+    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
     return 0;
 }
 

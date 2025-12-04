@@ -3,7 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit test: power squelch zeros lowpassed when below threshold; passes when above. */
+/* Unit test: channel squelch zeros lowpassed when below threshold; passes when above. */
 
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -36,29 +36,42 @@ main(void) {
     s->mode_demod = &raw_demod; // copy lowpassed -> result
 
     // Below threshold: set small magnitude on normalized float IQ
+    // mean_power of 0.01^2 + 0.01^2 = 0.0002 per pair
     for (int n = 0; n < pairs; n++) {
         buf[(size_t)(2 * n) + 0] = 0.01f;
         buf[(size_t)(2 * n) + 1] = -0.01f;
     }
-    s->squelch_level = 0.01f;    // per-component mean power threshold on normalized samples
-    s->squelch_decim_stride = 8; // small for test
+    // Set threshold above the signal power so squelch triggers
+    s->channel_squelch_level = 0.001f; // threshold higher than signal power (~0.0002)
 
     full_demod(s);
-    if (!all_zero(s->lowpassed, s->lp_len)) {
-        fprintf(stderr, "squelch: below threshold not zeroed\n");
+    if (!s->channel_squelched) {
+        fprintf(stderr, "squelch: below threshold but channel_squelched not set\n");
+        free(s);
+        return 1;
+    }
+    // When squelched, result_len should be 0 (early return)
+    if (s->result_len != 0) {
+        fprintf(stderr, "squelch: below threshold but result_len=%d (expected 0)\n", s->result_len);
         free(s);
         return 1;
     }
 
-    // Above threshold: larger magnitude should pass
+    // Above threshold: larger magnitude with zero DC should pass
+    // Use alternating signs so DC is zero but power is high
     for (int n = 0; n < pairs; n++) {
-        buf[(size_t)(2 * n) + 0] = 0.2f;
-        buf[(size_t)(2 * n) + 1] = 0.15f;
+        float sign = (n & 1) ? -1.0f : 1.0f;
+        buf[(size_t)(2 * n) + 0] = sign * 0.3f;
+        buf[(size_t)(2 * n) + 1] = sign * 0.3f;
     }
-    s->squelch_running_power = 0; // reset
+    // DC-corrected mean_power ~ 0.3^2 = 0.09 per sample, well above 0.001 threshold
+    s->lowpassed = buf; // reset pointer (may have been modified by full_demod)
+    s->lp_len = pairs * 2;
+    s->channel_pwr = 0.0f; // reset
     full_demod(s);
-    if (all_zero(s->lowpassed, s->lp_len)) {
-        fprintf(stderr, "squelch: above threshold unexpectedly zeroed\n");
+    if (s->channel_squelched) {
+        fprintf(stderr, "squelch: above threshold but channel_squelched is set (pwr=%.6f, thr=%.6f)\n", s->channel_pwr,
+                s->channel_squelch_level);
         free(s);
         return 1;
     }

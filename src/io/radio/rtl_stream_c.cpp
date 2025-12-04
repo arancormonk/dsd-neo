@@ -235,6 +235,12 @@ rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
     return dsd_rtl_stream_return_pwr();
 }
 
+extern "C" void
+rtl_stream_set_channel_squelch(float level) {
+    extern void dsd_rtl_stream_set_channel_squelch(float);
+    dsd_rtl_stream_set_channel_squelch(level);
+}
+
 extern "C" int
 rtl_stream_set_bias_tee(int on) {
     return dsd_rtl_stream_set_bias_tee(on);
