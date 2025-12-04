@@ -256,9 +256,19 @@ op25_gardner_cc(struct demod_state* d) {
                 debug_init = 1;
             }
             if (debug_cqpsk) {
-                fprintf(stderr, "[GARDNER] TED reinit: sps=%d->%d old_omega=%.3f\n", ted->sps, sps, ted->omega);
+                fprintf(stderr, "[GARDNER] TED reinit: sps=%d->%d old_omega=%.3f old_mu=%.3f -> new_mu=%.3f\n",
+                        ted->sps, sps, ted->omega, ted->mu, (float)sps);
             }
         }
+
+        /* Reset mu to sps (one full symbol period) when omega changes.
+         *
+         * This matches OP25's constructor initialization:
+         *   d_mu(samples_per_symbol)
+         *
+         * When switching between P25p1 (5 SPS) and P25p2 (4 SPS), the old mu value
+         * tracks the previous symbol rate's timing which is no longer valid. */
+        ted->mu = (float)sps;
 
         omega = (float)sps;
         ted->omega = omega;
@@ -830,6 +840,72 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
 }
 
 /*
+ * Initialize FLL band-edge filter for a given samples-per-symbol.
+ *
+ * Designs the band-edge filters and sets loop parameters upfront, avoiding
+ * the lazy initialization in op25_fll_band_edge_cc() that can cause poor
+ * acquisition on the first few sample blocks after cold start or retune.
+ *
+ * This should be called during demod_reset_on_retune() when CQPSK is enabled
+ * and the SPS is known.
+ */
+extern "C" void
+dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
+    if (!f || sps < 1) {
+        return;
+    }
+
+    /* Debug: log FLL init when DSD_NEO_DEBUG_CQPSK=1 */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk) {
+            int old_sps = f->sps;
+            float old_freq = f->freq;
+            fprintf(stderr, "[FLL-INIT] sps=%d (was %d) freq=%.1f (preserving)\n", sps, old_sps,
+                    old_freq * (24000.0f / kTwoPi));
+        }
+    }
+
+    /* OP25 parameters from p25_demodulator_dev.py line 403:
+     *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+     *
+     * excess_bw = 0.2 (from line ~60: _def_excess_bw = 0.2)
+     * filter_size = 2*sps+1 = 11 for sps=5, 9 for sps=4
+     * loop_bw = TWO_PI / sps / 350
+     */
+    float excess_bw = 0.2f;
+    int filter_size = 2 * sps + 1;
+    float loop_bw = kTwoPi / (float)sps / 350.0f;
+
+    /* Design the band-edge filters */
+    fll_band_edge_design_filter(f, sps, excess_bw, filter_size);
+
+    /* Set loop parameters using GNU Radio's control_loop update_gains() formula */
+    f->loop_bw = loop_bw;
+    float damping = 0.70710678118654752440f; /* sqrt(2)/2 - critically damped */
+    float denom = 1.0f + 2.0f * damping * loop_bw + loop_bw * loop_bw;
+    f->alpha = (4.0f * damping * loop_bw) / denom;
+    f->beta = (4.0f * loop_bw * loop_bw) / denom;
+    f->max_freq = 1.0f; /* rad/sample limit */
+    f->min_freq = -1.0f;
+
+    /* Reset phase and delay line, but preserve freq if previously locked */
+    f->phase = 0.0f;
+    f->delay_idx = 0;
+    for (int i = 0; i < FLL_BAND_EDGE_MAX_TAPS; i++) {
+        f->delay_r[i] = 0.0f;
+        f->delay_i[i] = 0.0f;
+    }
+    /* Note: deliberately NOT zeroing f->freq - preserve it for retunes */
+}
+
+/*
  * OP25-compatible FLL band-edge frequency lock loop.
  *
  * Direct port of GNU Radio's digital.fll_band_edge_cc as used in OP25:
@@ -852,12 +928,30 @@ op25_fll_band_edge_cc(struct demod_state* d) {
     /* Get SPS from TED state or default */
     int sps = d->ted_sps > 0 ? d->ted_sps : 5;
 
-    /* Initialize or reinitialize on SPS change */
-    if (!f->initialized || f->sps != sps) {
-        /* Save state BEFORE calling fll_band_edge_design_filter() which sets initialized=1.
-         * This is needed to correctly distinguish first-time init from SPS change. */
-        int was_initialized = f->initialized;
+    /* Redesign filters when SPS changes, matching OP25 dev behavior.
+     *
+     * OP25 production has set_samples_per_symbol() commented out due to GNU Radio
+     * thread-safety issues, but OP25 dev (for gnuradio > 3.10.9.2) calls it:
+     *   if _fll_threadsafe:
+     *       self.fll.set_samples_per_symbol(sps)
+     *
+     * The FLL band-edge filters are designed for a specific samples-per-symbol:
+     *   - Band-edge frequencies are at ±(1+rolloff)/(2*sps) of the sample rate
+     *   - Filter size is 2*sps+1
+     *   - Loop bandwidth is TWO_PI/(sps*350)
+     *
+     * If the filter was designed for 5 SPS but we're processing 4 SPS data, the
+     * band-edge frequencies will be off by 25%, causing incorrect frequency tracking.
+     *
+     * We don't have GNU Radio's threading constraints, so we CAN update the FLL
+     * on SPS change. The transient from filter redesign is acceptable because:
+     * 1. We preserve the frequency estimate (LO offset is SPS-independent)
+     * 2. The delay line is cleared anyway on retune
+     * 3. P25p2 TDMA needs correct band-edge frequencies for 4 SPS acquisition */
+    int need_reinit = !f->initialized || (f->sps != sps && f->sps > 0);
+    if (need_reinit) {
         float saved_freq = f->freq; /* Preserve frequency lock across SPS changes */
+        int was_initialized = f->initialized;
 
         /* OP25 parameters from p25_demodulator_dev.py line 403:
          *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
@@ -921,7 +1015,7 @@ op25_fll_band_edge_cc(struct demod_state* d) {
             f->delay_i[i] = 0.0f;
         }
 
-        /* Debug: log FLL init when DSD_NEO_DEBUG_CQPSK=1 */
+        /* Debug: log FLL init/reinit when DSD_NEO_DEBUG_CQPSK=1 */
         {
             static int debug_init = 0;
             static int debug_cqpsk = 0;
@@ -932,10 +1026,11 @@ op25_fll_band_edge_cc(struct demod_state* d) {
             }
             if (debug_cqpsk) {
                 float freq_hz = f->freq * ((float)(d->rate_out > 0 ? d->rate_out : 24000) / kTwoPi);
+                const char* reason = was_initialized ? "reinit (sps change)" : "init";
                 fprintf(stderr,
-                        "[FLL] init: sps=%d excess_bw=%.2f filter_size=%d loop_bw=%.6f alpha=%.6f beta=%.9f "
+                        "[FLL] %s: sps=%d excess_bw=%.2f filter_size=%d loop_bw=%.6f alpha=%.6f beta=%.9f "
                         "preserved_freq=%.1fHz\n",
-                        sps, excess_bw, filter_size, loop_bw, f->alpha, f->beta, freq_hz);
+                        reason, sps, excess_bw, filter_size, loop_bw, f->alpha, f->beta, freq_hz);
             }
         }
     }

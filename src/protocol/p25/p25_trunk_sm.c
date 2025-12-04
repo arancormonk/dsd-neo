@@ -106,13 +106,22 @@ is_tdma_channel(const dsd_state* state, int channel) {
     }
     int iden = (channel >> 12) & 0xF;
     if (iden >= 0 && iden < 16) {
+        int explicit_hint = (iden >= 0 && iden < 16) ? state->p25_chan_tdma_explicit[iden] : 0;
+        // Honor explicit IDEN hints first: 2 = TDMA, 1 = FDMA.
+        if (explicit_hint == 2) {
+            return 1;
+        }
+        if (explicit_hint == 1) {
+            return 0;
+        }
+
         int is_tdma = (state->p25_chan_tdma[iden] & 0x1) ? 1 : 0;
-        // Only fall back to p25_sys_is_tdma when IDEN data is untrusted (trust < 2).
-        // This prevents incorrect TDMA classification on LSM systems where the CC
-        // may be P25P1 but voice channels can be either P25P1 or P25P2. Once we
-        // receive an IDEN_UP or IDEN_UP_TDMA for this IDEN (trust >= 2), we rely
-        // solely on p25_chan_tdma[iden] which explicitly indicates TDMA capability.
-        if (!is_tdma && state->p25_sys_is_tdma == 1 && state->p25_iden_trust[iden] < 2) {
+        // Fall back to system-level TDMA knowledge when the IDEN does not carry
+        // an explicit TDMA/FDMA declaration. This covers systems with P25p1
+        // CQPSK control channels that have not sent IDEN_UP_TDMA yet, preventing
+        // Phase 2 grants from being treated as FDMA (5 SPS) and avoiding SPS
+        // mismatch on VC hops.
+        if (!is_tdma && state->p25_sys_is_tdma == 1) {
             is_tdma = 1;
         }
         return is_tdma;

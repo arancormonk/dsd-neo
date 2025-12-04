@@ -1885,7 +1885,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // }
 
             state->p25_chan_type[iden] = 1; //set as old values for now
-            state->p25_chan_tdma[iden] = 0; //set as old values for now
+            // Preserve explicit hints. When unknown, prefer TDMA if the system has
+            // already shown P25p2 voice so we do not misclassify VC grants as FDMA.
+            if (state->p25_chan_tdma_explicit[iden] == 0) {
+                int tdma_hint = (state->p25_sys_is_tdma == 1) ? 1 : (state->p25_chan_tdma[iden] & 0x1);
+                state->p25_chan_tdma[iden] = tdma_hint;
+                state->p25_chan_tdma_explicit[iden] = 0; // unknown/implicit
+            }
 
             // Record provenance (use current system/site context); trust if on CC
             state->p25_iden_wacn[iden] = state->p2_wacn;
@@ -1909,6 +1915,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             state->p25_chan_type[iden] = 1;
             state->p25_chan_tdma[iden] = 0;
+            state->p25_chan_tdma_explicit[iden] = 1; // explicit Non-TDMA
             int bw = ((MAC[2 + len_a] & 0xF) << 5) | ((MAC[3 + len_a] & 0xF8) >> 2);
             state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
             state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
@@ -1935,6 +1942,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_chan_iden = MAC[2 + len_a] >> 4;
             int iden = state->p25_chan_iden;
             state->p25_chan_tdma[iden] = 1;
+            state->p25_chan_tdma_explicit[iden] = 2; // explicit TDMA
             state->p25_chan_type[iden] = MAC[2 + len_a] & 0xF;
             state->p25_trans_off[iden] = (MAC[3 + len_a] << 6) | (MAC[4 + len_a] >> 2);
             state->p25_chan_spac[iden] = ((MAC[4 + len_a] & 0x3) << 8) | MAC[5 + len_a];
@@ -1961,6 +1969,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             state->p25_chan_iden = MAC[3 + len_a] >> 4;
             int iden = state->p25_chan_iden;
             state->p25_chan_tdma[iden] = 1;
+            state->p25_chan_tdma_explicit[iden] = 2; // explicit TDMA
             state->p25_chan_type[iden] = MAC[3 + len_a] & 0xF;
             state->p25_trans_off[iden] = (MAC[4 + len_a] << 6) | (MAC[5 + len_a] >> 2);
             state->p25_chan_spac[iden] = ((MAC[5 + len_a] & 0x3) << 8) | MAC[6 + len_a];

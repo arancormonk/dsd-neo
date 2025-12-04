@@ -540,7 +540,8 @@ demod_reset_on_retune(struct demod_state* s) {
     s->costas_state.error = 0.0f;
     /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
 
-    /* FLL: Reset phase and delay line but preserve frequency estimate.
+    /* FLL: Initialize band-edge filters and reset phase/delay, but preserve freq.
+     *
      * The FLL frequency offset (rad/sample) is primarily a property of the RTL-SDR
      * local oscillator, not the channel. Since the FLL operates at sample rate
      * (before TED), the frequency estimate remains valid when switching between
@@ -548,14 +549,17 @@ demod_reset_on_retune(struct demod_state* s) {
      *
      * Preserving freq allows immediate tracking on channel changes instead of
      * slewing from 0 Hz to the actual offset (~50-200 Hz typically). This is
-     * critical for P25p2 TDMA where the first superframe must be decoded quickly. */
-    s->fll_band_edge_state.phase = 0.0f;
-    s->fll_band_edge_state.delay_idx = 0;
-    for (int k = 0; k < FLL_BAND_EDGE_MAX_TAPS; k++) {
-        s->fll_band_edge_state.delay_r[k] = 0.0f;
-        s->fll_band_edge_state.delay_i[k] = 0.0f;
+     * critical for P25p2 TDMA where the first superframe must be decoded quickly.
+     *
+     * CRITICAL: We must design the band-edge filters HERE, not lazily on first
+     * sample block. Lazy initialization causes the first few blocks after cold
+     * start or retune to run with uninitialized/wrong filter taps, corrupting
+     * the FLL error signal and preventing proper frequency acquisition. */
+    {
+        int sps = s->ted_sps_override > 0 ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
+        dsd_fll_band_edge_init(&s->fll_band_edge_state, sps);
     }
-    /* Note: deliberately NOT zeroing fll_band_edge_state.freq - preserve it! */
+    /* Note: dsd_fll_band_edge_init preserves freq for retunes */
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
      * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
@@ -566,7 +570,43 @@ demod_reset_on_retune(struct demod_state* s) {
      * symbol rate is known), but must not be applied until AFTER retune when new
      * samples arrive. Applying it earlier would process stale samples (old freq)
      * with the wrong SPS. This function runs after hardware retune completes,
-     * so it's safe to apply the override here. */
+     * so it's safe to apply the override here.
+     *
+     * CRITICAL: When SPS changes (e.g., P25p1 5sps -> P25p2 4sps), we must reset
+     * the Costas loop frequency. OP25 does this explicitly in set_omega() by
+     * calling costas_reset() which zeros both frequency and phase.
+     *
+     * The Costas loop operates at SYMBOL RATE (after TED decimation), so its
+     * frequency estimate (rad/symbol) represents different Hz offsets at
+     * different symbol rates. A preserved frequency that tracked 100 Hz at
+     * 4800 sym/s would track 125 Hz at 6000 sym/s - a 25% error that causes
+     * the loop to fight against correct carrier recovery.
+     *
+     * The costas_reset_pending flag is set by dsd_rtl_stream_set_ted_sps() when
+     * the SPS override is different from the current SPS. This captures the
+     * SPS change before other code paths may equalize ted_sps and ted_sps_override. */
+    /* Debug: Log costas_reset_pending state */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk) {
+            fprintf(stderr, "[COSTAS-RESET] pending=%d ted_sps=%d override=%d\n", s->costas_reset_pending, s->ted_sps,
+                    s->ted_sps_override);
+        }
+    }
+    if (s->costas_reset_pending) {
+        /* SPS is changing - reset Costas loop to allow fresh acquisition.
+         * This matches OP25's set_omega() -> costas_reset() behavior. */
+        s->costas_state.freq = 0.0f;
+        s->costas_state.phase = 0.0f;
+        s->costas_state.error = 0.0f;
+        s->costas_reset_pending = 0;
+    }
     if (s->ted_sps_override > 0 && s->ted_sps != s->ted_sps_override) {
         s->ted_sps = s->ted_sps_override;
     }
@@ -3410,7 +3450,29 @@ dsd_rtl_stream_set_ted_sps(int sps) {
      *
      * This matches OP25's behavior where set_omega() is called AFTER the
      * frequency change, not before.
+     *
+     * We also set costas_reset_pending to signal that the Costas loop should
+     * be reset on the next retune. This is necessary because OP25's set_omega()
+     * calls costas_reset() when the symbol rate changes, but in dsd-neo the
+     * ted_sps may already be updated by other code paths before retune runs.
      */
+    /* Debug: log set_ted_sps call */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk) {
+            fprintf(stderr, "[SET_TED_SPS] sps=%d current_ted_sps=%d will_set_pending=%d\n", sps, demod.ted_sps,
+                    (sps != demod.ted_sps) ? 1 : 0);
+        }
+    }
+    if (sps != demod.ted_sps) {
+        demod.costas_reset_pending = 1;
+    }
     demod.ted_sps_override = sps;
 }
 
@@ -3426,6 +3488,33 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
     }
     if (sps > 64) {
         sps = 64;
+    }
+    /* Debug: log set_ted_sps_no_override call */
+    {
+        static int debug_init = 0;
+        static int debug_cqpsk = 0;
+        if (!debug_init) {
+            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+            debug_cqpsk = (env && *env == '1') ? 1 : 0;
+            debug_init = 1;
+        }
+        if (debug_cqpsk) {
+            fprintf(stderr, "[SET_TED_SPS_NO_OVERRIDE] sps=%d current_ted_sps=%d will_reset=%d\n", sps, demod.ted_sps,
+                    (sps != demod.ted_sps) ? 1 : 0);
+        }
+    }
+    /* Reset Costas loop IMMEDIATELY when SPS changes, not via pending flag.
+     *
+     * This function is called AFTER rtl_stream_tune() completes (e.g., in trunk_tune_to_cc),
+     * so demod_reset_on_retune() has already executed and won't consume a pending flag.
+     * We must reset the Costas loop here directly to avoid running with a ~20-25% frequency
+     * error (the Costas freq in rad/symbol represents different Hz at different symbol rates).
+     *
+     * This matches OP25's set_omega() -> costas_reset() behavior. */
+    if (sps != demod.ted_sps) {
+        demod.costas_state.freq = 0.0f;
+        demod.costas_state.phase = 0.0f;
+        demod.costas_state.error = 0.0f;
     }
     demod.ted_sps = sps;
     /* Does NOT set ted_sps_override, allowing rate-change refresh to

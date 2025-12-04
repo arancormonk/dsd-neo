@@ -251,6 +251,19 @@ void cqpsk_costas_diff_and_update(struct demod_state* d);
 void dsd_fll_band_edge_reset(dsd_fll_band_edge_state_t* f);
 
 /**
+ * @brief Initialize FLL band-edge filter for a given samples-per-symbol.
+ *
+ * Designs the band-edge filters and sets loop parameters. Call this during
+ * cold start or retune initialization to ensure the FLL is ready before
+ * processing samples. This avoids the lazy initialization that can cause
+ * poor acquisition on the first few sample blocks.
+ *
+ * @param f   FLL state to initialize.
+ * @param sps Samples per symbol (e.g., 5 for P25p1, 4 for P25p2).
+ */
+void dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps);
+
+/**
  * @brief OP25-compatible FLL band-edge frequency lock loop.
  *
  * Direct port of GNU Radio's digital.fll_band_edge_cc as used in OP25:

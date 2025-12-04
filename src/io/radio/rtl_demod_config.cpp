@@ -112,6 +112,8 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->ted_enabled = 0;
     s->ted_gain = 0.0f;
     s->ted_sps = 0;
+    s->ted_sps_override = 0;
+    s->costas_reset_pending = 0;
     s->ted_mu = 0.0f;
     s->sps_is_integer = 1; /* assume integer SPS until proven otherwise */
     /* Initialize FLL and TED module states */

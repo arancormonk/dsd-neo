@@ -175,6 +175,7 @@ p25_reset_iden_tables(dsd_state* state) {
     }
     for (int i = 0; i < 16; i++) {
         state->p25_chan_tdma[i] = 0;
+        state->p25_chan_tdma_explicit[i] = 0;
         state->p25_chan_type[i] = 0;
         state->p25_chan_spac[i] = 0;
         state->p25_base_freq[i] = 0;
