@@ -1157,6 +1157,15 @@ void p25_reset_iden_tables(dsd_state* state);
 // Promote any IDENs whose provenance matches the current site to trusted (2)
 /** @brief Promote IDEN entries matching the current site to trusted state. */
 void p25_confirm_idens_for_current_site(dsd_state* state);
+// Reset P25P2 frame processing global state (bit buffers, counters, ESS/FACCH/SACCH buffers)
+/** @brief Reset all P25P2 frame processing global state variables.
+ *
+ * Must be called when tuning to a new P25P2 voice channel to clear stale data
+ * from the previous channel. Without this, subsequent voice channel grants fail
+ * to lock with tanking EVM/SNR because the decoder processes new channel data
+ * using stale buffers from the previous channel.
+ */
+void p25_p2_frame_reset(void);
 
 //P25 CRC Functions
 // Accept a pointer to a bitvector (values 0/1) of length `len` plus trailing CRC bits.

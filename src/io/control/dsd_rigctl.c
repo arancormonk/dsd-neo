@@ -824,6 +824,17 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     // fresh acquisition on the new channel and avoid carrying stale decisions.
     dsd_frame_sync_reset_mod_state();
 
+    // Reset P25P2 frame processing state when tuning to a voice channel.
+    // This is critical: without resetting the global bit buffers (p2bit, p2xbit),
+    // ESS buffers (ess_a, ess_b), and counters (vc_counter, ts_counter), the
+    // decoder will process new channel data using stale buffers from the previous
+    // channel, causing decode failures. The symptom is: first P25P2 tune works,
+    // but subsequent voice channel grants fail to lock with tanking EVM/SNR.
+    // Only reset for P25P2 (ted_sps == 4), not P25P1 (ted_sps == 5) or other modes.
+    if (ted_sps == 4) {
+        p25_p2_frame_reset();
+    }
+
     // NOTE: We intentionally do NOT call rtl_stream_reset_costas() here.
     //
     // The Costas/TED state reset must happen AFTER the hardware retune completes,

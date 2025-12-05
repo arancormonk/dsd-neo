@@ -115,6 +115,48 @@ int facch_rs[2][114] = {0};
 int sacch[2][180] = {0};
 int sacch_rs[2][132] = {0};
 
+// Reset all P25P2 frame processing global state variables.
+// This must be called when tuning to a new P25P2 voice channel to clear stale
+// data from the previous channel that would otherwise cause decode failures.
+// The issue manifests as: first P25P2 tune works, but subsequent voice channel
+// grants fail to lock with tanking EVM/SNR until retune to P25P1 control channel.
+void
+p25_p2_frame_reset(void) {
+    // Reset counters
+    ts_counter = 0;
+    vc_counter = 0;
+    framing_counter = 0;
+    voice = 0;
+    dibit = 0;
+
+    // Reset bit buffers (stale data from previous channel causes decode failures)
+    memset(p2bit, 0, sizeof(p2bit));
+    memset(p2lbit, 0, sizeof(p2lbit));
+    memset(p2xbit, 0, sizeof(p2xbit));
+
+    // Reset decoded state
+    isch = 0;
+    isch_decoded = -1;
+    memset(p2_duid, 0, sizeof(p2_duid));
+    duid_decoded = -1;
+
+    // Reset ESS buffers (stale ESS_A/ESS_B from previous channel corrupts new channel)
+    memset(ess_a, 0, sizeof(ess_a));
+    memset(ess_b, 0, sizeof(ess_b));
+
+    // Reset FACCH/SACCH buffers
+    memset(facch, 0, sizeof(facch));
+    memset(facch_rs, 0, sizeof(facch_rs));
+    memset(sacch, 0, sizeof(sacch));
+    memset(sacch_rs, 0, sizeof(sacch_rs));
+
+    // Reset AMBE frame buffers
+    memset(ambe_fr1, 0, sizeof(ambe_fr1));
+    memset(ambe_fr2, 0, sizeof(ambe_fr2));
+    memset(ambe_fr3, 0, sizeof(ambe_fr3));
+    memset(ambe_fr4, 0, sizeof(ambe_fr4));
+}
+
 //store an entire p2 superframe worth of dibits into a bit buffer
 void
 p2_dibit_buffer(dsd_opts* opts, dsd_state* state) {
