@@ -3,7 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit test: channel squelch zeros lowpassed when below threshold; passes when above. */
+/* Unit test: channel squelch zeros lowpassed when below threshold; passes when above.
+ * With continuous flow model, squelch sets the flag and zeros the buffer but pipeline
+ * continues to produce output (zeros) to maintain UI responsiveness. */
 
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -50,9 +52,16 @@ main(void) {
         free(s);
         return 1;
     }
-    // When squelched, result_len should be 0 (early return)
-    if (s->result_len != 0) {
-        fprintf(stderr, "squelch: below threshold but result_len=%d (expected 0)\n", s->result_len);
+    // With continuous flow model, result_len should be > 0 (pipeline continues with zeros)
+    if (s->result_len <= 0) {
+        fprintf(stderr, "squelch: below threshold but result_len=%d (expected >0 for continuous flow)\n",
+                s->result_len);
+        free(s);
+        return 1;
+    }
+    // Verify output is all zeros when squelched
+    if (!all_zero(s->result, s->result_len)) {
+        fprintf(stderr, "squelch: below threshold but result contains non-zero samples\n");
         free(s);
         return 1;
     }

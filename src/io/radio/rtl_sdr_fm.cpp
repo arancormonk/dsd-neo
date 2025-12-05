@@ -1340,13 +1340,15 @@ demod_thread_fn(void* arg) {
             exitflag = 1;
         }
         /* Frequency hop on squelch: when channel power is below threshold, signal
-         * the controller to try the next frequency in a scan list. */
+         * the controller to try the next frequency in a scan list.
+         * Note: We still write samples to the ring buffer (don't use 'continue') to
+         * maintain continuous flow for UI responsiveness. The hop signal is async. */
         if (d->channel_squelch_level > 0.0f && d->channel_squelched) {
             d->squelch_hits++;
             if (d->squelch_hits > d->conseq_squelch) {
                 d->squelch_hits = d->conseq_squelch + 1; /* hair trigger */
                 safe_cond_signal(&controller.hop, &controller.hop_m);
-                continue;
+                /* Don't 'continue' here - still write zeros to keep pipeline flowing */
             }
         } else {
             d->squelch_hits = 0;

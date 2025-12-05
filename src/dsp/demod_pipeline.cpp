@@ -1237,7 +1237,10 @@ full_demod(struct demod_state* d) {
         }
         d->channel_pwr = mean_power(d->lowpassed, n, 1);
     }
-    /* Channel-based squelch: if power below threshold, zero buffer and skip processing */
+    /* Channel-based squelch: if power below threshold, zero buffer but continue processing.
+     * Industry standard: DSP pipeline always flows at constant rate. Squelch is a metadata
+     * flag, not a flow stopper. This keeps downstream consumers (frame sync, UI updates)
+     * running smoothly even when squelched. Decoders will simply fail to find sync on zeros. */
     if (d->channel_squelch_level > 0.0f && d->channel_pwr < d->channel_squelch_level) {
         d->channel_squelched = 1;
         d->squelch_gate_open = 0;
@@ -1245,12 +1248,12 @@ full_demod(struct demod_state* d) {
         for (int k = 0; k < d->lp_len; k++) {
             d->lowpassed[k] = 0.0f;
         }
-        /* Produce zero output and return early - skip all downstream processing */
-        d->result_len = 0;
-        return;
+        /* Continue processing with zeroed buffer - don't return early.
+         * This maintains continuous sample flow for UI responsiveness. */
+    } else {
+        d->channel_squelched = 0;
+        d->squelch_gate_open = 1;
     }
-    d->channel_squelched = 0;
-    d->squelch_gate_open = 1;
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
         /*
@@ -1269,6 +1272,29 @@ full_demod(struct demod_state* d) {
          * This matches OP25 exactly - no separate FLL, no separate TED call.
          * All timing recovery and carrier tracking happens inside op25_gardner_costas_cc().
          */
+
+        /* Fast path when squelched: skip expensive DSP but produce zero symbols to keep
+         * the pipeline flowing for UI responsiveness. The expensive AGC/FLL/TED/Costas
+         * processing is pointless on a zeroed buffer. */
+        if (d->channel_squelched) {
+            /* Estimate output symbol count: input IQ pairs / samples_per_symbol.
+             * TED decimates from sample rate to symbol rate. */
+            int in_pairs = d->lp_len >> 1;
+            int sps = (d->ted_sps > 0) ? d->ted_sps : 5;
+            int out_syms = (in_pairs + sps - 1) / sps; /* ceiling division */
+            if (out_syms < 1) {
+                out_syms = 1;
+            }
+            if (out_syms > MAXIMUM_BUF_LENGTH) {
+                out_syms = MAXIMUM_BUF_LENGTH;
+            }
+            /* Produce zero symbols directly */
+            for (int k = 0; k < out_syms; k++) {
+                d->result[k] = 0.0f;
+            }
+            d->result_len = out_syms;
+            return; /* Skip all CQPSK DSP and go straight to output */
+        }
 
         /* OP25: rms_agc.rms_agc(0.45, 0.85)
          * RMS AGC normalizes amplitude using running RMS estimate. */
@@ -1388,28 +1414,36 @@ full_demod(struct demod_state* d) {
             cqpsk_diff_phasor(d);
         }
     } else {
-        /* Baseband conditioning order (FM/C4FM):
-           1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
-           2) Block-based envelope AGC to normalize |z|
-           3) Optional per-sample limiter to clamp fast AM ripple */
-        iq_dc_block(d);
-        /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
-        if (d->fm_agc_enable) {
-            fm_envelope_agc(d);
-        } else if (d->fm_limiter_enable) {
-            fm_constant_envelope_limiter(d);
-        }
-        /* Residual-CFO FLL when enabled */
-        if (d->fll_enabled) {
-            /* Update control only when squelch indicates a carrier; always apply rotation. */
-            if (d->squelch_gate_open) {
-                fll_update_error(d);
+        /* Fast path when squelched: skip expensive DSP for FM/C4FM but keep samples flowing.
+         * The buffer is already zeroed, so just skip conditioning and let the demod produce zeros. */
+        if (d->channel_squelched) {
+            /* Skip all conditioning - zeros don't need DC block, AGC, limiter, or FLL.
+             * Fall through to mode_demod which will produce zero output. */
+        } else {
+            /* Baseband conditioning order (FM/C4FM):
+               1) Remove DC offset on I/Q to avoid biasing AGC and discriminator
+               2) Block-based envelope AGC to normalize |z|
+               3) Optional per-sample limiter to clamp fast AM ripple */
+            iq_dc_block(d);
+            /* Avoid running both AGC and limiter simultaneously to reduce gain "pumping". */
+            if (d->fm_agc_enable) {
+                fm_envelope_agc(d);
+            } else if (d->fm_limiter_enable) {
+                fm_constant_envelope_limiter(d);
             }
-            fll_mix_and_update(d);
+            /* Residual-CFO FLL when enabled */
+            if (d->fll_enabled) {
+                /* Update control only when squelch indicates a carrier; always apply rotation. */
+                if (d->squelch_gate_open) {
+                    fll_update_error(d);
+                }
+                fll_mix_and_update(d);
+            }
         }
     }
-    /* Mode-aware generic IQ balance (image suppression) after CFO rotation */
-    if (d->iqbal_enable && !d->cqpsk_enable && d->lowpassed && d->lp_len >= 2) {
+    /* Mode-aware generic IQ balance (image suppression) after CFO rotation.
+     * Skip when squelched - zeros don't benefit from IQ correction. */
+    if (d->iqbal_enable && !d->cqpsk_enable && !d->channel_squelched && d->lowpassed && d->lp_len >= 2) {
         /* Estimate s2 = E[z^2], p2 = E[|z|^2] over this block */
         double s2r = 0.0, s2i = 0.0, p2 = 0.0;
         int N = d->lp_len >> 1; /* complex pairs */
@@ -1454,8 +1488,10 @@ full_demod(struct demod_state* d) {
     /* Apply Gardner TED for non-CQPSK paths (e.g., C4FM) using the legacy
        non-decimating Farrow-based implementation so that FM/C4FM downstream
        stages continue to see sample-rate complex baseband. Requires integer
-       SPS; analog FM remains excluded unless explicitly forced. */
-    if (d->ted_enabled && !d->cqpsk_enable && d->sps_is_integer && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
+       SPS; analog FM remains excluded unless explicitly forced.
+       Skip when squelched - timing recovery on zeros is pointless. */
+    if (d->ted_enabled && !d->cqpsk_enable && !d->channel_squelched && d->sps_is_integer
+        && (d->mode_demod != &dsd_fm_demod || d->ted_force)) {
         gardner_timing_adjust(d);
     }
     /*
