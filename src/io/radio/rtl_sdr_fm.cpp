@@ -3483,6 +3483,38 @@ dsd_rtl_stream_set_ted_sps(int sps) {
         demod.costas_reset_pending = 1;
     }
     demod.ted_sps_override = sps;
+
+    /* OP25 dynamic IF filter switching (p25_demodulator_dev.py set_tdma()).
+     *
+     * OP25 uses different channel filter bandwidths for TDMA vs FDMA:
+     *   TDMA (P25p2, 6000 sym/s, sps=4): 9600 Hz cutoff - DSD_CH_LPF_PROFILE_OP25_TDMA
+     *   FDMA (P25p1, 4800 sym/s, sps=5): 7000 Hz cutoff - DSD_CH_LPF_PROFILE_OP25_FDMA
+     *
+     * The narrower FDMA filter improves SNR on P25p1 by rejecting more noise,
+     * while the wider TDMA filter preserves the higher symbol rate content.
+     *
+     * Note: We only switch if CQPSK is enabled (P25 digital mode). */
+    if (demod.cqpsk_enable) {
+        int new_profile = (sps == 4) ? DSD_CH_LPF_PROFILE_OP25_TDMA : DSD_CH_LPF_PROFILE_OP25_FDMA;
+        if (new_profile != demod.channel_lpf_profile) {
+            demod.channel_lpf_profile = new_profile;
+            /* Debug: log filter change */
+            {
+                static int debug_init2 = 0;
+                static int debug_cqpsk2 = 0;
+                if (!debug_init2) {
+                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
+                    debug_cqpsk2 = (env && *env == '1') ? 1 : 0;
+                    debug_init2 = 1;
+                }
+                if (debug_cqpsk2) {
+                    fprintf(stderr, "[CH_LPF] profile=%s (sps=%d)\n",
+                            (new_profile == DSD_CH_LPF_PROFILE_OP25_TDMA) ? "OP25_TDMA (9600Hz)" : "OP25_FDMA (7000Hz)",
+                            sps);
+                }
+            }
+        }
+    }
 }
 
 extern "C" void
@@ -3528,6 +3560,14 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
     demod.ted_sps = sps;
     /* Does NOT set ted_sps_override, allowing rate-change refresh to
        recalculate SPS later. Use when returning to CC or switching protocols. */
+
+    /* OP25 dynamic IF filter switching - same as dsd_rtl_stream_set_ted_sps() */
+    if (demod.cqpsk_enable) {
+        int new_profile = (sps == 4) ? DSD_CH_LPF_PROFILE_OP25_TDMA : DSD_CH_LPF_PROFILE_OP25_FDMA;
+        if (new_profile != demod.channel_lpf_profile) {
+            demod.channel_lpf_profile = new_profile;
+        }
+    }
 }
 
 extern "C" void
