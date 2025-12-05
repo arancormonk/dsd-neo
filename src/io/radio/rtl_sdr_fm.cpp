@@ -511,9 +511,9 @@ demod_reset_on_retune(struct demod_state* s) {
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
     s->costas_err_avg_q14 = 0;
-    /* OP25 RMS AGC: reset running average to 1.0 for clean acquisition.
-     * This matches rmsagc_ff_impl.cc set_alpha() which sets d_avg = 1.0 */
-    s->cqpsk_agc_avg = 1.0f;
+    /* Preserve AGC state so gain does not restart from unity on each retune.
+     * This mirrors OP25’s continuous-flow behavior and avoids a post-retune
+     * re-settle period. */
     /* Costas reset: clear phase and error, but PRESERVE freq estimate.
      *
      * The carrier frequency offset (c->freq) is primarily a property of the RTL-SDR
@@ -607,33 +607,9 @@ demod_reset_on_retune(struct demod_state* s) {
     }
     /* Note: s->ted_mu is a legacy field used by the Farrow path; the OP25-style
      * Gardner uses ted_state.mu internally. Don't reset it here. */
-    /* Deemphasis / audio LPF / DC */
-    s->deemph_avg = 0;
-    s->audio_lpf_state = 0;
-    s->dc_avg = 0;
-    /* HB histories */
-    for (int st = 0; st < 10; st++) {
-        memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
-        memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
-    }
-    /* Resampler */
-    s->resamp_phase = 0;
-    s->resamp_hist_head = 0;
-    if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
-        memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
-    }
-    /* Post-demod polyphase decimator history */
-    s->post_polydecim_hist_head = 0;
-    s->post_polydecim_phase = 0;
-    if (s->post_polydecim_hist && s->post_polydecim_K > 0) {
-        memset(s->post_polydecim_hist, 0, (size_t)s->post_polydecim_K * sizeof(float));
-    }
-    /* Channel LPF history */
-    s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
-    for (int k = 0; k < 64; k++) {
-        s->channel_lpf_hist_i[k] = 0;
-        s->channel_lpf_hist_q[k] = 0;
-    }
+    /* Preserve filter histories (HB/LPF/resampler/audio) across retunes.
+     * Gating via retune_in_progress prevents stale samples from leaking, so
+     * keeping histories avoids the AGC/filter re-settle that slows lock. */
 
     /* Debug: summarize key CQPSK/TED state after retune when DSD_NEO_DEBUG_CQPSK=1.
        This runs in the controller thread after hardware retune and SPS refresh. */
