@@ -413,9 +413,16 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
     return apply_fs4_guard(bw);
 }
 
+/* Forward declarations for visualization ring clears (defined later in file) */
+static void constellation_ring_clear(void);
+static void eye_ring_clear(void);
+
 /**
  * @brief On retune/hop, drain audio output ring for a short time to avoid
  * cutting off transmissions. If configured to clear, force-clear instead.
+ *
+ * Also clears the constellation and eye diagram buffers to prevent stale
+ * samples from the previous frequency/SPS from contaminating the display.
  */
 static void
 drain_output_on_retune(void) {
@@ -437,6 +444,14 @@ drain_output_on_retune(void) {
     if (drain_ms < 0) {
         drain_ms = 0;
     }
+
+    /* Clear visualization buffers to avoid mixing old/new frequency samples.
+     * This is critical for P25P1->P25P2 transitions where SPS changes from 5 to 4;
+     * stale constellation points from the old SPS create the appearance of
+     * degraded SNR even when the DSP is performing correctly. */
+    constellation_ring_clear();
+    eye_ring_clear();
+
     if (force_clear || drain_ms == 0) {
         dsd_rtl_stream_clear_output();
         return;
@@ -1750,6 +1765,21 @@ controller_thread_fn(void* arg) {
 static const int kConstMaxPairs = 8192;
 static float g_const_xy[kConstMaxPairs * 2];
 static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wraps */
+
+/**
+ * @brief Clear the constellation ring buffer.
+ *
+ * Called on retune to prevent stale samples from the previous frequency/SPS
+ * from contaminating the constellation display. Without this, the UI shows
+ * a mix of old and new constellation points, creating the appearance of
+ * degraded SNR even when the DSP is performing correctly.
+ */
+static void
+constellation_ring_clear(void) {
+    memset(g_const_xy, 0, sizeof(g_const_xy));
+    g_const_head = 0;
+}
+
 /* Forward decl for eye-ring append used in demod loop */
 static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
@@ -1798,6 +1828,18 @@ dsd_rtl_stream_constellation_get(float* out_xy, int max_points) {
 static const int kEyeMax = 16384;
 static float g_eye_buf[kEyeMax];
 static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
+
+/**
+ * @brief Clear the eye diagram ring buffer.
+ *
+ * Called on retune alongside constellation_ring_clear() to prevent stale
+ * samples from contaminating the eye diagram display.
+ */
+static void
+eye_ring_clear(void) {
+    memset(g_eye_buf, 0, sizeof(g_eye_buf));
+    g_eye_head = 0;
+}
 
 static inline void
 eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved) {
