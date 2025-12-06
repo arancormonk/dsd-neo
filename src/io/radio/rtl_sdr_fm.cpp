@@ -552,24 +552,34 @@ demod_reset_on_retune(struct demod_state* s) {
      *
      * We DO reset phase because the phase relationship changes with RF frequency.
      */
-    /* Costas: Reset phase but preserve frequency estimate.
-     * The carrier frequency offset is primarily a property of the RTL-SDR
-     * local oscillator, not the channel. Preserving freq allows immediate
-     * tracking on channel changes rather than slewing from 0 Hz. */
+    /* Costas: Reset phase and error. Frequency handling depends on tune type.
+     *
+     * For P25P2 voice channel tunes, also reset freq to 0. P25P2 VCs are at
+     * different RF frequencies from each other, so the preserved Costas freq
+     * from a previous P25P2 VC may be wrong and cause the loop to fight.
+     *
+     * For same-SPS tunes (e.g., P25P1 CC to P25P1 VC), preserve freq for faster
+     * reacquisition since the LO offset is similar on nearby frequencies. */
     s->costas_state.phase = 0.0f;
     s->costas_state.error = 0.0f;
-    /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
+    /* Reset Costas freq for P25P2 VC tunes to force fresh acquisition.
+     * This check is done before the costas_reset_pending check below because
+     * we want to reset even if SPS isn't changing (e.g., P25P2 VC to P25P2 VC). */
+    if (s->ted_sps_override == 4 && s->cqpsk_enable) {
+        s->costas_state.freq = 0.0f;
+    }
 
-    /* FLL: Initialize band-edge filters and reset phase/delay, but preserve freq.
+    /* FLL: Initialize band-edge filters and reset phase/delay.
      *
-     * The FLL frequency offset (rad/sample) is primarily a property of the RTL-SDR
-     * local oscillator, not the channel. Since the FLL operates at sample rate
-     * (before TED), the frequency estimate remains valid when switching between
-     * P25p1 (5 sps) and P25p2 (4 sps) on the same system.
+     * CRITICAL FIX for P25P2 subsequent tune failures:
+     * When tuning to P25P2 voice channels (ted_sps_override == 4), we must reset
+     * the FLL frequency to 0 to force fresh acquisition. Unlike P25P1 where CC and VC
+     * are often on nearby frequencies, P25P2 voice channels can be at significantly
+     * different RF frequencies from each other. The preserved FLL frequency from a
+     * previous P25P2 VC causes the loop to fight against the new signal, resulting
+     * in the observed SNR/EVM degradation on subsequent P25P2 tunes.
      *
-     * Preserving freq allows immediate tracking on channel changes instead of
-     * slewing from 0 Hz to the actual offset (~50-200 Hz typically). This is
-     * critical for P25p2 TDMA where the first superframe must be decoded quickly.
+     * For non-P25P2 tunes (same SPS), preserve freq for faster reacquisition.
      *
      * CRITICAL: We must design the band-edge filters HERE, not lazily on first
      * sample block. Lazy initialization causes the first few blocks after cold
@@ -577,13 +587,35 @@ demod_reset_on_retune(struct demod_state* s) {
      * the FLL error signal and preventing proper frequency acquisition. */
     {
         int sps = s->ted_sps_override > 0 ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
+        /* For P25P2 voice channel tunes, reset FLL frequency to force fresh acquisition.
+         * This is necessary because P25P2 VCs are at different RF frequencies from each
+         * other, so the preserved FLL frequency from a previous P25P2 VC is wrong. */
+        int is_p25p2_vc_tune = (s->ted_sps_override == 4 && s->cqpsk_enable);
+        if (is_p25p2_vc_tune) {
+            s->fll_band_edge_state.freq = 0.0f;
+        }
         dsd_fll_band_edge_init(&s->fll_band_edge_state, sps);
     }
-    /* Note: dsd_fll_band_edge_init preserves freq for retunes */
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
-     * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
+     * convergence to a suboptimal symbol phase, degrading CQPSK performance.
+     *
+     * HOWEVER, for P25P2 voice channel tunes, clear the delay line to avoid stale
+     * samples from a previous (different) RF frequency corrupting timing recovery.
+     * This matches OP25's reset() behavior which clears d_queue on every retune. */
     ted_soft_reset(&s->ted_state);
+    /* Clear TED delay line for P25P2 VC tunes to remove stale samples. */
+    if (s->ted_sps_override == 4 && s->cqpsk_enable) {
+        memset(s->ted_state.dl, 0, sizeof(s->ted_state.dl));
+        s->ted_state.dl_index = 0;
+        /* Also reinitialize mu to force delay line refill before first output.
+         * CRITICAL: Must also update the legacy ted_mu field because
+         * gardner_timing_adjust() syncs ted_mu -> ted_state.mu before processing,
+         * which would overwrite our reset if we only set ted_state.mu. */
+        float mu_init = (float)(s->ted_state.twice_sps + 1);
+        s->ted_state.mu = mu_init;
+        s->ted_mu = mu_init;
+    }
     /* Apply any pending TED SPS override NOW, after hardware retune completes.
      *
      * The override is set by trunking code BEFORE retune (when the new channel's
