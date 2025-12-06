@@ -289,6 +289,8 @@ struct demod_state demod;
 struct output_state output;
 struct controller_state controller;
 static struct input_ring_state input_ring;
+/* Controller can request a ring purge; consumer/demod performs the discard safely. */
+static std::atomic<int> g_ring_purge_pending{0};
 
 struct RtlSdrInternals {
     struct rtl_device* device;
@@ -507,12 +509,15 @@ demod_reset_on_retune(struct demod_state* s) {
     if (!s) {
         return;
     }
-    /* Track SPS transitions for CQPSK so we can clear filter history when switching
-     * between P25p1 (5 sps) and P25p2 (4 sps). */
+    /* Track SPS transitions for CQPSK so we can fully reset timing/carrier/filter
+     * state when jumping between P25p1 (5 sps) and P25p2 (4 sps). */
     {
         static int prev_ted_sps = 0;
         int next_sps = (s->ted_sps_override > 0) ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
-        if (s->cqpsk_enable && prev_ted_sps > 0 && next_sps != prev_ted_sps) {
+        int sps_changed = (prev_ted_sps > 0 && next_sps != prev_ted_sps);
+
+        if (s->cqpsk_enable && sps_changed) {
+            /* Purge half-band/channel filter histories to avoid cross-channel residue. */
             for (int st = 0; st < 10; st++) {
                 memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
                 memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
@@ -520,11 +525,20 @@ demod_reset_on_retune(struct demod_state* s) {
             memset(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
             memset(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
             s->channel_lpf_hist_len = 0;
+            /* Reset resampler bookkeeping just in case it was enabled. */
             s->resamp_phase = 0;
             s->resamp_hist_head = 0;
             if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
                 memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
             }
+            /* Reset timing/carrier loops for the new symbol rate. */
+            ted_init_state(&s->ted_state);
+            s->ted_mu = 0.0f;
+            s->costas_state.freq = 0.0f;
+            s->costas_state.phase = 0.0f;
+            s->costas_state.error = 0.0f;
+            /* Force fresh FLL acquisition after the SPS jump. */
+            s->fll_band_edge_state.freq = 0.0f;
         }
         prev_ted_sps = next_sps;
     }
@@ -852,6 +866,11 @@ demod_thread_fn(void* arg) {
         /* Preserve rtltcp prebuffer: hold the consumer until cold start finishes. */
         if (is_rtltcp_input && !controller.cold_start_ready.load(std::memory_order_acquire)) {
             usleep(1000); /* short sleep to avoid busy spinning */
+            continue;
+        }
+        /* Honor pending purge requests in the consumer thread to keep SPSC ownership intact. */
+        if (g_ring_purge_pending.exchange(0, std::memory_order_acq_rel)) {
+            input_ring_discard_all_consumer(&input_ring);
             continue;
         }
         /* Read a block from input ring */
@@ -1695,8 +1714,8 @@ controller_thread_fn(void* arg) {
             s->manual_retune_pending.store(0);
             /* Gate demod thread: prevent processing transient samples during retune */
             s->retune_in_progress.store(1, std::memory_order_release);
-            /* Drop any pre-retune samples so the next block is purely from the new RF center. */
-            input_ring_clear(&input_ring);
+            /* Ask consumer to purge ring safely (keeps SPSC producer/consumer contract). */
+            g_ring_purge_pending.store(1, std::memory_order_release);
             apply_capture_settings((uint32_t)tgt);
             rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
             rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
@@ -1714,7 +1733,7 @@ controller_thread_fn(void* arg) {
         /* Gate demod thread: prevent processing transient samples during hop */
         s->retune_in_progress.store(1, std::memory_order_release);
         /* Flush any leftover IQ from the previous frequency before applying the new center. */
-        input_ring_clear(&input_ring);
+        g_ring_purge_pending.store(1, std::memory_order_release);
         apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
         rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
         rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);

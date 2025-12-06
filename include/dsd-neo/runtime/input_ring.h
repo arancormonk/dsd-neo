@@ -107,3 +107,15 @@ void input_ring_write(struct input_ring_state* r, const float* data, size_t coun
  * @return Number of samples read (>=1), 0 if max_count is 0, or -1 on exit.
  */
 int input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count);
+
+/**
+ * @brief Discard all pending samples (consumer-side purge).
+ *
+ * Safe for the consumer thread to call; only updates tail to match the latest
+ * head snapshot without touching head (producer-owned).
+ */
+static inline void
+input_ring_discard_all_consumer(struct input_ring_state* r) {
+    size_t h = r->head.load(std::memory_order_acquire);
+    r->tail.store(h, std::memory_order_release);
+}
