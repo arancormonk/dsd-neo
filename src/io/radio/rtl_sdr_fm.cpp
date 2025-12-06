@@ -615,6 +615,23 @@ demod_reset_on_retune(struct demod_state* s) {
         float mu_init = (float)(s->ted_state.twice_sps + 1);
         s->ted_state.mu = mu_init;
         s->ted_mu = mu_init;
+
+        /* Purge filter histories so CC samples don't bleed into the VC path.
+         * P25P2 grants hop to distant RF channels; keeping HB/LPF state from the
+         * previous frequency contaminates the first VC blocks and drives EVM up. */
+        for (int st = 0; st < 10; st++) {
+            memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
+            memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
+        }
+        memset(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
+        memset(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
+        s->channel_lpf_hist_len = 0;
+        /* Resampler is typically off for CQPSK, but clear any residual state defensively. */
+        s->resamp_phase = 0;
+        s->resamp_hist_head = 0;
+        if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
+            memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
+        }
     }
     /* Apply any pending TED SPS override NOW, after hardware retune completes.
      *
@@ -1657,6 +1674,8 @@ controller_thread_fn(void* arg) {
             s->manual_retune_pending.store(0);
             /* Gate demod thread: prevent processing transient samples during retune */
             s->retune_in_progress.store(1, std::memory_order_release);
+            /* Drop any pre-retune samples so the next block is purely from the new RF center. */
+            input_ring_clear(&input_ring);
             apply_capture_settings((uint32_t)tgt);
             rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
             rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
@@ -1673,6 +1692,8 @@ controller_thread_fn(void* arg) {
         s->freq_now = (s->freq_now + 1) % s->freq_len;
         /* Gate demod thread: prevent processing transient samples during hop */
         s->retune_in_progress.store(1, std::memory_order_release);
+        /* Flush any leftover IQ from the previous frequency before applying the new center. */
+        input_ring_clear(&input_ring);
         apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
         rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
         rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
