@@ -507,6 +507,27 @@ demod_reset_on_retune(struct demod_state* s) {
     if (!s) {
         return;
     }
+    /* Track SPS transitions for CQPSK so we can clear filter history when switching
+     * between P25p1 (5 sps) and P25p2 (4 sps). */
+    {
+        static int prev_ted_sps = 0;
+        int next_sps = (s->ted_sps_override > 0) ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
+        if (s->cqpsk_enable && prev_ted_sps > 0 && next_sps != prev_ted_sps) {
+            for (int st = 0; st < 10; st++) {
+                memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
+                memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
+            }
+            memset(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
+            memset(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
+            s->channel_lpf_hist_len = 0;
+            s->resamp_phase = 0;
+            s->resamp_hist_head = 0;
+            if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
+                memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
+            }
+        }
+        prev_ted_sps = next_sps;
+    }
     /* Squelch */
     s->squelch_hits = 0;
     s->squelch_running_power = 0;
