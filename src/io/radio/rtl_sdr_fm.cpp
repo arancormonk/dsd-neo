@@ -340,10 +340,35 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
 
     int scanning = (controller.freq_len > 1) ? 1 : 0;
     int analog_like = (demod.deemph != 0) ? 1 : 0;
+    /* When offset_tuning is unavailable, we apply an fs/4 capture shift.
+       That places the desired channel capture_rate/4 away from tuner center,
+       so ensure the IF filter is wide enough to avoid attenuating it.
+       Tuner BW is total (double-sided), so we need 2×(fs/4 + half-channel). */
+    int fs4_shift_active = (!disable_fs4_shift && dongle.offset_tuning == 0) ? 1 : 0;
+    uint32_t fs4_guard_bw = 0;
+    if (fs4_shift_active && capture_rate_hz > 0) {
+        /* Channel center sits at fs/4 from tuner center; tuner BW is total passband.
+           Need: 2 × (offset + half_channel) = fs/2 + dsp_bw */
+        uint64_t guard = (uint64_t)(capture_rate_hz / 2);
+        if (dsp_bw_hz > 0) {
+            guard += (uint64_t)dsp_bw_hz;
+        }
+        /* Clamp to capture rate - no point requesting wider than what we sample. */
+        if (guard > (uint64_t)capture_rate_hz) {
+            guard = capture_rate_hz;
+        }
+        fs4_guard_bw = (uint32_t)guard;
+    }
+    auto apply_fs4_guard = [&](uint32_t bw) -> uint32_t {
+        if (fs4_guard_bw > 0 && bw < fs4_guard_bw) {
+            return fs4_guard_bw;
+        }
+        return bw;
+    };
 
     if (scanning) {
         if (capture_rate_hz >= 225000 && capture_rate_hz <= 5000000) {
-            return capture_rate_hz;
+            return apply_fs4_guard(capture_rate_hz);
         }
     } else {
         if (!analog_like && dsp_bw_hz > 0) {
@@ -359,11 +384,11 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
             if (capture_rate_hz > 0 && tgt > capture_rate_hz) {
                 tgt = capture_rate_hz;
             }
-            return (uint32_t)tgt;
+            return apply_fs4_guard((uint32_t)tgt);
         }
         if (analog_like && capture_rate_hz > 0) {
             uint32_t maxa = 1800000U; /* ~1.8 MHz ceiling for analog */
-            return (capture_rate_hz < maxa) ? capture_rate_hz : maxa;
+            return apply_fs4_guard((capture_rate_hz < maxa) ? capture_rate_hz : maxa);
         }
     }
 
@@ -383,7 +408,7 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
         /* Last-resort default */
         bw = 1200000; /* 1.2 MHz */
     }
-    return bw;
+    return apply_fs4_guard(bw);
 }
 
 /**
