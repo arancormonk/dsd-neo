@@ -681,8 +681,8 @@ void nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[14
 //MT and Voice
 /** @brief Decode NXDN message type header. */
 void nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType);
-/** @brief Decode NXDN voice frames from the provided dibit buffer. */
-void nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182]);
+/** @brief Decode NXDN voice frames from the provided dibit buffer with reliability. */
+void nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab);
 //Osmocom OP25 12 Rate Trellis Decoder (for NXDN, M17, YSF, etc)
 /** @brief Trellis-decode a 1/2-rate convolutional codeword. */
 void trellis_decode(uint8_t result[], const uint8_t source[], int result_len);

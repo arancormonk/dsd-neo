@@ -34,12 +34,16 @@ const int nZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 
                     19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
 
 void
-nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182]) {
+nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab) {
     int i;
     int start = 0, stop = 0;
     char ambe_fr[4][24];
+    uint8_t ambe_reliab[4][24];
 
     const int *w, *x, *y, *z;
+
+    // Suppress unused parameter warning until soft AMBE integration
+    (void)ambe_reliab;
 
     //these conditions will determine our starting and stopping value for voice
     //i.e. voice in first, voice in second, or voice in both
@@ -63,10 +67,17 @@ nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182]) {
         z = nZ;
 
         for (i = 0; i < 36; i++) {
+            int buf_idx = i + 38 + start * 36;
 
             //skip 8 lich and 30 sacch dibits already in buffer plus 36 times start position
-            ambe_fr[*w][*x] = dbuf[i + 38 + start * 36] >> 1;
-            ambe_fr[*y][*z] = dbuf[i + 38 + start * 36] & 1;
+            ambe_fr[*w][*x] = dbuf[buf_idx] >> 1;
+            ambe_fr[*y][*z] = dbuf[buf_idx] & 1;
+
+            // Track per-bit reliability from dibit reliability
+            if (dbuf_reliab != NULL) {
+                ambe_reliab[*w][*x] = dbuf_reliab[buf_idx];
+                ambe_reliab[*y][*z] = dbuf_reliab[buf_idx];
+            }
 
             w++;
             x++;

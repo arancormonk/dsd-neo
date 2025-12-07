@@ -4,13 +4,14 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dstar/dstar_const.h>
+#include <dsd-neo/protocol/dstar/dstar_header.h>
+#include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
-#include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 
 //simplified DSTAR
 void
@@ -67,13 +68,14 @@ void
 processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
 
     int i;
-    int radioheaderbuffer[660];
+    float soft_symbols[660];
 
+    // Capture soft symbols for soft-decision decoding
     for (i = 0; i < 660; i++) {
-        radioheaderbuffer[i] = getDibit(opts, state);
+        getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
     }
 
-    dstar_header_decode(state, radioheaderbuffer);
+    dstar_header_decode_soft(state, soft_symbols);
     processDSTAR(opts, state);
 }
 

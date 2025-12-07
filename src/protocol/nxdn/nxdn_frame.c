@@ -645,7 +645,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             state->nxdn_cipher_type = 0x1;
         }
         //process voice frame
-        nxdn_voice(opts, state, voice, dbuf);
+        nxdn_voice(opts, state, voice, dbuf, dbuf_reliab);
     }
 
     //close MBE file if no voice and its open
