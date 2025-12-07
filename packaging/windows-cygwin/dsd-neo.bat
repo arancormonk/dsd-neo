@@ -90,10 +90,30 @@ if "%PA_MODULES%"=="" (
 )
 
 echo   Modules: %PA_MODULES%
+echo   Listing modules directory:
+dir /B "%PA_MODULES%" 2>nul
+echo.
+
+REM Convert Windows paths to Cygwin POSIX paths for PulseAudio
+set "PA_CONFIG_POSIX="
+set "PA_CONFIG_FILE=%ETC%\pulse\default.pa"
+if exist "!PA_CONFIG_FILE!" (
+  if exist "%BIN%\cygpath.exe" (
+    for /f "delims=" %%P in ('"%BIN%\cygpath.exe" -u "!PA_CONFIG_FILE!" 2^>nul') do set "PA_CONFIG_POSIX=%%P"
+  ) else (
+    REM Fallback: manual conversion C:\path -> /cygdrive/c/path
+    set "PA_TMP=!PA_CONFIG_FILE:\=/!"
+    set "PA_DRIVE=!PA_TMP:~0,1!"
+    set "PA_REST=!PA_TMP:~2!"
+    set "PA_CONFIG_POSIX=/cygdrive/!PA_DRIVE!!PA_REST!"
+  )
+)
+echo   Config file: !PA_CONFIG_FILE!
+echo   Config (POSIX): !PA_CONFIG_POSIX!
+
 echo   Starting PulseAudio daemon...
-REM Use -n to skip default.pa, then -F to load our config (avoids loading system modules we don't have)
-if exist "%ETC%\pulse\default.pa" (
-  "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 --use-pid-file=0 --disable-shm=1 -p "%PA_MODULES%" -F "%ETC%\pulse\default.pa"
+if defined PA_CONFIG_POSIX (
+  "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 --use-pid-file=0 --disable-shm=1 -p "%PA_MODULES%" -F "!PA_CONFIG_POSIX!"
 ) else (
   "%BIN%\pulseaudio.exe" --daemonize=1 --exit-idle-time=-1 --use-pid-file=0 --disable-shm=1 -p "%PA_MODULES%"
 )

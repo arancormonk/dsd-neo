@@ -8,16 +8,13 @@
 load-module module-native-protocol-tcp auth-anonymous=1 port=4713 listen=127.0.0.1
 
 ### Windows audio output via WaveOut API (Cygwin's audio backend)
-load-module module-waveout
-
-### Fallback null sink if no hardware is available
-load-module module-null-sink sink_name=auto_null sink_properties=device.description="Dummy_Output"
-load-module module-always-sink
+load-module module-waveout sink_name=wave_output source_name=wave_input
 
 ### Stream/device management
-load-module module-device-restore
-load-module module-default-device-restore
-load-module module-rescue-streams
 load-module module-stream-restore
 load-module module-suspend-on-idle
+
+### Set wave_output as the default sink for audio playback
+set-default-sink wave_output
+set-default-source wave_input
 

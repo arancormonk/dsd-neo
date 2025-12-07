@@ -289,6 +289,11 @@ jobs:
             cp -f "$MINTTY_BIN" "$STAGE/bin/"
           fi
 
+          # Include cygpath for path conversion in launcher scripts
+          if command -v cygpath >/dev/null 2>&1; then
+            cp -f "$(command -v cygpath)" "$STAGE/bin/"
+          fi
+
           # Closure: resolve dependencies until fixed point (cap at 10 passes)
           # Include PulseAudio modules in dependency resolution
           pass=1
