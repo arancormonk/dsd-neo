@@ -257,6 +257,31 @@ jobs:
           if command -v pulseaudio >/dev/null 2>&1; then
             PULSEAUDIO_BIN="$(command -v pulseaudio)"
             cp -f "$PULSEAUDIO_BIN" "$STAGE/bin/"
+            # Copy PulseAudio modules - required for PA to function
+            PA_MOD_SRC="/usr/lib/pulseaudio/modules"
+            if [ -d "$PA_MOD_SRC" ]; then
+              PA_MOD_DST="$STAGE/lib/pulseaudio/modules"
+              mkdir -p "$PA_MOD_DST"
+              # Copy only essential modules to keep size down
+              for mod in \
+                module-native-protocol-tcp.dll \
+                module-waveout.dll \
+                module-null-sink.dll \
+                module-always-sink.dll \
+                module-device-restore.dll \
+                module-default-device-restore.dll \
+                module-rescue-streams.dll \
+                module-stream-restore.dll \
+                module-suspend-on-idle.dll \
+                libprotocol-native.dll \
+                libcli.dll; do
+                [ -f "$PA_MOD_SRC/$mod" ] && cp -f "$PA_MOD_SRC/$mod" "$PA_MOD_DST/" || true
+              done
+              echo "Copied PulseAudio modules to $PA_MOD_DST"
+              ls -la "$PA_MOD_DST" || true
+            else
+              echo "WARNING: PulseAudio modules directory not found at $PA_MOD_SRC"
+            fi
           fi
 
           if command -v mintty >/dev/null 2>&1; then
@@ -265,11 +290,12 @@ jobs:
           fi
 
           # Closure: resolve dependencies until fixed point (cap at 10 passes)
+          # Include PulseAudio modules in dependency resolution
           pass=1
           while true; do
-            before=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
-            collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll
-            after=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll 2>/dev/null | wc -l | awk '{print $1}')
+            before=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll "$STAGE"/lib/pulseaudio/modules/*.dll 2>/dev/null | wc -l | awk '{print $1}')
+            collect_deps "pass${pass}.txt" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll "$STAGE"/lib/pulseaudio/modules/*.dll 2>/dev/null
+            after=$(printf "%s\n" "$STAGE"/bin/*.exe "$STAGE"/bin/*.dll "$STAGE"/lib/pulseaudio/modules/*.dll 2>/dev/null | wc -l | awk '{print $1}')
             [ "$after" -le "$before" ] && break
             pass=$((pass+1))
             [ "$pass" -gt 10 ] && break

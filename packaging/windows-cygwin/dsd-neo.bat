@@ -62,16 +62,56 @@ REM Ensure ncurses can find terminfo in portable tree; default TERM if unset
 if not defined TERM set "TERM=xterm"
 if exist "%SHARE%\terminfo" set "TERMINFO=%SHARE%\terminfo"
 
-REM Start PulseAudio server if available; run hidden (no extra window)
-REM Use --daemonize=1 so it detaches immediately; silence output.
-if exist "%BIN%\pulseaudio.exe" (
-  echo Starting PulseAudio...
-  if exist "%ETC%\pulse\default.pa" (
-    "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 -F "%ETC%\pulse\default.pa" >nul 2>nul
-  ) else (
-    "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 >nul 2>nul
-  )
+REM Tell PulseAudio client to use TCP instead of Unix sockets/shm
+set "PULSE_SERVER=tcp:127.0.0.1:4713"
+
+REM PulseAudio modules directory - check portable locations
+set "PA_MODULES="
+if exist "%ROOT%lib\pulseaudio\modules" set "PA_MODULES=%ROOT%lib\pulseaudio\modules"
+
+REM Start PulseAudio server if available
+if not exist "%BIN%\pulseaudio.exe" goto :skip_pulseaudio
+
+echo Starting PulseAudio...
+
+REM Check if PulseAudio is already running
+tasklist /FI "IMAGENAME eq pulseaudio.exe" 2>nul | findstr /I "pulseaudio.exe" >nul
+if not errorlevel 1 (
+  echo   PulseAudio already running.
+  goto :pulseaudio_check
 )
+
+if "%PA_MODULES%"=="" (
+  echo   ERROR: PulseAudio modules directory not found!
+  echo   Expected: %ROOT%lib\pulseaudio\modules
+  echo   Please ensure the portable package includes the PulseAudio modules.
+  dir /B "%ROOT%lib" 2>nul
+  goto :skip_pulseaudio
+)
+
+echo   Modules: %PA_MODULES%
+echo   Starting PulseAudio daemon...
+REM Use -n to skip default.pa, then -F to load our config (avoids loading system modules we don't have)
+if exist "%ETC%\pulse\default.pa" (
+  "%BIN%\pulseaudio.exe" -n --daemonize=1 --exit-idle-time=-1 --use-pid-file=0 --disable-shm=1 -p "%PA_MODULES%" -F "%ETC%\pulse\default.pa"
+) else (
+  "%BIN%\pulseaudio.exe" --daemonize=1 --exit-idle-time=-1 --use-pid-file=0 --disable-shm=1 -p "%PA_MODULES%"
+)
+echo   PulseAudio exit code: %ERRORLEVEL%
+
+:pulseaudio_check
+REM Give PulseAudio a moment to initialize
+timeout /t 2 /nobreak >nul 2>nul
+
+REM Check if PulseAudio is now running
+tasklist /FI "IMAGENAME eq pulseaudio.exe" 2>nul | findstr /I "pulseaudio.exe" >nul
+if errorlevel 1 (
+  echo   WARNING: PulseAudio does not appear to be running!
+) else (
+  echo   PulseAudio is running.
+)
+
+:skip_pulseaudio
 
 REM If no arguments were provided, show help by default so users see something
 set "DEFAULT_ARGS="

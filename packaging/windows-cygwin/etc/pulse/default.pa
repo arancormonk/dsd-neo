@@ -1,22 +1,23 @@
-### Minimal PulseAudio default.pa for Windows (WASAPI backend)
-### If this file causes issues on some systems, delete it and the launcher
-### will start pulseaudio with its built-in defaults.
+### Minimal PulseAudio default.pa for Windows/Cygwin portable bundle
+### This config is used with -F flag to override system defaults.
 
-.fail
+### Do not use .fail - some modules may not be available on all systems
+.nofail
 
-### Load native protocol (TCP disabled by default)
+### Load native protocol (TCP for Windows compatibility)
 load-module module-native-protocol-tcp auth-anonymous=1 port=4713 listen=127.0.0.1
-load-module module-native-protocol-unix
 
-### Improve device probing
+### Windows audio output via WaveOut API (Cygwin's audio backend)
+load-module module-waveout
+
+### Fallback null sink if no hardware is available
+load-module module-null-sink sink_name=auto_null sink_properties=device.description="Dummy_Output"
+load-module module-always-sink
+
+### Stream/device management
 load-module module-device-restore
 load-module module-default-device-restore
 load-module module-rescue-streams
-load-module module-always-sink
-
-### On Windows, the pulseaudio package typically selects the WASAPI backend
-### automatically. No explicit module-wasapi load is necessary here.
-
-set-default-sink   auto_null
-set-default-source auto_null.monitor
+load-module module-stream-restore
+load-module module-suspend-on-idle
 
