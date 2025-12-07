@@ -581,7 +581,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 opts->use_dsp_output = 1;
                 break;
             case 'z': {
-                // TDMA voice slot preference for OSS (/dev/dsp) playback
+                // TDMA voice slot preference
                 // 0 = prefer slot 1, 1 = prefer slot 2, 2 = auto
                 int pref = atoi(optarg);
                 if (pref < 0) {

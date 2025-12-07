@@ -55,6 +55,7 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 - Set WAV sample rate: `-s <rate>` (48k or 96k typical)
 
 Other input options
+
 - `--input-volume <1..16>` scale non‑RTL input samples (file/UDP/TCP) by an integer factor.
 - `--input-level-warn-db <dB>` warn if input power falls below dBFS (default −40).
 
@@ -76,6 +77,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-^` P25: prefer CC candidates during control channel hunt
 
 ### P25 Follower (Advanced)
+
 - `--p25-vc-grace <s>` seconds after VC tune before eligible to return to CC
 - `--p25-min-follow-dwell <s>` minimum follow dwell after first voice
 - `--p25-grant-voice-timeout <s>` max seconds from grant to voice before returning
@@ -107,6 +109,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
 - `-nm` Enable legacy DMR mono audio path (equivalent to `-fs` plus mono)
+- `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <1|2|3>` TDMA voice synthesis on slot 1, slot 2, or both (default 3)
 - `-y` Use experimental float audio output
@@ -117,7 +120,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - Auto: `-fa`
 - Passive analog monitor: `-fA`
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
-- DMR simplex (BS/MS): `-fs`
+- DMR simplex (BS/MS): `-fs` (stereo output), `-fr` (legacy mono alias)
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`
@@ -133,6 +136,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - dPMR: `-fm`
 
 Notes
+
 - Some frame types cannot be auto‑detected (marked above).
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
 
@@ -146,11 +150,11 @@ Notes
 - Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT)
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
 - DMR Tier III Location Area n‑bits: `-D <0–10>`
- - Env (C4FM timing layers):
-   - `DSD_NEO_TED=1` enables Gardner TED in the RTL demod pipeline (timing at complex baseband).
-   - `DSD_NEO_C4FM_CLK=el|mm` enables a lightweight Early–Late or M&M clock assist in the symbol sampler for P25p1 C4FM.
-   - When using RTL input, an internal TED‑bias auto‑centering helper may also gently nudge `symbolCenter` based on the smoothed TED residual.
-   - Together these can all influence C4FM timing; if you are debugging “drifting” symbol centers, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) and disabling `DSD_NEO_C4FM_CLK` while testing.
+- Env (C4FM timing layers):
+  - `DSD_NEO_TED=1` enables Gardner TED in the RTL demod pipeline (timing at complex baseband).
+  - `DSD_NEO_C4FM_CLK=el|mm` enables a lightweight Early–Late or M&M clock assist in the symbol sampler for P25p1 C4FM.
+  - When using RTL input, an internal TED‑bias auto‑centering helper may also gently nudge `symbolCenter` based on the smoothed TED residual.
+  - Together these can all influence C4FM timing; if you are debugging “drifting” symbol centers, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) and disabling `DSD_NEO_C4FM_CLK` while testing.
 
 ## Trunking & Scanning
 
@@ -167,8 +171,9 @@ Notes
   - Env (advanced): When P25 Phase 1 voice error rate is elevated, extend hangtime to reduce VC↔CC thrash:
     - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 8.0)
     - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` (default 2.0)
-  - Env (DMR): Short post‑tune grace before returning to CC if voice hasn’t started yet:
-    - `DSD_NEO_DMR_VC_GRACE=<seconds>` (default 1.25)
+  - Env (DMR): Hangtime and grant timeout overrides:
+    - `DSD_NEO_DMR_HANGTIME=<seconds>` — post‑voice hangtime before returning to CC
+    - `DSD_NEO_DMR_GRANT_TIMEOUT=<seconds>` — max seconds waiting for voice after grant
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
@@ -178,6 +183,7 @@ Notes
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
 
 Advanced (env)
+
 - `DSD_NEO_RTL_DIRECT=0|1|2|I|Q` — Direct sampling selection (0 off; 1 I‑ADC; 2 Q‑ADC).
 - `DSD_NEO_RTL_OFFSET_TUNING=0|1` — Disable/enable offset tuning (default is to try enabling).
 - `DSD_NEO_RTL_XTAL_HZ` / `DSD_NEO_TUNER_XTAL_HZ` — Override crystal refs in Hz (optional).
@@ -192,12 +198,14 @@ Advanced (env)
 - Packet encoder: `-fP`
 
 M17 `-M` details
+
 - `CAN` 1–15
 - `SRC`/`DST` up to 9 UPPER base40 chars (` ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.`)
 - `INPUT_RATE` default 48000; use multiples of 8000 up to 48000
 - `VOX` enable with `1` (default `0`)
 
 Examples
+
 - `dsd-neo -fZ -M M17:9:DSD-neo:arancormonk -i pulse -6 m17signal.wav -8 -N`
 - `dsd-neo -fP -M M17:9:DSD-neo:arancormonk -6 m17pkt.wav -8`
 
@@ -227,11 +235,143 @@ Examples
   - `--calc-step <hz>` (override channel step)
   - `--calc-start-lcn <num>` (start when no anchor)
 - RTL auto‑PPM drift correction:
+
   - `--auto-ppm` enable
   - `--auto-ppm-snr <dB>` set SNR gate (default 6)
 
 - RTL‑TCP networking:
   - `--rtltcp-autotune` enable adaptive tuning of buffering/recv size for RTL‑TCP links.
+
+## Environment Variables (Advanced Tuning)
+
+These environment variables provide fine‑grained control for power users.
+
+Auto‑PPM (RTL‑SDR)
+
+- `DSD_NEO_AUTO_PPM=1` — enable spectrum‑based drift correction
+- `DSD_NEO_AUTO_PPM_SNR_DB=<dB>` — SNR gate (default 6)
+- `DSD_NEO_AUTO_PPM_PWR_DB=<dB>` — absolute peak gate (default −80)
+- `DSD_NEO_AUTO_PPM_ZEROLOCK_PPM=<ppm>` — zero‑step lock guard (default 0.6)
+- `DSD_NEO_AUTO_PPM_ZEROLOCK_HZ=<Hz>` — frequency lock guard (default 60)
+- `DSD_NEO_AUTO_PPM_FREEZE=0/1` — freeze retunes during training (default 1)
+
+Resampler
+
+- `DSD_NEO_RESAMP=48000` — target rate (default); `off` or `0` to disable
+
+FLL/TED controls
+
+- `DSD_NEO_FLL=1` — enable frequency‑locked loop
+- `DSD_NEO_FLL_ALPHA`, `DSD_NEO_FLL_BETA`, `DSD_NEO_FLL_DEADBAND`, `DSD_NEO_FLL_SLEW` — Q15/Q14 gains
+- `DSD_NEO_TED=1` — enable timing error detector
+- `DSD_NEO_TED_GAIN=<float>` — TED gain
+- `DSD_NEO_TED_FORCE=1` — force TED
+
+FM/C4FM stabilization
+
+- `DSD_NEO_FM_AGC=1` — enable FM AGC (default off)
+- `DSD_NEO_FM_AGC_TARGET`, `DSD_NEO_FM_AGC_MIN`, `DSD_NEO_FM_AGC_ALPHA_UP`, `DSD_NEO_FM_AGC_ALPHA_DOWN`
+- `DSD_NEO_FM_LIMITER=1` — constant‑envelope limiter
+- `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
+- `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
+
+Digital SNR squelch
+
+- `DSD_NEO_SNR_SQL_DB=<dB>` — skip sync when SNR below threshold
+
+Capture/retune behavior
+
+- `DSD_NEO_DISABLE_FS4_SHIFT=1` — disable +fs/4 capture shift
+- `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1` — clear output on retune
+- `DSD_NEO_RETUNE_DRAIN_MS=<ms>` — drain time before retune
+
+RTL‑TCP networking
+
+- `DSD_NEO_TCP_PREBUF_MS=<ms>` — prebuffer duration (default 1000, range 5–1000)
+- `DSD_NEO_TCP_RCVBUF=<bytes>` — OS socket receive buffer (default ~4 MiB)
+- `DSD_NEO_TCP_BUFSZ=<bytes>` — user‑space read size (default ~16 KiB)
+- `DSD_NEO_TCP_RCVTIMEO=<ms>` — socket receive timeout in milliseconds (default 2000)
+- `DSD_NEO_TCP_WAITALL=0/1` — require full reads (default off)
+- `DSD_NEO_TCP_STATS=1` — print throughput/queue stats
+- `DSD_NEO_TCP_AUTOTUNE=1` — enable adaptive buffering/recv size for TCP links
+- `DSD_NEO_TCP_MAX_TIMEOUTS=<n>` — max consecutive timeouts before giving up
+
+RTL‑SDR driver options
+
+- `DSD_NEO_RTL_DIRECT=0|1|2|I|Q` — direct sampling (0 off, 1 I‑ADC, 2 Q‑ADC)
+- `DSD_NEO_RTL_OFFSET_TUNING=0|1` — offset tuning (default: try enable)
+- `DSD_NEO_RTL_XTAL_HZ=<Hz>`, `DSD_NEO_TUNER_XTAL_HZ=<Hz>` — crystal overrides
+- `DSD_NEO_RTL_IF_GAINS="stage:gain[,...]"` — IF stage gains (dB or 0.1 dB)
+- `DSD_NEO_RTL_TESTMODE=0|1` — test mode (ramp source)
+- `DSD_NEO_RTL_AGC=0|1` — RTL2832U AGC enable/disable (default on)
+- `DSD_NEO_TUNER_BW_HZ=<Hz>` — override automatic tuner bandwidth
+
+Tuner autogain (experimental)
+
+- `DSD_NEO_TUNER_AUTOGAIN=1` — enable automatic tuner gain adjustment
+- `DSD_NEO_TUNER_AUTOGAIN_PROBE_MS=<ms>` — probe interval
+- `DSD_NEO_TUNER_AUTOGAIN_SEED_DB=<dB>` — initial gain seed
+- `DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB=<dB>` — spectrum SNR threshold
+- `DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO=<ratio>` — in‑band power ratio
+- `DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB=<dB>` — gain up step size
+- `DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST=<n>` — persistence before increasing gain
+
+Audio/DSP helpers
+
+- `DSD_NEO_DEEMPH=off|50|75|nfm` — deemphasis curve
+- `DSD_NEO_AUDIO_LPF=<Hz>|off` — audio low‑pass filter cutoff (or disable)
+- `DSD_NEO_C4FM_CLK=el|mm` — C4FM clock assist mode (Early–Late or M&M)
+- `DSD_NEO_C4FM_CLK_SYNC=1` — enable C4FM clock sync
+- `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
+- `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (mode‑dependent default)
+- `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
+- `DSD_NEO_COMBINE_ROT=0|1` — enable combined rotation (default 1)
+- `DSD_NEO_UPSAMPLE_FP=0|1` — enable upsampler fixed‑point path (default 1)
+- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation
+- `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
+
+Misc
+
+- `DSD_NEO_MT=1` — enable light worker pool (2 threads)
+- `DSD_NEO_PDU_JSON=1` — emit P25 MAC/VPDU JSON to stdout
+- `DSD_NEO_RT_SCHED=1` — enable real‑time thread scheduling (requires privileges)
+- `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
+- `DSD_NEO_INPUT_VOLUME=<1..16>` — scale non‑RTL input samples (env alternative to `--input-volume`)
+- `DSD_NEO_INPUT_WARN_DB=<dB>` — warn if input power falls below dBFS (default −40)
+- `DSD_NEO_RIGCTL_RCVTIMEO=<ms>` — rigctl socket receive timeout
+- `DSD_NEO_TCPIN_BACKOFF_MS=<ms>` — TCP input read backoff
+
+P25 trunking timing
+
+- `DSD_NEO_P25_HANGTIME=<seconds>` — post‑voice hangtime before returning to CC
+- `DSD_NEO_P25_GRANT_TIMEOUT=<seconds>` — max seconds waiting for voice after grant
+- `DSD_NEO_P25_VC_GRACE=<seconds>` — grace after VC tune before eligible to return (also via `--p25-vc-grace`)
+- `DSD_NEO_P25_MIN_FOLLOW_DWELL=<seconds>` — minimum follow dwell after first voice
+- `DSD_NEO_P25_GRANT_VOICE_TO=<seconds>` — grant‑to‑voice timeout
+- `DSD_NEO_P25_RETUNE_BACKOFF=<seconds>` — block immediate re‑tune to same VC
+- `DSD_NEO_P25_MAC_HOLD=<seconds>` — keep MAC activity eligible for audio (also via `--p25-mac-hold`)
+- `DSD_NEO_P25_RING_HOLD=<seconds>` — ring gate window for recent audio activity (also via `--p25-ring-hold`)
+- `DSD_NEO_P25_VOICE_HOLD=<seconds>` — voice activity hold window
+- `DSD_NEO_P25_CC_GRACE=<seconds>` — CC hunt grace window (also via `--p25-cc-grace`)
+- `DSD_NEO_P25_FORCE_RELEASE_EXTRA=<seconds>` — safety‑net extra beyond hangtime
+- `DSD_NEO_P25_FORCE_RELEASE_MARGIN=<seconds>` — safety‑net hard margin
+- `DSD_NEO_P25_WD_MS=<ms>` — P25 state machine watchdog interval (100–2000)
+- `DSD_NEO_CC_CACHE=0|1` — enable/disable control channel frequency caching
+- `DSD_NEO_CACHE_DIR=<path>` — override cache directory for CC frequency cache
+
+DMR Tier III (env helpers for `--calc-lcn`)
+
+- `DSD_NEO_DMR_T3_CALC_CSV=<file>` — CSV file of frequencies
+- `DSD_NEO_DMR_T3_STEP_HZ=<Hz>` — channel step (e.g., 12500)
+- `DSD_NEO_DMR_T3_CC_FREQ=<Hz>` — control channel anchor frequency
+- `DSD_NEO_DMR_T3_CC_LCN=<n>` — control channel anchor LCN
+- `DSD_NEO_DMR_T3_START_LCN=<n>` — start LCN when no anchor
+- `DSD_NEO_DMR_T3_HEUR=1` — enable heuristic LCN fill
+
+Debug (verbose/developer)
+
+- `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
+- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK/TED/FLL state output
 
 ## Handy Examples
 

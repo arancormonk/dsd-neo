@@ -67,23 +67,10 @@ This project is an active work in progress as we decouple from the upstream fork
     - Optional auto‑PPM correction from the timing error detector for long unattended runs.
   - Device control from the UI: toggle bias‑tee, switch AGC/manual gain, adjust bandwidth and squelch, and retune quickly.
 
-- RTL‑SDR advanced driver options (env)
+- Expanded DSP controls for power users
 
-  - Direct sampling selection: `DSD_NEO_RTL_DIRECT=0|1|2|I|Q` (0 off, 1 I‑ADC, 2 Q‑ADC)
-  - Offset tuning control: `DSD_NEO_RTL_OFFSET_TUNING=0|1` (default: try enable)
-  - Crystal reference overrides: `DSD_NEO_RTL_XTAL_HZ=<Hz>`, `DSD_NEO_TUNER_XTAL_HZ=<Hz>`
-  - IF stage gains: `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` where `gain` is dB or 0.1 dB
-  - Test mode (ramp source): `DSD_NEO_RTL_TESTMODE=0|1`
-
-- Expanded DSP controls (power users welcome)
-
-  - Adaptive equalizer and decision‑feedback equalizer toggles with adjustable parameters.
-- Matched filters with adjustable RRC parameters (alpha, span).
-  - Timing and carrier helpers: enable/disable TED and FLL, tweak TED rate/gain, and force TED when needed.
-  - IQ balance prefilter and DQPSK decision mode for tough RF environments.
-  - Sane DSP defaults per modulation/standard, with quick toggles for power users.
-  - Changes apply instantly from the UI and persist across retunes, so you can iterate quickly without restarting.
-  - These controls go beyond what most open DSD projects expose directly.
+  - Changes apply instantly from the UI and persist across retunes.
+  - See [docs/cli.md](docs/cli.md) for environment variable reference.
 
 - Portable, ready‑to‑run builds
   - Linux AppImage, macOS DMG, and Windows portable ZIP releases.
@@ -185,67 +172,15 @@ cmake --build build/dev-release --target uninstall
   - `RTLSDR_FOUND` — Builds RTL‑SDR radio front‑end (`-DUSE_RTLSDR`).
   - `CODEC2_FOUND` — Enables Codec2 support (`-DUSE_CODEC2`).
 
-## Runtime Tuning (Environment/CLI)
+## Runtime Tuning
 
-- Auto‑PPM (RTL‑SDR only): spectrum‑based drift correction with training/lock.
+Most users can run with defaults. For advanced tuning, see [docs/cli.md](docs/cli.md).
 
-  - CLI: `--auto-ppm`, `--auto-ppm-snr <dB>` (default 6).
-  - Env: `DSD_NEO_AUTO_PPM=1`, `DSD_NEO_AUTO_PPM_SNR_DB=<dB>`,
-    `DSD_NEO_AUTO_PPM_PWR_DB=<dB>` (absolute peak gate, default −80),
-    `DSD_NEO_AUTO_PPM_ZEROLOCK_PPM=<ppm>` (zero‑step lock guard, default 0.6),
-    `DSD_NEO_AUTO_PPM_ZEROLOCK_HZ=<Hz>` (default 60),
-    `DSD_NEO_AUTO_PPM_FREEZE=0/1` (freeze/allow retunes during training; default freeze).
-  - Behavior: estimates df via parabolic peak interpolation near DC; applies ±1 ppm steps with throttling, direction self‑calibration (SNR/|df| improvement), and locks after short stability.
+Common options:
 
-- Resampler (polyphase L/M):
-
-  - Env: `DSD_NEO_RESAMP=48000` (default) or `off/0` to disable; sets demod/output target rate and L/M design.
-
-- FLL/TED controls:
-
-  - Env: `DSD_NEO_FLL=1`, `DSD_NEO_FLL_ALPHA/BETA/DEADBAND/SLEW` (Q15/Q14 gains),
-    `DSD_NEO_TED=1`, `DSD_NEO_TED_GAIN=<float>`, `DSD_NEO_TED_FORCE=1`.
-
-- FM/C4FM stabilization:
-
-  - Env: `DSD_NEO_FM_AGC=1` (default off), `DSD_NEO_FM_AGC_TARGET/MIN/ALPHA_UP/ALPHA_DOWN`,
-    `DSD_NEO_FM_LIMITER=1` (constant‑envelope limiter),
-    `DSD_NEO_IQ_DC_BLOCK=1`, `DSD_NEO_IQ_DC_SHIFT=<k>`.
-
-- Digital SNR squelch:
-
-  - Env: `DSD_NEO_SNR_SQL_DB=<dB>` — skips expensive sync when estimated SNR below threshold for relevant modes.
-
-- Capture/retune behavior:
-
-  - Env: `DSD_NEO_DISABLE_FS4_SHIFT=1` (disable +fs/4 capture shift when offset tuning is off),
-    `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1`, `DSD_NEO_RETUNE_DRAIN_MS=<ms>`.
-
-- Rig control defaults:
-
-  - TCP rigctl default port 4532 (SDR++). CLI: `-U <port>`, bandwidth `-B <Hz>`.
-
-- RTL‑TCP networking:
-  - Env: `DSD_NEO_TCP_PREBUF_MS=<ms>` — prebuffer before starting demod (default 1000, clamp 5–1000).
-  - Behavior: when using RTL‑TCP, the input ring auto‑resizes so that the
-    requested prebuffer fits within ~50% of the ring (to leave headroom),
-    yielding an effective prebuffer close to the requested duration at the
-    active sample rate.
-  - Env: `DSD_NEO_TCP_RCVBUF=<bytes>` — OS socket receive buffer (default ~4 MiB, OS‑capped).
-  - Env: `DSD_NEO_TCP_BUFSZ=<bytes>` — user‑space read size per `recv` (default ~16 KiB for rtl_tcp).
-  - Env: `DSD_NEO_TCP_WAITALL=0/1` — require full reads (`MSG_WAITALL`) for steadier cadence (default off for rtl_tcp).
-  - Env: `DSD_NEO_TCP_STATS=1` — print periodic throughput/queue stats.
-  - CLI: `--rtltcp-autotune` — enable adaptive tuning of buffering/recv size (BUFSZ/WAITALL) for imperfect networks.
-  - Behavior: TCP keepalive is enabled; if the link drops, the client auto‑reconnects and reapplies tuner settings.
-  - On reconnect, advanced driver options (direct sampling, offset tuning, testmode, xtal, IF gains) are replayed.
-
-- Additional runtime controls (environment):
-
-  - Deemphasis/post‑filters: `DSD_NEO_DEEMPH=off|50|75|nfm`, `DSD_NEO_AUDIO_LPF=<Hz>`.
-  - C4FM helpers and Costas tuning: `DSD_NEO_C4FM_CLK=el|mm`, `DSD_NEO_C4FM_CLK_SYNC=1`,
-    `DSD_NEO_COSTAS_BW/DAMPING`.
-  - Experimental helpers: `DSD_NEO_CHANNEL_LPF=1`.
-  - Misc: `DSD_NEO_MT=1` enables the light worker pool; `DSD_NEO_PDU_JSON=1` emits P25 MAC/VPDU JSON to stdout.
+- Auto‑PPM drift correction (RTL‑SDR): `--auto-ppm`
+- RTL‑TCP adaptive buffering: `--rtltcp-autotune`
+- Rig control (SDR++): `-U 4532` (default port), `-B <Hz>` (bandwidth)
 
 ## Using The CLI
 
