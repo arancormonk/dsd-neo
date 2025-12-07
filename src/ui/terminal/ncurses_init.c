@@ -108,8 +108,10 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     // When ncurses UI is active, suppress direct stderr logging to prevent
     // screen corruption from background fprintf calls in protocol paths.
     // This avoids mixed ncurses/stdio output overwriting the UI until resize.
+    // However, if stderr has already been redirected (not a TTY), honor that
+    // redirect so users can capture logs with e.g. 2>log.txt.
 #ifdef __unix__
-    if (!s_stderr_suppressed) {
+    if (!s_stderr_suppressed && isatty(fileno(stderr))) {
         // Backup current stderr FD, then redirect to /dev/null.
         int backup_fd = dup(fileno(stderr));
         if (backup_fd >= 0) {
