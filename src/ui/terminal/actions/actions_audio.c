@@ -19,12 +19,6 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         if (opts->audio_out_type == 0) {
             closePulseOutput(opts);
             openPulseOutput(opts);
-        } else if (opts->audio_out_type == 2 || opts->audio_out_type == 5) {
-            if (opts->audio_out_fd >= 0) {
-                close(opts->audio_out_fd);
-                opts->audio_out_fd = -1;
-            }
-            openOSSOutput(opts);
         }
     }
     if (state) {

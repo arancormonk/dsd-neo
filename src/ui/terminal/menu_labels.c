@@ -288,8 +288,6 @@ lbl_current_output(void* vctx, char* b, size_t n) {
     const char* name;
     switch (c->opts->audio_out_type) {
         case 0: name = "Pulse Digital"; break;
-        case 2: name = "OSS (8k/2)"; break;
-        case 5: name = "OSS (48k/1)"; break;
         case 8: name = "UDP"; break;
         default: name = "?"; break;
     }
@@ -304,9 +302,6 @@ lbl_current_output(void* vctx, char* b, size_t n) {
     } else if (c->opts->audio_out_type == 8) {
         int m = (n > 32) ? (int)(n - 32) : 0; /* leave room for prefix and port */
         snprintf(b, n, "Current Output: UDP %.*s:%d", m, c->opts->udp_hostname, c->opts->udp_portno);
-    } else if (c->opts->audio_out_type == 2 || c->opts->audio_out_type == 5) {
-        int m = (n > 24) ? (int)(n - 24) : 0; /* room for suffix */
-        snprintf(b, n, "Current Output: %.*s (%s)", m, c->opts->audio_out_dev, name);
     } else {
         snprintf(b, n, "Current Output: %s", name);
     }
@@ -323,7 +318,6 @@ lbl_current_input(void* vctx, char* b, size_t n) {
         case 2: name = "WAV/File"; break;
         case 3: name = "RTL-SDR"; break;
         case 4: name = "Symbol .bin"; break;
-        case 5: name = "OSS /dev/dsp"; break;
         case 6: name = "UDP"; break;
         case 8: name = "TCP"; break;
         case 44: name = "Symbol Float"; break;

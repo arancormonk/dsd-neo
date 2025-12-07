@@ -248,15 +248,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
     }
 
-    if (opts->audio_in_type == 5) {
-        printw("| OSS Signal Input: %i kHz; 1 Ch;", SAMPLE_RATE_IN / 1000);
-        if (opts->use_rigctl == 1) {
-            printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
-        }
-        printw(" IV: %iX;", opts->input_volume_multiplier);
-        printw("\n");
-    }
-
     if (opts->audio_in_type == 4) {
         printw("| Dibit Bin Input: %s \n", opts->audio_in_dev);
     }
@@ -435,52 +426,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw(" \n");
     }
 
-    if (opts->audio_out_type == 5 || opts->audio_out_type == 2) {
-        printw("| OSS Audio Output: %i kHz; %i Ch; G: %02.0f%%", opts->pulse_digi_rate_out / 1000,
-               opts->pulse_digi_out_channels, state->aout_gain * 2);
-        if (opts->pulse_digi_out_channels == 2) {
-            printw(" G: %02.0f%%", state->aout_gainR * 2);
-        }
-        if (opts->audio_gain == 0) {
-            printw(" (+/-) Auto  ");
-        }
-        if (opts->audio_gain > 0) {
-            printw(" (+/-) Manual");
-        }
-        if (opts->use_hpf_d == 1) {
-            printw(" HPF");
-        }
-        if (opts->call_alert == 1) {
-            printw(" *CA!"); //Call Alert
-        }
-
-        if ((opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
-            && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            printw("\n| Analog Monitor PWR: %.1f dB; G: %02.0f%% (/|*) ", pwr_to_dB(opts->rtl_pwr), opts->audio_gainA);
-            if (opts->audio_gainA == 0.0f) {
-                printw("Auto   ");
-            } else {
-                printw("Manual ");
-            }
-            if (opts->use_lpf == 1) {
-                printw("F: |LP|");
-            } else {
-                printw("F: |  |");
-            }
-            if (opts->use_hpf == 1) {
-                printw("HP|");
-            } else {
-                printw("  |");
-            }
-            if (opts->use_pbf == 1) {
-                printw("PB|");
-            } else {
-                printw("  |");
-            }
-        }
-        printw(" \n");
-    }
-
     if (opts->audio_out_type == 8) {
         printw("| UDP Digital Output: %s:%d; %d kHz %d Ch; %02.0f%%", opts->udp_hostname, opts->udp_portno,
                opts->pulse_digi_rate_out / 1000, opts->pulse_digi_out_channels, state->aout_gain * 2);
@@ -498,10 +443,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         if (opts->call_alert == 1) {
             printw(" *CA!"); //Call Alert
-        }
-        if ((opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
-            && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            printw(" - Monitor PWR: %.1f dB ", pwr_to_dB(opts->rtl_pwr));
         }
         printw(" \n");
         if (opts->udp_sockfdA != 0) //Analog Output on udp port +2
@@ -1737,12 +1678,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
         printw("%s ", DMRBusrtTypes[state->dmrburstL]);
 
-        if (opts->slot_preference == 1 && opts->audio_out_type == 5 && opts->audio_out == 1
-            && (state->dmrburstL == 16 || state->dmrburstL == 21)
-            && (state->dmrburstR == 16 || state->dmrburstR == 21)) {
-            printw("*M*");
-        }
-
         printw("\n");
 
         printw("| V XTRA | "); //10 spaces
@@ -1946,12 +1881,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("%s | ", "                     "); // 21 spaces
             }
             printw("%s ", DMRBusrtTypes[state->dmrburstR]);
-
-            if (opts->slot_preference == 0 && opts->audio_out_type == 5 && opts->audio_out == 1
-                && (state->dmrburstL == 16 || state->dmrburstL == 21)
-                && (state->dmrburstR == 16 || state->dmrburstR == 21)) {
-                printw("*M*");
-            }
 
             printw("\n");
 

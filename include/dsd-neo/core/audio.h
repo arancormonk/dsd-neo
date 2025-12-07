@@ -8,7 +8,7 @@
  * @brief Core audio API surface for DSD-neo.
  *
  * Exposes device open/close helpers, drain/flush routines, and playback
- * helpers shared across OSS/Pulse/PCM paths. Kept separate from dsd.h so
+ * helpers shared across Pulse/PCM paths. Kept separate from dsd.h so
  * modules that only need audio APIs can avoid pulling in the full core header.
  */
 
@@ -48,14 +48,12 @@ void processAudioR(dsd_opts* opts, dsd_state* state);
 void openPulseInput(dsd_opts* opts);
 /** @brief Open PulseAudio output device based on opts. */
 void openPulseOutput(dsd_opts* opts);
-/** @brief Open OSS output device based on opts. */
-void openOSSOutput(dsd_opts* opts);
 /** @brief Close PulseAudio input device if open. */
 void closePulseInput(dsd_opts* opts);
 /** @brief Close PulseAudio output device if open. */
 void closePulseOutput(dsd_opts* opts);
 
-/** @brief Best-effort drain of audio output buffers (Pulse/OSS). Safe no-op when disabled. */
+/** @brief Best-effort drain of audio output buffers (Pulse). Safe no-op when disabled. */
 void dsd_drain_audio_output(dsd_opts* opts);
 
 /** @brief Write synthesized mono voice samples for slot 1. */
@@ -80,8 +78,6 @@ void playSynthesizedVoice(dsd_opts* opts, dsd_state* state); // short mono outpu
 void playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state); // short mono output slot 2
 /** @brief Play synthesized voice (short mono mix). */
 void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
-/** @brief Play synthesized voice (short mono mix for OSS 48k I/O). */
-void playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state); // short mono mix R (OSS 48k input/output)
 /** @brief Play synthesized voice (short stereo mix). */
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
@@ -140,9 +136,9 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
 
-/** @brief Open output audio device (Pulse/OSS) at requested speed. */
+/** @brief Open output audio device (Pulse) at requested speed. */
 void openAudioOutDevice(dsd_opts* opts, int speed);
-/** @brief Open input audio device (Pulse/OSS) based on opts. */
+/** @brief Open input audio device (Pulse) based on opts. */
 void openAudioInDevice(dsd_opts* opts);
 
 /** @brief Parse Pulse input device string (after 'pulse:' prefix) and update opts. */

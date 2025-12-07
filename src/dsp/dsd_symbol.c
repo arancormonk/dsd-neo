@@ -467,13 +467,6 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             sample = (float)s;
         }
 
-        else if (opts->audio_in_type == 5) //OSS
-        {
-            short s = 0;
-            read(opts->audio_in_fd, &s, 2);
-            sample = (float)s;
-        }
-
         //stdin only, wav files moving to new number
         else if (opts->audio_in_type == 1) //won't work in windows, needs posix pipe (mintty)
         {
@@ -822,22 +815,6 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     if (opts->audio_out_type == 8) {
                         udp_socket_blasterA(opts, state, bytes, state->analog_out);
                     }
-
-                    //NOTE: Worked okay earlier in Cygwin, so should be fine -- can only operate at 48k1, else slow mode lag
-
-                    //This one will only operate when OSS 48k1 (when both input and output are OSS audio)
-                    if (opts->audio_out_type == 5 && opts->pulse_digi_rate_out == 48000
-                        && opts->pulse_digi_out_channels == 1) {
-                        write(opts->audio_out_fd, state->analog_out, bytes);
-                    }
-
-                    //STDOUT, but only when operating at 48k1 (no go just yet)
-                    // if (opts->audio_out_type == 1 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
-                    //   write (opts->audio_out_fd, state->analog_out, 960*2);
-
-                    //OSS 8k1 (no go just yet)
-                    // if (opts->audio_out_type == 2 && opts->pulse_digi_rate_out == 48000 && opts->pulse_digi_out_channels == 1)
-                    //   write (opts->audio_out_fd, state->analog_out, 960*2);
 
                     // UI/scan heartbeat: avoid refreshing timers that the
                     // trunk SM depends on for hangtime and CC hunting logic.

@@ -1397,16 +1397,10 @@ initOpts(dsd_opts* opts) {
     opts->p25status = 0;
     opts->p25tg = 0;
     opts->scoperate = 15;
-#ifdef __CYGWIN__
-    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "/dev/dsp");
-    snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "/dev/dsp");
-#else
     snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
-#endif
     opts->audio_in_fd = -1;
     opts->audio_out_fd = -1;
-    opts->audio_out_fdR = -1;
 
     opts->split = 0;
     opts->playoffset = 0;
@@ -1634,15 +1628,7 @@ initOpts(dsd_opts* opts) {
 
     opts->dPMR_next_part_of_superframe = 0;
 
-//OSS audio - Slot Preference
-//slot preference is used during OSS audio playback to
-//prefer one tdma voice slot over another when both are playing back
-//this is a fix to OSS 48k/1 output
-#ifdef __CYGWIN__
-    opts->slot_preference = 0; //default prefer slot 1 -- state->currentslot = 0;
-#else
-    opts->slot_preference = 2; //use 2 since integrating the Stereo Channel Patch;
-#endif
+    opts->slot_preference = 2;
     //hardset slots to synthesize
     opts->slot1_on = 1;
     opts->slot2_on = 1;
@@ -1652,11 +1638,6 @@ initOpts(dsd_opts* opts) {
     opts->use_hpf = 1;
     opts->use_pbf = 1;
     opts->use_hpf_d = 1;
-
-//this is a quick bugfix for issues with OSS and TDMA slot 1/2 audio level mismatch
-#ifdef __CYGWIN__
-    opts->use_hpf_d = 0;
-#endif
 
     //dsp structured file
     opts->dsp_out_file[0] = 0;
@@ -2304,13 +2285,7 @@ usage() {
     printf("  -O            List All Pulse Audio Input Sources and Output Sinks (devices).\n");
     printf("\n");
     printf("Input/Output options:\n");
-#ifdef __CYGWIN__
-    printf("  -i <device>   Audio input device (default is /dev/dsp)\n");
-    printf("                pulse for pulse audio (will require pactl running in Cygwin)\n");
-#else
     printf("  -i <device>   Audio input device (default is pulse)\n");
-    printf("                /dev/dsp for OSS audio (Depreciated: Will require padsp wrapper in Linux) \n");
-#endif
     printf("                pulse for pulse audio signal input \n");
     printf("                pulse:6 or pulse:virtual_sink2.monitor for pulse audio signal input on virtual_sink2 (see "
            "-O) \n");
@@ -2336,13 +2311,7 @@ usage() {
     printf("  -s <rate>     Sample Rate of wav input files (48000 or 96000) Mono only!\n");
     printf("      --input-volume <N>  Scale non-RTL input samples by N (integer 1..16).\n");
     printf("      --input-level-warn-db <dB>  Warn if input power below dBFS (default -40).\n");
-#ifdef __CYGWIN__
-    printf("  -o <device>   Audio output device (default is /dev/dsp)\n");
-    printf("                pulse for pulse audio (will require pactl running in Cygwin)\n");
-#else
     printf("  -o <device>   Audio output device (default is pulse)\n");
-    printf("                /dev/dsp for OSS audio (Depreciated: Will require padsp wrapper in Linux) \n");
-#endif
     printf("                pulse for pulse audio decoded voice or analog output\n");
     printf("                pulse:1 or pulse:alsa_output.pci-0000_0d_00.3.analog-stereo for pulse audio decoded voice "
            "or analog output on device (see -O) \n");
@@ -2379,12 +2348,6 @@ usage() {
     printf(
         "  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n"); //does this still work correctly?
     printf("  -V <num>      Enable TDMA Voice Synthesis on Slot 1 (1), Slot 2 (2), or Both (3); Default is 3; \n");
-#ifdef __CYGWIN__
-    printf("                If using /dev/dsp input and output at 48k1, launch two instances of DSD-neo w -V 1 and -V "
-           "2 if needed\n");
-#endif
-    printf("  -z            Set TDMA Voice Slot Preference when using /dev/dsp audio output (prevent lag and "
-           "stuttering)\n");
     printf("  -y            Enable Experimental Pulse Audio Float Audio Output\n");
     printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option)\n");
     printf("                1 1 1 1 (0xF): PBF/LPF/HPF/HPFD on\n");
@@ -3193,10 +3156,6 @@ main(int argc, char** argv) {
             LOG_NOTICE("TCP Connection Success!\n");
             // openAudioInDevice(&opts); //do this to see if it makes it work correctly
         } else {
-#ifdef __CYGWIN__
-            sprintf(opts.audio_in_dev, "%s", "/dev/dsp");
-            opts.audio_in_type = 5;
-#else
             if (opts.frame_m17 == 1) {
                 sleep(1);
                 goto TCPEND; //try again if using M17 encoder / decoder over TCP
@@ -3204,7 +3163,6 @@ main(int argc, char** argv) {
             sprintf(opts.audio_in_dev, "%s", "pulse");
             LOG_ERROR("TCP Connection Failure - Using %s Audio Input.\n", opts.audio_in_dev);
             opts.audio_in_type = 0;
-#endif
         }
     }
 
@@ -3478,17 +3436,9 @@ main(int argc, char** argv) {
         rtl_ok = 1;
 #endif
 
-#ifdef __CYGWIN__
         if (rtl_ok == 0) //not set, means rtl support isn't compiled/available
         {
-            LOG_ERROR("RTL Support not enabled/compiled, falling back to OSS /dev/dsp Audio Input.\n");
-            sprintf(opts.audio_in_dev, "%s", "/dev/dsp");
-            opts.audio_in_type = 5;
-        }
-#else
-        if (rtl_ok == 0) //not set, means rtl support isn't compiled/available
-        {
-            LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Audio Input.\n");
+            LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
             sprintf(opts.audio_in_dev, "%s", "pulse");
             opts.audio_in_type = 0;
         }
@@ -3496,10 +3446,8 @@ main(int argc, char** argv) {
         UNUSED(product);
         UNUSED(serial);
         UNUSED(device_count);
-#endif
     }
 
-    //moved these to be checked prior to checking OSS for the split for 1-48k, or variable configurations
     if ((strncmp(opts.audio_in_dev, "pulse", 5) == 0)) {
         opts.audio_in_type = 0;
 
@@ -3540,15 +3488,8 @@ main(int argc, char** argv) {
         int err = udp_socket_connect(&opts, &state);
         if (err < 0) {
             LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio :( \n");
-#ifdef __CYGWIN__
-            sprintf(opts.audio_in_dev, "%s", "/dev/dsp");
-            opts.audio_in_type = 5;
-            //since I can't determine what the configuration will be for 48k1 or 8k2 here(lazy), need to exit
-            exitflag = 1;
-#else
             sprintf(opts.audio_out_dev, "%s", "pulse");
             opts.audio_out_type = 0;
-#endif
         }
 
         opts.audio_out_type = 8;
@@ -3590,71 +3531,6 @@ main(int argc, char** argv) {
         LOG_NOTICE("Audio Out Device: -\n");
     }
 
-    int fmt;
-    int speed;
-
-    //The long of the short is that PADSP can open multiple virtual /dev/dsp devices each with different sampling rates and channel configurations
-    //but the instance inside of Cygwin is a single instance tied to one sample rate AND one channel configuration, so if you change it on the output, it
-    //also changes on the input, and the way dsd handles this is to upsample output to make it work correctly, so in order to be able to change the output
-    //to a variable config, it cannot be the input as well
-
-    if ((strncmp(opts.audio_in_dev, "/dev/audio", 10) == 0)) {
-        sprintf(opts.audio_in_dev, "%s", "/dev/dsp");
-        LOG_NOTICE("Switching to /dev/dsp.\n");
-    }
-
-    if ((strncmp(opts.audio_in_dev, "pa", 2) == 0)) {
-        sprintf(opts.audio_in_dev, "%s", "/dev/dsp");
-        LOG_NOTICE("Switching to /dev/dsp.\n");
-    }
-
-    speed = 48000; //hardset to 48000
-#if DSD_HAVE_OSS
-    if ((strncmp(opts.audio_in_dev, "/dev/dsp", 8) == 0)) {
-        LOG_NOTICE("OSS Input %s.\n", opts.audio_in_dev);
-        opts.audio_in_fd = open(opts.audio_in_dev, O_RDWR);
-        if (opts.audio_in_fd == -1) {
-            LOG_ERROR("Error, couldn't open %s\n", opts.audio_in_dev);
-        }
-
-        fmt = 0;
-        if (ioctl(opts.audio_in_fd, SNDCTL_DSP_RESET) < 0) {
-            LOG_ERROR("ioctl reset error \n");
-        }
-        fmt = speed;
-        if (ioctl(opts.audio_in_fd, SNDCTL_DSP_SPEED, &fmt) < 0) {
-            LOG_ERROR("ioctl speed error \n");
-        }
-        fmt = 0;
-        if (ioctl(opts.audio_in_fd, SNDCTL_DSP_STEREO, &fmt) < 0) {
-            LOG_ERROR("ioctl stereo error \n");
-        }
-        fmt = AFMT_S16_LE;
-        if (ioctl(opts.audio_in_fd, SNDCTL_DSP_SETFMT, &fmt) < 0) {
-            LOG_ERROR("ioctl setfmt error \n");
-        }
-
-        opts.audio_in_type = 5; //5 will become OSS input type
-    }
-#endif
-
-    //check for OSS output
-    if ((strncmp(opts.audio_out_dev, "/dev/audio", 10) == 0)) {
-        sprintf(opts.audio_out_dev, "%s", "/dev/dsp");
-        LOG_NOTICE("Switching to /dev/dsp.\n");
-    }
-
-    if ((strncmp(opts.audio_out_dev, "pa", 2) == 0)) {
-        sprintf(opts.audio_out_dev, "%s", "/dev/dsp");
-        LOG_NOTICE("Switching to /dev/dsp.\n");
-    }
-
-    //this will only open OSS output if its listed as a type
-    //changed to this so I could call it freely inside of ncurses terminal
-    if (opts.playfiles == 0) {
-        openOSSOutput(&opts);
-    }
-
     if (opts.playfiles == 1) {
         opts.split = 1;
         opts.playoffset = 0;
@@ -3664,8 +3540,6 @@ main(int argc, char** argv) {
         opts.pulse_digi_out_channels = 1;
         if (opts.audio_out_type == 0) {
             openPulseOutput(&opts);
-        } else if ((strncmp(opts.audio_out_dev, "/dev/dsp", 8) == 0)) {
-            openOSSOutput(&opts); //open after split == 1 so it will open and playback at the proper speed
         }
     }
 
@@ -3789,7 +3663,7 @@ main(int argc, char** argv) {
 
         opts.pulse_digi_rate_out = 8000;
 
-        //open any inputs, if not alread opened, OSS input and output already handled
+        //open any inputs, if not already opened
         if (opts.audio_in_type == 0) {
             openPulseInput(&opts);
         }

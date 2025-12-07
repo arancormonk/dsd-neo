@@ -188,9 +188,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->audio_out_idx = 0;
             } else {
                 opts->slot1_on = 1;
-                if (opts->audio_out_type == 5) {
-                    opts->slot_preference = 0;
-                }
             }
             break;
         }
@@ -206,9 +203,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->audio_out_idxR = 0;
             } else {
                 opts->slot2_on = 1;
-                if (opts->audio_out_type == 5) {
-                    opts->slot_preference = 1;
-                }
             }
             break;
         }

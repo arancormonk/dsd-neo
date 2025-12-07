@@ -76,14 +76,6 @@
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
-// OSS support (Linux/BSD/Cygwin). Not available on macOS.
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
-#define DSD_HAVE_OSS 1
-#include <sys/soundcard.h>
-#else
-#define DSD_HAVE_OSS 0
-#endif
-
 #include <pulse/error.h>      //PULSE AUDIO
 #include <pulse/introspect.h> //PULSE AUDIO
 #include <pulse/pulseaudio.h> //PULSE AUDIO

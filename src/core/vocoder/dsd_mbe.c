@@ -201,7 +201,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     uint8_t hash_bits[24];
     memset(hash_bits, 0, sizeof(hash_bits));
 
-    int preempt = 0; //TDMA dual voice slot preemption(when using OSS output)
+    int preempt = 0; //TDMA dual voice slot preemption
 
     for (i = 0; i < 88; i++) {
         imbe_d[i] = 0;
@@ -1443,37 +1443,14 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
         //end reverse mute test
 
-        //OSS 48k/1 Specific Voice Preemption if dual voices on TDMA and one slot has preference over the other
-        if (opts->slot_preference == 1 && opts->audio_out_type == 5 && opts->audio_out == 1
-            && (state->dmrburstR == 16 || state->dmrburstR == 21)) {
-            opts->audio_out = 0;
-            preempt = 1;
-            if (opts->payload == 0 && opts->slot1_on == 1) {
-                fprintf(stderr, " *MUTED*");
-            } else if (opts->payload == 0 && opts->slot1_on == 0) {
-                fprintf(stderr, " *Off*");
-            }
-        }
-
         state->debug_audio_errors += state->errs2;
 
         if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
-            if (opts->floating_point
-                == 0) //opts->audio_out == 1 && //needed to remove for AERO OSS so we could still save wav files during dual voices
-            {
+            if (opts->floating_point == 0) {
 #ifdef __CYGWIN__
-                if (opts->audio_out == 1
-                    && opts->slot1_on
-                           == 1) //add conditional check here, otherwise some lag occurs on dual voices with OSS48k/1 input due to buffered audio
+                if (opts->audio_out == 1 && opts->slot1_on == 1)
 #endif
                     processAudio(opts, state);
-            }
-            if (opts->audio_out == 1 && opts->floating_point == 0 && opts->audio_out_type == 5
-                && opts->slot1_on == 1) //for OSS 48k 1 channel configs -- relocate later if possible
-            {
-                playSynthesizedVoiceMS(
-                    opts,
-                    state); //it may be more beneficial to move this to each individual decoding type to handle, but ultimately, let's just simpifly mbe handling instead
             }
         }
 
@@ -1520,35 +1497,14 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
         //end reverse mute test
 
-        //OSS 48k/1 Specific Voice Preemption if dual voices on TDMA and one slot has preference over the other
-        if (opts->slot_preference == 0 && opts->audio_out_type == 5 && opts->audio_out == 1
-            && (state->dmrburstL == 16 || state->dmrburstL == 21)) {
-            opts->audio_out = 0;
-            preempt = 1;
-            if (opts->payload == 0 && opts->slot2_on == 1) {
-                fprintf(stderr, " *MUTED*");
-            } else if (opts->payload == 0 && opts->slot2_on == 0) {
-                fprintf(stderr, " *Off*");
-            }
-        }
-
         state->debug_audio_errorsR += state->errs2R;
 
         if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
-            if (opts->floating_point
-                == 0) //opts->audio_out == 1 && //needed to remove for AERO OSS so we could still save wav files during dual voices
-            {
+            if (opts->floating_point == 0) {
 #ifdef __CYGWIN__
-                if (opts->audio_out == 1
-                    && opts->slot2_on
-                           == 1) //add conditional check here, otherwise some lag occurs on dual voices with OSS48k/1 input due to buffered audio
+                if (opts->audio_out == 1 && opts->slot2_on == 1)
 #endif
                     processAudioR(opts, state);
-            }
-            if (opts->audio_out == 1 && opts->floating_point == 0 && opts->audio_out_type == 5
-                && opts->slot2_on == 1) //for OSS 48k 1 channel configs -- relocate later if possible
-            {
-                playSynthesizedVoiceMSR(opts, state);
             }
         }
 

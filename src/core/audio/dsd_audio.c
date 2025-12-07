@@ -207,15 +207,6 @@ dsd_drain_audio_output(dsd_opts* opts) {
         }
         return;
     }
-#if DSD_HAVE_OSS
-    // OSS: block until the device has played all queued samples
-    if (opts->audio_out_type == 2 || opts->audio_out_type == 5) {
-        if (opts->audio_out_fd >= 0) {
-            (void)ioctl(opts->audio_out_fd, SNDCTL_DSP_SYNC, 0);
-        }
-        return;
-    }
-#endif
 }
 
 void
@@ -243,122 +234,6 @@ parse_pulse_output_string(dsd_opts* opts, char* input) {
         fprintf(stderr, "\n");
     }
 }
-
-// OSS output is only supported on platforms exposing <sys/soundcard.h>
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
-void
-openOSSOutput(dsd_opts* opts) {
-    int fmt;
-    int speed = 48000;
-    if (opts->audio_in_type == 5) //if((strncmp(opts->audio_in_dev, "/dev/dsp", 8) == 0)) or 'split' == 0
-    {
-
-        if ((strncmp(opts->audio_out_dev, "/dev/dsp", 8) == 0)) {
-            fprintf(stderr, "OSS Output %s.\n", opts->audio_out_dev);
-            opts->audio_out_fd = open(opts->audio_out_dev, O_RDWR);
-            if (opts->audio_out_fd == -1) {
-                LOG_ERROR("Error, couldn't open #1 %s\n", opts->audio_out_dev);
-                opts->audio_out = 0;
-                exit(1);
-            }
-
-            fmt = 0;
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_RESET) < 0) {
-                LOG_ERROR("ioctl reset error \n");
-            }
-
-            fmt = speed;
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SPEED, &fmt) < 0) {
-                LOG_ERROR("ioctl speed error \n");
-            }
-
-            fmt = 0; //this seems okay to be 1 or 0, not sure what the difference really is (works in stereo on 0)
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_STEREO, &fmt) < 0) {
-                LOG_ERROR("ioctl stereo error \n");
-            }
-
-            fmt = AFMT_S16_LE;
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SETFMT, &fmt) < 0) {
-                LOG_ERROR("ioctl setfmt error \n");
-            }
-
-            opts->audio_out_type = 5; //5 for 1 channel - 48k OSS 16-bit short output (matching with input)
-            opts->pulse_digi_rate_out =
-                48000; //this is used to force to upsample and also allow source audio monitor conditional check
-            opts->pulse_digi_out_channels = 1; //this is used to allow source audio monitor conditional check
-            opts->audio_gain = 0;
-        }
-    }
-
-    if (opts->audio_in_type != 5 || opts->split == 1) //split == 1
-    {
-
-        if ((strncmp(opts->audio_out_dev, "/dev/dsp", 8) == 0)) {
-            fprintf(stderr, "OSS Output %s.\n", opts->audio_out_dev);
-            opts->audio_out_fd = open(opts->audio_out_dev, O_WRONLY);
-            if (opts->audio_out_fd == -1) {
-                LOG_ERROR("Error, couldn't open %s\n", opts->audio_out_dev);
-                opts->audio_out = 0;
-                exit(1);
-            }
-
-            //Setup the device. Note that it's important to set the sample format, number of channels and sample rate exactly in this order. Some devices depend on the order.
-
-            fmt = 0;
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_RESET) < 0) {
-                LOG_ERROR("ioctl reset error \n");
-            }
-
-            fmt = AFMT_S16_LE; //Sample Format
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SETFMT, &fmt) < 0) {
-                LOG_ERROR("ioctl setfmt error \n");
-            }
-
-            fmt = opts->pulse_digi_out_channels; //number of channels //was 2
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_CHANNELS, &fmt) < 0) {
-                fprintf(stderr, "ioctl channel error \n");
-            }
-
-            //if using split with OSS output, and using EDACS w/ Analog, we have to use 48k
-            if (opts->frame_provoice == 1) {
-                opts->pulse_digi_rate_out = 48000;
-            }
-
-            speed = opts->pulse_digi_rate_out; //since we have split input/output, we want to mirror pulse rate out
-            fmt = speed;                       //output rate
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_SPEED, &fmt) < 0) {
-                LOG_ERROR("ioctl speed error \n");
-            }
-            if (opts->pulse_digi_out_channels == 2) {
-                fmt = 1;
-            } else {
-                fmt = 0;
-            }
-
-            if (ioctl(opts->audio_out_fd, SNDCTL_DSP_STEREO, &fmt) < 0) {
-                LOG_ERROR("ioctl stereo error \n");
-            }
-
-            //TODO: Multiple output returns based on 8k/1, 8k/2, or maybe 48k/1? (2,3,5)??
-            if (opts->pulse_digi_out_channels == 2 || opts->frame_m17 == 1) {
-                opts->audio_out_type = 2; //2 for 2 channel 8k OSS 16-bit short output
-            } else {
-                opts->audio_out_type = 5;
-            }
-
-            //debug
-            fprintf(stderr, "Using OSS Output with %dk/%d channel configuration.\n", opts->pulse_digi_rate_out,
-                    opts->pulse_digi_out_channels);
-        }
-    }
-}
-#else
-void
-openOSSOutput(dsd_opts* opts) {
-    (void)opts;
-    // No-op: OSS not available on this platform
-}
-#endif
 
 void
 processAudio(dsd_opts* opts, dsd_state* state) {
@@ -695,9 +570,7 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->audio_out_idx > opts->delay) {
-        if (opts->audio_out == 1 && (opts->audio_out_type == 5 || opts->audio_out_type == 1)) //OSS
-        {
-            //OSS 48k/1
+        if (opts->audio_out == 1 && opts->audio_out_type == 1) {
             (void)write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
                         (size_t)state->audio_out_idx * sizeof(short));
             state->audio_out_idx = 0;
@@ -732,13 +605,7 @@ playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
 
     if (state->audio_out_idxR > opts->delay) {
         // output synthesized speech to sound card
-        if (opts->audio_out == 1 && opts->audio_out_type == 5) //OSS
-        {
-            //OSS 48k/1
-            (void)write(opts->audio_out_fd, (state->audio_out_buf_pR - state->audio_out_idxR),
-                        (size_t)state->audio_out_idxR * sizeof(short));
-            state->audio_out_idxR = 0;
-        } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
+        if (opts->audio_out == 1 && opts->audio_out_type == 0) {
             pa_simple_write(opts->pulse_digi_dev_outR, (state->audio_out_buf_pR - state->audio_out_idxR),
                             (size_t)state->audio_out_idxR * sizeof(short), NULL);
             state->audio_out_idxR = 0;

@@ -375,10 +375,6 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
     /* Use fixed-size stack buffers to avoid per-frame heap churn */
     short samp1[320];
-    short upsamp[320 * 6];
-    short out[6];
-    short prev;
-    int j;
 
     codec2_decode(state->codec2_1600, samp1, voice1);
 
@@ -400,26 +396,7 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
             udp_socket_blaster(opts, state, nsam * sizeof(short), samp1);
         }
 
-        if (opts->audio_out_type == 5 && state->m17_enc == 0) //OSS 48k/1
-        {
-            //upsample to 48k and then play
-            prev = samp1[0];
-            for (i = 0; i < 160; i++) {
-                upsampleS(samp1[i], prev, out);
-                for (j = 0; j < 6; j++) {
-                    upsamp[((size_t)i * 6) + j] = out[j];
-                }
-            }
-            write(opts->audio_out_fd, upsamp, nsam * 6 * sizeof(short));
-        }
-
-        if (opts->audio_out_type == 1 && state->m17_enc == 0) //STDOUT
-        {
-            write(opts->audio_out_fd, samp1, nsam * sizeof(short));
-        }
-
-        if (opts->audio_out_type == 2 && state->m17_enc == 0) //OSS 8k/1
-        {
+        if (opts->audio_out_type == 1 && state->m17_enc == 0) {
             write(opts->audio_out_fd, samp1, nsam * sizeof(short));
         }
     }
@@ -504,10 +481,6 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
     /* Use fixed-size stack buffers to avoid per-frame heap churn */
     short samp1[160];
     short samp2[160];
-    short upsamp[160 * 6];
-    short out[6];
-    short prev;
-    int j;
 
     codec2_decode(state->codec2_3200, samp1, voice1);
     codec2_decode(state->codec2_3200, samp2, voice2);
@@ -533,35 +506,7 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
             udp_socket_blaster(opts, state, nsam * sizeof(short), samp2);
         }
 
-        if (opts->audio_out_type == 5 && state->m17_enc == 0) //OSS 48k/1
-        {
-            //upsample to 48k and then play
-            prev = samp1[0];
-            for (i = 0; i < 160; i++) {
-                upsampleS(samp1[i], prev, out);
-                for (j = 0; j < 6; j++) {
-                    upsamp[(i * 6) + j] = out[j];
-                }
-            }
-            write(opts->audio_out_fd, upsamp, nsam * 6 * sizeof(short));
-            prev = samp2[0];
-            for (i = 0; i < 160; i++) {
-                upsampleS(samp2[i], prev, out);
-                for (j = 0; j < 6; j++) {
-                    upsamp[(i * 6) + j] = out[j];
-                }
-            }
-            write(opts->audio_out_fd, upsamp, nsam * 6 * sizeof(short));
-        }
-
-        if (opts->audio_out_type == 1 && state->m17_enc == 0) //STDOUT
-        {
-            write(opts->audio_out_fd, samp1, nsam * sizeof(short));
-            write(opts->audio_out_fd, samp2, nsam * sizeof(short));
-        }
-
-        if (opts->audio_out_type == 2 && state->m17_enc == 0) //OSS 8k/1
-        {
+        if (opts->audio_out_type == 1 && state->m17_enc == 0) {
             write(opts->audio_out_fd, samp1, nsam * sizeof(short));
             write(opts->audio_out_fd, samp2, nsam * sizeof(short));
         }
@@ -1441,8 +1386,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
             udp_socket_blasterA(opts, state, sizeof(baseband), baseband);
         }
 
-        //STDOUT or OSS 48k/1
-        if (opts->audio_out_type == 1 || opts->audio_out_type == 5) {
+        if (opts->audio_out_type == 1) {
             write(opts->audio_out_fd, baseband, sizeof(baseband));
         }
     }
@@ -1932,47 +1876,6 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         exitflag = 1;
                         break;
                     }
-                }
-            }
-        }
-
-        else if (opts->audio_in_type == 5) //OSS
-        {
-            for (i = 0; i < (int)nsam; i++) {
-                for (j = 0; j < dec; j++) {
-                    short s = 0;
-                    read(opts->audio_in_fd, &s, 2);
-                    sample = (float)s;
-                }
-                if (opts->input_volume_multiplier > 1) {
-                    int v = (int)sample * opts->input_volume_multiplier;
-                    if (v > 32767) {
-                        v = 32767;
-                    } else if (v < -32768) {
-                        v = -32768;
-                    }
-                    sample = (short)v;
-                }
-                voice1[i] = clip_float_to_short(sample);
-            }
-
-            if (st == 2) {
-                for (i = 0; i < (int)nsam; i++) {
-                    for (j = 0; j < dec; j++) {
-                        short s = 0;
-                        read(opts->audio_in_fd, &s, 2);
-                        sample = (float)s;
-                    }
-                    if (opts->input_volume_multiplier > 1) {
-                        int v = (int)sample * opts->input_volume_multiplier;
-                        if (v > 32767) {
-                            v = 32767;
-                        } else if (v < -32768) {
-                            v = -32768;
-                        }
-                        sample = (short)v;
-                    }
-                    voice2[i] = clip_float_to_short(sample);
                 }
             }
         }

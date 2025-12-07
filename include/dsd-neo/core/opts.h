@@ -68,8 +68,7 @@ struct dsd_opts {
     int rtlsdr_ppm_error;
     int audio_in_type;
     int audio_out_fd;
-    int audio_out_fdR;  //right channel audio for OSS hack
-    int audio_out_type; // 0 for device, 1 for file,
+    int audio_out_type; // 0 for pulse, 1 for file/stdout, 8 for UDP
     int split;
     int playoffset;
     int playoffsetR;

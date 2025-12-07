@@ -573,14 +573,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog3);
         }
 
-        //added a condition check so that if OSS output and 8K, switches to 48K when opening OSS
-        if (opts->audio_out_type == 5 && opts->floating_point == 0 && opts->slot1_on == 1) {
-            write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
-            write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));
-            write(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short));
-        }
-
-        //STDOUT -- I don't see the harm of adding this here, will be fine for analog only or digital only (non-mixed analog and digital)
         if (opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1) {
             write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
             write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));

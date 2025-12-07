@@ -42,7 +42,6 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 
 - PulseAudio: `-i pulse` (default). List sources/sinks: `-O`.
 - PulseAudio by name/index: `-i pulse:<index|name>` (use `-O` to discover values)
-- OSS (legacy): `-i /dev/dsp` (deprecated; may require `padsp` on Linux)
 - WAV file: `-i file.wav` (48 kHz mono). For other rates (e.g., DSDPlus 96 kHz): add `-s 96000`.
 - OP25/FME capture BIN: `-i file.bin`.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
@@ -110,7 +109,6 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-nm` Enable legacy DMR mono audio path (equivalent to `-fs` plus mono)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <1|2|3>` TDMA voice synthesis on slot 1, slot 2, or both (default 3)
-- `-z <1|2>` TDMA slot preference for `/dev/dsp` output
 - `-y` Use experimental float audio output
 - `-a` Enable call alert beep (UI)
 

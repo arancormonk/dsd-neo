@@ -531,7 +531,6 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
             udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
         }
 
-        //No OSS, since we can't use float output, but STDOUT can with play, aplay, etc
         if (opts->audio_out_type == 1) {
             write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
         }
@@ -628,7 +627,7 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
             udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), state->f_l);
         }
 
-        if (opts->audio_out_type == 1 || opts->audio_out_type == 5) {
+        if (opts->audio_out_type == 1) {
             write(opts->audio_out_fd, state->f_l, (size_t)160u * sizeof(float));
         }
     }
@@ -692,12 +691,11 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
             udp_socket_blaster(opts, state, (size_t)len * sizeof(short), mono_samp);
         }
 
-        if (opts->audio_out_type == 1 || opts->audio_out_type == 2 || opts->audio_out_type == 5) { //STDOUT or OSS
+        if (opts->audio_out_type == 1) {
             write(opts->audio_out_fd, mono_samp, (size_t)len * sizeof(short));
         }
     }
 
-    //this one needs testing w/ 48000 OSS output when audio is not split
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         //convert to stereo for new static wav file setup
         short ss[320];
@@ -778,12 +776,11 @@ playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
             udp_socket_blaster(opts, state, (size_t)len * sizeof(short), mono_samp);
         }
 
-        if (opts->audio_out_type == 1 || opts->audio_out_type == 2 || opts->audio_out_type == 5) { //STDOUT or OSS
+        if (opts->audio_out_type == 1) {
             write(opts->audio_out_fd, mono_samp, (size_t)len * sizeof(short));
         }
     }
 
-    //this one needs testing w/ 48000 OSS output when audio is not split
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         //convert to stereo for new static wav file setup
         short ss[320];
@@ -882,7 +879,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
             udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
         }
 
-        if (opts->audio_out_type == 1 || opts->audio_out_type == 2) { //STDOUT or OSS 8k/2
+        if (opts->audio_out_type == 1) {
             write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
         }
     }
@@ -1152,8 +1149,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
         udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp3);
     }
 
-    if (opts->audio_out == 1 && (opts->audio_out_type == 1 || opts->audio_out_type == 2)) //STDOUT or OSS 8k/2channel
-    {
+    if (opts->audio_out == 1 && opts->audio_out_type == 1) {
         write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
         write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
         write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(short));
@@ -1403,8 +1399,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
             if (memcmp(empss, mono4, sizeof(empss)) != 0) {
                 udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono4);
             }
-        } else if (opts->audio_out == 1
-                   && (opts->audio_out_type == 1 || opts->audio_out_type == 2)) { // STDOUT/OSS mono
+        } else if (opts->audio_out == 1 && opts->audio_out_type == 1) {
             write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(short));
             write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(short));
             if (memcmp(empss, mono3, sizeof(empss)) != 0) {
@@ -1452,8 +1447,7 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if (opts->audio_out == 1 && (opts->audio_out_type == 1 || opts->audio_out_type == 2)) //STDOUT or OSS 8k/2channel
-    {
+    if (opts->audio_out == 1 && opts->audio_out_type == 1) {
         write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
         write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
@@ -1670,8 +1664,7 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        if (opts->audio_out_type == 1 || opts->audio_out_type == 2) //STDOUT or OSS 8k/2channel
-        {
+        if (opts->audio_out_type == 1) {
             for (j = 0; j < 18; j++) {
                 if (memcmp(empty, stereo_sf[j], sizeof(empty))
                     != 0) { //may not work as intended because its stereo and one will have something in it most likely
@@ -1752,13 +1745,11 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     float samp_fs[320]; //stereo float sample
     short samp_s[160];  //mono short sample
     short samp_ss[320]; //stereo short sample
-    short samp_su[960]; //mono short upsample
-    short outbuf[6];    //temp storage for upsample
 
     n = 0; //rolling sine wave 'degree'
 
     //double len if not using Pulse Audio,
-    //anything over UDP or using OSS may
+    //anything over UDP may
     //not clear the buffer at the shorter len
     if (opts->audio_out_type != 0) {
         len *= 2;
@@ -1846,34 +1837,6 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
                     write(opts->audio_out_fd, samp_s, (size_t)160u * 2u);
                 }
-            }
-
-            else if (opts->audio_out_type == 2) //OSS Variable Output (no float)
-            {
-
-                if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 0) {
-                    write(opts->audio_out_fd, samp_ss, (size_t)320u * sizeof(short));
-                }
-
-                if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
-                    write(opts->audio_out_fd, samp_s, (size_t)160u * sizeof(short));
-                }
-            }
-
-            else if (opts->audio_out_type == 5) //OSS 48k/1 configuration with upsample
-            {
-                short prev = 0;
-                for (i = 0; i < 160; i++) {
-                    upsampleS(samp_s[i], prev, outbuf);
-                    samp_su[(i * 6) + 0] = outbuf[0];
-                    samp_su[(i * 6) + 1] = outbuf[1];
-                    samp_su[(i * 6) + 2] = outbuf[2];
-                    samp_su[(i * 6) + 3] = outbuf[3];
-                    samp_su[(i * 6) + 4] = outbuf[4];
-                    samp_su[(i * 6) + 5] = outbuf[5];
-                }
-
-                write(opts->audio_out_fd, samp_su, (size_t)960u * 2u);
             }
         }
     }
