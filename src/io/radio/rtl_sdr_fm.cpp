@@ -891,7 +891,6 @@ demod_thread_fn(void* arg) {
     static int s_ag_up_step_db10 = 30;      /* up-step size in tenth-dB (default +3.0 dB) */
     static int s_ag_up_persist = 2;         /* require consecutive passes before stepping up */
     static int ag_spec_pass = 0;            /* persistence counter for spectral gate */
-    int logged_once = 0;
     const int is_rtltcp_input = (g_stream && g_stream->opts && g_stream->opts->rtltcp_enabled) ? 1 : 0;
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Preserve rtltcp prebuffer: hold the consumer until cold start finishes. */
@@ -1452,29 +1451,17 @@ demod_thread_fn(void* arg) {
             if (d->result_len > 0) {
                 ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
             }
-            if (!logged_once) {
-                LOG_INFO("Demod first block (CQPSK): in=%d symbols=%d (no resamp)\n", got, d->result_len);
-                logged_once = 1;
-            }
         } else if (d->resamp_enabled) {
             int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
             if (out_n > 0) {
                 apply_output_scale(d, d->resamp_outbuf, out_n);
                 ring_write_signal_on_empty_transition(o, d->resamp_outbuf, (size_t)out_n);
             }
-            if (!logged_once) {
-                LOG_INFO("Demod first block: in=%d decim_len=%d resamp_out=%d\n", got, d->result_len, out_n);
-                logged_once = 1;
-            }
         } else {
             /* When resampler is disabled, pass-through. */
             if (d->result_len > 0) {
                 apply_output_scale(d, d->result, d->result_len);
                 ring_write_signal_on_empty_transition(o, d->result, (size_t)d->result_len);
-            }
-            if (!logged_once) {
-                LOG_INFO("Demod first block: in=%d decim_len=%d (no resampler)\n", got, d->result_len);
-                logged_once = 1;
             }
         }
         /* Signaling occurs only when the ring transitions from empty to non-empty. */

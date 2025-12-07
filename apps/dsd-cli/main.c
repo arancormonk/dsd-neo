@@ -3418,19 +3418,9 @@ main(int argc, char** argv) {
             opts.rtl_volume_multiplier = 1; //I wonder if you could flip polarity by using -1
         }
 
-        LOG_NOTICE("Dev %d ", opts.rtl_dev_index);
-        LOG_NOTICE("Freq %d ", opts.rtlsdr_center_freq);
-        LOG_NOTICE("Gain %d ", opts.rtl_gain_value);
-        LOG_NOTICE("PPM %d ", opts.rtlsdr_ppm_error);
-        LOG_NOTICE("DSP-BW %d kHz ", opts.rtl_dsp_bw_khz);
-        LOG_NOTICE("SQ %.1f dB ", pwr_to_dB(opts.rtl_squelch_level));
-        // fprintf (stderr, "UDP %d \n", opts.rtl_udp_port);
-        LOG_NOTICE("VOL %d ", opts.rtl_volume_multiplier);
-        if (opts.rtl_bias_tee) {
-            LOG_NOTICE("BIAS on\n");
-        } else {
-            LOG_NOTICE("\n");
-        }
+        LOG_NOTICE("RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%.1fdB VOL=%d%s\n", opts.rtl_dev_index,
+                   opts.rtlsdr_center_freq, opts.rtl_gain_value, opts.rtlsdr_ppm_error, opts.rtl_dsp_bw_khz,
+                   pwr_to_dB(opts.rtl_squelch_level), opts.rtl_volume_multiplier, opts.rtl_bias_tee ? " BIAS=on" : "");
         opts.audio_in_type = 3;
 
         rtl_ok = 1;

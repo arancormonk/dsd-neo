@@ -804,14 +804,6 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     }
 
     ctx->initialized = 1;
-
-    if (opts && opts->verbose > 0) {
-        fprintf(stderr,
-                "\n[P25 SM] Init: hangtime=%.2fs grant_timeout=%.2fs cc_grace=%.2fs "
-                "state=%s\n",
-                ctx->config.hangtime_s, ctx->config.grant_timeout_s, ctx->config.cc_grace_s,
-                p25_sm_state_name(ctx->state));
-    }
 }
 
 void

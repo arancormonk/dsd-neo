@@ -409,14 +409,6 @@ channel_lpf_ensure_op25_taps(double sample_rate) {
     }
 
     s_op25_taps_sample_rate = sample_rate;
-
-    /* Debug: log filter parameters */
-    static int logged = 0;
-    if (!logged && (s_op25_tdma_ntaps > 0 || s_op25_fdma_ntaps > 0)) {
-        fprintf(stderr, "[channel_lpf] Generated OP25 filters for Fs=%.0f: TDMA=%d taps, FDMA=%d taps\n", sample_rate,
-                s_op25_tdma_ntaps, s_op25_fdma_ntaps);
-        logged = 1;
-    }
 }
 
 /**

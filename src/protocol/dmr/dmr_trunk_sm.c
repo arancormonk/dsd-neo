@@ -319,11 +319,6 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     }
 
     ctx->initialized = 1;
-
-    if (opts && opts->verbose > 0) {
-        fprintf(stderr, "\n[DMR SM] Init: hangtime=%.2fs grant_timeout=%.2fs state=%s\n", ctx->hangtime_s,
-                ctx->grant_timeout_s, dmr_sm_state_name(ctx->state));
-    }
 }
 
 void
