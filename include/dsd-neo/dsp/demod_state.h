@@ -145,12 +145,14 @@ struct demod_state {
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
 
-    /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs */
+    /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
+     * At 48 kHz with 1200 Hz transition, Blackman needs up to 135 taps (hist = 134).
+     * Size 144 provides headroom for higher sample rates. */
     int channel_lpf_enable; /* gate */
     int channel_lpf_hist_len;
-    int channel_lpf_profile;      /* see DSD_CH_LPF_PROFILE_* */
-    float channel_lpf_hist_i[64]; /* sized for up to 63-tap symmetric FIR (tap-1) */
-    float channel_lpf_hist_q[64];
+    int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
+    float channel_lpf_hist_i[144]; /* sized for up to 144-tap symmetric FIR (tap-1) */
+    float channel_lpf_hist_q[144];
     float channel_pwr;           /* mean power (RMS^2 proxy) measured after channel LPF */
     float channel_squelch_level; /* squelch threshold (linear power); 0 = disabled */
     int channel_squelched;       /* 1 if squelched this block, 0 otherwise */

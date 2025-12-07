@@ -22,7 +22,7 @@ extern "C" {
 typedef struct {
     int enabled;
     int force; /* allow forcing TED even for FM/C4FM paths */
-    int sps;   /* nominal samples per symbol (e.g., 5 for 4800 sym/s at 24k) */
+    int sps;   /* nominal samples per symbol. At 48 kHz: P25P1=10, P25P2=8, NXDN=20 */
     /* OP25-compatible Gardner parameters (from p25_demodulator.py) */
     float gain_mu;    /* mu loop gain, default 0.025 (OP25 default) */
     float gain_omega; /* omega loop gain, default 0.1 * gain_mu^2 */

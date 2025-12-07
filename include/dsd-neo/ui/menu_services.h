@@ -184,7 +184,7 @@ int svc_rtl_set_freq(dsd_opts* opts, uint32_t hz);
 int svc_rtl_set_gain(dsd_opts* opts, int value);
 /** @brief Set RTL PPM correction (clamped to ±200). */
 int svc_rtl_set_ppm(dsd_opts* opts, int ppm);
-/** @brief Set RTL DSP baseband bandwidth (kHz), clamping to allowed set and restarting if needed. */
+/** @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), clamping and restarting if needed. */
 int svc_rtl_set_bandwidth(dsd_opts* opts, int khz);
 /** @brief Set RTL squelch threshold in dB, converting to power units. */
 int svc_rtl_set_sql_db(dsd_opts* opts, double dB);

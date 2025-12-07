@@ -7,6 +7,9 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/ui_cmd_dispatch.h>
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 
 static int
 ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
@@ -40,8 +43,14 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         opts->mod_qpsk = 1;
         opts->mod_gfsk = 0;
         state->rf_mod = 1;
-        state->samplesPerSymbol = 10;
-        state->symbolCenter = 4;
+        // P25P1 QPSK: 4800 sym/s - compute SPS from actual demod rate
+#ifdef USE_RTLSDR
+        int demod_rate = (int)rtl_stream_output_rate(NULL);
+#else
+        int demod_rate = 0;
+#endif
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     } else {
         opts->mod_c4fm = 1;
         opts->mod_qpsk = 0;
@@ -55,20 +64,28 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 static int
 ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)c;
+    // P25P2 TDMA: 6000 sym/s - compute SPS from actual demod rate
+#ifdef USE_RTLSDR
+    int demod_rate = (int)rtl_stream_output_rate(NULL);
+#else
+    int demod_rate = 0;
+#endif
+    int sps = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
+    int center = dsd_opts_symbol_center(sps);
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
         opts->mod_qpsk = 1;
         opts->mod_gfsk = 0;
         state->rf_mod = 1;
-        state->samplesPerSymbol = 8;
-        state->symbolCenter = 3;
+        state->samplesPerSymbol = sps;
+        state->symbolCenter = center;
     } else {
         opts->mod_c4fm = 1;
         opts->mod_qpsk = 0;
         opts->mod_gfsk = 0;
         state->rf_mod = 0;
-        state->samplesPerSymbol = 8;
-        state->symbolCenter = 3;
+        state->samplesPerSymbol = sps;
+        state->symbolCenter = center;
     }
     return 1;
 }

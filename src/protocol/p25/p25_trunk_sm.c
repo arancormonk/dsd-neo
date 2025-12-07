@@ -63,6 +63,24 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
 }
 
 /* ============================================================================
+ * Weak fallback for querying actual demodulator output rate
+ * ============================================================================ */
+
+/**
+ * @brief Query the actual RTL demodulator output sample rate.
+ *
+ * When USE_RTLSDR is linked, this returns the post-resampler output rate
+ * (e.g., 24000 Hz if a 48->24 kHz resampler is active). Otherwise returns 0
+ * to signal that the caller should fall back to rtl_dsp_bw_khz.
+ *
+ * @return Output sample rate in Hz, or 0 if unavailable.
+ */
+__attribute__((weak)) unsigned int
+dsd_rtl_stream_output_rate(void) {
+    return 0; /* No RTL stream available in test/non-RTL builds */
+}
+
+/* ============================================================================
  * Weak Fallbacks for Event History
  * ============================================================================ */
 
@@ -119,8 +137,7 @@ is_tdma_channel(const dsd_state* state, int channel) {
         // Fall back to system-level TDMA knowledge when the IDEN does not carry
         // an explicit TDMA/FDMA declaration. This covers systems with P25p1
         // CQPSK control channels that have not sent IDEN_UP_TDMA yet, preventing
-        // Phase 2 grants from being treated as FDMA (5 SPS) and avoiding SPS
-        // mismatch on VC hops.
+        // Phase 2 grants from being treated as FDMA and avoiding SPS mismatch on VC hops.
         if (!is_tdma && state->p25_sys_is_tdma == 1) {
             is_tdma = 1;
         }
@@ -134,11 +151,20 @@ channel_slot(const dsd_state* state, int channel) {
     return is_tdma_channel(state, channel) ? ((channel & 1) ? 1 : 0) : -1;
 }
 
-// Compute TED SPS for control channel based on CC type.
-// At 24kHz DSP bandwidth: P25P1 CC (4800 sym/s) = 5, P25P2 TDMA CC (6000 sym/s) = 4.
+// Compute TED SPS based on actual demodulator output rate (accounts for resampler).
 static inline int
-cc_ted_sps(const dsd_state* state) {
-    return (state && state->p25_cc_is_tdma == 1) ? 4 : 5;
+p25_ted_sps_for_bw(const dsd_opts* opts, int sym_rate_hz) {
+    /* Query actual demodulator output rate first (accounts for any active resampler).
+     * Falls back to rtl_dsp_bw_khz if RTL stream is unavailable or returns 0. */
+    int demod_rate = (int)dsd_rtl_stream_output_rate();
+    return dsd_opts_compute_sps_rate(opts, sym_rate_hz, demod_rate);
+}
+
+// Compute TED SPS for control channel based on CC type.
+static inline int
+cc_ted_sps(const dsd_opts* opts, const dsd_state* state) {
+    int sym_rate = (state && state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+    return p25_ted_sps_for_bw(opts, sym_rate);
 }
 
 // Log status tag for debugging
@@ -350,21 +376,21 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
 
     // Set symbol timing and modulation based on channel type.
-    // TED SPS at 24kHz DSP bandwidth: P25P1 (4800 sym/s) = 5, P25P2 (6000 sym/s) = 4.
+    // Use dynamic SPS computation based on configured DSP bandwidth.
     int ted_sps;
     if (ctx->vc_is_tdma) {
-        state->samplesPerSymbol = 8;
-        state->symbolCenter = 3;
+        ted_sps = p25_ted_sps_for_bw(opts, 6000);
+        state->samplesPerSymbol = ted_sps;
+        state->symbolCenter = dsd_opts_symbol_center(ted_sps);
         state->p25_p2_active_slot = channel_slot(state, ev->channel);
         // P25P2 TDMA always uses CQPSK modulation - force QPSK mode
         // to prevent modulation auto-detect from flapping to C4FM
         state->rf_mod = 1;
-        ted_sps = 4; // P25P2: 6000 sym/s @ 24kHz = 4 SPS
     } else {
-        state->samplesPerSymbol = 10;
-        state->symbolCenter = 4;
+        ted_sps = p25_ted_sps_for_bw(opts, 4800);
+        state->samplesPerSymbol = ted_sps;
+        state->symbolCenter = dsd_opts_symbol_center(ted_sps);
         state->p25_p2_active_slot = -1;
-        ted_sps = 5; // P25P1: 4800 sym/s @ 24kHz = 5 SPS
     }
 
     // Tune to VC with TED SPS determined by channel type
@@ -674,7 +700,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         return;
     }
     long cand = 0;
-    int sps = cc_ted_sps(state);
+    int sps = cc_ted_sps(opts, state);
 
     // First try discovered CC candidates (if preference enabled)
     if (opts && opts->p25_prefer_candidates == 1 && next_cc_candidate(state, &cand, now_m)) {

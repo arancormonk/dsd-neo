@@ -96,13 +96,14 @@ static const double kPi = 3.14159265358979323846;
 static const double kC4fmEstimatorBiasDb = 5.73;
 static const double kEvmEstimatorBiasDb = 1.92;
 
-/* Noise equivalent bandwidth (Hz) for each channel LPF profile at 24 kHz Fs.
- * Computed as Bn = (Fs/2) * Σh² / (Σh)² for each filter.
- * These scale linearly with actual sample rate: Bn_actual = Bn_ref * (rate_out / 24000). */
-static const double kNoiseBwWide24k = 8200.0;     /* Wide/analog profile (~8 kHz cutoff) */
-static const double kNoiseBwDigital24k = 5400.0;  /* Digital-narrow profile (~5 kHz cutoff) */
-static const double kNoiseBwOp25Tdma24k = 9800.0; /* OP25 TDMA Hamming (9600 Hz cutoff) */
-static const double kNoiseBwOp25Fdma24k = 7200.0; /* OP25 FDMA Hamming (7000 Hz cutoff) */
+/* Noise equivalent bandwidth (Hz) for each channel LPF profile.
+ * Computed as Bn = (Fs/2) * Σh² / (Σh)² for the 24 kHz reference designs and
+ * used as fixed approximations because channel_lpf_* now holds the absolute
+ * cutoff constant (8k/5k/9.6k/7k) even when Fs changes. */
+static const double kNoiseBwWideHz = 8200.0;     /* Wide/analog profile (~8 kHz cutoff) */
+static const double kNoiseBwDigitalHz = 5400.0;  /* Digital-narrow profile (~5 kHz cutoff) */
+static const double kNoiseBwOp25TdmaHz = 9800.0; /* OP25 TDMA Hamming (9600 Hz cutoff) */
+static const double kNoiseBwOp25FdmaHz = 7200.0; /* OP25 FDMA Hamming (7000 Hz cutoff) */
 
 /**
  * @brief Get noise equivalent bandwidth for a given LPF profile and sample rate.
@@ -113,15 +114,17 @@ static const double kNoiseBwOp25Fdma24k = 7200.0; /* OP25 FDMA Hamming (7000 Hz 
  */
 static double
 get_noise_bandwidth_hz(int lpf_profile, int rate_out) {
-    double bn_24k;
+    double bn_hz;
     switch (lpf_profile) {
-        case 1: /* DSD_CH_LPF_PROFILE_DIGITAL */ bn_24k = kNoiseBwDigital24k; break;
-        case 2: /* DSD_CH_LPF_PROFILE_OP25_TDMA */ bn_24k = kNoiseBwOp25Tdma24k; break;
-        case 3: /* DSD_CH_LPF_PROFILE_OP25_FDMA */ bn_24k = kNoiseBwOp25Fdma24k; break;
-        default: /* DSD_CH_LPF_PROFILE_WIDE or unknown */ bn_24k = kNoiseBwWide24k; break;
+        case 1: /* DSD_CH_LPF_PROFILE_DIGITAL */ bn_hz = kNoiseBwDigitalHz; break;
+        case 2: /* DSD_CH_LPF_PROFILE_OP25_TDMA */ bn_hz = kNoiseBwOp25TdmaHz; break;
+        case 3: /* DSD_CH_LPF_PROFILE_OP25_FDMA */ bn_hz = kNoiseBwOp25FdmaHz; break;
+        default: /* DSD_CH_LPF_PROFILE_WIDE or unknown */ bn_hz = kNoiseBwWideHz; break;
     }
-    /* Scale by actual sample rate relative to 24 kHz reference */
-    return bn_24k * ((double)rate_out / 24000.0);
+    /* Channel LPF cutoffs are held constant in Hz across sample rates, so keep
+       noise bandwidth constant instead of linearly scaling with Fs. */
+    (void)rate_out;
+    return bn_hz;
 }
 
 /**
@@ -519,6 +522,11 @@ dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
  *
  * @param s Demodulator state to reset.
  */
+
+/* Forward declaration - defined later in file. Returns true if SPS corresponds to
+ * P25P2 TDMA (6000 sym/s) rather than P25P1 FDMA (4800 sym/s) for the given rate. */
+static int is_p25_tdma_sps_for_rate(int sps, int rate_out);
+
 static void
 demod_reset_on_retune(struct demod_state* s) {
     if (!s) {
@@ -614,15 +622,18 @@ demod_reset_on_retune(struct demod_state* s) {
     s->costas_state.error = 0.0f;
     /* Reset Costas freq for P25P2 VC tunes to force fresh acquisition.
      * This check is done before the costas_reset_pending check below because
-     * we want to reset even if SPS isn't changing (e.g., P25P2 VC to P25P2 VC). */
-    if (s->ted_sps_override == 4 && s->cqpsk_enable) {
+     * we want to reset even if SPS isn't changing (e.g., P25P2 VC to P25P2 VC).
+     * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value,
+     * since SPS varies with DSP sample rate (e.g., 4 @ 24kHz, 8 @ 48kHz).
+     * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
+    if (s->ted_sps_override > 0 && s->cqpsk_enable && is_p25_tdma_sps_for_rate(s->ted_sps_override, (int)output.rate)) {
         s->costas_state.freq = 0.0f;
     }
 
     /* FLL: Initialize band-edge filters and reset phase/delay.
      *
      * CRITICAL FIX for P25P2 subsequent tune failures:
-     * When tuning to P25P2 voice channels (ted_sps_override == 4), we must reset
+     * When tuning to P25P2 voice channels (TDMA @ 6000 sym/s), we must reset
      * the FLL frequency to 0 to force fresh acquisition. Unlike P25P1 where CC and VC
      * are often on nearby frequencies, P25P2 voice channels can be at significantly
      * different RF frequencies from each other. The preserved FLL frequency from a
@@ -639,8 +650,11 @@ demod_reset_on_retune(struct demod_state* s) {
         int sps = s->ted_sps_override > 0 ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
         /* For P25P2 voice channel tunes, reset FLL frequency to force fresh acquisition.
          * This is necessary because P25P2 VCs are at different RF frequencies from each
-         * other, so the preserved FLL frequency from a previous P25P2 VC is wrong. */
-        int is_p25p2_vc_tune = (s->ted_sps_override == 4 && s->cqpsk_enable);
+         * other, so the preserved FLL frequency from a previous P25P2 VC is wrong.
+         * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value.
+         * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
+        int is_p25p2_vc_tune = (s->ted_sps_override > 0 && s->cqpsk_enable
+                                && is_p25_tdma_sps_for_rate(s->ted_sps_override, (int)output.rate));
         if (is_p25p2_vc_tune) {
             s->fll_band_edge_state.freq = 0.0f;
         }
@@ -654,8 +668,10 @@ demod_reset_on_retune(struct demod_state* s) {
      * samples from a previous (different) RF frequency corrupting timing recovery.
      * This matches OP25's reset() behavior which clears d_queue on every retune. */
     ted_soft_reset(&s->ted_state);
-    /* Clear TED delay line for P25P2 VC tunes to remove stale samples. */
-    if (s->ted_sps_override == 4 && s->cqpsk_enable) {
+    /* Clear TED delay line for P25P2 VC tunes to remove stale samples.
+     * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value.
+     * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
+    if (s->ted_sps_override > 0 && s->cqpsk_enable && is_p25_tdma_sps_for_rate(s->ted_sps_override, (int)output.rate)) {
         memset(s->ted_state.dl, 0, sizeof(s->ted_state.dl));
         s->ted_state.dl_index = 0;
         /* Also reinitialize mu to force delay line refill before first output.
@@ -2666,23 +2682,31 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (demod.resamp_target_hz > 0) {
         int target = demod.resamp_target_hz;
         int inRate = demod.rate_out > 0 ? demod.rate_out : rtl_dsp_bw_hz;
-        int g = gcd_int(inRate, target);
-        int L = target / g;
-        int M = inRate / g;
-        if (L < 1) {
-            L = 1;
-        }
-        if (M < 1) {
-            M = 1;
-        }
-        int scale = (M > 0) ? ((L + M - 1) / M) : 1;
-        if (scale > 12) {
-            LOG_WARNING("Resampler ratio too large (L=%d,M=%d). Disabling resampler.\n", L, M);
+        /* Bypass resampler when input already matches target */
+        if (target == inRate) {
             demod.resamp_enabled = 0;
+            demod.resamp_L = 1;
+            demod.resamp_M = 1;
+            LOG_INFO("Resampler bypassed: input rate %d Hz matches target.\n", inRate);
         } else {
-            demod.resamp_enabled = 1;
-            resamp_design(&demod, L, M);
-            LOG_INFO("Rational resampler configured: %d -> %d Hz (L=%d,M=%d).\n", inRate, target, L, M);
+            int g = gcd_int(inRate, target);
+            int L = target / g;
+            int M = inRate / g;
+            if (L < 1) {
+                L = 1;
+            }
+            if (M < 1) {
+                M = 1;
+            }
+            int scale = (M > 0) ? ((L + M - 1) / M) : 1;
+            if (scale > 12) {
+                LOG_WARNING("Resampler ratio too large (L=%d,M=%d). Disabling resampler.\n", L, M);
+                demod.resamp_enabled = 0;
+            } else {
+                demod.resamp_enabled = 1;
+                resamp_design(&demod, L, M);
+                LOG_INFO("Rational resampler configured: %d -> %d Hz (L=%d,M=%d).\n", inRate, target, L, M);
+            }
         }
     } else {
         demod.resamp_enabled = 0;
@@ -2812,14 +2836,18 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         unsigned int capture_hz = dongle.rate;
         int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
         int post = (demod.post_downsample > 0) ? demod.post_downsample : 1;
-        int L = demod.resamp_enabled ? demod.resamp_L : 1;
-        int M = demod.resamp_enabled ? demod.resamp_M : 1;
         unsigned int demod_hz = (unsigned int)demod.rate_out;
         unsigned int out_hz =
             demod.resamp_enabled && demod.resamp_target_hz > 0 ? (unsigned int)demod.resamp_target_hz : demod_hz;
-        LOG_INFO(
-            "Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> output=%u Hz.\n",
-            capture_hz, base_decim, post, demod_hz, L, M, out_hz);
+        if (demod.resamp_enabled) {
+            LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler L/M=%d/%d -> "
+                     "output=%u Hz.\n",
+                     capture_hz, base_decim, post, demod_hz, demod.resamp_L, demod.resamp_M, out_hz);
+        } else {
+            LOG_INFO("Rate chain: capture=%u Hz, base_decim=%d, post=%d -> demod=%u Hz; resampler bypassed -> "
+                     "output=%u Hz.\n",
+                     capture_hz, base_decim, post, demod_hz, out_hz);
+        }
 
         /* Derived SPS for common digital modes at current output rate */
         if (out_hz > 0) {
@@ -3441,6 +3469,17 @@ dsd_rtl_stream_get_ted_sps(void) {
     return demod.ted_sps;
 }
 
+static int
+is_p25_tdma_sps_for_rate(int sps, int rate_out) {
+    if (sps <= 0 || rate_out <= 0) {
+        return 0;
+    }
+    double sym_rate = (double)rate_out / (double)sps;
+    double err_tdma = fabs(sym_rate - 6000.0);
+    double err_fdma = fabs(sym_rate - 4800.0);
+    return (err_tdma <= err_fdma);
+}
+
 extern "C" void
 dsd_rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
@@ -3490,15 +3529,17 @@ dsd_rtl_stream_set_ted_sps(int sps) {
     /* OP25 dynamic IF filter switching (p25_demodulator_dev.py set_tdma()).
      *
      * OP25 uses different channel filter bandwidths for TDMA vs FDMA:
-     *   TDMA (P25p2, 6000 sym/s, sps=4): 9600 Hz cutoff - DSD_CH_LPF_PROFILE_OP25_TDMA
-     *   FDMA (P25p1, 4800 sym/s, sps=5): 7000 Hz cutoff - DSD_CH_LPF_PROFILE_OP25_FDMA
+     *   TDMA (P25p2, 6000 sym/s): 9600 Hz cutoff - DSD_CH_LPF_PROFILE_OP25_TDMA
+     *   FDMA (P25p1, 4800 sym/s): 7000 Hz cutoff - DSD_CH_LPF_PROFILE_OP25_FDMA
      *
      * The narrower FDMA filter improves SNR on P25p1 by rejecting more noise,
      * while the wider TDMA filter preserves the higher symbol rate content.
      *
-     * Note: We only switch if CQPSK is enabled (P25 digital mode). */
+     * Note: We only switch if CQPSK is enabled (P25 digital mode).
+     * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
     if (demod.cqpsk_enable) {
-        int new_profile = (sps == 4) ? DSD_CH_LPF_PROFILE_OP25_TDMA : DSD_CH_LPF_PROFILE_OP25_FDMA;
+        int new_profile = is_p25_tdma_sps_for_rate(sps, (int)output.rate) ? DSD_CH_LPF_PROFILE_OP25_TDMA
+                                                                          : DSD_CH_LPF_PROFILE_OP25_FDMA;
         if (new_profile != demod.channel_lpf_profile) {
             demod.channel_lpf_profile = new_profile;
             /* Debug: log filter change */
@@ -3564,9 +3605,12 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
     /* Does NOT set ted_sps_override, allowing rate-change refresh to
        recalculate SPS later. Use when returning to CC or switching protocols. */
 
-    /* OP25 dynamic IF filter switching - same as dsd_rtl_stream_set_ted_sps() */
+    /* OP25 dynamic IF filter switching - same as dsd_rtl_stream_set_ted_sps().
+     * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value.
+     * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
     if (demod.cqpsk_enable) {
-        int new_profile = (sps == 4) ? DSD_CH_LPF_PROFILE_OP25_TDMA : DSD_CH_LPF_PROFILE_OP25_FDMA;
+        int new_profile = is_p25_tdma_sps_for_rate(sps, (int)output.rate) ? DSD_CH_LPF_PROFILE_OP25_TDMA
+                                                                          : DSD_CH_LPF_PROFILE_OP25_FDMA;
         if (new_profile != demod.channel_lpf_profile) {
             demod.channel_lpf_profile = new_profile;
         }

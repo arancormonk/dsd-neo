@@ -164,7 +164,7 @@ Notes
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout` do not tune encrypted P25 calls, `--enc-follow` allow encrypted (default)
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
-- Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–24000 by mode)
+- Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)
 - Hang time after voice/sync loss (seconds): `-t <secs>`
   - Env (advanced): When P25 Phase 1 voice error rate is elevated, extend hangtime to reduce VC↔CC thrash:
     - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 8.0)

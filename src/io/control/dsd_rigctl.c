@@ -786,20 +786,25 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // pipeline at DC and delay CC hunting.
     long int cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
     if (opts->p25_trunk == 1 && cc != 0) {
-        // Compute CC TED SPS: P25P1 CC (4800 sym/s) = 5, P25P2 TDMA CC (6000 sym/s) = 4.
-        int cc_sps = (state->p25_cc_is_tdma == 1) ? 4 : 5;
+        // Compute CC TED SPS dynamically based on actual demodulator output rate.
+        // P25P1 CC = 4800 sym/s, P25P2 TDMA CC = 6000 sym/s.
+        int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+        int demod_rate = (int)rtl_stream_output_rate(NULL);
+        int cc_sps = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
         trunk_tune_to_cc(opts, state, cc, cc_sps);
     }
 
-    // Set symbol timing for CC based on CC type.
+    // Set symbol timing for CC based on CC type and actual demodulator rate.
+    // samplesPerSymbol is used by the legacy symbol slicer code.
+    int demod_rate = (int)rtl_stream_output_rate(NULL);
     if (state->p25_cc_is_tdma == 0) {
         // P25P1 CC: 4800 sym/s
-        state->samplesPerSymbol = 10;
-        state->symbolCenter = 4;
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     } else {
         // P25P2 TDMA CC: 6000 sym/s
-        state->samplesPerSymbol = 8;
-        state->symbolCenter = 3;
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     }
 }
 
@@ -830,8 +835,10 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     // decoder will process new channel data using stale buffers from the previous
     // channel, causing decode failures. The symptom is: first P25P2 tune works,
     // but subsequent voice channel grants fail to lock with tanking EVM/SNR.
-    // Only reset for P25P2 (ted_sps == 4), not P25P1 (ted_sps == 5) or other modes.
-    if (ted_sps == 4) {
+    // Only reset for P25P2 (ted_sps matching the TDMA symbol rate), not P25P1 or other modes.
+    int p25p2_demod_rate = (int)rtl_stream_output_rate(NULL);
+    int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, p25p2_demod_rate);
+    if (ted_sps == p25p2_sps) {
         p25_p2_frame_reset();
     }
 
@@ -854,8 +861,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     // synchronously with the frequency change, not asynchronously before it.
 
     // Set TED samples-per-symbol override if provided by caller.
-    // At 24kHz DSP bandwidth: P25P1 (4800 sym/s) = 5 sps, P25P2 (6000 sym/s) = 4 sps.
-    // The state machine determines the correct SPS based on channel type and passes it directly.
+    // The state machine determines the correct SPS for the current DSP rate and channel type
+    // and passes it directly.
 #ifdef USE_RTLSDR
     if (opts->audio_in_type == 3 && ted_sps > 0) {
         rtl_stream_set_ted_sps(ted_sps);

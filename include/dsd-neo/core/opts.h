@@ -118,7 +118,7 @@ struct dsd_opts {
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
     int rtl_udp_port;
-    /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24). Influences capture rate planning.
+    /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
        Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
     int rtl_bias_tee; /* 1 to enable RTL-SDR bias tee (if supported) */
@@ -284,3 +284,63 @@ struct dsd_opts {
     char mbe_out_path[2048]; //1024
     char dsp_out_file[2048];
 };
+
+/**
+ * @brief Compute samples-per-symbol for a given symbol rate and sample rate.
+ *
+ * Dynamically computes SPS based on the actual demodulator output sample rate.
+ * When demod_rate_hz is provided (>0), it takes precedence over rtl_dsp_bw_khz
+ * to correctly handle cases where a resampler changes the effective rate.
+ *
+ * @param opts Decoder options containing rtl_dsp_bw_khz fallback (may be NULL).
+ * @param sym_rate_hz Symbol rate in Hz (e.g., 4800 for P25P1, 6000 for P25P2).
+ * @param demod_rate_hz Actual demodulator output rate in Hz (0 to use rtl_dsp_bw_khz).
+ * @return Computed samples per symbol, clamped to [2, 64].
+ */
+static inline int
+dsd_opts_compute_sps_rate(const dsd_opts* opts, int sym_rate_hz, int demod_rate_hz) {
+    int fs_hz = 48000; /* default fallback */
+    if (demod_rate_hz > 0) {
+        fs_hz = demod_rate_hz;
+    } else if (opts && opts->rtl_dsp_bw_khz > 0) {
+        fs_hz = opts->rtl_dsp_bw_khz * 1000;
+    }
+    int sps = (fs_hz + (sym_rate_hz / 2)) / sym_rate_hz; /* round(fs/sym_rate) */
+    if (sps < 2) {
+        sps = 2;
+    } else if (sps > 64) {
+        sps = 64;
+    }
+    return sps;
+}
+
+/**
+ * @brief Compute samples-per-symbol for a given symbol rate and DSP bandwidth.
+ *
+ * Convenience wrapper that uses rtl_dsp_bw_khz from opts. For cases where the
+ * actual demodulator output rate may differ (e.g., resampler active), prefer
+ * dsd_opts_compute_sps_rate() with the actual rate.
+ *
+ * @param opts Decoder options containing rtl_dsp_bw_khz (may be NULL).
+ * @param sym_rate_hz Symbol rate in Hz (e.g., 4800 for P25P1, 6000 for P25P2).
+ * @return Computed samples per symbol, clamped to [2, 64].
+ */
+static inline int
+dsd_opts_compute_sps(const dsd_opts* opts, int sym_rate_hz) {
+    return dsd_opts_compute_sps_rate(opts, sym_rate_hz, 0);
+}
+
+/**
+ * @brief Compute symbol center index for a given SPS value.
+ *
+ * The symbol center is the optimal sample index within the symbol period
+ * for slicing. Uses (sps - 1) / 2 which correctly handles both even and
+ * odd SPS values (e.g., SPS=5 -> 2, SPS=8 -> 3, SPS=10 -> 4).
+ *
+ * @param sps Samples per symbol.
+ * @return Symbol center index.
+ */
+static inline int
+dsd_opts_symbol_center(int sps) {
+    return (sps - 1) / 2;
+}

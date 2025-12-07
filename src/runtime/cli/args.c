@@ -1245,7 +1245,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     opts->frame_ysf = 0;
                     opts->frame_m17 = 0;
                     state->samplesPerSymbol = 20;
-                    state->symbolCenter = 10;
+                    state->symbolCenter = 9; /* (sps-1)/2 */
                     opts->mod_c4fm = 1;
                     opts->mod_qpsk = 0;
                     opts->mod_gfsk = 0;

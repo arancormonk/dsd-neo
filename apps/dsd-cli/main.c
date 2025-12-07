@@ -279,7 +279,7 @@ bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             int dev = prompt_int("RTL device index", 0, 0, 255);
             int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
             int ppm = prompt_int("PPM error", 0, -200, 200);
-            int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24)", 12, 4, 24);
+            int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
             int sql = prompt_int("Squelch (0=off; negative dB ok via CLI later)", 0, -1000, 100000);
             int vol = prompt_int("Volume multiplier (1..3)", 1, 1, 3);
             snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm,
@@ -303,7 +303,7 @@ bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             } else {
                 int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
                 int ppm = prompt_int("PPM error", 0, -200, 200);
-                int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24)", 12, 4, 24);
+                int bw = prompt_int("DSP bandwidth (kHz: 4,6,8,12,16,24,48)", 48, 4, 48);
                 int sql = prompt_int("Squelch (0=off)", 0, -1000, 100000);
                 int vol = prompt_int("Volume multiplier (1..3)", 1, 1, 3);
                 snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port,
@@ -462,7 +462,7 @@ bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             opts->frame_ysf = 0;
             opts->frame_m17 = 0;
             state->samplesPerSymbol = 20;
-            state->symbolCenter = 10;
+            state->symbolCenter = 9; /* (sps-1)/2 */
             opts->mod_c4fm = 1;
             opts->mod_qpsk = 0;
             opts->mod_gfsk = 0;
@@ -600,7 +600,7 @@ bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             opts->frame_ysf = 0;
             opts->frame_m17 = 0;
             state->samplesPerSymbol = 20; // same as NXDN48
-            state->symbolCenter = 10;     // same as NXDN48
+            state->symbolCenter = 9;      // (sps-1)/2, same as NXDN48
             opts->mod_c4fm = 1;
             opts->mod_qpsk = 0;
             opts->mod_gfsk = 0;
@@ -1489,7 +1489,7 @@ initOpts(dsd_opts* opts) {
     opts->input_volume_multiplier = 1;
     opts->rtl_udp_port =
         0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
-    opts->rtl_dsp_bw_khz = 24;  // DSP baseband kHz (4,6,8,12,16,24). Not tuner IF BW.
+    opts->rtl_dsp_bw_khz = 48;  // DSP baseband kHz (4,6,8,12,16,24,48). Not tuner IF BW.
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
@@ -2396,7 +2396,7 @@ usage() {
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M) \n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
-    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 24). Allowed: 4,6,8,12,16,24.\n");
+    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 48). Allowed: 4,6,8,12,16,24,48.\n");
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
@@ -3267,10 +3267,10 @@ main(int argc, char** argv) {
         curr = strtok_r(NULL, ":", &saveptr); // bw (kHz)
         if (curr != NULL) {
             int bw = atoi(curr);
-            if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24) {
+            if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
                 opts.rtl_dsp_bw_khz = bw;
             } else {
-                opts.rtl_dsp_bw_khz = 12;
+                opts.rtl_dsp_bw_khz = 48;
             }
         } else {
             goto RTLTCPEND;
@@ -3382,13 +3382,13 @@ main(int argc, char** argv) {
         if (curr != NULL) {
             int bw = 0;
             bw = atoi(curr);
-            //check for proper values (6,8,12,24)
-            if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16
-                || bw == 24) //testing 4 and 16 as well for weak and/or nxdn48 systems
+            //check for proper values (4,6,8,12,16,24,48)
+            if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24
+                || bw == 48) // testing 4 and 16 as well for weak and/or nxdn48 systems
             {
                 opts.rtl_dsp_bw_khz = bw;
             } else {
-                opts.rtl_dsp_bw_khz = 12; // safe default -- provides best performance on most systems
+                opts.rtl_dsp_bw_khz = 48; // default baseband when input omits/invalid
             }
         } else {
             goto RTLEND;

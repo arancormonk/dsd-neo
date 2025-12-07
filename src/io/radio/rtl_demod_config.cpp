@@ -67,11 +67,11 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     s->prev_lpr_index = 0;
     s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;
-    /* Channel LPF (post-HB) */
-    s->channel_lpf_enable = 0;    /* configured later by env/mode helper */
-    s->channel_lpf_hist_len = 62; /* kChannelLpfHistLen */
+    /* Channel LPF (post-HB). At 48 kHz with Blackman, up to 135 taps (hist = 134). */
+    s->channel_lpf_enable = 0;     /* configured later by env/mode helper */
+    s->channel_lpf_hist_len = 143; /* max history for 144-tap filter */
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-    for (int k = 0; k < 64; k++) {
+    for (int k = 0; k < 144; k++) {
         s->channel_lpf_hist_i[k] = 0;
         s->channel_lpf_hist_q[k] = 0;
     }
@@ -311,9 +311,10 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     dsd_costas_loop_state_t* cl = &demod->costas_state;
     cl->phase = 0.0f;
     cl->freq = 0.0f;
-    /* OP25: fmax = 2*pi * 2400 / if_rate; for 24kHz IF: ~0.628 rad/sample */
+    /* OP25: fmax = 2*pi * 2400 / if_rate; scale to current demod sample rate */
     const float kTwoPi = 6.28318530717958647692f;
-    cl->max_freq = kTwoPi * 2400.0f / 24000.0f; /* ~0.628 rad/sample */
+    float if_rate = (demod->rate_out > 0) ? (float)demod->rate_out : 24000.0f;
+    cl->max_freq = kTwoPi * 2400.0f / if_rate;
     cl->min_freq = -cl->max_freq;
     cl->loop_bw = cfg->costas_bw_is_set ? (float)cfg->costas_loop_bw : 0.008f; /* OP25 default (not used directly) */
     cl->damping = cfg->costas_damping_is_set ? (float)cfg->costas_damping : dsd_neo_costas_default_damping();
@@ -565,13 +566,34 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     if (!demod || !output) {
         return;
     }
+    /* Resolve actual input rate: prefer rate_out, fall back to DSP bandwidth. */
+    int inRate = demod->rate_out > 0 ? demod->rate_out : rtl_dsp_bw_hz;
     if (demod->resamp_target_hz <= 0) {
         demod->resamp_enabled = 0;
-        output->rate = demod->rate_out;
+        output->rate = inRate;
         return;
     }
     int target = demod->resamp_target_hz;
-    int inRate = demod->rate_out > 0 ? demod->rate_out : rtl_dsp_bw_hz;
+    /* Bypass the resampler when the input rate already matches the target. */
+    if (target == inRate) {
+        if (demod->resamp_enabled) {
+            if (demod->resamp_taps) {
+                dsd_neo_aligned_free(demod->resamp_taps);
+                demod->resamp_taps = NULL;
+            }
+            if (demod->resamp_hist) {
+                dsd_neo_aligned_free(demod->resamp_hist);
+                demod->resamp_hist = NULL;
+            }
+        }
+        demod->resamp_enabled = 0;
+        demod->resamp_L = 1;
+        demod->resamp_M = 1;
+        demod->resamp_phase = 0;
+        demod->resamp_hist_head = 0;
+        output->rate = inRate;
+        return;
+    }
     int g = gcd_int(inRate, target);
     int L = target / g;
     int M = inRate / g;
@@ -596,7 +618,7 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
             }
         }
         demod->resamp_enabled = 0;
-        output->rate = demod->rate_out;
+        output->rate = inRate;
         LOG_WARNING("Resampler ratio too large on retune (L=%d,M=%d). Disabled.\n", L, M);
         return;
     }

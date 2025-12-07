@@ -50,8 +50,14 @@ typedef struct {
  *
  * The FLL uses band-edge filters to estimate frequency error before timing recovery.
  * This is critical for initial frequency acquisition on channel retunes.
+ *
+ * Filter size = 2*sps+1. At 48 kHz DSP bandwidth:
+ *   - P25P1: SPS=10 -> 21 taps
+ *   - P25P2: SPS=8  -> 17 taps
+ *   - NXDN:  SPS=20 -> 41 taps
+ * Size 48 supports SPS up to 23 (e.g., future 2400 sym/s modes at higher rates).
  */
-#define FLL_BAND_EDGE_MAX_TAPS 32
+#define FLL_BAND_EDGE_MAX_TAPS 48
 
 typedef struct {
     float phase;    /* NCO phase accumulator (radians) */

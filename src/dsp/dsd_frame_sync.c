@@ -1585,7 +1585,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             state->samplesPerSymbol = 10;
                         }
                         if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                            state->symbolCenter = 5; /* middle of 0..9 */
+                            state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
                         }
                     }
                     if (opts->inverted_dmr == 0) {
@@ -1624,7 +1624,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             state->samplesPerSymbol = 10;
                         }
                         if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                            state->symbolCenter = 5;
+                            state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
                         }
                     }
                     if (opts->inverted_dmr == 0) {
@@ -1693,7 +1693,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             state->samplesPerSymbol = 10;
                         }
                         if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                            state->symbolCenter = 5;
+                            state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
                         }
                     }
                     if (opts->inverted_dmr == 0) {
@@ -1737,7 +1737,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                                 state->samplesPerSymbol = 10;
                             }
                             if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                                state->symbolCenter = 5;
+                                state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
                             }
                         }
                         // voice frame
@@ -1776,7 +1776,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                                 state->samplesPerSymbol = 10;
                             }
                             if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                                state->symbolCenter = 5;
+                                state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
                             }
                         }
                         // voice frame
@@ -2091,7 +2091,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                         /* Cycle through SPS values based on enabled protocols */
                         static const int sps_cycle[] = {10, 20, 5, 8};
-                        static const int sps_center[] = {5, 10, 2, 3};
+                        static const int sps_center[] = {4, 9, 2, 3};
                         int next_idx = (state->sps_hunt_idx + 1) % 4;
 
                         /* Skip SPS values for protocols not enabled */

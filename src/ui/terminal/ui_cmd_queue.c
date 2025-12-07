@@ -418,14 +418,15 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 #endif
                 state->last_cc_sync_time = time(NULL);
                 state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                if (state->p25_cc_is_tdma == 0) {
-                    state->samplesPerSymbol = 10;
-                    state->symbolCenter = 4;
-                }
-                if (state->p25_cc_is_tdma == 1) {
-                    state->samplesPerSymbol = 8;
-                    state->symbolCenter = 3;
-                }
+                // Set symbol timing dynamically based on CC type and actual demod rate
+                int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+#ifdef USE_RTLSDR
+                int demod_rate = (int)rtl_stream_output_rate(NULL);
+#else
+                int demod_rate = 0;
+#endif
+                state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
+                state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
                 LOG_INFO("User Activated Return to CC\n");
             }
             break;
@@ -520,9 +521,15 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
 #endif
             state->last_cc_sync_time = time(NULL);
+            // Set symbol timing dynamically based on CC type and actual demod rate
             if (state->p25_cc_is_tdma == 0) {
-                state->samplesPerSymbol = 10;
-                state->symbolCenter = 4;
+#ifdef USE_RTLSDR
+                int demod_rate_tune = (int)rtl_stream_output_rate(NULL);
+#else
+                int demod_rate_tune = 0;
+#endif
+                state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate_tune);
+                state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
             }
             break;
         }
@@ -630,14 +637,15 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->lcn_freq_roll++;
                 state->last_cc_sync_time = time(NULL);
                 state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                if (state->p25_cc_is_tdma == 0) {
-                    state->samplesPerSymbol = 10;
-                    state->symbolCenter = 4;
-                }
-                if (state->p25_cc_is_tdma == 1) {
-                    state->samplesPerSymbol = 8;
-                    state->symbolCenter = 3;
-                }
+                // Set symbol timing dynamically based on CC type and actual demod rate
+                int sym_rate_roll = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+#ifdef USE_RTLSDR
+                int demod_rate_roll = (int)rtl_stream_output_rate(NULL);
+#else
+                int demod_rate_roll = 0;
+#endif
+                state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate_roll, demod_rate_roll);
+                state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
             }
             break;
         }
