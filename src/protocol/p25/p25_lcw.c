@@ -543,7 +543,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                 fprintf(stderr, " %02X", b);
             }
             // Show computed callsign from current WACN/SysID if available
-            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
                 char callsign[7];
                 p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
                 fprintf(stderr, " [%s]", callsign);

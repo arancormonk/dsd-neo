@@ -321,7 +321,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "  Data: %02X %02X %02X %02X %02X %02X %02X %02X", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
                     tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
             // Show computed callsign from current WACN/SysID if available
-            if (state->p2_wacn != 0 || state->p2_sysid != 0) {
+            if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
                 char callsign[7];
                 p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
                 fprintf(stderr, " [Callsign: %s]", callsign);
@@ -361,11 +361,14 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
         int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
         int channel = (tsbk_byte[7] << 8) | tsbk_byte[8];
-        char callsign[7];
-        p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
         fprintf(stderr, "%s", KYEL);
         fprintf(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
-        fprintf(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX] [%s]", wacn, sysid, state->p2_cc, callsign);
+        fprintf(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
+        if (opts->show_p25_callsign_decode) {
+            char callsign[7];
+            p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
+            fprintf(stderr, " [%s]", callsign);
+        }
         state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
         long neigh[1] = {state->p25_cc_freq};
         p25_sm_on_neighbor_update(opts, state, neigh, 1);

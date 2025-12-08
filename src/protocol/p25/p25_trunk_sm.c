@@ -462,7 +462,7 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot
 }
 
 static void
-handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why) {
+handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end) {
     if (!ctx) {
         return;
     }
@@ -476,6 +476,40 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     // which set p25_p2_audio_allowed[slot] = 0.
 
     sm_log(opts, state, why);
+
+    // For explicit call termination (MAC_END_PTT or TDU), check if we should
+    // release immediately rather than waiting for hangtime. This matches P25P1
+    // behavior where LCW 0x4F (Call Termination) triggers immediate release.
+    if (is_explicit_end && ctx->state == P25_SM_TUNED && opts && state) {
+        // Explicitly clear audio gating for this slot - the call is terminated.
+        // This is done here because xcch.c sets p25_p2_audio_allowed AFTER calling
+        // p25_sm_emit_end(), so we need to clear it here to avoid false "active" state.
+        state->p25_p2_audio_allowed[s] = 0;
+
+        // For explicit end (MAC_END_PTT), this slot is done. Don't wait for ring buffer
+        // to drain - the audio output will continue playing buffered samples while we
+        // return to CC. The ring buffer check is only relevant for hangtime-based release.
+
+        // For TDMA (P25P2), check the other slot - but only if it ever had call activity
+        // during this VC tune. If last_active_m == 0, the other slot never received
+        // PTT/ACTIVE, so we shouldn't wait for it.
+        int other = s ^ 1;
+        int other_ever_active = (ctx->slots[other].last_active_m > 0.0);
+        int other_slot_active = 0;
+        if (ctx->vc_is_tdma && other_ever_active) {
+            // Other slot had activity - check if it's still actively in a call
+            // (voice_active set by PTT/ACTIVE, cleared by END/IDLE)
+            other_slot_active = ctx->slots[other].voice_active;
+        }
+
+        // Release if: FDMA, OR other slot never had a call, OR other slot also ended
+        int can_release = !ctx->vc_is_tdma || !other_ever_active || !other_slot_active;
+
+        if (can_release) {
+            // All active slots terminated - release immediately like P25P1 Call Termination
+            do_release(ctx, opts, state, "p2-call-end");
+        }
+    }
 }
 
 static void
@@ -824,13 +858,19 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
 
         case P25_SM_EV_ACTIVE: handle_voice_start(ctx, opts, state, ev->slot, "active"); break;
 
-        case P25_SM_EV_END: handle_voice_end(ctx, opts, state, ev->slot, "end"); break;
+        case P25_SM_EV_END:
+            // MAC_END_PTT is an explicit call termination - trigger immediate release check
+            handle_voice_end(ctx, opts, state, ev->slot, "end", 1);
+            break;
 
-        case P25_SM_EV_IDLE: handle_voice_end(ctx, opts, state, ev->slot, "idle"); break;
+        case P25_SM_EV_IDLE:
+            // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release
+            handle_voice_end(ctx, opts, state, ev->slot, "idle", 0);
+            break;
 
         case P25_SM_EV_TDU:
-            // P1 terminator - treat as end on slot 0
-            handle_voice_end(ctx, opts, state, 0, "tdu");
+            // P1 terminator - explicit call end, trigger immediate release check
+            handle_voice_end(ctx, opts, state, 0, "tdu", 1);
             break;
 
         case P25_SM_EV_CC_SYNC: handle_cc_sync(ctx, opts, state); break;

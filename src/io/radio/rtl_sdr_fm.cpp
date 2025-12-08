@@ -419,6 +419,7 @@ choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
 /* Forward declarations for visualization ring clears (defined later in file) */
 static void constellation_ring_clear(void);
 static void eye_ring_clear(void);
+static void snr_ema_reset(void);
 
 /**
  * @brief On retune/hop, drain audio output ring for a short time to avoid
@@ -454,6 +455,7 @@ drain_output_on_retune(void) {
      * degraded SNR even when the DSP is performing correctly. */
     constellation_ring_clear();
     eye_ring_clear();
+    snr_ema_reset();
 
     if (force_clear || drain_ms == 0) {
         dsd_rtl_stream_clear_output();
@@ -804,6 +806,28 @@ std::atomic<long long> g_snr_qpsk_last_ms{0};
 std::atomic<int> g_snr_qpsk_src{0};
 std::atomic<long long> g_snr_gfsk_last_ms{0};
 std::atomic<int> g_snr_gfsk_src{0};
+/* EMA state for direct SNR estimation (reset on retune for fast acquisition).
+ * These are atomic because snr_ema_reset() is called from the controller thread
+ * while the demod thread reads/writes them during SNR computation. */
+static std::atomic<double> g_snr_ema_c4fm{-100.0};
+static std::atomic<double> g_snr_ema_qpsk{-100.0};
+static std::atomic<double> g_snr_ema_gfsk{-100.0};
+/* QPSK accumulator reset flag (actual buffer is in demod loop) */
+static std::atomic<int> g_snr_qpsk_acc_reset{0};
+
+static void
+snr_ema_reset(void) {
+    g_snr_ema_c4fm.store(-100.0, std::memory_order_relaxed);
+    g_snr_ema_qpsk.store(-100.0, std::memory_order_relaxed);
+    g_snr_ema_gfsk.store(-100.0, std::memory_order_relaxed);
+    g_snr_c4fm_db.store(-100.0, std::memory_order_relaxed);
+    g_snr_qpsk_db.store(-100.0, std::memory_order_relaxed);
+    g_snr_gfsk_db.store(-100.0, std::memory_order_relaxed);
+    g_snr_c4fm_src.store(0, std::memory_order_relaxed);
+    g_snr_qpsk_src.store(0, std::memory_order_relaxed);
+    g_snr_gfsk_src.store(0, std::memory_order_relaxed);
+    g_snr_qpsk_acc_reset.store(1, std::memory_order_relaxed);
+}
 
 /* Apply a single gain factor to the final demod block before handing it to consumers. */
 static inline void
@@ -1218,10 +1242,79 @@ demod_thread_fn(void* arg) {
             if (win > mid) {
                 win = mid;
             }
-            /* QPSK/CQPSK: use constellation snapshot estimator instead */
             bool qpsk_updated = false;
             bool c4fm_updated = false;
             bool gfsk_updated = false;
+
+            /* QPSK/CQPSK: compute SNR directly from symbol-rate I/Q samples */
+            /* Accumulate across blocks since individual blocks may be small */
+            enum { QPSK_ACCUM_MAX = 256 };
+
+            static float qpsk_acc_i[QPSK_ACCUM_MAX], qpsk_acc_q[QPSK_ACCUM_MAX];
+            static int qpsk_acc_n = 0;
+            /* Check for reset request from retune */
+            if (g_snr_qpsk_acc_reset.exchange(0, std::memory_order_relaxed)) {
+                qpsk_acc_n = 0;
+            }
+            if (sps >= 2 && sps <= 12) {
+                /* Extract symbol-center I/Q pairs and accumulate */
+                for (int k = 0; k < pairs && qpsk_acc_n < QPSK_ACCUM_MAX; k++) {
+                    int phase = k % sps;
+                    if (phase >= mid - win && phase <= mid + win) {
+                        qpsk_acc_i[qpsk_acc_n] = iq[2 * k + 0];
+                        qpsk_acc_q[qpsk_acc_n] = iq[2 * k + 1];
+                        qpsk_acc_n++;
+                    }
+                }
+                int m = qpsk_acc_n;
+                if (m >= 64) {
+                    /* Per-axis normalization (handles I/Q gain imbalance) */
+                    double sum_abs_i = 0.0, sum_abs_q = 0.0;
+                    for (int i = 0; i < m; i++) {
+                        sum_abs_i += fabs((double)qpsk_acc_i[i]);
+                        sum_abs_q += fabs((double)qpsk_acc_q[i]);
+                    }
+                    double aI = sum_abs_i / (double)m;
+                    double aQ = sum_abs_q / (double)m;
+                    if (aI > 1e-9 && aQ > 1e-9) {
+                        /* Compute error to nearest QPSK target (axis-aligned) */
+                        double e2 = 0.0;
+                        for (int i = 0; i < m; i++) {
+                            double I = (double)qpsk_acc_i[i];
+                            double Q = (double)qpsk_acc_q[i];
+                            double ti = (I >= 0.0) ? aI : -aI;
+                            double tq = (Q >= 0.0) ? aQ : -aQ;
+                            double ei = I - ti;
+                            double eq = Q - tq;
+                            e2 += ei * ei + eq * eq;
+                        }
+                        double t2 = (double)m * (aI * aI + aQ * aQ);
+                        if (e2 > 1e-12 && t2 > 1e-9) {
+                            double ratio = t2 / e2;
+                            double snr_raw = 10.0 * log10(ratio);
+                            double bias = compute_evm_snr_bias_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+                            double snr = snr_raw - bias;
+                            double ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
+                            if (ema < -50.0) {
+                                ema = snr;
+                            } else {
+                                /* Faster EMA: 50% old, 50% new for quicker settling */
+                                ema = 0.5 * ema + 0.5 * snr;
+                            }
+                            g_snr_ema_qpsk.store(ema, std::memory_order_relaxed);
+                            g_snr_qpsk_db.store(ema, std::memory_order_relaxed);
+                            g_snr_qpsk_src.store(1, std::memory_order_relaxed);
+                            auto now = std::chrono::steady_clock::now();
+                            long long ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                            g_snr_qpsk_last_ms.store(ms, std::memory_order_relaxed);
+                            qpsk_updated = true;
+                        }
+                    }
+                    /* Reset accumulator after computing */
+                    qpsk_acc_n = 0;
+                }
+            }
             /* Include low-SPS FSK paths (e.g., 5 sps ProVoice/EDACS) in the SNR estimator. */
             if (sps >= 4 && sps <= 12) {
                 /* FSK family: compute both 4-level (C4FM) and 2-level (GFSK-like) */
@@ -1286,13 +1379,14 @@ demod_thread_fn(void* arg) {
                                     double bias =
                                         compute_c4fm_snr_bias_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
                                     double snr = 10.0 * log10(sig_var / noise_var) - bias;
-                                    static double ema = -100.0;
+                                    double ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
                                     if (ema < -50.0) {
                                         ema = snr;
                                     } else {
-                                        /* Make SNR meter snappier: 60% old, 40% new */
-                                        ema = 0.6 * ema + 0.4 * snr;
+                                        /* Faster EMA: 50% old, 50% new for quicker settling */
+                                        ema = 0.5 * ema + 0.5 * snr;
                                     }
+                                    g_snr_ema_c4fm.store(ema, std::memory_order_relaxed);
                                     g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
                                     g_snr_c4fm_src.store(1, std::memory_order_relaxed);
                                     auto now = std::chrono::steady_clock::now();
@@ -1338,13 +1432,14 @@ demod_thread_fn(void* arg) {
                                         double bias =
                                             compute_evm_snr_bias_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
                                         double snr = 10.0 * log10(sig_var / noise_var) - bias;
-                                        static double ema = -100.0;
+                                        double ema = g_snr_ema_gfsk.load(std::memory_order_relaxed);
                                         if (ema < -50.0) {
                                             ema = snr;
                                         } else {
-                                            /* Make SNR meter snappier: 60% old, 40% new */
-                                            ema = 0.6 * ema + 0.4 * snr;
+                                            /* Faster EMA: 50% old, 50% new for quicker settling */
+                                            ema = 0.5 * ema + 0.5 * snr;
                                         }
+                                        g_snr_ema_gfsk.store(ema, std::memory_order_relaxed);
                                         g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
                                         g_snr_gfsk_src.store(1, std::memory_order_relaxed);
                                         auto now = std::chrono::steady_clock::now();

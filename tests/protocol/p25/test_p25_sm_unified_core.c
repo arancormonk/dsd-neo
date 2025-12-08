@@ -123,7 +123,9 @@ test_ptt_voice_active(void) {
     return 0;
 }
 
-// Test: END clears voice_active but stays in TUNED
+// Test: END clears voice_active and releases when all slots are inactive
+// For P25P1 (non-TDMA), an explicit END triggers immediate release to CC
+// rather than waiting for hangtime. This matches P25P1 LCW 0x4F behavior.
 static int
 test_end_clears_voice(void) {
     reset_test_state();
@@ -142,9 +144,11 @@ test_end_clears_voice(void) {
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    // Still in TUNED (hangtime is now handled within TUNED state)
-    if (ctx.state != P25_SM_TUNED) {
-        fprintf(stderr, "FAIL: Expected TUNED after END, got %s\n", p25_sm_state_name(ctx.state));
+    // Explicit END triggers immediate release to ON_CC (no hangtime wait)
+    // This is the P25P2 fix: MAC_END_PTT should return to CC immediately
+    // rather than waiting for the 2s hangtime timeout.
+    if (ctx.state != P25_SM_ON_CC) {
+        fprintf(stderr, "FAIL: Expected ON_CC after END (immediate release), got %s\n", p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.slots[0].voice_active != 0) {
@@ -274,6 +278,126 @@ test_sacch_slot_mapping(void) {
     return 0;
 }
 
+// Test: P25P2 TDMA - END on one slot keeps TUNED if other slot still active
+static int
+test_tdma_partial_end_stays_tuned(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    // Mark this channel as TDMA (P25P2)
+    g_state.p25_chan_tdma_explicit[1] = 2; // iden=1, explicit TDMA hint
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+
+    // Grant on TDMA channel
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Should be detected as TDMA
+    if (!ctx.vc_is_tdma) {
+        fprintf(stderr, "FAIL: Expected vc_is_tdma=1 for TDMA channel\n");
+        return 1;
+    }
+
+    // PTT on both slots
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Simulate audio allowed on slot 1 (slot 0 will end, slot 1 still active)
+    g_state.p25_p2_audio_allowed[1] = 1;
+
+    // END on slot 0 only
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Should stay TUNED because slot 1 is still active
+    if (ctx.state != P25_SM_TUNED) {
+        fprintf(stderr, "FAIL: Expected TUNED after END on slot 0 (slot 1 still active), got %s\n",
+                p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    // Now end slot 1 as well
+    g_state.p25_p2_audio_allowed[1] = 0;
+    ev = p25_sm_ev_end(1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Now both slots ended - should release to ON_CC
+    if (ctx.state != P25_SM_ON_CC) {
+        fprintf(stderr, "FAIL: Expected ON_CC after END on both slots, got %s\n", p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    return 0;
+}
+
+// Test: P25P2 TDMA - END on single-slot call releases immediately
+// This tests the bug fix where calls on only one slot were waiting for
+// the full hangtime (10s forced release) instead of releasing on MAC_END_PTT.
+static int
+test_tdma_single_slot_end_releases(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    // Mark this channel as TDMA (P25P2)
+    g_state.p25_chan_tdma_explicit[1] = 2; // iden=1, explicit TDMA hint
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+
+    // Grant on TDMA channel
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Should be detected as TDMA
+    if (!ctx.vc_is_tdma) {
+        fprintf(stderr, "FAIL: Expected vc_is_tdma=1 for TDMA channel\n");
+        return 1;
+    }
+
+    // PTT on slot 0 ONLY - slot 1 never has any activity
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Simulate what xcch.c does: enable audio on PTT
+    g_state.p25_p2_audio_allowed[0] = 1;
+
+    // Simulate audio in the ring buffer (jitter buffer has samples)
+    g_state.p25_p2_audio_ring_count[0] = 5;
+
+    // Verify slot 1 never had activity
+    if (ctx.slots[1].last_active_m != 0.0) {
+        fprintf(stderr, "FAIL: Expected slot 1 last_active_m=0 (never active)\n");
+        return 1;
+    }
+
+    // END on slot 0 - should release immediately since slot 1 never had activity
+    // This mimics the real scenario: xcch.c calls p25_sm_emit_end() BEFORE clearing
+    // p25_p2_audio_allowed, so the SM must handle this correctly.
+    // Note: p25_p2_audio_allowed[0] is still 1 AND ring buffer has audio!
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    // Should release to ON_CC immediately - not waiting for slot 1
+    if (ctx.state != P25_SM_ON_CC) {
+        fprintf(stderr, "FAIL: Expected ON_CC after END on single-slot TDMA call, got %s\n",
+                p25_sm_state_name(ctx.state));
+        fprintf(stderr, "      (slot 1 never had activity, should not block release)\n");
+        fprintf(stderr, "      audio_allowed[0]=%d audio_allowed[1]=%d\n", g_state.p25_p2_audio_allowed[0],
+                g_state.p25_p2_audio_allowed[1]);
+        return 1;
+    }
+
+    // Verify the SM cleared audio_allowed for slot 0
+    if (g_state.p25_p2_audio_allowed[0] != 0) {
+        fprintf(stderr, "FAIL: Expected audio_allowed[0]=0 after END, got %d\n", g_state.p25_p2_audio_allowed[0]);
+        return 1;
+    }
+
+    return 0;
+}
+
 int
 main(void) {
     int fail = 0;
@@ -290,6 +414,8 @@ main(void) {
     fail += test_singleton();
     fail += test_audio_allowed();
     fail += test_sacch_slot_mapping();
+    fail += test_tdma_partial_end_stays_tuned();
+    fail += test_tdma_single_slot_end_releases();
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);
