@@ -730,3 +730,30 @@ add_executable(dsd-neo_test_p25_indiv_gating protocol/p25/test_p25_indiv_gating.
 target_include_directories(dsd-neo_test_p25_indiv_gating PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25_indiv_gating PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_INDIV_GATING COMMAND dsd-neo_test_p25_indiv_gating)
+
+# CQPSK reliability metric unit test
+# Note: compiles its own test stub rather than linking dsd-neo_core to avoid
+# pulling in heavy dependencies and duplicate symbol issues with DSD_NEO_TEST_HOOKS
+add_executable(dsd-neo_test_cqpsk_reliability dsp/test_cqpsk_reliability.c)
+target_include_directories(dsd-neo_test_cqpsk_reliability PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_cqpsk_reliability PRIVATE m)
+add_test(NAME CQPSK_RELIABILITY COMMAND dsd-neo_test_cqpsk_reliability)
+
+# P25P2 reliability buffer test
+# Note: compiles p25p2_frame.c directly with stubs to avoid dragging in full library dependencies
+add_executable(dsd-neo_test_p25_p2_reliability
+  protocol/p25/test_p25_p2_reliability.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2/p25p2_frame.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2/p25p2_soft.c
+)
+target_include_directories(dsd-neo_test_p25_p2_reliability PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
+target_compile_definitions(dsd-neo_test_p25_p2_reliability PRIVATE DSD_NEO_P25P2_TEST_STUB=1)
+add_test(NAME P25_P2_RELIABILITY COMMAND dsd-neo_test_p25_p2_reliability)
+
+# P25P2 soft erasure unit tests
+add_executable(dsd-neo_test_p25p2_soft_erasure
+  protocol/p25/test_p25p2_soft_erasure.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2/p25p2_soft.c
+)
+target_include_directories(dsd-neo_test_p25p2_soft_erasure PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
+add_test(NAME P25_P2_SOFT_ERASURE COMMAND dsd-neo_test_p25p2_soft_erasure)

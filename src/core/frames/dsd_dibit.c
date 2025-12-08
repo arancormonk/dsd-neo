@@ -281,86 +281,162 @@ cqpsk_slice_aligned(float symbol) {
     return raw_dibit;
 }
 
-static inline uint8_t
+uint8_t
 dmr_compute_reliability(const dsd_state* st, float sym) {
-    const float eps = 1e-6f;
-    float min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
+    /* Remove DC bias for CQPSK to keep thresholds centered */
+    float sym_c = sym;
+    if (st->rf_mod == 1) {
+        sym_c -= st->center;
+    }
     int rel = 0;
-    if (sym > umid) {
-        float span = max - umid;
-        if (span < eps) {
-            span = eps;
+
+    /* ========== CQPSK path ========== */
+    if (st->rf_mod == 1) {
+        /* CQPSK reliability: angle-error based metric.
+         *
+         * The symbol value (after recentering) is the output of qpsk_differential_demod():
+         *   sym = atan2(Q, I) * (4/π), recentered with st->center for CQPSK
+         *
+         * Ideal levels: +1 ↔ +π/4, +3 ↔ +3π/4, -1 ↔ -π/4, -3 ↔ -3π/4.
+         * The decision boundary is 1.0 away from each ideal level.
+         */
+        float ideal;
+        if (sym_c >= 2.0f) {
+            ideal = 3.0f;
+        } else if (sym_c >= 0.0f) {
+            ideal = 1.0f;
+        } else if (sym_c >= -2.0f) {
+            ideal = -1.0f;
+        } else {
+            ideal = -3.0f;
         }
-        rel = (int)lrintf(((sym - umid) * 255.0f) / span);
-    } else if (sym > center) {
-        float d1 = sym - center;
-        float d2 = umid - sym;
-        float span = umid - center;
-        if (span < eps) {
-            span = eps;
+
+        float error = fabsf(sym_c - ideal);
+        if (error > 1.0f) {
+            error = 1.0f;
         }
-        float m = d1 < d2 ? d1 : d2;
-        rel = (int)lrintf((m * 510.0f) / span); // scale to 0..255 (2x since max margin is span/2)
-    } else if (sym >= lmid) {
-        float d1 = center - sym;
-        float d2 = sym - lmid;
-        float span = center - lmid;
-        if (span < eps) {
-            span = eps;
+
+        rel = (int)((1.0f - error) * 255.0f + 0.5f);
+        if (rel < 0) {
+            rel = 0;
         }
-        float m = d1 < d2 ? d1 : d2;
-        rel = (int)lrintf((m * 510.0f) / span);
-    } else {
-        float span = lmid - min;
-        if (span < eps) {
-            span = eps;
+        if (rel > 255) {
+            rel = 255;
         }
-        rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
+
+        /* SNR-weighted scaling (CQPSK path) */
+#ifdef USE_RTLSDR
+        {
+            double snr_db = rtl_stream_get_snr_cqpsk();
+            if (snr_db > -50.0) {
+                int w256 = 0;
+                if (snr_db >= 25.0) {
+                    w256 = 255;
+                } else if (snr_db > 0.0) {
+                    w256 = (int)((snr_db / 25.0) * 255.0 + 0.5);
+                }
+                int scale_num = 204 + (w256 >> 2);
+                int scaled = (rel * scale_num) >> 8;
+                if (scaled > 255) {
+                    scaled = 255;
+                }
+                if (scaled < 0) {
+                    scaled = 0;
+                }
+                rel = scaled;
+            }
+        }
+#endif
     }
-    if (rel < 0) {
-        rel = 0;
-    }
-    if (rel > 255) {
-        rel = 255;
+    /* ========== END CQPSK path ========== */
+
+    else {
+        /* ========== C4FM/GFSK path (unchanged) ========== */
+        const float eps = 1e-6f;
+        float min = st->min, max = st->max, lmid = st->lmid, center = st->center, umid = st->umid;
+
+        if (sym > umid) {
+            float span = max - umid;
+            if (span < eps) {
+                span = eps;
+            }
+            rel = (int)lrintf(((sym - umid) * 255.0f) / span);
+        } else if (sym > center) {
+            float d1 = sym - center;
+            float d2 = umid - sym;
+            float span = umid - center;
+            if (span < eps) {
+                span = eps;
+            }
+            float m = d1 < d2 ? d1 : d2;
+            rel = (int)lrintf((m * 510.0f) / span);
+        } else if (sym >= lmid) {
+            float d1 = center - sym;
+            float d2 = sym - lmid;
+            float span = center - lmid;
+            if (span < eps) {
+                span = eps;
+            }
+            float m = d1 < d2 ? d1 : d2;
+            rel = (int)lrintf((m * 510.0f) / span);
+        } else {
+            float span = lmid - min;
+            if (span < eps) {
+                span = eps;
+            }
+            rel = (int)lrintf(((lmid - sym) * 255.0f) / span);
+        }
+        if (rel < 0) {
+            rel = 0;
+        }
+        if (rel > 255) {
+            rel = 255;
+        }
+
+#ifdef USE_RTLSDR
+        double snr_db = rtl_stream_get_snr_c4fm();
+        if (snr_db < -50.0) {
+            snr_db = rtl_stream_estimate_snr_c4fm_eye();
+        }
+        int w256 = 0;
+        if (snr_db > -13.0) {
+            if (snr_db >= 12.0) {
+                w256 = 255;
+            } else {
+                double w = (snr_db + 13.0) / 25.0;
+                if (w < 0.0) {
+                    w = 0.0;
+                }
+                if (w > 1.0) {
+                    w = 1.0;
+                }
+                w256 = (int)(w * 255.0 + 0.5);
+            }
+        }
+        int scale_num = 204 + (w256 >> 2);
+        int scaled = (rel * scale_num) >> 8;
+        if (scaled > 255) {
+            scaled = 255;
+        }
+        if (scaled < 0) {
+            scaled = 0;
+        }
+        rel = scaled;
+#endif
+        /* ========== END C4FM/GFSK path ========== */
     }
 
-    // Refine using demod SNR when available from RTL stream: scale reliability
-    // into [~0.8x, ~1.2x] based on SNR in a coarse [ -5dB .. +20dB ] window.
-#ifdef USE_RTLSDR
-    double snr_db = rtl_stream_get_snr_c4fm();
-    if (snr_db < -50.0) {
-        // fallback estimate when smooth SNR not available
-        snr_db = rtl_stream_estimate_snr_c4fm_eye();
-    }
-    // Map unbiased C4FM SNR [-13, 12] dB to [0, 255] (shifted from [-5,20])
-    int w256 = 0;
-    if (snr_db > -13.0) {
-        if (snr_db >= 12.0) {
-            w256 = 255;
-        } else {
-            double w = (snr_db + 13.0) / 25.0; // 0..1
-            if (w < 0.0) {
-                w = 0.0;
-            }
-            if (w > 1.0) {
-                w = 1.0;
-            }
-            w256 = (int)(w * 255.0 + 0.5);
-        }
-    }
-    // Base scale 0.8 (204/256) + up to +0.25 (64/256) with SNR
-    int scale_num = 204 + (w256 >> 2); // 204..(204+63)=267
-    int scaled = (rel * scale_num) >> 8;
-    if (scaled > 255) {
-        scaled = 255;
-    }
-    if (scaled < 0) {
-        scaled = 0;
-    }
-    rel = scaled;
-#endif
     return (uint8_t)rel;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+uint8_t
+dsd_test_compute_cqpsk_reliability(float sym) {
+    dsd_state dummy = {0};
+    dummy.rf_mod = 1;
+    return dmr_compute_reliability(&dummy, sym);
+}
+#endif
 
 /**
  * @brief Check if CQPSK demodulation path is active.

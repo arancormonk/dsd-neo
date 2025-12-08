@@ -19,6 +19,8 @@ extern "C" {
 int ez_rs28_ess(int payload[96], int parity[168]);
 int ez_rs28_facch(int payload[156], int parity[114]);
 int ez_rs28_sacch(int payload[180], int parity[132]);
+int ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures);
+int ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures);
 int isch_lookup(uint64_t isch);
 }
 
@@ -173,6 +175,112 @@ ez_rs28_sacch(int payload[180], int parity[132]) {
         }
     }
     return (ec);
+}
+
+/**
+ * Reed-Solomon correction of FACCH section with dynamic erasures.
+ *
+ * @param payload   156-bit payload array.
+ * @param parity    114-bit parity array.
+ * @param erasures  Erasure position array (RS symbol positions 0-62).
+ * @param n_erasures Number of erasures (must be <=28).
+ * @return Correction count, or -1 on failure.
+ */
+int
+ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures) {
+    int ec = -2;
+    int i, j, k, b;
+
+    /* Initialize HB */
+    for (i = 0; i < (int)HB.size(); i++) {
+        HB[i] = 0;
+    }
+
+    /* Build erasure vector from provided positions */
+    std::vector<int> ErasuresDyn;
+    for (i = 0; i < n_erasures && i < 28; i++) {
+        ErasuresDyn.push_back(erasures[i]);
+    }
+
+    /* Convert bits to hexbits (same as ez_rs28_facch) */
+    j = 9;
+    for (i = 0; i < 156; i += 6) {
+        HB[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
+                + (payload[i + 4] << 1) + payload[i + 5];
+        j++;
+    }
+    for (i = 0; i < 114; i += 6) {
+        HB[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
+                + (parity[i + 4] << 1) + parity[i + 5];
+        j++;
+    }
+
+    ec = rs28.decode(HB, ErasuresDyn);
+
+    /* Convert back to bits */
+    k = 0;
+    for (i = 0; i < 26; i++) {
+        for (j = 0; j < 6; j++) {
+            b = (HB[i + 9] >> (5 - j)) & 0x1;
+            payload[k] = b;
+            k++;
+        }
+    }
+
+    return ec;
+}
+
+/**
+ * Reed-Solomon correction of SACCH section with dynamic erasures.
+ *
+ * @param payload   180-bit payload array.
+ * @param parity    132-bit parity array.
+ * @param erasures  Erasure position array (RS symbol positions 0-62).
+ * @param n_erasures Number of erasures (must be <=28).
+ * @return Correction count, or -1 on failure.
+ */
+int
+ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures) {
+    int ec = -2;
+    int i, j, k, b;
+
+    /* Initialize HBS */
+    for (i = 0; i < (int)HBS.size(); i++) {
+        HBS[i] = 0;
+    }
+
+    /* Build erasure vector from provided positions */
+    std::vector<int> ErasuresDyn;
+    for (i = 0; i < n_erasures && i < 28; i++) {
+        ErasuresDyn.push_back(erasures[i]);
+    }
+
+    /* Convert bits to hexbits (same as ez_rs28_sacch) */
+    j = 5;
+    for (i = 0; i < 180; i += 6) {
+        HBS[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
+                 + (payload[i + 4] << 1) + payload[i + 5];
+        j++;
+    }
+    for (i = 0; i < 132; i += 6) {
+        HBS[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
+                 + (parity[i + 4] << 1) + parity[i + 5];
+        j++;
+    }
+
+    ec = rs28.decode(HBS, ErasuresDyn);
+
+    /* Convert back to bits */
+    k = 0;
+    for (i = 0; i < 30; i++) {
+        for (j = 0; j < 6; j++) {
+            b = (HBS[i + 5] >> (5 - j)) & 0x1;
+            payload[k] = b;
+            k++;
+        }
+    }
+
+    return ec;
 }
 
 /* One-time initialized ISCH lookup table (P25 (40,9,16) codewords) */

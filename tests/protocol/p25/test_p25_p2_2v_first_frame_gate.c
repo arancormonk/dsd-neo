@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
  * Validate P25 Phase 2 2V first-subframe gating: when per-slot audio is not
  * allowed (e.g., due to encryption lockout), the first AMBE subframe should
  * not be decoded. When audio is allowed, both AMBE subframes in 2V should be
@@ -152,6 +156,16 @@ int
 getDibit(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return 0;
+}
+
+int
+getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
+    (void)opts;
+    (void)state;
+    if (out_reliability) {
+        *out_reliability = 128;
+    }
     return 0;
 }
 

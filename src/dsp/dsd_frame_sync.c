@@ -24,6 +24,9 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
+
+/* Forward declaration for reliability computation (defined in dsd_dibit.c) */
+extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -733,28 +736,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 d = 3;
             }
             *state->dmr_payload_p = d;
-            /* Reliability for CQPSK: based on distance from threshold boundaries.
-             * Symbol levels are ±1, ±3 with thresholds at 0 and ±2. */
+            /* Reliability computed via dmr_compute_reliability() which handles CQPSK internally */
             if (state->dmr_reliab_p) {
-                float dist;
-                if (sym >= 2.0f) {
-                    dist = sym - 2.0f; /* distance from +2 threshold */
-                } else if (sym >= 0.0f) {
-                    dist = fminf(sym, 2.0f - sym); /* distance to 0 or +2 */
-                } else if (sym >= -2.0f) {
-                    dist = fminf(-sym, sym + 2.0f); /* distance to 0 or -2 */
-                } else {
-                    dist = -2.0f - sym; /* distance from -2 threshold */
-                }
-                /* Scale to [0, 255]: max dist from threshold is ~2 (ideal symbol at ±1, ±3) */
-                int rel = (int)(dist * 127.5f);
-                if (rel < 0) {
-                    rel = 0;
-                }
-                if (rel > 255) {
-                    rel = 255;
-                }
-                *state->dmr_reliab_p = (uint8_t)rel;
+                *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
                 state->dmr_reliab_p++;
             }
         } else if (1 == 1) {
@@ -771,80 +755,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     *state->dmr_payload_p = 2; // -1
                 }
             }
+            /* Reliability computed via dmr_compute_reliability() which handles C4FM/GFSK internally */
             if (state->dmr_reliab_p) {
-                int sym = symbol;
-                int rel = 0;
-                if (sym > state->umid) {
-                    int span = state->max - state->umid;
-                    if (span < 1) {
-                        span = 1;
-                    }
-                    rel = (sym - state->umid) * 255 / span;
-                } else if (sym > state->center) {
-                    int d1 = sym - state->center;
-                    int d2 = state->umid - sym;
-                    int span = state->umid - state->center;
-                    if (span < 1) {
-                        span = 1;
-                    }
-                    int m = d1 < d2 ? d1 : d2;
-                    rel = (m * 510) / span;
-                } else if (sym >= state->lmid) {
-                    int d1 = state->center - sym;
-                    int d2 = sym - state->lmid;
-                    int span = state->center - state->lmid;
-                    if (span < 1) {
-                        span = 1;
-                    }
-                    int m = d1 < d2 ? d1 : d2;
-                    rel = (m * 510) / span;
-                } else {
-                    int span = state->lmid - state->min;
-                    if (span < 1) {
-                        span = 1;
-                    }
-                    rel = (state->lmid - sym) * 255 / span;
-                }
-                if (rel < 0) {
-                    rel = 0;
-                }
-                if (rel > 255) {
-                    rel = 255;
-                }
-#ifdef USE_RTLSDR
-                double snr_db = rtl_stream_get_snr_c4fm();
-                if (snr_db < -50.0) {
-                    snr_db = rtl_stream_estimate_snr_c4fm_eye();
-                }
-                int w256 = 0;
-                /* Map unbiased C4FM SNR to [0,1] over roughly 25 dB span.
-                   Before bias fix, noise ~8 dB; mapping was [-5, 20] dB.
-                   After bias removal, shift by ~8 dB: [-13, 12] dB. */
-                if (snr_db > -13.0) {
-                    if (snr_db >= 12.0) {
-                        w256 = 255;
-                    } else {
-                        double w = (snr_db + 13.0) / 25.0;
-                        if (w < 0.0) {
-                            w = 0.0;
-                        }
-                        if (w > 1.0) {
-                            w = 1.0;
-                        }
-                        w256 = (int)(w * 255.0 + 0.5);
-                    }
-                }
-                int scale_num = 204 + (w256 >> 2);
-                int scaled = (rel * scale_num) >> 8;
-                if (scaled > 255) {
-                    scaled = 255;
-                }
-                if (scaled < 0) {
-                    scaled = 0;
-                }
-                rel = scaled;
-#endif
-                *state->dmr_reliab_p = (uint8_t)rel;
+                *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
                 state->dmr_reliab_p++;
             }
         }

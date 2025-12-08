@@ -250,6 +250,7 @@ struct dsd_opts {
     uint8_t use_dsp_output;
     uint8_t use_heuristics;
     uint8_t dmr_t3_heuristic_fill;
+    uint8_t p25_p2_soft_erasure; /* Enable soft-decision RS erasure marking for P25P2 */
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];

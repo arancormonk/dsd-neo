@@ -35,6 +35,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   phase2/p25p2_mac_parse.c
   phase2/p25p2_vpdu.c
   phase2/p25p2_xcch.c
+  phase2/p25p2_soft.c
   ${PROJECT_SOURCE_DIR}/src/ez.cpp
 )
 

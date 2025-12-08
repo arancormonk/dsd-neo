@@ -207,6 +207,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_NOTICE("P25: Encrypted call lockout: Off (follow encrypted).\n");
             continue;
         }
+        if (strcmp(argv[i], "--no-p25p2-soft") == 0) {
+            opts->p25_p2_soft_erasure = 0;
+            LOG_NOTICE("P25P2: Soft-decision RS erasure marking disabled.\n");
+            continue;
+        }
     }
 
     // If CLI present, set env vars and maybe run calculator
@@ -333,6 +338,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             continue;
         }
         if (strcmp(argv[i], "--enc-follow") == 0) {
+            continue;
+        }
+        if (strcmp(argv[i], "--no-p25p2-soft") == 0) {
             continue;
         }
         if (strcmp(argv[i], "--config") == 0) {
