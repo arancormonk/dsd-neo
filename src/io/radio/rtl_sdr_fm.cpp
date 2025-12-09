@@ -37,6 +37,7 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
@@ -284,6 +285,16 @@ struct controller_state {
      * during hardware retune before TED/Costas/AGC are reset. Set to 1 at
      * start of retune, cleared to 0 after reset complete. */
     std::atomic<int> retune_in_progress;
+    /* Retune completion signaling: allows dsd_rtl_stream_tune() to block until
+     * the controller thread has finished the hardware retune and DSP reset.
+     * This prevents the race where trunking code sets SPS parameters before
+     * demod_reset_on_retune() has executed, causing Costas/FLL state corruption. */
+    pthread_cond_t retune_done_cond;
+    pthread_mutex_t retune_done_m;
+    std::atomic<int> retune_done_flag;
+    /* Request ID for matching completion signals to requests (prevents stale wakeups) */
+    std::atomic<uint32_t> retune_request_id;
+    std::atomic<uint32_t> retune_complete_id;
 };
 
 struct rtl_device* rtl_device_handle = NULL;
@@ -612,37 +623,23 @@ demod_reset_on_retune(struct demod_state* s) {
      *
      * We DO reset phase because the phase relationship changes with RF frequency.
      */
-    /* Costas: Reset phase and error. Frequency handling depends on tune type.
+    /* Costas: Reset phase, error, AND frequency on every CQPSK retune.
      *
-     * For P25P2 voice channel tunes, also reset freq to 0. P25P2 VCs are at
-     * different RF frequencies from each other, so the preserved Costas freq
-     * from a previous P25P2 VC may be wrong and cause the loop to fight.
-     *
-     * For same-SPS tunes (e.g., P25P1 CC to P25P1 VC), preserve freq for faster
-     * reacquisition since the LO offset is similar on nearby frequencies. */
+     * Previously we preserved freq for "nearby" same-SPS tunes (P25P1 CC↔VC),
+     * but P25 channels can be several MHz apart. A preserved Costas freq from
+     * the old channel will be wrong and cause the loop to fight against the
+     * new signal. Starting from 0 Hz and acquiring fresh is more reliable. */
     s->costas_state.phase = 0.0f;
     s->costas_state.error = 0.0f;
-    /* Reset Costas freq for P25P2 VC tunes to force fresh acquisition.
-     * This check is done before the costas_reset_pending check below because
-     * we want to reset even if SPS isn't changing (e.g., P25P2 VC to P25P2 VC).
-     * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value,
-     * since SPS varies with DSP sample rate (e.g., 4 @ 24kHz, 8 @ 48kHz).
-     * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
-    if (s->ted_sps_override > 0 && s->cqpsk_enable && is_p25_tdma_sps_for_rate(s->ted_sps_override, (int)output.rate)) {
+    if (s->cqpsk_enable) {
         s->costas_state.freq = 0.0f;
     }
 
-    /* FLL: Initialize band-edge filters and reset phase/delay.
+    /* FLL: Reset frequency and initialize band-edge filters on every CQPSK retune.
      *
-     * CRITICAL FIX for P25P2 subsequent tune failures:
-     * When tuning to P25P2 voice channels (TDMA @ 6000 sym/s), we must reset
-     * the FLL frequency to 0 to force fresh acquisition. Unlike P25P1 where CC and VC
-     * are often on nearby frequencies, P25P2 voice channels can be at significantly
-     * different RF frequencies from each other. The preserved FLL frequency from a
-     * previous P25P2 VC causes the loop to fight against the new signal, resulting
-     * in the observed SNR/EVM degradation on subsequent P25P2 tunes.
-     *
-     * For non-P25P2 tunes (same SPS), preserve freq for faster reacquisition.
+     * Previously we only reset FLL freq for P25P2 tunes, but the same logic applies
+     * to all retunes: channels can be several MHz apart, so a preserved FLL freq
+     * from the old channel will be wrong. Starting from 0 Hz is more reliable.
      *
      * CRITICAL: We must design the band-edge filters HERE, not lazily on first
      * sample block. Lazy initialization causes the first few blocks after cold
@@ -650,56 +647,30 @@ demod_reset_on_retune(struct demod_state* s) {
      * the FLL error signal and preventing proper frequency acquisition. */
     {
         int sps = s->ted_sps_override > 0 ? s->ted_sps_override : (s->ted_sps > 0 ? s->ted_sps : 5);
-        /* For P25P2 voice channel tunes, reset FLL frequency to force fresh acquisition.
-         * This is necessary because P25P2 VCs are at different RF frequencies from each
-         * other, so the preserved FLL frequency from a previous P25P2 VC is wrong.
-         * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value.
-         * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
-        int is_p25p2_vc_tune = (s->ted_sps_override > 0 && s->cqpsk_enable
-                                && is_p25_tdma_sps_for_rate(s->ted_sps_override, (int)output.rate));
-        if (is_p25p2_vc_tune) {
+        if (s->cqpsk_enable) {
             s->fll_band_edge_state.freq = 0.0f;
         }
         dsd_fll_band_edge_init(&s->fll_band_edge_state, sps);
     }
     /* TED: Use soft reset to preserve mu/omega for phase continuity across retunes.
      * The Gardner TED has multiple stable lock points and a full reset can cause
-     * convergence to a suboptimal symbol phase, degrading CQPSK performance.
-     *
-     * HOWEVER, for P25P2 voice channel tunes, clear the delay line to avoid stale
-     * samples from a previous (different) RF frequency corrupting timing recovery.
-     * This matches OP25's reset() behavior which clears d_queue on every retune. */
+     * convergence to a suboptimal symbol phase, degrading CQPSK performance. */
     ted_soft_reset(&s->ted_state);
-    /* Clear TED delay line for P25P2 VC tunes to remove stale samples.
-     * Use dynamic TDMA detection based on symbol rate, not hardcoded SPS value.
-     * IMPORTANT: Use output.rate (post-resampler) to match how trunking code computes SPS. */
-    if (s->ted_sps_override > 0 && s->cqpsk_enable && is_p25_tdma_sps_for_rate(s->ted_sps_override, (int)output.rate)) {
+    /* Clear TED delay line on EVERY CQPSK retune to remove stale samples from the
+     * previous RF frequency. This is critical for ANY frequency change, not just
+     * P25P2 tunes. For example, P25P1 VC → P25P1 CC may tune several MHz away;
+     * stale VC samples in the TED delay line corrupt timing recovery on the CC.
+     * This matches OP25's reset() behavior which clears d_queue on every retune. */
+    if (s->cqpsk_enable) {
         memset(s->ted_state.dl, 0, sizeof(s->ted_state.dl));
         s->ted_state.dl_index = 0;
-        /* Also reinitialize mu to force delay line refill before first output.
+        /* Reinitialize mu to force delay line refill before first output.
          * CRITICAL: Must also update the legacy ted_mu field because
          * gardner_timing_adjust() syncs ted_mu -> ted_state.mu before processing,
          * which would overwrite our reset if we only set ted_state.mu. */
         float mu_init = (float)(s->ted_state.twice_sps + 1);
         s->ted_state.mu = mu_init;
         s->ted_mu = mu_init;
-
-        /* Purge filter histories so CC samples don't bleed into the VC path.
-         * P25P2 grants hop to distant RF channels; keeping HB/LPF state from the
-         * previous frequency contaminates the first VC blocks and drives EVM up. */
-        for (int st = 0; st < 10; st++) {
-            memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
-            memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
-        }
-        memset(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
-        memset(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
-        s->channel_lpf_hist_len = 0;
-        /* Resampler is typically off for CQPSK, but clear any residual state defensively. */
-        s->resamp_phase = 0;
-        s->resamp_hist_head = 0;
-        if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
-            memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
-        }
     }
     /* Apply any pending TED SPS override NOW, after hardware retune completes.
      *
@@ -749,9 +720,40 @@ demod_reset_on_retune(struct demod_state* s) {
     }
     /* Note: s->ted_mu is a legacy field used by the Farrow path; the OP25-style
      * Gardner uses ted_state.mu internally. Don't reset it here. */
-    /* Preserve filter histories (HB/LPF/resampler/audio) across retunes.
-     * Gating via retune_in_progress prevents stale samples from leaking, so
-     * keeping histories avoids the AGC/filter re-settle that slows lock. */
+
+    /* CRITICAL: Clear filter histories on EVERY retune for CQPSK mode.
+     *
+     * When retuning between frequencies (e.g., P25P1 VC → CC or P25P2 VC → CC),
+     * the HB/LPF filter histories contain samples from the OLD RF frequency.
+     * Even with ring purging that prevents NEW stale samples from leaking,
+     * the filter delay lines themselves hold several samples of convolution
+     * history. When new samples from the NEW frequency arrive, they convolve
+     * with old samples from the previous frequency, producing corrupted output.
+     *
+     * This is especially severe for P25P1 VC → P25P1 CC transitions where the
+     * SPS doesn't change (both use 10 SPS at 48kHz), so the conditional reset
+     * at lines ~555-578 is skipped. The stale filter history from a VC several
+     * MHz away corrupts the first ~100ms of CC samples, causing constellation
+     * magnitude collapse (~0.2 instead of ~0.9) and sync loss.
+     *
+     * Solution: Always clear filter histories for CQPSK. The AGC/filter settle
+     * time (~10-50ms) is much less costly than the prolonged (~1-3s) sync loss
+     * caused by stale history corruption. */
+    if (s->cqpsk_enable) {
+        for (int st = 0; st < 10; st++) {
+            memset(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
+            memset(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
+        }
+        memset(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
+        memset(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
+        s->channel_lpf_hist_len = 0;
+        /* Clear resampler state defensively (typically off for CQPSK). */
+        s->resamp_phase = 0;
+        s->resamp_hist_head = 0;
+        if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
+            memset(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * sizeof(float));
+        }
+    }
 
     /* Debug: summarize key CQPSK/TED state after retune when DSD_NEO_DEBUG_CQPSK=1.
        This runs in the controller thread after hardware retune and SPS refresh. */
@@ -1835,6 +1837,14 @@ controller_thread_fn(void* arg) {
             demod_reset_on_retune(&demod);
             /* Retune complete: allow demod thread to resume processing */
             s->retune_in_progress.store(0, std::memory_order_release);
+            /* Signal completion to any waiting callers (e.g., dsd_rtl_stream_tune).
+             * Increment the complete_id to match the request_id that was generated
+             * when the tune was requested. This ensures waiters wake up only for
+             * their own request, handling the case where multiple retunes are queued. */
+            pthread_mutex_lock(&s->retune_done_m);
+            s->retune_complete_id.fetch_add(1, std::memory_order_release);
+            pthread_cond_broadcast(&s->retune_done_cond);
+            pthread_mutex_unlock(&s->retune_done_m);
             drain_output_on_retune();
             LOG_INFO("Retune applied: %u Hz.\n", tgt);
             continue;
@@ -2318,6 +2328,12 @@ controller_init(struct controller_state* s) {
     s->manual_retune_freq = 0;
     s->cold_start_ready.store(0); /* Demod will wait for controller to signal ready */
     s->retune_in_progress.store(0);
+    /* Initialize retune completion synchronization */
+    pthread_cond_init(&s->retune_done_cond, NULL);
+    pthread_mutex_init(&s->retune_done_m, NULL);
+    s->retune_done_flag.store(0);
+    s->retune_request_id.store(0);
+    s->retune_complete_id.store(0);
 }
 
 /**
@@ -2329,6 +2345,8 @@ void
 controller_cleanup(struct controller_state* s) {
     pthread_cond_destroy(&s->hop);
     pthread_mutex_destroy(&s->hop_m);
+    pthread_cond_destroy(&s->retune_done_cond);
+    pthread_mutex_destroy(&s->retune_done_m);
 }
 
 /**
@@ -2386,6 +2404,34 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
 }
 
 /**
+ * @brief Enqueue a manual retune on the controller thread and return its request ID.
+ *
+ * Coalesces callers when a retune is already pending (controller has not yet
+ * consumed the request) so that completion IDs track the number of retunes
+ * actually executed. This prevents synchronous waiters from timing out when
+ * multiple retune requests arrive faster than the controller loop can service
+ * them.
+ *
+ * @param target_freq_hz Desired center frequency in Hz.
+ * @return Request ID that will be completed once the queued retune finishes.
+ */
+static uint32_t
+schedule_manual_retune(uint32_t target_freq_hz) {
+    pthread_mutex_lock(&controller.hop_m);
+    uint32_t request_id = controller.retune_request_id.load(std::memory_order_acquire);
+    int pending = controller.manual_retune_pending.load(std::memory_order_acquire);
+    if (!pending) {
+        request_id = controller.retune_request_id.fetch_add(1, std::memory_order_acq_rel) + 1;
+        controller.manual_retune_pending.store(1, std::memory_order_release);
+    }
+    /* Update/override target frequency even when coalescing into an existing pending retune. */
+    controller.manual_retune_freq = target_freq_hz;
+    pthread_cond_signal(&controller.hop);
+    pthread_mutex_unlock(&controller.hop_m);
+    return request_id;
+}
+
+/**
  * @brief Launch controller/demod threads and start async device capture.
  *
  * Spawns the controller and demodulation workers, begins RTL-SDR async
@@ -2403,11 +2449,7 @@ start_threads_and_async(void) {
             port,
             [](uint32_t new_freq_hz, void* /*user_data*/) {
                 /* Marshal onto controller thread: single programming path */
-                pthread_mutex_lock(&controller.hop_m);
-                controller.manual_retune_freq = new_freq_hz;
-                controller.manual_retune_pending.store(1);
-                pthread_cond_signal(&controller.hop);
-                pthread_mutex_unlock(&controller.hop_m);
+                schedule_manual_retune(new_freq_hz);
             },
             NULL);
     }
@@ -2890,15 +2932,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         pthread_create(&demod.thread, NULL, demod_thread_fn, (void*)(&demod));
         if (port != 0) {
             g_udp_ctrl = udp_control_start(
-                port,
-                [](uint32_t new_freq_hz, void* /*user_data*/) {
-                    pthread_mutex_lock(&controller.hop_m);
-                    controller.manual_retune_freq = new_freq_hz;
-                    controller.manual_retune_pending.store(1);
-                    pthread_cond_signal(&controller.hop);
-                    pthread_mutex_unlock(&controller.hop_m);
-                },
-                NULL);
+                port, [](uint32_t new_freq_hz, void* /*user_data*/) { schedule_manual_retune(new_freq_hz); }, NULL);
         }
     } else {
         /* Start controller/demod threads and async (USB path and defaults) */
@@ -3877,11 +3911,7 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
         demod.resamp_target_hz = target_hz;
     }
     /* Schedule retune to current center to apply changes on controller thread */
-    pthread_mutex_lock(&controller.hop_m);
-    controller.manual_retune_freq = dongle.freq;
-    controller.manual_retune_pending.store(1);
-    pthread_cond_signal(&controller.hop);
-    pthread_mutex_unlock(&controller.hop_m);
+    schedule_manual_retune(dongle.freq);
 }
 
 /* Runtime DSP tuning entrypoints (C shim) */
@@ -3999,9 +4029,13 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
 /**
  * @brief Tune RTL-SDR to a new center frequency, updating optimal settings.
  *
+ * This function is SYNCHRONOUS: it blocks until the controller thread has
+ * completed the hardware retune and all DSP state resets. This ensures that
+ * subsequent SPS/Costas configuration calls operate on properly reset state.
+ *
  * @param opts      Decoder options.
  * @param frequency Target center frequency in Hz.
- * @return 0 on success.
+ * @return 0 on success, -1 on timeout.
  */
 extern "C" int
 dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
@@ -4024,19 +4058,56 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
         LOG_INFO("\nTuning to %ld Hz.", frequency);
     }
     dongle.freq = opts->rtlsdr_center_freq = frequency;
-    /* Marshal onto controller thread to ensure single-threaded device programming */
-    pthread_mutex_lock(&controller.hop_m);
-    controller.manual_retune_freq = (uint32_t)dongle.freq;
-    controller.manual_retune_pending.store(1);
-    pthread_cond_signal(&controller.hop);
-    pthread_mutex_unlock(&controller.hop_m);
+
+    /* Enqueue retune, coalescing with any already-pending request so completion IDs
+     * stay aligned with the number of retunes the controller will actually execute. */
+    uint32_t my_request_id = schedule_manual_retune((uint32_t)dongle.freq);
+
     if (opts->payload == 1) {
         LOG_INFO(" (Center Frequency: %u Hz.) \n", dongle.freq);
     }
 
+    /* Wait for controller to complete the retune with a timeout.
+     *
+     * The timeout (500ms) is generous - typical RTL-SDR retunes complete in
+     * 10-50ms. The timeout protects against controller thread deadlock or
+     * missed wakeups, allowing the system to continue (with degraded performance)
+     * rather than hanging indefinitely.
+     *
+     * We use a request ID to handle spurious wakeups and ensure we're waiting
+     * for OUR retune to complete, not a previous one. */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 500000000L; /* 500ms timeout */
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000L;
+    }
+
+    int rc = 0;
+    pthread_mutex_lock(&controller.retune_done_m);
+    while (controller.retune_complete_id.load(std::memory_order_acquire) < my_request_id) {
+        int wait_rc = pthread_cond_timedwait(&controller.retune_done_cond, &controller.retune_done_m, &ts);
+        if (wait_rc == ETIMEDOUT) {
+            /* Timeout - log warning but continue to avoid deadlock.
+             * The retune may still complete; caller should be prepared for
+             * slightly degraded initial lock performance. */
+            LOG_NOTICE("Retune wait timeout (request %u, complete %u) - continuing.\n", my_request_id,
+                       controller.retune_complete_id.load(std::memory_order_relaxed));
+            rc = -1;
+            break;
+        }
+        /* Check for shutdown to avoid waiting forever during exit */
+        if (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_relaxed))) {
+            rc = -1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&controller.retune_done_m);
+
     /* Honor drain/clear policy for API-triggered tunes as well */
     drain_output_on_retune();
-    return 0;
+    return rc;
 }
 
 /**

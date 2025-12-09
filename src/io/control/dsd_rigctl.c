@@ -951,15 +951,17 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
         SetFreq(opts->rigctl_sockfd, freq);
     } else if (opts->audio_in_type == 3) {
 #ifdef USE_RTLSDR
-        if (g_rtl_ctx) {
-            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
-        }
-        // Set TED SPS for control channel if provided by caller.
+        // Set TED SPS for control channel BEFORE tuning so that demod_reset_on_retune()
+        // (triggered by the controller thread after retune) uses the correct CC SPS,
+        // not the stale VC override value.
         // Clear the override so non-P25 protocols can have SPS computed automatically.
         // Use no_override variant so rate-change refresh can recalculate SPS later.
         if (ted_sps > 0) {
             rtl_stream_clear_ted_sps_override();
             rtl_stream_set_ted_sps_no_override(ted_sps);
+        }
+        if (g_rtl_ctx) {
+            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
         }
 #endif
     }

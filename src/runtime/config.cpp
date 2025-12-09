@@ -60,8 +60,7 @@ void
 dsd_neo_config_init(const dsd_opts* opts) {
     (void)opts; /* precedence hook reserved for future CLI/opts overrides */
 
-    dsdneoRuntimeConfig c;
-    memset(&c, 0, sizeof(c));
+    dsdneoRuntimeConfig c{};
 
     /* COMBINE_ROT */
     const char* cr = getenv("DSD_NEO_COMBINE_ROT");
@@ -275,7 +274,7 @@ dsd_neo_get_config(void) {
 extern "C" void
 dsd_neo_set_c4fm_clk(int mode) {
     if (!g_config_inited) {
-        memset(&g_config, 0, sizeof(g_config));
+        g_config = dsdneoRuntimeConfig{};
         g_config_inited = 1;
     }
     if (mode >= 0) {
@@ -298,7 +297,7 @@ dsd_neo_get_c4fm_clk(void) {
 extern "C" void
 dsd_neo_set_c4fm_clk_sync(int enable) {
     if (!g_config_inited) {
-        memset(&g_config, 0, sizeof(g_config));
+        g_config = dsdneoRuntimeConfig{};
         g_config_inited = 1;
     }
     g_config.c4fm_clk_sync_is_set = 1;

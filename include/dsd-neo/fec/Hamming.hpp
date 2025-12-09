@@ -38,52 +38,14 @@ class Hamming_10_6_3_data {
 
     int bad_bit_table[16];
 
-    Hamming_10_6_3_data() {
-        // G matrix come from the APCO 25 reference documentation:
-        g0 = std::bitset<10>(std::string("1000001110"));
-        g1 = std::bitset<10>(std::string("0100001101"));
-        g2 = std::bitset<10>(std::string("0010001011"));
-        g3 = std::bitset<10>(std::string("0001000111"));
-        g4 = std::bitset<10>(std::string("0000100011"));
-        g5 = std::bitset<10>(std::string("0000011100"));
-
-        gt0 = std::bitset<6>(std::string("111001"));
-        gt1 = std::bitset<6>(std::string("110101"));
-        gt2 = std::bitset<6>(std::string("101110"));
-        gt3 = std::bitset<6>(std::string("011110"));
-
-        // H matrix, calculated transposing G. See wikipedia.
-        h0 = std::bitset<10>(std::string("1110011000"));
-        h1 = std::bitset<10>(std::string("1101010100"));
-        h2 = std::bitset<10>(std::string("1011100010"));
-        h3 = std::bitset<10>(std::string("0111100001"));
-
-        // bad_bit_table indicates which is the bit to correct from the calculated syndromes.
-        // It's calculated from the previous matrices: See the left-most column of the matrix whose rows are
-        // h0,h1,h2 and h3. It's [1 1 1 0]. It means: when the syndrome value is the binary number 1110, the
-        // bit that is wrong is the bit 9 (the left-most column is for the bit 9). Another example with
-        // the right-most column: it's column is [0 0 0 1], so when the syndrome is 0001, the bit to fix is
-        // bit 0 (one of the parity bits).
-        bad_bit_table[1] = 0;
-        bad_bit_table[2] = 1;
-        bad_bit_table[4] = 2;
-        bad_bit_table[8] = 3;
-        bad_bit_table[12] = 4;
-        bad_bit_table[3] = 5;
-        bad_bit_table[7] = 6;
-        bad_bit_table[11] = 7;
-        bad_bit_table[13] = 8;
-        bad_bit_table[14] = 9;
-
-        // If the syndrome is zero, then the data is correct, no errors detected.
-        bad_bit_table[0] = -2;
-
-        // Incorrect values, if the syndrome gets one of this values, then we fail to correct the data.
-        bad_bit_table[5] = -1;
-        bad_bit_table[6] = -1;
-        bad_bit_table[9] = -1;
-        bad_bit_table[10] = -1;
-        bad_bit_table[15] = -1;
+    Hamming_10_6_3_data()
+        : g0(std::string("1000001110")), g1(std::string("0100001101")), g2(std::string("0010001011")),
+          g3(std::string("0001000111")), g4(std::string("0000100011")), g5(std::string("0000011100")),
+          gt0(std::string("111001")), gt1(std::string("110101")), gt2(std::string("101110")),
+          gt3(std::string("011110")), h0(std::string("1110011000")), h1(std::string("1101010100")),
+          h2(std::string("1011100010")), h3(std::string("0111100001")),
+          bad_bit_table{-2, 0, 1, 5, 2, -1, -1, 6, 3, -1, -1, 7, 4, 8, 9, -1} {
+        // Matrices and syndrome table from APCO 25 reference documentation.
     }
 };
 
@@ -113,57 +75,15 @@ class Hamming_15_11_3_data {
 
     int bad_bit_table[16];
 
-    Hamming_15_11_3_data() {
-        // G matrix come from the APCO 25 reference documentation:
-        g0 = std::bitset<15>(std::string("100000000001111"));
-        g1 = std::bitset<15>(std::string("010000000001110"));
-        g2 = std::bitset<15>(std::string("001000000001101"));
-        g3 = std::bitset<15>(std::string("000100000001100"));
-        g4 = std::bitset<15>(std::string("000010000001011"));
-        g5 = std::bitset<15>(std::string("000001000001010"));
-        g6 = std::bitset<15>(std::string("000000100001001"));
-        g7 = std::bitset<15>(std::string("000000010000111"));
-        g8 = std::bitset<15>(std::string("000000001000110"));
-        g9 = std::bitset<15>(std::string("000000000100101"));
-        g10 = std::bitset<15>(std::string("000000000010011"));
-
-        gt0 = std::bitset<11>(std::string("11111110000"));
-        gt1 = std::bitset<11>(std::string("11110001110"));
-        gt2 = std::bitset<11>(std::string("11001101101"));
-        gt3 = std::bitset<11>(std::string("10101011011"));
-
-        // H matrix, calculated transposing G. See wikipedia.
-        h0 = std::bitset<15>(std::string("111111100001000"));
-        h1 = std::bitset<15>(std::string("111100011100100"));
-        h2 = std::bitset<15>(std::string("110011011010010"));
-        h3 = std::bitset<15>(std::string("101010110110001"));
-
-        // bad_bit_table indicates which is the bit to correct from the calculated syndromes.
-        // It's calculated from the previous matrices: See the left-most column of the matrix whose rows are
-        // h0,h1,h2 and h3. It's [1 1 1 0]. It means: when the syndrome value is the binary number 1110, the
-        // bit that is wrong is the bit 9 (the left-most column is for the bit 9). Another example with
-        // the right-most column: it's column is [0 0 0 1], so when the syndrome is 0001, the bit to fix is
-        // bit 0 (one of the parity bits).
-        bad_bit_table[1] = 0;
-        bad_bit_table[2] = 1;
-        bad_bit_table[4] = 2;
-        bad_bit_table[8] = 3;
-        bad_bit_table[12] = 4;
-        bad_bit_table[3] = 5;
-        bad_bit_table[7] = 6;
-        bad_bit_table[11] = 7;
-        bad_bit_table[13] = 8;
-        bad_bit_table[14] = 9;
-
-        // If the syndrome is zero, then the data is correct, no errors detected.
-        bad_bit_table[0] = -2;
-
-        // Incorrect values, if the syndrome gets one of this values, then we fail to correct the data.
-        bad_bit_table[5] = -1;
-        bad_bit_table[6] = -1;
-        bad_bit_table[9] = -1;
-        bad_bit_table[10] = -1;
-        bad_bit_table[15] = -1;
+    Hamming_15_11_3_data()
+        : g0(std::string("100000000001111")), g1(std::string("010000000001110")), g2(std::string("001000000001101")),
+          g3(std::string("000100000001100")), g4(std::string("000010000001011")), g5(std::string("000001000001010")),
+          g6(std::string("000000100001001")), g7(std::string("000000010000111")), g8(std::string("000000001000110")),
+          g9(std::string("000000000100101")), g10(std::string("000000000010011")), gt0(std::string("11111110000")),
+          gt1(std::string("11110001110")), gt2(std::string("11001101101")), gt3(std::string("10101011011")),
+          h0(std::string("111111100001000")), h1(std::string("111100011100100")), h2(std::string("110011011010010")),
+          h3(std::string("101010110110001")), bad_bit_table{-2, 0, 1, 5, 2, -1, -1, 6, 3, -1, -1, 7, 4, 8, 9, -1} {
+        // Matrices and syndrome table from APCO 25 reference documentation.
     }
 };
 
