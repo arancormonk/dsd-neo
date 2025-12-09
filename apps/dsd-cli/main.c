@@ -1659,6 +1659,9 @@ initOpts(dsd_opts* opts) {
     // P25P2 soft-decision RS erasure marking (enabled by default)
     opts->p25_p2_soft_erasure = 1;
 
+    // P25P1 soft-decision FEC for voice (enabled by default)
+    opts->p25_p1_soft_voice = 1;
+
     // Low input level warning defaults
     opts->input_warn_db = -40.0;        // warn if below -40 dBFS
     opts->input_warn_cooldown_sec = 10; // rate-limit warnings

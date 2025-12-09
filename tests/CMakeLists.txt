@@ -757,3 +757,21 @@ add_executable(dsd-neo_test_p25p2_soft_erasure
 )
 target_include_directories(dsd-neo_test_p25p2_soft_erasure PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
 add_test(NAME P25_P2_SOFT_ERASURE COMMAND dsd-neo_test_p25p2_soft_erasure)
+
+# P25P1 soft Hamming(10,6,3) decoder test
+add_executable(dsd-neo_test_p25p1_soft_hamming
+  protocol/p25/test_p25p1_soft_hamming.cpp
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(dsd-neo_test_p25p1_soft_hamming PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25p1_soft_hamming PRIVATE dsd-neo_fec)
+add_test(NAME P25P1_SOFT_HAMMING COMMAND dsd-neo_test_p25p1_soft_hamming)
+
+# P25P1 soft Golay(24,6) and Golay(24,12) decoder test
+add_executable(dsd-neo_test_p25p1_soft_golay
+  protocol/p25/test_p25p1_soft_golay.cpp
+  ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(dsd-neo_test_p25p1_soft_golay PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25p1_soft_golay PRIVATE dsd-neo_fec)
+add_test(NAME P25P1_SOFT_GOLAY COMMAND dsd-neo_test_p25p1_soft_golay)

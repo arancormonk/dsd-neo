@@ -310,3 +310,148 @@ p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fi
 
     return total;
 }
+
+/*
+ * ESS bit offset tables.
+ *
+ * ESS_B (4V mode): 96 payload bits across 4 frames, 24 bits per frame.
+ * Each frame contributes 4 hexbits at offset 148-171 relative to vc_counter.
+ * Frame 0: vc_counter=0, bits 148-171
+ * Frame 1: vc_counter=360, bits 508-531 (148+360)
+ * Frame 2: vc_counter=720, bits 868-891
+ * Frame 3: vc_counter=1080, bits 1228-1251
+ */
+static const uint16_t ess_b_payload_bit_offsets[16][6] = {
+    /* Frame 0, hexbits 0-3 */
+    /* 00 */ {148, 149, 150, 151, 152, 153},
+    /* 01 */ {154, 155, 156, 157, 158, 159},
+    /* 02 */ {160, 161, 162, 163, 164, 165},
+    /* 03 */ {166, 167, 168, 169, 170, 171},
+    /* Frame 1, hexbits 4-7 (add 360 to base) */
+    /* 04 */ {508, 509, 510, 511, 512, 513},
+    /* 05 */ {514, 515, 516, 517, 518, 519},
+    /* 06 */ {520, 521, 522, 523, 524, 525},
+    /* 07 */ {526, 527, 528, 529, 530, 531},
+    /* Frame 2, hexbits 8-11 (add 720 to base) */
+    /* 08 */ {868, 869, 870, 871, 872, 873},
+    /* 09 */ {874, 875, 876, 877, 878, 879},
+    /* 10 */ {880, 881, 882, 883, 884, 885},
+    /* 11 */ {886, 887, 888, 889, 890, 891},
+    /* Frame 3, hexbits 12-15 (add 1080 to base) */
+    /* 12 */ {1228, 1229, 1230, 1231, 1232, 1233},
+    /* 13 */ {1234, 1235, 1236, 1237, 1238, 1239},
+    /* 14 */ {1240, 1241, 1242, 1243, 1244, 1245},
+    /* 15 */ {1246, 1247, 1248, 1249, 1250, 1251},
+};
+
+/*
+ * ESS_A (2V mode): 168 bits = 28 hexbits for parity.
+ * First 96 bits (hexbits 0-15) at 148..243
+ * Next 72 bits (hexbits 16-27) at 246..317
+ * Note: bits 244-245 are UNUSED and must be skipped.
+ */
+static const uint16_t ess_a_parity_bit_offsets[28][6] = {
+    /* Hexbits 0-15: bits 148-243 */
+    /* 00 */ {148, 149, 150, 151, 152, 153},
+    /* 01 */ {154, 155, 156, 157, 158, 159},
+    /* 02 */ {160, 161, 162, 163, 164, 165},
+    /* 03 */ {166, 167, 168, 169, 170, 171},
+    /* 04 */ {172, 173, 174, 175, 176, 177},
+    /* 05 */ {178, 179, 180, 181, 182, 183},
+    /* 06 */ {184, 185, 186, 187, 188, 189},
+    /* 07 */ {190, 191, 192, 193, 194, 195},
+    /* 08 */ {196, 197, 198, 199, 200, 201},
+    /* 09 */ {202, 203, 204, 205, 206, 207},
+    /* 10 */ {208, 209, 210, 211, 212, 213},
+    /* 11 */ {214, 215, 216, 217, 218, 219},
+    /* 12 */ {220, 221, 222, 223, 224, 225},
+    /* 13 */ {226, 227, 228, 229, 230, 231},
+    /* 14 */ {232, 233, 234, 235, 236, 237},
+    /* 15 */ {238, 239, 240, 241, 242, 243},
+    /* Hexbits 16-27: bits 246-317 (skipping 244-245) */
+    /* 16 */ {246, 247, 248, 249, 250, 251},
+    /* 17 */ {252, 253, 254, 255, 256, 257},
+    /* 18 */ {258, 259, 260, 261, 262, 263},
+    /* 19 */ {264, 265, 266, 267, 268, 269},
+    /* 20 */ {270, 271, 272, 273, 274, 275},
+    /* 21 */ {276, 277, 278, 279, 280, 281},
+    /* 22 */ {282, 283, 284, 285, 286, 287},
+    /* 23 */ {288, 289, 290, 291, 292, 293},
+    /* 24 */ {294, 295, 296, 297, 298, 299},
+    /* 25 */ {300, 301, 302, 303, 304, 305},
+    /* 26 */ {306, 307, 308, 309, 310, 311},
+    /* 27 */ {312, 313, 314, 315, 316, 317},
+};
+
+/**
+ * Build dynamic erasure list for ESS based on reliability.
+ *
+ * ESS uses RS(44,16,29):
+ *   - 16 payload hexbits (ESS_B) at RS positions 0-15
+ *   - 28 parity hexbits (ESS_A) at RS positions 16-43
+ *
+ * In 4V mode, ESS_B payload bits are spread across 4 frames.
+ * In 2V mode, ESS_A parity bits come from a single 2V frame.
+ *
+ * @param ts_counter     Current timeslot counter (0-3).
+ * @param is_4v          1 for ESS_B (4V mode), 0 for ESS_A parity (2V mode).
+ * @param erasures       Output: array to append erasures (must have space for at least 44 entries).
+ * @param n_fixed        Number of fixed erasures already in the array.
+ * @param max_add        Maximum dynamic erasures to add.
+ * @return Total erasure count (fixed + dynamic).
+ */
+int
+p25p2_ess_soft_erasures(int ts_counter, int is_4v, int* erasures, int n_fixed, int max_add) {
+    const uint8_t* reliab = p2xreliab; /* ESS uses descrambled buffer */
+    int thresh = get_erasure_threshold();
+    int added = 0;
+    int total = n_fixed;
+
+    if (is_4v) {
+        /* 4V mode: check each of the 16 payload hexbits (RS positions 0-15) */
+        for (int hb = 0; hb < 16 && added < max_add; hb++) {
+            const uint16_t* bits = ess_b_payload_bit_offsets[hb];
+            uint8_t rel = p25p2_hexbit_reliability(bits, ts_counter, reliab);
+
+            if (rel < thresh) {
+                int rs_pos = hb; /* ESS_B maps to positions 0-15 */
+                /* Check not already in erasure list */
+                int dup = 0;
+                for (int e = 0; e < total; e++) {
+                    if (erasures[e] == rs_pos) {
+                        dup = 1;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    erasures[total++] = rs_pos;
+                    added++;
+                }
+            }
+        }
+    } else {
+        /* 2V mode: check each of the 28 parity hexbits (RS positions 16-43) */
+        for (int hb = 0; hb < 28 && added < max_add; hb++) {
+            const uint16_t* bits = ess_a_parity_bit_offsets[hb];
+            uint8_t rel = p25p2_hexbit_reliability(bits, ts_counter, reliab);
+
+            if (rel < thresh) {
+                int rs_pos = 16 + hb; /* ESS_A maps to positions 16-43 */
+                /* Check not already in erasure list */
+                int dup = 0;
+                for (int e = 0; e < total; e++) {
+                    if (erasures[e] == rs_pos) {
+                        dup = 1;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    erasures[total++] = rs_pos;
+                    added++;
+                }
+            }
+        }
+    }
+
+    return total;
+}

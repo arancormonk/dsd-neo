@@ -624,6 +624,9 @@ struct dsd_state {
     unsigned int p25_p2_rs_ess_err;
     unsigned int p25_p2_rs_ess_corr;     // total corrected symbols over accepts
     unsigned int p25_p2_soft_erasure_ok; // soft-decision RS successful recoveries
+    // P25P1 soft decision counters
+    unsigned int p25_p1_soft_golay_ok; // soft Golay corrections (hard would have failed)
+    unsigned int p25_p2_soft_ess_ok;   // soft ESS corrections
     // P25p2 early ENC lockout counter (MAC_PTT-driven)
     unsigned int p25_p2_enc_lo_early;
     // P25p2 early ENC lockout hardening: require confirmation across two indications

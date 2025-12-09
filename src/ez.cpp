@@ -19,6 +19,7 @@ extern "C" {
 int ez_rs28_ess(int payload[96], int parity[168]);
 int ez_rs28_facch(int payload[156], int parity[114]);
 int ez_rs28_sacch(int payload[180], int parity[132]);
+int ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_erasures);
 int ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures);
 int ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures);
 int isch_lookup(uint64_t isch);
@@ -80,6 +81,73 @@ ez_rs28_ess(int payload[96], int parity[168]) {
     }
 
     return (ec);
+}
+
+/**
+ * Reed-Solomon correction of ESS section with dynamic erasures.
+ *
+ * ESS uses RS(44,16,29) over GF(64):
+ *   - 16 payload hexbits (96 bits from ESS_B)
+ *   - 28 parity hexbits (168 bits from ESS_A)
+ *
+ * The ezpwd RS<63,35> decoder maps ESS_B to positions 0-15 and ESS_A to 16-43.
+ *
+ * @param payload   96-bit payload array (ESS_B, converted to 16 hexbits).
+ * @param parity    168-bit parity array (ESS_A, converted to 28 hexbits).
+ * @param erasures  Erasure position array (RS symbol positions 0-43).
+ * @param n_erasures Number of erasures (must be <= 28).
+ * @return Correction count, or -1 on failure.
+ */
+int
+ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_erasures) {
+    int ec = -2;
+    int i, j, k;
+    uint8_t a, b;
+
+    /* Build erasure vector from provided positions */
+    std::vector<int> ErasuresDyn;
+    for (i = 0; i < n_erasures && i < 28; i++) {
+        ErasuresDyn.push_back(erasures[i]);
+    }
+
+    /* Convert payload bits to hexbits (16 hexbits = 96 bits) */
+    k = 0;
+    for (i = 0; i < 16; i++) {
+        b = 0;
+        for (j = 0; j < 6; j++) {
+            b = b << 1;
+            b = b + payload[k];
+            k++;
+        }
+        ESS_B[i] = b;
+    }
+
+    /* Convert parity bits to hexbits (28 hexbits = 168 bits) */
+    k = 0;
+    for (i = 0; i < 28; i++) {
+        a = 0;
+        for (j = 0; j < 6; j++) {
+            a = a << 1;
+            a = a + parity[k];
+            k++;
+        }
+        ESS_A[i] = a;
+    }
+
+    /* Decode with erasures */
+    ec = rs28.decode(ESS_B, ESS_A, ErasuresDyn);
+
+    /* Convert ESS_B back to bits */
+    k = 0;
+    for (i = 0; i < 16; i++) {
+        for (j = 0; j < 6; j++) {
+            b = (ESS_B[i] >> (5 - j)) & 0x1;
+            payload[k] = b;
+            k++;
+        }
+    }
+
+    return ec;
 }
 
 //Reed-Solomon Correction of FACCH section

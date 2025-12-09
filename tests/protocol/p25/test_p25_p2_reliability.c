@@ -337,6 +337,15 @@ ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasure
     return 0;
 }
 
+int
+ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+    (void)payload;
+    (void)parity;
+    (void)erasures;
+    (void)n_erasures;
+    return 0;
+}
+
 /* MAC PDU handlers */
 void
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {

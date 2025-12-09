@@ -4,6 +4,7 @@
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 
 #ifdef TRACE_DSD
 static void
@@ -161,6 +162,11 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
                           AnalogSignal* analog_signal_array, int* analog_signal_index) {
     char parity[4];
     int error_count;
+    /* Remember where this hex word's analog signals start */
+    int start_index = *analog_signal_index;
+#ifdef LDU_DEBUG
+    int i;
+#endif
 
     // Read the hex word
     read_word(opts, state, hex, 6, status_count, analog_signal_array, analog_signal_index);
@@ -181,6 +187,48 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
 
     // Use Hamming to error correct the hex word
     error_count = check_and_fix_hamming_10_6_3(hex, parity);
+
+    if (error_count == 2 && opts->p25_p1_soft_voice && analog_signal_array != NULL) {
+        /* Hard decode failed - try soft decode using reliability info.
+         * The analog_signal_array from start_index contains 5 dibits:
+         *   [0..2] = 3 dibits for 6 data bits
+         *   [3..4] = 2 dibits for 4 parity bits
+         * Extract per-bit reliability by taking dibit reliability for both bits.
+         */
+        int reliab[10];
+        char bits[10];
+        int idx = 0;
+
+        /* Data bits: 3 dibits -> 6 bits */
+        for (int d = 0; d < 3; d++) {
+            int r = analog_signal_array[start_index + d].reliab;
+            bits[idx] = hex[(d * 2) + 0];
+            reliab[idx++] = r;
+            bits[idx] = hex[(d * 2) + 1];
+            reliab[idx++] = r;
+        }
+        /* Parity bits: 2 dibits -> 4 bits */
+        for (int d = 0; d < 2; d++) {
+            int r = analog_signal_array[start_index + 3 + d].reliab;
+            bits[idx] = parity[(d * 2) + 0];
+            reliab[idx++] = r;
+            bits[idx] = parity[(d * 2) + 1];
+            reliab[idx++] = r;
+        }
+
+        char corrected[10];
+        int soft_result = hamming_10_6_3_soft(bits, reliab, corrected);
+        if (soft_result != 2) {
+            /* Soft decode succeeded: copy corrected bits back */
+            for (int i = 0; i < 6; i++) {
+                hex[i] = corrected[i];
+            }
+            for (int i = 0; i < 4; i++) {
+                parity[i] = corrected[6 + i];
+            }
+            error_count = soft_result; /* 0 or 1 */
+        }
+    }
 
     if (error_count == 1) {
         state->debug_header_errors++;

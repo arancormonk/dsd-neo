@@ -31,6 +31,7 @@ typedef struct {
     int dibit;
     int corrected_dibit;
     int sequence_broken;
+    int reliab; /* Reliability 0-255 (0=uncertain, 255=confident). Use int for struct alignment consistency. */
 } AnalogSignal;
 
 #ifdef __cplusplus

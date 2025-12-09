@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <time.h>
 
 // Uncomment for some verbose debug info
@@ -60,7 +61,8 @@ swap_hex_words(char* dodeca_data, char* dodeca_parity) {
 }
 
 /**
- * Read an hex word, its parity bits and attempts to error correct it using the Hamming algorithm.
+ * Read a dodeca (12-bit) word, its parity bits and attempts to error correct it using the Golay(24,12) algorithm.
+ * Uses soft decode if hard decode fails and reliability info is available.
  */
 static void
 read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int* status_count,
@@ -69,6 +71,9 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     int fixed_errors;
     int irrecoverable_errors;
 
+    /* Remember where this dodeca word's analog signals start */
+    int start_index = *analog_signal_index;
+
     // Read the hex word
     read_word(opts, state, dodeca, 12, status_count, analog_signal_array, analog_signal_index);
     // Read the parity
@@ -76,11 +81,11 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
 
 #ifdef TDULC_DEBUG
     fprintf(stderr, "[");
-    for (i = 0; i < 12; i++) {
+    for (int i = 0; i < 12; i++) {
         fprintf(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
     }
     fprintf(stderr, "-");
-    for (i = 0; i < 12; i++) {
+    for (int i = 0; i < 12; i++) {
         fprintf(stderr, "%c", (parity[i] == 1) ? 'X' : ' ');
     }
     fprintf(stderr, "]");
@@ -90,13 +95,47 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     irrecoverable_errors = check_and_fix_golay_24_12(dodeca, parity, &fixed_errors);
 
     state->debug_header_errors += fixed_errors;
+
+    if (irrecoverable_errors != 0 && analog_signal_array != NULL && opts->p25_p1_soft_voice) {
+        /* Hard decode failed - try soft decode using reliability info.
+         * The analog_signal_array from start_index contains 12 dibits:
+         *   [0..5] = 6 dibits for 12 data bits
+         *   [6..11] = 6 dibits for 12 parity bits
+         * Extract per-bit reliability by taking dibit reliability for both bits.
+         */
+        const AnalogSignal* sig = &analog_signal_array[start_index];
+        int reliab[24];
+        int idx = 0;
+
+        /* Data bits: 6 dibits -> 12 bits */
+        for (int d = 0; d < 6; d++) {
+            int r = sig[d].reliab;
+            reliab[idx++] = r;
+            reliab[idx++] = r;
+        }
+        /* Parity bits: 6 dibits -> 12 bits */
+        for (int d = 6; d < 12; d++) {
+            int r = sig[d].reliab;
+            reliab[idx++] = r;
+            reliab[idx++] = r;
+        }
+
+        int soft_fixed = 0;
+        int soft_result = check_and_fix_golay_24_12_soft(dodeca, parity, reliab, &soft_fixed);
+        if (soft_result == 0) {
+            /* Soft decode succeeded */
+            state->debug_header_errors += soft_fixed;
+            irrecoverable_errors = 0;
+        }
+    }
+
     if (irrecoverable_errors != 0) {
         state->debug_header_critical_errors++;
     }
 
 #ifdef TDULC_DEBUG
     fprintf(stderr, " -> [");
-    for (i = 0; i < 12; i++) {
+    for (int i = 0; i < 12; i++) {
         fprintf(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
     }
     fprintf(stderr, "]");
@@ -222,7 +261,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
     int irrecoverable_errors;
 
-    AnalogSignal analog_signal_array[6 * (6 + 6) + 6 * (6 + 6) + 10];
+    AnalogSignal analog_signal_array[6 * (6 + 6) + 6 * (6 + 6) + 10] = {0};
     int analog_signal_index;
 
     analog_signal_index = 0;

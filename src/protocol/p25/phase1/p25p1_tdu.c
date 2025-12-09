@@ -18,7 +18,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     //or stale slot value from p2 and then decoding a pdu
     state->currentslot = 0;
 
-    AnalogSignal analog_signal_array[14];
+    AnalogSignal analog_signal_array[14] = {0};
     int status_count;
 
     // we skip the status dibits that occur every 36 symbols

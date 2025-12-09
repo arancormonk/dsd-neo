@@ -512,6 +512,71 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
         return irrecoverable_errors;
     }
 
+    /**
+     * Does a Reed-Solomon decode with soft erasure information.
+     * Uses a simple strategy: try hard decode first, and if it fails, try zeroing
+     * erased symbols one at a time to help the decoder.
+     *
+     * \param hex_data Data packed bits, char[20][6], 20 hex words. Corrected in place.
+     * \param hex_parity Parity packed bits, char[16][6], 16 hex words.
+     * \param erasures Array of erasure positions in RS codeword space (0-15=parity, 16-35=data).
+     * \param n_erasures Number of erasure positions (max 16 for t=8).
+     * \return 1 if irrecoverable errors, 0 otherwise.
+     */
+    int
+    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) {
+        // Try hard decode first
+        int result = decode(hex_data, hex_parity);
+        if (result == 0) {
+            return 0; // Success
+        }
+
+        // Hard decode failed. If we have erasure info, try zeroing erased symbols.
+        // This is a simplified approach - true erasure decoding would modify the
+        // Berlekamp-Massey algorithm. For now, we try helping the decoder by
+        // assuming erased positions have value 0 (which may be correct).
+        if (n_erasures > 0 && n_erasures <= 16) {
+            char hex_data_copy[20 * 6];
+            char hex_parity_copy[16 * 6];
+
+            for (int i = 0; i < 20 * 6; i++) {
+                hex_data_copy[i] = hex_data[i];
+            }
+            for (int i = 0; i < 16 * 6; i++) {
+                hex_parity_copy[i] = hex_parity[i];
+            }
+
+            // Zero out erased symbols
+            for (int e = 0; e < n_erasures; e++) {
+                int pos = erasures[e];
+                if (pos >= 0 && pos < 16) {
+                    // Parity position
+                    for (int b = 0; b < 6; b++) {
+                        hex_parity_copy[pos * 6 + b] = 0;
+                    }
+                } else if (pos >= 16 && pos < 36) {
+                    // Data position
+                    int data_idx = pos - 16;
+                    for (int b = 0; b < 6; b++) {
+                        hex_data_copy[data_idx * 6 + b] = 0;
+                    }
+                }
+            }
+
+            // Try decode with zeroed erasures
+            result = decode(hex_data_copy, hex_parity_copy);
+            if (result == 0) {
+                // Success - copy corrected data back
+                for (int i = 0; i < 20 * 6; i++) {
+                    hex_data[i] = hex_data_copy[i];
+                }
+                return 0;
+            }
+        }
+
+        return 1; // Failed
+    }
+
     void
     encode(const char* hex_data, char* out_hex_parity) {
         int input[47];
@@ -588,6 +653,58 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
         return irrecoverable_errors;
     }
 
+    /**
+     * Does a Reed-Solomon decode with soft erasure information.
+     *
+     * \param hex_data Data packed bits, char[12][6], 12 hex words. Corrected in place.
+     * \param hex_parity Parity packed bits, char[12][6], 12 hex words.
+     * \param erasures Array of erasure positions in RS codeword space (0-11=parity, 12-23=data).
+     * \param n_erasures Number of erasure positions (max 12 for t=6).
+     * \return 1 if irrecoverable errors, 0 otherwise.
+     */
+    int
+    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) {
+        // Try hard decode first
+        int result = decode(hex_data, hex_parity);
+        if (result == 0) {
+            return 0;
+        }
+
+        if (n_erasures > 0 && n_erasures <= 12) {
+            char hex_data_copy[12 * 6];
+            char hex_parity_copy[12 * 6];
+
+            for (int i = 0; i < 12 * 6; i++) {
+                hex_data_copy[i] = hex_data[i];
+                hex_parity_copy[i] = hex_parity[i];
+            }
+
+            for (int e = 0; e < n_erasures; e++) {
+                int pos = erasures[e];
+                if (pos >= 0 && pos < 12) {
+                    for (int b = 0; b < 6; b++) {
+                        hex_parity_copy[pos * 6 + b] = 0;
+                    }
+                } else if (pos >= 12 && pos < 24) {
+                    int data_idx = pos - 12;
+                    for (int b = 0; b < 6; b++) {
+                        hex_data_copy[data_idx * 6 + b] = 0;
+                    }
+                }
+            }
+
+            result = decode(hex_data_copy, hex_parity_copy);
+            if (result == 0) {
+                for (int i = 0; i < 12 * 6; i++) {
+                    hex_data[i] = hex_data_copy[i];
+                }
+                return 0;
+            }
+        }
+
+        return 1;
+    }
+
     void
     encode(const char* hex_data, char* out_hex_parity) {
         int input[51];
@@ -662,6 +779,60 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
         }
 
         return irrecoverable_errors;
+    }
+
+    /**
+     * Does a Reed-Solomon decode with soft erasure information.
+     *
+     * \param hex_data Data packed bits, char[16][6], 16 hex words. Corrected in place.
+     * \param hex_parity Parity packed bits, char[8][6], 8 hex words.
+     * \param erasures Array of erasure positions in RS codeword space (0-7=parity, 8-23=data).
+     * \param n_erasures Number of erasure positions (max 8 for t=4).
+     * \return 1 if irrecoverable errors, 0 otherwise.
+     */
+    int
+    decode_soft(char* hex_data, const char* hex_parity, const int* erasures, int n_erasures) {
+        // Try hard decode first
+        int result = decode(hex_data, hex_parity);
+        if (result == 0) {
+            return 0;
+        }
+
+        if (n_erasures > 0 && n_erasures <= 8) {
+            char hex_data_copy[16 * 6];
+            char hex_parity_copy[8 * 6];
+
+            for (int i = 0; i < 16 * 6; i++) {
+                hex_data_copy[i] = hex_data[i];
+            }
+            for (int i = 0; i < 8 * 6; i++) {
+                hex_parity_copy[i] = hex_parity[i];
+            }
+
+            for (int e = 0; e < n_erasures; e++) {
+                int pos = erasures[e];
+                if (pos >= 0 && pos < 8) {
+                    for (int b = 0; b < 6; b++) {
+                        hex_parity_copy[pos * 6 + b] = 0;
+                    }
+                } else if (pos >= 8 && pos < 24) {
+                    int data_idx = pos - 8;
+                    for (int b = 0; b < 6; b++) {
+                        hex_data_copy[data_idx * 6 + b] = 0;
+                    }
+                }
+            }
+
+            result = decode(hex_data_copy, hex_parity_copy);
+            if (result == 0) {
+                for (int i = 0; i < 16 * 6; i++) {
+                    hex_data[i] = hex_data_copy[i];
+                }
+                return 0;
+            }
+        }
+
+        return 1;
     }
 
     void

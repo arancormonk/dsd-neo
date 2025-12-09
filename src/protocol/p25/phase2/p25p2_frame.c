@@ -739,6 +739,32 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
     int ec = 69;
     ec = ez_rs28_ess(payload, parity);
 
+    /* If hard decode failed and soft-decision is enabled, try with erasures */
+    if (ec < 0 && opts->p25_p2_soft_erasure) {
+        /* Reload payload and parity (hard decode may have corrupted them) */
+        for (int i = 0; i < 96; i++) {
+            payload[i] = state->ess_b[state->currentslot][i];
+        }
+        for (int i = 0; i < 168; i++) {
+            parity[i] = ess_a[state->currentslot][i];
+        }
+
+        /* Build erasure list from reliability info.
+         * ESS_B (payload) is collected across 4V frames, ESS_A (parity) from 2V.
+         * Use ts_counter=0 as base since ESS spans multiple frames.
+         */
+        int erasures[44];
+        int n_erasures = p25p2_ess_soft_erasures(0, 1, erasures, 0, 10);      /* 4V payload */
+        n_erasures = p25p2_ess_soft_erasures(0, 0, erasures, n_erasures, 10); /* 2V parity */
+
+        if (n_erasures > 0) {
+            ec = ez_rs28_ess_soft(payload, parity, erasures, n_erasures);
+            if (ec >= 0) {
+                state->p25_p2_soft_ess_ok++;
+            }
+        }
+    }
+
     int algid = 0;
     for (short i = 0; i < 8; i++) {
         algid = algid << 1;

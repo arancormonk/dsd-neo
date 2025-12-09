@@ -23,12 +23,51 @@
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
+
+/**
+ * Read a dibit and retrieve both analog signal value and reliability.
+ *
+ * @param opts      Decoder options.
+ * @param state     Decoder state.
+ * @param analog    Output: analog signal value (for heuristics).
+ * @param reliab    Output: reliability 0-255 (for soft decode).
+ * @return The dibit value (0-3).
+ *
+ * Implementation note: Reliability is read from dmr_reliab_p[-1] because
+ * dmr_compute_reliability() advances the pointer AFTER writing. Guard against
+ * buffer wrap using the same bounds as the writer (wraps at +900000, starts
+ * at +200). Only read when rp lies in [dmr_reliab_buf+200, dmr_reliab_buf+900000).
+ */
+static int
+get_dibit_analog_and_reliability(dsd_opts* opts, dsd_state* state, int* analog, int* reliab) {
+    int dibit = get_dibit_and_analog_signal(opts, state, analog);
+
+    int r = 255;
+    if (state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
+        uint8_t* rp = state->dmr_reliab_p - 1;
+        if (rp >= state->dmr_reliab_buf + 200 && rp < state->dmr_reliab_buf + 1000000) {
+            r = (int)(*rp);
+        }
+    }
+
+    if (r < 0) {
+        r = 0;
+    }
+    if (r > 255) {
+        r = 255;
+    }
+    *reliab = r;
+
+    return dibit;
+}
 
 int
-read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
-           int* did_read_status) {
+read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal, int* did_read_status,
+           int* reliab) {
     int dibit;
     int status;
+    int r;
     UNUSED(status);
 
     if (*status_count == 35) {
@@ -57,7 +96,10 @@ read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, in
         (*status_count)++;
     }
 
-    dibit = get_dibit_and_analog_signal(opts, state, analog_signal);
+    dibit = get_dibit_analog_and_reliability(opts, state, analog_signal, &r);
+    if (reliab != NULL) {
+        *reliab = r;
+    }
     output[0] = (1 & (dibit >> 1)); // bit 1
     output[1] = (1 & dibit);        // bit 0
 
@@ -73,15 +115,17 @@ read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, un
         // We read two bits on each call
         int analog_signal;
         int did_read_status;
+        int reliab;
         int dibit;
 
-        dibit = read_dibit(opts, state, output + i, status_count, &analog_signal, &did_read_status);
+        dibit = read_dibit(opts, state, output + i, status_count, &analog_signal, &did_read_status, &reliab);
 
         if (analog_signal_array != NULL) {
             // Fill up the AnalogSignal struct
             analog_signal_array[*analog_signal_index].value = analog_signal;
             analog_signal_array[*analog_signal_index].dibit = dibit;
             analog_signal_array[*analog_signal_index].sequence_broken = did_read_status;
+            analog_signal_array[*analog_signal_index].reliab = reliab;
             (*analog_signal_index)++;
         }
     }
@@ -107,16 +151,56 @@ read_hamm_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_cou
 }
 
 /**
- * Corrects a hex (6 bit) word  using the Golay 24 FEC.
+ * Corrects a hex (6 bit) word using the Golay 24 FEC.
+ * Uses soft decode if hard decode fails and reliability info is available.
+ *
+ * @param state Decoder state for error tracking.
+ * @param hex   The 6-bit data word (modified in place).
+ * @param parity The 12-bit parity word.
+ * @param analog_signal_array AnalogSignal array for this hex word (9 dibits: 3 data + 6 parity).
+ *                            May be NULL to disable soft decode.
  */
 static void
-correct_hex_word(dsd_state* state, char* hex, char* parity) {
+correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, char* parity, const AnalogSignal* analog_signal_array) {
     int fixed_errors;
     int irrecoverable_errors;
 
     irrecoverable_errors = check_and_fix_golay_24_6(hex, parity, &fixed_errors);
 
     state->debug_header_errors += fixed_errors;
+
+    if (irrecoverable_errors != 0 && analog_signal_array != NULL && opts->p25_p1_soft_voice) {
+        /* Hard decode failed - try soft decode using reliability info.
+         * The analog_signal_array contains 9 dibits:
+         *   [0..2] = 3 dibits for 6 data bits
+         *   [3..8] = 6 dibits for 12 parity bits
+         * Extract per-bit reliability by taking dibit reliability for both bits.
+         */
+        int reliab[18];
+        int idx = 0;
+
+        /* Data bits: 3 dibits -> 6 bits */
+        for (int d = 0; d < 3; d++) {
+            int r = analog_signal_array[d].reliab;
+            reliab[idx++] = r; /* bit 0 of dibit */
+            reliab[idx++] = r; /* bit 1 of dibit */
+        }
+        /* Parity bits: 6 dibits -> 12 bits */
+        for (int d = 3; d < 9; d++) {
+            int r = analog_signal_array[d].reliab;
+            reliab[idx++] = r;
+            reliab[idx++] = r;
+        }
+
+        int soft_fixed = 0;
+        int soft_result = check_and_fix_golay_24_6_soft(hex, parity, reliab, &soft_fixed);
+        if (soft_result == 0) {
+            /* Soft decode succeeded */
+            state->debug_header_errors += soft_fixed;
+            irrecoverable_errors = 0;
+        }
+    }
+
     if (irrecoverable_errors != 0) {
         state->debug_header_critical_errors++;
     }
@@ -130,12 +214,18 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
                           AnalogSignal* analog_signal_array, int* analog_signal_index) {
     char parity[12];
 
+    /* Remember where this hex word's analog signals start */
+    int start_index = *analog_signal_index;
+
     // Read the hex word
     read_word(opts, state, hex, 6, status_count, analog_signal_array, analog_signal_index);
     // Read the parity
     read_golay24_parity(opts, state, parity, status_count, analog_signal_array, analog_signal_index);
-    // Use the Golay24 FEC to correct it. This call modifies the content of hex to fix it, hopefully
-    correct_hex_word(state, hex, parity);
+
+    // Use the Golay24 FEC to correct it. This call modifies the content of hex to fix it, hopefully.
+    // Pass the analog signal array starting at this hex word for soft decode support.
+    const AnalogSignal* hex_analog = (analog_signal_array != NULL) ? &analog_signal_array[start_index] : NULL;
+    correct_hex_word(opts, state, hex, parity, hex_analog);
 }
 
 /**
@@ -229,7 +319,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     int irrecoverable_errors;
 
-    AnalogSignal analog_signal_array[20 * (3 + 6) + 16 * (3 + 6)];
+    AnalogSignal analog_signal_array[20 * (3 + 6) + 16 * (3 + 6)] = {0};
     int analog_signal_index;
 
     analog_signal_index = 0;

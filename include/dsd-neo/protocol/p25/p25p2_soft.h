@@ -49,6 +49,22 @@ int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int 
  */
 int p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);
 
+/**
+ * Build soft-decision erasure list for ESS.
+ *
+ * ESS uses RS(44,16,29) with:
+ *   - 16 payload hexbits (positions 0-15 in RS space)
+ *   - 28 parity hexbits (positions 16-43 in RS space)
+ *
+ * @param ts_counter  Current timeslot counter (0-3).
+ * @param is_4v       1 for ESS_B (4V mode, 96 bits across 4 frames), 0 for ESS_A (2V mode).
+ * @param erasures    Erasure array (in/out). Must have space for n_fixed + max_add.
+ * @param n_fixed     Number of fixed erasures already present.
+ * @param max_add     Maximum dynamic erasures to add.
+ * @return Total erasure count.
+ */
+int p25p2_ess_soft_erasures(int ts_counter, int is_4v, int* erasures, int n_fixed, int max_add);
+
 #ifdef __cplusplus
 }
 #endif

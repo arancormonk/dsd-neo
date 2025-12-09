@@ -212,6 +212,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_NOTICE("P25P2: Soft-decision RS erasure marking disabled.\n");
             continue;
         }
+        if (strcmp(argv[i], "--no-p25p1-soft-voice") == 0) {
+            opts->p25_p1_soft_voice = 0;
+            LOG_NOTICE("P25P1: Soft-decision voice FEC disabled.\n");
+            continue;
+        }
     }
 
     // If CLI present, set env vars and maybe run calculator
@@ -341,6 +346,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             continue;
         }
         if (strcmp(argv[i], "--no-p25p2-soft") == 0) {
+            continue;
+        }
+        if (strcmp(argv[i], "--no-p25p1-soft-voice") == 0) {
             continue;
         }
         if (strcmp(argv[i], "--config") == 0) {

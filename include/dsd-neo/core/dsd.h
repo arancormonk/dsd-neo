@@ -1414,6 +1414,8 @@ int ez_rs28_sacch(int payload[180], int parity[132]); //ezpwd bridge for FME
 int ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures);
 /** @brief Correct P25p2 SACCH with dynamic erasures. */
 int ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures);
+/** @brief Correct P25p2 ESS with dynamic erasures. */
+int ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_erasures);
 /** @brief Lookup ISCH codeword index from 40-bit hash. */
 int isch_lookup(uint64_t isch); //isch map lookup
 

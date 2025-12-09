@@ -71,7 +71,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
 
     int irrecoverable_errors;
 
-    AnalogSignal analog_signal_array[12 * (3 + 2) + 12 * (3 + 2)];
+    AnalogSignal analog_signal_array[12 * (3 + 2) + 12 * (3 + 2)] = {0};
     int analog_signal_index;
 
     analog_signal_index = 0;
@@ -314,10 +314,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         char cyclic_parity[8];
 
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, lsd + i, &status_count, NULL, NULL);
+            read_dibit(opts, state, lsd + i, &status_count, NULL, NULL, NULL);
         }
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, cyclic_parity + i, &status_count, NULL, NULL);
+            read_dibit(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL);
         }
         lsd_hex1 = 0;
         for (i = 0; i < 8; i++) {
@@ -329,10 +329,10 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         }
 
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, lsd + i, &status_count, NULL, NULL);
+            read_dibit(opts, state, lsd + i, &status_count, NULL, NULL, NULL);
         }
         for (i = 0; i <= 6; i += 2) {
-            read_dibit(opts, state, cyclic_parity + i, &status_count, NULL, NULL);
+            read_dibit(opts, state, cyclic_parity + i, &status_count, NULL, NULL, NULL);
         }
         lsd_hex2 = 0;
         for (i = 0; i < 8; i++) {

@@ -25,9 +25,10 @@
  * \param did_read_status Address were a boolean is returned. This is set to true when one status symbol was
  * read (and skipped). This indicates that the sequence on dibits has been broken and is used by the P25
  * heuristics.
+ * \param reliab Output: reliability 0-255 (for soft decode). May be NULL.
  */
 int read_dibit(dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal,
-               int* did_read_status);
+               int* did_read_status, int* reliab);
 
 /**
  * Reads a number of dibits and stores its value together with the actual analog value that has been
