@@ -775,3 +775,24 @@ add_executable(dsd-neo_test_p25p1_soft_golay
 target_include_directories(dsd-neo_test_p25p1_soft_golay PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_p25p1_soft_golay PRIVATE dsd-neo_fec)
 add_test(NAME P25P1_SOFT_GOLAY COMMAND dsd-neo_test_p25p1_soft_golay)
+
+# Config system tests
+add_executable(dsd-neo_test_config_expand runtime/test_config_expand.cpp)
+target_include_directories(dsd-neo_test_config_expand PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_config_expand PRIVATE dsd-neo_runtime)
+add_test(NAME CONFIG_EXPAND COMMAND dsd-neo_test_config_expand)
+
+add_executable(dsd-neo_test_config_template runtime/test_config_template.cpp)
+target_include_directories(dsd-neo_test_config_template PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_config_template PRIVATE dsd-neo_runtime)
+add_test(NAME CONFIG_TEMPLATE COMMAND dsd-neo_test_config_template)
+
+add_executable(dsd-neo_test_config_validation runtime/test_config_validation.cpp)
+target_include_directories(dsd-neo_test_config_validation PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_config_validation PRIVATE dsd-neo_runtime)
+add_test(NAME CONFIG_VALIDATION COMMAND dsd-neo_test_config_validation)
+
+add_executable(dsd-neo_test_config_profile runtime/test_config_profile.cpp)
+target_include_directories(dsd-neo_test_config_profile PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_config_profile PRIVATE dsd-neo_runtime)
+add_test(NAME CONFIG_PROFILE COMMAND dsd-neo_test_config_profile)

@@ -14,6 +14,9 @@
 #ifndef DSD_NEO_RUNTIME_CONFIG_H
 #define DSD_NEO_RUNTIME_CONFIG_H
 
+/* Include schema types first (before extern "C" for C++ compat) */
+#include <dsd-neo/runtime/config_schema.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -350,6 +353,14 @@ typedef enum {
     DSDCFG_MODE_ANALOG
 } dsdneoUserDecodeMode;
 
+typedef enum {
+    DSDCFG_DEMOD_UNSET = 0,
+    DSDCFG_DEMOD_AUTO,
+    DSDCFG_DEMOD_C4FM,
+    DSDCFG_DEMOD_GFSK,
+    DSDCFG_DEMOD_QPSK
+} dsdneoUserDemodPath;
+
 typedef struct dsdneoUserConfig {
     int version; /* schema version, currently 1 */
 
@@ -382,6 +393,8 @@ typedef struct dsdneoUserConfig {
     /* [mode] */
     int has_mode;
     dsdneoUserDecodeMode decode_mode;
+    int has_demod;
+    dsdneoUserDemodPath demod_path;
 
     /* [trunking] */
     int has_trunking;
@@ -446,6 +459,85 @@ void dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* sta
  * @param stream Output stream (stdout/stderr/file).
  */
 void dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream);
+
+/**
+ * @brief Render a commented config template with all options and defaults.
+ *
+ * Generates a fully-commented INI file showing all available configuration
+ * keys with their descriptions, types, and default values.
+ *
+ * @param stream Output stream (stdout/file).
+ */
+void dsd_user_config_render_template(FILE* stream);
+
+/**
+ * @brief Expand shell-like variables in a path string.
+ *
+ * Expands:
+ *   ~       -> $HOME or platform home directory
+ *   $VAR    -> environment variable VAR
+ *   ${VAR}  -> environment variable VAR (braced form)
+ *
+ * Missing variables expand to empty string (no error).
+ *
+ * @param input Input path with possible variables.
+ * @param output Output buffer for expanded path.
+ * @param output_size Size of output buffer.
+ * @return 0 on success; -1 on truncation or error.
+ */
+int dsd_config_expand_path(const char* input, char* output, size_t output_size);
+
+/**
+ * @brief Load a user config with optional profile overlay.
+ *
+ * Loads the base configuration from the INI file. If profile_name is non-NULL,
+ * the named [profile.NAME] section is applied on top of the base config.
+ *
+ * Profile sections use dotted key syntax: section.key = value
+ *
+ * @param path Path to INI file.
+ * @param profile_name Profile name (NULL for base config only).
+ * @param cfg [out] Destination user config.
+ * @return 0 on success; non-zero on error.
+ */
+int dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoUserConfig* cfg);
+
+/**
+ * @brief List available profile names in a config file.
+ *
+ * Scans the INI file for [profile.NAME] sections and returns the names.
+ *
+ * @param path Path to INI file.
+ * @param names Output array of profile name pointers (caller provides).
+ * @param names_buf Buffer to store profile name strings.
+ * @param names_buf_size Size of names buffer.
+ * @param max_names Maximum number of names to return.
+ * @return Number of profiles found, or -1 on error.
+ */
+int dsd_user_config_list_profiles(const char* path, const char** names, char* names_buf, size_t names_buf_size,
+                                  int max_names);
+
+/**
+ * @brief Validate a config file and collect diagnostics.
+ *
+ * Parses the config file and checks for:
+ *   - Unknown keys (warning)
+ *   - Type mismatches (error)
+ *   - Value range violations (warning)
+ *   - Deprecated key usage (info)
+ *
+ * @param path Path to INI file.
+ * @param diags [out] Diagnostic results (caller frees via dsd_user_config_diags_free).
+ * @return 0 if no errors; non-zero if errors present.
+ */
+int dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags);
+
+/**
+ * @brief Free diagnostic results from validation.
+ *
+ * @param diags Diagnostics structure to free.
+ */
+void dsd_user_config_diags_free(dsdcfg_diagnostics_t* diags);
 
 #ifdef __cplusplus
 }

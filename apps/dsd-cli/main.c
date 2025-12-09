@@ -2879,7 +2879,13 @@ main(int argc, char** argv) {
     int disable_config_cli = 0;
     int force_bootstrap_cli = 0;
     int print_config_cli = 0;
+    int dump_template_cli = 0;
+    int validate_config_cli = 0;
+    int strict_config_cli = 0;
+    int list_profiles_cli = 0;
     const char* config_path_cli = NULL;
+    const char* profile_cli = NULL;
+    const char* validate_path_cli = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--no-config") == 0) {
@@ -2891,6 +2897,19 @@ main(int argc, char** argv) {
             force_bootstrap_cli = 1;
         } else if (strcmp(argv[i], "--print-config") == 0) {
             print_config_cli = 1;
+        } else if (strcmp(argv[i], "--dump-config-template") == 0) {
+            dump_template_cli = 1;
+        } else if (strcmp(argv[i], "--validate-config") == 0) {
+            validate_config_cli = 1;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                validate_path_cli = argv[++i];
+            }
+        } else if (strcmp(argv[i], "--strict-config") == 0) {
+            strict_config_cli = 1;
+        } else if (strcmp(argv[i], "--profile") == 0 && i + 1 < argc) {
+            profile_cli = argv[++i];
+        } else if (strcmp(argv[i], "--list-profiles") == 0) {
+            list_profiles_cli = 1;
         }
     }
 
@@ -2924,10 +2943,25 @@ main(int argc, char** argv) {
             snprintf(s_user_config_save_path, sizeof s_user_config_save_path, "%s", cfg_path);
             s_user_config_save_path[sizeof s_user_config_save_path - 1] = '\0';
 
-            if (dsd_user_config_load(cfg_path, &user_cfg) == 0) {
+            int load_rc;
+            if (profile_cli && *profile_cli) {
+                load_rc = dsd_user_config_load_profile(cfg_path, profile_cli, &user_cfg);
+            } else {
+                load_rc = dsd_user_config_load(cfg_path, &user_cfg);
+            }
+
+            if (load_rc == 0) {
                 dsd_apply_user_config_to_opts(&user_cfg, &opts, &state);
                 user_cfg_loaded = 1;
-                LOG_NOTICE("Loaded user config from %s\n", cfg_path);
+                if (profile_cli && *profile_cli) {
+                    LOG_NOTICE("Loaded user config from %s (profile: %s)\n", cfg_path, profile_cli);
+                } else {
+                    LOG_NOTICE("Loaded user config from %s\n", cfg_path);
+                }
+            } else if (profile_cli && *profile_cli) {
+                // Missing profile is fatal when --profile is specified
+                LOG_ERROR("Profile '%s' not found in config file %s\n", profile_cli, cfg_path);
+                return 1;
             } else if (config_path_cli || config_env) {
                 LOG_WARNING("Failed to load config file from %s; proceeding without config.\n", cfg_path);
             }
@@ -2979,6 +3013,85 @@ main(int argc, char** argv) {
         dsdneoUserConfig eff;
         dsd_snapshot_opts_to_user_config(&opts, &state, &eff);
         dsd_user_config_render_ini(&eff, stdout);
+        return 0;
+    }
+
+    // --dump-config-template: print commented template and exit
+    if (dump_template_cli) {
+        dsd_user_config_render_template(stdout);
+        return 0;
+    }
+
+    // --validate-config: validate config file and exit
+    if (validate_config_cli) {
+        const char* vpath = validate_path_cli;
+        if (!vpath || !*vpath) {
+            // Use default or explicit config path
+            if (config_path_cli && *config_path_cli) {
+                vpath = config_path_cli;
+            } else if (config_env && *config_env) {
+                vpath = config_env;
+            } else {
+                vpath = dsd_user_config_default_path();
+            }
+        }
+        if (!vpath || !*vpath) {
+            fprintf(stderr, "No config file path specified or found.\n");
+            return 1;
+        }
+
+        dsdcfg_diagnostics_t diags;
+        int rc = dsd_user_config_validate(vpath, &diags);
+
+        if (diags.count > 0) {
+            dsdcfg_diags_print(&diags, stderr, vpath);
+        } else {
+            fprintf(stderr, "%s: OK\n", vpath);
+        }
+
+        int exit_code = 0;
+        if (rc != 0 || diags.error_count > 0) {
+            exit_code = 1;
+        } else if (strict_config_cli && diags.warning_count > 0) {
+            exit_code = 2;
+        }
+
+        dsd_user_config_diags_free(&diags);
+        return exit_code;
+    }
+
+    // --list-profiles: list available profiles and exit
+    if (list_profiles_cli) {
+        const char* lpath = config_path_cli;
+        if (!lpath || !*lpath) {
+            if (config_env && *config_env) {
+                lpath = config_env;
+            } else {
+                lpath = dsd_user_config_default_path();
+            }
+        }
+        if (!lpath || !*lpath) {
+            fprintf(stderr, "No config file path specified or found.\n");
+            return 1;
+        }
+
+        const char* names[32];
+        char names_buf[1024];
+        int count = dsd_user_config_list_profiles(lpath, names, names_buf, sizeof names_buf, 32);
+
+        if (count < 0) {
+            fprintf(stderr, "Failed to read config file: %s\n", lpath);
+            return 1;
+        }
+
+        if (count == 0) {
+            printf("No profiles found in %s\n", lpath);
+        } else {
+            printf("Profiles in %s:\n", lpath);
+            for (int i = 0; i < count; i++) {
+                printf("  %s\n", names[i]);
+            }
+        }
         return 0;
     }
 

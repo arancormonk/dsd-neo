@@ -221,10 +221,98 @@ test_snapshot_roundtrip(void) {
     return rc;
 }
 
+static int
+test_apply_demod_lock(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[mode]\n"
+                             "decode = \"auto\"\n"
+                             "demod = \"qpsk\"\n";
+
+    char path[128];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
+        unlink(path);
+        return 1;
+    }
+
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof opts);
+    memset(&state, 0, sizeof state);
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (!(opts.mod_cli_lock == 1 && opts.mod_qpsk == 1 && opts.mod_c4fm == 0 && opts.mod_gfsk == 0)) {
+        fprintf(stderr, "demod lock not applied correctly (c4fm=%d qpsk=%d gfsk=%d lock=%d)\n", opts.mod_c4fm,
+                opts.mod_qpsk, opts.mod_gfsk, opts.mod_cli_lock);
+        rc |= 1;
+    }
+    if (state.rf_mod != 1) {
+        fprintf(stderr, "rf_mod should be 1 for QPSK lock, got %d\n", state.rf_mod);
+        rc |= 1;
+    }
+
+    unlink(path);
+    return rc;
+}
+
+static int
+test_snapshot_persists_demod_lock(void) {
+    dsd_opts opts;
+    dsd_state state;
+    memset(&opts, 0, sizeof opts);
+    memset(&state, 0, sizeof state);
+
+    snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "pulse");
+    snprintf(opts.audio_out_dev, sizeof opts.audio_out_dev, "null");
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 1;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+
+    int rc = 0;
+    if (!snap.has_demod || snap.demod_path != DSDCFG_DEMOD_QPSK) {
+        fprintf(stderr, "snapshot missing demod lock (has_demod=%d demod_path=%d)\n", snap.has_demod, snap.demod_path);
+        rc |= 1;
+    }
+
+    FILE* tmp = tmpfile();
+    if (!tmp) {
+        fprintf(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    dsd_user_config_render_ini(&snap, tmp);
+    rewind(tmp);
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof buf - 1, tmp);
+    buf[n] = '\0';
+    fclose(tmp);
+
+    if (!strstr(buf, "demod = \"qpsk\"")) {
+        fprintf(stderr, "rendered INI missing demod line:\n%s\n", buf);
+        rc |= 1;
+    }
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_load_and_apply_basic();
     rc |= test_snapshot_roundtrip();
+    rc |= test_apply_demod_lock();
+    rc |= test_snapshot_persists_demod_lock();
     return rc;
 }

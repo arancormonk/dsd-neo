@@ -366,6 +366,27 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (strcmp(argv[i], "--interactive-setup") == 0) {
             continue;
         }
+        if (strcmp(argv[i], "--dump-config-template") == 0) {
+            continue;
+        }
+        if (strcmp(argv[i], "--validate-config") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-') {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--strict-config") == 0) {
+            continue;
+        }
+        if (strcmp(argv[i], "--profile") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--list-profiles") == 0) {
+            continue;
+        }
         if (strcmp(argv[i], "--p25-vc-grace") == 0) {
             if (i + 1 < argc) {
                 i++;

@@ -1,8 +1,7 @@
-# DSD-neo Configuration System (Design)
+# DSD-neo Configuration System
 
-This document describes the configuration file system implemented in `dsd-neo`.
-It is intended for developers and contributors; user-focused docs can be
-derived from this.
+This document describes the configuration file system in `dsd-neo`, covering
+file format, options, profiles, validation, and CLI integration.
 
 The goal is to let users avoid re-entering common options on every run while
 preserving strict backward compatibility with existing CLI / environment
@@ -10,7 +9,7 @@ workflows.
 
 ---
 
-## High-Level Goals
+## Goals
 
 - **Persist user preferences** such as input source, output backend, decode
   mode, trunking basics, and UI behavior.
@@ -18,12 +17,15 @@ workflows.
   - If no config file exists, behavior is identical to current releases.
   - CLI arguments and environment variables always take precedence over
     config file values.
-- **Simple and dependency-free** implementation using an INI-style file
-  format with a small internal parser.
-- **Future-proof**:
-  - Config files are versioned.
-  - Unknown keys are ignored (silently), so older binaries can safely
-    read newer configs and vice versa where possible.
+- **Simple INI-style format** that's easy to read and edit.
+- **Future-proof**: Config files are versioned; unknown keys generate
+  warnings but do not prevent loading.
+- **Validation** with helpful diagnostics including line numbers.
+- **User experience enhancements**:
+  - Template generation (`--dump-config-template`).
+  - Path expansion (`~`, `$VAR`, `${VAR}`).
+  - Profile support for switching between configurations.
+  - Include directive for modular configs.
 
 ---
 
@@ -38,12 +40,14 @@ We use a minimal INI-style format:
   - Strings (unquoted or double-quoted).
   - Integers (parsed with `strtol`).
   - Booleans (`true` / `false`, `yes` / `no`, `on` / `off`, `1` / `0`).
+  - Paths (support `~` and `$VAR` expansion).
+  - Frequencies (support K/M/G suffix, e.g., `851.375M`).
 
 Design principles:
 
 - **Whitespace is ignored** around keys, the `=` sign, and values.
 - **Case-insensitive booleans** (e.g., `True`, `YES`, `0`).
-- **Unknown sections/keys are ignored**; they do not cause load failure.
+- **Unknown sections/keys generate warnings** but do not cause load failure.
 - A top-level `version` key defines the config schema version.
 
 Example:
@@ -62,13 +66,121 @@ ncurses_ui = true           # map to -N / use_ncurses_terminal
 
 [trunking]
 enabled = true
-chan_csv = "/path/to/dmr_t3_chan.csv"
-group_csv = "/path/to/group.csv"
+chan_csv = "~/dsd-neo/dmr_t3_chan.csv"   # path expansion supported
+group_csv = "$HOME/dsd-neo/group.csv"
 allow_list = true
 
 [mode]
 decode = "auto"             # auto / p25p1 / p25p2 / dmr / nxdn48 / ...
 ```
+
+---
+
+## Path Expansion
+
+Configuration values of type `PATH` support shell-like expansion:
+
+- `~` expands to the user's home directory (`$HOME` on Unix,
+  `%USERPROFILE%` on Windows).
+- `$VAR` expands to environment variable `VAR`.
+- `${VAR}` expands to environment variable `VAR` (braced form).
+- Missing variables expand to empty string (no error).
+
+Path expansion is applied to:
+- `[input] file_path`
+- `[trunking] chan_csv`
+- `[trunking] group_csv`
+- Include directive paths
+
+---
+
+## Profile Support
+
+Profiles allow defining multiple named configurations in a single file.
+Use `--profile NAME` to activate a specific profile.
+
+### Syntax
+
+Profiles are defined using `[profile.NAME]` sections with dotted key syntax:
+
+```ini
+version = 1
+
+[input]
+source = "pulse"
+
+[mode]
+decode = "auto"
+
+[trunking]
+enabled = false
+
+[profile.p25_trunk]
+# Dotted syntax: section.key = value
+mode.decode = "p25p1"
+trunking.enabled = true
+trunking.chan_csv = "~/p25/channels.csv"
+
+[profile.local_dmr]
+input.source = "rtl"
+input.rtl_device = 0
+input.rtl_freq = "446.5M"
+input.rtl_gain = 30
+mode.decode = "dmr"
+
+[profile.scanner]
+mode.decode = "auto"
+output.ncurses_ui = true
+```
+
+### Usage
+
+```bash
+# Load base config
+dsd-neo --config config.ini
+
+# Load base config with profile overlay
+dsd-neo --config config.ini --profile p25_trunk
+
+# List available profiles
+dsd-neo --config config.ini --list-profiles
+```
+
+### Behavior
+
+- Base config is loaded first.
+- Profile keys override base config values.
+- If `--profile NAME` is specified but profile doesn't exist, an error is
+  returned.
+- Profile sections do not affect base loading (they are skipped unless
+  `--profile` is specified).
+
+---
+
+## Include Directive
+
+Config files can include other files using the `include` directive:
+
+```ini
+# Main config file
+include = "/etc/dsd-neo/system.ini"
+include = "~/.config/dsd-neo/local.ini"
+
+version = 1
+
+[input]
+source = "rtl"  # overrides anything from includes
+```
+
+### Rules
+
+- Include directives must appear **before** any section headers.
+- Paths support expansion (`~`, `$VAR`, `${VAR}`).
+- Maximum include depth: 3 (to prevent infinite recursion).
+- Circular includes are detected and silently skipped.
+- Included files are processed first; main file values override includes.
+- Profile sections in included files are ignored (profiles are only read
+  from the main config file).
 
 ---
 
@@ -111,26 +223,18 @@ exist, we skip config and run as today.
 
 ## Precedence Rules
 
-The effective options are derived from multiple sources in a strict order:
+Options are derived from multiple sources, with later sources overriding
+earlier ones:
 
 1. **Built-in defaults**
-   - Whatever `initOpts()` / `initState()` currently configure.
-2. **Config file**
-   - Loaded from explicit or default path.
-   - Sets baseline user preferences.
+2. **Config file** (explicit or default path)
 3. **Environment variables**
-   - Both the existing DSP/runtime env (parsed in `config.cpp`) and the
-     env mapping in `src/runtime/cli/args.c`.
-4. **CLI arguments**
-   - Short options and long options handled in `dsd_parse_args()`.
+4. **CLI arguments** (highest priority)
 
-Rules:
-
-- Later sources override earlier ones.
-- Config never overrides env or CLI; it is strictly lower precedence than
-  both, higher only than built-in defaults.
-- This preserves all existing usage: any automation that relies on env or
-  CLI continues to work exactly as before, regardless of config presence.
+This ensures:
+- Config never overrides env or CLI.
+- Existing scripts and automation work unchanged.
+- Config provides convenient defaults that can be overridden when needed.
 
 ---
 
@@ -152,450 +256,272 @@ Behavior:
 
 ---
 
-## Internal Data Structures
+## Configuration Reference
 
-To keep concerns separated and to avoid coupling the parser to the
-full `dsd_opts`/`dsd_state` types, we use a dedicated struct (implemented
-in `include/dsd-neo/runtime/config.h`):
+**[input] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `source` | ENUM | Input source type | `pulse` |
+| `pulse_source` | STRING | PulseAudio source device | (empty) |
+| `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
+| `rtl_freq` | FREQ | RTL-SDR frequency | `850M` |
+| `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
+| `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
+| `rtl_bw_khz` | INT (6-48) | DSP bandwidth | `48` |
+| `rtl_sql` | INT (-100-0) | Squelch level | `0` |
+| `rtl_volume` | INT (1-10) | Volume multiplier | `2` |
+| `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
+| `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
+| `file_path` | PATH | Input file path | (empty) |
+| `file_sample_rate` | INT (8000-192000) | File sample rate | `48000` |
+| `tcp_host` | STRING | TCP direct host | `127.0.0.1` |
+| `tcp_port` | INT (1-65535) | TCP direct port | `7355` |
+| `udp_addr` | STRING | UDP bind address | `127.0.0.1` |
+| `udp_port` | INT (1-65535) | UDP port | `7355` |
 
-```c
-typedef enum {
-    DSDCFG_INPUT_UNSET = 0,
-    DSDCFG_INPUT_PULSE,
-    DSDCFG_INPUT_RTL,
-    DSDCFG_INPUT_RTLTCP,
-    DSDCFG_INPUT_FILE,
-    DSDCFG_INPUT_TCP,
-    DSDCFG_INPUT_UDP
-} dsdneoUserInputSource;
+**[output] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `backend` | ENUM | Audio output backend | `pulse` |
+| `pulse_sink` | STRING | PulseAudio sink device | (empty) |
+| `ncurses_ui` | BOOL | Enable ncurses UI | `false` |
 
-typedef enum {
-    DSDCFG_OUTPUT_UNSET = 0,
-    DSDCFG_OUTPUT_PULSE,
-    DSDCFG_OUTPUT_NULL
-} dsdneoUserOutputBackend;
+**[mode] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `decode` | ENUM | Decode mode preset | `auto` |
 
-typedef enum {
-    DSDCFG_MODE_UNSET = 0,
-    DSDCFG_MODE_AUTO,
-    DSDCFG_MODE_P25P1,
-    DSDCFG_MODE_P25P2,
-    DSDCFG_MODE_DMR,
-    DSDCFG_MODE_NXDN48,
-    DSDCFG_MODE_NXDN96,
-    DSDCFG_MODE_X2TDMA,
-    DSDCFG_MODE_YSF,
-    DSDCFG_MODE_DSTAR,
-    DSDCFG_MODE_EDACS_PV,
-    DSDCFG_MODE_DPMR,
-    DSDCFG_MODE_M17,
-    DSDCFG_MODE_TDMA,
-    DSDCFG_MODE_ANALOG
-} dsdneoUserDecodeMode;
+**[trunking] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `enabled` | BOOL | Enable trunking | `false` |
+| `chan_csv` | PATH | Channel map CSV | (empty) |
+| `group_csv` | PATH | Group list CSV | (empty) |
+| `allow_list` | BOOL | Use as allow list | `false` |
 
-typedef struct dsdneoUserConfig {
-    int version; /* schema version, currently 1 */
+---
 
-    /* [input] */
-    int has_input;
-    dsdneoUserInputSource input_source;
-    char pulse_input[256];
-    int rtl_device;
-    char rtl_freq[64];
-    int rtl_gain;
-    int rtl_ppm;
-    int rtl_bw_khz;
-    int rtl_sql;
-    int rtl_volume;
-    char rtltcp_host[128];
-    int rtltcp_port;
-    char file_path[1024];
-    int file_sample_rate;
-    char tcp_host[128];
-    int tcp_port;
-    char udp_addr[64];
-    int udp_port;
+## Validation
 
-    /* [output] */
-    int has_output;
-    dsdneoUserOutputBackend output_backend;
-    char pulse_output[256];
-    int ncurses_ui; /* bool */
+The config system validates files and reports issues with line numbers:
 
-    /* [mode] */
-    int has_mode;
-    dsdneoUserDecodeMode decode_mode;
+- **Error**: Invalid enum value, type mismatch, parse failure
+- **Warning**: Unknown key or section, integer out of range
+- **Info**: Deprecated key usage (key still works)
 
-    /* [trunking] */
-    int has_trunking;
-    int trunk_enabled;
-    char trunk_chan_csv[1024];
-    char trunk_group_csv[1024];
-    int trunk_use_allow_list;
-} dsdneoUserConfig;
+```bash
+# Validate a config file
+dsd-neo --validate-config /path/to/config.ini
+
+# Validate with strict mode (warnings become errors)
+dsd-neo --validate-config /path/to/config.ini --strict-config
 ```
 
-Notes:
+Exit codes:
+- `0`: No errors (may have warnings)
+- `1`: Errors present
+- `2`: Only warnings (strict mode only)
 
-- The struct is intentionally conservative and includes only the subset of
-  options that make sense to persist as user preferences.
-- DSP-tuning and experimental runtime controls remain in
-  `dsdneoRuntimeConfig` (`include/dsd-neo/runtime/config.h`) and continue
-  to be configured primarily via environment variables.
+Diagnostics are only printed when you run `--validate-config`; normal startup is
+silent unless the config file cannot be opened.
 
 ---
 
-## Parser and Serializer APIs
+## Template Generation
 
-Key functions (all shipped in the current tree):
+Generate a commented config template with all options:
 
-```c
-/* Resolve the platform-specific default path (no I/O). */
-const char* dsd_user_config_default_path(void);
-
-/* Load config from a given path into cfg.
- * Returns 0 on success, non-zero on error (file missing, unreadable, or
- * parse error). On error, cfg is left zeroed. */
-int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
-
-/* Atomically write cfg to the given path (for interactive save).
- * Returns 0 on success, non-zero on error. */
-int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
+```bash
+dsd-neo --dump-config-template > config.ini
 ```
 
-Implementation details:
+Output format:
 
-- **Parsing**:
-  - Read file line-by-line.
-  - Track current section; parse `key = value` pairs.
-  - Normalize section names and keys to lowercase for matching.
-  - Parse booleans and integers with bounds checking where sensible.
-  - On unknown section/key or malformed lines: silently skip and
-    continue (best-effort).
-- **Writing**:
-  - Write to a temp file `config.ini.tmp` in the same directory.
-  - `fsync()` if appropriate, then atomically replace the final path
-    (`rename()` on POSIX; `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`
-    on Windows).
-  - Ensure parent directory exists; on Unix, use restrictive permissions
-    (`0700` for directory, `0600` for file) where possible.
+```ini
+# DSD-neo configuration template
+# Generated by: dsd-neo --dump-config-template
+#
+# Uncomment and modify values as needed.
+# Lines starting with # are comments.
+#
+# Precedence: CLI arguments > environment variables > config file > defaults
 
----
+version = 1
 
-## Mapping Config to Runtime Options
+[input]
+# Input source type
+# Allowed: pulse|rtl|rtltcp|file|tcp|udp
+# source = "pulse"
 
-We keep a small translation layer between `dsdneoUserConfig` and the
-existing runtime types (`dsd_opts`, `dsd_state`):
+# RTL-SDR device index (0-based)
+# Range: 0 to 255
+# rtl_device = 0
 
-```c
-/* Apply config-derived defaults to opts/state before env + CLI. */
-void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg,
-                                   dsd_opts* opts,
-                                   dsd_state* state);
-
-/* Snapshot current opts/state into a user config (for save/print). */
-void dsd_snapshot_opts_to_user_config(const dsd_opts* opts,
-                                      const dsd_state* state,
-                                      dsdneoUserConfig* cfg);
+# RTL-SDR frequency (supports K/M/G suffix)
+# Frequency (supports K/M/G suffix)
+# rtl_freq = "851.375M"
+...
 ```
 
-### Example: Input Mapping
+---
 
-- For `[input]` section with `source = "rtl"` and associated keys:
-  - Build the `opts->audio_in_dev` string in the same format the CLI
-    currently produces in `bootstrap_interactive()`:
-    - `rtl:dev:freq:gain:ppm:bw:sql:vol`
-  - Respect defaults for omitted values (e.g., gain, bandwidth, volume)
-    by falling back to the initialized `dsd_opts` fields when a config
-    key is missing.
+## Notes on Input Sources
 
-- For `source = "rtltcp"`:
-  - Use `rtltcp_host` / `rtltcp_port` for the network endpoint and the
-    same `rtl_*` keys (`rtl_freq`, `rtl_gain`, etc.) to seed the tuner
-    parameters when present.
+- **RTL-SDR (`source = "rtl"`)**: Uses the `rtl_*` keys for frequency,
+  gain, PPM correction, bandwidth, squelch, and volume. Omitted values
+  use sensible defaults.
 
-- For `source = "pulse"`:
-  - Use optional `pulse_source` to capture a specific PulseAudio input
-    device; when omitted, keep the default Pulse source. The loader also
-    accepts the older `pulse_input` key as an alias and the writer emits
-    `pulse_source`.
+- **RTL-TCP (`source = "rtltcp"`)**: Uses `rtltcp_host`/`rtltcp_port`
+  for the network endpoint, plus the same `rtl_*` tuning keys.
 
-### Example: Mode Mapping
+- **PulseAudio (`source = "pulse"`)**: Use `pulse_source` to specify
+  a particular input device. The older `pulse_input` key is accepted
+  as an alias.
 
-- For `[mode]` with `decode = "dmr"`:
-  - Set the same fields that the interactive prompt sets for `DMR` in
-    `bootstrap_interactive()` (frame flags, modulation, output channels,
-    etc.).
+- **UDP (`source = "udp"`)**: Provide both `udp_addr` and `udp_port`; leaving
+  them empty will not switch the input to UDP.
 
-### Example: Trunking
+### Decode Modes
 
-- For `[trunking]` with `enabled = true`:
-  - Set `opts->p25_trunk` / `opts->trunk_enable` as appropriate for the
-    selected mode.
-  - Copy CSV paths into `opts->chan_in_file` and `opts->group_in_file`.
-  - Do **not** automatically import CSVs at config-apply time; instead,
-    maintain the current import behavior in the main runtime flow so that
-    error handling is consistent.
+The `decode` key in `[mode]` configures the frame types and modulation.
+Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `nxdn48`, `nxdn96`,
+`x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`, `analog`.
+
+If you choose RTL/RTLTCP input and omit specific tuning fields, DSD-neo falls
+back to its built-in RTL defaults: center frequency 850 MHz, DSP bandwidth
+48 kHz, and volume multiplier 2. The template still shows 851.375M as the
+example frequency.
+
+### Trunking
+
+When `[trunking] enabled = true`:
+
+- Trunking is activated for the selected mode.
+- CSV paths (`chan_csv`, `group_csv`) are passed to the decoder.
+- CSV files are not auto-imported just because they are listed in the config.
+  They load only when triggered by CLI flags (`-C`/`-G`) or the interactive
+  wizard.
 
 ---
 
-## Startup Flow with Config
+## Startup Behavior
 
-The high-level startup sequence (simplified) becomes:
+1. Config is loaded early, before CLI argument parsing.
+2. CLI arguments and environment variables override config values.
+3. One-shot commands (`--dump-config-template`, `--validate-config`,
+   `--list-profiles`, `--print-config`) execute and exit immediately.
+4. If no CLI args and no config file exists, the interactive bootstrap
+   wizard runs.
+5. When config exists: interactive bootstrap is skipped unless
+   `--interactive-setup` is specified.
 
-1. **Initialize defaults**
-   - `initOpts(&opts);`
-   - `initState(&state);`
-2. **Honor `--no-config` / `DSD_NEO_NO_CONFIG`**
-   - If `--no-config` is present, skip config loading entirely.
-   - If `DSD_NEO_NO_CONFIG` is set and no `--config` is provided, skip
-     config discovery and loading.
-3. **Resolve config path**
-   - If `--config PATH`, use that.
-   - Else if `DSD_NEO_CONFIG`, use that.
-   - Else use `dsd_user_config_default_path()` and check if file exists.
-4. **Load config**
-   - If path is set and file readable, call `dsd_user_config_load()`.
-   - On success: `dsd_apply_user_config_to_opts(&cfg, &opts, &state);`
-   - `dsd_user_config_load()` currently treats parse issues as
-     non-fatal; as long as the file can be opened, unknown or malformed
-     lines are skipped and the function returns success.
-5. **Parse CLI (and CLI-related env)**
-   - `dsd_parse_args(argc, argv, &opts, &state, &new_argc, &oneshot_rc);`
-     - Handles long and short options.
-     - Applies env mapping for CLI-related behavior (e.g.
-       `DSD_NEO_TCP_AUTOTUNE`).
-6. **Run or handle one-shot**
-   - If `dsd_parse_args()` returns `DSD_PARSE_ONE_SHOT`, exit with
-     `oneshot_rc`.
-   - Otherwise, continue into normal decoder runtime.
+### File Sample Rate
 
-This preserves existing semantics while inserting config effects early in
-the chain.
+When using `source = "file"` with a non-48 kHz sample rate:
 
-### File sample rate scaling
-
-When a user config specifies a non-48 kHz file input:
-
-- `[input] source = "file"`, `file_path`, and `file_sample_rate` set.
-- If the CLI does not override the sample rate, the startup path:
-  - Applies `file_sample_rate` to `opts->wav_sample_rate`.
-  - Adjusts `opts->wav_interpolator` and the symbol timing fields in
-    `dsd_state` so that demodulation matches the effective sample rate.
-- This mirrors the legacy `-s` CLI behavior without requiring users to
-  worry about option ordering when using a config file.
+- Set `file_sample_rate` to match your input file.
+- Symbol timing is adjusted automatically.
 
 ---
 
-## Interactive Bootstrap Integration
+## Interactive Bootstrap
 
-`apps/dsd-cli/main.c` provides `bootstrap_interactive()` that guides new
-users through selecting input, mode, trunking, and UI options.
+The interactive bootstrap wizard (`--interactive-setup`) guides you
+through selecting input, mode, trunking, and UI options.
 
-### Saving Config
+### Auto-Saving
 
-At the end of `bootstrap_interactive()`:
+- When the wizard completes, settings are automatically saved to the
+  config path (default or explicit).
+- If `--no-config` or `DSD_NEO_NO_CONFIG` is set, auto-save is disabled.
+- Outside the wizard, the app also auto-saves the effective settings at exit
+  whenever a config path is in use (CLI/env/default discovery). Disable config
+  loading to avoid having your file rewritten.
 
-- The CLI startup code enables an autosave path whenever config is not
-  explicitly disabled and a config path (explicit, env, or default) is
-  known.
-- `bootstrap_interactive()` calls a helper that snapshots the current
-  `dsd_opts`/`dsd_state` into a `dsdneoUserConfig` and saves it to that
-  path via `dsd_user_config_save_atomic()`.
-- If config was disabled via `--no-config` or `DSD_NEO_NO_CONFIG`, no
-  autosave occurs.
+### Config and CLI Interaction
 
-### Using Config on Future Runs
-
-- If a config file exists and:
-  - No CLI args are provided, **skip** the interactive bootstrap entirely
-    and run with config + env + defaults.
-  - CLI args are provided, config is still loaded, but CLI can override it.
+- If a config file exists and no CLI args are provided: skip the wizard,
+  use config settings.
+- If CLI args are provided: config is loaded first, then CLI overrides it.
 - CLI:
   - `--interactive-setup` forces running the wizard even if a config
     exists; the resulting setup is automatically saved to the current
     config path.
 
-In addition, when running with CLI arguments but **without** an existing
-config file:
-
-- If config is enabled and a default config path can be determined, the
-  final effective settings at exit are automatically saved there.
-- This makes it easy to:
-  - Start with explicit CLI flags,
-  - Let `dsd-neo` snapshot them to a config file, and
-  - Later run without CLI flags and reuse the same setup.
-
 ---
 
-## User-Facing Flags for Config
+## CLI Flags Reference
 
-We extend the CLI surface (implemented in `src/runtime/cli/args.c`) with:
+### Config Loading
 
-- `--config PATH`
-  - Use the given INI file as the config source.
-- `--no-config`
-  - Disable all config loading.
-- `--print-config`
-  - Print the **effective** user-config-style representation (as INI) to
-    stdout.
-  - Implementation:
-    - After applying config + env + CLI, snapshot to a temporary
-      `dsdneoUserConfig` and render it in INI format using
-      `dsd_user_config_render_ini()`.
-    - Do not run the decoder; exit after printing.
+| Flag | Description |
+|------|-------------|
+| `--config PATH` | Use the given INI file as the config source |
+| `--no-config` | Disable all config loading |
+| `--print-config` | Print effective config (as INI) and exit |
 
-These flags are additive and do not alter existing option behavior.
+### Template and Validation
+
+| Flag | Description |
+|------|-------------|
+| `--dump-config-template` | Print commented template with all options |
+| `--validate-config [PATH]` | Validate config and report diagnostics |
+| `--strict-config` | Treat warnings as errors (with `--validate-config`) |
+
+### Profiles
+
+| Flag | Description |
+|------|-------------|
+| `--profile NAME` | Load named profile (overrides base config) |
+| `--list-profiles` | List all profile names in config file |
+
+### Bootstrap
+
+| Flag | Description |
+|------|-------------|
+| `--interactive-setup` | Force interactive wizard even if config exists |
 
 ---
 
 ## Versioning and Compatibility
 
-Config files are explicitly versioned:
-
-- The `version` key at the top of the file indicates the schema version.
-- Current implementation stores the version but only supports schema
-  `version = 1` and does not enforce or migrate between versions yet.
-
-On load:
-
-- If `version` is missing:
-  - The loader defaults `cfg->version` to `1` and proceeds.
-- If `version` is present but not `1`:
-  - The value is preserved in `cfg->version` but no special handling is
-    applied; all known keys are still parsed best-effort.
-
-Unknown keys:
-
-- Silently ignored; they do not cause load failure.
-- This allows newer binaries to add config options without breaking older
-  installed configs.
+- Config files use `version = 1` at the top.
+- If `version` is missing, defaults to 1.
+- Unknown keys generate warnings but don't prevent loading.
+- This allows newer binaries to add options without breaking older configs.
 
 ---
 
-## Testing Strategy
+## ncurses UI Config Menu
 
-Tests will live under `tests/runtime` (or a similar area) and should cover:
+When running with the ncurses UI (`ncurses_ui = true` or `-N`), the
+**Config** menu provides:
 
-- Parsing:
-  - Minimal valid config.
-  - Config with comments, whitespace, unknown keys.
-  - Malformed lines (ensure graceful handling).
-- Mapping:
-  - Given a specific INI config, verify resulting `dsd_opts` and
-    `dsd_state` match expectations (e.g., known equivalent of a manual
-    CLI invocation or interactive session).
-- Precedence:
-  - Config vs env vs CLI:
-    - e.g., config sets DMR, env sets P25, CLI sets NXDN; verify NXDN
-      wins.
-- Versioning:
-  - Load config with `version = 1` and unknown extra keys.
-  - Load config missing `version` and ensure defaulting behavior.
+- **Save Config (Default)**: Save current settings to the default config path.
+- **Save Config As...**: Save to a custom path.
+- **Load Config...**: Load a config file and apply it to the running session.
+
+### Live Reload
+
+The following can be changed without restarting:
+
+- PulseAudio input/output device
+- RTL-SDR and RTLTCP tuning parameters (frequency, gain, PPM, etc.)
+- TCP/UDP connection parameters
+- File input path
+
+Switching between different input types (e.g., Pulse → RTL) requires a
+restart to take full effect.
 
 ---
-
-## ncurses UI Integration and Live Reload
-
-When running with the ncurses UI enabled (`[output] ncurses_ui = true` or `-N` /
-`--ncurses-ui`), the top-level **Config** menu exposes runtime config helpers:
-The ncurses UI always runs on its own thread; the legacy synchronous renderer
-has been removed.
-
-- `Save Config (Default)`
-  - Snapshots the current `dsd_opts`/`dsd_state` into a `dsdneoUserConfig` and
-    writes it atomically to `dsd_user_config_default_path()`.
-- `Save Config As...`
-  - Prompts for a path and writes the current snapshot there.
-- `Load Config...`
-  - Prompts for an INI path, loads it via `dsd_user_config_load()`, and applies
-    it to the running session using the same mapping as startup.
-
-To keep the UI responsive and safe, the apply step is routed through
-`UI_CMD_CONFIG_APPLY` on the demod thread. The command takes a full
-`dsdneoUserConfig` payload, calls `dsd_apply_user_config_to_opts()` and then
-optionally restarts specific backends when they are already active and their
-configuration changed.
-
-### Live-reloadable backends
-
-The following inputs / outputs are “live-reloadable” when configs are applied
-via `Load Config...`:
-
-- **PulseAudio input** (`[input] source = "pulse"`)
-  - When Pulse input is already active (`audio_in_type == 0`) and the
-    `audio_in_dev` string changes (e.g., `pulse:source1` → `pulse:source2`), the
-    UI:
-    - Closes the current Pulse input (`closePulseInput()`),
-    - Updates `opts->pa_input_idx` from the new suffix, and
-    - Reopens the stream (`openPulseInput()`).
-- **PulseAudio output** (`[output] backend = "pulse"`)
-  - When Pulse output is already active (`audio_out_type == 0`) and
-    `audio_out_dev` changes (`pulse` or `pulse:sink`), the UI:
-    - Closes the current Pulse output (`closePulseOutput()`),
-    - Updates `opts->pa_output_idx`, and
-    - Reopens (`openPulseOutput()`).
-- **RTL dongle input** (`[input] source = "rtl"`)
-  - When the RTL pipeline is already active (`audio_in_type == 3`) and
-    `audio_in_dev` changes, the UI:
-    - Updates `opts->rtl_dev_index`, tuner frequency (parsed from
-      `rtl_freq` with K/M/G suffix support), gain, PPM, bandwidth, squelch, and
-      volume from the config (falling back to existing defaults when omitted),
-      and
-    - Calls `svc_rtl_restart()` to rebuild and retune the RTL stream.
-- **RTLTCP input** (`[input] source = "rtltcp"`)
-  - When RTLTCP is already in use (`audio_in_type == 3` with `rtltcp_enabled`
-    set) and the config changes host/port/tuner fields, the UI:
-    - Updates `opts->rtltcp_hostname`/`opts->rtltcp_portno` and the same
-      `rtl_*` tuner parameters as above, and
-    - Calls `svc_rtl_restart()` to reconnect the RTLTCP-based RTL stream with
-      the new settings.
-- **TCP direct PCM input** (`[input] source = "tcp"`)
-  - When TCP direct input is already active (`audio_in_type == 8` and
-    `audio_in_dev` starts with `tcp:`) and the config changes host/port, the UI:
-    - Updates `opts->tcp_hostname`/`opts->tcp_portno`,
-    - Closes any existing `tcp_file_in` and socket, and
-    - Reconnects using `svc_tcp_connect_audio()` (non-fatal on failure).
-- **UDP direct PCM input** (`[input] source = "udp"`)
-  - When UDP input is already active (`audio_in_type == 6` and
-    `audio_in_dev` starts with `udp:`) and the config changes bind address or
-    port, the UI:
-    - Updates `opts->udp_in_bindaddr` and `opts->udp_in_portno`,
-    - Stops the existing UDP backend via `udp_input_stop()`, and
-    - Restarts it with `udp_input_start()` at the new address/port.
-- **Simple file input** (`[input] source = "file"`)
-  - When libsndfile-based file input is already active (`audio_in_type == 2`)
-    and `audio_in_dev` changes, the UI:
-    - Closes the current file and frees the `SF_INFO`,
-    - Recreates `SF_INFO` using the current `opts->wav_sample_rate`, and
-    - Reopens the path via `sf_open(...)` (logging errors instead of exiting
-      on failure).
-
-For all of the above, the backend type must already match (e.g., loading a
-`source = "udp"` config while currently using Pulse input does **not** attempt
-to hot-switch to UDP mid-run). Changes that alter the input/output *type* rather
-than just its parameters are guaranteed to take full effect on the next program
-start, not necessarily when reloading in-place.
-
-### Non-reloadable / restart-only changes
-
-Some config changes are only guaranteed to fully apply on the next launch:
-
-- Switching between fundamentally different input backends (e.g.
-  Pulse → RTL, file → UDP).
-- Changes that rely on the broader startup path (e.g. CLI sequencing, one-shot
-  flows, environment-driven heuristics).
-
-In these cases, `Load Config...` will still update `opts`/`state` so saves or
-`--print-config` reflect the new config, but the underlying I/O stack may not
-be completely rebuilt until the process is restarted.
 
 ## Summary
 
-- The config system is INI-based, with clearly defined precedence and
-  platform-specific discovery.
-- It introduces a dedicated `dsdneoUserConfig` structure and helper APIs
-  to decouple parsing from runtime internals.
-- Interactive bootstrap can optionally persist user choices to config,
-  making `dsd-neo` friendlier for new users without impacting existing
-  scripted or environment-driven setups.
+- INI-based config with clear precedence (CLI > env > config > defaults).
+- Platform-specific default paths with automatic discovery.
+- Validation with line-number diagnostics.
+- Template generation for discoverability.
+- Path expansion (`~`, `$VAR`, `${VAR}`) for portability.
+- Profile support for switching configurations.
+- Include directive for modular configs.
+- Interactive bootstrap can persist user choices automatically.
