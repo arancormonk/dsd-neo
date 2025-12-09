@@ -240,7 +240,10 @@ static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
  */
 static void
 audio_polydecim_ensure(struct demod_state* d, int M) {
-    if (!d || M <= 2) {
+    if (!d) {
+        return;
+    }
+    if (M <= 2) {
         d->post_polydecim_enabled = 0;
         return;
     }

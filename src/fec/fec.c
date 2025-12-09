@@ -638,7 +638,7 @@ rand_test_20_8() //from dforsi as a pull request to DSDcc
     unsigned char msg[8];
     unsigned char codeword[20], xcodeword[20];
     int idx1, idx2, idx3 = 0;
-    int dataIn, dataOut;
+    int dataIn, dataOut = 0;
     UNUSED(dataIn); //don't know why its reporting dataIn as unused for
     int passCount = 0, failCount = 0, parityFailCount = 0;
 

@@ -677,20 +677,8 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int channel = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
             int target = (MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a];
             int source = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
-            unsigned long long int src_suid = 0;
+            unsigned long long int src_suid = 0; // TODO: parse SUID for extended (0xC4) format
             long int freq = 0;
-
-            if (MAC[1 + len_a] == 0x21) {
-                src_suid = (MAC[6 + len_a] << 48ULL) | (MAC[7 + len_a] << 40ULL) | (MAC[8 + len_a] << 32ULL)
-                           | (MAC[9 + len_a] << 24ULL) | (MAC[10 + len_a] << 16ULL) | (MAC[11 + len_a] << 8ULL)
-                           | (MAC[12 + len_a] << 0ULL);
-
-                source = src_suid & 0xFFFFFF;
-
-                target = (MAC[13 + len_a] << 16) | (MAC[14 + len_a] << 8) | MAC[15 + len_a];
-
-                // channel = (MAC[4+len_a] << 8) | MAC[5+len_a]; //CH-R, above is CH-T value
-            }
 
             fprintf(stderr, "\n Unit to Unit Channel Grant");
             if (MAC[1 + len_a] == 0x46) {
@@ -2277,7 +2265,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         }
 
         //Unit Deregistration Acknowlegement (TSBK and vPDU are the same)
-        if (MAC[1 + len_a] == 0x6F) {
+        if (MAC[1 + len_a] == 0x6F || MAC[1 + len_a] == 0xEF) {
             int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
             int uwacn = (MAC[3 + len_a] << 12) | (MAC[4 + len_a] << 4) | ((MAC[5 + len_a] & 0xF0) >> 4);
             int usys = ((MAC[5 + len_a] & 0xF) << 8) | MAC[6 + len_a];

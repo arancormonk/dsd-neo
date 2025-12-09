@@ -799,8 +799,8 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
     float M = roundf((float)n_taps / (float)sps);
     int N = (n_taps - 1) / 2;
 
-    /* Build baseband filter taps */
-    float* bb = (float*)alloca((size_t)n_taps * sizeof(float));
+    /* Build baseband filter taps - use stack array since n_taps <= FLL_BAND_EDGE_MAX_TAPS */
+    float bb[FLL_BAND_EDGE_MAX_TAPS];
     float power = 0.0f;
 
     for (int i = 0; i < n_taps; i++) {
@@ -844,8 +844,9 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
         float freq = (float)(-N + i) / (2.0f * (float)sps);
         float phase = kTwoPi * (1.0f + rolloff) * freq;
 
-        /* Lower band edge: exp(-j * phase) - store in reverse order */
-        int rev_idx = n_taps - 1 - i;
+        /* Lower band edge: exp(-j * phase) - store in reverse order.
+         * rev_idx ranges from n_taps-1 down to 0 as i goes 0 to n_taps-1. */
+        size_t rev_idx = (size_t)(n_taps - 1 - i);
         f->taps_lower_r[rev_idx] = bb[i] * cosf(-phase);
         f->taps_lower_i[rev_idx] = bb[i] * sinf(-phase);
 

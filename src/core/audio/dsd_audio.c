@@ -675,6 +675,10 @@ openAudioInDevice(dsd_opts* opts) {
     if (strncmp(opts->audio_in_dev, "-", 1) == 0) {
         opts->audio_in_type = 1;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
+        if (opts->audio_in_file_info == NULL) {
+            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+            exit(1);
+        }
         opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
         opts->audio_in_file_info->channels = 1;
         opts->audio_in_file_info->seekable = 0;
@@ -713,6 +717,10 @@ openAudioInDevice(dsd_opts* opts) {
     else if (strncmp(opts->audio_in_dev, "tcp", 3) == 0) {
         opts->audio_in_type = 8;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
+        if (opts->audio_in_file_info == NULL) {
+            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+            exit(1);
+        }
         opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
         opts->audio_in_file_info->channels = 1;
         opts->audio_in_file_info->seekable = 0;
@@ -761,6 +769,10 @@ openAudioInDevice(dsd_opts* opts) {
     else if (extension == NULL) {
         opts->audio_in_type = 2;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
+        if (opts->audio_in_file_info == NULL) {
+            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+            exit(1);
+        }
         opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
         opts->audio_in_file_info->channels = 1;
         opts->audio_in_file_info->seekable = 0;
@@ -780,6 +792,10 @@ openAudioInDevice(dsd_opts* opts) {
 
         opts->audio_in_type = 2;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
+        if (opts->audio_in_file_info == NULL) {
+            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+            exit(1);
+        }
         opts->audio_in_file_info->samplerate = 48000;
         opts->audio_in_file_info->channels = 1;
         opts->audio_in_file_info->seekable = 0;
@@ -845,6 +861,10 @@ openAudioInDevice(dsd_opts* opts) {
         if (S_ISREG(stat_buf.st_mode)) {
             opts->audio_in_type = 2; //two now, seperating STDIN and wav files
             opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
+            if (opts->audio_in_file_info == NULL) {
+                LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+                exit(1);
+            }
             opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
             opts->audio_in_file_info->channels = 1;
             opts->audio_in_file_info->channels = 1;

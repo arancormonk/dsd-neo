@@ -148,6 +148,10 @@ class ReedSolomon_63 {
         gen_poly();
     }
 
+    // Non-copyable to prevent double-delete of dynamic arrays
+    ReedSolomon_63(const ReedSolomon_63&) = delete;
+    ReedSolomon_63& operator=(const ReedSolomon_63&) = delete;
+
     virtual ~ReedSolomon_63() {
         delete[] gg;
         delete[] index_of;

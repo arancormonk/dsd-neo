@@ -1201,7 +1201,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                             if (a_channel == 0xFFF) {
                                 fprintf(stderr, "\n APCN: %04d;", mbc_lpchannum); //absolute physical channel number
-                            } else if (a_channel != 0) {
+                            } else {
                                 fprintf(stderr, "\n LPCN: %04d;", mbc_lpchannum); //logical physical channel number
                             }
                             fprintf(stderr, " RX Base: %d; RX Step: %d; RX Freq: %ld;", mbc_abs_rx_int * 1000000,

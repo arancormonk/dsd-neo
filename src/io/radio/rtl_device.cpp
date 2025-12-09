@@ -321,11 +321,11 @@ tcp_connect_host(const char* host, int port) {
         return -1;
     }
     struct sockaddr_in serveraddr;
-    memset((char*)&serveraddr, 0, sizeof(serveraddr));
+    memset(&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
-    memcpy((char*)&serveraddr.sin_addr.s_addr, (char*)server->h_addr, server->h_length);
-    serveraddr.sin_port = htons((uint16_t)port);
-    if (connect(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr)) < 0) {
+    memcpy(&serveraddr.sin_addr.s_addr, server->h_addr, static_cast<size_t>(server->h_length));
+    serveraddr.sin_port = htons(static_cast<uint16_t>(port));
+    if (connect(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr)) < 0) {
         fprintf(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
         close(sockfd);
         return -1;

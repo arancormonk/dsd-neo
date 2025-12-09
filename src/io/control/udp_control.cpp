@@ -80,7 +80,7 @@ udp_thread_fn(void* arg) {
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons((uint16_t)ctrl->port);
 
-    if (bind(ctrl->sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (bind(ctrl->sockfd, reinterpret_cast<struct sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
         perror("ERROR on binding");
         close(ctrl->sockfd);
         ctrl->sockfd = -1;

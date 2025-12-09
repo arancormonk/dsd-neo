@@ -310,19 +310,14 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     int i, j;
     char ext[5];
-    char* timestr; //add timestr here, so we can assign it and also free it to prevent memory leak
-    char* datestr;
+    char timestr[7]; //stack buffer for time string
+    char datestr[9]; //stack buffer for date string
 
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = rand() & 0xFFFF;
 
-    {
-        char tbuf[7], dbuf[9];
-        getTime_buf(tbuf);
-        getDate_buf(dbuf);
-        timestr = strdup(tbuf);
-        datestr = strdup(dbuf);
-    }
+    getTime_buf(timestr);
+    getDate_buf(datestr);
 
     //phase 1 and provoice
     if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
@@ -370,19 +365,14 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     int i, j;
     char ext[5];
-    char* timestr; //add timestr here, so we can assign it and also free it to prevent memory leak
-    char* datestr;
+    char timestr[7]; //stack buffer for time string
+    char datestr[9]; //stack buffer for date string
 
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = rand() & 0xFFFF;
 
-    {
-        char tbuf[7], dbuf[9];
-        getTime_buf(tbuf);
-        getDate_buf(dbuf);
-        timestr = strdup(tbuf);
-        datestr = strdup(dbuf);
-    }
+    getTime_buf(timestr);
+    getDate_buf(datestr);
 
     //phase 1 and provoice
     if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
@@ -1170,6 +1160,10 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
     /* Allocate raw buffer + 1 for NUL terminator; no need to zero-fill */
     char* source_str = (char*)malloc(0x100000 + 1);
+    if (source_str == NULL) {
+        LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
+        return;
+    }
     size_t source_size;
 
     int8_t protocol = -1;

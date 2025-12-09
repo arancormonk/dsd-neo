@@ -42,12 +42,10 @@ class Golay24 {
     /* This function checks the overall parity of codeword cw.
        If parity is even, 0 is returned, else 1. */
     {
-        unsigned char p;
+        unsigned int p;
 
-        /* XOR the bytes of the codeword */
-        p = *(unsigned char*)&cw;
-        p ^= *((unsigned char*)&cw + 1);
-        p ^= *((unsigned char*)&cw + 2);
+        /* XOR bytes together using shifts (portable, no aliasing) */
+        p = cw ^ (cw >> 8) ^ (cw >> 16);
 
         /* XOR the halves of the intermediate result */
         p = p ^ (p >> 4);

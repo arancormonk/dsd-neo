@@ -1365,12 +1365,14 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
     {
         FILE* pFile;                            //file pointer
         pFile = fopen(opts->dsp_out_file, "a"); //append, not write
-        float val = 0;
-        for (i = 0; i < 192; i++) {
-            val = (float)output_symbols[i];
-            fwrite(&val, 4, 1, pFile);
+        if (pFile != NULL) {
+            float val = 0;
+            for (i = 0; i < 192; i++) {
+                val = (float)output_symbols[i];
+                fwrite(&val, 4, 1, pFile);
+            }
+            fclose(pFile);
         }
-        fclose(pFile);
     }
 
     //playing back signal audio into device/udp

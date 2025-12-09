@@ -239,14 +239,16 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         if (opts->use_dsp_output == 1) {
             FILE* pFile; //file pointer
             pFile = fopen(opts->dsp_out_file, "a");
-            fprintf(pFile, "\n%d 10 ", state->currentslot + 1); //0x10 for "voice burst", forced to slot 1
-            for (i = 6; i < 72; i++)                            //33 bytes, no CACH
-            {
-                int dsp_byte =
-                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-                fprintf(pFile, "%X", dsp_byte);
+            if (pFile != NULL) {
+                fprintf(pFile, "\n%d 10 ", state->currentslot + 1); //0x10 for "voice burst", forced to slot 1
+                for (i = 6; i < 72; i++)                            //33 bytes, no CACH
+                {
+                    int dsp_byte = (state->dmr_stereo_payload[((size_t)i * 2)] << 2)
+                                   | state->dmr_stereo_payload[((size_t)i * 2) + 1];
+                    fprintf(pFile, "%X", dsp_byte);
+                }
+                fclose(pFile);
             }
-            fclose(pFile);
         }
 
         state->dmr_ms_mode = 1;
@@ -520,14 +522,16 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     if (opts->use_dsp_output == 1) {
         FILE* pFile; //file pointer
         pFile = fopen(opts->dsp_out_file, "a");
-        fprintf(pFile, "\n%d 10 ", state->currentslot + 1); //0x10 for "voice burst", force to slot 1
-        for (i = 6; i < 72; i++)                            //33 bytes, no CACH
-        {
-            int dsp_byte =
-                (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
-            fprintf(pFile, "%X", dsp_byte);
+        if (pFile != NULL) {
+            fprintf(pFile, "\n%d 10 ", state->currentslot + 1); //0x10 for "voice burst", force to slot 1
+            for (i = 6; i < 72; i++)                            //33 bytes, no CACH
+            {
+                int dsp_byte =
+                    (state->dmr_stereo_payload[((size_t)i * 2)] << 2) | state->dmr_stereo_payload[((size_t)i * 2) + 1];
+                fprintf(pFile, "%X", dsp_byte);
+            }
+            fclose(pFile);
         }
-        fclose(pFile);
     }
 
     {

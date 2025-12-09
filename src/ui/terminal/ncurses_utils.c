@@ -71,7 +71,7 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
     if (len > 64) {
         len = 64;
     }
-    int vals[64];
+    int vals[64] = {0};
     for (int i = 0; i < len; i++) {
         vals[i] = (int)src[i];
     }

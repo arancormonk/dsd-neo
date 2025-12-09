@@ -131,6 +131,14 @@ demod_mt_init(struct demod_state* s) {
     pthread_cond_init(&ctx->cv, NULL);
     pthread_cond_init(&ctx->done_cv, NULL);
     WorkerArg* args = (WorkerArg*)calloc(2, sizeof(WorkerArg));
+    if (args == NULL) {
+        fprintf(stderr, "Failed to allocate worker thread arguments\n");
+        pthread_mutex_destroy(&ctx->lock);
+        pthread_cond_destroy(&ctx->cv);
+        pthread_cond_destroy(&ctx->done_cv);
+        free(ctx);
+        return;
+    }
     for (int i = 0; i < 2; i++) {
         args[i].ctx = ctx;
         args[i].id = i;

@@ -3764,27 +3764,18 @@ dsd_rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up
         demod.fm_agc_target_rms = target_rms;
     }
     if (min_rms >= 0.0f) {
-        if (min_rms < 0.0f) {
-            min_rms = 0.0f;
-        }
         if (min_rms > 1.0f) {
             min_rms = 1.0f;
         }
         demod.fm_agc_min_rms = min_rms;
     }
     if (alpha_up >= 0.0f) {
-        if (alpha_up < 0.0f) {
-            alpha_up = 0.0f;
-        }
         if (alpha_up > 1.0f) {
             alpha_up = 1.0f;
         }
         demod.fm_agc_alpha_up = alpha_up;
     }
     if (alpha_down >= 0.0f) {
-        if (alpha_down < 0.0f) {
-            alpha_down = 0.0f;
-        }
         if (alpha_down > 1.0f) {
             alpha_down = 1.0f;
         }

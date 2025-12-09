@@ -33,8 +33,8 @@ trellis_encode(uint8_t result[], const uint8_t source[], int result_len, int reg
 void
 trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
     int reg = 0;
-    int min_d;
-    int min_bt;
+    int min_d = 9999;
+    int min_bt = 0;
     static const int NTEST = 4;
     static const int NTESTC = 1 << NTEST;
     uint8_t bt[NTEST];
@@ -154,10 +154,10 @@ viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct,
         fprintf(stderr, "Input size exceeds max history\n");
     }
 
-    uint16_t umsg[244 * 2]; //unpunctured message
-    uint8_t p = 0;          //puncturer matrix entry
-    uint16_t u = 0;         //bits count - unpunctured message
-    uint16_t i = 0;         //bits read from the input message
+    uint16_t umsg[244 * 2] = {0}; //unpunctured message
+    uint8_t p = 0;                //puncturer matrix entry
+    uint16_t u = 0;               //bits count - unpunctured message
+    uint16_t i = 0;               //bits read from the input message
 
     while (i < in_len) {
         if (punct[p]) {

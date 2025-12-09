@@ -645,9 +645,7 @@ gardner_timing_adjust_farrow(const ted_config_t* config, ted_state_t* state, flo
         if (am1_c < 0) {
             am1_c = 0;
         }
-        if (ap1_c >= nc) {
-            ap1_c = nc - 1;
-        }
+        /* ap1_c < nc is guaranteed by loop condition (n_c + 1 < nc) */
         if (ap2_c >= nc) {
             ap2_c = nc - 1;
         }

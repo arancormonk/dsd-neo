@@ -336,23 +336,23 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             extern int rtl_stream_auto_ppm_get_status(int*, double*, double*, double*, int*, int*, int*);
             (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, &ap_estppm, &ap_dir, &ap_cd, &ap_locked);
 #endif
-            const char* ap_state = ap_en ? (ap_locked ? "Locked" : "On") : "Off";
-            printw("\n| Auto PPM: %s", ap_state);
-            if (ap_en) {
-                if (ap_locked) {
-                    int lppm = 0;
-                    double lsnr = -100.0, ldf = 0.0;
+            if (!ap_en) {
+                printw("\n| Auto PPM: Off");
+            } else if (ap_locked) {
+                int lppm = 0;
+                double lsnr = -100.0, ldf = 0.0;
 #ifdef USE_RTLSDR
-                    extern int rtl_stream_auto_ppm_get_lock(int*, double*, double*);
-                    (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
+                extern int rtl_stream_auto_ppm_get_lock(int*, double*, double*);
+                (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
 #endif
-                    printw(" (PPM: %d)", lppm);
-                } else {
-                    printw("; SNR: %.1f dB; df: %.1f Hz; step: %s;", ap_snr, ap_df,
-                           (ap_dir > 0)   ? "+1"
-                           : (ap_dir < 0) ? "-1"
-                                          : "hold");
-                }
+                (void)lsnr;
+                (void)ldf;
+                printw("\n| Auto PPM: Locked (PPM: %d)", lppm);
+            } else {
+                printw("\n| Auto PPM: On; SNR: %.1f dB; df: %.1f Hz; step: %s;", ap_snr, ap_df,
+                       (ap_dir > 0)   ? "+1"
+                       : (ap_dir < 0) ? "-1"
+                                      : "hold");
             }
         }
         if (opts->rtl_udp_port != 0) {

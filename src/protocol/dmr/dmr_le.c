@@ -566,17 +566,19 @@ SBRC_END:
     if (opts->use_dsp_output == 1) {
         FILE* pFile; //file pointer
         pFile = fopen(opts->dsp_out_file, "a");
-        fprintf(pFile, "\n%d 99 ", slot + 1); //'99' is SB and RC designation value
-        for (i = 0; i < 12; i++)              //48 bits (includes CC, PPI, LCSS, and QR)
-        // for (i = 2; i < 10; i++) //32 bits (only SB/RC Data and its PC/H)
-        {
-            uint8_t sbrc_nib = (state->dmr_embedded_signalling[slot][5][(i * 4) + 0] << 3)
-                               | (state->dmr_embedded_signalling[slot][5][(i * 4) + 1] << 2)
-                               | (state->dmr_embedded_signalling[slot][5][(i * 4) + 2] << 1)
-                               | (state->dmr_embedded_signalling[slot][5][(i * 4) + 3] << 0);
-            fprintf(pFile, "%X", sbrc_nib);
+        if (pFile != NULL) {
+            fprintf(pFile, "\n%d 99 ", slot + 1); //'99' is SB and RC designation value
+            for (i = 0; i < 12; i++)              //48 bits (includes CC, PPI, LCSS, and QR)
+            // for (i = 2; i < 10; i++) //32 bits (only SB/RC Data and its PC/H)
+            {
+                uint8_t sbrc_nib = (state->dmr_embedded_signalling[slot][5][(i * 4) + 0] << 3)
+                                   | (state->dmr_embedded_signalling[slot][5][(i * 4) + 1] << 2)
+                                   | (state->dmr_embedded_signalling[slot][5][(i * 4) + 2] << 1)
+                                   | (state->dmr_embedded_signalling[slot][5][(i * 4) + 3] << 0);
+                fprintf(pFile, "%X", sbrc_nib);
+            }
+            fclose(pFile);
         }
-        fclose(pFile);
     }
 }
 

@@ -492,19 +492,15 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
 
                 // Gate keystream start offset by (MFID, opcode)
                 // Known fixture: 0x1F 0x10 0x02 -> start after 3 bytes
-                if (p_mfid == 0x10) {
-                    switch (p_opcode) {
-                        case 0x02: // Motorola MNIS/ENC header variant (observed)
-                            state->data_ks_start[slot] = 3;
-                            break;
-                        default:
-                            // Unknown opcode: do not offset by default
-                            state->data_ks_start[slot] = 0;
-                            break;
-                    }
-                } else {
-                    // Non-Motorola (or unknown MFID): do not apply an offset
-                    state->data_ks_start[slot] = 0;
+                // Note: p_mfid == 0x10 is already guaranteed by outer condition
+                switch (p_opcode) {
+                    case 0x02: // Motorola MNIS/ENC header variant (observed)
+                        state->data_ks_start[slot] = 3;
+                        break;
+                    default:
+                        // Unknown opcode: do not offset by default
+                        state->data_ks_start[slot] = 0;
+                        break;
                 }
             }
 
@@ -1229,7 +1225,7 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
                 //loader for aes keys
                 uint8_t kaes[32];
-                uint8_t empt[32];
+                uint8_t empt[32] = {0};
                 uint8_t maes[16];
                 for (i = 0; i < 8; i++) {
                     kaes[i + 0] = ((state->rkey_array[kid + 0x000]) >> (56 - (i * 8))) & 0xFF;
