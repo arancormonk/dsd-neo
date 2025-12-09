@@ -363,6 +363,31 @@ jobs:
             diff -u <(cat $files) <(clang-format $files) || (echo "Formatting issues found. Run clang-format." && exit 1)
           fi
 
+  cppcheck:
+    name: cppcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+
+      - name: Run cppcheck
+        run: |
+          tools/cppcheck.sh
+
+      - name: Upload cppcheck output
+        if: always()
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: cppcheck-report
+          path: .cppcheck.local.out
+          include-hidden-files: true
+          retention-days: 7
+
   clang-tidy:
     name: clang-tidy
     runs-on: ubuntu-latest
