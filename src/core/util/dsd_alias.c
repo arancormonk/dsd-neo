@@ -388,7 +388,7 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
             num_bytes = 1;
         }
 
-        for (int16_t i = 0; i < num_bytes; i++) {
+        for (uint16_t i = 0; i < num_bytes; i++) {
             encoded[i] = (uint8_t)ConvertBitIntoBytes(&input[ptr], 8);
             ptr += 8;
         }
@@ -437,7 +437,7 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
         //dump the decoded payload as long chars
         // fprintf (stderr, "\n");
         fprintf(stderr, " Alias: ");
-        for (int16_t i = 0; i < num_bytes / 2; i++) {
+        for (int i = 0; i < num_bytes / 2; i++) {
             uint16_t ch = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
             if (dsd_unicode_supported()) {
                 fprintf(stderr, "%lc", ch);
@@ -469,7 +469,7 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
         num_bytes = 98;
     }
 
-    for (int16_t i = 0; i < num_bytes / 2; i++) {
+    for (int i = 0; i < num_bytes / 2; i++) {
         if (decoded[(i * 2) + 1] == 0x2C) { //remove a comma if it exists, change it to a 0x2E dot
             str[i] = 0x2E;
         } else if (decoded[(i * 2) + 1] > 0x1F && decoded[(i * 2) + 1] < 0x7F) { //may not need or use this restriction
@@ -578,7 +578,7 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     } else {
         fprintf(stderr, " TG: UNK; SRC: UNK; Talker Alias: ");
     }
-    for (int8_t i = 4; i <= len; i++) {
+    for (int16_t i = 4; i <= len; i++) {
         if ((input[i] > 0x19) && (input[i] < 0x7F)) {
             fprintf(stderr, "%c", (char)input[i]);
         } else {
@@ -652,7 +652,7 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     UNUSED(slot);
     uint8_t alias[24];
     memset(alias, 0, sizeof(alias));
-    for (uint8_t i = 0; i < len; i++) {
+    for (int16_t i = 0; i < len; i++) {
         alias[i] = (uint8_t)ConvertBitIntoBytes(&input[16 + (i * 7)], 7);
         fprintf(stderr, "%c", alias[i]);
         if (alias[i] == 0x2C) { //change a comma to a dot

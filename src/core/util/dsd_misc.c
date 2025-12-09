@@ -190,7 +190,7 @@ viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos) {
     static const uint16_t COST_TABLE_0[] = {0, 0, 0, 0, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
     static const uint16_t COST_TABLE_1[] = {0, 0xFFFF, 0xFFFF, 0, 0, 0xFFFF, 0xFFFF, 0};
 
-    for (uint8_t i = 0; i < NUM_STATES / 2; i++) {
+    for (int i = 0; i < NUM_STATES / 2; i++) {
         uint32_t metric = q_abs_diff(COST_TABLE_0[i], s0) + q_abs_diff(COST_TABLE_1[i], s1);
 
         uint32_t m0 = prevMetrics[i] + metric;
@@ -199,8 +199,8 @@ viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos) {
         uint32_t m2 = prevMetrics[i] + (0x1FFFE - metric);
         uint32_t m3 = prevMetrics[i + NUM_STATES / 2] + metric;
 
-        uint8_t i0 = 2 * i;
-        uint8_t i1 = i0 + 1;
+        int i0 = 2 * i;
+        int i1 = i0 + 1;
 
         if (m0 >= m1) {
             viterbi_history[pos] |= (1 << i0);
@@ -221,10 +221,10 @@ viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos) {
 
     //swap
     uint32_t tmp[NUM_STATES];
-    for (uint8_t i = 0; i < NUM_STATES; i++) {
+    for (int i = 0; i < NUM_STATES; i++) {
         tmp[i] = currMetrics[i];
     }
-    for (uint8_t i = 0; i < NUM_STATES; i++) {
+    for (int i = 0; i < NUM_STATES; i++) {
         currMetrics[i] = prevMetrics[i];
         prevMetrics[i] = tmp[i];
     }

@@ -103,8 +103,8 @@ rs_12_9_multiply_poly_z(rs_12_9_poly_t* poly) {
 
 static void
 rs_12_9_multiplicate_polys(uint8_t dst[], rs_12_9_poly_t* p1, rs_12_9_poly_t* p2) {
-    uint8_t i;
-    int8_t j;
+    int i;
+    int j;
     int8_t tmp1[RS_12_9_POLY_MAXDEG * 2];
 
     for (i = 0; i < RS_12_9_POLY_MAXDEG * 2; i++) {
@@ -247,7 +247,8 @@ rs_12_9_find_roots(rs_12_9_poly_t* error_locator_poly) {
 
 void
 rs_12_9_calc_syndrome(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome) {
-    uint8_t i, j;
+    size_t i;
+    int j;
 
     syndrome->data[0] = syndrome->data[1] = syndrome->data[2] = 0;
 

@@ -685,7 +685,7 @@ rand_test_20_8() //from dforsi as a pull request to DSDcc
                 }
 
                 // Check also that parity has been corrected, as we previously had a bug with this
-                if (memcmp(codeword, xcodeword, 20)) {
+                if (memcmp(codeword, xcodeword, 20) != 0) {
                     parityFailCount++;
                 }
             } else {

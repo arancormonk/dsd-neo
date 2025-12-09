@@ -66,7 +66,7 @@ fi
 clang-tidy -p "$PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" >/dev/null || true
 
 # Fail only on curated high-signal checks (must align with WarningsAsErrors)
-ERROR_REGEX='\[(clang-analyzer[^]]*|security-[^]]*|bugprone-(macro-parentheses|branch-clone|integer-division|signed-char-misuse|implicit-widening-of-multiplication-result|unsafe-functions))[^]]*\]$'
+ERROR_REGEX='\[(clang-analyzer[^]]*|security-[^]]*|bugprone-(macro-parentheses|branch-clone|integer-division|signed-char-misuse|implicit-widening-of-multiplication-result|unsafe-functions|too-small-loop-variable|suspicious-string-compare)|misc-redundant-expression|cert-(str34-c|flp30-c))[^]]*\]$'
 if rg -n "$ERROR_REGEX" "$LOG_FILE" >/dev/null; then
   echo "clang-tidy found curated analyzer/security/bugprone issues. See $LOG_FILE for details." >&2
   # Print a brief summary of counts by check for convenience

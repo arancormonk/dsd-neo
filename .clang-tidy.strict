@@ -7,6 +7,7 @@ Checks: >
   bugprone-*,
   security-*,
   cert-*,
+  misc-*,
   # Useful readability/performance/portability in strict mode only
   performance-*,
   readability-*,
@@ -26,8 +27,12 @@ Checks: >
   -readability-uppercase-literal-suffix,
   -readability-isolate-declaration,
   -readability-non-const-parameter,
-  -readability-math-missing-parentheses
-WarningsAsErrors: 'clang-analyzer-*,security-*,bugprone-macro-parentheses,bugprone-branch-clone,bugprone-integer-division,bugprone-signed-char-misuse,bugprone-implicit-widening-of-multiplication-result,bugprone-unsafe-functions,clang-diagnostic-sign-compare,clang-diagnostic-implicit-fallthrough,clang-diagnostic-tautological-pointer-compare'
+  -readability-math-missing-parentheses,
+  # Noisy misc checks
+  -misc-no-recursion,
+  -misc-unused-parameters,
+  -misc-include-cleaner
+WarningsAsErrors: 'clang-analyzer-*,security-*,bugprone-macro-parentheses,bugprone-branch-clone,bugprone-integer-division,bugprone-signed-char-misuse,bugprone-implicit-widening-of-multiplication-result,bugprone-unsafe-functions,bugprone-too-small-loop-variable,bugprone-suspicious-string-compare,misc-redundant-expression,cert-str34-c,cert-flp30-c,clang-diagnostic-sign-compare,clang-diagnostic-implicit-fallthrough,clang-diagnostic-tautological-pointer-compare'
 HeaderFilterRegex: '^(src|include|apps)/'
 FormatStyle: none
 CheckOptions:

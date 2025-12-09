@@ -328,7 +328,7 @@ compute(PC4Context* ctx, uint8_t* tab1, uint8_t round) {
 void
 binhex(PC4Context* ctx, short* z, int length) {
     short* b = (short*)z;
-    uint8_t i, j;
+    int i, j;
     for (i = 0; i < length; i = j) {
         uint8_t a = 0;
         for (j = i; j < i + 8; ++j) {
