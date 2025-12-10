@@ -15,6 +15,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 
+#include <cmath>
 #include <ctype.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -32,6 +33,22 @@
 #endif
 
 // Internal helpers ------------------------------------------------------------
+
+// Local helper to convert linear power to dB (avoids dependency on dsd_misc.c)
+static double
+local_pwr_to_dB(double mean_power) {
+    if (mean_power <= 0) {
+        return -120.0;
+    }
+    double dB = 10.0 * std::log10(mean_power);
+    if (dB > 0.0) {
+        dB = 0.0;
+    }
+    if (dB < -120.0) {
+        dB = -120.0;
+    }
+    return dB;
+}
 
 static void
 user_cfg_reset(dsdneoUserConfig* cfg) {
@@ -1169,6 +1186,17 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
             tok = strtok_r(NULL, ":", &save);
             idx++;
         }
+        // Override with live opts values for settings that can change at runtime
+        cfg->rtl_gain = opts->rtl_gain_value;
+        cfg->rtl_ppm = opts->rtlsdr_ppm_error;
+        cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
+        cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
+        cfg->rtl_volume = opts->rtl_volume_multiplier;
+        // Update frequency from live value (stored as Hz in opts)
+        if (opts->rtlsdr_center_freq > 0) {
+            snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
+            cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
+        }
     } else if (strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
         char buf[1024];
@@ -1199,6 +1227,17 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
             }
             tok = strtok_r(NULL, ":", &save);
             idx++;
+        }
+        // Override with live opts values for settings that can change at runtime
+        cfg->rtl_gain = opts->rtl_gain_value;
+        cfg->rtl_ppm = opts->rtlsdr_ppm_error;
+        cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
+        cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
+        cfg->rtl_volume = opts->rtl_volume_multiplier;
+        // Update frequency from live value (stored as Hz in opts)
+        if (opts->rtlsdr_center_freq > 0) {
+            snprintf(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
+            cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
         }
     } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_TCP;
