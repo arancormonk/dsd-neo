@@ -205,15 +205,29 @@ jobs:
     name: Update AUR package
     needs: [build-linux]
     runs-on: ubuntu-latest
-    # Only run where the AUR key is available and not on forked PRs
-    if: github.repository == 'arancormonk/dsd-neo' && github.event_name != 'pull_request' && secrets.AUR_SSH_PRIVATE_KEY != ''
+    # Only run on upstream pushes; steps guard on AUR key presence
+    if: github.repository == 'arancormonk/dsd-neo' && github.event_name != 'pull_request'
     steps:
+      - name: Check AUR SSH key availability
+        id: aur_key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_PRIVATE_KEY is not set; skipping AUR update steps."
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.aur_key.outputs.has_key == 'true'
         uses: actions/checkout@v6.0.1
         with:
           fetch-depth: 0
 
       - name: Setup SSH for AUR
+        if: steps.aur_key.outputs.has_key == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
@@ -221,11 +235,13 @@ jobs:
           ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
 
       - name: Clone AUR package
+        if: steps.aur_key.outputs.has_key == 'true'
         run: |
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
 
       - name: Compute new pkgver
         id: pkgver
+        if: steps.aur_key.outputs.has_key == 'true'
         run: |
           cd "$GITHUB_WORKSPACE"
           commit_count=$(git rev-list --count HEAD)
@@ -236,6 +252,7 @@ jobs:
 
       - name: Check if update needed
         id: check
+        if: steps.aur_key.outputs.has_key == 'true'
         run: |
           cd aur-package
           current_pkgver=$(grep -E '^pkgver=' PKGBUILD | cut -d= -f2)
@@ -250,7 +267,7 @@ jobs:
           fi
 
       - name: Update PKGBUILD
-        if: steps.check.outputs.needs_update == 'true'
+        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           sed -i "s/^pkgver=.*/pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
@@ -258,7 +275,7 @@ jobs:
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
       - name: Update .SRCINFO
-        if: steps.check.outputs.needs_update == 'true'
+        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           # Update pkgver in .SRCINFO (lightweight approach)
@@ -269,7 +286,7 @@ jobs:
           sed -i "s/dsd-neo-git-r[0-9]*\.[a-f0-9]*/dsd-neo-git-${{ steps.pkgver.outputs.pkgver }}/" .SRCINFO
 
       - name: Commit and push to AUR
-        if: steps.check.outputs.needs_update == 'true'
+        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           git config user.name "github-actions[bot]"
