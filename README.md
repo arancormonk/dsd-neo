@@ -22,6 +22,7 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
   - Windows ZIP (x86_64): [dsd-neo-cygwin-x86_64-portable-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-cygwin-x86_64-portable-nightly.zip)
+- Arch Linux (AUR): [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git)
 
 ## Project Status
 
