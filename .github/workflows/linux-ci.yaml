@@ -255,7 +255,8 @@ jobs:
         if: steps.aur_key.outputs.has_key == 'true'
         run: |
           cd aur-package
-          current_pkgver=$(grep -E '^pkgver=' PKGBUILD | cut -d= -f2)
+          # Handle PKGBUILDs with or without leading whitespace
+          current_pkgver=$(grep -E '^\s*pkgver=' PKGBUILD | sed 's/.*pkgver=//')
           echo "Current pkgver: $current_pkgver"
           echo "New pkgver: ${{ steps.pkgver.outputs.pkgver }}"
           if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ]; then
@@ -270,9 +271,10 @@ jobs:
         if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
-          sed -i "s/^pkgver=.*/pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
+          # Handle PKGBUILDs with or without leading whitespace
+          sed -i "s/^\(\s*\)pkgver=.*/\1pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
           # Reset pkgrel to 1 for new upstream version
-          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^\(\s*\)pkgrel=.*/\1pkgrel=1/" PKGBUILD
 
       - name: Update .SRCINFO
         if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
