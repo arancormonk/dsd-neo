@@ -57,6 +57,10 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "chan_csv", DSDCFG_TYPE_PATH, "Channel map CSV file path", "", 0, 0, NULL, 0},
     {"trunking", "group_csv", DSDCFG_TYPE_PATH, "Group list CSV file path", "", 0, 0, NULL, 0},
     {"trunking", "allow_list", DSDCFG_TYPE_BOOL, "Use group.csv as allow list (vs block list)", "false", 0, 0, NULL, 0},
+    {"trunking", "tune_group_calls", DSDCFG_TYPE_BOOL, "Tune to group voice calls", "true", 0, 0, NULL, 0},
+    {"trunking", "tune_private_calls", DSDCFG_TYPE_BOOL, "Tune to private/individual calls", "true", 0, 0, NULL, 0},
+    {"trunking", "tune_data_calls", DSDCFG_TYPE_BOOL, "Tune to data channel grants", "false", 0, 0, NULL, 0},
+    {"trunking", "tune_enc_calls", DSDCFG_TYPE_BOOL, "Tune to encrypted calls", "true", 0, 0, NULL, 0},
 };
 
 static const int s_schema_count = sizeof(s_schema) / sizeof(s_schema[0]);

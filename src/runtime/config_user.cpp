@@ -57,6 +57,11 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     }
     memset(cfg, 0, sizeof(*cfg));
     cfg->version = 1;
+    // Set trunking tune defaults to match main.c init defaults
+    cfg->trunk_tune_group_calls = 1;
+    cfg->trunk_tune_private_calls = 1;
+    cfg->trunk_tune_data_calls = 0;
+    cfg->trunk_tune_enc_calls = 1;
 }
 
 static void
@@ -451,6 +456,26 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
                 if (parse_bool(val, &b) == 0) {
                     cfg->trunk_use_allow_list = b;
                 }
+            } else if (strcmp(key_lc, "tune_group_calls") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->trunk_tune_group_calls = b;
+                }
+            } else if (strcmp(key_lc, "tune_private_calls") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->trunk_tune_private_calls = b;
+                }
+            } else if (strcmp(key_lc, "tune_data_calls") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->trunk_tune_data_calls = b;
+                }
+            } else if (strcmp(key_lc, "tune_enc_calls") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->trunk_tune_enc_calls = b;
+                }
             }
             continue;
         }
@@ -684,6 +709,10 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             fprintf(out, "group_csv = \"%s\"\n", cfg->trunk_group_csv);
         }
         fprintf(out, "allow_list = %s\n", cfg->trunk_use_allow_list ? "true" : "false");
+        fprintf(out, "tune_group_calls = %s\n", cfg->trunk_tune_group_calls ? "true" : "false");
+        fprintf(out, "tune_private_calls = %s\n", cfg->trunk_tune_private_calls ? "true" : "false");
+        fprintf(out, "tune_data_calls = %s\n", cfg->trunk_tune_data_calls ? "true" : "false");
+        fprintf(out, "tune_enc_calls = %s\n", cfg->trunk_tune_enc_calls ? "true" : "false");
         fprintf(out, "\n");
     }
 }
@@ -1141,9 +1170,11 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
             snprintf(opts->group_in_file, sizeof opts->group_in_file, "%s", cfg->trunk_group_csv);
             opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
         }
-        if (cfg->trunk_use_allow_list) {
-            opts->trunk_use_allow_list = 1;
-        }
+        opts->trunk_use_allow_list = cfg->trunk_use_allow_list ? 1 : 0;
+        opts->trunk_tune_group_calls = cfg->trunk_tune_group_calls ? 1 : 0;
+        opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
+        opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
+        opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
     }
 }
 
@@ -1380,6 +1411,10 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snprintf(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s", opts->group_in_file);
     cfg->trunk_group_csv[sizeof cfg->trunk_group_csv - 1] = '\0';
     cfg->trunk_use_allow_list = opts->trunk_use_allow_list ? 1 : 0;
+    cfg->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 1 : 0;
+    cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
+    cfg->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 1 : 0;
+    cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
 }
 
 // Template generation ---------------------------------------------------------

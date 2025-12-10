@@ -402,6 +402,10 @@ typedef struct dsdneoUserConfig {
     char trunk_chan_csv[1024];
     char trunk_group_csv[1024];
     int trunk_use_allow_list;
+    int trunk_tune_group_calls;
+    int trunk_tune_private_calls;
+    int trunk_tune_data_calls;
+    int trunk_tune_enc_calls;
 } dsdneoUserConfig;
 
 /**
