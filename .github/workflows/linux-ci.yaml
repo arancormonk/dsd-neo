@@ -201,6 +201,83 @@ jobs:
           fi
           git push --force origin refs/tags/nightly
 
+  update-aur:
+    name: Update AUR package
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    # Only run on the main repository, not forks
+    if: github.repository == 'arancormonk/dsd-neo'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup SSH for AUR
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Clone AUR package
+        run: |
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
+
+      - name: Compute new pkgver
+        id: pkgver
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          commit_count=$(git rev-list --count HEAD)
+          commit_hash=$(git rev-parse --short=7 HEAD)
+          new_pkgver="r${commit_count}.${commit_hash}"
+          echo "pkgver=$new_pkgver" >> "$GITHUB_OUTPUT"
+          echo "Computed pkgver: $new_pkgver"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          cd aur-package
+          current_pkgver=$(grep -E '^pkgver=' PKGBUILD | cut -d= -f2)
+          echo "Current pkgver: $current_pkgver"
+          echo "New pkgver: ${{ steps.pkgver.outputs.pkgver }}"
+          if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ]; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "No update needed"
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "Update needed"
+          fi
+
+      - name: Update PKGBUILD
+        if: steps.check.outputs.needs_update == 'true'
+        run: |
+          cd aur-package
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
+          # Reset pkgrel to 1 for new upstream version
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+      - name: Update .SRCINFO
+        if: steps.check.outputs.needs_update == 'true'
+        run: |
+          cd aur-package
+          # Update pkgver in .SRCINFO (lightweight approach)
+          sed -i "s/^\(\s*\)pkgver = .*/\1pkgver = ${{ steps.pkgver.outputs.pkgver }}/" .SRCINFO
+          # Reset pkgrel to 1
+          sed -i "s/^\(\s*\)pkgrel = .*/\1pkgrel = 1/" .SRCINFO
+          # Update source line version reference if present
+          sed -i "s/dsd-neo-git-r[0-9]*\.[a-f0-9]*/dsd-neo-git-${{ steps.pkgver.outputs.pkgver }}/" .SRCINFO
+
+      - name: Commit and push to AUR
+        if: steps.check.outputs.needs_update == 'true'
+        run: |
+          cd aur-package
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.pkgver.outputs.pkgver }}"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git push origin master
+
   sanitize-linux:
     name: Linux • Debug • sanitizers
     runs-on: ubuntu-latest
