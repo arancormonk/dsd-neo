@@ -75,14 +75,20 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
 
     if (opts->serial_fd > 0) {
         snprintf(cmd, sizeof cmd, "\rKEY00\r");
-        (void)write(opts->serial_fd, cmd, 7);
+        ssize_t written = write(opts->serial_fd, cmd, 7);
+        if (written != 7) {
+            LOG_WARN("resumeScan: sent %zd/7 bytes on serial FD", written);
+        }
         cmd[0] = 2;
         cmd[1] = 75;
         cmd[2] = 15;
         cmd[3] = 3;
         cmd[4] = 93;
         cmd[5] = 0;
-        (void)write(opts->serial_fd, cmd, 5);
+        written = write(opts->serial_fd, cmd, 5);
+        if (written != 5) {
+            LOG_WARN("resumeScan: sent %zd/5 bytes on serial FD", written);
+        }
         state->numtdulc = 0;
     }
 }

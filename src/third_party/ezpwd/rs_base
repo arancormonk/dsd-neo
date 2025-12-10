@@ -690,6 +690,9 @@ namespace ezpwd {
 	    if ( len < 1 ) {
 	        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: must provide space for all parity and at least one non-parity symbol", -1 );
 	    }
+	    if ( len > LOAD ) {
+	        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: payload length exceeds maximum load", -1 );
+	    }
 
 	    const TYP       	       *dataptr;
 	    TYP			       *pariptr;
@@ -836,6 +839,9 @@ namespace ezpwd {
 	    if ( ! parity ) {
 		len			       -= NROOTS;
 		parity				= data + len;
+	    }
+	    if ( len > LOAD ) {
+	        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: payload length exceeds maximum load", -1 );
 	    }
 
 	    TYP		       	       *dataptr;

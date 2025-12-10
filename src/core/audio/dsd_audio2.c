@@ -30,6 +30,12 @@ dsd_is_all_zero_f(const float* buf, size_t n) {
     return 1;
 }
 
+static inline void
+write_audio_out(int fd, const void* buf, size_t bytes) {
+    const ssize_t written = write(fd, buf, bytes);
+    (void)written;
+}
+
 //NOTE: Tones produce ringing sound when put through the hpf_d, may want to look into tweaking it,
 //or looking for a way to store is_tone by glancing at ambe_d values and not running hpf_d on them
 
@@ -186,9 +192,9 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
                 udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono2);
                 udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono3);
             } else if (opts->audio_out_type == 1) { // STDOUT mono
-                write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
-                write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
-                write(opts->audio_out_fd, mono3, (size_t)160u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, mono3, (size_t)160u * sizeof(float));
             }
         } else {
             if (opts->audio_out_type == 0) { // Pulse stereo
@@ -200,9 +206,9 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
                 udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
                 udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
             } else if (opts->audio_out_type == 1) { // STDOUT stereo
-                write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
-                write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
-                write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
             }
         }
     }
@@ -390,13 +396,13 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
                 udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono4);
             }
         } else if (opts->audio_out == 1 && opts->audio_out_type == 1) { // STDOUT mono
-            write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
-            write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
+            write_audio_out(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
+            write_audio_out(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
             if (!dsd_is_all_zero_f(mono3, 160)) {
-                write(opts->audio_out_fd, mono3, (size_t)160u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, mono3, (size_t)160u * sizeof(float));
             }
             if (!dsd_is_all_zero_f(mono4, 160)) {
-                write(opts->audio_out_fd, mono4, (size_t)160u * sizeof(float));
+                write_audio_out(opts->audio_out_fd, mono4, (size_t)160u * sizeof(float));
             }
         }
         goto END_FS4;
@@ -429,13 +435,13 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_out == 1 && opts->audio_out_type == 1) //STDOUT
     {
-        write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
-        write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
+        write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
+        write_audio_out(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
         if (!dsd_is_all_zero_f(stereo_samp3, 320)) {
-            write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
+            write_audio_out(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(float));
         }
         if (!dsd_is_all_zero_f(stereo_samp4, 320)) {
-            write(opts->audio_out_fd, stereo_samp4, (size_t)320u * sizeof(float));
+            write_audio_out(opts->audio_out_fd, stereo_samp4, (size_t)320u * sizeof(float));
         }
     }
 
@@ -532,7 +538,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 1) {
-            write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
+            write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
         }
     }
 
@@ -628,7 +634,7 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 1) {
-            write(opts->audio_out_fd, state->f_l, (size_t)160u * sizeof(float));
+            write_audio_out(opts->audio_out_fd, state->f_l, (size_t)160u * sizeof(float));
         }
     }
 
@@ -692,7 +698,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 1) {
-            write(opts->audio_out_fd, mono_samp, (size_t)len * sizeof(short));
+            write_audio_out(opts->audio_out_fd, mono_samp, (size_t)len * sizeof(short));
         }
     }
 
@@ -777,7 +783,7 @@ playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 1) {
-            write(opts->audio_out_fd, mono_samp, (size_t)len * sizeof(short));
+            write_audio_out(opts->audio_out_fd, mono_samp, (size_t)len * sizeof(short));
         }
     }
 
@@ -880,7 +886,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 1) {
-            write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
+            write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
         }
     }
 
@@ -1150,9 +1156,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     }
 
     if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-        write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
-        write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
-        write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(short));
+        write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
+        write_audio_out(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
+        write_audio_out(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(short));
     }
 
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
@@ -1400,13 +1406,13 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
                 udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono4);
             }
         } else if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-            write(opts->audio_out_fd, mono1, (size_t)160u * sizeof(short));
-            write(opts->audio_out_fd, mono2, (size_t)160u * sizeof(short));
+            write_audio_out(opts->audio_out_fd, mono1, (size_t)160u * sizeof(short));
+            write_audio_out(opts->audio_out_fd, mono2, (size_t)160u * sizeof(short));
             if (memcmp(empss, mono3, sizeof(empss)) != 0) {
-                write(opts->audio_out_fd, mono3, (size_t)160u * sizeof(short));
+                write_audio_out(opts->audio_out_fd, mono3, (size_t)160u * sizeof(short));
             }
             if (memcmp(empss, mono4, sizeof(empss)) != 0) {
-                write(opts->audio_out_fd, mono4, (size_t)160u * sizeof(short));
+                write_audio_out(opts->audio_out_fd, mono4, (size_t)160u * sizeof(short));
             }
         }
         if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
@@ -1448,13 +1454,13 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
     }
 
     if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-        write(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
-        write(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
+        write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(short));
+        write_audio_out(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(short));
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
-            write(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(short));
+            write_audio_out(opts->audio_out_fd, stereo_samp3, (size_t)320u * sizeof(short));
         }
         if (memcmp(empty, stereo_samp4, sizeof(empty)) != 0) {
-            write(opts->audio_out_fd, stereo_samp4, (size_t)320u * sizeof(short));
+            write_audio_out(opts->audio_out_fd, stereo_samp4, (size_t)320u * sizeof(short));
         }
     }
 
@@ -1668,7 +1674,7 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
             for (j = 0; j < 18; j++) {
                 if (memcmp(empty, stereo_sf[j], sizeof(empty))
                     != 0) { //may not work as intended because its stereo and one will have something in it most likely
-                    write(opts->audio_out_fd, stereo_sf[j], (size_t)320u * sizeof(short));
+                    write_audio_out(opts->audio_out_fd, stereo_sf[j], (size_t)320u * sizeof(short));
                 }
             }
         }
@@ -1823,19 +1829,19 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
             else if (opts->audio_out_type == 1) //STDOUT
             {
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 1) {
-                    write(opts->audio_out_fd, samp_fs, (size_t)320u * sizeof(float));
+                    write_audio_out(opts->audio_out_fd, samp_fs, (size_t)320u * sizeof(float));
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 1) {
-                    write(opts->audio_out_fd, samp_f, (size_t)160u * sizeof(float));
+                    write_audio_out(opts->audio_out_fd, samp_f, (size_t)160u * sizeof(float));
                 }
 
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 0) {
-                    write(opts->audio_out_fd, samp_ss, (size_t)320u * 2u);
+                    write_audio_out(opts->audio_out_fd, samp_ss, (size_t)320u * 2u);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
-                    write(opts->audio_out_fd, samp_s, (size_t)160u * 2u);
+                    write_audio_out(opts->audio_out_fd, samp_s, (size_t)160u * 2u);
                 }
             }
         }

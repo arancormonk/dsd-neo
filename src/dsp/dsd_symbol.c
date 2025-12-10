@@ -1120,7 +1120,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     //.raw or .sym float symbol files
     if (opts->audio_in_type == 44) {
         float float_symbol = 0.0f;
-        fread(&float_symbol, sizeof(float), 1, opts->symbolfile); //sizeof(float) is 4 (usually)
+        size_t read_count = fread(&float_symbol, sizeof(float), 1, opts->symbolfile); //sizeof(float) is 4 (usually)
+        if (read_count != 1) {
+            exitflag = 1; // EOF or read error, exit loop cleanly
+            symbol = 0.0f;
+            return symbol;
+        }
         if (feof(opts->symbolfile)) {
             exitflag = 1; //end of file, exit
         }
