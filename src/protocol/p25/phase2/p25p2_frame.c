@@ -300,8 +300,6 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
         rtl_stream_p25p2_err_update(state->currentslot, 0, 1, 0, 0, 0);
 #endif
-        //if (state->currentslot == 0) state->dmrburstL = 13;
-        //else state->dmrburstR = 13;
     }
 }
 
@@ -368,8 +366,6 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
         rtl_stream_p25p2_err_update(state->currentslot, 0, 1, 0, 0, 0);
 #endif
-        //if (state->currentslot == 0) state->dmrburstL = 13;
-        //else state->dmrburstR = 13;
     }
 }
 
@@ -433,8 +429,6 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
         rtl_stream_p25p2_err_update(state->currentslot, 0, 0, 0, 1, 0);
 #endif
-        // if (state->currentslot == 0) state->dmrburstL = 13;
-        // else state->dmrburstR = 13;
     }
 }
 
@@ -498,8 +492,6 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
         rtl_stream_p25p2_err_update(state->currentslot, 0, 0, 0, 1, 0);
 #endif
-        // if (state->currentslot == 0) state->dmrburstL = 13;
-        // else state->dmrburstR = 13;
     }
 }
 
@@ -649,11 +641,14 @@ process_4V(dsd_opts* opts, dsd_state* state) {
             p25_p2_audio_ring_push(state, 1, state->f_r4[0]);
         }
     } else {
-        // Not allowed: avoid decoding noise while retaining timing
+        // Not allowed: zero both float and short buffers to prevent stale
+        // encrypted audio from leaking into SS18 mixer path
         if (state->currentslot == 0) {
             memset(state->f_l4[0], 0, sizeof(state->f_l4[0]));
+            memset(state->s_l4[(state->voice_counter[0]++) % 18], 0, sizeof(state->s_l4[0]));
         } else {
             memset(state->f_r4[0], 0, sizeof(state->f_r4[0]));
+            memset(state->s_r4[(state->voice_counter[1]++) % 18], 0, sizeof(state->s_r4[0]));
         }
     }
 
@@ -661,20 +656,20 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         processMbeFrame(opts, state, NULL, ambe_fr2, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[1], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            // memcpy(state->s_l4[1], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4u[1], state->s_lu, sizeof(state->s_lu));
         } else {
             memcpy(state->f_r4[1], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            // memcpy(state->s_r4[1], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4u[1], state->s_ru, sizeof(state->s_ru));
         }
     } else {
         if (state->currentslot == 0) {
             memset(state->f_l4[1], 0, sizeof(state->f_l4[1]));
+            memset(state->s_l4[(state->voice_counter[0]++) % 18], 0, sizeof(state->s_l4[0]));
         } else {
             memset(state->f_r4[1], 0, sizeof(state->f_r4[1]));
+            memset(state->s_r4[(state->voice_counter[1]++) % 18], 0, sizeof(state->s_r4[0]));
         }
     }
 
@@ -682,20 +677,20 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         processMbeFrame(opts, state, NULL, ambe_fr3, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[2], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            // memcpy(state->s_l4[2], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4u[2], state->s_lu, sizeof(state->s_lu));
         } else {
             memcpy(state->f_r4[2], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            // memcpy(state->s_r4[2], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4u[2], state->s_ru, sizeof(state->s_ru));
         }
     } else {
         if (state->currentslot == 0) {
             memset(state->f_l4[2], 0, sizeof(state->f_l4[2]));
+            memset(state->s_l4[(state->voice_counter[0]++) % 18], 0, sizeof(state->s_l4[0]));
         } else {
             memset(state->f_r4[2], 0, sizeof(state->f_r4[2]));
+            memset(state->s_r4[(state->voice_counter[1]++) % 18], 0, sizeof(state->s_r4[0]));
         }
     }
 
@@ -703,20 +698,20 @@ process_4V(dsd_opts* opts, dsd_state* state) {
         processMbeFrame(opts, state, NULL, ambe_fr4, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[3], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            // memcpy(state->s_l4[3], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4u[3], state->s_lu, sizeof(state->s_lu));
         } else {
             memcpy(state->f_r4[3], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            // memcpy(state->s_r4[3], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4u[3], state->s_ru, sizeof(state->s_ru));
         }
     } else {
         if (state->currentslot == 0) {
             memset(state->f_l4[3], 0, sizeof(state->f_l4[3]));
+            memset(state->s_l4[(state->voice_counter[0]++) % 18], 0, sizeof(state->s_l4[0]));
         } else {
             memset(state->f_r4[3], 0, sizeof(state->f_r4[3]));
+            memset(state->s_r4[(state->voice_counter[1]++) % 18], 0, sizeof(state->s_r4[0]));
         }
     }
 }
@@ -1130,20 +1125,22 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         processMbeFrame(opts, state, NULL, ambe_fr1, NULL);
         if (state->currentslot == 0) {
             memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-            // memcpy(state->s_l4[0], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4[(state->voice_counter[0]++) % 18], state->s_l, sizeof(state->s_l));
             memcpy(state->s_l4u[0], state->s_lu, sizeof(state->s_lu));
         } else {
             memcpy(state->f_r4[0], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-            // memcpy(state->s_r4[0], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4[(state->voice_counter[1]++) % 18], state->s_r, sizeof(state->s_r));
             memcpy(state->s_r4u[0], state->s_ru, sizeof(state->s_ru));
         }
     } else {
+        // Not allowed: zero both float and short buffers to prevent stale
+        // encrypted audio from leaking into SS18 mixer path
         if (state->currentslot == 0) {
             memset(state->f_l4[0], 0, sizeof(state->f_l4[0]));
+            memset(state->s_l4[(state->voice_counter[0]++) % 18], 0, sizeof(state->s_l4[0]));
         } else {
             memset(state->f_r4[0], 0, sizeof(state->f_r4[0]));
+            memset(state->s_r4[(state->voice_counter[1]++) % 18], 0, sizeof(state->s_r4[0]));
         }
     }
 
@@ -1163,8 +1160,10 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     } else {
         if (state->currentslot == 0) {
             memset(state->f_l4[1], 0, sizeof(state->f_l4[1]));
+            memset(state->s_l4[(state->voice_counter[0]++) % 18], 0, sizeof(state->s_l4[0]));
         } else {
             memset(state->f_r4[1], 0, sizeof(state->f_r4[1]));
+            memset(state->s_r4[(state->voice_counter[1]++) % 18], 0, sizeof(state->s_r4[0]));
         }
     }
     // if (state->currentslot == 0) state->voice_counter[0] = 0; if (state->currentslot == 1) state->voice_counter[1] = 0;
@@ -1413,8 +1412,6 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             }
         } else {
             fprintf(stderr, " DUID ERR %d", duid_decoded);
-            //if (state->currentslot == 0) state->dmrburstL = 12;
-            //else state->dmrburstR = 12;
             err_counter++;
         }
         if (err_counter > 1) //&& opts->aggressive_framesync == 1
@@ -1478,13 +1475,6 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             state->voice_counter[0] = 0; //reset
             state->voice_counter[1] = 0; //reset
         }
-
-        //debug: fix burst indicator for ncurses if marginal signal
-        // if (voice)
-        // {
-        // 	if (state->currentslot == 0) state->dmrburstL = 21;
-        // 	else state->dmrburstR = 21;
-        // }
 
         //flip slots after each TS processed
         if (state->currentslot == 0) {

@@ -594,6 +594,24 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     state->p25_p2_audio_allowed[slot] = 0;
     p25_p2_audio_ring_reset(state, slot);
 
+    // Clear voice activity indicator to prevent audio routing logic from
+    // treating this locked-out slot as having active voice
+    if (slot == 0) {
+        state->dmrburstL = 0;
+        // Reset voice counters to prevent stale state from affecting later calls
+        state->fourv_counter[0] = 0;
+        state->voice_counter[0] = 0;
+        state->DMRvcL = 0;
+        state->dropL = 256;
+    } else {
+        state->dmrburstR = 0;
+        // Reset voice counters to prevent stale state from affecting later calls
+        state->fourv_counter[1] = 0;
+        state->voice_counter[1] = 0;
+        state->DMRvcR = 0;
+        state->dropR = 256;
+    }
+
     // Check if opposite slot is active - only release if both slots are quiet
     int other = slot ^ 1;
     int other_active = ctx->slots[other].voice_active || state->p25_p2_audio_allowed[other]

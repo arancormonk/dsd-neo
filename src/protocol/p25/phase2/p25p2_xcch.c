@@ -67,8 +67,6 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 //fprintf (stderr, " NULL ");
             } else {
                 fprintf(stderr, " CRC12 ERR S");
-                //if (state->currentslot == 0) state->dmrburstL = 14;
-                //else state->dmrburstR = 14;
                 goto END_SMAC;
             }
         }
@@ -102,8 +100,6 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                         p25_p2_audio_ring_reset(state, slot);
                     }
                     state->p2_is_lcch = 0; //turn flag off here
-                    //if (state->currentslot == 0) state->dmrburstL = 14;
-                    //else state->dmrburstR = 14;
                     goto END_SMAC;
                 }
             }
@@ -145,7 +141,6 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->voice_counter[0] = 0;
             state->dropL = 256;
 
-            state->dmrburstL = 20;
             fprintf(stderr, "\n VCH 1 - ");
             //check that src is not zero first, some harris and other patch systems may do this,
             //but that also causes an issue in the new event logger if the active channel has a src, but mac_ptt has 0
@@ -219,6 +214,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     allow_audio = 1; // clear or decryptable with key
                 }
                 state->p25_p2_audio_allowed[slot] = allow_audio;
+                // Only set PTT burst indicator when audio is allowed; encrypted/locked-out
+                // calls should not influence audio routing decisions
+                if (allow_audio) {
+                    state->dmrburstL = 20;
+                }
             }
         }
 
@@ -229,7 +229,6 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
             state->dropR = 256;
             state->payload_algidR = 0; //zero this out as well
 
-            state->dmrburstR = 20;
             fprintf(stderr, "\n VCH 2 - ");
             //check that src is not zero first, some harris and other patch systems may do this,
             //but that also causes an issue in the new event logger if the active channel has a src, but mac_ptt has 0
@@ -294,6 +293,11 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                     allow_audio = 1;
                 }
                 state->p25_p2_audio_allowed[slot] = allow_audio;
+                // Only set PTT burst indicator when audio is allowed; encrypted/locked-out
+                // calls should not influence audio routing decisions
+                if (allow_audio) {
+                    state->dmrburstR = 20;
+                }
             }
         }
 
@@ -484,25 +488,6 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         // Release decision handled by SM tick based on hangtime/slot activity.
     }
     if (opcode == 0x4 && err == 0) {
-//disable to prevent blinking in ncurses terminal due to OSS preemption shim
-#ifdef __CYGWIN__
-        if (opts->audio_out_type != 5) {
-            // SACCH uses inverted slot mapping; use 'slot' (not currentslot)
-            if (slot == 0) {
-                state->dmrburstL = 21;
-            } else {
-                state->dmrburstR = 21;
-            }
-        }
-#else
-        // SACCH uses inverted slot mapping; use 'slot' (not currentslot)
-        if (slot == 0) {
-            state->dmrburstL = 21;
-        } else {
-            state->dmrburstR = 21;
-        }
-#endif
-
         fprintf(stderr, " MAC_ACTIVE ");
         fprintf(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 1, SMAC);
@@ -525,6 +510,22 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 allow_audio = state->p25_call_is_packet[slot] ? 0 : allow_audio;
             }
             state->p25_p2_audio_allowed[slot] = allow_audio;
+
+            // Only set voice-active burst indicator when audio is allowed;
+            // encrypted/locked-out calls should not influence audio routing
+#ifdef __CYGWIN__
+            if (opts->audio_out_type != 5)
+#endif
+            {
+                // SACCH uses inverted slot mapping; use 'slot' (not currentslot)
+                if (allow_audio) {
+                    if (slot == 0) {
+                        state->dmrburstL = 21;
+                    } else {
+                        state->dmrburstR = 21;
+                    }
+                }
+            }
         }
 
         // Emit ENC event for dual indication (SM tracks pending/confirmed)
@@ -608,8 +609,6 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 //fprintf (stderr, " NULL ");
             } else {
                 fprintf(stderr, " CRC12 ERR F");
-                //if (state->currentslot == 0) state->dmrburstL = 14;
-                //else state->dmrburstR = 14;
                 goto END_FMAC;
             }
         }

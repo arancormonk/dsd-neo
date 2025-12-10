@@ -201,8 +201,6 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     uint8_t hash_bits[24];
     memset(hash_bits, 0, sizeof(hash_bits));
 
-    int preempt = 0; //TDMA dual voice slot preemption
-
     for (i = 0; i < 88; i++) {
         imbe_d[i] = 0;
     }
@@ -1579,14 +1577,6 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             writeSynthesizedVoiceR(opts, state);
         }
     }
-
-    if (preempt == 1) {
-        opts->audio_out = 1;
-        // preempt is a local; no need to reset before return
-    }
-
-    //reset audio out flag for next repitition --disabled for now
-    // if (strcmp(mode, "B") == 0) opts->audio_out = 1;
 
     //restore flag for null output type
     if (opts->audio_out_type == 9) {
