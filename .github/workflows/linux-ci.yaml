@@ -205,8 +205,8 @@ jobs:
     name: Update AUR package
     needs: [build-linux]
     runs-on: ubuntu-latest
-    # Only run on the main repository, not forks
-    if: github.repository == 'arancormonk/dsd-neo'
+    # Only run where the AUR key is available and not on forked PRs
+    if: github.repository == 'arancormonk/dsd-neo' && github.event_name != 'pull_request' && secrets.AUR_SSH_PRIVATE_KEY != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.1
