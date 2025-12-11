@@ -15,22 +15,16 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
 #include <errno.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-// socket timeouts
-#include <sys/time.h>
 
-//UDP Specific
-#include <arpa/inet.h>
-/* For TCP options like TCP_NODELAY on POSIX platforms */
-#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)    \
-    || defined(__CYGWIN__)
-#include <netinet/tcp.h>
+#if DSD_PLATFORM_POSIX
+#include <unistd.h> /* usleep */
+#elif DSD_PLATFORM_WIN_NATIVE
+#include <windows.h>
+#define usleep(us) Sleep((us) / 1000)
 #endif
 
 #define BUFSIZE        1024
@@ -66,37 +60,30 @@ struct sockaddr_in addressM17;
  * @param portno Target port number.
  * @return Socket FD on success; 0 on resolution/connection failure.
  */
-int
+dsd_socket_t
 Connect(char* hostname, int portno) {
-    int sockfd;
+    dsd_socket_t sockfd;
     struct sockaddr_in serveraddr;
-    struct hostent* server;
 
     /* socket: create the socket */
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
+    sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == DSD_INVALID_SOCKET) {
         LOG_ERROR("ERROR opening socket\n");
         error("ERROR opening socket");
     }
 
-    /* gethostbyname: get the server's DNS entry */
-    server = gethostbyname(hostname);
-    if (server == NULL) {
+    /* Resolve hostname and build the server's Internet address */
+    if (dsd_socket_resolve(hostname, portno, &serveraddr) != 0) {
         LOG_ERROR("ERROR, no such host as %s\n", hostname);
-        //exit(0);
-        return (0); //return 0, check on other end and configure pulse input
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET; //check on other end and configure pulse input
     }
 
-    /* build the server's Internet address */
-    memset((char*)&serveraddr, 0, sizeof(serveraddr));
-    serveraddr.sin_family = AF_INET;
-    memcpy((char*)&serveraddr.sin_addr.s_addr, (char*)server->h_addr, server->h_length);
-    serveraddr.sin_port = htons(portno);
-
     /* connect: create a connection with the server */
-    if (connect(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr)) < 0) {
-        LOG_ERROR("ERROR opening socket\n");
-        return (0);
+    if (dsd_socket_connect(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr)) != 0) {
+        LOG_ERROR("ERROR connecting socket\n");
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET;
     }
 
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
@@ -112,12 +99,9 @@ Connect(char* hostname, int portno) {
                 to_ms = v;
             }
         }
-        struct timeval tv;
-        tv.tv_sec = to_ms / 1000;
-        tv.tv_usec = (suseconds_t)((long)(to_ms % 1000) * 1000L);
-        (void)setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)to_ms);
         int nodelay = 1;
-        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
 
     return sockfd;
@@ -133,10 +117,10 @@ Connect(char* hostname, int portno) {
  * @return true on success; false on error.
  */
 bool
-Send(int sockfd, char* buf) {
+Send(dsd_socket_t sockfd, char* buf) {
     int n;
 
-    n = write(sockfd, buf, strlen(buf));
+    n = dsd_socket_send(sockfd, buf, strlen(buf), 0);
     if (n < 0) {
         // Non-fatal: allow control plane hiccups without exiting
         return false;
@@ -155,10 +139,10 @@ Send(int sockfd, char* buf) {
  * @return true on success; false on timeout/error.
  */
 bool
-Recv(int sockfd, char* buf) {
+Recv(dsd_socket_t sockfd, char* buf) {
     int n;
 
-    n = read(sockfd, buf, BUFSIZE);
+    n = dsd_socket_recv(sockfd, buf, BUFSIZE, 0);
     if (n <= 0) {
         // Timeout or error: treat as soft failure so callers can continue
         if (buf) {
@@ -179,7 +163,7 @@ Recv(int sockfd, char* buf) {
  * @return Current frequency in Hz; 0 on error/unknown.
  */
 long int
-GetCurrentFreq(int sockfd) {
+GetCurrentFreq(dsd_socket_t sockfd) {
     long int freq = 0;
     char buf[BUFSIZE];
     char* ptr;
@@ -208,8 +192,8 @@ GetCurrentFreq(int sockfd) {
  * @return true on success; false on failure.
  */
 bool
-SetFreq(int sockfd, long int freq) {
-    static int s_last_sockfd = -1;
+SetFreq(dsd_socket_t sockfd, long int freq) {
+    static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
     static long int s_last_freq = LONG_MIN;
     if (sockfd == s_last_sockfd && freq == s_last_freq) {
         return true; // no change; skip I/O
@@ -240,8 +224,8 @@ SetFreq(int sockfd, long int freq) {
  * @return true on success; false on failure.
  */
 bool
-SetModulation(int sockfd, int bandwidth) {
-    static int s_last_sockfd = -1;
+SetModulation(dsd_socket_t sockfd, int bandwidth) {
+    static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
     static int s_last_bw = INT_MIN;
     if (sockfd == s_last_sockfd && bandwidth == s_last_bw) {
         return true; // unchanged
@@ -282,7 +266,7 @@ SetModulation(int sockfd, int bandwidth) {
  * @return true on success; false on error or zero reading.
  */
 bool
-GetSignalLevel(int sockfd, double* dB) {
+GetSignalLevel(dsd_socket_t sockfd, double* dB) {
     char buf[BUFSIZE];
 
     Send(sockfd, "l\n");
@@ -308,7 +292,7 @@ GetSignalLevel(int sockfd, double* dB) {
  * @return true on success; false on error.
  */
 bool
-GetSquelchLevel(int sockfd, double* dB) {
+GetSquelchLevel(dsd_socket_t sockfd, double* dB) {
     char buf[BUFSIZE];
 
     Send(sockfd, "l SQL\n");
@@ -331,7 +315,7 @@ GetSquelchLevel(int sockfd, double* dB) {
  * @return true on success; false on failure.
  */
 bool
-SetSquelchLevel(int sockfd, double dB) {
+SetSquelchLevel(dsd_socket_t sockfd, double dB) {
     char buf[BUFSIZE];
 
     snprintf(buf, sizeof buf, "L SQL %f\n", dB);
@@ -361,7 +345,7 @@ SetSquelchLevel(int sockfd, double dB) {
  * @return true when sampling completed (errors are tolerated in the average).
  */
 bool
-GetSignalLevelEx(int sockfd, double* dB, int n_samp) {
+GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
     double temp_level;
     *dB = 0;
     int errors = 0;
@@ -387,18 +371,18 @@ GetSignalLevelEx(int sockfd, double* dB, int n_samp) {
  * @param portno UDP port to bind.
  * @return Socket FD on success; exits the process on fatal errors.
  */
-int
+dsd_socket_t
 UDPBind(char* hostname, int portno) {
     UNUSED(hostname);
 
-    int sockfd;
+    dsd_socket_t sockfd;
     struct sockaddr_in serveraddr;
 
     /* socket: create the socket */
     //UDP socket
-    sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-    if (sockfd < 0) {
+    if (sockfd == DSD_INVALID_SOCKET) {
         fprintf(stderr, "ERROR opening UDP socket\n");
         error("ERROR opening UDP socket");
     }
@@ -407,18 +391,15 @@ UDPBind(char* hostname, int portno) {
     memset((char*)&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_addr.s_addr = INADDR_ANY; //INADDR_ANY
-    serveraddr.sin_port = htons(portno);
+    serveraddr.sin_port = htons((uint16_t)portno);
 
     //Bind socket to listening
-    if (bind(sockfd, (struct sockaddr*)&serveraddr, sizeof(serveraddr)) < 0) {
+    if (dsd_socket_bind(sockfd, (struct sockaddr*)&serveraddr, sizeof(serveraddr)) != 0) {
         perror("ERROR on binding UDP Port");
     }
 
-    //set these for non blocking when no samples to read
-    struct timeval read_timeout;
-    read_timeout.tv_sec = 0;
-    read_timeout.tv_usec = 10;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &read_timeout, sizeof read_timeout);
+    //set these for non blocking when no samples to read (very short timeout)
+    dsd_socket_set_recv_timeout(sockfd, 1); // 1ms timeout
 
     return sockfd;
 }
@@ -441,32 +422,31 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     if (frequency == s_last_udp_freq) {
         return; // unchanged
     }
-    int handle;
+    dsd_socket_t handle;
     unsigned short udp_port = opts->rtl_udp_port;
     char data[5] = {0}; //data buffer size is 5 for UDP frequency tuning
-    struct sockaddr_in address;
+    struct sockaddr_in tune_addr;
 
-    uint32_t new_freq = frequency;
+    uint32_t new_freq = (uint32_t)frequency;
     opts->rtlsdr_center_freq = new_freq; //for ncurses terminal display after rtl is started up
 
-    handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (handle < 0) {
+    handle = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (handle == DSD_INVALID_SOCKET) {
         return; // failed to create socket
     }
 
     data[0] = 0;
-    data[1] = new_freq & 0xFF;
-    data[2] = (new_freq >> 8) & 0xFF;
-    data[3] = (new_freq >> 16) & 0xFF;
-    data[4] = (new_freq >> 24) & 0xFF;
+    data[1] = (char)(new_freq & 0xFF);
+    data[2] = (char)((new_freq >> 8) & 0xFF);
+    data[3] = (char)((new_freq >> 16) & 0xFF);
+    data[4] = (char)((new_freq >> 24) & 0xFF);
 
-    memset((char*)&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = inet_addr("127.0.0.1"); //make user configurable later
-    address.sin_port = htons(udp_port);
-    (void)sendto(handle, data, 5, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
+    memset((char*)&tune_addr, 0, sizeof(tune_addr));
+    tune_addr.sin_family = AF_INET;
+    dsd_socket_resolve("127.0.0.1", udp_port, &tune_addr); //make user configurable later
+    (void)dsd_socket_sendto(handle, data, 5, 0, (const struct sockaddr*)&tune_addr, sizeof(struct sockaddr_in));
 
-    close(handle); //close socket after sending.
+    dsd_socket_close(handle); //close socket after sending.
     s_last_udp_freq = frequency;
 }
 
@@ -483,7 +463,7 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
 void
 udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
-    ssize_t err = 0;
+    int err = 0;
 
     //listen with:
 
@@ -500,12 +480,13 @@ udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     //socat stdio udp-listen:23456 | play --buffer 640 -q -e float -b 32 -r 8000 -c1 -t f32 -
 
     //send audio or data to socket
-    err = sendto(opts->udp_sockfd, data, nsam, 0, (const struct sockaddr*)&address, sizeof(struct sockaddr_in));
+    err = dsd_socket_sendto(opts->udp_sockfd, data, nsam, 0, (const struct sockaddr*)&address,
+                            sizeof(struct sockaddr_in));
     if (err < 0) {
-        fprintf(stderr, "\n UDP SENDTO ERR %zd", err);
+        fprintf(stderr, "\n UDP SENDTO ERR %d", err);
     }
     if (err >= 0 && (size_t)err < nsam) {
-        fprintf(stderr, "\n UDP Underflow %zd", err); //I'm not even sure if this is possible
+        fprintf(stderr, "\n UDP Underflow %d", err); //I'm not even sure if this is possible
     }
 }
 
@@ -520,13 +501,12 @@ udp_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
  */
 int
 m17_socket_receiver(dsd_opts* opts, void* data) {
-    ssize_t err = 0;
-    struct sockaddr_in cliaddr;
-    socklen_t len = sizeof(cliaddr);
+    int err = 0;
+    int len = sizeof(address);
 
     //receive data from socket
-    err = recvfrom(opts->udp_sockfd, data, 1000, 0, (struct sockaddr*)&address,
-                   &len); //was MSG_WAITALL, but that seems to be = 256
+    err = dsd_socket_recvfrom(opts->udp_sockfd, data, 1000, 0, (struct sockaddr*)&address,
+                              &len); //was MSG_WAITALL, but that seems to be = 256
 
     return err;
 }
@@ -545,7 +525,7 @@ m17_socket_receiver(dsd_opts* opts, void* data) {
 void
 udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
-    ssize_t err = 0;
+    int err = 0;
 
     //listen with:
 
@@ -553,13 +533,14 @@ udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     //socat stdio udp-listen:23456 | play --buffer 1920 -q -b 16 -r 48000 -c1 -t s16 -
 
     //send audio or data to socket
-    err = sendto(opts->udp_sockfdA, data, nsam, 0, (const struct sockaddr*)&addressA, sizeof(struct sockaddr_in));
+    err = dsd_socket_sendto(opts->udp_sockfdA, data, nsam, 0, (const struct sockaddr*)&addressA,
+                            sizeof(struct sockaddr_in));
     if (err < 0) {
-        fprintf(stderr, "\n UDP SENDTO ERR %zd",
-                err); // return value here is ssize_t number of bytes sent, or -1 for failure
+        fprintf(stderr, "\n UDP SENDTO ERR %d",
+                err); // return value here is number of bytes sent, or -1 for failure
     }
     if (err >= 0 && (size_t)err < nsam) {
-        fprintf(stderr, "\n UDP Underflow %zd", err); //I'm not even sure if this is possible
+        fprintf(stderr, "\n UDP Underflow %d", err); //I'm not even sure if this is possible
     }
 }
 
@@ -577,12 +558,13 @@ udp_socket_blasterA(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
 int
 m17_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {
     UNUSED(state);
-    ssize_t err = 0;
+    int err = 0;
 
     //See notes in m17.c on line ~3395 regarding usage
 
     //send audio or data to socket
-    err = sendto(opts->m17_udp_sock, data, nsam, 0, (const struct sockaddr*)&addressM17, sizeof(struct sockaddr_in));
+    err = dsd_socket_sendto(opts->m17_udp_sock, data, nsam, 0, (const struct sockaddr*)&addressM17,
+                            sizeof(struct sockaddr_in));
     //RETURN Value should be ACKN or NACK, or PING, or PONG
 
     return (err);
@@ -601,34 +583,26 @@ int
 udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
 
-    long int err = 0;
-    err = opts->udp_sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (err < 0) {
-        fprintf(stderr, " UDP Socket Error %ld\n", err);
-        return (err);
+    int err = 0;
+    opts->udp_sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (opts->udp_sockfd == DSD_INVALID_SOCKET) {
+        fprintf(stderr, " UDP Socket Error\n");
+        return -1;
     }
 
     // Don't think this is needed, but doesn't seem to hurt to keep it here either
     int broadcastEnable = 1;
-    err = setsockopt(opts->udp_sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
-    if (err < 0) {
-        fprintf(stderr, " UDP Broadcast Set Error %ld\n", err);
-        return (err);
+    err = dsd_socket_setsockopt(opts->udp_sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
+    if (err != 0) {
+        fprintf(stderr, " UDP Broadcast Set Error %d\n", err);
+        return err;
     }
 
     memset((char*)&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    err = address.sin_addr.s_addr = inet_addr(opts->udp_hostname);
-    if (err < 0) //error in this context reports back 32-bit inet_addr reversed order byte pairs
-    {
-        fprintf(stderr, " UDP inet_addr Error %ld\n", err);
-        return (err);
-    }
-
-    address.sin_port = htons(opts->udp_portno);
-    if (err < 0) {
-        fprintf(stderr, " UDP htons Error %ld\n", err);
-        return (err);
+    if (dsd_socket_resolve(opts->udp_hostname, opts->udp_portno, &address) != 0) {
+        fprintf(stderr, " UDP address resolve error for %s\n", opts->udp_hostname);
+        return -1;
     }
 
     return 0;
@@ -647,34 +621,27 @@ int
 udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
 
-    long int err = 0;
-    err = opts->udp_sockfdA = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (err < 0) {
-        fprintf(stderr, " UDP Socket Error %ld\n", err);
-        return (err);
+    int err = 0;
+    opts->udp_sockfdA = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (opts->udp_sockfdA == DSD_INVALID_SOCKET) {
+        fprintf(stderr, " UDP Socket Error\n");
+        return -1;
     }
 
     // Don't think this is needed, but doesn't seem to hurt to keep it here either
     int broadcastEnable = 1;
-    err = setsockopt(opts->udp_sockfdA, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
-    if (err < 0) {
-        fprintf(stderr, " UDP Broadcast Set Error %ld\n", err);
-        return (err);
+    err = dsd_socket_setsockopt(opts->udp_sockfdA, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
+    if (err != 0) {
+        fprintf(stderr, " UDP Broadcast Set Error %d\n", err);
+        return err;
     }
 
     memset((char*)&addressA, 0, sizeof(addressA));
     addressA.sin_family = AF_INET;
-    err = addressA.sin_addr.s_addr = inet_addr(opts->udp_hostname);
-    if (err < 0) //error in this context reports back 32-bit inet_addr reversed order byte pairs
-    {
-        fprintf(stderr, " UDP inet_addr Error %ld\n", err);
-        return (err);
-    }
-
-    addressA.sin_port = htons(opts->udp_portno + 2); //plus 2 to current port assignment for the analog port value
-    if (err < 0) {
-        fprintf(stderr, " UDP htons Error %ld\n", err);
-        return (err);
+    //plus 2 to current port assignment for the analog port value
+    if (dsd_socket_resolve(opts->udp_hostname, opts->udp_portno + 2, &addressA) != 0) {
+        fprintf(stderr, " UDP address resolve error for %s\n", opts->udp_hostname);
+        return -1;
     }
 
     return 0;
@@ -693,34 +660,27 @@ int
 udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
 
-    long int err = 0;
-    err = opts->m17_udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (err < 0) {
-        fprintf(stderr, " UDP Socket Error %ld\n", err);
-        return (err);
+    int err = 0;
+    opts->m17_udp_sock = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (opts->m17_udp_sock == DSD_INVALID_SOCKET) {
+        fprintf(stderr, " UDP Socket Error\n");
+        return -1;
     }
 
     // Don't think this is needed, but doesn't seem to hurt to keep it here either
     int broadcastEnable = 1;
-    err = setsockopt(opts->m17_udp_sock, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
-    if (err < 0) {
-        fprintf(stderr, " UDP Broadcast Set Error %ld\n", err);
-        return (err);
+    err =
+        dsd_socket_setsockopt(opts->m17_udp_sock, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
+    if (err != 0) {
+        fprintf(stderr, " UDP Broadcast Set Error %d\n", err);
+        return err;
     }
 
     memset((char*)&addressM17, 0, sizeof(addressM17));
     addressM17.sin_family = AF_INET;
-    err = addressM17.sin_addr.s_addr = inet_addr(opts->m17_hostname);
-    if (err < 0) //error in this context reports back 32-bit inet_addr reversed order byte pairs
-    {
-        fprintf(stderr, " UDP inet_addr Error %ld\n", err);
-        return (err);
-    }
-
-    addressM17.sin_port = htons(opts->m17_portno);
-    if (err < 0) {
-        fprintf(stderr, " UDP htons Error %ld\n", err);
-        return (err);
+    if (dsd_socket_resolve(opts->m17_hostname, opts->m17_portno, &addressM17) != 0) {
+        fprintf(stderr, " UDP address resolve error for %s\n", opts->m17_hostname);
+        return -1;
     }
 
     return 0;

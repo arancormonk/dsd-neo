@@ -1550,24 +1550,24 @@ initOpts(dsd_opts* opts) {
 
     //rigctl options
     opts->use_rigctl = 0;
-    opts->rigctl_sockfd = 0;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->rigctlportno = 4532; //TCP Port Number; GQRX - 7356; SDR++ - 4532
     snprintf(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "localhost");
 
     //UDP Socket Blaster Audio
-    opts->udp_sockfd = 0;
-    opts->udp_sockfdA = 0;
+    opts->udp_sockfd = DSD_INVALID_SOCKET;
+    opts->udp_sockfdA = DSD_INVALID_SOCKET;
     opts->udp_portno = 23456; //default port, same os OP25's sockaudio.py
     snprintf(opts->udp_hostname, sizeof opts->udp_hostname, "%s", "127.0.0.1");
 
     //M17 UDP Port and hostname
-    opts->m17_use_ip = 0;     //if enabled, open UDP and broadcast IP frame
-    opts->m17_portno = 17000; //default is 17000
-    opts->m17_udp_sock = 0;   //actual UDP socket for M17 to send to
+    opts->m17_use_ip = 0;                    //if enabled, open UDP and broadcast IP frame
+    opts->m17_portno = 17000;                //default is 17000
+    opts->m17_udp_sock = DSD_INVALID_SOCKET; //actual UDP socket for M17 to send to
     snprintf(opts->m17_hostname, sizeof opts->m17_hostname, "%s", "127.0.0.1");
 
     //tcp input options
-    opts->tcp_sockfd = 0;
+    opts->tcp_sockfd = DSD_INVALID_SOCKET;
     opts->tcp_portno = 7355; //default favored by SDR++
     snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", "localhost");
 
@@ -1578,7 +1578,7 @@ initOpts(dsd_opts* opts) {
     opts->rtltcp_autotune = 0; // default off; enable via CLI --rtltcp-autotune or env
 
     // UDP direct input defaults
-    opts->udp_in_sockfd = 0;
+    opts->udp_in_sockfd = DSD_INVALID_SOCKET;
     opts->udp_in_portno = 7355;
     opts->udp_in_bindaddr[0] = '\0';
     opts->udp_in_ctx = NULL;
@@ -2791,16 +2791,16 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
     }
 #endif
 
-    if (opts->udp_sockfd) {
-        close(opts->udp_sockfd);
+    if (opts->udp_sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(opts->udp_sockfd);
     }
 
-    if (opts->udp_sockfdA) {
-        close(opts->udp_sockfdA);
+    if (opts->udp_sockfdA != DSD_INVALID_SOCKET) {
+        dsd_socket_close(opts->udp_sockfdA);
     }
 
-    if (opts->m17_udp_sock) {
-        close(opts->m17_udp_sock);
+    if (opts->m17_udp_sock != DSD_INVALID_SOCKET) {
+        dsd_socket_close(opts->m17_udp_sock);
     }
 
     if (opts->udp_in_ctx) {
@@ -2823,6 +2823,10 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
     LOG_NOTICE("Total header errors: %i\n", state->debug_header_errors);
     LOG_NOTICE("Total irrecoverable header errors: %i\n", state->debug_header_critical_errors);
     LOG_NOTICE("Exiting.\n");
+
+    // Cleanup socket subsystem (required for Windows, no-op on POSIX)
+    dsd_socket_cleanup();
+
     exit(0);
 }
 
@@ -2872,6 +2876,12 @@ main(int argc, char** argv) {
     init_rrc_filter_memory(); //initialize input filtering
     InitAllFecFunction();
     CNXDNConvolution_init();
+
+    // Initialize socket subsystem (required for Windows, no-op on POSIX)
+    if (dsd_socket_init() != 0) {
+        fprintf(stderr, "Failed to initialize socket subsystem\n");
+        return 1;
+    }
 
     exitflag = 0;
 
@@ -3270,7 +3280,7 @@ main(int argc, char** argv) {
         LOG_NOTICE("%s:", opts.tcp_hostname);
         LOG_NOTICE("%d \n", opts.tcp_portno);
         opts.tcp_sockfd = Connect(opts.tcp_hostname, opts.tcp_portno);
-        if (opts.tcp_sockfd != 0) {
+        if (opts.tcp_sockfd != DSD_INVALID_SOCKET) {
             opts.audio_in_type = 8;
 
             LOG_NOTICE("TCP Connection Success!\n");
@@ -3288,7 +3298,7 @@ main(int argc, char** argv) {
 
     if (opts.use_rigctl == 1) {
         opts.rigctl_sockfd = Connect(opts.rigctlhostname, opts.rigctlportno);
-        if (opts.rigctl_sockfd != 0) {
+        if (opts.rigctl_sockfd != DSD_INVALID_SOCKET) {
             opts.use_rigctl = 1;
         } else {
             LOG_ERROR("RIGCTL Connection Failure - RIGCTL Features Disabled\n");
@@ -3608,7 +3618,7 @@ main(int argc, char** argv) {
             err = udp_socket_connectA(&opts, &state);
             if (err < 0) {
                 LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio Analog :( \n");
-                opts.udp_sockfdA = 0;
+                opts.udp_sockfdA = DSD_INVALID_SOCKET;
                 opts.monitor_input_audio = 0;
             } else {
                 LOG_NOTICE("UDP Blaster Output (Analog): ");

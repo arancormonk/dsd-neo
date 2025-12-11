@@ -5,21 +5,26 @@
 
 /* UDP PCM16LE input backend */
 
-#include <arpa/inet.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/threading.h>
+
 #include <errno.h>
-#include <netinet/in.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <time.h>
-#include <unistd.h>
+
+#if DSD_PLATFORM_POSIX
+#include <unistd.h> /* usleep */
+#elif DSD_PLATFORM_WIN_NATIVE
+#include <windows.h>
+#define usleep(us) Sleep((us) / 1000)
+#endif
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
-#include <dsd-neo/platform/threading.h>
 
 /** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {
@@ -33,7 +38,7 @@ typedef struct udp_input_ring {
 
 /** @brief UDP input backend state shared across the reader thread and callers. */
 typedef struct udp_input_ctx {
-    int sockfd;
+    dsd_socket_t sockfd;
     int running;
     udp_input_ring ring;
     dsd_thread_t th;
@@ -180,15 +185,26 @@ static DSD_THREAD_RETURN_TYPE
     }
 
     while (ctx->running) {
-        ssize_t n = recv(ctx->sockfd, buf, max_bytes, 0);
+        int n = dsd_socket_recv(ctx->sockfd, buf, max_bytes, 0);
         if (n < 0) {
-            if (errno == EINTR) {
+            int err = dsd_socket_get_error();
+#if DSD_PLATFORM_WIN_NATIVE
+            if (err == WSAEINTR) {
                 continue;
             }
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT) {
                 usleep(1000);
                 continue;
             }
+#else
+            if (err == EINTR) {
+                continue;
+            }
+            if (err == EAGAIN || err == EWOULDBLOCK) {
+                usleep(1000);
+                continue;
+            }
+#endif
             // fatal error -> stop
             break;
         }
@@ -241,21 +257,18 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         return 0; // already started
     }
 
-    int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sockfd < 0) {
+    dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sockfd == DSD_INVALID_SOCKET) {
         fprintf(stderr, "Error creating UDP input socket\n");
         return -1;
     }
 
     // Increase OS receive buffer if possible
     int rcvbuf = 4 * 1024 * 1024;
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    (void)dsd_socket_setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
     // Set a short receive timeout so thread can notice stop requests
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 200000; // 200 ms
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    (void)dsd_socket_set_recv_timeout(sockfd, 200); // 200ms
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -265,9 +278,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         if (strcmp(bindaddr, "0.0.0.0") == 0) {
             addr.sin_addr.s_addr = htonl(INADDR_ANY);
         } else {
-            if (inet_aton(bindaddr, &addr.sin_addr) == 0) {
+            /* Parse numeric address */
+            if (dsd_socket_resolve(bindaddr, port, &addr) != 0) {
                 fprintf(stderr, "Invalid UDP bind address: %s\n", bindaddr);
-                close(sockfd);
+                dsd_socket_close(sockfd);
                 return -1;
             }
         }
@@ -275,15 +289,15 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     }
 
-    if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (dsd_socket_bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
         fprintf(stderr, "Failed to bind UDP %s:%d\n", bindaddr ? bindaddr : "127.0.0.1", port);
-        close(sockfd);
+        dsd_socket_close(sockfd);
         return -1;
     }
 
     udp_input_ctx* ctx = (udp_input_ctx*)calloc(1, sizeof(udp_input_ctx));
     if (!ctx) {
-        close(sockfd);
+        dsd_socket_close(sockfd);
         return -1;
     }
     ctx->sockfd = sockfd;
@@ -297,7 +311,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     }
     ring_init(&ctx->ring, cap);
     if (ctx->ring.cap == 0) {
-        close(sockfd);
+        dsd_socket_close(sockfd);
         free(ctx);
         return -1;
     }
@@ -307,10 +321,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     int rc = dsd_thread_create(&ctx->th, (dsd_thread_fn)udp_rx_thread, opts);
     if (rc != 0) {
         ring_destroy(&ctx->ring);
-        close(sockfd);
+        dsd_socket_close(sockfd);
         free(ctx);
         opts->udp_in_ctx = NULL;
-        opts->udp_in_sockfd = 0;
+        opts->udp_in_sockfd = DSD_INVALID_SOCKET;
         return -1;
     }
     return 0;
@@ -327,18 +341,18 @@ udp_input_stop(dsd_opts* opts) {
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
     ctx->running = 0;
-    if (ctx->sockfd > 0) {
-        shutdown(ctx->sockfd, SHUT_RD);
-        close(ctx->sockfd);
+    if (ctx->sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_shutdown(ctx->sockfd, SHUT_RD);
+        dsd_socket_close(ctx->sockfd);
     }
-    ctx->sockfd = -1;
+    ctx->sockfd = DSD_INVALID_SOCKET;
     // wake any blocked reader
     ring_signal(&ctx->ring);
     dsd_thread_join(ctx->th);
     ring_destroy(&ctx->ring);
     free(ctx);
     opts->udp_in_ctx = NULL;
-    opts->udp_in_sockfd = 0;
+    opts->udp_in_sockfd = DSD_INVALID_SOCKET;
 }
 
 /**

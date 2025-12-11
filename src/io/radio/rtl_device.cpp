@@ -15,6 +15,7 @@
 #include <atomic>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
@@ -24,20 +25,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
-#include <unistd.h>
-/* Networking for rtl_tcp backend */
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+
+#if DSD_PLATFORM_POSIX
+#include <strings.h>
 #include <sys/time.h>
-#include <sys/types.h>
-/* For TCP options like TCP_NODELAY on POSIX platforms */
-#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)    \
-    || defined(__CYGWIN__)
-#include <netinet/tcp.h>
+#include <unistd.h>
+#elif DSD_PLATFORM_WIN_NATIVE
+#include <windows.h>
+#define nanosleep(ts, rem) Sleep((DWORD)((ts)->tv_sec * 1000 + (ts)->tv_nsec / 1000000))
+#define clock_gettime(id, ts)                                                                                          \
+    do {                                                                                                               \
+        LARGE_INTEGER freq, count;                                                                                     \
+        QueryPerformanceFrequency(&freq);                                                                              \
+        QueryPerformanceCounter(&count);                                                                               \
+        (ts)->tv_sec = (time_t)(count.QuadPart / freq.QuadPart);                                                       \
+        (ts)->tv_nsec = (long)((count.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart);                       \
+    } while (0)
+#define CLOCK_MONOTONIC 0
 #endif
 /* Some platforms (e.g. non-glibc) may not define MSG_NOSIGNAL */
 #ifndef MSG_NOSIGNAL
@@ -68,7 +73,7 @@ struct rtl_device {
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp */
     int backend;
     /* rtl_tcp connection */
-    int sockfd;
+    dsd_socket_t sockfd;
     char host[1024];
     int port;
     std::atomic<int> run;
@@ -287,64 +292,59 @@ static DSD_THREAD_RETURN_TYPE
 /* ---- rtl_tcp backend helpers ---- */
 
 /* Connect to rtl_tcp server */
-static int
+static dsd_socket_t
 tcp_connect_host(const char* host, int port) {
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
+    dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == DSD_INVALID_SOCKET) {
         fprintf(stderr, "rtl_tcp: ERROR opening socket\n");
-        return -1;
+        return DSD_INVALID_SOCKET;
     }
     /* Best-effort: enable TCP keepalive to detect half-open links */
     {
         int opt = 1;
-        (void)setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
+        (void)dsd_socket_setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
 #if defined(TCP_KEEPIDLE)
         int idle = 15; /* seconds before starting keepalive probes */
-        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
 #endif
 #if defined(TCP_KEEPCNT)
         int cnt = 4; /* number of probes */
-        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
 #endif
 #if defined(TCP_KEEPINTVL)
         int intvl = 5; /* seconds between probes */
-        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
 #endif
 #if defined(TCP_USER_TIMEOUT)
         /* Optional fail-fast if ACKs are not received within timeout (ms) */
         int uto = 20000; /* 20s */
-        (void)setsockopt(sockfd, IPPROTO_TCP, TCP_USER_TIMEOUT, &uto, sizeof(uto));
+        (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_USER_TIMEOUT, &uto, sizeof(uto));
 #endif
     }
-    struct hostent* server = gethostbyname(host);
-    if (!server) {
-        fprintf(stderr, "rtl_tcp: ERROR, no such host as %s\n", host);
-        close(sockfd);
-        return -1;
-    }
     struct sockaddr_in serveraddr;
-    memset(&serveraddr, 0, sizeof(serveraddr));
-    serveraddr.sin_family = AF_INET;
-    memcpy(&serveraddr.sin_addr.s_addr, server->h_addr, static_cast<size_t>(server->h_length));
-    serveraddr.sin_port = htons(static_cast<uint16_t>(port));
-    if (connect(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr)) < 0) {
+    if (dsd_socket_resolve(host, port, &serveraddr) != 0) {
+        fprintf(stderr, "rtl_tcp: ERROR, no such host as %s\n", host);
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET;
+    }
+    if (dsd_socket_connect(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr)) != 0) {
         fprintf(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
-        close(sockfd);
-        return -1;
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET;
     }
     return sockfd;
 }
 
 /* Send rtl_tcp command: 1 byte id + 4 byte big-endian value */
 static int
-rtl_tcp_send_cmd(int sockfd, uint8_t cmd, uint32_t param) {
+rtl_tcp_send_cmd(dsd_socket_t sockfd, uint8_t cmd, uint32_t param) {
     uint8_t buf[5];
     buf[0] = cmd;
     buf[1] = (uint8_t)((param >> 24) & 0xFF);
     buf[2] = (uint8_t)((param >> 16) & 0xFF);
     buf[3] = (uint8_t)((param >> 8) & 0xFF);
     buf[4] = (uint8_t)(param & 0xFF);
-    ssize_t n = send(sockfd, buf, 5, MSG_NOSIGNAL);
+    int n = dsd_socket_send(sockfd, buf, 5, MSG_NOSIGNAL);
     return (n == 5) ? 0 : -1;
 }
 
@@ -360,10 +360,10 @@ env_agc_want(void) {
 
 /* Read and discard rtl_tcp header: 'RTL0' + tuner(4) + ngains(4) + ngains*4 */
 static void
-rtl_tcp_skip_header(int sockfd) {
+rtl_tcp_skip_header(dsd_socket_t sockfd) {
     uint8_t hdr[12];
-    ssize_t n = recv(sockfd, hdr, sizeof(hdr), MSG_WAITALL);
-    if (n != (ssize_t)sizeof(hdr)) {
+    int n = dsd_socket_recv(sockfd, hdr, sizeof(hdr), MSG_WAITALL);
+    if (n != (int)sizeof(hdr)) {
         return;
     }
     if (!(hdr[0] == 'R' && hdr[1] == 'T' && hdr[2] == 'L' && hdr[3] == '0')) {
@@ -377,7 +377,7 @@ rtl_tcp_skip_header(int sockfd) {
         uint8_t buf[1024];
         while (to_discard > 0) {
             size_t chunk = to_discard > sizeof(buf) ? sizeof(buf) : to_discard;
-            ssize_t r = recv(sockfd, buf, chunk, MSG_WAITALL);
+            int r = dsd_socket_recv(sockfd, buf, chunk, MSG_WAITALL);
             if (r <= 0) {
                 break;
             }
@@ -472,15 +472,19 @@ static DSD_THREAD_RETURN_TYPE
                 nanosleep(&ts, NULL);
             }
         }
-        ssize_t r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
+        int r = dsd_socket_recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
         if (r <= 0) {
             /* Timeout or connection closed. On timeout, tolerate up to
                timeout_limit consecutive occurrences before reconnecting. */
             if (!s->run.load() || exitflag) {
                 break;
             }
-            int e = errno;
+            int e = dsd_socket_get_error();
+#if DSD_PLATFORM_WIN_NATIVE
+            int is_timeout = (r < 0) && (e == WSAEWOULDBLOCK || e == WSAETIMEDOUT || e == WSAEINTR);
+#else
             int is_timeout = (r < 0) && (e == EAGAIN || e == EWOULDBLOCK || e == EINTR);
+#endif
             if (is_timeout) {
                 consec_timeouts++;
                 if (consec_timeouts < timeout_limit) {
@@ -504,17 +508,17 @@ static DSD_THREAD_RETURN_TYPE
             const uint32_t prev_rtl_xtal = s->rtl_xtal_hz;
             const uint32_t prev_tuner_xtal = s->tuner_xtal_hz;
 
-            if (s->sockfd >= 0) {
-                shutdown(s->sockfd, SHUT_RDWR);
-                close(s->sockfd);
-                s->sockfd = -1;
+            if (s->sockfd != DSD_INVALID_SOCKET) {
+                dsd_socket_shutdown(s->sockfd, SHUT_RDWR);
+                dsd_socket_close(s->sockfd);
+                s->sockfd = DSD_INVALID_SOCKET;
             }
             /* Backoff loop */
             int attempt = 0;
             while (s->run.load() && exitflag == 0) {
                 attempt++;
-                int newsfd = tcp_connect_host(s->host, s->port);
-                if (newsfd >= 0) {
+                dsd_socket_t newsfd = tcp_connect_host(s->host, s->port);
+                if (newsfd != DSD_INVALID_SOCKET) {
                     s->sockfd = newsfd;
                     fprintf(stderr, "rtl_tcp: reconnected on attempt %d.\n", attempt);
                     /* Reinitialize stream framing and pending state */
@@ -529,10 +533,9 @@ static DSD_THREAD_RETURN_TYPE
                                 rcvbuf = v;
                             }
                         }
-                        (void)setsockopt(s->sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+                        (void)dsd_socket_setsockopt(s->sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
                         int nodelay = 1;
-                        (void)setsockopt(s->sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-                        struct timeval rcvto;
+                        (void)dsd_socket_setsockopt(s->sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
                         int to_ms = 2000;
                         if (const char* et = getenv("DSD_NEO_TCP_RCVTIMEO")) {
                             int v = atoi(et);
@@ -540,9 +543,7 @@ static DSD_THREAD_RETURN_TYPE
                                 to_ms = v;
                             }
                         }
-                        rcvto.tv_sec = to_ms / 1000;
-                        rcvto.tv_usec = (to_ms % 1000) * 1000;
-                        (void)setsockopt(s->sockfd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
+                        (void)dsd_socket_set_recv_timeout(s->sockfd, (unsigned int)to_ms);
                     }
                     /* Replay essential device state to server */
                     if (prev_freq > 0) {
@@ -587,21 +588,21 @@ static DSD_THREAD_RETURN_TYPE
                         }
                     }
                     /* Resume recv loop */
-                    r = recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
+                    r = dsd_socket_recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
                     if (r > 0) {
                         /* Continue with normal processing */
                         break;
                     }
                     /* Immediate failure: close and retry */
-                    shutdown(s->sockfd, SHUT_RDWR);
-                    close(s->sockfd);
-                    s->sockfd = -1;
+                    dsd_socket_shutdown(s->sockfd, SHUT_RDWR);
+                    dsd_socket_close(s->sockfd);
+                    s->sockfd = DSD_INVALID_SOCKET;
                 }
                 int backoff_ms = 200 * (attempt < 10 ? attempt : 10); /* up to ~2s */
                 struct timespec ts = {backoff_ms / 1000, (backoff_ms % 1000) * 1000000L};
                 nanosleep(&ts, NULL);
             }
-            if (s->sockfd < 0 || r <= 0) {
+            if (s->sockfd == DSD_INVALID_SOCKET || r <= 0) {
                 /* Could not reconnect or no data after reconnect; exit */
                 break;
             }
@@ -1177,7 +1178,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->mute = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled_param;
     dev->backend = 0;
-    dev->sockfd = -1;
+    dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
     dev->port = 0;
     dev->run.store(0);
@@ -1214,7 +1215,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->mute = 0;
     dev->combine_rotate_enabled = combine_rotate_enabled_param;
     dev->backend = 1;
-    dev->sockfd = -1;
+    dev->sockfd = DSD_INVALID_SOCKET;
     snprintf(dev->host, sizeof(dev->host), "%s", host);
     dev->port = port;
     dev->run.store(0);
@@ -1229,8 +1230,8 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->tuner_xtal_hz = 0;
     dev->if_gain_count = 0;
 
-    int sfd = tcp_connect_host(host, port);
-    if (sfd < 0) {
+    dsd_socket_t sfd = tcp_connect_host(host, port);
+    if (sfd == DSD_INVALID_SOCKET) {
         free(dev);
         return NULL;
     }
@@ -1243,12 +1244,11 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
                 rcvbuf = v;
             }
         }
-        (void)setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+        (void)dsd_socket_setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
         int nodelay = 1;
-        (void)setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+        (void)dsd_socket_setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
         /* Hard fix: apply a receive timeout so stalled connections don't appear
            as a P25 wedge. Default 2 seconds; override via DSD_NEO_TCP_RCVTIMEO (ms). */
-        struct timeval rcvto;
         int to_ms = 2000;
         if (const char* et = getenv("DSD_NEO_TCP_RCVTIMEO")) {
             int v = atoi(et);
@@ -1256,9 +1256,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
                 to_ms = v;
             }
         }
-        rcvto.tv_sec = to_ms / 1000;
-        rcvto.tv_usec = (to_ms % 1000) * 1000;
-        (void)setsockopt(sfd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
+        (void)dsd_socket_set_recv_timeout(sfd, (unsigned int)to_ms);
     }
     dev->sockfd = sfd;
     fprintf(stderr, "rtl_tcp: Connected to %s:%d\n", host, port);
@@ -1299,8 +1297,8 @@ rtl_device_destroy(struct rtl_device* dev) {
             }
         } else if (dev->backend == 1) {
             dev->run.store(0);
-            if (dev->sockfd >= 0) {
-                shutdown(dev->sockfd, SHUT_RDWR);
+            if (dev->sockfd != DSD_INVALID_SOCKET) {
+                dsd_socket_shutdown(dev->sockfd, SHUT_RDWR);
             }
         }
         dsd_thread_join(dev->thread);
@@ -1320,8 +1318,8 @@ rtl_device_destroy(struct rtl_device* dev) {
     if (dev->backend == 0 && dev->dev) {
         rtlsdr_close(dev->dev);
     }
-    if (dev->backend == 1 && dev->sockfd >= 0) {
-        close(dev->sockfd);
+    if (dev->backend == 1 && dev->sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(dev->sockfd);
     }
     if (dev->tcp_pending) {
         free(dev->tcp_pending);
@@ -1695,8 +1693,8 @@ rtl_device_stop_async(struct rtl_device* dev) {
         }
     } else {
         dev->run.store(0);
-        if (dev->sockfd >= 0) {
-            shutdown(dev->sockfd, SHUT_RDWR);
+        if (dev->sockfd != DSD_INVALID_SOCKET) {
+            dsd_socket_shutdown(dev->sockfd, SHUT_RDWR);
         }
     }
     dsd_thread_join(dev->thread);
@@ -1777,7 +1775,7 @@ rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t 
     dev->rtl_xtal_hz = rtl_xtal_hz;
     dev->tuner_xtal_hz = tuner_xtal_hz;
     if (dev->backend == 1) {
-        if (dev->sockfd < 0) {
+        if (dev->sockfd == DSD_INVALID_SOCKET) {
             return -1;
         }
         if (rtl_xtal_hz > 0) {
@@ -1808,7 +1806,7 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
     }
     dev->testmode_on = on ? 1 : 0;
     if (dev->backend == 1) {
-        if (dev->sockfd < 0) {
+        if (dev->sockfd == DSD_INVALID_SOCKET) {
             return -1;
         }
         return rtl_tcp_send_cmd(dev->sockfd, 0x07, (uint32_t)(on ? 1 : 0));
@@ -1847,7 +1845,7 @@ rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
         dev->if_gain_count++;
     }
     if (dev->backend == 1) {
-        if (dev->sockfd < 0) {
+        if (dev->sockfd == DSD_INVALID_SOCKET) {
             return -1;
         }
         uint32_t packed = ((uint32_t)(stage & 0xFFFF) << 16) | ((uint16_t)(gain_tenth_db & 0xFFFF));

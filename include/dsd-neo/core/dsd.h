@@ -59,6 +59,7 @@
 #endif
 
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
 
 #include <signal.h>
 #include <stdio.h>
@@ -1186,37 +1187,37 @@ long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t ch
 //rigctl functions and TCP/UDP functions
 /** @brief Print an error message and exit. */
 void error(char* msg);
-/** @brief Connect to a TCP host/port and return socket fd. */
-int Connect(char* hostname, int portno);
+/** @brief Connect to a TCP host/port and return socket. */
+dsd_socket_t Connect(char* hostname, int portno);
 /** @brief Send a buffer over an existing socket. */
-bool Send(int sockfd, char* buf);
+bool Send(dsd_socket_t sockfd, char* buf);
 /** @brief Receive a buffer from an existing socket. */
-bool Recv(int sockfd, char* buf);
+bool Recv(dsd_socket_t sockfd, char* buf);
 
 //rtl_fm udp tuning function
 /** @brief Send a tune request via rtl_fm UDP backend. */
 void rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
 
 /** @brief Query current tuner frequency over rigctl. */
-long int GetCurrentFreq(int sockfd);
+long int GetCurrentFreq(dsd_socket_t sockfd);
 /** @brief Set tuner frequency over rigctl. */
-bool SetFreq(int sockfd, long int freq);
+bool SetFreq(dsd_socket_t sockfd, long int freq);
 /** @brief Set tuner modulation/bandwidth over rigctl. */
-bool SetModulation(int sockfd, int bandwidth);
+bool SetModulation(dsd_socket_t sockfd, int bandwidth);
 //commands below unique to GQRX only, not usable on SDR++
 /** @brief Get current signal level from GQRX rigctl. */
-bool GetSignalLevel(int sockfd, double* dB);
+bool GetSignalLevel(dsd_socket_t sockfd, double* dB);
 /** @brief Get squelch level from GQRX rigctl. */
-bool GetSquelchLevel(int sockfd, double* dB);
+bool GetSquelchLevel(dsd_socket_t sockfd, double* dB);
 /** @brief Set squelch level via GQRX rigctl. */
-bool SetSquelchLevel(int sockfd, double dB);
+bool SetSquelchLevel(dsd_socket_t sockfd, double dB);
 /** @brief Get averaged signal level from GQRX rigctl. */
-bool GetSignalLevelEx(int sockfd, double* dB, int n_samp);
+bool GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp);
 //end gqrx-scanner
 
 //UDP socket connection
-/** @brief Bind a UDP socket on hostname/port and return fd. */
-int UDPBind(char* hostname, int portno);
+/** @brief Bind a UDP socket on hostname/port and return socket. */
+dsd_socket_t UDPBind(char* hostname, int portno);
 
 //EDACS
 /** @brief Decode an EDACS voice/data frame. */

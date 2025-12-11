@@ -13,21 +13,18 @@
  */
 
 #include <dsd-neo/io/udp_control.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <dsd-neo/runtime/log.h>
 
 struct udp_control {
     int port;
-    int sockfd;
+    dsd_socket_t sockfd;
     dsd_thread_t thread;
     udp_control_retune_cb cb;
     void* user_data;
@@ -72,10 +69,10 @@ static DSD_THREAD_RETURN_TYPE
     unsigned char buffer[5];
     struct sockaddr_in serv_addr;
 
-    ctrl->sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (ctrl->sockfd < 0) {
+    ctrl->sockfd = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (ctrl->sockfd == DSD_INVALID_SOCKET) {
         perror("ERROR opening socket");
-        return NULL;
+        DSD_THREAD_RETURN;
     }
 
     memset(&serv_addr, 0, sizeof(serv_addr));
@@ -83,17 +80,17 @@ static DSD_THREAD_RETURN_TYPE
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons((uint16_t)ctrl->port);
 
-    if (bind(ctrl->sockfd, reinterpret_cast<struct sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
+    if (dsd_socket_bind(ctrl->sockfd, reinterpret_cast<struct sockaddr*>(&serv_addr), sizeof(serv_addr)) != 0) {
         perror("ERROR on binding");
-        close(ctrl->sockfd);
-        ctrl->sockfd = -1;
-        return NULL;
+        dsd_socket_close(ctrl->sockfd);
+        ctrl->sockfd = DSD_INVALID_SOCKET;
+        DSD_THREAD_RETURN;
     }
 
     memset(buffer, 0, sizeof(buffer));
     LOG_INFO("Main socket started! :-) Tuning enabled on UDP/%d \n", ctrl->port);
 
-    while (!ctrl->stop_flag && (n = (int)read(ctrl->sockfd, buffer, 5)) > 0) {
+    while (!ctrl->stop_flag && (n = dsd_socket_recv(ctrl->sockfd, buffer, 5, 0)) > 0) {
         if (n == 5 && buffer[0] == 0) {
             unsigned int new_freq = udp_chars_to_int(buffer);
             if (ctrl->cb) {
@@ -106,9 +103,9 @@ static DSD_THREAD_RETURN_TYPE
         perror("ERROR on read");
     }
 
-    if (ctrl->sockfd >= 0) {
-        close(ctrl->sockfd);
-        ctrl->sockfd = -1;
+    if (ctrl->sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(ctrl->sockfd);
+        ctrl->sockfd = DSD_INVALID_SOCKET;
     }
     DSD_THREAD_RETURN;
 }
@@ -134,7 +131,7 @@ udp_control_start(int udp_port, udp_control_retune_cb cb, void* user_data) {
         return NULL;
     }
     ctrl->port = udp_port;
-    ctrl->sockfd = -1;
+    ctrl->sockfd = DSD_INVALID_SOCKET;
     ctrl->cb = cb;
     ctrl->user_data = user_data;
     ctrl->stop_flag = 0;
@@ -159,13 +156,13 @@ udp_control_stop(udp_control* ctrl) {
         return;
     }
     ctrl->stop_flag = 1;
-    if (ctrl->sockfd >= 0) {
-        shutdown(ctrl->sockfd, SHUT_RDWR);
+    if (ctrl->sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_shutdown(ctrl->sockfd, SHUT_RDWR);
     }
     dsd_thread_join(ctrl->thread);
-    if (ctrl->sockfd >= 0) {
-        close(ctrl->sockfd);
-        ctrl->sockfd = -1;
+    if (ctrl->sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(ctrl->sockfd);
+        ctrl->sockfd = DSD_INVALID_SOCKET;
     }
     free(ctrl);
 }

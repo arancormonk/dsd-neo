@@ -15,8 +15,14 @@
 #pragma once
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
 
+#if DSD_PLATFORM_POSIX
 #include <pulse/simple.h>
+#elif DSD_PLATFORM_WIN_NATIVE
+typedef void* pa_simple; /* Placeholder for Windows - no PulseAudio */
+#endif
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -197,18 +203,18 @@ struct dsd_opts {
     int call_alert;
 
     // rigctl / sockets / streaming
-    int rigctl_sockfd;
+    dsd_socket_t rigctl_sockfd;
     int use_rigctl;
     int rigctlportno;
-    int udp_sockfd;  //digital
-    int udp_sockfdA; //analog 48k1
+    dsd_socket_t udp_sockfd;  //digital
+    dsd_socket_t udp_sockfdA; //analog 48k1
     int udp_portno;
-    int udp_in_sockfd; // bound UDP socket for input
-    int udp_in_portno; // bind port (default 7355)
-    int m17_use_ip;    //if enabled, open UDP and broadcast IP frame
-    int m17_portno;    //default is 17000
-    int m17_udp_sock;  //actual UDP socket for M17 to send to
-    int tcp_sockfd;
+    dsd_socket_t udp_in_sockfd; // bound UDP socket for input
+    int udp_in_portno;          // bind port (default 7355)
+    int m17_use_ip;             //if enabled, open UDP and broadcast IP frame
+    int m17_portno;             //default is 17000
+    dsd_socket_t m17_udp_sock;  //actual UDP socket for M17 to send to
+    dsd_socket_t tcp_sockfd;
     int tcp_portno;
     int rtltcp_enabled;  // 1 when using rtl_tcp backend
     int rtltcp_portno;   // default 1234
