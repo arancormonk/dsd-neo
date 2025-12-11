@@ -6,6 +6,9 @@ include(GNUInstallDirs)
 
 # Prefer modern list operations to update module path
 list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+
+# Platform detection and configuration
+include(Platform)
 # Prefer ncurses wide-character support
 set(CURSES_NEED_NCURSES TRUE)
 set(CURSES_NEED_WIDE TRUE)
@@ -199,6 +202,7 @@ add_custom_target(uninstall
 install(FILES LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
+add_subdirectory(src/platform)
 add_subdirectory(src/core)
 add_subdirectory(src/dsp)
 add_subdirectory(src/io)

@@ -58,28 +58,40 @@
 #define KWHT ""
 #endif
 
+#include <dsd-neo/platform/platform.h>
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
+#if DSD_PLATFORM_POSIX
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <time.h>
 #include <unistd.h>
+#elif DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#include <io.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <windows.h>
+#endif
 
 #include <math.h>
 #include <sndfile.h>
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
+#if DSD_PLATFORM_POSIX
 #include <pulse/error.h>      //PULSE AUDIO
 #include <pulse/introspect.h> //PULSE AUDIO
 #include <pulse/pulseaudio.h> //PULSE AUDIO
 #include <pulse/simple.h>     //PULSE AUDIO
+#endif
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
