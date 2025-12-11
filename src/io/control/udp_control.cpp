@@ -13,10 +13,10 @@
  */
 
 #include <dsd-neo/io/udp_control.h>
+#include <dsd-neo/platform/threading.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +28,7 @@
 struct udp_control {
     int port;
     int sockfd;
-    pthread_t thread;
+    dsd_thread_t thread;
     udp_control_retune_cb cb;
     void* user_data;
     volatile int stop_flag;
@@ -62,8 +62,11 @@ udp_chars_to_int(unsigned char* buf) {
  * @param arg Pointer to `udp_control`.
  * @return NULL on exit.
  */
-static void*
-udp_thread_fn(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    udp_thread_fn(void* arg) {
     udp_control* ctrl = (udp_control*)arg;
     int n;
     unsigned char buffer[5];
@@ -107,7 +110,7 @@ udp_thread_fn(void* arg) {
         close(ctrl->sockfd);
         ctrl->sockfd = -1;
     }
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 /**
@@ -135,7 +138,7 @@ udp_control_start(int udp_port, udp_control_retune_cb cb, void* user_data) {
     ctrl->cb = cb;
     ctrl->user_data = user_data;
     ctrl->stop_flag = 0;
-    int rc = pthread_create(&ctrl->thread, NULL, udp_thread_fn, ctrl);
+    int rc = dsd_thread_create(&ctrl->thread, udp_thread_fn, ctrl);
     if (rc != 0) {
         free(ctrl);
         return NULL;
@@ -159,7 +162,7 @@ udp_control_stop(udp_control* ctrl) {
     if (ctrl->sockfd >= 0) {
         shutdown(ctrl->sockfd, SHUT_RDWR);
     }
-    pthread_join(ctrl->thread, NULL);
+    dsd_thread_join(ctrl->thread);
     if (ctrl->sockfd >= 0) {
         close(ctrl->sockfd);
         ctrl->sockfd = -1;

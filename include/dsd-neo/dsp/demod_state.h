@@ -14,12 +14,12 @@
 
 #pragma once
 
-#include <pthread.h>
 #include <stdint.h>
 
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/platform/threading.h>
 
 /* Buffer sizing constants used throughout the demodulator. Keep consistent
    with rtl_sdr_fm.cpp; guard to avoid redefinition across TUs. */
@@ -78,7 +78,7 @@ struct demod_state {
     alignas(64) float resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
 
     /* Pointers and 64-bit items next */
-    pthread_t thread;
+    dsd_thread_t thread;
     float* lowpassed;
     double squelch_running_power;
     float* resamp_taps; /* normalized taps, length = K*L */
@@ -89,7 +89,7 @@ struct demod_state {
     double fm_agc_ema_rms;      /* normalized RMS estimator (0..~1.0) */
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */
-    pthread_t mt_threads[2];
+    dsd_thread_t mt_threads[2];
 
     struct {
         void (*run)(void*);
@@ -101,11 +101,11 @@ struct demod_state {
         int id;
     } mt_args[2];
 
-    pthread_mutex_t mt_lock;
-    pthread_mutex_t ready_m;
-    pthread_cond_t mt_cv;
-    pthread_cond_t mt_done_cv;
-    pthread_cond_t ready;
+    dsd_mutex_t mt_lock;
+    dsd_mutex_t ready_m;
+    dsd_cond_t mt_cv;
+    dsd_cond_t mt_done_cv;
+    dsd_cond_t ready;
 
     /* Scalars and small arrays */
     int exit_flag;

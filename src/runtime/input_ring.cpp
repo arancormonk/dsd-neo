@@ -11,8 +11,9 @@
  * blockingly read samples with wrap-around handling and wakeup signaling.
  */
 #include <cstring>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
-#include <time.h>
+#include <errno.h>
 
 extern volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
 #ifdef USE_RTLSDR
@@ -84,9 +85,9 @@ input_ring_commit(struct input_ring_state* r, size_t produced) {
     }
     r->head.store(h);
     if (need_signal) {
-        pthread_mutex_lock(&r->ready_m);
-        pthread_cond_signal(&r->ready);
-        pthread_mutex_unlock(&r->ready_m);
+        dsd_mutex_lock(&r->ready_m);
+        dsd_cond_signal(&r->ready);
+        dsd_mutex_unlock(&r->ready_m);
     }
 }
 
@@ -143,9 +144,9 @@ input_ring_write(struct input_ring_state* r, const float* data, size_t count) {
         count -= write_now;
     }
     if (need_signal) {
-        pthread_mutex_lock(&r->ready_m);
-        pthread_cond_signal(&r->ready);
-        pthread_mutex_unlock(&r->ready_m);
+        dsd_mutex_lock(&r->ready_m);
+        dsd_cond_signal(&r->ready);
+        dsd_mutex_unlock(&r->ready_m);
     }
 }
 
@@ -170,16 +171,9 @@ input_ring_read_block(struct input_ring_state* r, float* out, size_t max_count) 
             return -1;
         }
 #endif
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 10L * 1000000L; /* 10ms */
-        if (ts.tv_nsec >= 1000000000L) {
-            ts.tv_sec += 1;
-            ts.tv_nsec -= 1000000000L;
-        }
-        pthread_mutex_lock(&r->ready_m);
-        int ret = pthread_cond_timedwait(&r->ready, &r->ready_m, &ts);
-        pthread_mutex_unlock(&r->ready_m);
+        dsd_mutex_lock(&r->ready_m);
+        int ret = dsd_cond_timedwait(&r->ready, &r->ready_m, 10); /* 10ms */
+        dsd_mutex_unlock(&r->ready_m);
         if (ret != 0) {
             if (exitflag) {
                 return -1;

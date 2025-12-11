@@ -14,8 +14,9 @@
 #ifndef DSP_DEMOD_PIPELINE_H
 #define DSP_DEMOD_PIPELINE_H
 
-#include <pthread.h>
 #include <stdint.h>
+
+#include <dsd-neo/platform/threading.h>
 
 #ifdef __cplusplus
 extern "C" {

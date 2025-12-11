@@ -13,11 +13,11 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
 
-#include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
 #ifdef USE_RTLSDR
@@ -36,9 +36,18 @@
 static struct UiCmd g_q[UI_CMD_Q_CAP];
 static size_t g_head = 0; // pop index
 static size_t g_tail = 0; // push index
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static dsd_mutex_t g_mu;
+static atomic_int g_mu_init = 0;
 static atomic_uint g_overflow = 0;
 static atomic_uint g_overflow_warn_gate = 0;
+
+static void
+ensure_mu_init(void) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_mu_init, &expected, 1)) {
+        dsd_mutex_init(&g_mu);
+    }
+}
 
 // Local helper to parse frequency strings with optional K/M/G suffixes into Hz.
 // Mirrors the CLI atofs() semantics for config paths without mutating the input.
@@ -117,7 +126,8 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     if (payload_sz > sizeof(g_q[0].data)) {
         payload_sz = sizeof(g_q[0].data);
     }
-    pthread_mutex_lock(&g_mu);
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
     if (q_is_full_unlocked()) {
         // Drop the oldest command (advance head) and warn once per burst
         g_head = (g_head + 1) % UI_CMD_Q_CAP;
@@ -133,7 +143,7 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
         memcpy(c->data, payload, payload_sz);
     }
     g_tail = (g_tail + 1) % UI_CMD_Q_CAP;
-    pthread_mutex_unlock(&g_mu);
+    dsd_mutex_unlock(&g_mu);
     return 0;
 }
 
@@ -1649,10 +1659,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 int
 ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
+    ensure_mu_init();
     for (;;) {
         struct UiCmd cmd;
         int have = 0;
-        pthread_mutex_lock(&g_mu);
+        dsd_mutex_lock(&g_mu);
         if (!q_is_empty_unlocked()) {
             cmd = g_q[g_head];
             g_head = (g_head + 1) % UI_CMD_Q_CAP;
@@ -1662,7 +1673,7 @@ ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (((g_tail + 1) % UI_CMD_Q_CAP) != g_head) {
             atomic_store(&g_overflow_warn_gate, 0);
         }
-        pthread_mutex_unlock(&g_mu);
+        dsd_mutex_unlock(&g_mu);
         if (!have) {
             break;
         }

@@ -14,9 +14,10 @@
 
 #pragma once
 
-#include <dsd-neo/runtime/input_ring.h>
-#include <pthread.h>
 #include <stdint.h>
+
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/input_ring.h>
 
 #ifdef __cplusplus
 extern "C" {

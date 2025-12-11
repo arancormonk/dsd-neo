@@ -4,15 +4,15 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
 
 extern volatile uint8_t exitflag;
 
-static pthread_t g_p25_sm_wd_thread;
+static dsd_thread_t g_p25_sm_wd_thread;
 static atomic_int g_p25_sm_wd_running = 0;
 static atomic_int g_p25_sm_tick_lock = 0;
 static atomic_int g_p25_sm_in_tick = 0;
@@ -36,8 +36,11 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static void*
-p25_sm_watchdog_thread(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    p25_sm_watchdog_thread(void* arg) {
     (void)arg;
     struct timespec ts;
     while (atomic_load(&g_p25_sm_wd_running) && !exitflag) {
@@ -60,7 +63,7 @@ p25_sm_watchdog_thread(void* arg) {
         ts.tv_nsec = (long)(ms % 1000) * 1000000L;
         nanosleep(&ts, NULL);
     }
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 void
@@ -85,7 +88,7 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
     }
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_p25_sm_wd_running, &expected, 1)) {
-        (void)pthread_create(&g_p25_sm_wd_thread, NULL, p25_sm_watchdog_thread, NULL);
+        (void)dsd_thread_create(&g_p25_sm_wd_thread, p25_sm_watchdog_thread, NULL);
     }
 }
 
@@ -93,7 +96,7 @@ void
 p25_sm_watchdog_stop(void) {
     int was = atomic_exchange(&g_p25_sm_wd_running, 0);
     if (was != 0) {
-        pthread_join(g_p25_sm_wd_thread, NULL);
+        dsd_thread_join(g_p25_sm_wd_thread);
     }
 }
 

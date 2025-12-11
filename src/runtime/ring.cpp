@@ -12,8 +12,9 @@
  */
 
 #include <cstring>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/ring.h>
-#include <time.h>
+#include <errno.h>
 
 extern volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
 
@@ -36,16 +37,9 @@ ring_write(struct output_state* o, const float* data, size_t count) {
         size_t free_sp = ring_free(o);
         if (free_sp == 0) {
             /* Wait for space with timeout to avoid indefinite blocking */
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 50L * 1000000L; /* 50ms */
-            if (ts.tv_nsec >= 1000000000L) {
-                ts.tv_sec += ts.tv_nsec / 1000000000L;
-                ts.tv_nsec = ts.tv_nsec % 1000000000L;
-            }
-            pthread_mutex_lock(&o->ready_m);
-            int ret = pthread_cond_timedwait(&o->space, &o->ready_m, &ts);
-            pthread_mutex_unlock(&o->ready_m);
+            dsd_mutex_lock(&o->ready_m);
+            int ret = dsd_cond_timedwait(&o->space, &o->ready_m, 50); /* 50ms */
+            dsd_mutex_unlock(&o->ready_m);
             if (ret != 0) {
                 if (exitflag) {
                     return;
@@ -93,9 +87,9 @@ ring_write(struct output_state* o, const float* data, size_t count) {
         count -= write_now;
     }
     if (need_signal) {
-        pthread_mutex_lock(&o->ready_m);
-        pthread_cond_signal(&o->ready);
-        pthread_mutex_unlock(&o->ready_m);
+        dsd_mutex_lock(&o->ready_m);
+        dsd_cond_signal(&o->ready);
+        dsd_mutex_unlock(&o->ready_m);
     }
 }
 
@@ -117,16 +111,9 @@ ring_write_no_signal(struct output_state* o, const float* data, size_t count) {
         size_t free_sp = ring_free(o);
         if (free_sp == 0) {
             /* Wait for space with timeout to avoid indefinite blocking */
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 50L * 1000000L; /* 50ms */
-            if (ts.tv_nsec >= 1000000000L) {
-                ts.tv_sec += ts.tv_nsec / 1000000000L;
-                ts.tv_nsec = ts.tv_nsec % 1000000000L;
-            }
-            pthread_mutex_lock(&o->ready_m);
-            int ret = pthread_cond_timedwait(&o->space, &o->ready_m, &ts);
-            pthread_mutex_unlock(&o->ready_m);
+            dsd_mutex_lock(&o->ready_m);
+            int ret = dsd_cond_timedwait(&o->space, &o->ready_m, 50); /* 50ms */
+            dsd_mutex_unlock(&o->ready_m);
             if (ret != 0) {
                 if (exitflag) {
                     return;
@@ -187,9 +174,9 @@ ring_write_signal_on_empty_transition(struct output_state* o, const float* data,
     int need_signal = ring_is_empty(o);
     ring_write_no_signal(o, data, count);
     if (need_signal) {
-        pthread_mutex_lock(&o->ready_m);
-        pthread_cond_signal(&o->ready);
-        pthread_mutex_unlock(&o->ready_m);
+        dsd_mutex_lock(&o->ready_m);
+        dsd_cond_signal(&o->ready);
+        dsd_mutex_unlock(&o->ready_m);
     }
 }
 
@@ -209,16 +196,9 @@ ring_read_one(struct output_state* o, float* out) {
         if (!o->buffer) {
             return -1; /* stream torn down */
         }
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 10L * 1000000L; /* 10ms */
-        if (ts.tv_nsec >= 1000000000L) {
-            ts.tv_sec += 1;
-            ts.tv_nsec -= 1000000000L;
-        }
-        pthread_mutex_lock(&o->ready_m);
-        int ret = pthread_cond_timedwait(&o->ready, &o->ready_m, &ts);
-        pthread_mutex_unlock(&o->ready_m);
+        dsd_mutex_lock(&o->ready_m);
+        int ret = dsd_cond_timedwait(&o->ready, &o->ready_m, 10); /* 10ms */
+        dsd_mutex_unlock(&o->ready_m);
         if (ret != 0) {
             if (exitflag) {
                 return -1;
@@ -241,9 +221,9 @@ ring_read_one(struct output_state* o, float* out) {
     }
     o->tail.store(t);
     /* Signal space available for producer */
-    pthread_mutex_lock(&o->ready_m);
-    pthread_cond_signal(&o->space);
-    pthread_mutex_unlock(&o->ready_m);
+    dsd_mutex_lock(&o->ready_m);
+    dsd_cond_signal(&o->space);
+    dsd_mutex_unlock(&o->ready_m);
     return 0;
 }
 
@@ -269,16 +249,9 @@ ring_read_batch(struct output_state* o, float* out, size_t max_count) {
         if (!o->buffer) {
             return -1; /* stream torn down */
         }
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 10L * 1000000L; /* 10ms */
-        if (ts.tv_nsec >= 1000000000L) {
-            ts.tv_sec += 1;
-            ts.tv_nsec -= 1000000000L;
-        }
-        pthread_mutex_lock(&o->ready_m);
-        int ret = pthread_cond_timedwait(&o->ready, &o->ready_m, &ts);
-        pthread_mutex_unlock(&o->ready_m);
+        dsd_mutex_lock(&o->ready_m);
+        int ret = dsd_cond_timedwait(&o->ready, &o->ready_m, 10); /* 10ms */
+        dsd_mutex_unlock(&o->ready_m);
         if (ret != 0) {
             if (exitflag) {
                 return -1;
@@ -310,8 +283,8 @@ ring_read_batch(struct output_state* o, float* out, size_t max_count) {
     }
     o->tail.store(t);
     /* Signal space available once for the whole batch */
-    pthread_mutex_lock(&o->ready_m);
-    pthread_cond_signal(&o->space);
-    pthread_mutex_unlock(&o->ready_m);
+    dsd_mutex_lock(&o->ready_m);
+    dsd_cond_signal(&o->space);
+    dsd_mutex_unlock(&o->ready_m);
     return (int)read_now;
 }

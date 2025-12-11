@@ -11,9 +11,9 @@
  * Used to run up to two inner-loop tasks in parallel per processing block.
  */
 
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <mutex>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,10 +22,10 @@
 /* Opaque handle keyed off demod_state* to avoid depending on its layout here */
 struct WorkerCtx {
     bool enabled;
-    pthread_t threads[2];
-    pthread_mutex_t lock;
-    pthread_cond_t cv;
-    pthread_cond_t done_cv;
+    dsd_thread_t threads[2];
+    dsd_mutex_t lock;
+    dsd_cond_t cv;
+    dsd_cond_t done_cv;
     bool should_exit;
     int epoch;
     int completed_in_epoch;
@@ -62,19 +62,22 @@ set_ctx(const void* key, WorkerCtx* ctx) {
     }
 }
 
-static void*
-demod_mt_worker(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    demod_mt_worker(void* arg) {
     WorkerArg* wa = (WorkerArg*)arg;
     WorkerCtx* ctx = wa->ctx;
     const int id = wa->id;
     int local_epoch = 0;
     for (;;) {
-        pthread_mutex_lock(&ctx->lock);
+        dsd_mutex_lock(&ctx->lock);
         while (!ctx->should_exit && ctx->epoch == local_epoch) {
-            pthread_cond_wait(&ctx->cv, &ctx->lock);
+            dsd_cond_wait(&ctx->cv, &ctx->lock);
         }
         if (ctx->should_exit) {
-            pthread_mutex_unlock(&ctx->lock);
+            dsd_mutex_unlock(&ctx->lock);
             break;
         }
         local_epoch = ctx->epoch;
@@ -84,18 +87,18 @@ demod_mt_worker(void* arg) {
             fn = ctx->tasks[id].run;
             fn_arg = ctx->tasks[id].arg;
         }
-        pthread_mutex_unlock(&ctx->lock);
+        dsd_mutex_unlock(&ctx->lock);
         if (fn) {
             fn(fn_arg);
         }
-        pthread_mutex_lock(&ctx->lock);
+        dsd_mutex_lock(&ctx->lock);
         ctx->completed_in_epoch++;
         if (ctx->completed_in_epoch >= ctx->posted_count) {
-            pthread_cond_signal(&ctx->done_cv);
+            dsd_cond_signal(&ctx->done_cv);
         }
-        pthread_mutex_unlock(&ctx->lock);
+        dsd_mutex_unlock(&ctx->lock);
     }
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 /**
@@ -127,22 +130,22 @@ demod_mt_init(struct demod_state* s) {
     ctx->epoch = 0;
     ctx->completed_in_epoch = 0;
     ctx->posted_count = 0;
-    pthread_mutex_init(&ctx->lock, NULL);
-    pthread_cond_init(&ctx->cv, NULL);
-    pthread_cond_init(&ctx->done_cv, NULL);
+    dsd_mutex_init(&ctx->lock);
+    dsd_cond_init(&ctx->cv);
+    dsd_cond_init(&ctx->done_cv);
     WorkerArg* args = (WorkerArg*)calloc(2, sizeof(WorkerArg));
     if (args == NULL) {
         fprintf(stderr, "Failed to allocate worker thread arguments\n");
-        pthread_mutex_destroy(&ctx->lock);
-        pthread_cond_destroy(&ctx->cv);
-        pthread_cond_destroy(&ctx->done_cv);
+        dsd_mutex_destroy(&ctx->lock);
+        dsd_cond_destroy(&ctx->cv);
+        dsd_cond_destroy(&ctx->done_cv);
         free(ctx);
         return;
     }
     for (int i = 0; i < 2; i++) {
         args[i].ctx = ctx;
         args[i].id = i;
-        pthread_create(&ctx->threads[i], NULL, demod_mt_worker, (void*)&args[i]);
+        dsd_thread_create(&ctx->threads[i], (dsd_thread_fn)demod_mt_worker, (void*)&args[i]);
     }
     // Intentionally leak args array until threads exit to keep pointers valid; freed in destroy
     set_ctx((const void*)s, ctx);
@@ -162,16 +165,16 @@ demod_mt_destroy(struct demod_state* s) {
         set_ctx((const void*)s, nullptr);
         return;
     }
-    pthread_mutex_lock(&ctx->lock);
+    dsd_mutex_lock(&ctx->lock);
     ctx->should_exit = true;
-    pthread_cond_broadcast(&ctx->cv);
-    pthread_mutex_unlock(&ctx->lock);
+    dsd_cond_broadcast(&ctx->cv);
+    dsd_mutex_unlock(&ctx->lock);
     for (int i = 0; i < 2; i++) {
-        pthread_join(ctx->threads[i], NULL);
+        dsd_thread_join(ctx->threads[i]);
     }
-    pthread_cond_destroy(&ctx->done_cv);
-    pthread_cond_destroy(&ctx->cv);
-    pthread_mutex_destroy(&ctx->lock);
+    dsd_cond_destroy(&ctx->done_cv);
+    dsd_cond_destroy(&ctx->cv);
+    dsd_mutex_destroy(&ctx->lock);
     // Free leaked WorkerArg array: not tracked; threads have exited so it's safe to free if we had kept pointer.
     // Since we didn't keep it, allow small leak to be reclaimed on process exit. Not critical during normal teardown.
     free(ctx);
@@ -200,7 +203,7 @@ demod_mt_run_two(struct demod_state* s, void (*f0)(void*), void* a0, void (*f1)(
         }
         return;
     }
-    pthread_mutex_lock(&ctx->lock);
+    dsd_mutex_lock(&ctx->lock);
     ctx->tasks[0].run = f0;
     ctx->tasks[0].arg = a0;
     ctx->tasks[1].run = f1;
@@ -208,9 +211,9 @@ demod_mt_run_two(struct demod_state* s, void (*f0)(void*), void* a0, void (*f1)(
     ctx->posted_count = (f1 != NULL) ? 2 : 1;
     ctx->completed_in_epoch = 0;
     ctx->epoch++;
-    pthread_cond_broadcast(&ctx->cv);
+    dsd_cond_broadcast(&ctx->cv);
     while (ctx->completed_in_epoch < ctx->posted_count) {
-        pthread_cond_wait(&ctx->done_cv, &ctx->lock);
+        dsd_cond_wait(&ctx->done_cv, &ctx->lock);
     }
-    pthread_mutex_unlock(&ctx->lock);
+    dsd_mutex_unlock(&ctx->lock);
 }

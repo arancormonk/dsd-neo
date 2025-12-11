@@ -15,13 +15,12 @@
 #include <atomic>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
 #include <math.h>
-#include <pthread.h>
 #include <rtl-sdr.h>
-#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,7 +61,7 @@ struct rtl_device {
     int offset_tuning;
     int direct_sampling;
     std::atomic<int> mute;
-    pthread_t thread;
+    dsd_thread_t thread;
     int thread_started;
     struct input_ring_state* input_ring;
     int combine_rotate_enabled;
@@ -274,12 +273,15 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
  * @param arg Pointer to `rtl_device`.
  * @return NULL on exit.
  */
-static void*
-dongle_thread_fn(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    dongle_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
     rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
-    return 0;
+    DSD_THREAD_RETURN;
 }
 
 /* ---- rtl_tcp backend helpers ---- */
@@ -385,8 +387,11 @@ rtl_tcp_skip_header(int sockfd) {
 }
 
 /* TCP reader thread: read u8 IQ, widen to float, push to ring */
-static void*
-tcp_thread_fn(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    tcp_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
     /* Default read size: for rtl_tcp prefer small (16 KiB) chunks for higher cadence.
@@ -858,7 +863,7 @@ tcp_thread_fn(void* arg) {
     }
     free(u8);
     s->run.store(0);
-    return 0;
+    DSD_THREAD_RETURN;
 }
 
 /**
@@ -1298,7 +1303,7 @@ rtl_device_destroy(struct rtl_device* dev) {
                 shutdown(dev->sockfd, SHUT_RDWR);
             }
         }
-        pthread_join(dev->thread, NULL);
+        dsd_thread_join(dev->thread);
         dev->thread_started = 0;
     }
 
@@ -1661,10 +1666,10 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
             dev->thread_started = 0;
             return -1;
         }
-        r = pthread_create(&dev->thread, NULL, dongle_thread_fn, dev);
+        r = dsd_thread_create(&dev->thread, (dsd_thread_fn)dongle_thread_fn, dev);
     } else {
         dev->run.store(1);
-        r = pthread_create(&dev->thread, NULL, tcp_thread_fn, dev);
+        r = dsd_thread_create(&dev->thread, (dsd_thread_fn)tcp_thread_fn, dev);
     }
     if (r != 0) {
         dev->thread_started = 0;
@@ -1694,7 +1699,7 @@ rtl_device_stop_async(struct rtl_device* dev) {
             shutdown(dev->sockfd, SHUT_RDWR);
         }
     }
-    pthread_join(dev->thread, NULL);
+    dsd_thread_join(dev->thread);
     dev->thread_started = 0;
     return 0;
 }

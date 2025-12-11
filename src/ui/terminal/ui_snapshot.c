@@ -4,9 +4,10 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
-#include <pthread.h>
+#include <stdatomic.h>
 #include <string.h>
 
 static dsd_state g_pub;     // latest published by demod thread
@@ -16,14 +17,24 @@ static dsd_state g_consume; // last copied out for UI
 static Event_History_I g_pub_eh[2];
 static Event_History_I g_consume_eh[2];
 static int g_have = 0;
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static dsd_mutex_t g_mu;
+static atomic_int g_mu_init = 0;
+
+static void
+ensure_mu_init(void) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_mu_init, &expected, 1)) {
+        dsd_mutex_init(&g_mu);
+    }
+}
 
 void
 ui_publish_snapshot(const dsd_state* state) {
     if (!state) {
         return;
     }
-    pthread_mutex_lock(&g_mu);
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
     // Coarse copy of the entire struct first
     memcpy(&g_pub, state, sizeof(dsd_state));
     // Deep copy pointer-backed UI data (event history for 2 slots)
@@ -35,14 +46,15 @@ ui_publish_snapshot(const dsd_state* state) {
         g_pub.event_history_s = NULL;
     }
     g_have = 1;
-    pthread_mutex_unlock(&g_mu);
+    dsd_mutex_unlock(&g_mu);
 }
 
 const dsd_state*
 ui_get_latest_snapshot(void) {
-    pthread_mutex_lock(&g_mu);
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
     if (!g_have) {
-        pthread_mutex_unlock(&g_mu);
+        dsd_mutex_unlock(&g_mu);
         return NULL;
     }
     // Copy the coarse snapshot
@@ -55,6 +67,6 @@ ui_get_latest_snapshot(void) {
     } else {
         g_consume.event_history_s = NULL;
     }
-    pthread_mutex_unlock(&g_mu);
+    dsd_mutex_unlock(&g_mu);
     return &g_consume;
 }

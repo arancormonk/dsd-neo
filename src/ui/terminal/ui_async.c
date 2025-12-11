@@ -3,10 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_async.h>
 
 #include <ncurses.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
 
@@ -16,7 +16,7 @@
 #include <dsd-neo/ui/ui_snapshot.h>
 
 // Minimal thread state.
-static pthread_t g_ui_thread;
+static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
 static atomic_int g_ui_stop = 0;
 static atomic_int g_ui_dirty = 0; // notifier for redraw requests
@@ -41,8 +41,11 @@ ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     ui_request_redraw();
 }
 
-static void*
-ui_thread_main(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    ui_thread_main(void* arg) {
     (void)arg;
 
     struct timespec ts;
@@ -120,7 +123,7 @@ ui_thread_main(void* arg) {
         ncursesClose();
     }
 
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 int
@@ -133,7 +136,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
     g_ui_state = state;
     atomic_store(&g_ui_stop, 0);
 
-    if (pthread_create(&g_ui_thread, NULL, ui_thread_main, NULL) != 0) {
+    if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {
         g_ui_opts = NULL;
         g_ui_state = NULL;
         return -1;
@@ -149,7 +152,7 @@ ui_stop(void) {
         return;
     }
     atomic_store(&g_ui_stop, 1);
-    pthread_join(g_ui_thread, NULL);
+    dsd_thread_join(g_ui_thread);
     atomic_store(&g_ui_running, 0);
     g_ui_opts = NULL;
     g_ui_state = NULL;

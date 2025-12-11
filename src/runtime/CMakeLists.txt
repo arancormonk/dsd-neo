@@ -32,6 +32,9 @@ target_include_directories(dsd-neo_runtime
   PRIVATE ${_PUBLIC_INCLUDES}
 )
 
+# Link platform abstraction library for threading primitives
+target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform)
+
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

@@ -29,19 +29,19 @@
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_control.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
+#include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
-#include <pthread.h>
-#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -245,7 +245,7 @@ uint16_t port;
 
 struct dongle_state {
     int exit_flag;
-    pthread_t thread;
+    dsd_thread_t thread;
     int dev_index;
     uint32_t freq;
     uint32_t rate;
@@ -265,14 +265,14 @@ struct demod_mt_worker_arg {
 
 struct controller_state {
     int exit_flag;
-    pthread_t thread;
+    dsd_thread_t thread;
     uint32_t freqs[FREQUENCIES_LIMIT];
     int freq_len;
     int freq_now;
     int edge;
     int wb_mode;
-    pthread_cond_t hop;
-    pthread_mutex_t hop_m;
+    dsd_cond_t hop;
+    dsd_mutex_t hop_m;
     /* Marshalled retune request from external threads (UDP/API). */
     std::atomic<int> manual_retune_pending;
     uint32_t manual_retune_freq;
@@ -289,8 +289,8 @@ struct controller_state {
      * the controller thread has finished the hardware retune and DSP reset.
      * This prevents the race where trunking code sets SPS parameters before
      * demod_reset_on_retune() has executed, causing Costas/FLL state corruption. */
-    pthread_cond_t retune_done_cond;
-    pthread_mutex_t retune_done_m;
+    dsd_cond_t retune_done_cond;
+    dsd_mutex_t retune_done_m;
     std::atomic<int> retune_done_flag;
     /* Request ID for matching completion signals to requests (prevents stale wakeups) */
     std::atomic<uint32_t> retune_request_id;
@@ -882,8 +882,11 @@ extern "C" void dsd_rtl_stream_set_tuner_autogain(int onoff);
 /* Spectrum updater used in demod thread (implemented in rtl_metrics.cpp). */
 extern "C" void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz);
 
-static void*
-demod_thread_fn(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
     struct output_state* o = d->output_target;
     maybe_set_thread_realtime_and_affinity("DEMOD");
@@ -1563,7 +1566,7 @@ demod_thread_fn(void* arg) {
         }
         /* Signaling occurs only when the ring transitions from empty to non-empty. */
     }
-    return 0;
+    DSD_THREAD_RETURN;
 }
 
 /**
@@ -1722,8 +1725,11 @@ apply_capture_settings(uint32_t center_freq_hz) {
  * @param arg Pointer to `controller_state`.
  * @return NULL on exit.
  */
-static void*
-controller_thread_fn(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    controller_thread_fn(void* arg) {
     int i;
     struct controller_state* s = static_cast<controller_state*>(arg);
 
@@ -1815,11 +1821,11 @@ controller_thread_fn(void* arg) {
 
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Wait for a hop signal or a pending retune, with proper predicate guard */
-        pthread_mutex_lock(&s->hop_m);
+        dsd_mutex_lock(&s->hop_m);
         while (!s->manual_retune_pending.load() && !exitflag && !(g_stream && g_stream->should_exit.load())) {
-            pthread_cond_wait(&s->hop, &s->hop_m);
+            dsd_cond_wait(&s->hop, &s->hop_m);
         }
-        pthread_mutex_unlock(&s->hop_m);
+        dsd_mutex_unlock(&s->hop_m);
         if (exitflag || (g_stream && g_stream->should_exit.load())) {
             break;
         }
@@ -1841,10 +1847,10 @@ controller_thread_fn(void* arg) {
              * Increment the complete_id to match the request_id that was generated
              * when the tune was requested. This ensures waiters wake up only for
              * their own request, handling the case where multiple retunes are queued. */
-            pthread_mutex_lock(&s->retune_done_m);
+            dsd_mutex_lock(&s->retune_done_m);
             s->retune_complete_id.fetch_add(1, std::memory_order_release);
-            pthread_cond_broadcast(&s->retune_done_cond);
-            pthread_mutex_unlock(&s->retune_done_m);
+            dsd_cond_broadcast(&s->retune_done_cond);
+            dsd_mutex_unlock(&s->retune_done_m);
             drain_output_on_retune();
             LOG_INFO("Retune applied: %u Hz.\n", tgt);
             continue;
@@ -1865,7 +1871,7 @@ controller_thread_fn(void* arg) {
         s->retune_in_progress.store(0, std::memory_order_release);
         drain_output_on_retune();
     }
-    return 0;
+    DSD_THREAD_RETURN;
 }
 
 /* ---------------- Constellation capture (simple lock-free ring) ---------------- */
@@ -2273,9 +2279,9 @@ dongle_init(struct dongle_state* s) {
 void
 output_init(struct output_state* s) {
     s->rate = rtl_dsp_bw_hz;
-    pthread_cond_init(&s->ready, NULL);
-    pthread_cond_init(&s->space, NULL);
-    pthread_mutex_init(&s->ready_m, NULL);
+    dsd_cond_init(&s->ready);
+    dsd_cond_init(&s->space);
+    dsd_mutex_init(&s->ready_m);
     /* Allocate SPSC ring buffer */
     s->capacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
     /* Try aligned allocation for better vectorized copies; fall back if unavailable */
@@ -2302,9 +2308,9 @@ output_init(struct output_state* s) {
  */
 void
 output_cleanup(struct output_state* s) {
-    pthread_cond_destroy(&s->ready);
-    pthread_cond_destroy(&s->space);
-    pthread_mutex_destroy(&s->ready_m);
+    dsd_cond_destroy(&s->ready);
+    dsd_cond_destroy(&s->space);
+    dsd_mutex_destroy(&s->ready_m);
     if (s->buffer) {
         dsd_neo_aligned_free(s->buffer);
         s->buffer = NULL;
@@ -2322,15 +2328,15 @@ controller_init(struct controller_state* s) {
     s->freq_len = 0;
     s->edge = 0;
     s->wb_mode = 0;
-    pthread_cond_init(&s->hop, NULL);
-    pthread_mutex_init(&s->hop_m, NULL);
+    dsd_cond_init(&s->hop);
+    dsd_mutex_init(&s->hop_m);
     s->manual_retune_pending.store(0);
     s->manual_retune_freq = 0;
     s->cold_start_ready.store(0); /* Demod will wait for controller to signal ready */
     s->retune_in_progress.store(0);
     /* Initialize retune completion synchronization */
-    pthread_cond_init(&s->retune_done_cond, NULL);
-    pthread_mutex_init(&s->retune_done_m, NULL);
+    dsd_cond_init(&s->retune_done_cond);
+    dsd_mutex_init(&s->retune_done_m);
     s->retune_done_flag.store(0);
     s->retune_request_id.store(0);
     s->retune_complete_id.store(0);
@@ -2343,10 +2349,10 @@ controller_init(struct controller_state* s) {
  */
 void
 controller_cleanup(struct controller_state* s) {
-    pthread_cond_destroy(&s->hop);
-    pthread_mutex_destroy(&s->hop_m);
-    pthread_cond_destroy(&s->retune_done_cond);
-    pthread_mutex_destroy(&s->retune_done_m);
+    dsd_cond_destroy(&s->hop);
+    dsd_mutex_destroy(&s->hop_m);
+    dsd_cond_destroy(&s->retune_done_cond);
+    dsd_mutex_destroy(&s->retune_done_m);
 }
 
 /**
@@ -2417,7 +2423,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
  */
 static uint32_t
 schedule_manual_retune(uint32_t target_freq_hz) {
-    pthread_mutex_lock(&controller.hop_m);
+    dsd_mutex_lock(&controller.hop_m);
     uint32_t request_id = controller.retune_request_id.load(std::memory_order_acquire);
     int pending = controller.manual_retune_pending.load(std::memory_order_acquire);
     if (!pending) {
@@ -2426,8 +2432,8 @@ schedule_manual_retune(uint32_t target_freq_hz) {
     }
     /* Update/override target frequency even when coalescing into an existing pending retune. */
     controller.manual_retune_freq = target_freq_hz;
-    pthread_cond_signal(&controller.hop);
-    pthread_mutex_unlock(&controller.hop_m);
+    dsd_cond_signal(&controller.hop);
+    dsd_mutex_unlock(&controller.hop_m);
     return request_id;
 }
 
@@ -2440,8 +2446,8 @@ schedule_manual_retune(uint32_t target_freq_hz) {
  */
 static void
 start_threads_and_async(void) {
-    pthread_create(&controller.thread, NULL, controller_thread_fn, (void*)(&controller));
-    pthread_create(&demod.thread, NULL, demod_thread_fn, (void*)(&demod));
+    dsd_thread_create(&controller.thread, (dsd_thread_fn)controller_thread_fn, (void*)(&controller));
+    dsd_thread_create(&demod.thread, (dsd_thread_fn)demod_thread_fn, (void*)(&demod));
     LOG_INFO("Starting RTL async read...\n");
     rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH);
     if (port != 0) {
@@ -2518,8 +2524,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         input_ring.capacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
         input_ring.head.store(0);
         input_ring.tail.store(0);
-        pthread_cond_init(&input_ring.ready, NULL);
-        pthread_mutex_init(&input_ring.ready_m, NULL);
+        dsd_cond_init(&input_ring.ready);
+        dsd_mutex_init(&input_ring.ready_m);
         /* Metrics */
         input_ring.producer_drops.store(0);
         input_ring.read_timeouts.store(0);
@@ -2928,8 +2934,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         }
 
         /* Launch controller and demod threads after prebuffer */
-        pthread_create(&controller.thread, NULL, controller_thread_fn, (void*)(&controller));
-        pthread_create(&demod.thread, NULL, demod_thread_fn, (void*)(&demod));
+        dsd_thread_create(&controller.thread, (dsd_thread_fn)controller_thread_fn, (void*)(&controller));
+        dsd_thread_create(&demod.thread, (dsd_thread_fn)demod_thread_fn, (void*)(&demod));
         if (port != 0) {
             g_udp_ctrl = udp_control_start(
                 port, [](uint32_t new_freq_hz, void* /*user_data*/) { schedule_manual_retune(new_freq_hz); }, NULL);
@@ -3014,10 +3020,10 @@ dsd_rtl_stream_close(void) {
     /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
     safe_cond_signal(&output.space, &output.ready_m);
-    pthread_join(demod.thread, NULL);
+    dsd_thread_join(demod.thread);
     /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
-    pthread_join(controller.thread, NULL);
+    dsd_thread_join(controller.thread);
 
     rtl_demod_cleanup(&demod);
     output_cleanup(&output);
@@ -3061,10 +3067,10 @@ dsd_rtl_stream_soft_stop(void) {
     /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
     safe_cond_signal(&output.space, &output.ready_m);
-    pthread_join(demod.thread, NULL);
+    dsd_thread_join(demod.thread);
     /* Wake any consumers blocked on output.ready to finish */
     safe_cond_signal(&output.ready, &output.ready_m);
-    pthread_join(controller.thread, NULL);
+    dsd_thread_join(controller.thread);
 
     rtl_demod_cleanup(&demod);
     output_cleanup(&output);
@@ -4076,19 +4082,11 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
      *
      * We use a request ID to handle spurious wakeups and ensure we're waiting
      * for OUR retune to complete, not a previous one. */
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_nsec += 500000000L; /* 500ms timeout */
-    if (ts.tv_nsec >= 1000000000L) {
-        ts.tv_sec += 1;
-        ts.tv_nsec -= 1000000000L;
-    }
-
     int rc = 0;
-    pthread_mutex_lock(&controller.retune_done_m);
+    dsd_mutex_lock(&controller.retune_done_m);
     while (controller.retune_complete_id.load(std::memory_order_acquire) < my_request_id) {
-        int wait_rc = pthread_cond_timedwait(&controller.retune_done_cond, &controller.retune_done_m, &ts);
-        if (wait_rc == ETIMEDOUT) {
+        int wait_rc = dsd_cond_timedwait(&controller.retune_done_cond, &controller.retune_done_m, 500);
+        if (wait_rc != 0) {
             /* Timeout - log warning but continue to avoid deadlock.
              * The retune may still complete; caller should be prepared for
              * slightly degraded initial lock performance. */
@@ -4103,7 +4101,7 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
             break;
         }
     }
-    pthread_mutex_unlock(&controller.retune_done_m);
+    dsd_mutex_unlock(&controller.retune_done_m);
 
     /* Honor drain/clear policy for API-triggered tunes as well */
     drain_output_on_retune();

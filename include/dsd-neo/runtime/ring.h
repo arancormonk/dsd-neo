@@ -11,11 +11,10 @@
 #pragma once
 
 #include <atomic>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <dsd-neo/runtime/threading.h>
+#include <dsd-neo/platform/threading.h>
 
 struct output_state {
     int rate;
@@ -23,9 +22,9 @@ struct output_state {
     size_t capacity;
     std::atomic<size_t> head;
     std::atomic<size_t> tail;
-    pthread_cond_t ready;
-    pthread_mutex_t ready_m;
-    pthread_cond_t space;
+    dsd_cond_t ready;
+    dsd_mutex_t ready_m;
+    dsd_cond_t space;
     std::atomic<uint64_t> write_timeouts; /* producer waited for space */
     std::atomic<uint64_t> read_timeouts;  /* consumer waited for data */
 };

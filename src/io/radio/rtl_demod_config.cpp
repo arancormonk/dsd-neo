@@ -160,8 +160,8 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Reset IQ balance EMA */
     s->iqbal_alpha_ema_r = 0.0f;
     s->iqbal_alpha_ema_i = 0.0f;
-    pthread_cond_init(&s->ready, NULL);
-    pthread_mutex_init(&s->ready_m, NULL);
+    dsd_cond_init(&s->ready);
+    dsd_mutex_init(&s->ready_m);
     s->output_target = output;
 
     /* FM AGC auto-tune per-instance state */
@@ -749,8 +749,8 @@ rtl_demod_cleanup(struct demod_state* demod) {
     if (!demod) {
         return;
     }
-    pthread_cond_destroy(&demod->ready);
-    pthread_mutex_destroy(&demod->ready_m);
+    dsd_cond_destroy(&demod->ready);
+    dsd_mutex_destroy(&demod->ready_m);
     demod_mt_destroy(demod);
     if (demod->resamp_taps) {
         dsd_neo_aligned_free(demod->resamp_taps);

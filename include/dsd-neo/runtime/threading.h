@@ -5,21 +5,21 @@
 
 /**
  * @file
- * @brief Lightweight pthread condition helpers shared across runtime components.
+ * @brief Lightweight condition helpers shared across runtime components.
  */
 
 #pragma once
 
-#include <pthread.h>
+#include <dsd-neo/platform/threading.h>
 
 /** @brief Signal a condition variable while holding its mutex. */
 #define safe_cond_signal(n, m)                                                                                         \
-    pthread_mutex_lock(m);                                                                                             \
-    pthread_cond_signal(n);                                                                                            \
-    pthread_mutex_unlock(m)
+    dsd_mutex_lock(m);                                                                                                 \
+    dsd_cond_signal(n);                                                                                                \
+    dsd_mutex_unlock(m)
 
 /** @brief Wait on a condition variable while holding its mutex. */
 #define safe_cond_wait(n, m)                                                                                           \
-    pthread_mutex_lock(m);                                                                                             \
-    pthread_cond_wait(n, m);                                                                                           \
-    pthread_mutex_unlock(m)
+    dsd_mutex_lock(m);                                                                                                 \
+    dsd_cond_wait(n, m);                                                                                               \
+    dsd_mutex_unlock(m)

@@ -1,18 +1,21 @@
 # Platform abstraction library
 
-add_library(dsd-neo_platform INTERFACE)
+add_library(dsd-neo_platform)
 
-# Platform-specific sources will be added in later phases
-# For now, this is a header-only interface library
+# Platform-specific sources
+if(WIN32 AND NOT CYGWIN)
+    target_sources(dsd-neo_platform PRIVATE
+        threading_win32.c
+    )
+    target_link_libraries(dsd-neo_platform PUBLIC ws2_32)
+else()
+    target_sources(dsd-neo_platform PRIVATE
+        threading_posix.c
+    )
+    find_package(Threads REQUIRED)
+    target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
+endif()
 
 target_include_directories(dsd-neo_platform
-    INTERFACE ${PROJECT_SOURCE_DIR}/include
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
-
-# Platform-specific link dependencies
-if(WIN32 AND NOT CYGWIN)
-    target_link_libraries(dsd-neo_platform INTERFACE ws2_32)
-else()
-    find_package(Threads REQUIRED)
-    target_link_libraries(dsd-neo_platform INTERFACE Threads::Threads)
-endif()

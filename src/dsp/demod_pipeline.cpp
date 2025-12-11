@@ -33,7 +33,6 @@ __attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
 }
 #include <algorithm>
 #include <math.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

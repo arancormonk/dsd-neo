@@ -8,7 +8,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +19,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/threading.h>
 
 /** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {
@@ -27,8 +27,8 @@ typedef struct udp_input_ring {
     size_t cap; // in samples
     size_t head;
     size_t tail;
-    pthread_mutex_t m;
-    pthread_cond_t cv;
+    dsd_mutex_t m;
+    dsd_cond_t cv;
 } udp_input_ring;
 
 /** @brief UDP input backend state shared across the reader thread and callers. */
@@ -36,7 +36,7 @@ typedef struct udp_input_ctx {
     int sockfd;
     int running;
     udp_input_ring ring;
-    pthread_t th;
+    dsd_thread_t th;
     int sample_rate;
 } udp_input_ctx;
 
@@ -50,8 +50,8 @@ ring_init(udp_input_ring* r, size_t cap_samples) {
     r->buf = (int16_t*)malloc(cap_samples * sizeof(int16_t));
     r->cap = (r->buf ? cap_samples : 0);
     r->head = r->tail = 0;
-    pthread_mutex_init(&r->m, NULL);
-    pthread_cond_init(&r->cv, NULL);
+    dsd_mutex_init(&r->m);
+    dsd_cond_init(&r->cv);
 }
 
 /**
@@ -65,8 +65,8 @@ ring_destroy(udp_input_ring* r) {
     }
     r->buf = NULL;
     r->cap = r->head = r->tail = 0;
-    pthread_mutex_destroy(&r->m);
-    pthread_cond_destroy(&r->cv);
+    dsd_mutex_destroy(&r->m);
+    dsd_cond_destroy(&r->cv);
 }
 
 /**
@@ -115,34 +115,27 @@ ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
  */
 static __attribute__((unused)) int
 ring_read_block(udp_input_ring* r, int16_t* out) {
-    pthread_mutex_lock(&r->m);
+    dsd_mutex_lock(&r->m);
     while (ring_used(r) == 0) {
         if (exitflag) {
-            pthread_mutex_unlock(&r->m);
+            dsd_mutex_unlock(&r->m);
             return 0;
         }
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 100000000L; // +100ms
-        if (ts.tv_nsec >= 1000000000) {
-            ts.tv_sec += 1;
-            ts.tv_nsec -= 1000000000;
-        }
-        int ret = pthread_cond_timedwait(&r->cv, &r->m, &ts);
-        (void)ret; // ignore spuriously
+        int ret = dsd_cond_timedwait(&r->cv, &r->m, 100); // 100ms timeout
+        (void)ret;                                        // ignore spuriously
     }
     *out = r->buf[r->tail];
     r->tail = (r->tail + 1) % r->cap;
-    pthread_mutex_unlock(&r->m);
+    dsd_mutex_unlock(&r->m);
     return 1;
 }
 
 /** @brief Wake any thread blocked on the ring condition variable. */
 static void
 ring_signal(udp_input_ring* r) {
-    pthread_mutex_lock(&r->m);
-    pthread_cond_signal(&r->cv);
-    pthread_mutex_unlock(&r->m);
+    dsd_mutex_lock(&r->m);
+    dsd_cond_signal(&r->cv);
+    dsd_mutex_unlock(&r->m);
 }
 
 /**
@@ -154,13 +147,13 @@ ring_signal(udp_input_ring* r) {
 static int
 ring_try_read(udp_input_ring* r, int16_t* out) {
     int ok = 0;
-    pthread_mutex_lock(&r->m);
+    dsd_mutex_lock(&r->m);
     if (ring_used(r) > 0) {
         *out = r->buf[r->tail];
         r->tail = (r->tail + 1) % r->cap;
         ok = 1;
     }
-    pthread_mutex_unlock(&r->m);
+    dsd_mutex_unlock(&r->m);
     return ok;
 }
 
@@ -173,14 +166,17 @@ ring_try_read(udp_input_ring* r, int16_t* out) {
  * @param arg Pointer to owning `dsd_opts`.
  * @return NULL on exit.
  */
-static void*
-udp_rx_thread(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    udp_rx_thread(void* arg) {
     dsd_opts* opts = (dsd_opts*)arg;
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
     const size_t max_bytes = 65536;
     uint8_t* buf = (uint8_t*)malloc(max_bytes);
     if (!buf) {
-        return NULL;
+        DSD_THREAD_RETURN;
     }
 
     while (ctx->running) {
@@ -211,17 +207,17 @@ udp_rx_thread(void* arg) {
         // Write into ring, account for drops
         const int16_t* s = (const int16_t*)buf; // assumes little-endian input
         size_t wrote = 0;
-        pthread_mutex_lock(&ctx->ring.m);
+        dsd_mutex_lock(&ctx->ring.m);
         wrote = ring_write(&ctx->ring, s, nsamp);
         if (wrote < nsamp) {
             opts->udp_in_drops += (unsigned long long)(nsamp - wrote);
         }
-        pthread_mutex_unlock(&ctx->ring.m);
+        dsd_mutex_unlock(&ctx->ring.m);
         ring_signal(&ctx->ring);
     }
 
     free(buf);
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 /**
@@ -308,7 +304,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
 
     opts->udp_in_ctx = ctx;
     opts->udp_in_sockfd = sockfd;
-    int rc = pthread_create(&ctx->th, NULL, udp_rx_thread, opts);
+    int rc = dsd_thread_create(&ctx->th, (dsd_thread_fn)udp_rx_thread, opts);
     if (rc != 0) {
         ring_destroy(&ctx->ring);
         close(sockfd);
@@ -338,7 +334,7 @@ udp_input_stop(dsd_opts* opts) {
     ctx->sockfd = -1;
     // wake any blocked reader
     ring_signal(&ctx->ring);
-    pthread_join(ctx->th, NULL);
+    dsd_thread_join(ctx->th);
     ring_destroy(&ctx->ring);
     free(ctx);
     opts->udp_in_ctx = NULL;

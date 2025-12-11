@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/ring.h>
 
@@ -43,8 +44,8 @@ test_input_ring_wrap_and_read(void) {
     r.tail.store(0);
     r.producer_drops.store(0);
     r.read_timeouts.store(0);
-    pthread_cond_init(&r.ready, NULL);
-    pthread_mutex_init(&r.ready_m, NULL);
+    dsd_cond_init(&r.ready);
+    dsd_mutex_init(&r.ready_m);
 
     /* First write: no wrap, fills positions [0..5] */
     float src1[6] = {10, 20, 30, 40, 50, 60};
@@ -85,8 +86,8 @@ test_input_ring_wrap_and_read(void) {
         return 1;
     }
 
-    pthread_mutex_destroy(&r.ready_m);
-    pthread_cond_destroy(&r.ready);
+    dsd_mutex_destroy(&r.ready_m);
+    dsd_cond_destroy(&r.ready);
     free(r.buffer);
     return 0;
 }
@@ -107,8 +108,8 @@ test_input_ring_drop_on_full(void) {
     r.tail.store(0);
     r.producer_drops.store(0);
     r.read_timeouts.store(0);
-    pthread_cond_init(&r.ready, NULL);
-    pthread_mutex_init(&r.ready_m, NULL);
+    dsd_cond_init(&r.ready);
+    dsd_mutex_init(&r.ready_m);
 
     /* Fill ring to capacity-1 (maximum usable occupancy) */
     float initial[3] = {1, 2, 3};
@@ -145,8 +146,8 @@ test_input_ring_drop_on_full(void) {
         return 1;
     }
 
-    pthread_mutex_destroy(&r.ready_m);
-    pthread_cond_destroy(&r.ready);
+    dsd_mutex_destroy(&r.ready_m);
+    dsd_cond_destroy(&r.ready);
     free(r.buffer);
     return 0;
 }
@@ -167,9 +168,9 @@ test_output_ring_wrap_and_read(void) {
     o.tail.store(0);
     o.write_timeouts.store(0);
     o.read_timeouts.store(0);
-    pthread_cond_init(&o.ready, NULL);
-    pthread_mutex_init(&o.ready_m, NULL);
-    pthread_cond_init(&o.space, NULL);
+    dsd_cond_init(&o.ready);
+    dsd_mutex_init(&o.ready_m);
+    dsd_cond_init(&o.space);
 
     /* First write: no wrap, fills positions [0..5] */
     float src1[6] = {1, 2, 3, 4, 5, 6};
@@ -210,9 +211,9 @@ test_output_ring_wrap_and_read(void) {
         return 1;
     }
 
-    pthread_cond_destroy(&o.space);
-    pthread_mutex_destroy(&o.ready_m);
-    pthread_cond_destroy(&o.ready);
+    dsd_cond_destroy(&o.space);
+    dsd_mutex_destroy(&o.ready_m);
+    dsd_cond_destroy(&o.ready);
     free(o.buffer);
     return 0;
 }
@@ -221,8 +222,8 @@ struct OutputWriterArgs {
     struct output_state* ring;
     const float* data;
     size_t count;
-    pthread_mutex_t* mu;
-    pthread_cond_t* cv;
+    dsd_mutex_t* mu;
+    dsd_cond_t* cv;
     int* ready_flag;
 };
 
@@ -234,21 +235,27 @@ struct OutputReaderArgs {
     int* error_flag;
 };
 
-static void*
-output_writer_thread(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    output_writer_thread(void* arg) {
     OutputWriterArgs* ctx = (OutputWriterArgs*)arg;
     /* Signal that writer is about to start the blocking write */
-    pthread_mutex_lock(ctx->mu);
+    dsd_mutex_lock(ctx->mu);
     *(ctx->ready_flag) = 1;
-    pthread_cond_signal(ctx->cv);
-    pthread_mutex_unlock(ctx->mu);
+    dsd_cond_signal(ctx->cv);
+    dsd_mutex_unlock(ctx->mu);
 
     ring_write(ctx->ring, ctx->data, ctx->count);
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
-static void*
-output_reader_thread(void* arg) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    output_reader_thread(void* arg) {
     OutputReaderArgs* ctx = (OutputReaderArgs*)arg;
     size_t have = 0;
     float tmp[16];
@@ -256,13 +263,13 @@ output_reader_thread(void* arg) {
         int n = ring_read_batch(ctx->ring, tmp, 8);
         if (n < 0) {
             *(ctx->error_flag) = 1;
-            return NULL;
+            DSD_THREAD_RETURN;
         }
         memcpy(ctx->out + have, tmp, (size_t)n * sizeof(float));
         have += (size_t)n;
     }
     *(ctx->out_count) = have;
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 static int
@@ -281,9 +288,9 @@ test_output_ring_blocking_producer_consumer(void) {
     o.tail.store(0);
     o.write_timeouts.store(0);
     o.read_timeouts.store(0);
-    pthread_cond_init(&o.ready, NULL);
-    pthread_mutex_init(&o.ready_m, NULL);
-    pthread_cond_init(&o.space, NULL);
+    dsd_cond_init(&o.ready);
+    dsd_mutex_init(&o.ready_m);
+    dsd_cond_init(&o.space);
 
     /* Prefill ring to capacity-1 so the next producer write observes full state */
     float pre[3] = {100, 101, 102};
@@ -298,11 +305,11 @@ test_output_ring_blocking_producer_consumer(void) {
         bulk[i] = (float)(200 + i);
     }
 
-    pthread_mutex_t barrier_mu;
-    pthread_cond_t barrier_cv;
+    dsd_mutex_t barrier_mu;
+    dsd_cond_t barrier_cv;
     int writer_ready = 0;
-    pthread_mutex_init(&barrier_mu, NULL);
-    pthread_cond_init(&barrier_cv, NULL);
+    dsd_mutex_init(&barrier_mu);
+    dsd_cond_init(&barrier_cv);
 
     float all[16] = {0};
     size_t all_count = 0;
@@ -323,28 +330,28 @@ test_output_ring_blocking_producer_consumer(void) {
     rargs.out_count = &all_count;
     rargs.error_flag = &read_error;
 
-    pthread_t wthread;
-    pthread_t rthread;
+    dsd_thread_t wthread;
+    dsd_thread_t rthread;
 
-    if (pthread_create(&wthread, NULL, output_writer_thread, &wargs) != 0) {
+    if (dsd_thread_create(&wthread, (dsd_thread_fn)output_writer_thread, &wargs) != 0) {
         fprintf(stderr, "output_ring pc: failed to create writer thread\n");
         return 1;
     }
 
     /* Wait until writer has entered its write path (and likely observed a full ring) */
-    pthread_mutex_lock(&barrier_mu);
+    dsd_mutex_lock(&barrier_mu);
     while (!writer_ready) {
-        pthread_cond_wait(&barrier_cv, &barrier_mu);
+        dsd_cond_wait(&barrier_cv, &barrier_mu);
     }
-    pthread_mutex_unlock(&barrier_mu);
+    dsd_mutex_unlock(&barrier_mu);
 
-    if (pthread_create(&rthread, NULL, output_reader_thread, &rargs) != 0) {
+    if (dsd_thread_create(&rthread, (dsd_thread_fn)output_reader_thread, &rargs) != 0) {
         fprintf(stderr, "output_ring pc: failed to create reader thread\n");
         return 1;
     }
 
-    pthread_join(wthread, NULL);
-    pthread_join(rthread, NULL);
+    dsd_thread_join(wthread);
+    dsd_thread_join(rthread);
 
     if (read_error != 0) {
         fprintf(stderr, "output_ring pc: reader saw error\n");
@@ -373,11 +380,11 @@ test_output_ring_blocking_producer_consumer(void) {
         return 1;
     }
 
-    pthread_cond_destroy(&barrier_cv);
-    pthread_mutex_destroy(&barrier_mu);
-    pthread_cond_destroy(&o.space);
-    pthread_mutex_destroy(&o.ready_m);
-    pthread_cond_destroy(&o.ready);
+    dsd_cond_destroy(&barrier_cv);
+    dsd_mutex_destroy(&barrier_mu);
+    dsd_cond_destroy(&o.space);
+    dsd_mutex_destroy(&o.ready_m);
+    dsd_cond_destroy(&o.ready);
     free(o.buffer);
     return 0;
 }

@@ -13,10 +13,10 @@
 #pragma once
 
 #include <atomic>
-#include <dsd-neo/runtime/threading.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+#include <dsd-neo/platform/threading.h>
 
 /* Simple SPSC ring for interleaved I/Q float samples (input path) */
 struct input_ring_state {
@@ -24,8 +24,8 @@ struct input_ring_state {
     size_t capacity; /* in float elements */
     std::atomic<size_t> head;
     std::atomic<size_t> tail;
-    pthread_cond_t ready;
-    pthread_mutex_t ready_m;
+    dsd_cond_t ready;
+    dsd_mutex_t ready_m;
     std::atomic<uint64_t> producer_drops; /* bytes dropped when full */
     std::atomic<uint64_t> read_timeouts;  /* waits for data */
 };
