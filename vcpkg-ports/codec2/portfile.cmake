@@ -4,7 +4,9 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/codec2
     HEAD_REF main
-    PATCHES fix-msvc-libm.patch
+    PATCHES
+        fix-msvc-libm.patch
+        fix-msvc-flags.patch
 )
 
 vcpkg_cmake_configure(

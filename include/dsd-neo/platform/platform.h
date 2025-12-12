@@ -30,8 +30,9 @@
 #define DSD_PLATFORM_MACOS 0
 #endif
 
-/* Detect POSIX-like systems */
-#if DSD_PLATFORM_LINUX || DSD_PLATFORM_MACOS || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+/* Detect POSIX-like systems (including Cygwin) */
+#if DSD_PLATFORM_LINUX || DSD_PLATFORM_MACOS || defined(__CYGWIN__) || defined(__FreeBSD__) || defined(__NetBSD__)     \
+    || defined(__OpenBSD__)
 #define DSD_PLATFORM_POSIX 1
 #else
 #define DSD_PLATFORM_POSIX 0
