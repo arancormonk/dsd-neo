@@ -7,3 +7,4 @@ set(VCPKG_CMAKE_SYSTEM_NAME MinGW)
 set(VCPKG_BUILD_TYPE release)
 
 set(VCPKG_C_FLAGS "-std=gnu17")
+set(VCPKG_CXX_FLAGS "")
