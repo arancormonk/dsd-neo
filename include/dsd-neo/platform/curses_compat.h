@@ -15,14 +15,14 @@
 
 #include <dsd-neo/platform/platform.h>
 
-#if DSD_PLATFORM_WIN_NATIVE
-/* PDCurses for Windows */
+#if defined(DSD_USE_PDCURSES)
+/* PDCurses backend */
 #ifndef PDC_WIDE
 #define PDC_WIDE
 #endif
 #include <curses.h>
 #else
-/* ncurses for POSIX systems */
+/* ncurses backend */
 #include <ncurses.h>
 #endif
 
@@ -31,7 +31,7 @@
  */
 
 /* PDCurses mouse handling differs slightly - provide unified macros if needed */
-#if DSD_PLATFORM_WIN_NATIVE && defined(PDC_KEY_MODIFIER_SHIFT)
+#if defined(DSD_USE_PDCURSES) && defined(PDC_KEY_MODIFIER_SHIFT)
 /* PDCurses-specific key modifier handling */
 #endif
 
@@ -45,7 +45,7 @@
  * ncurses typically supports more. Use common subset if needed.
  */
 #ifndef DSD_MAX_COLOR_PAIRS
-#if DSD_PLATFORM_WIN_NATIVE
+#if defined(DSD_USE_PDCURSES)
 #define DSD_MAX_COLOR_PAIRS 256
 #else
 #define DSD_MAX_COLOR_PAIRS COLOR_PAIRS
@@ -56,7 +56,7 @@
  * Terminal resize handling differs between ncurses and PDCurses.
  * PDCurses uses Windows Console API internally.
  */
-#if DSD_PLATFORM_WIN_NATIVE
+#if defined(DSD_USE_PDCURSES)
 /* PDCurses may need explicit resize handling via resize_term() */
 #ifndef DSD_CURSES_NEEDS_EXPLICIT_RESIZE
 #define DSD_CURSES_NEEDS_EXPLICIT_RESIZE 1

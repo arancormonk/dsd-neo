@@ -1,0 +1,7 @@
+{
+  "name": "mbe-neo",
+  "version-string": "head",
+  "description": "AMBE/IMBE vocoder library (mbelib-neo)",
+  "homepage": "https://github.com/arancormonk/mbelib-neo",
+  "license": "GPL-2.0-or-later"
+}

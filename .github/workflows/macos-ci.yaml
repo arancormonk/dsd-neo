@@ -220,7 +220,13 @@ jobs:
           # Bundle license/notice files
           DOCDIR="$STAGE/share/doc/dsd-neo"
           mkdir -p "$DOCDIR"
-          cp -f LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt "$DOCDIR/" || true
+          cp -f LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt "$DOCDIR/"
+          for f in LICENSE COPYRIGHT THIRD_PARTY.md lesser.txt; do
+            if [ ! -f "$DOCDIR/$f" ]; then
+              echo "ERROR: missing required license file $f in $DOCDIR" >&2
+              exit 1
+            fi
+          done
 
           # Helper: collect dylib deps of a file and copy non-system libs into $STAGE/lib
           collect_deps() {

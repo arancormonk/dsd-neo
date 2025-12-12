@@ -1,0 +1,7 @@
+{
+  "name": "codec2",
+  "version-string": "head",
+  "description": "Next-Generation Digital Voice for Two-Way Radio (Codec2)",
+  "homepage": "https://github.com/arancormonk/codec2",
+  "license": "LGPL-2.1-or-later"
+}

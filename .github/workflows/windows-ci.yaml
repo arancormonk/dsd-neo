@@ -210,7 +210,14 @@ jobs:
           cp -f "$EXE" "$STAGE/bin/"
           DOCDIR="$STAGE/share/doc/dsd-neo"
           mkdir -p "$DOCDIR"
-          cp -f LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt "$DOCDIR/" || true
+          cp -f LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt "$DOCDIR/"
+          required_licenses=(LICENSE COPYRIGHT THIRD_PARTY.md lesser.txt)
+          for f in "${required_licenses[@]}"; do
+            if [ ! -f "$DOCDIR/$f" ]; then
+              echo "ERROR: missing required license file $f in $DOCDIR" >&2
+              exit 1
+            fi
+          done
 
           : "${DEPS_PREFIX:?DEPS_PREFIX not set}"
 
@@ -443,4 +450,202 @@ jobs:
           prerelease: true
           file: ${{ steps.zip.outputs.ZIP_PATH }}
           asset_name: dsd-neo-cygwin-x86_64-portable-nightly.zip
+          overwrite: true
+
+  build-native-msvc:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      VCPKG_TARGET_TRIPLET: x64-windows-static
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.1
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11.5
+        with:
+          vcpkgGitCommitId: "latest"
+
+      - name: Install vcpkg dependencies (MSVC)
+        shell: pwsh
+        run: vcpkg install --triplet $env:VCPKG_DEFAULT_TRIPLET --x-manifest-root "$env:GITHUB_WORKSPACE"
+
+      - name: Configure (MSVC Release)
+        shell: pwsh
+        run: cmake --preset win-msvc-release
+
+      - name: Build (MSVC Release)
+        shell: pwsh
+        run: cmake --build --preset win-msvc-release
+
+      - name: Stage native MSVC tree
+        id: stage
+        shell: pwsh
+        run: |
+          $exeCandidates = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
+            Select-Object -ExpandProperty FullName
+          if (-not $exeCandidates) { throw "Exe not found under build/win-msvc-release/apps/dsd-cli" }
+          $exe = $exeCandidates[0]
+          $stage = 'dist/dsd-neo-msvc'
+          $binDir = Join-Path $stage 'bin'
+          $docDir = Join-Path $stage 'share/doc/dsd-neo'
+          New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
+          Copy-Item -Force $exe $binDir
+          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
+          foreach ($f in $required) {
+            $p = Join-Path $docDir $f
+            if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
+          }
+
+      - name: Archive native MSVC ZIP
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $stage = 'dist/dsd-neo-msvc'
+          if ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME) {
+            $zip = "dist/dsd-neo-msvc-x86_64-native-$($env:REF_NAME).zip"
+            $artName = "dsd-neo-msvc-x86_64-native-$($env:REF_NAME)"
+          } else {
+            $zip = "dist/dsd-neo-msvc-x86_64-native-nightly.zip"
+            $artName = "dsd-neo-msvc-x86_64-native-nightly"
+          }
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
+          echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: zip
+
+      - name: Upload native MSVC artifact
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: ${{ steps.zip.outputs.ART_NAME }}
+          path: ${{ steps.zip.outputs.ZIP_PATH }}
+          retention-days: 7
+
+      - name: Upload native MSVC release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2.5.0
+        with:
+          files: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Upload native MSVC nightly asset (overwrite)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: nightly
+          prerelease: true
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          asset_name: dsd-neo-msvc-x86_64-native-nightly.zip
+          overwrite: true
+
+  build-native-mingw:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-mingw-static
+      VCPKG_TARGET_TRIPLET: x64-mingw-static
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.1
+
+      - name: Setup MSYS2 (MinGW-w64)
+        uses: msys2/setup-msys2@v2.29.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkgconf
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11.5
+        with:
+          vcpkgGitCommitId: "latest"
+
+      - name: Install vcpkg dependencies (MinGW)
+        shell: msys2 {0}
+        run: vcpkg install --triplet "${VCPKG_DEFAULT_TRIPLET}" --x-manifest-root "$GITHUB_WORKSPACE"
+
+      - name: Configure (MinGW Release)
+        shell: msys2 {0}
+        run: cmake --preset win-mingw-release
+
+      - name: Build (MinGW Release)
+        shell: msys2 {0}
+        run: cmake --build --preset win-mingw-release -j2
+
+      - name: Stage native MinGW tree
+        id: stage
+        shell: pwsh
+        run: |
+          $exe = 'build/win-mingw-release/apps/dsd-cli/dsd-neo.exe'
+          if (!(Test-Path $exe)) { throw "Exe not found: $exe" }
+          $stage = 'dist/dsd-neo-mingw'
+          $binDir = Join-Path $stage 'bin'
+          $docDir = Join-Path $stage 'share/doc/dsd-neo'
+          New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
+          Copy-Item -Force $exe $binDir
+          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
+          foreach ($f in $required) {
+            $p = Join-Path $docDir $f
+            if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
+          }
+
+      - name: Archive native MinGW ZIP
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $stage = 'dist/dsd-neo-mingw'
+          if ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME) {
+            $zip = "dist/dsd-neo-mingw-x86_64-native-$($env:REF_NAME).zip"
+            $artName = "dsd-neo-mingw-x86_64-native-$($env:REF_NAME)"
+          } else {
+            $zip = "dist/dsd-neo-mingw-x86_64-native-nightly.zip"
+            $artName = "dsd-neo-mingw-x86_64-native-nightly"
+          }
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
+          echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: zip
+
+      - name: Upload native MinGW artifact
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: ${{ steps.zip.outputs.ART_NAME }}
+          path: ${{ steps.zip.outputs.ZIP_PATH }}
+          retention-days: 7
+
+      - name: Upload native MinGW release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2.5.0
+        with:
+          files: ${{ steps.zip.outputs.ZIP_PATH }}
+
+      - name: Upload native MinGW nightly asset (overwrite)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: nightly
+          prerelease: true
+          file: ${{ steps.zip.outputs.ZIP_PATH }}
+          asset_name: dsd-neo-mingw-x86_64-native-nightly.zip
           overwrite: true

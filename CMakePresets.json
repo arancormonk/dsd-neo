@@ -89,7 +89,7 @@
         "DSD_ENABLE_FAST_MATH": "ON"
       }
     },
-    {
+	    {
       "name": "win-mingw-debug",
       "displayName": "Windows MinGW Debug",
       "description": "Windows Debug build with MinGW-w64",
@@ -102,7 +102,8 @@
       },
 	      "cacheVariables": {
 	        "CMAKE_BUILD_TYPE": "Debug",
-	        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+	        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+	        "CMAKE_EXE_LINKER_FLAGS": "-static -static-libgcc -static-libstdc++"
 	      }
 	    },
 	    {
@@ -120,7 +121,8 @@
 	        "CMAKE_BUILD_TYPE": "Release",
 	        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
 	        "DSD_ENABLE_LTO": "ON",
-	        "DSD_ENABLE_FAST_MATH": "ON"
+	        "DSD_ENABLE_FAST_MATH": "ON",
+	        "CMAKE_EXE_LINKER_FLAGS": "-static -static-libgcc -static-libstdc++"
 	      }
 	    }
   ],

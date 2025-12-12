@@ -16,7 +16,7 @@ if (NOT RTLSDR_FOUND)
     HINTS ${RTLSDR_PKG_INCLUDE_DIRS})
 
   find_library(RTLSDR_LIBRARY
-    NAMES rtlsdr
+    NAMES rtlsdr rtlsdr_static librtlsdr librtlsdr_static
     HINTS ${RTLSDR_PKG_LIBRARY_DIRS})
 
   set(RTLSDR_LIBRARIES ${RTLSDR_LIBRARY})

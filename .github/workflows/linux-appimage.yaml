@@ -165,6 +165,15 @@ jobs:
               rm -rf AppDir
               cmake --install build/appimage --prefix AppDir/usr
 
+              docdir="AppDir/usr/share/doc/dsd-neo"
+              required=(LICENSE COPYRIGHT THIRD_PARTY.md lesser.txt)
+              for f in "${required[@]}"; do
+                if [ ! -f "$docdir/$f" ]; then
+                  echo "ERROR: missing required license file: $docdir/$f" >&2
+                  exit 1
+                fi
+              done
+
               mkdir -p AppDir/usr/share/applications
               cp -f packaging/appimage/dsd-neo.desktop AppDir/usr/share/applications/
               mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps

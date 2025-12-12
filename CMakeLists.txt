@@ -160,8 +160,10 @@ endif()
 find_package(ITPP REQUIRED)
 find_package(RTLSDR)
 
-# Curses library selection: PDCurses on Windows, ncurses elsewhere
-if(WIN32 AND NOT CYGWIN)
+# Curses library selection:
+# - MSVC/native Windows: PDCurses
+# - MinGW/Cygwin/POSIX: ncurses via CMake's FindCurses
+if(WIN32 AND NOT CYGWIN AND NOT MINGW)
     find_package(PDCurses REQUIRED)
     set(CURSES_LIBRARIES ${PDCURSES_LIBRARIES})
     set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
@@ -214,6 +216,16 @@ if(RTLSDR_FOUND)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
     add_definitions(-DUSE_RTLSDR)
+    # vcpkg static builds on Windows install rtlsdr as rtlsdr_static.* and
+    # require rtlsdr_STATIC to avoid dllimport decorations.
+    if(WIN32 AND NOT CYGWIN)
+        foreach(_rtlsdr_lib IN LISTS RTLSDR_LIBRARIES)
+            get_filename_component(_rtlsdr_name "${_rtlsdr_lib}" NAME_WE)
+            if(_rtlsdr_name MATCHES "rtlsdr_static")
+                add_compile_definitions(rtlsdr_STATIC)
+            endif()
+        endforeach()
+    endif()
     # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
     include(CheckSymbolExists)
     set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})

@@ -5,8 +5,25 @@
   "description": "Digital Speech Decoder: DSD-neo",
   "homepage": "https://github.com/arancormonk/dsd-neo",
   "dependencies": [
+    "mbe-neo",
     "libsndfile",
+    "itpp",
     "portaudio",
-    "pdcurses"
+    {
+      "name": "rtlsdr",
+      "platform": "windows"
+    },
+    {
+      "name": "codec2",
+      "platform": "windows"
+    },
+    {
+      "name": "pdcurses",
+      "platform": "windows & !mingw"
+    },
+    {
+      "name": "ncurses",
+      "platform": "windows & mingw"
+    }
   ]
 }
