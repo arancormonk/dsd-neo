@@ -1,0 +1,45 @@
+diff --git a/src/lpc.c b/src/lpc.c
+index 3117a1a..eeb1008 100644
+--- a/src/lpc.c
++++ b/src/lpc.c
+@@ -143,10 +143,12 @@ void levinson_durbin(float R[],    /* order+1 autocorrelation coeff */
+                      float lpcs[], /* order+1 LPC's */
+                      int order     /* order of the LPC analysis */
+ ) {
+-  float a[order + 1][order + 1];
++  float a[LPC_MAX_ORDER + 1][LPC_MAX_ORDER + 1];
+   float sum, e, k;
+   int i, j; /* loop variables */
+ 
++  assert(order <= LPC_MAX_ORDER);
++
+   e = R[0]; /* Equation 38a, Makhoul */
+ 
+   for (i = 1; i <= order; i++) {
+@@ -244,10 +246,11 @@ void find_aks(float Sn[], /* Nsam samples with order sample memory */
+               float *E    /* residual energy */
+ ) {
+   float Wn[LPC_MAX_N]; /* windowed frame of Nsam speech samples */
+-  float R[order + 1];  /* order+1 autocorrelation values of Sn[] */
++  float R[LPC_MAX_ORDER + 1];  /* order+1 autocorrelation values of Sn[] */
+   int i;
+ 
+   assert(Nsam < LPC_MAX_N);
++  assert(order <= LPC_MAX_ORDER);
+ 
+   hanning_window(Sn, Wn, Nsam);
+   autocorrelate(Wn, R, Nsam, order);
+diff --git a/src/nlp.c b/src/nlp.c
+index 53cf040..48ba7c9 100644
+--- a/src/nlp.c
++++ b/src/nlp.c
+@@ -252,7 +252,8 @@ float nlp(
+     m /= 2;
+     n /= 2;
+ 
+-    float Sn8k[n];
++    float Sn8k[PMAX_M];
++    assert(n <= PMAX_M);
+     fdmdv_16_to_8(Sn8k, &nlp->Sn16k[FDMDV_OS_TAPS_16K], n);
+ 
+     /* Square latest input samples */
