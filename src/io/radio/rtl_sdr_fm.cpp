@@ -29,6 +29,7 @@
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_control.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
@@ -48,7 +49,6 @@
 #include <stdlib.h>
 #include <string.h>
 #if DSD_PLATFORM_POSIX
-#include <strings.h>
 #include <unistd.h>
 #endif
 #include <vector>
@@ -340,7 +340,7 @@ static uint32_t
 choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
     const char* e = getenv("DSD_NEO_TUNER_BW_HZ");
     if (e && *e) {
-        if (strcasecmp(e, "auto") == 0) {
+        if (dsd_strcasecmp(e, "auto") == 0) {
             return 0; /* driver automatic */
         }
         long v = strtol(e, NULL, 10);
@@ -2685,7 +2685,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             char buf[1024];
             snprintf(buf, sizeof buf, "%s", ig);
             char* save = NULL;
-            for (char* tok = strtok_r(buf, ",; ", &save); tok; tok = strtok_r(NULL, ",; ", &save)) {
+            for (char* tok = dsd_strtok_r(buf, ",; ", &save); tok; tok = dsd_strtok_r(NULL, ",; ", &save)) {
                 int stage = -1;
                 double gain_db = 0.0;
                 char* colon = strchr(tok, ':');

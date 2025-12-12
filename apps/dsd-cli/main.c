@@ -22,6 +22,8 @@
 #define _MAIN
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
@@ -243,7 +245,7 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
 
 static void
 bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
-    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+    if (!dsd_isatty(DSD_STDIN_FILENO) || !dsd_isatty(DSD_STDOUT_FILENO)) {
         // Non-interactive environment: keep defaults
         return;
     }
@@ -1682,20 +1684,11 @@ initOpts(dsd_opts* opts) {
 
 static void*
 aligned_alloc_64(size_t size) {
-    void* p = NULL;
-#if defined(_ISOC11_SOURCE)
-    // aligned_alloc requires size to be multiple of alignment; we pass 64 and large sizes so OK
-    p = aligned_alloc(64, (size + 63) & ~((size_t)63));
+    void* p = dsd_aligned_alloc(64, size);
     if (!p) {
         return malloc(size);
     }
     return p;
-#else
-    if (posix_memalign(&p, 64, size) != 0 || !p) {
-        return malloc(size);
-    }
-    return p;
-#endif
 }
 
 void
@@ -3129,7 +3122,7 @@ main(int argc, char** argv) {
     // any env-based skip (DSD_NEO_NO_BOOTSTRAP).
     if (force_bootstrap_cli || (argc <= 1 && !user_cfg_loaded)) {
         if (force_bootstrap_cli) {
-            unsetenv("DSD_NEO_NO_BOOTSTRAP");
+            dsd_unsetenv("DSD_NEO_NO_BOOTSTRAP");
         }
         bootstrap_interactive(&opts, &state);
     }
@@ -3647,8 +3640,8 @@ main(int argc, char** argv) {
     }
 
     if ((strncmp(opts.audio_out_dev, "-", 1) == 0)) {
-        opts.audio_out_fd = fileno(stdout); //STDOUT_FILENO;
-        opts.audio_out_type = 1;            //using 1 for stdout to match input stdin as 1
+        opts.audio_out_fd = dsd_fileno(stdout); //DSD_STDOUT_FILENO;
+        opts.audio_out_type = 1;                //using 1 for stdout to match input stdin as 1
         LOG_NOTICE("Audio Out Device: -\n");
     }
 

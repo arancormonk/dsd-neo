@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -712,7 +713,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (stat(wav_file_directory, &st) == -1) {
                 LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
                 LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
-                mkdir(wav_file_directory, 0700);
+                dsd_mkdir(wav_file_directory, 0700);
             }
             LOG_NOTICE("Per Call Wav File Enabled to Directory: %s\n", opts->wav_out_dir);
             srand((unsigned)time(NULL));

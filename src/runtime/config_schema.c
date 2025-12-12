@@ -10,11 +10,11 @@
  * and constraints for validation and template generation.
  */
 
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config_schema.h>
 
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 /* Schema data for all configuration keys */
 static const dsdcfg_schema_entry_t s_schema[] = {
@@ -84,7 +84,7 @@ dsdcfg_schema_find(const char* section, const char* key) {
         return NULL;
     }
     for (int i = 0; i < s_schema_count; i++) {
-        if (strcasecmp(s_schema[i].section, section) == 0 && strcasecmp(s_schema[i].key, key) == 0) {
+        if (dsd_strcasecmp(s_schema[i].section, section) == 0 && dsd_strcasecmp(s_schema[i].key, key) == 0) {
             return &s_schema[i];
         }
     }
@@ -241,7 +241,7 @@ dsdcfg_schema_sections(const char** sections, int max_sections) {
         /* Check if section already in output list */
         int found = 0;
         for (int j = 0; j < count; j++) {
-            if (strcasecmp(sections[j], sec) == 0) {
+            if (dsd_strcasecmp(sections[j], sec) == 0) {
                 found = 1;
                 break;
             }

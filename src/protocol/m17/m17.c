@@ -13,6 +13,7 @@
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
 #include <dsd-neo/runtime/log.h>
@@ -397,7 +398,7 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) {
-            ssize_t written = write(opts->audio_out_fd, samp1, nsam * sizeof(short));
+            ssize_t written = dsd_write(opts->audio_out_fd, samp1, nsam * sizeof(short));
             if (written < 0) {
                 LOG_WARN("M17processCodec2_1600: failed to write %zu-byte audio block", nsam * sizeof(short));
             }
@@ -510,11 +511,11 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) {
-            ssize_t written = write(opts->audio_out_fd, samp1, nsam * sizeof(short));
+            ssize_t written = dsd_write(opts->audio_out_fd, samp1, nsam * sizeof(short));
             if (written < 0) {
                 LOG_WARN("M17processCodec2_3200: failed to write first %zu-byte audio block", nsam * sizeof(short));
             }
-            written = write(opts->audio_out_fd, samp2, nsam * sizeof(short));
+            written = dsd_write(opts->audio_out_fd, samp2, nsam * sizeof(short));
             if (written < 0) {
                 LOG_WARN("M17processCodec2_3200: failed to write second %zu-byte audio block", nsam * sizeof(short));
             }
@@ -1398,7 +1399,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
         }
 
         if (opts->audio_out_type == 1) {
-            ssize_t written = write(opts->audio_out_fd, baseband, sizeof(baseband));
+            ssize_t written = dsd_write(opts->audio_out_fd, baseband, sizeof(baseband));
             if (written < 0) {
                 LOG_WARN("encodeM17RF: failed to write %zu-byte baseband block", sizeof(baseband));
             }

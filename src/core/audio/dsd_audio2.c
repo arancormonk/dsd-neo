@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <math.h>
 
 // Return 1 if all elements are effectively zero (|x| < 1e-12f)
@@ -32,7 +33,7 @@ dsd_is_all_zero_f(const float* buf, size_t n) {
 
 static inline void
 write_audio_out(int fd, const void* buf, size_t bytes) {
-    const ssize_t written = write(fd, buf, bytes);
+    const ssize_t written = dsd_write(fd, buf, bytes);
     (void)written;
 }
 

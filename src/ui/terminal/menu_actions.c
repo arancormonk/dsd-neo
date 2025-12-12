@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -323,7 +324,7 @@ act_toggle_ftz_daz(void* v) {
     const char* e = getenv("DSD_NEO_FTZ_DAZ");
     on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
     on = on ? 0 : 1; // flip
-    setenv("DSD_NEO_FTZ_DAZ", on ? "1" : "0", 1);
+    dsd_setenv("DSD_NEO_FTZ_DAZ", on ? "1" : "0", 1);
     unsigned int mxcsr = _mm_getcsr();
     if (on) {
         mxcsr |= (1u << 15) | (1u << 6);
@@ -348,11 +349,11 @@ act_deemph_cycle(void* v) {
     int mode = cfg ? cfg->deemph_mode : DSD_NEO_DEEMPH_UNSET;
     mode = (mode + 1) % 5; // cycle through UNSET->OFF->50->75->NFM->UNSET
     switch (mode) {
-        case DSD_NEO_DEEMPH_UNSET: setenv("DSD_NEO_DEEMPH", "", 1); break;
-        case DSD_NEO_DEEMPH_OFF: setenv("DSD_NEO_DEEMPH", "off", 1); break;
-        case DSD_NEO_DEEMPH_50: setenv("DSD_NEO_DEEMPH", "50", 1); break;
-        case DSD_NEO_DEEMPH_75: setenv("DSD_NEO_DEEMPH", "75", 1); break;
-        case DSD_NEO_DEEMPH_NFM: setenv("DSD_NEO_DEEMPH", "nfm", 1); break;
+        case DSD_NEO_DEEMPH_UNSET: dsd_setenv("DSD_NEO_DEEMPH", "", 1); break;
+        case DSD_NEO_DEEMPH_OFF: dsd_setenv("DSD_NEO_DEEMPH", "off", 1); break;
+        case DSD_NEO_DEEMPH_50: dsd_setenv("DSD_NEO_DEEMPH", "50", 1); break;
+        case DSD_NEO_DEEMPH_75: dsd_setenv("DSD_NEO_DEEMPH", "75", 1); break;
+        case DSD_NEO_DEEMPH_NFM: dsd_setenv("DSD_NEO_DEEMPH", "nfm", 1); break;
         default: break;
     }
     env_reparse_runtime_cfg(c ? c->opts : NULL);
@@ -370,7 +371,7 @@ act_window_freeze_toggle(void* v) {
     UiCtx* c = (UiCtx*)v;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->window_freeze_is_set) ? cfg->window_freeze : 0;
-    setenv("DSD_NEO_WINDOW_FREEZE", on ? "0" : "1", 1);
+    dsd_setenv("DSD_NEO_WINDOW_FREEZE", on ? "0" : "1", 1);
     env_reparse_runtime_cfg(c ? c->opts : NULL);
 }
 
@@ -379,7 +380,7 @@ act_auto_ppm_freeze(void* v) {
     UNUSED(v);
     const char* e = getenv("DSD_NEO_AUTO_PPM_FREEZE");
     int on = (e && *e && *e != '0');
-    setenv("DSD_NEO_AUTO_PPM_FREEZE", on ? "0" : "1", 1);
+    dsd_setenv("DSD_NEO_AUTO_PPM_FREEZE", on ? "0" : "1", 1);
 }
 
 void
@@ -387,7 +388,7 @@ act_tcp_waitall(void* v) {
     UiCtx* c = (UiCtx*)v;
     const char* e = getenv("DSD_NEO_TCP_WAITALL");
     int on = (e && *e && *e != '0');
-    setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
+    dsd_setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
     if (c && c->opts && c->opts->audio_in_type == 3) {
         ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
@@ -398,7 +399,7 @@ act_rt_sched(void* v) {
     UNUSED(v);
     const char* e = getenv("DSD_NEO_RT_SCHED");
     int on = (e && *e && *e != '0');
-    setenv("DSD_NEO_RT_SCHED", on ? "0" : "1", 1);
+    dsd_setenv("DSD_NEO_RT_SCHED", on ? "0" : "1", 1);
 }
 
 void
@@ -406,7 +407,7 @@ act_mt(void* v) {
     UiCtx* c = (UiCtx*)v;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int on = (cfg && cfg->mt_is_set) ? cfg->mt_enable : 0;
-    setenv("DSD_NEO_MT", on ? "0" : "1", 1);
+    dsd_setenv("DSD_NEO_MT", on ? "0" : "1", 1);
     env_reparse_runtime_cfg(c ? c->opts : NULL);
 }
 
@@ -628,7 +629,7 @@ io_set_pulse_out(void* vctx) {
         snprintf(bufs[n], 768, "[%d] %.*s - %.*s", outs[i].index, name_len, outs[i].name, desc_len,
                  outs[i].description);
         labels[n] = bufs[n];
-        names[n] = strdup(outs[i].name);
+        names[n] = dsd_strdup(outs[i].name);
         n++;
     }
     if (n == 0) {
@@ -691,7 +692,7 @@ io_set_pulse_in(void* vctx) {
         int desc_len2 = (int)strnlen(ins[i].description, 255);
         snprintf(bufs[n], 768, "[%d] %.*s - %.*s", ins[i].index, name_len2, ins[i].name, desc_len2, ins[i].description);
         labels[n] = bufs[n];
-        names[n] = strdup(ins[i].name);
+        names[n] = dsd_strdup(ins[i].name);
         n++;
     }
     if (n == 0) {
@@ -1137,7 +1138,7 @@ rtl_toggle_tuner_autogain(void* v) {
     } else {
         const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");
         int on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
-        setenv("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1", 1);
+        dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1", 1);
     }
 }
 

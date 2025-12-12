@@ -49,9 +49,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
-#ifdef __unix__
-#include <unistd.h> // dup, dup2, close
-#endif
+/* file_compat.h provides portable file descriptor operations */
+#include <dsd-neo/platform/file_compat.h>
 
 // s_stderr_suppressed, s_saved_stderr_fd moved to ncurses_init.c
 

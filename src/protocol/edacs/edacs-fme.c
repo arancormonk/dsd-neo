@@ -25,6 +25,7 @@
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -575,15 +576,15 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         }
 
         if (opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1) {
-            ssize_t written = write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
+            ssize_t written = dsd_write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
             if (written < 0) {
                 LOG_WARN("edacs_analog: failed to write analog1 audio block");
             }
-            written = write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));
+            written = dsd_write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));
             if (written < 0) {
                 LOG_WARN("edacs_analog: failed to write analog2 audio block");
             }
-            written = write(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short));
+            written = dsd_write(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short));
             if (written < 0) {
                 LOG_WARN("edacs_analog: failed to write analog3 audio block");
             }

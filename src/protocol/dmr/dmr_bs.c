@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -104,7 +105,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
         {
             char tbuf[9];
             getTimeC_buf(tbuf);
-            timestr = strdup(tbuf);
+            timestr = dsd_strdup(tbuf);
         }
 
         memset(ambe_fr, 0, sizeof(ambe_fr));

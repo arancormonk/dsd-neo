@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 
 #include <errno.h>
@@ -17,9 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <direct.h>
-#endif
 
 int
 p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
@@ -85,9 +83,9 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     struct stat st;
     if (stat(path, &st) != 0) {
 #ifdef _WIN32
-        (void)_mkdir(path);
+        (void)_dsd_mkdir(path);
 #else
-        (void)mkdir(path, 0700);
+        (void)dsd_mkdir(path, 0700);
 #endif
     }
 

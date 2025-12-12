@@ -10,6 +10,7 @@
 
 #include "menu_env.h"
 
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,7 +32,7 @@ void
 env_set_int(const char* name, int v) {
     char buf[64];
     snprintf(buf, sizeof buf, "%d", v);
-    setenv(name, buf, 1);
+    dsd_setenv(name, buf, 1);
 }
 
 void
@@ -39,7 +40,7 @@ env_set_double(const char* name, double v) {
     char buf[64];
     // limit precision just for display sanity
     snprintf(buf, sizeof buf, "%.6g", v);
-    setenv(name, buf, 1);
+    dsd_setenv(name, buf, 1);
 }
 
 void

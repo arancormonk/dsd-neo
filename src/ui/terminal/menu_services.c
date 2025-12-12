@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/menu_services.h>
 
 #include <dsd-neo/runtime/log.h>
@@ -47,7 +49,7 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     if (stat(wav_file_directory, &st) == -1) {
         LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
         LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
-        mkdir(wav_file_directory, 0700);
+        dsd_mkdir(wav_file_directory, 0700);
     }
     fprintf(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
     srand((unsigned)time(NULL));
@@ -78,8 +80,8 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
         LOG_ERROR("Error, couldn't open %s\n", filename);
         return -1;
     }
-    struct stat sb;
-    if (fstat(fileno(opts->symbolfile), &sb) != 0) {
+    dsd_stat_t sb;
+    if (dsd_fstat(dsd_fileno(opts->symbolfile), &sb) != 0) {
         LOG_ERROR("Error, couldn't stat %s\n", filename);
         fclose(opts->symbolfile);
         opts->symbolfile = NULL;
@@ -107,8 +109,8 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
         LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
         return -1;
     }
-    struct stat sb;
-    if (fstat(fileno(opts->symbolfile), &sb) != 0) {
+    dsd_stat_t sb;
+    if (dsd_fstat(dsd_fileno(opts->symbolfile), &sb) != 0) {
         LOG_ERROR("Error, couldn't stat %s\n", opts->audio_in_dev);
         fclose(opts->symbolfile);
         opts->symbolfile = NULL;
@@ -344,7 +346,7 @@ svc_set_dsp_output_file(dsd_opts* opts, const char* filename) {
     snprintf(dir, sizeof dir, "./DSP");
     struct stat st;
     if (stat(dir, &st) == -1) {
-        mkdir(dir, 0700);
+        dsd_mkdir(dir, 0700);
     }
     snprintf(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", dir, filename);
     opts->use_dsp_output = 1;
@@ -775,7 +777,7 @@ svc_rtltcp_set_autotune(dsd_opts* opts, int on) {
     }
     opts->rtltcp_autotune = on ? 1 : 0;
     /* Update env so future restarts inherit */
-    setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
+    dsd_setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
     if (g_rtl_ctx) {
         /* Apply live when RTL stream is active */
         rtl_stream_set_rtltcp_autotune(opts->rtltcp_autotune);
@@ -790,7 +792,7 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, int on) {
     }
     opts->rtl_auto_ppm = on ? 1 : 0;
     /* Update env for persistence */
-    setenv("DSD_NEO_AUTO_PPM", on ? "1" : "0", 1);
+    dsd_setenv("DSD_NEO_AUTO_PPM", on ? "1" : "0", 1);
     if (g_rtl_ctx) {
         rtl_stream_set_auto_ppm(on ? 1 : 0);
     }

@@ -12,6 +12,7 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/platform/posix_compat.h>
 #include <unordered_map>
 #include "ezpwd/rs"
 
@@ -403,7 +404,7 @@ isch_lookup(uint64_t isch) {
     int decoded = -2;
     int popmin = 40;
     for (const auto& kv : m) {
-        int popct = __builtin_popcountll(isch ^ kv.first);
+        int popct = dsd_popcount64(isch ^ kv.first);
         if ((popct <= 7) && (popct < popmin)) {
             decoded = kv.second;
             popmin = popct;

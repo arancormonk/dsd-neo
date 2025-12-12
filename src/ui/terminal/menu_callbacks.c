@@ -15,6 +15,7 @@
 #include "menu_prompts.h"
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -24,7 +25,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 // ---- Simple path callbacks ----
 
@@ -683,7 +683,7 @@ cb_switch_to_symbol(void* v, const char* path) {
     }
     if (path && *path) {
         size_t len = strlen(path);
-        if (len >= 4 && strcasecmp(path + len - 4, ".bin") == 0) {
+        if (len >= 4 && dsd_strcasecmp(path + len - 4, ".bin") == 0) {
             ui_post_cmd(UI_CMD_SYMBOL_IN_OPEN, path, strlen(path) + 1);
             ui_statusf("Symbol input open requested");
         } else {
@@ -878,7 +878,7 @@ cb_audio_lpf(void* v, int ok, int hz) {
         return;
     }
     if (hz <= 0) {
-        setenv("DSD_NEO_AUDIO_LPF", "off", 1);
+        dsd_setenv("DSD_NEO_AUDIO_LPF", "off", 1);
     } else {
         env_set_int("DSD_NEO_AUDIO_LPF", hz);
     }
@@ -937,7 +937,7 @@ cb_tcp_rcvbuf(void* v, int ok, int sz) {
         return;
     }
     if (sz <= 0) {
-        setenv("DSD_NEO_TCP_RCVBUF", "", 1);
+        dsd_setenv("DSD_NEO_TCP_RCVBUF", "", 1);
     } else {
         env_set_int("DSD_NEO_TCP_RCVBUF", sz);
     }
@@ -953,7 +953,7 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
         return;
     }
     if (ms <= 0) {
-        setenv("DSD_NEO_TCP_RCVTIMEO", "", 1);
+        dsd_setenv("DSD_NEO_TCP_RCVTIMEO", "", 1);
     } else {
         env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
     }
@@ -985,7 +985,7 @@ cb_env_edit_value(void* u, const char* val) {
         return;
     }
     if (val && *val) {
-        setenv(ec->name, val, 1);
+        dsd_setenv(ec->name, val, 1);
         // Apply to runtime config as appropriate
         env_reparse_runtime_cfg(ec->c ? ec->c->opts : NULL);
     }
@@ -1003,7 +1003,7 @@ cb_env_edit_name(void* u, const char* name) {
         return;
     }
     // Require DSD_NEO_ prefix for safety
-    if (strncasecmp(name, "DSD_NEO_", 8) != 0) {
+    if (dsd_strncasecmp(name, "DSD_NEO_", 8) != 0) {
         free(ec);
         return;
     }

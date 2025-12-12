@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -361,9 +362,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 init_clk_env = 1;
                 const char* clk = getenv("DSD_NEO_C4FM_CLK");
                 if (clk) {
-                    if (strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
+                    if (dsd_strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
                         env_mode = 1;
-                    } else if (strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
+                    } else if (dsd_strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
                         env_mode = 2;
                     } else {
                         env_mode = 0;

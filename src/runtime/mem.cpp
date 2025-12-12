@@ -13,12 +13,13 @@
 
 #include <cstdlib>
 
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/mem.h>
 
 /**
  * @brief Allocate memory aligned to `DSD_NEO_ALIGN`.
  *
- * Falls back to `malloc` if an aligned allocation API is unavailable.
+ * Uses cross-platform dsd_aligned_alloc, falling back to malloc on failure.
  *
  * @param size Number of bytes to allocate.
  * @return Pointer to allocated memory, or NULL on failure or when `size` is 0.
@@ -28,25 +29,23 @@ dsd_neo_aligned_malloc(size_t size) {
     if (size == 0) {
         return NULL;
     }
-#if defined(_POSIX_C_SOURCE) && (_POSIX_C_SOURCE >= 200112L)
-    void* mem_ptr = NULL;
-    if (posix_memalign(&mem_ptr, DSD_NEO_ALIGN, size) != 0) {
+    void* mem_ptr = dsd_aligned_alloc(DSD_NEO_ALIGN, size);
+    if (!mem_ptr) {
         mem_ptr = std::malloc(size);
     }
     return mem_ptr;
-#else
-    return std::malloc(size);
-#endif
 }
 
 /**
  * @brief Free memory allocated by `dsd_neo_aligned_malloc`.
  *
- * Also valid for memory allocated by the plain `malloc` fallback.
+ * Uses cross-platform dsd_aligned_free for properly allocated memory.
+ * Note: On Windows, memory from _aligned_malloc MUST be freed with
+ * _aligned_free. The dsd_aligned_free wrapper handles this correctly.
  *
  * @param ptr Pointer previously returned by `dsd_neo_aligned_malloc`.
  */
 void
 dsd_neo_aligned_free(void* ptr) {
-    std::free(ptr);
+    dsd_aligned_free(ptr);
 }

@@ -7,6 +7,7 @@
 #include <dsd-neo/runtime/log.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/posix_compat.h>
 
 #include <ctype.h>
 #include <stdio.h>
@@ -14,7 +15,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
+#endif
 
 // Local helpers --------------------------------------------------------------
 static void dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state);
@@ -31,7 +34,7 @@ dsd_cli_usage(void) {
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc) {
 
-    // Copy env to avoid invalidation by subsequent setenv() calls
+    // Copy env to avoid invalidation by subsequent dsd_setenv() calls
     char* calc_csv_env = NULL;
     {
         const char* p = getenv("DSD_NEO_DMR_T3_CALC_CSV");
@@ -57,14 +60,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
             opts->rtltcp_autotune = 1;
-            setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
+            dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
             continue;
         }
         if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {
             opts->p25_vc_grace_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);
-            setenv("DSD_NEO_P25_VC_GRACE", buf, 1);
+            dsd_setenv("DSD_NEO_P25_VC_GRACE", buf, 1);
             LOG_NOTICE("P25: VC grace set to %.2fs (CLI).\n", opts->p25_vc_grace_s);
             continue;
         }
@@ -72,7 +75,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_min_follow_dwell_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_min_follow_dwell_s);
-            setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);
+            dsd_setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);
             LOG_NOTICE("P25: Min follow dwell set to %.2fs (CLI).\n", opts->p25_min_follow_dwell_s);
             continue;
         }
@@ -80,7 +83,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_grant_voice_to_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_grant_voice_to_s);
-            setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);
+            dsd_setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);
             LOG_NOTICE("P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);
             continue;
         }
@@ -88,7 +91,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_retune_backoff_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_retune_backoff_s);
-            setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);
+            dsd_setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);
             LOG_NOTICE("P25: Retune backoff set to %.2fs (CLI).\n", opts->p25_retune_backoff_s);
             continue;
         }
@@ -96,7 +99,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             double v = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", v);
-            setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);
+            dsd_setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);
             LOG_NOTICE("P25: MAC hold set to %.2fs (CLI).\n", v);
             continue;
         }
@@ -104,7 +107,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             double v = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", v);
-            setenv("DSD_NEO_P25_RING_HOLD", buf, 1);
+            dsd_setenv("DSD_NEO_P25_RING_HOLD", buf, 1);
             LOG_NOTICE("P25: Ring hold set to %.2fs (CLI).\n", v);
             continue;
         }
@@ -118,7 +121,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", v);
-            setenv("DSD_NEO_P25_CC_GRACE", buf, 1);
+            dsd_setenv("DSD_NEO_P25_CC_GRACE", buf, 1);
             LOG_NOTICE("P25: CC grace set to %.2fs (CLI).\n", v);
             continue;
         }
@@ -126,7 +129,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_force_release_extra_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_force_release_extra_s);
-            setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);
+            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);
             LOG_NOTICE("P25: Force-release extra set to %.2fs (CLI).\n", opts->p25_force_release_extra_s);
             continue;
         }
@@ -134,7 +137,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_force_release_margin_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_force_release_margin_s);
-            setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);
+            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);
             LOG_NOTICE("P25: Force-release margin set to %.2fs (CLI).\n", opts->p25_force_release_margin_s);
             continue;
         }
@@ -142,7 +145,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_p1_err_hold_pct = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.1f", opts->p25_p1_err_hold_pct);
-            setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);
+            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);
             LOG_NOTICE("P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts->p25_p1_err_hold_pct);
             continue;
         }
@@ -150,7 +153,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->p25_p1_err_hold_s = atof(argv[++i]);
             char buf[32];
             snprintf(buf, sizeof buf, "%.3f", opts->p25_p1_err_hold_s);
-            setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);
+            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);
             LOG_NOTICE("P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts->p25_p1_err_hold_s);
             continue;
         }
@@ -176,7 +179,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
         if (strcmp(argv[i], "--auto-ppm") == 0) {
             opts->rtl_auto_ppm = 1;
-            setenv("DSD_NEO_AUTO_PPM", "1", 1);
+            dsd_setenv("DSD_NEO_AUTO_PPM", "1", 1);
             continue;
         }
         if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {
@@ -193,7 +196,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->rtl_auto_ppm_snr_db = (float)atof(sv);
                 char buf[32];
                 snprintf(buf, sizeof buf, "%.2f", opts->rtl_auto_ppm_snr_db);
-                setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);
+                dsd_setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);
             }
             continue;
         }
@@ -221,18 +224,18 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 
     // If CLI present, set env vars and maybe run calculator
     if (calc_csv_cli) {
-        setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);
+        dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_cli, 1);
         if (calc_step_cli) {
-            setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);
+            dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);
         }
         if (calc_ccf_cli) {
-            setenv("DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli, 1);
+            dsd_setenv("DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli, 1);
         }
         if (calc_ccl_cli) {
-            setenv("DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli, 1);
+            dsd_setenv("DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli, 1);
         }
         if (calc_start_cli) {
-            setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
+            dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
         }
         // Run via existing helper in main.c
         extern int run_t3_lcn_calc_from_csv(const char* path);
@@ -267,7 +270,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         opts->input_volume_multiplier = mv;
         char b[16];
         snprintf(b, sizeof b, "%d", mv);
-        setenv("DSD_NEO_INPUT_VOLUME", b, 1);
+        dsd_setenv("DSD_NEO_INPUT_VOLUME", b, 1);
         LOG_NOTICE("Input volume multiplier: %dx\n", mv);
     } else {
         const char* ev = getenv("DSD_NEO_INPUT_VOLUME");
@@ -294,7 +297,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         opts->input_warn_db = thr;
         char b[32];
         snprintf(b, sizeof b, "%.1f", thr);
-        setenv("DSD_NEO_INPUT_WARN_DB", b, 1);
+        dsd_setenv("DSD_NEO_INPUT_WARN_DB", b, 1);
         LOG_NOTICE("Low input warning threshold: %.1f dBFS\n", thr);
     } else {
         const char* ew = getenv("DSD_NEO_INPUT_WARN_DB");
@@ -610,7 +613,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     LOG_NOTICE("-Q %s DSP file directory does not exist\n", wav_file_directory);
                     LOG_NOTICE("Creating directory %s to save DSP Structured or M17 Binary Stream files\n",
                                wav_file_directory);
-                    mkdir(wav_file_directory, 0700);
+                    dsd_mkdir(wav_file_directory, 0700);
                 }
                 strncpy(dsp_filename, optarg, 1023);
                 snprintf(opts->dsp_out_file, sizeof opts->dsp_out_file, "%s/%s", wav_file_directory, dsp_filename);
@@ -689,7 +692,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 if (stat(wav_file_directory, &st) == -1) {
                     LOG_NOTICE("-P %s WAV file directory does not exist\n", wav_file_directory);
                     LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
-                    mkdir(wav_file_directory, 0700);
+                    dsd_mkdir(wav_file_directory, 0700);
                 }
                 LOG_NOTICE("Per Call Wav File Enabled.\n");
                 srand(time(NULL));
@@ -748,7 +751,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 if (stat(opts->mbe_out_dir, &st) == -1) {
                     LOG_NOTICE("%s directory does not exist\n", opts->mbe_out_dir);
                     LOG_NOTICE("Creating directory %s to save mbe+ processed files\n", opts->mbe_out_dir);
-                    mkdir(opts->mbe_out_dir, 0700);
+                    dsd_mkdir(opts->mbe_out_dir, 0700);
                 }
                 break;
             case '6':

@@ -8,14 +8,11 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/file_compat.h>
 
 #include <locale.h>
 #include <ncurses.h>
 #include <string.h>
-
-#ifdef __unix__
-#include <unistd.h>
-#endif
 
 /* MBE library version string (populated by ncursesOpen) */
 char mbeversionstr[25];
@@ -25,10 +22,8 @@ unsigned long long int edacs_channel_tree[33][6];
 
 /* When ncurses UI is active, we temporarily suppress stderr to avoid stdio
  * mixed with the curses screen. Keep track so we can restore on close. */
-#ifdef __unix__
 static int s_stderr_suppressed = 0;
 static int s_saved_stderr_fd = -1;
-#endif
 
 void
 ncursesOpen(dsd_opts* opts, dsd_state* state) {
@@ -110,40 +105,36 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     // This avoids mixed ncurses/stdio output overwriting the UI until resize.
     // However, if stderr has already been redirected (not a TTY), honor that
     // redirect so users can capture logs with e.g. 2>log.txt.
-#ifdef __unix__
-    if (!s_stderr_suppressed && isatty(fileno(stderr))) {
-        // Backup current stderr FD, then redirect to /dev/null.
-        int backup_fd = dup(fileno(stderr));
+    if (!s_stderr_suppressed && dsd_isatty(dsd_fileno(stderr))) {
+        // Backup current stderr FD, then redirect to null device.
+        int backup_fd = dsd_dup(dsd_fileno(stderr));
         if (backup_fd >= 0) {
-            FILE* devnull = fopen("/dev/null", "w");
+            FILE* devnull = fopen(dsd_null_device(), "w");
             if (devnull) {
                 fflush(stderr);
-                dup2(fileno(devnull), fileno(stderr));
+                dsd_dup2(dsd_fileno(devnull), dsd_fileno(stderr));
                 fclose(devnull);
                 s_saved_stderr_fd = backup_fd;
                 s_stderr_suppressed = 1;
             } else {
-                // If we cannot open /dev/null, discard backup.
-                close(backup_fd);
+                // If we cannot open null device, discard backup.
+                dsd_close(backup_fd);
             }
         }
     }
-#endif
 }
 
 void
 ncursesClose(void) {
-#ifdef __unix__
     // Restore stderr so exit-time logs (e.g., ring stats) are visible.
     if (s_stderr_suppressed) {
         fflush(stderr);
         if (s_saved_stderr_fd >= 0) {
-            dup2(s_saved_stderr_fd, fileno(stderr));
-            close(s_saved_stderr_fd);
+            dsd_dup2(s_saved_stderr_fd, dsd_fileno(stderr));
+            dsd_close(s_saved_stderr_fd);
             s_saved_stderr_fd = -1;
         }
         s_stderr_suppressed = 0;
     }
-#endif
     endwin();
 }

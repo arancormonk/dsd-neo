@@ -13,10 +13,10 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 static dsdneoRuntimeConfig g_config;
 static int g_config_inited = 0;
@@ -78,7 +78,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.resamp_disable = 0;
     c.resamp_target_hz = 48000;
     if (c.resamp_is_set) {
-        if (strcasecmp(rs, "off") == 0 || strcmp(rs, "0") == 0) {
+        if (dsd_strcasecmp(rs, "off") == 0 || strcmp(rs, "0") == 0) {
             c.resamp_disable = 1;
         } else {
             int v = atoi(rs);
@@ -136,11 +136,11 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.c4fm_clk_is_set = env_is_set(clk);
     c.c4fm_clk_mode = 0;
     if (c.c4fm_clk_is_set && clk && clk[0] != '\0') {
-        if (strcasecmp(clk, "off") == 0 || strcmp(clk, "0") == 0) {
+        if (dsd_strcasecmp(clk, "off") == 0 || strcmp(clk, "0") == 0) {
             c.c4fm_clk_mode = 0;
-        } else if (strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
+        } else if (dsd_strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
             c.c4fm_clk_mode = 1;
-        } else if (strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
+        } else if (dsd_strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
             c.c4fm_clk_mode = 2;
         } else {
             /* Unrecognized → keep off */
@@ -155,13 +155,13 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.deemph_is_set = env_is_set(deemph);
     c.deemph_mode = DSD_NEO_DEEMPH_UNSET;
     if (c.deemph_is_set) {
-        if (strcasecmp(deemph, "off") == 0 || strcmp(deemph, "0") == 0) {
+        if (dsd_strcasecmp(deemph, "off") == 0 || strcmp(deemph, "0") == 0) {
             c.deemph_mode = DSD_NEO_DEEMPH_OFF;
         } else if (strcmp(deemph, "50") == 0) {
             c.deemph_mode = DSD_NEO_DEEMPH_50;
         } else if (strcmp(deemph, "75") == 0) {
             c.deemph_mode = DSD_NEO_DEEMPH_75;
-        } else if (strcasecmp(deemph, "nfm") == 0) {
+        } else if (dsd_strcasecmp(deemph, "nfm") == 0) {
             c.deemph_mode = DSD_NEO_DEEMPH_NFM;
         }
     }
@@ -172,7 +172,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.audio_lpf_disable = 0;
     c.audio_lpf_cutoff_hz = 0;
     if (c.audio_lpf_is_set) {
-        if (strcasecmp(alpf, "off") == 0 || strcmp(alpf, "0") == 0) {
+        if (dsd_strcasecmp(alpf, "off") == 0 || strcmp(alpf, "0") == 0) {
             c.audio_lpf_disable = 1;
         } else {
             int cutoff = atoi(alpf);

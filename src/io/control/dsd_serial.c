@@ -1,7 +1,46 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/log.h>
+
+#if DSD_PLATFORM_WIN_NATIVE
+/* Windows: Serial port support is stubbed for now. */
+
+/**
+ * @brief Open and configure the outbound serial port used for radio control.
+ *
+ * Windows stub - serial port support not yet implemented.
+ *
+ * @param opts Decoder options containing serial configuration.
+ * @param state Decoder state (unused).
+ */
+void
+openSerial(dsd_opts* opts, dsd_state* state) {
+    UNUSED(state);
+    LOG_ERROR("Serial port control is not yet supported on Windows.\n");
+    LOG_ERROR("Requested port: %s, baud: %d\n", opts->serial_dev, opts->serial_baud);
+    opts->serial_fd = -1;
+}
+
+/**
+ * @brief Resume scanning on the attached serial-controlled receiver.
+ *
+ * Windows stub - serial port support not yet implemented.
+ *
+ * @param opts Decoder options containing serial FD.
+ * @param state Decoder state to update.
+ */
+void
+resumeScan(dsd_opts* opts, dsd_state* state) {
+    UNUSED(opts);
+    state->numtdulc = 0;
+}
+
+#else /* POSIX */
+
+#include <fcntl.h>
 #include <termios.h>
+#include <unistd.h>
 
 /**
  * @brief Open and configure the outbound serial port used for radio control.
@@ -92,3 +131,5 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
         state->numtdulc = 0;
     }
 }
+
+#endif /* DSD_PLATFORM_WIN_NATIVE */

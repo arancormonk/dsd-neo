@@ -22,6 +22,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 
 pa_sample_spec ss;
@@ -203,7 +204,7 @@ dsd_drain_audio_output(dsd_opts* opts) {
     // UDP/STDOUT: nothing meaningful to drain; attempt fsync for file descriptors
     if (opts->audio_out_type == 1 || opts->audio_out_type == 8) {
         if (opts->audio_out_fd >= 0) {
-            (void)fsync(opts->audio_out_fd);
+            (void)dsd_fsync(opts->audio_out_fd);
         }
         return;
     }
@@ -687,7 +688,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file_info->channels = 1;
         opts->audio_in_file_info->seekable = 0;
         opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-        opts->audio_in_file = sf_open_fd(fileno(stdin), SFM_READ, opts->audio_in_file_info, 0);
+        opts->audio_in_file = sf_open_fd(dsd_fileno(stdin), SFM_READ, opts->audio_in_file_info, 0);
 
         if (opts->audio_in_file == NULL) {
             LOG_ERROR("Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
