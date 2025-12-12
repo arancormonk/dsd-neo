@@ -12,6 +12,8 @@ on:
       - "**/*.md"
       - "**/*.json"
       - "vcpkg-ports/**"
+      - "**/*.cmake"
+
   pull_request:
     branches: [main, master]
     paths-ignore:
@@ -22,6 +24,7 @@ on:
       - "**/*.md"
       - "**/*.json"
       - "vcpkg-ports/**"
+      - "**/*.cmake"
 
 jobs:
   build-linux:

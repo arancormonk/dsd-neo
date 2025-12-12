@@ -12,6 +12,7 @@ on:
       - "**/*.md"
       - "**/*.json"
       - "vcpkg-ports/**"
+      - "**/*.cmake"
 
 jobs:
   build-portable-zip:

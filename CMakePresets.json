@@ -85,6 +85,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "BUILD_TESTING": "OFF",
         "DSD_ENABLE_LTO": "ON",
         "DSD_ENABLE_FAST_MATH": "ON"
       }
@@ -117,9 +118,10 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
-	      "cacheVariables": {
+      "cacheVariables": {
 	        "CMAKE_BUILD_TYPE": "Release",
 	        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+	        "BUILD_TESTING": "OFF",
 	        "DSD_ENABLE_LTO": "ON",
 	        "DSD_ENABLE_FAST_MATH": "ON",
 	        "CMAKE_EXE_LINKER_FLAGS": "-static -static-libgcc -static-libstdc++"
