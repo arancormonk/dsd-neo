@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
 
@@ -48,12 +49,12 @@ prompt_int(const char* q, int def_val, int min_val, int max_val) {
 
 void
 dsd_bootstrap_choose_audio_output(dsd_opts* opts) {
-    pa_devicelist_t ins[16];
-    pa_devicelist_t outs[16];
+    dsd_audio_device ins[16];
+    dsd_audio_device outs[16];
     int n_out = 0;
 
-    if (pa_get_devicelist(ins, outs) < 0) {
-        LOG_WARNING("PulseAudio device query failed; using default output.\n");
+    if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
+        LOG_WARNING("Audio device query failed; using default output.\n");
         snprintf(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
         return;
     }
@@ -81,12 +82,12 @@ dsd_bootstrap_choose_audio_output(dsd_opts* opts) {
 
 void
 dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
-    pa_devicelist_t ins[16];
-    pa_devicelist_t outs[16];
+    dsd_audio_device ins[16];
+    dsd_audio_device outs[16];
     int n_in = 0;
 
-    if (pa_get_devicelist(ins, outs) < 0) {
-        LOG_WARNING("PulseAudio device query failed; using default input.\n");
+    if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
+        LOG_WARNING("Audio device query failed; using default input.\n");
         snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
         return;
     }

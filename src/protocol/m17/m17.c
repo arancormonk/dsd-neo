@@ -13,6 +13,7 @@
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
@@ -389,7 +390,7 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 0 && state->m17_enc == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, samp1, nsam * sizeof(short), NULL);
+            dsd_audio_write(opts->audio_out_stream, samp1, (size_t)nsam);
         }
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
@@ -500,8 +501,8 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 0 && state->m17_enc == 0) //Pulse Audio
         {
-            pa_simple_write(opts->pulse_digi_dev_out, samp1, nsam * sizeof(short), NULL);
-            pa_simple_write(opts->pulse_digi_dev_out, samp2, nsam * sizeof(short), NULL);
+            dsd_audio_write(opts->audio_out_stream, samp1, (size_t)nsam);
+            dsd_audio_write(opts->audio_out_stream, samp2, (size_t)nsam);
         }
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
@@ -1390,7 +1391,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
     if (opts->monitor_input_audio == 1 && opts->audio_out == 1) {
         //Pulse Audio
         if (opts->audio_out_type == 0) {
-            pa_simple_write(opts->pulse_raw_dev_out, baseband, sizeof(baseband), NULL);
+            dsd_audio_write(opts->audio_raw_out, baseband, sizeof(baseband) / sizeof(short));
         }
 
         //UDP
@@ -1803,7 +1804,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     short s = 0;
-                    pa_simple_read(opts->pulse_digi_dev_in, &s, 2, NULL);
+                    dsd_audio_read(opts->audio_in_stream, &s, 1);
                     sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
@@ -1822,7 +1823,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         short s = 0;
-                        pa_simple_read(opts->pulse_digi_dev_in, &s, 2, NULL);
+                        dsd_audio_read(opts->audio_in_stream, &s, 1);
                         sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {

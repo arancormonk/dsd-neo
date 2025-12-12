@@ -15,14 +15,10 @@
 #pragma once
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 
-#if DSD_PLATFORM_POSIX
-#include <pulse/simple.h>
-#elif DSD_PLATFORM_WIN_NATIVE
-typedef void* pa_simple; /* Placeholder for Windows - no PulseAudio */
-#endif
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,11 +39,10 @@ struct dsd_opts {
     SNDFILE* wav_out_fR;
     SNDFILE* wav_out_raw;
     double rtl_pwr;
-    pa_simple* pulse_raw_dev_in;
-    pa_simple* pulse_raw_dev_out;
-    pa_simple* pulse_digi_dev_in;
-    pa_simple* pulse_digi_dev_out;
-    pa_simple* pulse_digi_dev_outR;
+    dsd_audio_stream* audio_in_stream;   /* Primary audio input stream */
+    dsd_audio_stream* audio_out_stream;  /* Primary audio output stream (digital) */
+    dsd_audio_stream* audio_out_streamR; /* Secondary audio output stream (slot 2/right) */
+    dsd_audio_stream* audio_raw_out;     /* Raw/analog audio output stream (48kHz) */
     FILE* symbolfile;
     void* udp_in_ctx;                  // opaque UDP input context
     unsigned long long udp_in_packets; // received datagrams

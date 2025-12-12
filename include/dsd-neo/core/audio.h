@@ -8,7 +8,7 @@
  * @brief Core audio API surface for DSD-neo.
  *
  * Exposes device open/close helpers, drain/flush routines, and playback
- * helpers shared across Pulse/PCM paths. Kept separate from dsd.h so
+ * helpers shared across audio backends. Kept separate from dsd.h so
  * modules that only need audio APIs can avoid pulling in the full core header.
  */
 
@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/audio.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,19 +25,6 @@
 extern "C" {
 #endif
 
-// Forward declarations for PulseAudio types used in callbacks.
-typedef struct pa_context pa_context;
-typedef struct pa_sink_info pa_sink_info;
-typedef struct pa_source_info pa_source_info;
-
-// Field list is here: http://0pointer.de/lennart/projects/pulseaudio/doxygen/structpa__sink__info.html
-typedef struct pa_devicelist {
-    uint8_t initialized;
-    char name[512];
-    uint32_t index;
-    char description[256];
-} pa_devicelist_t;
-
 /** @brief Process one block of dPMR voice through the decoder/synth path. */
 void processdPMRvoice(dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 1). */
@@ -44,17 +32,23 @@ void processAudio(dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 2 / right). */
 void processAudioR(dsd_opts* opts, dsd_state* state);
 
-/** @brief Open PulseAudio input device based on opts. */
-void openPulseInput(dsd_opts* opts);
-/** @brief Open PulseAudio output device based on opts. */
-void openPulseOutput(dsd_opts* opts);
-/** @brief Close PulseAudio input device if open. */
-void closePulseInput(dsd_opts* opts);
-/** @brief Close PulseAudio output device if open. */
-void closePulseOutput(dsd_opts* opts);
+/** @brief Open audio input stream based on opts. */
+void openAudioInput(dsd_opts* opts);
+/** @brief Open audio output stream based on opts. */
+void openAudioOutput(dsd_opts* opts);
+/** @brief Close audio input stream if open. */
+void closeAudioInput(dsd_opts* opts);
+/** @brief Close audio output stream if open. */
+void closeAudioOutput(dsd_opts* opts);
 
-/** @brief Best-effort drain of audio output buffers (Pulse). Safe no-op when disabled. */
+/** @brief Best-effort drain of audio output buffers. Safe no-op when disabled. */
 void dsd_drain_audio_output(dsd_opts* opts);
+
+/* Legacy function names for backward compatibility - redirect to new names */
+#define openPulseInput(opts)   openAudioInput(opts)
+#define openPulseOutput(opts)  openAudioOutput(opts)
+#define closePulseInput(opts)  closeAudioInput(opts)
+#define closePulseOutput(opts) closeAudioOutput(opts)
 
 /** @brief Write synthesized mono voice samples for slot 1. */
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
@@ -136,25 +130,25 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
 
-/** @brief Open output audio device (Pulse) at requested speed. */
+/** @brief Open output audio device at requested speed. */
 void openAudioOutDevice(dsd_opts* opts, int speed);
-/** @brief Open input audio device (Pulse) based on opts. */
+/** @brief Open input audio device based on opts. */
 void openAudioInDevice(dsd_opts* opts);
 
-/** @brief Parse Pulse input device string (after 'pulse:' prefix) and update opts. */
-void parse_pulse_input_string(dsd_opts* opts, char* input);
-/** @brief Parse Pulse output device string (after 'pulse:' prefix) and update opts. */
-void parse_pulse_output_string(dsd_opts* opts, char* input);
-/** @brief PulseAudio context state callback used during device discovery. */
-void pa_state_cb(pa_context* c, void* userdata);
-/** @brief PulseAudio sink enumeration callback. */
-void pa_sinklist_cb(pa_context* c, const pa_sink_info* l, int eol, void* userdata);
-/** @brief PulseAudio source enumeration callback. */
-void pa_sourcelist_cb(pa_context* c, const pa_source_info* l, int eol, void* userdata);
-/** @brief Populate input/output Pulse device lists. */
-int pa_get_devicelist(pa_devicelist_t* input, pa_devicelist_t* output);
-/** @brief Print available Pulse devices to stdout. */
-int pulse_list(void);
+/** @brief Parse audio input device string and update opts. */
+void parse_audio_input_string(dsd_opts* opts, char* input);
+/** @brief Parse audio output device string and update opts. */
+void parse_audio_output_string(dsd_opts* opts, char* input);
+
+/* Legacy function names for backward compatibility */
+#define parse_pulse_input_string(opts, input)  parse_audio_input_string(opts, input)
+#define parse_pulse_output_string(opts, input) parse_audio_output_string(opts, input)
+
+/** @brief Print available audio devices to stdout. */
+int audio_list_devices(void);
+
+/* Legacy alias */
+#define pulse_list() audio_list_devices()
 
 #ifdef __cplusplus
 }

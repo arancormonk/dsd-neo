@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -599,10 +600,10 @@ io_stop_symbol_saving(void* vctx) {
 void
 io_set_pulse_out(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    pa_devicelist_t outs[16];
-    pa_devicelist_t ins[16];
-    if (pa_get_devicelist(ins, outs) < 0) {
-        ui_statusf("Failed to get Pulse device list");
+    dsd_audio_device outs[16];
+    dsd_audio_device ins[16];
+    if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
+        ui_statusf("Failed to get audio device list");
         return;
     }
     int n = 0;
@@ -663,10 +664,10 @@ io_set_pulse_out(void* vctx) {
 void
 io_set_pulse_in(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    pa_devicelist_t outs[16];
-    pa_devicelist_t ins[16];
-    if (pa_get_devicelist(ins, outs) < 0) {
-        ui_statusf("Failed to get Pulse device list");
+    dsd_audio_device outs[16];
+    dsd_audio_device ins[16];
+    if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
+        ui_statusf("Failed to get audio device list");
         return;
     }
     int n = 0;

@@ -87,7 +87,8 @@
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
-#if DSD_PLATFORM_POSIX
+/* PulseAudio headers only included when using PulseAudio backend on POSIX */
+#if DSD_PLATFORM_POSIX && !defined(DSD_USE_PORTAUDIO)
 #include <pulse/error.h>      //PULSE AUDIO
 #include <pulse/introspect.h> //PULSE AUDIO
 #include <pulse/pulseaudio.h> //PULSE AUDIO

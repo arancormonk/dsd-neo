@@ -157,17 +157,42 @@ endif()
 find_package(ITPP REQUIRED)
 find_package(RTLSDR)
 find_package(Curses REQUIRED)
-find_package(PulseAudio REQUIRED)
 find_package(CODEC2)
+
+# Audio backend selection
+option(DSD_USE_PORTAUDIO "Use PortAudio for cross-platform audio (required on Windows)" OFF)
+
+# Windows requires PortAudio (no PulseAudio available)
+if(WIN32 AND NOT CYGWIN)
+    set(DSD_USE_PORTAUDIO ON CACHE BOOL "Use PortAudio on Windows" FORCE)
+endif()
+
+if(DSD_USE_PORTAUDIO)
+    find_package(PortAudio REQUIRED)
+    add_compile_definitions(DSD_USE_PORTAUDIO)
+    message(STATUS "Audio backend: PortAudio")
+else()
+    find_package(PulseAudio REQUIRED)
+    message(STATUS "Audio backend: PulseAudio")
+endif()
 
 # Aggregate include directories; when using the modern package, we still add
 # the mbelib-neo leaf include directory so #include <mbelib.h> continues to work.
-set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${ITPP_INCLUDE_DIR} ${PULSEAUDIO_INCLUDE_DIRS} ${CURSES_INCLUDE_DIRS})
+set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${ITPP_INCLUDE_DIR} ${CURSES_INCLUDE_DIRS})
 if(MBE_INCLUDE_DIR)
     list(APPEND _PUBLIC_INCLUDES ${MBE_INCLUDE_DIR})
 endif()
 
-set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARY} ${ITPP_LIBRARY} ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY} ${CURSES_LIBRARIES})
+# Audio backend includes and libraries
+if(DSD_USE_PORTAUDIO)
+    list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
+    set(AUDIO_LIBS ${PORTAUDIO_LIBRARIES})
+else()
+    list(APPEND _PUBLIC_INCLUDES ${PULSEAUDIO_INCLUDE_DIRS})
+    set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
+endif()
+
+set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARY} ${ITPP_LIBRARY} ${AUDIO_LIBS} ${CURSES_LIBRARIES})
 
 if(RTLSDR_FOUND)
     find_package(Threads)

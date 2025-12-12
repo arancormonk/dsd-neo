@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
@@ -453,10 +454,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         // Read the new sample from the input
-        if (opts->audio_in_type == 0) //pulse audio
+        if (opts->audio_in_type == 0) //audio stream input
         {
             short s = 0;
-            pa_simple_read(opts->pulse_digi_dev_in, &s, 2, NULL);
+            if (opts->audio_in_stream) {
+                dsd_audio_read(opts->audio_in_stream, &s, 1);
+            }
             if (opts->input_volume_multiplier > 1) {
                 int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
@@ -810,7 +813,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     }
                     size_t bytes = (size_t)analog_block * sizeof(short);
                     if (opts->audio_out_type == 0) {
-                        pa_simple_write(opts->pulse_raw_dev_out, state->analog_out, bytes, NULL);
+                        if (opts->audio_raw_out) {
+                            dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
+                        }
                     }
 
                     if (opts->audio_out_type == 8) {

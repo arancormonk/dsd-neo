@@ -22,162 +22,92 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 
-pa_sample_spec ss;
-pa_sample_spec tt;
-pa_sample_spec zz;
-pa_sample_spec cc;
-pa_sample_spec ff; //float
-
-//pulse audio buffer attributes (input latency)
-pa_buffer_attr lt;
-
 void
-closePulseOutput(dsd_opts* opts) {
-    // In analog-only monitor mode, the digital output stream may never be opened.
-    // Guard against NULL to avoid pa_simple_free aborting on a NULL handle.
-    if (opts->pulse_digi_dev_out) {
-        pa_simple_free(opts->pulse_digi_dev_out);
-        opts->pulse_digi_dev_out = NULL;
+closeAudioOutput(dsd_opts* opts) {
+    /* Close primary audio output stream */
+    if (opts->audio_out_stream) {
+        dsd_audio_close(opts->audio_out_stream);
+        opts->audio_out_stream = NULL;
     }
-    // EDACS analog or raw analog monitoring can open a separate 48kHz stream.
-    if (opts->pulse_raw_dev_out) {
-        pa_simple_free(opts->pulse_raw_dev_out);
-        opts->pulse_raw_dev_out = NULL;
+    /* Close secondary output stream (slot 2/right) */
+    if (opts->audio_out_streamR) {
+        dsd_audio_close(opts->audio_out_streamR);
+        opts->audio_out_streamR = NULL;
+    }
+    /* Close raw/analog audio output stream */
+    if (opts->audio_raw_out) {
+        dsd_audio_close(opts->audio_raw_out);
+        opts->audio_raw_out = NULL;
     }
 }
 
 void
-closePulseInput(dsd_opts* opts) {
-    if (opts->pulse_digi_dev_in) {
-        pa_simple_free(opts->pulse_digi_dev_in);
-        opts->pulse_digi_dev_in = NULL;
+closeAudioInput(dsd_opts* opts) {
+    if (opts->audio_in_stream) {
+        dsd_audio_close(opts->audio_in_stream);
+        opts->audio_in_stream = NULL;
     }
 }
 
 void
-openPulseOutput(dsd_opts* opts) {
-
-    char* dev = NULL;
-    if (opts->pa_output_idx[0] != 0) {
+openAudioOutput(dsd_opts* opts) {
+    const char* dev = NULL;
+    if (opts->pa_output_idx[0] != '\0') {
         dev = opts->pa_output_idx;
     }
 
-    int err = 0;
+    dsd_audio_params params;
+    params.device = dev;
+    params.app_name = "DSD-neo";
 
-    ss.format = PA_SAMPLE_S16NE;
-    ss.channels = opts->pulse_raw_out_channels;
-    ss.rate = opts->pulse_raw_rate_out;
-
-    tt.format = PA_SAMPLE_S16NE;
-    tt.channels = opts->pulse_digi_out_channels;
-    tt.rate = opts->pulse_digi_rate_out;
-
-    ff.format = PA_SAMPLE_FLOAT32NE;
-    ff.channels = opts->pulse_digi_out_channels;
-    ff.rate = opts->pulse_digi_rate_out;
-
-    //reconfigured to open when using edacs or raw analog monitor so we can have a analog audio out that runs at 48k1 and not 8k1 float/short
+    /* Open raw/analog output stream for ProVoice or analog monitor mode */
     if (opts->frame_provoice == 1 || opts->monitor_input_audio == 1) {
-        opts->pulse_raw_dev_out =
-            pa_simple_new(NULL, "DSD-neo3", PA_STREAM_PLAYBACK, dev, "Analog", &ss, 0, NULL, &err);
-    }
-
-    if (err != 0) {
-        LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
-#ifdef __CYGWIN__
-        LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
-#endif
-        exit(0);
-    }
-
-    pa_channel_map* fl = 0; //NULL and 0 are same in this context
-    pa_channel_map* ss = 0; //NULL and 0 are same in this context
-
-    if (opts->floating_point == 0 && opts->analog_only == 0) {
-        opts->pulse_digi_dev_out =
-            pa_simple_new(NULL, "DSD-neo", PA_STREAM_PLAYBACK, dev, opts->output_name, &tt, ss, NULL, &err);
-
-        if (err != 0) {
-            LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
-#ifdef __CYGWIN__
-            LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
-#endif
-            exit(0);
+        params.sample_rate = opts->pulse_raw_rate_out;
+        params.channels = opts->pulse_raw_out_channels;
+        params.bits_per_sample = 16;
+        opts->audio_raw_out = dsd_audio_open_output(&params);
+        if (!opts->audio_raw_out) {
+            LOG_ERROR("Failed to open raw audio output: %s", dsd_audio_get_error());
+            exit(1);
         }
     }
 
-    if (opts->floating_point == 1 && opts->analog_only == 0) {
-        opts->pulse_digi_dev_out =
-            pa_simple_new(NULL, "DSD-neo", PA_STREAM_PLAYBACK, dev, opts->output_name, &ff, fl, NULL, &err);
-
-        if (err != 0) {
-            LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
-#ifdef __CYGWIN__
-            LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
-#endif
-            exit(0);
+    /* Open main digital audio output stream (unless in analog-only mode) */
+    if (opts->analog_only == 0) {
+        params.sample_rate = opts->pulse_digi_rate_out;
+        params.channels = opts->pulse_digi_out_channels;
+        params.bits_per_sample = 16;
+        opts->audio_out_stream = dsd_audio_open_output(&params);
+        if (!opts->audio_out_stream) {
+            LOG_ERROR("Failed to open audio output: %s", dsd_audio_get_error());
+            exit(1);
         }
     }
 }
 
 void
-openPulseInput(dsd_opts* opts) {
-
-    char* dev = NULL;
-    if (opts->pa_input_idx[0] != 0) {
+openAudioInput(dsd_opts* opts) {
+    const char* dev = NULL;
+    if (opts->pa_input_idx[0] != '\0') {
         dev = opts->pa_input_idx;
     }
 
-    int err = 0;
+    dsd_audio_params params;
+    params.sample_rate = opts->pulse_digi_rate_in;
+    params.channels = opts->pulse_digi_in_channels;
+    params.bits_per_sample = 16;
+    params.device = dev;
+    params.app_name = (opts->m17encoder == 1) ? "DSD-neo M17" : "DSD-neo";
 
-    cc.format = PA_SAMPLE_S16NE;
-    cc.channels = opts->pulse_digi_in_channels;
-    cc.rate = opts->pulse_digi_rate_in; //48000
-
-    //adjust input latency settings (defaults are all -1 to let server set these automatically, but without pavucontrol open, this is approx 2s)
-    //setting fragsize to 960 for 48000 input seems to do the trick to allow a much faster latency without underrun, may need adjusting if
-    //modifying the input rate (will only apply IF using pulse audio input, and not any other input method)
-
-    //TODO: set fragsize vs expected input rate if required in the future
-    //NOTE: If users report any underrun conditions, then either change 960 back to -1, or pass NULL instead of &lt
-
-    //https://freedesktop.org/software/pulseaudio/doxygen/structpa__buffer__attr.html
-
-    //for now, only going to modify the fragsize if using the encoder, else, let the pa server set it automatically
-    // if (opts->m17encoder == 1)
-    //   lt.fragsize = 960*5;
-    // else lt.fragsize = -1;
-
-    //test doing it universally, fall back to above if needed
-    lt.fragsize = 960 * 5;
-    lt.maxlength = -1;
-    lt.prebuf = -1;
-    lt.tlength = -1;
-    if (opts->m17encoder == 1) {
-        opts->pulse_digi_dev_in =
-            pa_simple_new(NULL, "DSD-neo4", PA_STREAM_RECORD, dev, "M17 Voice Input", &cc, NULL, &lt, &err);
-    } else {
-        opts->pulse_digi_dev_in =
-            pa_simple_new(NULL, "DSD-neo", PA_STREAM_RECORD, dev, opts->output_name, &cc, NULL, &lt, &err);
+    opts->audio_in_stream = dsd_audio_open_input(&params);
+    if (!opts->audio_in_stream) {
+        LOG_ERROR("Failed to open audio input: %s", dsd_audio_get_error());
+        exit(1);
     }
-
-    if (err != 0) {
-        LOG_ERROR("Err: %d; %s; ", err, pa_strerror(err));
-#ifdef __CYGWIN__
-        LOG_ERROR("Please make sure the Pulse Audio Server Backend is running first.");
-#endif
-        exit(0);
-    }
-
-    //debug
-    // if (opts->m17encoder == 1)
-    // {
-    //   unsigned long long int latency = pa_simple_get_latency (opts->pulse_digi_dev_in, NULL);
-    //   fprintf (stderr, "Pulse Audio Input Latency: %05lld;", latency);
-    // }
 }
 
 void
@@ -185,23 +115,21 @@ dsd_drain_audio_output(dsd_opts* opts) {
     if (!opts) {
         return;
     }
-    // Only act if audio output is enabled
+    /* Only act if audio output is enabled */
     if (opts->audio_out != 1) {
         return;
     }
-    // PulseAudio: drain any queued samples on digital/raw streams
+    /* Audio stream: drain any queued samples */
     if (opts->audio_out_type == 0) {
-        int err = 0;
-        if (opts->pulse_digi_dev_out) {
-            (void)pa_simple_drain(opts->pulse_digi_dev_out, &err);
+        if (opts->audio_out_stream) {
+            (void)dsd_audio_drain(opts->audio_out_stream);
         }
-        if (opts->pulse_raw_dev_out) {
-            err = 0;
-            (void)pa_simple_drain(opts->pulse_raw_dev_out, &err);
+        if (opts->audio_raw_out) {
+            (void)dsd_audio_drain(opts->audio_raw_out);
         }
         return;
     }
-    // UDP/STDOUT: nothing meaningful to drain; attempt fsync for file descriptors
+    /* UDP/STDOUT: nothing meaningful to drain; attempt fsync for file descriptors */
     if (opts->audio_out_type == 1 || opts->audio_out_type == 8) {
         if (opts->audio_out_fd >= 0) {
             (void)dsd_fsync(opts->audio_out_fd);
@@ -211,29 +139,34 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 void
-parse_pulse_input_string(dsd_opts* opts, char* input) {
+parse_audio_input_string(dsd_opts* opts, char* input) {
     char* curr;
     curr = strtok(input, ":");
     if (curr != NULL) {
         strncpy(opts->pa_input_idx, curr, 99);
-        opts->pa_input_idx[99] = 0;
+        opts->pa_input_idx[99] = '\0';
         fprintf(stderr, "\n");
-        fprintf(stderr, "Pulse Input Device: %s; ", opts->pa_input_idx);
+        fprintf(stderr, "Audio Input Device: %s; ", opts->pa_input_idx);
         fprintf(stderr, "\n");
     }
 }
 
 void
-parse_pulse_output_string(dsd_opts* opts, char* input) {
+parse_audio_output_string(dsd_opts* opts, char* input) {
     char* curr;
     curr = strtok(input, ":");
     if (curr != NULL) {
         strncpy(opts->pa_output_idx, curr, 99);
-        opts->pa_output_idx[99] = 0;
+        opts->pa_output_idx[99] = '\0';
         fprintf(stderr, "\n");
-        fprintf(stderr, "Pulse Output Device: %s; ", opts->pa_output_idx);
+        fprintf(stderr, "Audio Output Device: %s; ", opts->pa_output_idx);
         fprintf(stderr, "\n");
     }
+}
+
+int
+audio_list_devices(void) {
+    return dsd_audio_list_devices();
 }
 
 void
@@ -580,8 +513,11 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
             }
             state->audio_out_idx = 0;
         } else if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-            pa_simple_write(opts->pulse_digi_dev_out, (state->audio_out_buf_p - state->audio_out_idx),
-                            (size_t)state->audio_out_idx * sizeof(short), NULL);
+            /* Use audio abstraction layer */
+            if (opts->audio_out_stream) {
+                dsd_audio_write(opts->audio_out_stream, (state->audio_out_buf_p - state->audio_out_idx),
+                                (size_t)state->audio_out_idx);
+            }
             state->audio_out_idx = 0;
         } else if (opts->audio_out == 1
                    && opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now
@@ -611,8 +547,11 @@ playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
     if (state->audio_out_idxR > opts->delay) {
         // output synthesized speech to sound card
         if (opts->audio_out == 1 && opts->audio_out_type == 0) {
-            pa_simple_write(opts->pulse_digi_dev_outR, (state->audio_out_buf_pR - state->audio_out_idxR),
-                            (size_t)state->audio_out_idxR * sizeof(short), NULL);
+            /* Use audio abstraction layer */
+            if (opts->audio_out_streamR) {
+                dsd_audio_write(opts->audio_out_streamR, (state->audio_out_buf_pR - state->audio_out_idxR),
+                                (size_t)state->audio_out_idxR);
+            }
             state->audio_out_idxR = 0;
         } else if (
             opts->audio_out == 1
@@ -640,29 +579,12 @@ void
 openAudioOutDevice(dsd_opts* opts, int speed) {
     UNUSED(speed);
 
-    //converted to handle any calls to use portaudio
-    if (strncmp(opts->audio_out_dev, "pa:", 3) == 0) {
-        opts->audio_out_type = 0;
-        fprintf(stderr, "Error, Port Audio is not supported by FME!\n");
-        fprintf(stderr, "Using Pulse Audio Output Stream Instead! \n");
-        sprintf(opts->audio_out_dev, "pulse");
+    /* Handle device type detection */
+    if (strncmp(opts->audio_out_dev, "pulse", 5) == 0 || strncmp(opts->audio_out_dev, "pa:", 3) == 0) {
+        opts->audio_out_type = 0; /* Audio stream output */
     }
     if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
         opts->audio_in_type = 0;
-    } else {
-        // struct stat stat_buf;
-        // if(stat(opts->audio_out_dev, &stat_buf) != 0 && strncmp(opts->audio_out_dev, "pulse", 5 != 0)) //HERE
-        //   {
-        //     fprintf (stderr,"Error, couldn't open %s\n", opts->audio_out_dev);
-        //     exit(1);
-        //   }
-
-        // if( (!(S_ISCHR(stat_buf.st_mode) || S_ISBLK(stat_buf.st_mode))) && strncmp(opts->audio_out_dev, "pulse", 5 != 0))
-        //   {
-        //     // this is not a device
-        //     fprintf (stderr,"Error, %s is not a device. use -w filename for wav output.\n", opts->audio_out_dev);
-        //     exit(1);
-        //   }
     }
     fprintf(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
 }

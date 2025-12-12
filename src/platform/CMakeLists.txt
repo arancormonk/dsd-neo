@@ -24,6 +24,24 @@ else()
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
 endif()
 
+# Audio backend sources
+if(DSD_USE_PORTAUDIO)
+    target_sources(dsd-neo_platform PRIVATE
+        audio_portaudio.c
+    )
+    target_link_libraries(dsd-neo_platform PUBLIC PortAudio::PortAudio)
+    target_include_directories(dsd-neo_platform PUBLIC ${PORTAUDIO_INCLUDE_DIRS})
+else()
+    target_sources(dsd-neo_platform PRIVATE
+        audio_pulse.c
+    )
+    target_link_libraries(dsd-neo_platform PUBLIC
+        ${PULSEAUDIO_LIBRARY}
+        ${PULSEAUDIO_SIMPLE_LIBRARY}
+    )
+    target_include_directories(dsd-neo_platform PUBLIC ${PULSEAUDIO_INCLUDE_DIRS})
+endif()
+
 target_include_directories(dsd-neo_platform
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
