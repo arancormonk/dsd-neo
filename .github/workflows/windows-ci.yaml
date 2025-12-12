@@ -463,9 +463,22 @@ jobs:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-windows-static-release
       VCPKG_TARGET_TRIPLET: x64-windows-static-release
+      # Enable vcpkg binary caching on GitHub Actions cache.
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      # Enable sccache GitHub Actions backend.
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.1
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Initialize sccache
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --version
+          & $env:SCCACHE_PATH --zero-stats
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11.5
@@ -479,11 +492,16 @@ jobs:
 
       - name: Configure (MSVC Release)
         shell: pwsh
-        run: cmake --preset win-msvc-release
+        run: cmake --preset win-msvc-release -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build (MSVC Release)
         shell: pwsh
         run: cmake --build --preset win-msvc-release
+
+      - name: Show sccache stats
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --show-stats
 
       - name: Stage native MSVC tree
         id: stage
@@ -558,10 +576,23 @@ jobs:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
       VCPKG_DEFAULT_TRIPLET: x64-mingw-static-release
       VCPKG_TARGET_TRIPLET: x64-mingw-static-release
+      # Enable vcpkg binary caching on GitHub Actions cache.
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      # Enable sccache GitHub Actions backend.
+      SCCACHE_GHA_ENABLED: "true"
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.1
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Initialize sccache
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --version
+          & $env:SCCACHE_PATH --zero-stats
 
       - name: Setup MSYS2 (MinGW-w64)
         uses: msys2/setup-msys2@v2.29.0
@@ -593,11 +624,21 @@ jobs:
 
       - name: Configure (MinGW Release)
         shell: msys2 {0}
-        run: cmake --preset win-mingw-release
+        run: |
+          set -euo pipefail
+          SCCACHE_EXE="$(cygpath -u "$SCCACHE_PATH")"
+          cmake --preset win-mingw-release \
+            -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE_EXE" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE_EXE"
 
       - name: Build (MinGW Release)
         shell: msys2 {0}
         run: cmake --build --preset win-mingw-release -j2
+
+      - name: Show sccache stats
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --show-stats
 
       - name: Stage native MinGW tree
         id: stage
