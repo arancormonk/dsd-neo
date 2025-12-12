@@ -8,7 +8,7 @@ vcpkg_from_github(
         fix-msvc-libm.patch
         fix-msvc-flags.patch
         fix-msvc-m-pi.patch
-        fix-msvc-vla.patch
+        fix-msvc-vla-all.patch
 )
 
 vcpkg_cmake_configure(

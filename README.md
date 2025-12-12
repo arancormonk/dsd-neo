@@ -16,19 +16,19 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - Linux AppImage (x86_64): dsd-neo-linux-x86_64-portable-<version>.AppImage
   - Linux AppImage (aarch64): dsd-neo-linux-aarch64-portable-<version>.AppImage
   - macOS DMG (arm64): dsd-neo-macos-arm64-portable-<version>.dmg
-  - Windows native ZIP (MSVC x86_64, **recommended**): dsd-neo-msvc-x86_64-native-<version>.zip
-  - Windows native ZIP (MinGW x86_64, alternative): dsd-neo-mingw-x86_64-native-<version>.zip
+  <!-- Windows native ZIP (MSVC x86_64, **recommended**): dsd-neo-msvc-x86_64-native-<version>.zip
+  - Windows native ZIP (MinGW x86_64, alternative): dsd-neo-mingw-x86_64-native-<version>.zip -->
   - Windows portable ZIP (Cygwin x86_64, fallback/portable): dsd-neo-cygwin-x86_64-portable-<version>.zip
 - Nightly builds:
   - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
-  - Windows native ZIP (MSVC x86_64, **recommended**): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
-  - Windows native ZIP (MinGW x86_64, alternative): [dsd-neo-mingw-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-mingw-x86_64-native-nightly.zip)
+  <!-- Windows native ZIP (MSVC x86_64, **recommended**): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
+  - Windows native ZIP (MinGW x86_64, alternative): [dsd-neo-mingw-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-mingw-x86_64-native-nightly.zip) -->
   - Windows portable ZIP (Cygwin x86_64, fallback/portable): [dsd-neo-cygwin-x86_64-portable-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-cygwin-x86_64-portable-nightly.zip)
 - Arch Linux (AUR): [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git)
 
-On Windows, the native MSVC ZIP is the preferred download for best integration with the Windows console and audio stack. The MinGW ZIP is a fully native alternative. The Cygwin portable ZIP bundles a POSIX runtime and launchers for users who want a self‑contained environment.
+<!-- On Windows, the native MSVC ZIP is the preferred download for best integration with the Windows console and audio stack. The MinGW ZIP is a fully native alternative. The Cygwin portable ZIP bundles a POSIX runtime and launchers for users who want a self‑contained environment. -->
 
 ## Project Status
 

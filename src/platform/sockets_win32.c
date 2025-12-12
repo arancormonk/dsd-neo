@@ -99,6 +99,10 @@ dsd_socket_setsockopt(dsd_socket_t sock, int level, int optname, const void* opt
 
 int
 dsd_socket_getsockopt(dsd_socket_t sock, int level, int optname, void* optval, int* optlen) {
+    if (!optlen) {
+        WSASetLastError(WSAEINVAL);
+        return DSD_SOCKET_ERROR;
+    }
     return getsockopt(sock, level, optname, (char*)optval, optlen);
 }
 

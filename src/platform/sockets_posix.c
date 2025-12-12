@@ -90,9 +90,14 @@ dsd_socket_setsockopt(dsd_socket_t sock, int level, int optname, const void* opt
 
 int
 dsd_socket_getsockopt(dsd_socket_t sock, int level, int optname, void* optval, int* optlen) {
-    socklen_t slen = optlen ? (socklen_t)*optlen : 0;
-    int result = getsockopt(sock, level, optname, optval, optlen ? &slen : NULL);
-    if (optlen) {
+    if (!optlen) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    socklen_t slen = (socklen_t)*optlen;
+    int result = getsockopt(sock, level, optname, optval, &slen);
+    if (result == 0) {
         *optlen = (int)slen;
     }
     return result;
@@ -126,7 +131,7 @@ int
 dsd_socket_set_recv_timeout(dsd_socket_t sock, unsigned int timeout_ms) {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    tv.tv_usec = (suseconds_t)(timeout_ms % 1000U) * 1000;
     return setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
@@ -134,7 +139,7 @@ int
 dsd_socket_set_send_timeout(dsd_socket_t sock, unsigned int timeout_ms) {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    tv.tv_usec = (suseconds_t)(timeout_ms % 1000U) * 1000;
     return setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
