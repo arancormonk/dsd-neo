@@ -11,9 +11,9 @@
  * that are shared across the menu subsystem.
  */
 
+#include <dsd-neo/platform/curses_compat.h>
 #include "menu_internal.h"
 
-#include <ncurses.h>
 #include <string.h>
 #include <time.h>
 

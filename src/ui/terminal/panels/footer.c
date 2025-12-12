@@ -8,7 +8,7 @@
  * Footer panel renderer for the ncurses terminal UI
  */
 
-#include <ncurses.h>
+#include <dsd-neo/platform/curses_compat.h>
 #include <time.h>
 
 #include <dsd-neo/core/dsd.h>

@@ -10,9 +10,8 @@
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/ui/ui_prims.h>
-
-#include <ncurses.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>

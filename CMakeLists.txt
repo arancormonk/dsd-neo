@@ -9,9 +9,12 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
 # Platform detection and configuration
 include(Platform)
-# Prefer ncurses wide-character support
-set(CURSES_NEED_NCURSES TRUE)
-set(CURSES_NEED_WIDE TRUE)
+# Curses/PDCurses selection - set early before find_package
+if(NOT (WIN32 AND NOT CYGWIN))
+    # Prefer ncurses wide-character support (POSIX systems)
+    set(CURSES_NEED_NCURSES TRUE)
+    set(CURSES_NEED_WIDE TRUE)
+endif()
 
 # Language and build defaults
 set(CMAKE_C_STANDARD 11)
@@ -156,7 +159,20 @@ else()
 endif()
 find_package(ITPP REQUIRED)
 find_package(RTLSDR)
-find_package(Curses REQUIRED)
+
+# Curses library selection: PDCurses on Windows, ncurses elsewhere
+if(WIN32 AND NOT CYGWIN)
+    find_package(PDCurses REQUIRED)
+    set(CURSES_LIBRARIES ${PDCURSES_LIBRARIES})
+    set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
+    add_compile_definitions(PDC_WIDE)  # Wide character support for PDCurses
+    add_compile_definitions(DSD_USE_PDCURSES)
+    message(STATUS "Curses backend: PDCurses")
+else()
+    find_package(Curses REQUIRED)
+    message(STATUS "Curses backend: ncurses")
+endif()
+
 find_package(CODEC2)
 
 # Audio backend selection

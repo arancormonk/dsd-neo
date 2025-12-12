@@ -11,8 +11,8 @@
 
 #include <dsd-neo/core/dsd.h>
 
+#include <dsd-neo/platform/curses_compat.h>
 #include <math.h>
-#include <ncurses.h>
 #include <wchar.h>
 
 /* SNR history buffers for sparkline (per modulation) */

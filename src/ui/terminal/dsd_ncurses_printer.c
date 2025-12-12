@@ -19,6 +19,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype.h>
+#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -39,7 +40,6 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <math.h>
-#include <ncurses.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

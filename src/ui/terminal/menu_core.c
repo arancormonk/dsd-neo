@@ -28,7 +28,7 @@
 #include "menu_internal.h"
 #include "menu_prompts.h"
 
-#include <ncurses.h>
+#include <dsd-neo/platform/curses_compat.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>

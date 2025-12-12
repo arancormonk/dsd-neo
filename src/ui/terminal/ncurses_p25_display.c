@@ -17,8 +17,8 @@
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ui_prims.h>
 
+#include <dsd-neo/platform/curses_compat.h>
 #include <math.h>
-#include <ncurses.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>

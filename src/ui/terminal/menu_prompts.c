@@ -12,10 +12,10 @@
  */
 
 #include "menu_prompts.h"
+#include <dsd-neo/platform/curses_compat.h>
 #include "menu_internal.h"
 
 #include <ctype.h>
-#include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
 

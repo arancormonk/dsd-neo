@@ -11,8 +11,8 @@
  */
 #pragma once
 
+#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/ui/menu_core.h>
-#include <ncurses.h>
 
 // Shared UI context passed to callbacks (full definition; forward-declared in menu_defs.h)
 typedef struct UiCtx {
