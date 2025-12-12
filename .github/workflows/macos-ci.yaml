@@ -110,69 +110,133 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then
-            git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
-            git -C /tmp/mbelib-neo fetch --depth 1 origin ${{ steps.dep-shas.outputs.mbe_sha }}
-            git -C /tmp/mbelib-neo checkout ${{ steps.dep-shas.outputs.mbe_sha }}
-            cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-              -DCMAKE_OSX_ARCHITECTURES=arm64
-            cmake --build /tmp/mbelib-neo/build -j
-            cmake --install /tmp/mbelib-neo/build
+          mf="$DEPS_PREFIX/.manifest"
+          want_sha='${{ steps.dep-shas.outputs.mbe_sha }}'
+          pc1="$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc"
+          pc2="$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc"
+          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
+            if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
+              echo "Using cached mbelib-neo in $DEPS_PREFIX"
+              exit 0
+            fi
+            echo "Cached mbelib-neo does not match desired SHA; rebuilding"
           fi
+          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          git -C /tmp/mbelib-neo fetch --depth 1 origin "$want_sha"
+          git -C /tmp/mbelib-neo checkout "$want_sha"
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
 
       - name: Ensure codec2 (cached fallback if not found)
         shell: bash
         run: |
           set -euxo pipefail
-          if ! pkg-config --exists codec2 && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then
-            git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
-            git -C /tmp/codec2 fetch --depth 1 origin ${{ steps.dep-shas.outputs.codec2_sha }}
-            git -C /tmp/codec2 checkout ${{ steps.dep-shas.outputs.codec2_sha }}
-            cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-              -DCMAKE_OSX_ARCHITECTURES=arm64
-            cmake --build /tmp/codec2/build -j
-            cmake --install /tmp/codec2/build
+          mf="$DEPS_PREFIX/.manifest"
+          want_sha='${{ steps.dep-shas.outputs.codec2_sha }}'
+          pc1="$DEPS_PREFIX/lib/pkgconfig/codec2.pc"
+          pc2="$DEPS_PREFIX/lib64/pkgconfig/codec2.pc"
+          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
+            if [ -f "$mf" ] && grep -q "^codec2_sha=$want_sha$" "$mf"; then
+              echo "Using cached codec2 in $DEPS_PREFIX"
+              exit 0
+            fi
+            echo "Cached codec2 does not match desired SHA; rebuilding"
+          else
+            if pkg-config --exists codec2; then
+              echo "Using system codec2"
+              exit 0
+            fi
           fi
+          git clone --depth 1 https://github.com/arancormonk/codec2 /tmp/codec2
+          git -C /tmp/codec2 fetch --depth 1 origin "$want_sha"
+          git -C /tmp/codec2 checkout "$want_sha"
+          cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build /tmp/codec2/build -j
+          cmake --install /tmp/codec2/build
 
       - name: Ensure ITPP (cached fallback if not found)
         shell: bash
         run: |
           set -euxo pipefail
-          if ! pkg-config --exists itpp && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then
-            git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
-            git -C /tmp/itpp fetch --depth 1 origin ${{ steps.dep-shas.outputs.itpp_sha }}
-            git -C /tmp/itpp checkout ${{ steps.dep-shas.outputs.itpp_sha }}
-            cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-              -DCMAKE_OSX_ARCHITECTURES=arm64 \
-              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-              -DBLA_VENDOR=Apple \
-              -DITPP_SHARED_LIB=ON \
-              -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/usr/bin/false
-            cmake --build /tmp/itpp/build -j
-            cmake --install /tmp/itpp/build
+          mf="$DEPS_PREFIX/.manifest"
+          want_sha='${{ steps.dep-shas.outputs.itpp_sha }}'
+          pc1="$DEPS_PREFIX/lib/pkgconfig/itpp.pc"
+          pc2="$DEPS_PREFIX/lib64/pkgconfig/itpp.pc"
+          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
+            if [ -f "$mf" ] && grep -q "^itpp_sha=$want_sha$" "$mf"; then
+              echo "Using cached itpp in $DEPS_PREFIX"
+              exit 0
+            fi
+            echo "Cached itpp does not match desired SHA; rebuilding"
+          else
+            if pkg-config --exists itpp; then
+              echo "Using system itpp"
+              exit 0
+            fi
           fi
+          git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
+          git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
+          git -C /tmp/itpp checkout "$want_sha"
+          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DBLA_VENDOR=Apple \
+            -DITPP_SHARED_LIB=ON \
+            -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/usr/bin/false
+          cmake --build /tmp/itpp/build -j
+          cmake --install /tmp/itpp/build
 
       - name: Ensure RTL-SDR (cached fallback if not found)
         shell: bash
         run: |
           set -euxo pipefail
-          if ! pkg-config --exists librtlsdr && [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then
-            git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
-            git -C /tmp/rtl-sdr fetch --depth 1 origin ${{ steps.dep-shas.outputs.rtlsdr_sha }}
-            git -C /tmp/rtl-sdr checkout ${{ steps.dep-shas.outputs.rtlsdr_sha }}
-            cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON \
-              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-              -DCMAKE_OSX_ARCHITECTURES=arm64
-            cmake --build /tmp/rtl-sdr/build -j
-            cmake --install /tmp/rtl-sdr/build
+          mf="$DEPS_PREFIX/.manifest"
+          want_sha='${{ steps.dep-shas.outputs.rtlsdr_sha }}'
+          pc1="$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc"
+          pc2="$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc"
+          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
+            if [ -f "$mf" ] && grep -q "^rtlsdr_sha=$want_sha$" "$mf"; then
+              echo "Using cached rtl-sdr in $DEPS_PREFIX"
+              exit 0
+            fi
+            echo "Cached rtl-sdr does not match desired SHA; rebuilding"
+          else
+            if pkg-config --exists librtlsdr; then
+              echo "Using system rtl-sdr"
+              exit 0
+            fi
           fi
+          git clone --depth 1 https://github.com/arancormonk/rtl-sdr /tmp/rtl-sdr
+          git -C /tmp/rtl-sdr fetch --depth 1 origin "$want_sha"
+          git -C /tmp/rtl-sdr checkout "$want_sha"
+          cmake -S /tmp/rtl-sdr -B /tmp/rtl-sdr/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DDETACH_KERNEL_DRIVER=ON \
+            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build /tmp/rtl-sdr/build -j
+          cmake --install /tmp/rtl-sdr/build
+
+      - name: Update deps manifest
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$DEPS_PREFIX"
+          mf="$DEPS_PREFIX/.manifest"
+          : > "$mf"
+          echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
+          echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
+          echo "itpp_sha=${{ steps.dep-shas.outputs.itpp_sha }}" >> "$mf"
+          echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
+          echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 
       - name: Show dependency versions
         shell: bash
