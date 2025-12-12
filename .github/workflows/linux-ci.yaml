@@ -28,7 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     # Do not run this full Release build on pull_request; keep it for push/dispatch
     if: github.event_name != 'pull_request'
-    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.1
@@ -304,7 +303,6 @@ jobs:
   sanitize-linux:
     name: Linux • Debug • sanitizers
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.1
@@ -445,7 +443,6 @@ jobs:
   format-check:
     name: clang-format
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6.0.1
       - name: Install clang-format
@@ -466,7 +463,6 @@ jobs:
   cppcheck:
     name: cppcheck
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6.0.1
 
@@ -491,7 +487,6 @@ jobs:
   clang-tidy:
     name: clang-tidy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6.0.1
 

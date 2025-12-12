@@ -4,11 +4,6 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/codec2
     HEAD_REF main
-    PATCHES
-        fix-msvc-libm.patch
-        fix-msvc-flags.patch
-        fix-msvc-m-pi.patch
-        fix-msvc-vla-all.patch
 )
 
 vcpkg_cmake_configure(
@@ -16,6 +11,8 @@ vcpkg_cmake_configure(
     OPTIONS
         -DUNITTEST=OFF
         -DLPCNET=OFF
+        -DCODEC2_BUILD_PROGRAMS=OFF
+        -DCODEC2_BUILD_DEMOS=OFF
 )
 
 vcpkg_cmake_install()

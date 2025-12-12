@@ -16,7 +16,6 @@ on:
 jobs:
   build-portable-dmg:
     runs-on: macos-latest
-    timeout-minutes: 45
     permissions:
       contents: write
     env:

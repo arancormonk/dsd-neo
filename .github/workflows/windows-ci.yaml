@@ -456,7 +456,6 @@ jobs:
 
   build-native-msvc:
     runs-on: windows-latest
-    timeout-minutes: 30
     permissions:
       contents: write
     env:
@@ -551,7 +550,6 @@ jobs:
 
   build-native-mingw:
     runs-on: windows-latest
-    timeout-minutes: 45
     permissions:
       contents: write
     env:
