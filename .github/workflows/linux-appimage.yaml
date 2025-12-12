@@ -11,6 +11,7 @@ on:
       - ".github/**/*.yaml"
       - "**/*.md"
       - "**/*.json"
+      - "vcpkg-ports/**"
 
 jobs:
   build-appimage:
