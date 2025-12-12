@@ -21,13 +21,13 @@ if(RTLSDR_FOUND)
   if(DSD_ENABLE_WARNINGS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
       target_compile_options(dsd-neo_io_radio PRIVATE -Wall -Wextra -Wpedantic)
+      target_compile_options(dsd-neo_io_radio PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
+                             -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                             -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
+                             -Wtautological-compare)
     elseif(MSVC)
       target_compile_options(dsd-neo_io_radio PRIVATE /W4)
     endif()
-    target_compile_options(dsd-neo_io_radio PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                           -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                           -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                           -Wtautological-compare)
     if(DSD_WARNINGS_AS_ERRORS)
       if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(dsd-neo_io_radio PRIVATE -Werror)
@@ -62,13 +62,13 @@ target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime dsd-neo_platform)
 if(DSD_ENABLE_WARNINGS)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(dsd-neo_io_audio PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(dsd-neo_io_audio PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
+                           -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                           -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
+                           -Wtautological-compare)
   elseif(MSVC)
     target_compile_options(dsd-neo_io_audio PRIVATE /W4)
   endif()
-  target_compile_options(dsd-neo_io_audio PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                         -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                         -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                         -Wtautological-compare)
   if(DSD_WARNINGS_AS_ERRORS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
       target_compile_options(dsd-neo_io_audio PRIVATE -Werror)
@@ -95,13 +95,13 @@ target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime)
 if(DSD_ENABLE_WARNINGS)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(dsd-neo_io_control PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(dsd-neo_io_control PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
+                           -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                           -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
+                           -Wtautological-compare)
   elseif(MSVC)
     target_compile_options(dsd-neo_io_control PRIVATE /W4)
   endif()
-  target_compile_options(dsd-neo_io_control PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                         -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                         -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                         -Wtautological-compare)
   if(DSD_WARNINGS_AS_ERRORS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
       target_compile_options(dsd-neo_io_control PRIVATE -Werror)

@@ -51,13 +51,13 @@ target_link_libraries(dsd-neo_proto_p25 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-n
 if(DSD_ENABLE_WARNINGS)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(dsd-neo_proto_p25 PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(dsd-neo_proto_p25 PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
+                           -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                           -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
+                           -Wtautological-compare)
   elseif(MSVC)
     target_compile_options(dsd-neo_proto_p25 PRIVATE /W4)
   endif()
-  target_compile_options(dsd-neo_proto_p25 PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                         -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                         -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                         -Wtautological-compare)
   if(DSD_WARNINGS_AS_ERRORS)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
       target_compile_options(dsd-neo_proto_p25 PRIVATE -Werror)
