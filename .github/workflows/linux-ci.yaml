@@ -180,7 +180,7 @@ jobs:
           git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
           git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
           git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10
           cmake --build /tmp/itpp/build -j
           cmake --install /tmp/itpp/build
 
@@ -517,7 +517,7 @@ jobs:
           git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
           git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
           git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10
           cmake --build /tmp/itpp/build -j
           cmake --install /tmp/itpp/build
 
@@ -763,7 +763,7 @@ jobs:
           git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
           git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
           git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10
           cmake --build /tmp/itpp/build -j
           cmake --install /tmp/itpp/build
 
