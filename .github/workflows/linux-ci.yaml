@@ -395,9 +395,9 @@ jobs:
         uses: actions/cache@v4.3.0
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-v2-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
-          restore-k: |
-            deps-v2-${{ runner.os }}-
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          restore-keys: |
+            deps-${{ runner.os }}-
 
       - name: Install base build dependencies
         run: |
@@ -643,9 +643,9 @@ jobs:
         uses: actions/cache@v4.3.0
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-v2-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
-            deps-v2{ runner.os }}-
+            deps-${{ runner.os }}-
 
       - name: Inll toolchains
         run: |
