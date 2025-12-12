@@ -54,7 +54,75 @@
         "CMAKE_EXE_LINKER_FLAGS": "--coverage",
         "CMAKE_SHARED_LINKER_FLAGS": "--coverage"
       }
-    }
+    },
+    {
+      "name": "win-msvc-debug",
+      "displayName": "Windows MSVC Debug",
+      "description": "Windows Debug build with MSVC via vcpkg",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/win-msvc-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "win-msvc-release",
+      "displayName": "Windows MSVC Release",
+      "description": "Windows Release build with MSVC via vcpkg",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/win-msvc-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "DSD_ENABLE_LTO": "ON",
+        "DSD_ENABLE_FAST_MATH": "ON"
+      }
+    },
+    {
+      "name": "win-mingw-debug",
+      "displayName": "Windows MinGW Debug",
+      "description": "Windows Debug build with MinGW-w64",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/win-mingw-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+	      "cacheVariables": {
+	        "CMAKE_BUILD_TYPE": "Debug",
+	        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+	      }
+	    },
+	    {
+      "name": "win-mingw-release",
+      "displayName": "Windows MinGW Release",
+      "description": "Windows Release build with MinGW-w64",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/win-mingw-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+	      "cacheVariables": {
+	        "CMAKE_BUILD_TYPE": "Release",
+	        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+	        "DSD_ENABLE_LTO": "ON",
+	        "DSD_ENABLE_FAST_MATH": "ON"
+	      }
+	    }
   ],
   "buildPresets": [
     {
@@ -100,6 +168,26 @@
       "configurePreset": "coverage-debug",
       "configuration": "Debug",
       "cleanFirst": true
+    },
+    {
+      "name": "win-msvc-debug",
+      "configurePreset": "win-msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-msvc-release",
+      "configurePreset": "win-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "win-mingw-debug",
+      "configurePreset": "win-mingw-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-mingw-release",
+      "configurePreset": "win-mingw-release",
+      "configuration": "Release"
     }
   ],
   "testPresets": [
@@ -122,6 +210,26 @@
       "name": "coverage-debug",
       "configurePreset": "coverage-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "win-msvc-debug",
+      "configurePreset": "win-msvc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-msvc-release",
+      "configurePreset": "win-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "win-mingw-debug",
+      "configurePreset": "win-mingw-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-mingw-release",
+      "configurePreset": "win-mingw-release",
+      "configuration": "Release"
     }
   ]
 }

@@ -125,7 +125,7 @@ git_describe(GIT_TAG --tags --abbrev=0)
 
 # Sanitize/fallbacks for non-git tarballs or archives
 if("${GIT_TAG}" MATCHES "NOTFOUND" OR "${GIT_TAG}" STREQUAL "")
-    set(GIT_TAG "0.0.0")
+    set(GIT_TAG "0.1.0")
 endif()
 if("${GIT_HASH}" MATCHES "NOTFOUND" OR "${GIT_HASH}" STREQUAL "")
     set(GIT_HASH "unknown")
