@@ -459,8 +459,9 @@ jobs:
     permissions:
       contents: write
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
-      VCPKG_TARGET_TRIPLET: x64-windows-static
+      # Use a release-only triplet to avoid building debug variants of vcpkg deps.
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static-release
+      VCPKG_TARGET_TRIPLET: x64-windows-static-release
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.1
@@ -553,8 +554,10 @@ jobs:
     permissions:
       contents: write
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-mingw-static
-      VCPKG_TARGET_TRIPLET: x64-mingw-static
+      # Use a release-only triplet to avoid building debug variants of vcpkg deps.
+      VCPKG_DEFAULT_TRIPLET: x64-mingw-static-release
+      VCPKG_TARGET_TRIPLET: x64-mingw-static-release
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.1
