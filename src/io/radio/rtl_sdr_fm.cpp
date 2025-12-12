@@ -30,6 +30,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_control.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/log.h>
@@ -46,9 +47,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if DSD_PLATFORM_POSIX
 #include <strings.h>
-#include <time.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 #ifdef __cplusplus
@@ -475,7 +477,7 @@ drain_output_on_retune(void) {
     size_t before = ring_used(outp);
     int waited_ms = 0;
     while (!ring_is_empty(outp) && waited_ms < drain_ms) {
-        usleep(1000);
+        dsd_sleep_ms(1);
         waited_ms++;
     }
     if (!ring_is_empty(outp)) {
@@ -924,7 +926,7 @@ static DSD_THREAD_RETURN_TYPE
     while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
         /* Preserve rtltcp prebuffer: hold the consumer until cold start finishes. */
         if (is_rtltcp_input && !controller.cold_start_ready.load(std::memory_order_acquire)) {
-            usleep(1000); /* short sleep to avoid busy spinning */
+            dsd_sleep_ms(1); /* short sleep to avoid busy spinning */
             continue;
         }
         /* Honor pending purge requests in the consumer thread to keep SPSC ownership intact. */
@@ -2927,7 +2929,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         {
             int waited_ms = 0;
             while (!exitflag && input_ring_used(&input_ring) < target && waited_ms < 2000) {
-                usleep(2000); /* 2 ms */
+                dsd_sleep_ms(2); /* 2 ms */
                 waited_ms += 2;
             }
             LOG_INFO("rtltcp prebuffer filled: %zu/%zu samples in ring.\n", input_ring_used(&input_ring), target);

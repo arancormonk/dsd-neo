@@ -8,20 +8,13 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-
-#if DSD_PLATFORM_POSIX
-#include <unistd.h> /* usleep */
-#elif DSD_PLATFORM_WIN_NATIVE
-#include <windows.h>
-#define usleep(us) Sleep((us) / 1000)
-#endif
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
@@ -193,7 +186,7 @@ static DSD_THREAD_RETURN_TYPE
                 continue;
             }
             if (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT) {
-                usleep(1000);
+                dsd_sleep_ms(1);
                 continue;
             }
 #else
@@ -201,7 +194,7 @@ static DSD_THREAD_RETURN_TYPE
                 continue;
             }
             if (err == EAGAIN || err == EWOULDBLOCK) {
-                usleep(1000);
+                dsd_sleep_ms(1);
                 continue;
             }
 #endif
@@ -385,6 +378,6 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
     }
     *out = 0;
     // throttle ~1ms to avoid busy spin when idle
-    usleep(1000);
+    dsd_sleep_ms(1);
     return 1;
 }

@@ -7,12 +7,14 @@ if(WIN32 AND NOT CYGWIN)
     target_sources(dsd-neo_platform PRIVATE
         threading_win32.c
         sockets_win32.c
+        timing_win32.c
     )
     target_link_libraries(dsd-neo_platform PUBLIC ws2_32)
 else()
     target_sources(dsd-neo_platform PRIVATE
         threading_posix.c
         sockets_posix.c
+        timing_posix.c
     )
     find_package(Threads REQUIRED)
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)

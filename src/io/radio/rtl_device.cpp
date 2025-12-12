@@ -17,6 +17,7 @@
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
@@ -25,24 +26,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #if DSD_PLATFORM_POSIX
 #include <strings.h>
-#include <sys/time.h>
 #include <unistd.h>
-#elif DSD_PLATFORM_WIN_NATIVE
-#include <windows.h>
-#define nanosleep(ts, rem) Sleep((DWORD)((ts)->tv_sec * 1000 + (ts)->tv_nsec / 1000000))
-#define clock_gettime(id, ts)                                                                                          \
-    do {                                                                                                               \
-        LARGE_INTEGER freq, count;                                                                                     \
-        QueryPerformanceFrequency(&freq);                                                                              \
-        QueryPerformanceCounter(&count);                                                                               \
-        (ts)->tv_sec = (time_t)(count.QuadPart / freq.QuadPart);                                                       \
-        (ts)->tv_nsec = (long)((count.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart);                       \
-    } while (0)
-#define CLOCK_MONOTONIC 0
 #endif
 /* Some platforms (e.g. non-glibc) may not define MSG_NOSIGNAL */
 #ifndef MSG_NOSIGNAL
@@ -85,7 +72,7 @@ struct rtl_device {
     uint64_t tcp_bytes_window;
     uint64_t reserve_full_events;
     int stats_enabled;
-    struct timespec stats_last_ts;
+    uint64_t stats_last_ns;
     /* TCP reassembly to uniform chunk size */
     unsigned char* tcp_pending;
     size_t tcp_pending_len;
@@ -448,8 +435,7 @@ static DSD_THREAD_RETURN_TYPE
     uint64_t prev_drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
     uint64_t prev_rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
     uint64_t prev_res_full = s->reserve_full_events;
-    struct timespec auto_last;
-    clock_gettime(CLOCK_MONOTONIC, &auto_last);
+    uint64_t auto_last_ns = dsd_time_monotonic_ns();
     /* Less aggressive reconnect: allow a few consecutive timeouts before
        declaring the connection lost. Default 3; override via
        DSD_NEO_TCP_MAX_TIMEOUTS. */
@@ -468,8 +454,7 @@ static DSD_THREAD_RETURN_TYPE
             const size_t SLICE = (s->buf_len > 0 ? (size_t)s->buf_len : 16384);
             size_t free_sp = input_ring_free(s->input_ring);
             if (free_sp < (SLICE * 2)) {
-                struct timespec ts = {0, 500000}; /* 0.5 ms */
-                nanosleep(&ts, NULL);
+                dsd_sleep_us(500); /* 0.5 ms */
             }
         }
         int r = dsd_socket_recv(s->sockfd, u8, BUFSZ, waitall ? MSG_WAITALL : 0);
@@ -599,8 +584,7 @@ static DSD_THREAD_RETURN_TYPE
                     s->sockfd = DSD_INVALID_SOCKET;
                 }
                 int backoff_ms = 200 * (attempt < 10 ? attempt : 10); /* up to ~2s */
-                struct timespec ts = {backoff_ms / 1000, (backoff_ms % 1000) * 1000000L};
-                nanosleep(&ts, NULL);
+                dsd_sleep_ms((unsigned int)backoff_ms);
             }
             if (s->sockfd == DSD_INVALID_SOCKET || r <= 0) {
                 /* Could not reconnect or no data after reconnect; exit */
@@ -779,16 +763,10 @@ static DSD_THREAD_RETURN_TYPE
 
         /* Once per ~1s: optional stats print and adaptive tuning */
         {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            long sec = (long)(now.tv_sec - s->stats_last_ts.tv_sec);
-            long nsec = (long)(now.tv_nsec - s->stats_last_ts.tv_nsec);
-            if (nsec < 0) {
-                sec -= 1;
-                nsec += 1000000000L;
-            }
-            if (s->stats_enabled && sec >= 1) {
-                double dt = (double)sec + (double)nsec / 1e9;
+            uint64_t now_ns = dsd_time_monotonic_ns();
+            uint64_t stats_dt_ns = now_ns - s->stats_last_ns;
+            if (s->stats_enabled && stats_dt_ns >= 1000000000ULL) {
+                double dt = (double)stats_dt_ns / 1e9;
                 double mbps = (double)s->tcp_bytes_window / dt / (1024.0 * 1024.0);
                 double exp_bps = (s->rate > 0) ? (double)(s->rate * 2ULL) : 0.0;
                 double exp_mbps = exp_bps / (1024.0 * 1024.0);
@@ -798,17 +776,12 @@ static DSD_THREAD_RETURN_TYPE
                         exp_mbps, (unsigned long long)drops, (unsigned long long)s->reserve_full_events,
                         (unsigned long long)rdto);
                 s->tcp_bytes_window = 0ULL;
-                s->stats_last_ts = now;
+                s->stats_last_ns = now_ns;
             }
             /* Adaptive block ~1s cadence */
-            long a_sec = (long)(now.tv_sec - auto_last.tv_sec);
-            long a_nsec = (long)(now.tv_nsec - auto_last.tv_nsec);
-            if (a_nsec < 0) {
-                a_sec -= 1;
-                a_nsec += 1000000000L;
-            }
+            uint64_t auto_dt_ns = now_ns - auto_last_ns;
             autotune = s->tcp_autotune;
-            if (autotune && a_sec >= 1) {
+            if (autotune && auto_dt_ns >= 1000000000ULL) {
                 uint64_t drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
                 uint64_t rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
                 uint64_t resf = s->reserve_full_events;
@@ -858,7 +831,7 @@ static DSD_THREAD_RETURN_TYPE
                         }
                     }
                 }
-                auto_last = now;
+                auto_last_ns = now_ns;
             }
         }
     }
@@ -1264,7 +1237,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     if (const char* es = getenv("DSD_NEO_TCP_STATS")) {
         if (es[0] != '\0' && es[0] != '0' && es[0] != 'f' && es[0] != 'F' && es[0] != 'n' && es[0] != 'N') {
             dev->stats_enabled = 1;
-            clock_gettime(CLOCK_MONOTONIC, &dev->stats_last_ts);
+            dev->stats_last_ns = dsd_time_monotonic_ns();
             fprintf(stderr, "rtl_tcp: stats enabled.\n");
         }
     }

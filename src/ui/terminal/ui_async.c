@@ -4,11 +4,11 @@
  */
 
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/ui/ui_async.h>
 
 #include <ncurses.h>
 #include <stdatomic.h>
-#include <time.h>
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -48,18 +48,15 @@ static DSD_THREAD_RETURN_TYPE
     ui_thread_main(void* arg) {
     (void)arg;
 
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 15L * 1000L * 1000L; // ~15 ms sleep cadence
+    const unsigned int sleep_ms = 15; // ~15 ms sleep cadence
 
     // Initialize ncurses lifecycle in UI thread
     if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
         ncursesOpen(g_ui_opts, g_ui_state);
     }
 
-    struct timespec last_draw = {0, 0};
-    clock_gettime(CLOCK_MONOTONIC, &last_draw);
-    const long frame_ns = 66L * 1000L * 1000L; // ~15 FPS cap
+    uint64_t last_draw_ns = dsd_time_monotonic_ns();
+    const uint64_t frame_ns = 66ULL * 1000ULL * 1000ULL; // ~15 FPS cap
 
     while (!atomic_load(&g_ui_stop)) {
         // Input + overlays handled in the UI thread when curses is ready.
@@ -99,9 +96,8 @@ static DSD_THREAD_RETURN_TYPE
 
         // Draw on dirty or FPS tick when curses is active
         if (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            long dt_ns = (now.tv_sec - last_draw.tv_sec) * 1000000000L + (now.tv_nsec - last_draw.tv_nsec);
+            uint64_t now_ns = dsd_time_monotonic_ns();
+            uint64_t dt_ns = now_ns - last_draw_ns;
             if (atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns) {
                 atomic_store(&g_ui_in_context, 1);
                 /* Draw using a state snapshot when available */
@@ -112,11 +108,11 @@ static DSD_THREAD_RETURN_TYPE
                     ncursesPrinter((dsd_opts*)osnap, g_ui_state);
                 }
                 atomic_store(&g_ui_in_context, 0);
-                last_draw = now;
+                last_draw_ns = now_ns;
             }
         }
 
-        nanosleep(&ts, NULL);
+        dsd_sleep_ms(sleep_ms);
     }
 
     if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {

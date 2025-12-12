@@ -20,6 +20,7 @@
 #include <math.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/timing.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -749,7 +750,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
         //assign dibit from last symbol/dibit read from capture bin
         dibit = state->symbolc;
         if (state->use_throttle == 1) {
-            usleep(0);
+            dsd_sleep_ms(0); /* yield CPU */
         }
     }
 
@@ -839,7 +840,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
     if (opts->audio_in_type == 4) {
         dibit = state->symbolc;
         if (state->use_throttle == 1) {
-            usleep(0);
+            dsd_sleep_ms(0); /* yield CPU */
         }
     }
 

@@ -16,16 +16,10 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
 #include <errno.h>
-
-#if DSD_PLATFORM_POSIX
-#include <unistd.h> /* usleep */
-#elif DSD_PLATFORM_WIN_NATIVE
-#include <windows.h>
-#define usleep(us) Sleep((us) / 1000)
-#endif
 
 #define BUFSIZE        1024
 #define FREQ_MAX       4096
@@ -355,7 +349,7 @@ GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
         } else {
             errors++;
         }
-        usleep(1000);
+        dsd_sleep_ms(1);
     }
     *dB = *dB / (n_samp - errors);
     return true;

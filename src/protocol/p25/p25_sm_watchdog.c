@@ -5,10 +5,10 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdatomic.h>
-#include <time.h>
 
 extern volatile uint8_t exitflag;
 
@@ -42,7 +42,6 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     p25_sm_watchdog_thread(void* arg) {
     (void)arg;
-    struct timespec ts;
     while (atomic_load(&g_p25_sm_wd_running) && !exitflag) {
         if (g_opts && g_state && g_opts->p25_trunk == 1) {
             p25_sm_try_tick(g_opts, g_state);
@@ -59,9 +58,7 @@ static DSD_THREAD_RETURN_TYPE
         if (ms > 2000) {
             ms = 2000; // 2s max
         }
-        ts.tv_sec = ms / 1000;
-        ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-        nanosleep(&ts, NULL);
+        dsd_sleep_ms((unsigned int)ms);
     }
     DSD_THREAD_RETURN;
 }

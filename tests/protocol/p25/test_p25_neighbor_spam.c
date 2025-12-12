@@ -13,9 +13,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define main dsd_neo_main_decl
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #undef main
 
@@ -74,12 +76,7 @@ main(void) {
 
     // Timing start for rough performance guard
     double elapsed_ms = 0.0;
-#if defined(_POSIX_TIMERS) && (_POSIX_TIMERS > 0)
-    struct timespec ts0, ts1;
-    clock_gettime(CLOCK_MONOTONIC, &ts0);
-#else
-    clock_t c0 = clock();
-#endif
+    uint64_t t0_ns = dsd_time_monotonic_ns();
 
     // Spam with pseudo-random neighbors around 851 MHz
     // Ensure we include some duplicates and the current CC at times.
@@ -100,15 +97,8 @@ main(void) {
     }
 
     // Timing end and guard: ensure this remains snappy
-#if defined(_POSIX_TIMERS) && (_POSIX_TIMERS > 0)
-    clock_gettime(CLOCK_MONOTONIC, &ts1);
-    elapsed_ms = (ts1.tv_sec - ts0.tv_sec) * 1000.0 + (ts1.tv_nsec - ts0.tv_nsec) / 1e6;
-#else
-    clock_t c1 = clock();
-    if (c1 > c0) {
-        elapsed_ms = 1000.0 * (double)(c1 - c0) / (double)CLOCKS_PER_SEC;
-    }
-#endif
+    uint64_t t1_ns = dsd_time_monotonic_ns();
+    elapsed_ms = (double)(t1_ns - t0_ns) / 1e6;
     // Allow a generous envelope to avoid CI flakiness, but detect regressions
     rc |= expect_true("neighbor-spam-fast", elapsed_ms < 200.0);
 

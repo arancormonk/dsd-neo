@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <math.h>
@@ -556,7 +557,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in 3 seconds.\n");
                 sample = 0;
                 sf_close(opts->tcp_file_in); //close current connection on this end
-                sleep(3);                    //halt all processing and wait 3 seconds
+                dsd_sleep_ms(3000);          //halt all processing and wait 3 seconds
 
                 //attempt to reconnect to socket
                 opts->tcp_sockfd = 0;
@@ -636,8 +637,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 sample = 0;
                 sf_close(opts->tcp_file_in); //close current connection on this end
                 // short throttle to avoid busy loop, but keep UI/SM responsive
-                struct timespec ts = {backoff_ms / 1000, (backoff_ms % 1000) * 1000000L};
-                nanosleep(&ts, NULL);
+                dsd_sleep_ms((unsigned int)backoff_ms);
 
                 //attempt to reconnect to socket
                 opts->tcp_sockfd = 0;

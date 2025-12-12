@@ -22,6 +22,7 @@
 #define _MAIN
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
@@ -3287,7 +3288,7 @@ main(int argc, char** argv) {
             // openAudioInDevice(&opts); //do this to see if it makes it work correctly
         } else {
             if (opts.frame_m17 == 1) {
-                sleep(1);
+                dsd_sleep_ms(1000);
                 goto TCPEND; //try again if using M17 encoder / decoder over TCP
             }
             sprintf(opts.audio_in_dev, "%s", "pulse");

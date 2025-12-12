@@ -408,7 +408,7 @@ add_test(NAME P25_NEXT_CC_CANDIDATE_EDGES COMMAND dsd-neo_test_p25_next_cc_candi
 # P25 neighbor update spam (bounded CC candidates + iteration)
 add_executable(dsd-neo_test_p25_neighbor_spam protocol/p25/test_p25_neighbor_spam.c)
 target_include_directories(dsd-neo_test_p25_neighbor_spam PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25)
-target_link_libraries(dsd-neo_test_p25_neighbor_spam PRIVATE dsd-neo_proto_p25 dsd-neo_core)
+target_link_libraries(dsd-neo_test_p25_neighbor_spam PRIVATE dsd-neo_proto_p25 dsd-neo_core dsd-neo_platform)
 add_test(NAME P25_NEIGHBOR_SPAM COMMAND dsd-neo_test_p25_neighbor_spam)
 
 # P25 Unified SM tests
@@ -430,12 +430,14 @@ add_executable(dsd-neo_test_dmr_t3_sm_clamp
   protocol/dmr/test_dmr_t3_sm_clamp.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
 target_include_directories(dsd-neo_test_dmr_t3_sm_clamp PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_t3_sm_clamp PRIVATE dsd-neo_platform)
 add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 
 add_executable(dsd-neo_test_dmr_t3_sm_release
   protocol/dmr/test_dmr_t3_sm_release.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
 target_include_directories(dsd-neo_test_dmr_t3_sm_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_t3_sm_release PRIVATE dsd-neo_platform)
 add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 
 # DMR Tier III end-to-end shim (neighbor → grant → release)
@@ -443,6 +445,7 @@ add_executable(dsd-neo_test_dmr_t3_shim
   protocol/dmr/test_dmr_t3_shim.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c)
 target_include_directories(dsd-neo_test_dmr_t3_shim PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_link_libraries(dsd-neo_test_dmr_t3_shim PRIVATE dsd-neo_platform)
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
 # DMR Tier III C_MOVE retune (grant -> move -> retune, gated on VC)
@@ -453,7 +456,7 @@ add_executable(dsd-neo_test_dmr_t3_cmove
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c)
 target_include_directories(dsd-neo_test_dmr_t3_cmove PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
-target_link_libraries(dsd-neo_test_dmr_t3_cmove PRIVATE m)
+target_link_libraries(dsd-neo_test_dmr_t3_cmove PRIVATE dsd-neo_platform m)
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 
 # DMR Tier III forced release via TG hold override on P_CLEAR
@@ -464,7 +467,7 @@ add_executable(dsd-neo_test_dmr_t3_force_release
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c)
 target_include_directories(dsd-neo_test_dmr_t3_force_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
-target_link_libraries(dsd-neo_test_dmr_t3_force_release PRIVATE m)
+target_link_libraries(dsd-neo_test_dmr_t3_force_release PRIVATE dsd-neo_platform m)
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 
 # DMR Tier III move then release (grant -> move TS2->TS1 -> P_CLEAR -> return CC)
@@ -475,7 +478,7 @@ add_executable(dsd-neo_test_dmr_t3_move_release
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c)
 target_include_directories(dsd-neo_test_dmr_t3_move_release PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
-target_link_libraries(dsd-neo_test_dmr_t3_move_release PRIVATE m)
+target_link_libraries(dsd-neo_test_dmr_t3_move_release PRIVATE dsd-neo_platform m)
 add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)
 
 # DSP block tests
@@ -748,6 +751,7 @@ add_executable(dsd-neo_test_p25_p2_reliability
 )
 target_include_directories(dsd-neo_test_p25_p2_reliability PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES})
 target_compile_definitions(dsd-neo_test_p25_p2_reliability PRIVATE DSD_NEO_P25P2_TEST_STUB=1)
+target_link_libraries(dsd-neo_test_p25_p2_reliability PRIVATE dsd-neo_platform)
 add_test(NAME P25_P2_RELIABILITY COMMAND dsd-neo_test_p25_p2_reliability)
 
 # P25P2 soft erasure unit tests
