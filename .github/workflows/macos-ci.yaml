@@ -10,6 +10,7 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
+      - "**/*.json"
 
 jobs:
   build-portable-dmg:

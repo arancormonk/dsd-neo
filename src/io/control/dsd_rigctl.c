@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/log.h>
 #include <errno.h>
+#include <limits.h>
 
 #define BUFSIZE        1024
 #define FREQ_MAX       4096

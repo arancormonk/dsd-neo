@@ -10,6 +10,7 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
+      - "**/*.json"
   pull_request:
     branches: [main, master]
     paths-ignore:
@@ -18,6 +19,7 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
+      - "**/*.json"
 
 jobs:
   build-linux:

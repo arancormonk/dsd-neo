@@ -10,6 +10,7 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
+      - "**/*.json"
 
 jobs:
   build-portable-zip:
@@ -579,7 +580,13 @@ jobs:
 
       - name: Install vcpkg dependencies (MinGW)
         shell: msys2 {0}
-        run: vcpkg install --triplet "${VCPKG_DEFAULT_TRIPLET}" --x-manifest-root "$GITHUB_WORKSPACE"
+        env:
+          # Ensure the Windows PATH (with vcpkg.exe) is visible in MSYS2.
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          VCPKG_EXE="$(cygpath -u "$VCPKG_ROOT")/vcpkg.exe"
+          "$VCPKG_EXE" install --triplet "${VCPKG_DEFAULT_TRIPLET}" --x-manifest-root "$GITHUB_WORKSPACE"
 
       - name: Configure (MinGW Release)
         shell: msys2 {0}
