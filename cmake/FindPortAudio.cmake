@@ -58,6 +58,9 @@ find_package_handle_standard_args(PortAudio
 if(PORTAUDIO_FOUND)
     set(PORTAUDIO_INCLUDE_DIRS ${PORTAUDIO_INCLUDE_DIR})
     set(PORTAUDIO_LIBRARIES ${PORTAUDIO_LIBRARY})
+    if(WIN32)
+        list(APPEND PORTAUDIO_LIBRARIES winmm ole32 uuid setupapi)
+    endif()
 
     if(NOT TARGET PortAudio::PortAudio)
         add_library(PortAudio::PortAudio UNKNOWN IMPORTED)
@@ -69,7 +72,7 @@ if(PORTAUDIO_FOUND)
         # On Windows, PortAudio may need additional system libraries
         if(WIN32)
             set_property(TARGET PortAudio::PortAudio APPEND PROPERTY
-                INTERFACE_LINK_LIBRARIES winmm ole32 uuid
+                INTERFACE_LINK_LIBRARIES winmm ole32 uuid setupapi
             )
         endif()
     endif()

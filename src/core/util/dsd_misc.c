@@ -35,8 +35,9 @@ trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
     int reg = 0;
     int min_d = 9999;
     int min_bt = 0;
-    static const int NTEST = 4;
-    static const int NTESTC = 1 << NTEST;
+
+    enum { NTEST = 4, NTESTC = 1 << NTEST };
+
     uint8_t bt[NTEST];
     uint8_t tt[NTEST * 2];
     int dstats[4];

@@ -35,6 +35,8 @@ if(MSVC)
     if(NOT CMAKE_C_FLAGS MATCHES "/experimental:c11atomics")
         string(APPEND CMAKE_C_FLAGS " /std:c11 /Zc:__STDC__ /experimental:c11atomics")
     endif()
+    # MSVC does not define common math constants (e.g., M_PI) unless explicitly enabled.
+    add_compile_definitions(_USE_MATH_DEFINES)
 endif()
 
 # Modern build options (aligned with mbelib-neo style)
@@ -195,6 +197,18 @@ else()
         endforeach()
         list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
     endif()
+    # When linking a static ncurses on MinGW, the headers may default to
+    # __declspec(dllimport) which produces __imp_* references that do not exist
+    # in the static archive. Defining NCURSES_STATIC ensures the correct
+    # linkage decorations.
+    if(MINGW)
+        foreach(_curses_lib IN LISTS CURSES_LIBRARIES)
+            if(_curses_lib MATCHES "\\.a$" AND NOT _curses_lib MATCHES "\\.dll\\.a$")
+                add_compile_definitions(NCURSES_STATIC)
+                break()
+            endif()
+        endforeach()
+    endif()
     message(STATUS "Curses backend: ncurses")
 endif()
 
@@ -225,9 +239,15 @@ if(MBE_INCLUDE_DIR)
 endif()
 
 # Audio backend includes and libraries
+set(AUDIO_SYSTEM_LIBS "")
 if(DSD_USE_PORTAUDIO)
     list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
-    set(AUDIO_LIBS ${PORTAUDIO_LIBRARIES})
+    # Prefer linking only the PortAudio library here; platform/system deps are
+    # appended later to keep static link order correct on MinGW.
+    set(AUDIO_LIBS ${PORTAUDIO_LIBRARY})
+    if(WIN32 AND NOT CYGWIN)
+        list(APPEND AUDIO_SYSTEM_LIBS winmm ole32 uuid setupapi)
+    endif()
 else()
     list(APPEND _PUBLIC_INCLUDES ${PULSEAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
@@ -262,6 +282,10 @@ if(CODEC2_FOUND)
     list(APPEND LIBS ${CODEC2_LIBRARIES})
     add_definitions(-DUSE_CODEC2)
 endif(CODEC2_FOUND)
+
+if(AUDIO_SYSTEM_LIBS)
+    list(APPEND LIBS ${AUDIO_SYSTEM_LIBS})
+endif()
 
 ## Executable target is defined in apps/dsd-cli
 
