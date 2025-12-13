@@ -23,7 +23,7 @@
 #include <curses.h>
 #else
 /* ncurses backend */
-#include <ncurses.h>
+#include <curses.h>
 #endif
 
 /*
