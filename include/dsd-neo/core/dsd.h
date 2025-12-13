@@ -109,7 +109,13 @@
 #include <codec2/codec2.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern volatile uint8_t exitflag; //fix for issue #136
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Frame sync patterns

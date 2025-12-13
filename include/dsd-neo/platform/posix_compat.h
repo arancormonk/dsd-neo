@@ -64,6 +64,20 @@ int dsd_unsetenv(const char* name);
 #endif
 
 /* ============================================================================
+ * getopt (MSVC)
+ * ============================================================================ */
+
+/* MSVC does not ship getopt/optarg/optind. Provide declarations for our
+ * compatibility implementation in src/platform/posix_compat_win32.c. */
+#if DSD_COMPILER_MSVC
+extern char* optarg;
+extern int optind;
+extern int opterr;
+extern int optopt;
+int getopt(int argc, char* const argv[], const char* optstring);
+#endif
+
+/* ============================================================================
  * Directory Creation (mkdir)
  * ============================================================================ */
 

@@ -53,7 +53,13 @@
 #include <rtl-sdr.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 volatile uint8_t exitflag; //fix for issue #136
+#ifdef __cplusplus
+}
+#endif
 #ifdef USE_RTLSDR
 struct RtlSdrContext* g_rtl_ctx = NULL; /* global orchestrator context */
 #endif
@@ -803,16 +809,6 @@ pretty_colors() {
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
-
-inline int
-comp(const void* a, const void* b) {
-    const float fa = *((const float*)a);
-    const float fb = *((const float*)b);
-    if (fa == fb) {
-        return 0;
-    }
-    return (fa < fb) ? -1 : 1;
-}
 
 // Small helpers to efficiently set fixed-width strings
 static inline void
@@ -3154,17 +3150,17 @@ main(int argc, char** argv) {
         strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok_r(inbuf, ":", &saveptr); //should be 'm17'
+        curr = dsd_strtok_r(inbuf, ":", &saveptr); //should be 'm17'
         if (curr == NULL) {
             goto M17ENDIN; //end early with preset values
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //host address
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
             strncpy(opts.m17_hostname, curr, 1023);
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //host port
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
             opts.m17_portno = atoi(curr);
         }
@@ -3183,18 +3179,18 @@ main(int argc, char** argv) {
         strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok_r(inbuf, ":", &saveptr); // 'udp'
+        curr = dsd_strtok_r(inbuf, ":", &saveptr); // 'udp'
         if (curr == NULL) {
             goto UDPINEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // bind address
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // bind address
         if (curr != NULL) {
             strncpy(opts.udp_in_bindaddr, curr, 1023);
             opts.udp_in_bindaddr[1023] = '\0';
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // bind port
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // bind port
         if (curr != NULL) {
             opts.udp_in_portno = atoi(curr);
         }
@@ -3218,17 +3214,17 @@ main(int argc, char** argv) {
         strncpy(outbuf, opts.audio_out_dev, sizeof(outbuf) - 1);
         outbuf[sizeof(outbuf) - 1] = '\0';
 
-        curr = strtok_r(outbuf, ":", &saveptr); //should be 'm17'
+        curr = dsd_strtok_r(outbuf, ":", &saveptr); //should be 'm17'
         if (curr == NULL) {
             goto M17ENDOUT; //end early with preset values
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //host address
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
             strncpy(opts.m17_hostname, curr, 1023);
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //host port
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
             opts.m17_portno = atoi(curr);
         }
@@ -3249,12 +3245,12 @@ main(int argc, char** argv) {
         strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok_r(inbuf, ":", &saveptr); //should be 'tcp'
+        curr = dsd_strtok_r(inbuf, ":", &saveptr); //should be 'tcp'
         if (curr == NULL) {
             goto TCPEND; //end early with preset values
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //host address
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
             strncpy(opts.tcp_hostname, curr, 1023);
             //shim to tie the hostname of the tcp input to the rigctl hostname (probably covers a vast majority of use cases)
@@ -3262,7 +3258,7 @@ main(int argc, char** argv) {
             memcpy(opts.rigctlhostname, opts.tcp_hostname, sizeof(opts.rigctlhostname));
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //host port
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
             opts.tcp_portno = atoi(curr);
         }
@@ -3309,44 +3305,44 @@ main(int argc, char** argv) {
         strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok_r(inbuf, ":", &saveptr); // 'rtltcp'
+        curr = dsd_strtok_r(inbuf, ":", &saveptr); // 'rtltcp'
         if (curr == NULL) {
             goto RTLTCPEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // host
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // host
         if (curr != NULL) {
             strncpy(opts.rtltcp_hostname, curr, 1023);
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // port
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // port
         if (curr != NULL) {
             opts.rtltcp_portno = atoi(curr);
         }
 
         // Optional: freq:gain:ppm:bw:sql:vol (mirrors rtl: string semantics)
-        curr = strtok_r(NULL, ":", &saveptr); // freq
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // freq
         if (curr != NULL) {
             opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
         } else {
             goto RTLTCPEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // gain
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // gain
         if (curr != NULL) {
             opts.rtl_gain_value = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // ppm
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // ppm
         if (curr != NULL) {
             opts.rtlsdr_ppm_error = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // bw (kHz)
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // bw (kHz)
         if (curr != NULL) {
             int bw = atoi(curr);
             if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
@@ -3358,7 +3354,7 @@ main(int argc, char** argv) {
             goto RTLTCPEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // sql (dB if negative; else linear)
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // sql (dB if negative; else linear)
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
@@ -3370,7 +3366,7 @@ main(int argc, char** argv) {
             goto RTLTCPEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); // vol (1..3)
+        curr = dsd_strtok_r(NULL, ":", &saveptr); // vol (1..3)
         if (curr != NULL) {
             opts.rtl_volume_multiplier = atoi(curr);
         } else {
@@ -3378,7 +3374,7 @@ main(int argc, char** argv) {
         }
 
         // Optional trailing tokens: bias tee toggle
-        while ((curr = strtok_r(NULL, ":", &saveptr)) != NULL) {
+        while ((curr = dsd_strtok_r(NULL, ":", &saveptr)) != NULL) {
             if (strncmp(curr, "bias", 4) == 0 || strncmp(curr, "b", 1) == 0) {
                 const char* val = strchr(curr, '=');
                 int on = 1; // default enable if no explicit value
@@ -3427,40 +3423,40 @@ main(int argc, char** argv) {
         strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
-        curr = strtok_r(inbuf, ":", &saveptr); //should be 'rtl'
+        curr = dsd_strtok_r(inbuf, ":", &saveptr); //should be 'rtl'
         if (curr == NULL) {
             goto RTLEND; //end early with preset values
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl device number "-D"
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl device number "-D"
         if (curr != NULL) {
             opts.rtl_dev_index = atoi(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl freq "-c"
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl freq "-c"
         if (curr != NULL) {
             opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl gain value "-G"
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl gain value "-G"
         if (curr != NULL) {
             opts.rtl_gain_value = atoi(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl ppm err "-P"
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl ppm err "-P"
         if (curr != NULL) {
             opts.rtlsdr_ppm_error = atoi(curr);
         } else {
             goto RTLEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl bandwidth "-Y"
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl bandwidth "-Y"
         if (curr != NULL) {
             int bw = 0;
             bw = atoi(curr);
@@ -3476,7 +3472,7 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl squelch threshold (dB if negative; else linear)
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl squelch threshold (dB if negative; else linear)
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
@@ -3488,11 +3484,11 @@ main(int argc, char** argv) {
             goto RTLEND;
         }
 
-        // curr = strtok_r(NULL, ":", &saveptr); //rtl udp port "-U"
+        // curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl udp port "-U"
         // if (curr != NULL) opts.rtl_udp_port = atoi (curr);
         // else goto RTLEND;
 
-        curr = strtok_r(NULL, ":", &saveptr); //rtl sample / volume multiplier
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl sample / volume multiplier
         if (curr != NULL) {
             opts.rtl_volume_multiplier = atoi(curr);
         } else {
@@ -3500,7 +3496,7 @@ main(int argc, char** argv) {
         }
 
         // Optional trailing tokens: bias tee toggle
-        while ((curr = strtok_r(NULL, ":", &saveptr)) != NULL) {
+        while ((curr = dsd_strtok_r(NULL, ":", &saveptr)) != NULL) {
             if (strncmp(curr, "bias", 4) == 0 || strncmp(curr, "b", 1) == 0) {
                 const char* val = strchr(curr, '=');
                 int on = 1; // default enable if no explicit value
@@ -3580,17 +3576,17 @@ main(int argc, char** argv) {
         strncpy(outbuf, opts.audio_out_dev, sizeof(outbuf) - 1);
         outbuf[sizeof(outbuf) - 1] = '\0';
 
-        curr = strtok_r(outbuf, ":", &saveptr); //should be 'udp'
+        curr = dsd_strtok_r(outbuf, ":", &saveptr); //should be 'udp'
         if (curr == NULL) {
             goto UDPEND; //end early with preset values
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //udp blaster hostname
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //udp blaster hostname
         if (curr != NULL) {
             strncpy(opts.udp_hostname, curr, 1023); //set address to blast to
         }
 
-        curr = strtok_r(NULL, ":", &saveptr); //udp blaster port
+        curr = dsd_strtok_r(NULL, ":", &saveptr); //udp blaster port
         if (curr != NULL) {
             opts.udp_portno = atoi(curr);
         }

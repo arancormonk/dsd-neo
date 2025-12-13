@@ -37,7 +37,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     setlocale(LC_ALL, "");
     initscr(); // Initialize NCURSES screen window
     // Improve ESC-key responsiveness and UI ergonomics
-    set_escdelay(25);
+    dsd_curses_set_escdelay(25);
     curs_set(0); // hide cursor in main UI (menus will show it when needed)
     timeout(0);  // non-blocking input on stdscr; menus use nonblocking wtimeout
     start_color();

@@ -8,6 +8,7 @@ target_sources(dsd-neo_runtime PRIVATE
   config_expand.c
   log.cpp
   mem.cpp
+  comp.c
   ring.cpp
   input_ring.cpp
   worker_pool.cpp

@@ -66,7 +66,7 @@ static DSD_THREAD_RETURN_TYPE
         if (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL) {
             // One-time input config in UI thread (ESC delay, keypad, nonblocking getch)
             if (!g_ui_curses_cfg_done) {
-                set_escdelay(25);
+                dsd_curses_set_escdelay(25);
                 keypad(stdscr, TRUE);
                 timeout(0);
                 g_ui_curses_cfg_done = 1;

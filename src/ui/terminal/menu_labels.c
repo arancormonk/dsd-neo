@@ -15,6 +15,7 @@
 #include "menu_items.h"
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdio.h>

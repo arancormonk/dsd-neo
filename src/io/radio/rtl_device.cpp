@@ -39,7 +39,7 @@
 #include <stdint.h>
 
 // Forward declarations from main file (exit flag shared with core)
-extern volatile uint8_t exitflag;
+extern "C" volatile uint8_t exitflag;
 
 // Internal RTL device structure
 struct rtl_device {

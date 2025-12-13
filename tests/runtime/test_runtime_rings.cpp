@@ -20,7 +20,9 @@
 #include <dsd-neo/runtime/ring.h>
 
 /* Global exit flag referenced by runtime ring implementations */
+extern "C" {
 volatile uint8_t exitflag = 0;
+}
 
 /* RTL-SDR stream exit shim (when USE_RTLSDR is enabled in runtime) */
 extern "C" int

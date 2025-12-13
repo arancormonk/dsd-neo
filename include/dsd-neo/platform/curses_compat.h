@@ -66,3 +66,13 @@
 #define DSD_CURSES_NEEDS_EXPLICIT_RESIZE 0
 #endif
 #endif
+
+static inline void
+dsd_curses_set_escdelay(int delay_ms) {
+#if defined(DSD_USE_PDCURSES)
+    /* PDCurses does not provide set_escdelay(); degrade gracefully. */
+    (void)delay_ms;
+#else
+    set_escdelay(delay_ms);
+#endif
+}

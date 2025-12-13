@@ -17,6 +17,104 @@
 #include <sys/stat.h>
 #include <windows.h>
 
+#if DSD_COMPILER_MSVC
+/* Minimal getopt(3) implementation for MSVC builds. MinGW/Cygwin provide
+ * getopt via their POSIX layers, so we only enable this for MSVC. */
+char* optarg = NULL;
+int optind = 1;
+int opterr = 1;
+int optopt = 0;
+
+int
+getopt(int argc, char* const argv[], const char* optstring) {
+    static int optpos = 1;
+
+    if (argv == NULL || optstring == NULL) {
+        return -1;
+    }
+
+    /* Allow callers to reset parsing by setting optind <= 1. */
+    if (optind <= 1) {
+        optind = 1;
+        optpos = 1;
+    }
+
+    optarg = NULL;
+
+    if (optind >= argc) {
+        return -1;
+    }
+
+    char* arg = argv[optind];
+    if (arg == NULL) {
+        return -1;
+    }
+
+    /* Start of a new argv element: validate that it looks like an option. */
+    if (optpos == 1) {
+        if (arg[0] != '-' || arg[1] == '\0') {
+            return -1;
+        }
+        /* End-of-options marker */
+        if (arg[1] == '-' && arg[2] == '\0') {
+            optind++;
+            return -1;
+        }
+    }
+
+    /* Consume next option character from this argv element. */
+    char c = arg[optpos];
+    if (c == '\0') {
+        optind++;
+        optpos = 1;
+        return getopt(argc, argv, optstring);
+    }
+
+    optopt = (unsigned char)c;
+
+    const char* spec = strchr(optstring, c);
+    if (spec == NULL || c == ':') {
+        /* Unknown option */
+        optpos++;
+        if (arg[optpos] == '\0') {
+            optind++;
+            optpos = 1;
+        }
+        return '?';
+    }
+
+    if (spec[1] == ':') {
+        /* Option requires an argument. */
+        if (arg[optpos + 1] != '\0') {
+            optarg = &arg[optpos + 1];
+            optind++;
+            optpos = 1;
+        } else if (optind + 1 < argc && argv[optind + 1] != NULL) {
+            optarg = argv[optind + 1];
+            optind += 2;
+            optpos = 1;
+        } else {
+            /* Missing required argument */
+            optpos++;
+            if (arg[optpos] == '\0') {
+                optind++;
+                optpos = 1;
+            }
+            return (optstring[0] == ':') ? ':' : '?';
+        }
+    } else {
+        /* Option does not take an argument. */
+        optpos++;
+        if (arg[optpos] == '\0') {
+            optind++;
+            optpos = 1;
+        }
+    }
+
+    return (int)c;
+}
+#endif /* DSD_COMPILER_MSVC */
+
 int
 dsd_setenv(const char* name, const char* value, int overwrite) {
     if (name == NULL || value == NULL) {
