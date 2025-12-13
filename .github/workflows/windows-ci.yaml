@@ -540,6 +540,14 @@ jobs:
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
           }
 
+      - name: Smoke test staged binary (MSVC)
+        shell: pwsh
+        run: |
+          $exe = 'dist/dsd-neo-msvc/bin/dsd-neo.exe'
+          if (!(Test-Path $exe)) { throw "Staged exe not found: $exe" }
+          Write-Host "Running: $exe -h"
+          & $exe -h
+
       - name: Archive native MSVC ZIP
         shell: pwsh
         env:
@@ -560,6 +568,22 @@ jobs:
           echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         id: zip
+
+      - name: Verify ZIP contents (extract and run help)
+        shell: pwsh
+        run: |
+          $zip = '${{ steps.zip.outputs.ZIP_PATH }}'
+          if (!(Test-Path $zip)) { throw "ZIP not found: $zip" }
+          $dest = Join-Path $env:RUNNER_TEMP ('dsd-neo-msvc-' + [System.Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          $bin = Join-Path $dest 'bin'
+          $exe = Join-Path $bin 'dsd-neo.exe'
+          if (!(Test-Path $exe)) { throw "Extracted exe not found: $exe" }
+          $env:PATH = "$bin;$env:PATH"
+          Write-Host "Running: $exe -h"
+          & $exe -h
 
       - name: Upload native MSVC artifact
         uses: actions/upload-artifact@v5.0.0
@@ -678,6 +702,14 @@ jobs:
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
           }
 
+      - name: Smoke test staged binary (MinGW)
+        shell: pwsh
+        run: |
+          $exe = 'dist/dsd-neo-mingw/bin/dsd-neo.exe'
+          if (!(Test-Path $exe)) { throw "Staged exe not found: $exe" }
+          Write-Host "Running: $exe -h"
+          & $exe -h
+
       - name: Archive native MinGW ZIP
         shell: pwsh
         env:
@@ -698,6 +730,22 @@ jobs:
           echo "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         id: zip
+
+      - name: Verify ZIP contents (extract and run help)
+        shell: pwsh
+        run: |
+          $zip = '${{ steps.zip.outputs.ZIP_PATH }}'
+          if (!(Test-Path $zip)) { throw "ZIP not found: $zip" }
+          $dest = Join-Path $env:RUNNER_TEMP ('dsd-neo-mingw-' + [System.Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          $bin = Join-Path $dest 'bin'
+          $exe = Join-Path $bin 'dsd-neo.exe'
+          if (!(Test-Path $exe)) { throw "Extracted exe not found: $exe" }
+          $env:PATH = "$bin;$env:PATH"
+          Write-Host "Running: $exe -h"
+          & $exe -h
 
       - name: Upload native MinGW artifact
         uses: actions/upload-artifact@v5.0.0
