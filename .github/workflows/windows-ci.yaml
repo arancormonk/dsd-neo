@@ -695,6 +695,16 @@ jobs:
           $docDir = Join-Path $stage 'share/doc/dsd-neo'
           New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
           Copy-Item -Force $exe $binDir
+          # Bundle any runtime DLLs produced by the vcpkg triplet (some ports
+          # may still build shared libraries even under *-static-* triplets).
+          $triplet = $env:VCPKG_TARGET_TRIPLET
+          if (-not $triplet) { $triplet = $env:VCPKG_DEFAULT_TRIPLET }
+          if (-not $triplet) { $triplet = 'x64-mingw-static-release' }
+          $vcpkgBin = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'bin'))
+          if (Test-Path $vcpkgBin) {
+            Get-ChildItem -Path $vcpkgBin -Filter '*.dll' -File -ErrorAction SilentlyContinue |
+              ForEach-Object { Copy-Item -Force $_.FullName $binDir }
+          }
           Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
           $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
           foreach ($f in $required) {
@@ -707,6 +717,10 @@ jobs:
         run: |
           $exe = 'dist/dsd-neo-mingw/bin/dsd-neo.exe'
           if (!(Test-Path $exe)) { throw "Staged exe not found: $exe" }
+          $bin = Split-Path -Parent $exe
+          # Ensure the staged tree is self-contained by avoiding PATH leakage
+          # from the build environment (vcpkg/MSYS2).
+          $env:PATH = "$bin;$env:SystemRoot\\System32;$env:SystemRoot"
           Write-Host "Running: $exe -h"
           & $exe -h
 
@@ -743,7 +757,9 @@ jobs:
           $bin = Join-Path $dest 'bin'
           $exe = Join-Path $bin 'dsd-neo.exe'
           if (!(Test-Path $exe)) { throw "Extracted exe not found: $exe" }
-          $env:PATH = "$bin;$env:PATH"
+          # Ensure the ZIP is self-contained by avoiding PATH leakage from the
+          # build environment (vcpkg/MSYS2).
+          $env:PATH = "$bin;$env:SystemRoot\\System32;$env:SystemRoot"
           Write-Host "Running: $exe -h"
           & $exe -h
 
