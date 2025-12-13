@@ -1147,8 +1147,10 @@ print_fsk_hist_view(void) {
     if (maxv == minv) {
         maxv = minv + 1; /* avoid div-by-zero */
     }
-    const int WR = 60;
-    char ruler[(size_t)WR];
+
+    enum { WR = 60 };
+
+    char ruler[WR];
     for (int x = 0; x < WR; x++) {
         ruler[x] = '-';
     }

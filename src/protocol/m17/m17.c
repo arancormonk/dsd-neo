@@ -1576,9 +1576,16 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     short* samp1 = malloc(sizeof(short) * nsam);
     short* samp2 = malloc(sizeof(short) * nsam);
-
-    short voice1[nsam]; //read in xxx ms of audio from input source
-    short voice2[nsam]; //read in xxx ms of audio from input source
+    short* voice1 = malloc(sizeof(short) * nsam); //read in xxx ms of audio from input source
+    short* voice2 = malloc(sizeof(short) * nsam); //read in xxx ms of audio from input source
+    if (!samp1 || !samp2 || !voice1 || !voice2) {
+        fprintf(stderr, "encodeM17STR: out of memory allocating %zu-sample buffers\n", nsam);
+        free(samp1);
+        free(samp2);
+        free(voice1);
+        free(voice2);
+        return;
+    }
 
     //frame sequence number and eot bit
     uint16_t fsn = 0;
@@ -2676,6 +2683,8 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     }
 
     //free allocated memory
+    free(voice1);
+    free(voice2);
     free(samp1);
     free(samp2);
 }

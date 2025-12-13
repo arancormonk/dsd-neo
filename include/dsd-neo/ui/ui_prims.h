@@ -13,11 +13,11 @@
 
 #pragma once
 
+#include <dsd-neo/platform/curses_compat.h>
 #include <stddef.h>
 #include <time.h>
 
-// ncurses forward declarations (opaque in header)
-typedef struct _win_st WINDOW;
+// `curses_compat.h` provides the `WINDOW` type.
 
 #ifdef __cplusplus
 extern "C" {
