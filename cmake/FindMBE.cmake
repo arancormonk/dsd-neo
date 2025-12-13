@@ -25,8 +25,6 @@ set(_MBE_CANDIDATE_LIB_NAMES
   mbe-neo
   mbe
   libmbe
-  # Windows static library name when shared also exists
-  mbe-neo-static
 )
 find_library(MBE_LIBRARY NAMES ${_MBE_CANDIDATE_LIB_NAMES})
 

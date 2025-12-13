@@ -22,11 +22,8 @@ target_link_libraries(dsd-neo PRIVATE
   dsd-neo_proto_dmr
   dsd-neo_proto_nxdn
   dsd-neo_proto_p25
-  # Ensure runtime logging symbols resolve after static libs that reference them
   dsd-neo_runtime
-  # Audio backends last so Pulse helpers resolve symbols from UI/Runtime
   dsd-neo_io_audio
-  # System/third-party libraries last to satisfy static lib resolution order
   ${LIBS})
 
 # Target include directories (prefer target-scoped over global)

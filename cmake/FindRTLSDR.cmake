@@ -24,7 +24,7 @@ if (NOT RTLSDR_FOUND)
     PATH_SUFFIXES include)
 
   find_library(RTLSDR_LIBRARY
-    NAMES rtlsdr rtlsdr_static librtlsdr librtlsdr_static
+    NAMES rtlsdr librtlsdr
     HINTS
       ${PC_RTLSDR_LIBDIR}
       ${PC_RTLSDR_LIBRARY_DIRS}
@@ -32,8 +32,7 @@ if (NOT RTLSDR_FOUND)
       ENV RTLSDR_ROOT
     PATH_SUFFIXES lib lib64)
 
-  # librtlsdr depends on libusb; this is required when linking against static
-  # librtlsdr, and harmless when linking shared.
+  # librtlsdr depends on libusb
   find_library(RTLSDR_LIBUSB_LIBRARY
     NAMES usb-1.0 libusb-1.0
     HINTS

@@ -156,35 +156,10 @@ set(USE_MBELIB_NEO FALSE)
 find_package(mbe-neo CONFIG QUIET)
 if(mbe-neo_FOUND)
     set(USE_MBELIB_NEO TRUE)
-    set(_dsd_prefer_static_mbe FALSE)
-    if(DEFINED DSD_PREFER_STATIC_DEPS AND DSD_PREFER_STATIC_DEPS)
-        set(_dsd_prefer_static_mbe TRUE)
-    elseif(DEFINED VCPKG_TARGET_TRIPLET AND VCPKG_TARGET_TRIPLET MATCHES "static")
-        set(_dsd_prefer_static_mbe TRUE)
-    endif()
-
-    if(_dsd_prefer_static_mbe)
-        if(TARGET mbe_neo::mbe_static)
-            set(MBE_LINK_TARGET mbe_neo::mbe_static)
-        elseif(TARGET mbe_neo::mbe_shared)
-            set(MBE_LINK_TARGET mbe_neo::mbe_shared)
-        else()
-            message(FATAL_ERROR "mbe-neo package found but exported targets are missing")
-        endif()
+    if(TARGET mbe_neo::mbe_shared)
+        set(MBE_LINK_TARGET mbe_neo::mbe_shared)
     else()
-        if(TARGET mbe_neo::mbe_shared)
-            set(MBE_LINK_TARGET mbe_neo::mbe_shared)
-        elseif(TARGET mbe_neo::mbe_static)
-            set(MBE_LINK_TARGET mbe_neo::mbe_static)
-        else()
-            message(FATAL_ERROR "mbe-neo package found but exported targets are missing")
-        endif()
-    endif()
-
-    if(MBE_LINK_TARGET STREQUAL "mbe_neo::mbe_static")
-        # When consuming the static mbelib-neo on Windows/Cygwin, ensure
-        # headers don't apply __declspec(dllimport) decorations.
-        add_compile_definitions(MBE_STATIC)
+        message(FATAL_ERROR "mbe-neo package found but exported targets are missing")
     endif()
     # Ensure includes for legacy-style #include <mbelib.h>
     # by adding the directory that directly contains mbelib.h
@@ -219,18 +194,6 @@ else()
         endforeach()
         list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
     endif()
-    # When linking a static ncurses on MinGW, the headers may default to
-    # __declspec(dllimport) which produces __imp_* references that do not exist
-    # in the static archive. Defining NCURSES_STATIC ensures the correct
-    # linkage decorations.
-    if(MINGW)
-        foreach(_curses_lib IN LISTS CURSES_LIBRARIES)
-            if(_curses_lib MATCHES "\\.a$" AND NOT _curses_lib MATCHES "\\.dll\\.a$")
-                add_compile_definitions(NCURSES_STATIC)
-                break()
-            endif()
-        endforeach()
-    endif()
     message(STATUS "Curses backend: ncurses")
 endif()
 
@@ -264,8 +227,6 @@ endif()
 set(AUDIO_SYSTEM_LIBS "")
 if(DSD_USE_PORTAUDIO)
     list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
-    # Prefer linking only the PortAudio library here; platform/system deps are
-    # appended later to keep static link order correct on MinGW.
     set(AUDIO_LIBS ${PORTAUDIO_LIBRARY})
     if(WIN32 AND NOT CYGWIN)
         list(APPEND AUDIO_SYSTEM_LIBS winmm ole32 uuid setupapi)
@@ -281,16 +242,6 @@ if(RTLSDR_FOUND)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
     add_definitions(-DUSE_RTLSDR)
-    # vcpkg static builds on Windows install rtlsdr as rtlsdr_static.* and
-    # require rtlsdr_STATIC to avoid dllimport decorations.
-    if(WIN32 AND NOT CYGWIN)
-        foreach(_rtlsdr_lib IN LISTS RTLSDR_LIBRARIES)
-            get_filename_component(_rtlsdr_name "${_rtlsdr_lib}" NAME_WE)
-            if(_rtlsdr_name MATCHES "rtlsdr_static")
-                add_compile_definitions(rtlsdr_STATIC)
-            endif()
-        endforeach()
-    endif()
     # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
     include(CheckSymbolExists)
     set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
