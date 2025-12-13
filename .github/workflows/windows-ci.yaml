@@ -615,7 +615,10 @@ jobs:
         uses: msys2/setup-msys2@v2.29.0
         with:
           msystem: MINGW64
-          update: true
+          # Avoid full MSYS2 system upgrades in CI.
+          # We've seen intermittent pacman database signature failures in unrelated repos (e.g. clangarm64)
+          # that break the job before we even build. Installing only what we need is more reliable.
+          update: false
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
