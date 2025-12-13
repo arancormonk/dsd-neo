@@ -4,6 +4,9 @@
 # Tool caches
 /.cache/
 
+# Visual Studio
+/.vs/
+
 # Editor/IntelliSense database generated via CMake Tools
 /compile_commands.json
 
