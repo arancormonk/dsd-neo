@@ -25,9 +25,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# MSVC: enable experimental C11 atomics for <stdatomic.h>
+# MSVC: enable C11 atomics for <stdatomic.h>
+#
+# MSVC currently requires explicit opt-in for C11 atomics; otherwise it defines
+# __STDC_NO_ATOMICS__ and <stdatomic.h> hard-errors (vcruntime_c11_stdatomic.h).
 if(MSVC)
-    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+    add_compile_options(
+        $<$<COMPILE_LANG_AND_ID:C,MSVC>:/std:c11>
+        $<$<COMPILE_LANG_AND_ID:C,MSVC>:/Zc:__STDC__>
+        $<$<COMPILE_LANG_AND_ID:C,MSVC>:/experimental:c11atomics>
+    )
 endif()
 
 # Modern build options (aligned with mbelib-neo style)
