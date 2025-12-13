@@ -16,11 +16,18 @@
 #include <string.h>
 #include <time.h>
 
-// MSVC doesn't support GCC-style weak attributes; rely on real implementations there.
+// Weak symbols are used to allow tests to override certain hooks.
+// On COFF targets (Cygwin/MinGW), weak definitions may not be pulled from
+// static archives reliably, so keep public wrapper APIs strong there.
 #if defined(_MSC_VER)
-#define P25_WEAK_API
+#define P25_WEAK_FALLBACK
+#define P25_WEAK_WRAPPER
+#elif defined(__CYGWIN__) || defined(__MINGW32__) || defined(__MINGW64__)
+#define P25_WEAK_FALLBACK __attribute__((weak))
+#define P25_WEAK_WRAPPER
 #else
-#define P25_WEAK_API __attribute__((weak))
+#define P25_WEAK_FALLBACK __attribute__((weak))
+#define P25_WEAK_WRAPPER  __attribute__((weak))
 #endif
 
 /* ============================================================================
@@ -28,7 +35,7 @@
  * ============================================================================ */
 
 #if !defined(_MSC_VER)
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
     if (!opts || !state || freq <= 0) {
@@ -45,12 +52,12 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     state->p25_last_vc_tune_time_m = nowm;
 }
 
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     UNUSED(opts);
     (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
@@ -76,7 +83,7 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
  *
  * @return Output sample rate in Hz, or 0 if unavailable.
  */
-P25_WEAK_API unsigned int
+P25_WEAK_FALLBACK unsigned int
 dsd_rtl_stream_output_rate(void) {
     return 0; /* No RTL stream available in test/non-RTL builds */
 }
@@ -85,22 +92,22 @@ dsd_rtl_stream_output_rate(void) {
  * Weak Fallbacks for Event History
  * ============================================================================ */
 
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     UNUSED3(opts, state, slot);
 }
 
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
     UNUSED5(opts, state, slot, swrite, event_string);
 }
 
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 push_event_history(Event_History_I* event_struct) {
     UNUSED(event_struct);
 }
 
-P25_WEAK_API void
+P25_WEAK_FALLBACK void
 init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
     UNUSED3(event_struct, start, stop);
 }
@@ -1110,7 +1117,7 @@ p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid
  * Neighbor Update and CC Candidate Functions
  * ============================================================================ */
 
-P25_WEAK_API void
+P25_WEAK_WRAPPER void
 p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     if (count <= 0 || !state || !freqs) {
         return;
@@ -1130,7 +1137,7 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     }
 }
 
-P25_WEAK_API int
+P25_WEAK_WRAPPER int
 p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
     if (!state || !out_freq) {
         return 0;
@@ -1201,10 +1208,10 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
 
 /* ============================================================================
  * Legacy Compatibility Wrappers
- * These use weak symbols to allow tests to override them with stubs.
+ * These use weak symbols (where supported) to allow tests to override them.
  * ============================================================================ */
 
-P25_WEAK_API void
+P25_WEAK_WRAPPER void
 p25_sm_init(dsd_opts* opts, dsd_state* state) {
     // Reset global flag to allow re-initialization with real opts/state.
     // This ensures user configuration (e.g., trunk_hangtime) is applied
@@ -1213,24 +1220,24 @@ p25_sm_init(dsd_opts* opts, dsd_state* state) {
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
 }
 
-P25_WEAK_API void
+P25_WEAK_WRAPPER void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
-P25_WEAK_API void
+P25_WEAK_WRAPPER void
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, dst, src, svc_bits);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
-P25_WEAK_API void
+P25_WEAK_WRAPPER void
 p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
 }
 
-P25_WEAK_API void
+P25_WEAK_WRAPPER void
 p25_sm_tick(dsd_opts* opts, dsd_state* state) {
     p25_sm_tick_ctx(p25_sm_get_ctx(), opts, state);
 }
