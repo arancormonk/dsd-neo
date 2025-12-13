@@ -57,7 +57,13 @@ __attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
 #endif
 
 #ifndef DSD_NEO_RESTRICT
+#if defined(_MSC_VER)
+#define DSD_NEO_RESTRICT __restrict
+#elif defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_RESTRICT __restrict__
+#else
+#define DSD_NEO_RESTRICT
+#endif
 #endif
 
 #ifndef DSD_NEO_IVDEP

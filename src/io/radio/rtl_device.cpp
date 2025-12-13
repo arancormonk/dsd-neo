@@ -98,7 +98,15 @@ struct rtl_device {
  * specified alignment. Use with care and only when the alignment guarantee
  * is actually met.
  */
+#ifndef DSD_NEO_RESTRICT
+#if defined(_MSC_VER)
+#define DSD_NEO_RESTRICT __restrict
+#elif defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_RESTRICT __restrict__
+#else
+#define DSD_NEO_RESTRICT
+#endif
+#endif
 
 /**
  * @brief Optionally enable realtime scheduling and set CPU affinity for the current
