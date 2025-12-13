@@ -30,11 +30,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # MSVC currently requires explicit opt-in for C11 atomics; otherwise it defines
 # __STDC_NO_ATOMICS__ and <stdatomic.h> hard-errors (vcruntime_c11_stdatomic.h).
 if(MSVC)
-    add_compile_options(
-        $<$<COMPILE_LANG_AND_ID:C,MSVC>:/std:c11>
-        $<$<COMPILE_LANG_AND_ID:C,MSVC>:/Zc:__STDC__>
-        $<$<COMPILE_LANG_AND_ID:C,MSVC>:/experimental:c11atomics>
-    )
+    # Visual Studio generators are more reliable when these are applied via the
+    # language-specific C flags rather than directory compile options.
+    if(NOT CMAKE_C_FLAGS MATCHES "/experimental:c11atomics")
+        string(APPEND CMAKE_C_FLAGS " /std:c11 /Zc:__STDC__ /experimental:c11atomics")
+    endif()
 endif()
 
 # Modern build options (aligned with mbelib-neo style)
