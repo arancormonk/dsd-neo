@@ -25,6 +25,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# MSVC: enable experimental C11 atomics for <stdatomic.h>
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+endif()
+
 # Modern build options (aligned with mbelib-neo style)
 option(DSD_ENABLE_WARNINGS "Enable common warning flags" ON)
 option(DSD_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)

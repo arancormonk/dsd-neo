@@ -340,7 +340,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     int i, count;
     float symbol;
     float sum;
-    ssize_t result;
+    sf_count_t result;
     const unsigned int analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
 
     sum = 0.0f;
