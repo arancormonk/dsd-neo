@@ -20,6 +20,10 @@ static dsd_opts* g_opts = NULL;
 static dsd_state* g_state = NULL;
 static int g_p25_sm_wd_ms = 0; // 0 => unset (use defaults per UI mode)
 
+#if defined(__CYGWIN__)
+static p25_sm_ctx_t* (*volatile g_p25_sm_link_anchor)(void) = p25_sm_get_ctx;
+#endif
+
 void
 p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -68,6 +72,9 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+#if defined(__CYGWIN__)
+    (void)g_p25_sm_link_anchor;
+#endif
     g_opts = opts;
     g_state = state;
     // One-time env override for watchdog cadence (milliseconds)
