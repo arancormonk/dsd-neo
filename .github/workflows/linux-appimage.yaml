@@ -10,9 +10,6 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
-      - "**/*.json"
-      - "vcpkg-ports/**"
-      - "**/*.cmake"
 
 jobs:
   build-appimage:

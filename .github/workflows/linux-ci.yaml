@@ -10,9 +10,6 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
-      - "**/*.json"
-      - "vcpkg-ports/**"
-      - "**/*.cmake"
 
   pull_request:
     branches: [main, master]
@@ -22,9 +19,6 @@ on:
       - ".github/**/*.yml"
       - ".github/**/*.yaml"
       - "**/*.md"
-      - "**/*.json"
-      - "vcpkg-ports/**"
-      - "**/*.cmake"
 
 jobs:
   build-linux:

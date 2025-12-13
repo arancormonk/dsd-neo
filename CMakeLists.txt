@@ -10,8 +10,8 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # Platform detection and configuration
 include(Platform)
 # Curses/PDCurses selection - set early before find_package
-if(NOT (WIN32 AND NOT CYGWIN))
-    # Prefer ncurses wide-character support (POSIX systems)
+if(MINGW OR NOT (WIN32 AND NOT CYGWIN))
+    # Prefer ncurses wide-character support (POSIX + MinGW/vcpkg ships ncursesw)
     set(CURSES_NEED_NCURSES TRUE)
     set(CURSES_NEED_WIDE TRUE)
 endif()
