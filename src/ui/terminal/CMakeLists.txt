@@ -62,12 +62,19 @@ if(DSD_ENABLE_WARNINGS)
     endif()
 endif()
 
-# Many menu actions are conditionally referenced; suppress unused-function just for these sources
-set_source_files_properties(menu_core.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(menu_labels.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(menu_callbacks.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(menu_actions.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(menu_items.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(menu_prompts.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(menu_render.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
-set_source_files_properties(dsd_ncurses_menu.c PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+# Many menu actions are conditionally referenced; suppress unused-function just for these sources.
+# MSVC/clang-cl do not understand GCC/Clang-style `-Wno-*` options.
+if(MSVC)
+    set(_dsd_ui_terminal_no_unused_function_opt "/wd4505")
+else()
+    set(_dsd_ui_terminal_no_unused_function_opt "-Wno-unused-function")
+endif()
+
+set_source_files_properties(menu_core.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(menu_labels.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(menu_callbacks.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(menu_actions.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(menu_items.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(menu_prompts.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(menu_render.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
+set_source_files_properties(dsd_ncurses_menu.c PROPERTIES COMPILE_OPTIONS "${_dsd_ui_terminal_no_unused_function_opt}")
