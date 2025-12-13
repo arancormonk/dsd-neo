@@ -27,7 +27,6 @@
 #include <sys/stat.h>
 
 #if defined(_WIN32)
-#include <direct.h>
 #include <windows.h>
 #endif
 
@@ -186,21 +185,13 @@ ensure_dir_exists(const char* path) {
             char saved = *p;
             *p = '\0';
             if (strlen(buf) > 0) {
-#if defined(_WIN32)
-                _dsd_mkdir(buf);
-#else
                 dsd_mkdir(buf, 0700);
-#endif
             }
             *p = saved;
         }
         p++;
     }
-#if defined(_WIN32)
-    _dsd_mkdir(buf);
-#else
     dsd_mkdir(buf, 0700);
-#endif
 }
 
 // Default path ---------------------------------------------------------------

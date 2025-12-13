@@ -23,7 +23,10 @@ debug_write_label_imbe(dsd_state* state, unsigned int cc, int bitindex, char bit
 /**
  * Logs the IMBE's c0-c6 words.
  */
-static __attribute__((unused)) void
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((unused))
+#endif
+static void
 debug_log_imbe(char imbe_fr[8][23]) {
     int i, j;
     fprintf(stderr, "    ");

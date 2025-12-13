@@ -111,7 +111,10 @@ ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
  * @param out [out] Destination for the sample.
  * @return 1 on success, 0 on shutdown/exit request.
  */
-static __attribute__((unused)) int
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((unused))
+#endif
+static int
 ring_read_block(udp_input_ring* r, int16_t* out) {
     dsd_mutex_lock(&r->m);
     while (ring_used(r) == 0) {

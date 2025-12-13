@@ -82,11 +82,7 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
 
     struct stat st;
     if (stat(path, &st) != 0) {
-#ifdef _WIN32
-        (void)_dsd_mkdir(path);
-#else
         (void)dsd_mkdir(path, 0700);
-#endif
     }
 
     int n = 0;

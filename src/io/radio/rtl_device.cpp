@@ -946,7 +946,10 @@ verbose_direct_sampling(rtlsdr_dev_t* dev, int on) {
  * @return 0 on success or a negative error code.
  */
 // Not currently used; keep for potential future diagnostics.
-static __attribute__((unused)) int
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((unused))
+#endif
+static int
 verbose_offset_tuning(rtlsdr_dev_t* dev) {
     int r;
     r = rtlsdr_set_offset_tuning(dev, 1);

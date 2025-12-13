@@ -16,8 +16,8 @@
 #include <string.h>
 #include <time.h>
 
-// COFF/Windows archives can drop weak symbols; make wrappers strong there.
-#if defined(_WIN32) || defined(__CYGWIN__)
+// MSVC doesn't support GCC-style weak attributes; rely on real implementations there.
+#if defined(_MSC_VER)
 #define P25_WEAK_API
 #else
 #define P25_WEAK_API __attribute__((weak))
@@ -27,7 +27,8 @@
  * Weak fallbacks for tuning functions (overridden by io/control when linked)
  * ============================================================================ */
 
-__attribute__((weak)) void
+#if !defined(_MSC_VER)
+P25_WEAK_API void
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
     if (!opts || !state || freq <= 0) {
@@ -44,12 +45,12 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     state->p25_last_vc_tune_time_m = nowm;
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     UNUSED(opts);
     (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
@@ -75,7 +76,7 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
  *
  * @return Output sample rate in Hz, or 0 if unavailable.
  */
-__attribute__((weak)) unsigned int
+P25_WEAK_API unsigned int
 dsd_rtl_stream_output_rate(void) {
     return 0; /* No RTL stream available in test/non-RTL builds */
 }
@@ -84,25 +85,26 @@ dsd_rtl_stream_output_rate(void) {
  * Weak Fallbacks for Event History
  * ============================================================================ */
 
-__attribute__((weak)) void
+P25_WEAK_API void
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     UNUSED3(opts, state, slot);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
     UNUSED5(opts, state, slot, swrite, event_string);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 push_event_history(Event_History_I* event_struct) {
     UNUSED(event_struct);
 }
 
-__attribute__((weak)) void
+P25_WEAK_API void
 init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
     UNUSED3(event_struct, start, stop);
 }
+#endif
 
 /* ============================================================================
  * Internal Helpers

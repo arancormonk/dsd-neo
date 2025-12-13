@@ -9,6 +9,12 @@
 #ifndef TYT_AP
 #define TYT_AP
 
+#if defined(__GNUC__) || defined(__clang__)
+#define PC4_ATTR_UNUSED __attribute__((unused))
+#else
+#define PC4_ATTR_UNUSED
+#endif
+
 #define nbround      254
 #define n1           264
 
@@ -59,10 +65,10 @@ void pc4decrypt(PC4Context* ctx);
 void binhex(PC4Context* ctx, short* z, int length);
 /** @brief Convert hexadecimal representation to binary bits. */
 void hexbin(PC4Context* ctx, short* q, uint8_t w, uint8_t hex);
-static __attribute__((unused)) void u64_to_bytes_be(uint64_t val, unsigned char* out);
+static PC4_ATTR_UNUSED void u64_to_bytes_be(uint64_t val, unsigned char* out);
 
 /* Encrypt a 49-bit frame (original flow) */
-static __attribute__((unused)) void
+static PC4_ATTR_UNUSED void
 encrypt_frame_49(short frame_bits_in[49]) {
     for (int i = 0; i < 49; i++) {
         ctx.bits[i] = frame_bits_in[i];
@@ -90,7 +96,7 @@ encrypt_frame_49(short frame_bits_in[49]) {
 }
 
 /* Decrypt a 49-bit frame (original flow) */
-static __attribute__((unused)) void
+static PC4_ATTR_UNUSED void
 decrypt_frame_49(short frame_bits_in[49]) {
     for (int i = 0; i < 49; i++) {
         ctx.bits[i] = frame_bits_in[i];
@@ -118,7 +124,7 @@ decrypt_frame_49(short frame_bits_in[49]) {
 }
 
 /* Convert 64-bit integer to bytes (big-endian) */
-static __attribute__((unused)) void
+static PC4_ATTR_UNUSED void
 u64_to_bytes_be(uint64_t val, unsigned char* out) {
     for (int i = 0; i < 8; i++) {
         out[i] = (unsigned char)((val >> (56 - 8 * i)) & 0xFF);
