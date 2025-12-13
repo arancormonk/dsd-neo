@@ -15,7 +15,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-#if !DSD_PLATFORM_WIN_NATIVE
+#if defined(__MINGW32__) || defined(__MINGW64__)
+#include <getopt.h>
+#include <unistd.h>
+#elif !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
 #endif
 
