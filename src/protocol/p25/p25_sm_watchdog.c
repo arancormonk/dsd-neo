@@ -4,11 +4,11 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <stdatomic.h>
 
 extern volatile uint8_t exitflag;
 

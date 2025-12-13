@@ -27,6 +27,7 @@
 
 /* Forward declaration for reliability computation (defined in dsd_dibit.c) */
 extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -34,7 +35,6 @@ extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <locale.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -42,13 +42,13 @@ extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
  * Vote counters and Hamming distance tracking for C4FM/QPSK/GFSK switching.
  * These are atomic because trunk_tune_to_freq() resets them from the tuning
  * thread while getFrameSync() reads/writes them on the DSP thread. */
-static _Atomic int g_vote_qpsk = 0;
-static _Atomic int g_vote_c4fm = 0;
-static _Atomic int g_vote_gfsk = 0;
-static _Atomic int g_ham_c4fm_recent = 24;
-static _Atomic int g_ham_qpsk_recent = 24;
-static _Atomic int g_ham_gfsk_recent = 24;
-static _Atomic double g_qpsk_dwell_enter_m = 0.0;
+static atomic_int g_vote_qpsk = 0;
+static atomic_int g_vote_c4fm = 0;
+static atomic_int g_vote_gfsk = 0;
+static atomic_int g_ham_c4fm_recent = 24;
+static atomic_int g_ham_qpsk_recent = 24;
+static atomic_int g_ham_gfsk_recent = 24;
+static atomic_int g_qpsk_dwell_enter_ms = 0;
 
 void
 dsd_frame_sync_reset_mod_state(void) {
@@ -58,7 +58,7 @@ dsd_frame_sync_reset_mod_state(void) {
     atomic_store(&g_ham_c4fm_recent, 24);
     atomic_store(&g_ham_qpsk_recent, 24);
     atomic_store(&g_ham_gfsk_recent, 24);
-    atomic_store(&g_qpsk_dwell_enter_m, 0.0);
+    atomic_store(&g_qpsk_dwell_enter_ms, 0);
 }
 
 /**
@@ -193,7 +193,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    /* Dwell timer for CQPSK entry uses file-scope g_qpsk_dwell_enter_m. */
+    /* Dwell timer for CQPSK entry uses file-scope g_qpsk_dwell_enter_ms. */
     const time_t now = time(NULL);
     // Periodic P25 trunk SM heartbeat (once per second) to enforce hangtime
     // fallbacks even if frame processing stalls due to signal loss.
@@ -433,10 +433,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                                Compare (snr_q - 6) vs snr_c to account for this offset. */
                             const double kQpskOffsetDb = 6.0;
                             double normalized_delta = (snr_q - kQpskOffsetDb) - snr_c;
-                            double nowm_bias = dsd_time_now_monotonic_s();
-                            double dwell_bias = atomic_load(&g_qpsk_dwell_enter_m);
-                            int in_qpsk_dwell =
-                                (state->rf_mod == 1 && dwell_bias > 0.0 && (nowm_bias - dwell_bias) < 2.0);
+                            uint32_t now_ms = (uint32_t)dsd_time_monotonic_ms();
+                            uint32_t dwell_enter_ms = (uint32_t)atomic_load(&g_qpsk_dwell_enter_ms);
+                            int in_qpsk_dwell = (state->rf_mod == 1 && dwell_enter_ms != 0
+                                                 && (uint32_t)(now_ms - dwell_enter_ms) < 2000U);
                             if (normalized_delta >= 2.0) {
                                 want_mod = 1; /* QPSK clearly better (normalized) */
                             } else if (normalized_delta <= -3.0 && !in_qpsk_dwell) {
@@ -531,9 +531,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
              * misclassification time that can corrupt early bursts and elevate audio errors.
              */
                     /* Slightly increase hysteresis when leaving QPSK to avoid flip-flop */
-                    double nowm_dwell = dsd_time_now_monotonic_s();
-                    double dwell_enter = atomic_load(&g_qpsk_dwell_enter_m);
-                    int in_qpsk_dwell2 = (state->rf_mod == 1 && dwell_enter > 0.0 && (nowm_dwell - dwell_enter) < 2.0);
+                    uint32_t now_ms = (uint32_t)dsd_time_monotonic_ms();
+                    uint32_t dwell_enter_ms = (uint32_t)atomic_load(&g_qpsk_dwell_enter_ms);
+                    int in_qpsk_dwell2 =
+                        (state->rf_mod == 1 && dwell_enter_ms != 0 && (uint32_t)(now_ms - dwell_enter_ms) < 2000U);
                     int req_c4_votes = (state->rf_mod == 1) ? (in_qpsk_dwell2 ? 5 : 3) : 2;
                     int vote_qpsk = atomic_load(&g_vote_qpsk);
                     int vote_gfsk = atomic_load(&g_vote_gfsk);
@@ -550,10 +551,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     /* Record entry time when switching into QPSK to add short dwell
                      * that resists immediate fallback to C4FM on marginal signals. */
                     if (do_switch == 1) {
-                        atomic_store(&g_qpsk_dwell_enter_m, dsd_time_now_monotonic_s());
+                        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
                     } else if (state->rf_mod == 1) {
                         /* Leaving QPSK: clear dwell marker */
-                        atomic_store(&g_qpsk_dwell_enter_m, 0.0);
+                        atomic_store(&g_qpsk_dwell_enter_ms, 0);
                     }
                     state->rf_mod = do_switch;
                     /* Reset Hamming distance trackers so new modulation starts fresh */

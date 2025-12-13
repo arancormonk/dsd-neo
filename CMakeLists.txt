@@ -184,6 +184,17 @@ if(WIN32 AND NOT CYGWIN AND NOT MINGW)
     message(STATUS "Curses backend: PDCurses")
 else()
     find_package(Curses REQUIRED)
+    # Some ncurses installs (notably vcpkg's ncursesw on MinGW) do not provide a
+    # top-level curses.h shim in the include root. Our code includes <curses.h>,
+    # so add the ncursesw subdir when needed.
+    if(CURSES_NEED_WIDE)
+        foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
+            if(EXISTS "${_curses_inc}/ncursesw/curses.h" AND NOT EXISTS "${_curses_inc}/curses.h")
+                list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
+            endif()
+        endforeach()
+        list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
+    endif()
     message(STATUS "Curses backend: ncurses")
 endif()
 

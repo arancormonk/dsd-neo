@@ -13,13 +13,12 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
-
-#include <stdatomic.h>
 #include <string.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -39,8 +38,8 @@ static size_t g_head = 0; // pop index
 static size_t g_tail = 0; // push index
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
-static atomic_uint g_overflow = 0;
-static atomic_uint g_overflow_warn_gate = 0;
+static atomic_int g_overflow = 0;
+static atomic_int g_overflow_warn_gate = 0;
 
 static void
 ensure_mu_init(void) {
