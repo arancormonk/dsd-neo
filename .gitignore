@@ -1,5 +1,6 @@
 # Build artifacts
 /build/
+/vcpkg_installed/
 
 # Tool caches
 /.cache/

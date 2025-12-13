@@ -68,7 +68,10 @@
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
       }
     },
     {
@@ -85,32 +88,35 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-dynamic-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
         "BUILD_TESTING": "OFF",
         "DSD_ENABLE_LTO": "ON",
         "DSD_ENABLE_FAST_MATH": "ON"
       }
     },
-		    {
-	      "name": "win-mingw-debug",
-	      "displayName": "Windows MinGW Debug",
-	      "description": "Windows Debug build with MinGW-w64",
-	      "generator": "MinGW Makefiles",
-	      "binaryDir": "${sourceDir}/build/win-mingw-debug",
-	      "condition": {
-	        "type": "equals",
-	        "lhs": "${hostSystemName}",
-	        "rhs": "Windows"
-	      },
-		      "cacheVariables": {
-		        "CMAKE_BUILD_TYPE": "Debug",
-		        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-		        "VCPKG_TARGET_TRIPLET": "x64-mingw-static-release",
-		        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
-		        "CMAKE_EXE_LINKER_FLAGS": "-static -static-libgcc -static-libstdc++"
-		      }
-		    },
-		    {
-	      "name": "win-mingw-release",
+    {
+      "name": "win-mingw-debug",
+      "displayName": "Windows MinGW Debug",
+      "description": "Windows Debug build with MinGW-w64",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/win-mingw-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
+      }
+    },
+    {
+      "name": "win-mingw-release",
       "displayName": "Windows MinGW Release",
       "description": "Windows Release build with MinGW-w64",
       "generator": "MinGW Makefiles",
@@ -119,18 +125,18 @@
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
-	      },
-	      "cacheVariables": {
-		        "CMAKE_BUILD_TYPE": "Release",
-		        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-		        "VCPKG_TARGET_TRIPLET": "x64-mingw-static-release",
-		        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
-		        "BUILD_TESTING": "OFF",
-		        "DSD_ENABLE_LTO": "ON",
-		        "DSD_ENABLE_FAST_MATH": "ON",
-		        "CMAKE_EXE_LINKER_FLAGS": "-static -static-libgcc -static-libstdc++"
-		      }
-		    }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "BUILD_TESTING": "OFF",
+        "DSD_ENABLE_LTO": "ON",
+        "DSD_ENABLE_FAST_MATH": "ON"
+      }
+    }
   ],
   "buildPresets": [
     {

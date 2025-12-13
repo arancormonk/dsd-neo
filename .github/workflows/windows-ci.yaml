@@ -134,7 +134,7 @@ jobs:
         shell: pwsh
         if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_mbe == 'true'
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then echo "Extracting mbelib-neo.tar.gz in $WS"; tar -xzf mbelib-neo.tar.gz || true; D="mbelib-neo-main"; if [ ! -d "$D/src/ambe" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" mbelib-neo || true; git clone --depth 1 https://github.com/arancormonk/mbelib-neo.git mbelib-neo; D="mbelib-neo"; fi; echo "Using source dir: $D"; test -d "$D/src/ambe" && ls -la "$D/src/ambe" || true; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=ON; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached mbelib-neo in $DEPS_PREFIX"; fi'
 
       - name: Download codec2 source (tarball)
         shell: pwsh
@@ -478,8 +478,9 @@ jobs:
       contents: write
     env:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static-release
-      VCPKG_TARGET_TRIPLET: x64-windows-static-release
+      VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
+      VCPKG_TARGET_TRIPLET: x64-windows-dynamic-release
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
       # Enable vcpkg binary caching on GitHub Actions cache.
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
       # Enable sccache GitHub Actions backend.
@@ -505,7 +506,7 @@ jobs:
 
       - name: Install vcpkg dependencies (MSVC)
         shell: pwsh
-        run: vcpkg install --triplet $env:VCPKG_DEFAULT_TRIPLET --x-manifest-root "$env:GITHUB_WORKSPACE"
+        run: vcpkg install --triplet $env:VCPKG_DEFAULT_TRIPLET --overlay-triplets "$env:GITHUB_WORKSPACE\\vcpkg-triplets" --x-manifest-root "$env:GITHUB_WORKSPACE"
 
       - name: Configure (MSVC Release)
         shell: pwsh
@@ -533,6 +534,18 @@ jobs:
           $docDir = Join-Path $stage 'share/doc/dsd-neo'
           New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
           Copy-Item -Force $exe $binDir
+
+          $triplet = $env:VCPKG_TARGET_TRIPLET
+          if (-not $triplet) { $triplet = $env:VCPKG_DEFAULT_TRIPLET }
+          if (-not $triplet) { $triplet = 'x64-windows-dynamic-release' }
+          $vcpkgBin = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'bin'))
+          $searchDirs = @()
+          if (Test-Path $vcpkgBin) { $searchDirs += $vcpkgBin }
+          & 'tools/windows/stage_runtime_dlls.ps1' `
+            -TargetBinary (Join-Path $binDir 'dsd-neo.exe') `
+            -DestinationDir $binDir `
+            -SearchDirs $searchDirs
+
           Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
           $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
           foreach ($f in $required) {
@@ -545,6 +558,10 @@ jobs:
         run: |
           $exe = 'dist/dsd-neo-msvc/bin/dsd-neo.exe'
           if (!(Test-Path $exe)) { throw "Staged exe not found: $exe" }
+          $bin = Split-Path -Parent $exe
+          # Ensure the staged tree is self-contained by avoiding PATH leakage
+          # from the build environment (vcpkg/VS).
+          $env:PATH = "$bin;$env:SystemRoot\\System32;$env:SystemRoot"
           Write-Host "Running: $exe -h"
           & $exe -h
 
@@ -581,7 +598,9 @@ jobs:
           $bin = Join-Path $dest 'bin'
           $exe = Join-Path $bin 'dsd-neo.exe'
           if (!(Test-Path $exe)) { throw "Extracted exe not found: $exe" }
-          $env:PATH = "$bin;$env:PATH"
+          # Ensure the ZIP is self-contained by avoiding PATH leakage from the
+          # build environment.
+          $env:PATH = "$bin;$env:SystemRoot\\System32;$env:SystemRoot"
           Write-Host "Running: $exe -h"
           & $exe -h
 
@@ -615,8 +634,8 @@ jobs:
       contents: write
     env:
       # Use a release-only triplet to avoid building debug variants of vcpkg deps.
-      VCPKG_DEFAULT_TRIPLET: x64-mingw-static-release
-      VCPKG_TARGET_TRIPLET: x64-mingw-static-release
+      VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic-release
+      VCPKG_TARGET_TRIPLET: x64-mingw-dynamic-release
       # Enable vcpkg binary caching on GitHub Actions cache.
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
       # Enable sccache GitHub Actions backend.
@@ -695,16 +714,19 @@ jobs:
           $docDir = Join-Path $stage 'share/doc/dsd-neo'
           New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
           Copy-Item -Force $exe $binDir
-          # Bundle any runtime DLLs produced by the vcpkg triplet (some ports
-          # may still build shared libraries even under *-static-* triplets).
           $triplet = $env:VCPKG_TARGET_TRIPLET
           if (-not $triplet) { $triplet = $env:VCPKG_DEFAULT_TRIPLET }
-          if (-not $triplet) { $triplet = 'x64-mingw-static-release' }
+          if (-not $triplet) { $triplet = 'x64-mingw-dynamic-release' }
           $vcpkgBin = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'bin'))
-          if (Test-Path $vcpkgBin) {
-            Get-ChildItem -Path $vcpkgBin -Filter '*.dll' -File -ErrorAction SilentlyContinue |
-              ForEach-Object { Copy-Item -Force $_.FullName $binDir }
-          }
+          $searchDirs = @()
+          if (Test-Path $vcpkgBin) { $searchDirs += $vcpkgBin }
+          $msysMingwBin = 'C:\\msys64\\mingw64\\bin'
+          if (Test-Path $msysMingwBin) { $searchDirs += $msysMingwBin }
+          & 'tools/windows/stage_runtime_dlls.ps1' `
+            -TargetBinary (Join-Path $binDir 'dsd-neo.exe') `
+            -DestinationDir $binDir `
+            -SearchDirs $searchDirs
+
           Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
           $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
           foreach ($f in $required) {
