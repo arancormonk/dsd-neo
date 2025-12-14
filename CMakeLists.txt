@@ -255,6 +255,7 @@ set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS} ${CURSES_LIBRA
 if(RTLSDR_FOUND)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+    list(APPEND _PUBLIC_INCLUDES ${RTLSDR_INCLUDE_DIRS})
     add_definitions(-DUSE_RTLSDR)
     # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
     include(CheckSymbolExists)
