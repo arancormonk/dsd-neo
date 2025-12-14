@@ -9,11 +9,17 @@
 
 #include <dsd-neo/runtime/unicode.h>
 
+#include <dsd-neo/platform/platform.h>
+
 #include <ctype.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if DSD_PLATFORM_WIN_NATIVE
+#include <windows.h>
+#endif
 
 #if defined(__unix__) || defined(__APPLE__)
 #define HAVE_LANGINFO 1
@@ -22,6 +28,21 @@
 
 static int g_unicode_cached = 0;
 static int g_unicode_supported = 0;
+static int g_locale_inited = 0;
+
+static char g_cached_locale[128] = {0};
+#if DSD_PLATFORM_WIN_NATIVE
+static unsigned int g_cached_console_cp = 0;
+#endif
+
+static int
+env_truthy(const char* name) {
+    const char* v = getenv(name);
+    if (!v || !*v) {
+        return 0;
+    }
+    return (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+}
 
 static int
 str_ieq(const char* a, const char* b) {
@@ -35,37 +56,126 @@ str_ieq(const char* a, const char* b) {
     return *a == *b;
 }
 
-int
-dsd_unicode_supported(void) {
-    if (g_unicode_cached) {
-        return g_unicode_supported;
+static int
+str_icontains(const char* haystack, const char* needle) {
+    if (!haystack || !needle || !*needle) {
+        return 0;
+    }
+    size_t nlen = strlen(needle);
+    for (size_t i = 0; haystack[i]; i++) {
+        size_t j = 0;
+        for (; j < nlen; j++) {
+            unsigned char hc = (unsigned char)haystack[i + j];
+            unsigned char nc = (unsigned char)needle[j];
+            if (!hc) {
+                break;
+            }
+            if (tolower(hc) != tolower(nc)) {
+                break;
+            }
+        }
+        if (j == nlen) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+locale_is_utf8(void) {
+#if HAVE_LANGINFO
+    const char* codeset = nl_langinfo(CODESET);
+    if (codeset && (str_ieq(codeset, "UTF-8") || str_ieq(codeset, "UTF8"))) {
+        return 1;
+    }
+#endif
+
+    const char* loc = setlocale(LC_CTYPE, NULL);
+    if (loc && (str_icontains(loc, "UTF-8") || str_icontains(loc, "UTF8") || str_icontains(loc, "65001"))) {
+        return 1;
+    }
+    return 0;
+}
+
+void
+dsd_unicode_init_locale(void) {
+    if (g_locale_inited) {
+        return;
+    }
+    g_locale_inited = 1;
+
+    /* Initialize locale from the user's environment first. */
+    setlocale(LC_CTYPE, "");
+
+    if (env_truthy("DSD_FORCE_ASCII")) {
+        return;
     }
 
-    const char* force_ascii = getenv("DSD_FORCE_ASCII");
-    if (force_ascii && (*force_ascii == '1' || *force_ascii == 'y' || *force_ascii == 'Y')) {
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Prefer UTF-8 console code pages on native Windows terminals (best effort). */
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
+    if (locale_is_utf8()) {
+        g_unicode_cached = 0;
+        return;
+    }
+
+#if DSD_PLATFORM_WIN_NATIVE
+    static const char* const candidates[] = {".UTF8", ".UTF-8", "C.UTF-8", "en_US.UTF-8", NULL};
+#else
+    static const char* const candidates[] = {"C.UTF-8", "C.UTF8", "en_US.UTF-8", "en_US.UTF8", NULL};
+#endif
+    for (int i = 0; candidates[i] != NULL; i++) {
+        if (setlocale(LC_CTYPE, candidates[i]) != NULL && locale_is_utf8()) {
+            break;
+        }
+    }
+
+    /* Locale/codepage changes can affect support detection; recompute on next query. */
+    g_unicode_cached = 0;
+}
+
+int
+dsd_unicode_supported(void) {
+    if (env_truthy("DSD_FORCE_ASCII")) {
         g_unicode_supported = 0;
         g_unicode_cached = 1;
         return 0;
     }
-    const char* force_utf8 = getenv("DSD_FORCE_UTF8");
-    if (force_utf8 && (*force_utf8 == '1' || *force_utf8 == 'y' || *force_utf8 == 'Y')) {
+    if (env_truthy("DSD_FORCE_UTF8")) {
         g_unicode_supported = 1;
         g_unicode_cached = 1;
         return 1;
     }
 
-    /* Ensure locale is initialized */
-    setlocale(LC_CTYPE, "");
+    dsd_unicode_init_locale();
 
-#if HAVE_LANGINFO
-    const char* codeset = nl_langinfo(CODESET);
-    if (codeset && (str_ieq(codeset, "UTF-8") || str_ieq(codeset, "UTF8"))) {
-        g_unicode_supported = 1;
-    } else {
-        g_unicode_supported = (MB_CUR_MAX > 1) ? 1 : 0;
+    const char* loc = setlocale(LC_CTYPE, NULL);
+    if (!loc) {
+        loc = "";
     }
+#if DSD_PLATFORM_WIN_NATIVE
+    unsigned int cp = GetConsoleOutputCP();
+    if (g_unicode_cached && strcmp(loc, g_cached_locale) == 0 && cp == g_cached_console_cp) {
+        return g_unicode_supported;
+    }
+    g_cached_console_cp = cp;
 #else
-    g_unicode_supported = (MB_CUR_MAX > 1) ? 1 : 0;
+    if (g_unicode_cached && strcmp(loc, g_cached_locale) == 0) {
+        return g_unicode_supported;
+    }
+#endif
+    strncpy(g_cached_locale, loc, sizeof(g_cached_locale) - 1);
+    g_cached_locale[sizeof(g_cached_locale) - 1] = '\0';
+
+    g_unicode_supported = locale_is_utf8() ? 1 : 0;
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Even without a UTF-8 CRT locale, a UTF-8 console code page can render UTF-8 bytes. */
+    if (g_unicode_supported == 0 && cp == CP_UTF8) {
+        g_unicode_supported = 1;
+    }
 #endif
     g_unicode_cached = 1;
     return g_unicode_supported;

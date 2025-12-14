@@ -10,6 +10,8 @@
 #include <dsd-neo/ui/ncurses_internal.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/runtime/unicode.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -17,6 +19,19 @@
 
 /* Shared state: last sync type seen by the UI (updated by ncursesPrinter) */
 int ncurses_last_synctype = -1;
+
+int
+ui_unicode_supported(void) {
+#if defined(DSD_USE_PDCURSES)
+    PDC_VERSION ver;
+    memset(&ver, 0, sizeof(ver));
+    PDC_get_version(&ver);
+    if ((ver.flags & (PDC_VFLAG_WIDE | PDC_VFLAG_UTF8)) == (PDC_VFLAG_WIDE | PDC_VFLAG_UTF8)) {
+        return 1;
+    }
+#endif
+    return dsd_unicode_supported();
+}
 
 /* Quickselect helpers for int arrays (k-th smallest in O(n)) */
 

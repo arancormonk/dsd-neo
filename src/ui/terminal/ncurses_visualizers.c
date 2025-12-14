@@ -17,7 +17,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -57,7 +56,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     }
 
     /* Respect UI toggles */
-    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
 
     /* Local palettes */
     static const char ascii_palette[] = " .:-=+*#%@"; /* 10 levels */
@@ -556,11 +555,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     static int s_unicode_ready = -1;
     static int s_unicode_warned = 0;
     if (s_unicode_ready < 0) {
-        int ok = 0;
-        if (MB_CUR_MAX > 1) {
-            ok = 1; /* basic check: multibyte locale active */
-        }
-        s_unicode_ready = ok;
+        s_unicode_ready = ui_unicode_supported() ? 1 : 0;
     }
     /* Compute effective Unicode use for this frame without mutating opts */
     int use_unicode_ui = (opts && opts->eye_unicode && s_unicode_ready);
@@ -1303,7 +1298,7 @@ print_spectrum_view(dsd_opts* opts) {
         span = 1.0f;
     }
 
-    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
 #ifdef PRETTY_COLORS
     const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
 #endif

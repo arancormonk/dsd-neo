@@ -9,10 +9,10 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/unicode.h>
 
 #include <dsd-neo/platform/curses_compat.h>
 
-#include <locale.h>
 #include <string.h>
 
 /* MBE library version string (populated by ncursesOpen) */
@@ -34,7 +34,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 
     // menu overlays are nonblocking and do not gate demod processing
     mbe_printVersion(mbeversionstr);
-    setlocale(LC_ALL, "");
+    dsd_unicode_init_locale();
     initscr(); // Initialize NCURSES screen window
     // Improve ESC-key responsiveness and UI ergonomics
     dsd_curses_set_escdelay(25);

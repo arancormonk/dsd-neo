@@ -10,10 +10,10 @@
 #include <dsd-neo/ui/ncurses_snr.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/ui/ncurses_internal.h>
 
 #include <dsd-neo/platform/curses_compat.h>
 #include <math.h>
-#include <wchar.h>
 
 /* SNR history buffers for sparkline (per modulation) */
 enum { SNR_HIST_N = 48 };
@@ -73,7 +73,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Make the lowest ASCII level visible (no leading space) */
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
     /* Respect the UI toggle: only use Unicode blocks when enabled and locale supports it */
-    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
     const int levels = 8;
     const int W = 24;                             /* sparkline width */
     const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
@@ -191,7 +191,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
         li = levels - 1;
     }
 
-    int use_unicode = (opts && opts->eye_unicode && MB_CUR_MAX > 1);
+    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
     short cp = (snr_db < thr1) ? C_POOR : (snr_db < thr2) ? C_MOD : C_GOOD;
 #ifdef PRETTY_COLORS
     attron(COLOR_PAIR(cp));

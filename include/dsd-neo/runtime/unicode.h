@@ -20,6 +20,14 @@ extern "C" {
 /** @brief Return 1 if UTF-8 output is likely supported, else 0 (cached). */
 int dsd_unicode_supported(void);
 
+/**
+ * @brief Best-effort initialization to make UTF-8 output usable.
+ *
+ * Attempts to select a UTF-8 locale (LC_CTYPE) and, on native Windows, set the
+ * console code page to UTF-8. Safe to call multiple times.
+ */
+void dsd_unicode_init_locale(void);
+
 /** @brief Convenience helper to pick Unicode or ASCII string based on support. */
 static inline const char*
 dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
