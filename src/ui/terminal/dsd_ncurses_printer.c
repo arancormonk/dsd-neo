@@ -80,8 +80,8 @@ ui_print_label_pad(const char* label) {
     if (lab_len < 0) {
         lab_len = 0;
     }
-    /* Draw the left border in the primary UI color (teal/cyan) for consistency */
-    ui_print_lborder();
+    /* Draw the left border using current color (green when carrier active, cyan otherwise) */
+    addch('|');
     addch(' ');
     addstr(label);
     addch(':');
