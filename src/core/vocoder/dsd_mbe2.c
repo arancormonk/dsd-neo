@@ -65,8 +65,14 @@ soft_demod_ambe_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], cha
 //AMBE+2 One Shot (X2-TDMA)
 void
 soft_demod_ambe_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char ambe_d[49]) {
-    mbe_processAmbe3600x2450Framef(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_fr,
-                                   ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
+    /*
+     * Avoid mbe_processAmbe3600x2450Framef():
+     * - Some Windows/Cygwin builds of mbelib-neo do not export this symbol from the shared library.
+     * - Demodulate/ECC explicitly and then decode via mbe_processAmbe2450Dataf(), which is exported.
+     */
+    soft_demod_ambe2_ehr(state, ambe_fr, ambe_d);
+    mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
+                             state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
     if (opts->floating_point == 1) {
         memcpy(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
     } else {
