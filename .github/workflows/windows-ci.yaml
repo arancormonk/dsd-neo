@@ -499,6 +499,9 @@ jobs:
           & $env:SCCACHE_PATH --version
           & $env:SCCACHE_PATH --zero-stats
 
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11.5
         with:
@@ -511,7 +514,8 @@ jobs:
 
       - name: Configure (MSVC Release)
         shell: pwsh
-        run: cmake --preset win-msvc-release -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
+        run: cmake --preset win-msvc-release -G Ninja -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build (MSVC Release)
         shell: pwsh
@@ -688,10 +692,11 @@ jobs:
 
       - name: Configure (MinGW Release)
         shell: msys2 {0}
+        # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
         run: |
           set -euo pipefail
           SCCACHE_EXE="$(cygpath -u "$SCCACHE_PATH")"
-          cmake --preset win-mingw-release \
+          cmake --preset win-mingw-release -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE_EXE" \
             -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE_EXE"
 
