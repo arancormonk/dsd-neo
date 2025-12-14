@@ -4,8 +4,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-      # Optional: day/time can be set to reduce noise
-      # day: "monday"
-      # time: "09:00"
-      # timezone: "UTC"
     open-pull-requests-limit: 10
+
+  - package-ecosystem: "vcpkg"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "vcpkg"
