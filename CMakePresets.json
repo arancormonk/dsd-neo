@@ -69,7 +69,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-dynamic",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
       }
@@ -110,7 +110,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic-release",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
       }
