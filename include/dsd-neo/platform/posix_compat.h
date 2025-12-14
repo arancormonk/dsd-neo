@@ -168,7 +168,7 @@ dsd_popcount64(uint64_t x) {
 #endif
 
 /* ============================================================================
- * File Status Macros (S_ISDIR, S_ISREG)
+ * File Status Macros (S_ISDIR, S_ISREG) and stat() compatibility
  * ============================================================================ */
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -178,6 +178,10 @@ dsd_popcount64(uint64_t x) {
 #endif
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+/* MSVC uses _stat/_stat64 instead of POSIX stat; provide alias */
+#if DSD_COMPILER_MSVC
+#define stat _stat
 #endif
 #endif
 

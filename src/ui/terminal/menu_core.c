@@ -29,6 +29,7 @@
 #include "menu_prompts.h"
 
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
