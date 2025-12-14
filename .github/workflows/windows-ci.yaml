@@ -525,10 +525,9 @@ jobs:
         id: stage
         shell: pwsh
         run: |
-          $exeCandidates = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
-            Select-Object -ExpandProperty FullName
-          if (-not $exeCandidates) { throw "Exe not found under build/win-msvc-release/apps/dsd-cli" }
-          $exe = $exeCandidates[0]
+          $exe = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) { throw "Exe not found under build/win-msvc-release/apps/dsd-cli" }
           $stage = 'dist/dsd-neo-msvc'
           $binDir = Join-Path $stage 'bin'
           $docDir = Join-Path $stage 'share/doc/dsd-neo'
