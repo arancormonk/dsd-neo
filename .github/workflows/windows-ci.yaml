@@ -717,8 +717,10 @@ jobs:
           if (-not $triplet) { $triplet = $env:VCPKG_DEFAULT_TRIPLET }
           if (-not $triplet) { $triplet = 'x64-mingw-dynamic-release' }
           $vcpkgBin = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'bin'))
+          $vcpkgLib = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'lib'))
           $searchDirs = @()
           if (Test-Path $vcpkgBin) { $searchDirs += $vcpkgBin }
+          if (Test-Path $vcpkgLib) { $searchDirs += $vcpkgLib }
           $msysCandidateBins = @()
           if ($env:RUNNER_TEMP) {
             $msysCandidateBins += (Join-Path $env:RUNNER_TEMP 'msys64\\mingw64\\bin')
