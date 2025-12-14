@@ -719,8 +719,16 @@ jobs:
           $vcpkgBin = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'bin'))
           $searchDirs = @()
           if (Test-Path $vcpkgBin) { $searchDirs += $vcpkgBin }
-          $msysMingwBin = 'C:\\msys64\\mingw64\\bin'
-          if (Test-Path $msysMingwBin) { $searchDirs += $msysMingwBin }
+          $msysCandidateBins = @()
+          if ($env:RUNNER_TEMP) {
+            $msysCandidateBins += (Join-Path $env:RUNNER_TEMP 'msys64\\mingw64\\bin')
+            $msysCandidateBins += (Join-Path $env:RUNNER_TEMP 'msys64\\ucrt64\\bin')
+          }
+          $msysCandidateBins += 'C:\\msys64\\mingw64\\bin'
+          $msysCandidateBins += 'C:\\msys64\\ucrt64\\bin'
+          foreach ($d in $msysCandidateBins) {
+            if ($d -and (Test-Path $d)) { $searchDirs += $d }
+          }
           & 'tools/windows/stage_runtime_dlls.ps1' `
             -TargetBinary (Join-Path $binDir 'dsd-neo.exe') `
             -DestinationDir $binDir `
