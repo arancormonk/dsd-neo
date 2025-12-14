@@ -24,10 +24,6 @@
     {
       "name": "pdcurses",
       "platform": "windows & !mingw"
-    },
-    {
-      "name": "ncurses",
-      "platform": "windows & mingw"
     }
   ]
 }
