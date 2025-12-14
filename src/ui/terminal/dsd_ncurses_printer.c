@@ -922,7 +922,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     printw(" SNR: n/a []");
 #endif
     printw("\n");
-    ui_print_kv_line("In Level", "[%02d%%]", level);
+    /* In Level is only meaningful for non-RTL inputs (Pulse, WAV, TCP audio, UDP);
+       RTL-SDR and RTL-TCP (audio_in_type == 3) have their own power measurement. */
+    if (opts->audio_in_type != 3) {
+        ui_print_kv_line("In Level", "[%02d%%]", level);
+    }
     /* Quick hint for output mute toggle */
     ui_print_kv_line("Output (x)", "[%s]", (opts->audio_out == 0) ? "Muted" : "On");
 
