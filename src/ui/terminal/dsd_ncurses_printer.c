@@ -185,6 +185,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     {
         c = getch(); // non-blocking (set once in ncursesOpen)
         if (c == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+            // PDCurses doesn't auto-update dimensions on resize.
+            resize_term(0, 0);
+#endif
             // Force a full redraw on next refresh to avoid artifacts
             clearok(stdscr, TRUE);
             c = -1; // ignore as input

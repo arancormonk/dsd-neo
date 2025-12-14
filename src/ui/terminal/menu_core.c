@@ -112,6 +112,11 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
         return 1;
     }
     if (ch == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+        // PDCurses doesn't auto-update dimensions on resize;
+        // resize_term(0,0) queries actual console size.
+        resize_term(0, 0);
+#endif
         // Recompute layout and recreate window on next tick
         if (f->win) {
             delwin(f->win);

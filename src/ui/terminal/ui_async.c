@@ -85,6 +85,11 @@ static DSD_THREAD_RETURN_TYPE
                 ui_menu_tick(g_ui_opts, g_ui_state);
             } else {
                 if (ch == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+                    // PDCurses doesn't auto-update dimensions on resize;
+                    // resize_term(0,0) queries actual console size.
+                    resize_term(0, 0);
+#endif
                     clearok(stdscr, TRUE);
                     ui_request_redraw();
                 } else if (ch != ERR) {

@@ -226,6 +226,9 @@ ui_prompt_handle_key(int ch) {
         return 0;
     }
     if (ch == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+        resize_term(0, 0);
+#endif
         if (g_prompt.win) {
             delwin(g_prompt.win);
             g_prompt.win = NULL;
@@ -426,6 +429,9 @@ ui_chooser_handle_key(int ch) {
         return 1;
     }
     if (ch == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+        resize_term(0, 0);
+#endif
         if (g_chooser.win) {
             delwin(g_chooser.win);
             g_chooser.win = NULL;
