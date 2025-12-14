@@ -25,6 +25,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Ensure that non-ASCII UTF-8 string literals (used for UI glyphs and help text)
+# are interpreted consistently across compilers. This primarily affects MinGW
+# builds on Windows where the default input charset may not be UTF-8, causing
+# mojibake like "â€“" instead of "–".
+if(MINGW)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:C>:-finput-charset=UTF-8>
+            $<$<COMPILE_LANGUAGE:C>:-fexec-charset=UTF-8>
+            $<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>
+            $<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>
+        )
+    endif()
+endif()
+
 # MSVC: enable C11 atomics for <stdatomic.h>
 #
 # MSVC currently requires explicit opt-in for C11 atomics; otherwise it defines
