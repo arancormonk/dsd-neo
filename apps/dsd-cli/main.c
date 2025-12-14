@@ -2854,14 +2854,20 @@ main(int argc, char** argv) {
     extern char* optarg;
     extern int optind;
 #endif
-    dsd_opts opts;
-    dsd_state state;
+    dsd_opts* opts = calloc(1, sizeof(dsd_opts));
+    dsd_state* state = calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        fprintf(stderr, "Failed to allocate memory for opts/state\n");
+        free(opts);
+        free(state);
+        return 1;
+    }
     int argc_effective = argc; // effective argc after runtime compaction
     char versionstr[25];
     mbe_printVersion(versionstr);
 
-    initOpts(&opts);
-    initState(&state);
+    initOpts(opts);
+    initState(state);
     dsd_bootstrap_enable_ftz_daz_if_enabled();
     init_rrc_filter_memory(); //initialize input filtering
     InitAllFecFunction();
@@ -2951,7 +2957,7 @@ main(int argc, char** argv) {
             }
 
             if (load_rc == 0) {
-                dsd_apply_user_config_to_opts(&user_cfg, &opts, &state);
+                dsd_apply_user_config_to_opts(&user_cfg, opts, state);
                 user_cfg_loaded = 1;
                 if (profile_cli && *profile_cli) {
                     LOG_NOTICE("Loaded user config from %s (profile: %s)\n", cfg_path, profile_cli);
@@ -2975,7 +2981,7 @@ main(int argc, char** argv) {
     // Phase 1: long-option and env parsing moved into runtime CLI helper
     {
         int oneshot_rc = 0;
-        int early_rc = dsd_parse_args(argc, argv, &opts, &state, &argc_effective, &oneshot_rc);
+        int early_rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &oneshot_rc);
         if (early_rc == DSD_PARSE_ONE_SHOT) {
             return oneshot_rc;
         } else if (early_rc != DSD_PARSE_CONTINUE) {
@@ -2990,9 +2996,9 @@ main(int argc, char** argv) {
     // (via -T / -Y), fall back to the built-in default of trunking disabled
     // for this run. This keeps CLI-driven sessions from inheriting trunk
     // enable solely from the config file.
-    if (argc > 1 && user_cfg_loaded && !opts.trunk_cli_seen) {
-        opts.p25_trunk = 0;
-        opts.trunk_enable = 0;
+    if (argc > 1 && user_cfg_loaded && !opts->trunk_cli_seen) {
+        opts->p25_trunk = 0;
+        opts->trunk_enable = 0;
     }
 
     // If a user config specified a non-48kHz file/RAW input and the CLI did
@@ -3001,17 +3007,17 @@ main(int argc, char** argv) {
     // correctly. This mirrors legacy "-s" behavior without requiring users
     // to manage option ordering manually when using the config file.
     if (user_cfg_loaded && user_cfg.has_input && user_cfg.input_source == DSDCFG_INPUT_FILE
-        && user_cfg.file_sample_rate > 0 && user_cfg.file_sample_rate != 48000 && opts.wav_decimator != 0
-        && user_cfg.file_path[0] != '\0' && strcmp(opts.audio_in_dev, user_cfg.file_path) == 0
-        && opts.wav_sample_rate == user_cfg.file_sample_rate) {
-        opts.wav_interpolator = opts.wav_sample_rate / opts.wav_decimator;
-        state.samplesPerSymbol = state.samplesPerSymbol * opts.wav_interpolator;
-        state.symbolCenter = state.symbolCenter * opts.wav_interpolator;
+        && user_cfg.file_sample_rate > 0 && user_cfg.file_sample_rate != 48000 && opts->wav_decimator != 0
+        && user_cfg.file_path[0] != '\0' && strcmp(opts->audio_in_dev, user_cfg.file_path) == 0
+        && opts->wav_sample_rate == user_cfg.file_sample_rate) {
+        opts->wav_interpolator = opts->wav_sample_rate / opts->wav_decimator;
+        state->samplesPerSymbol = state->samplesPerSymbol * opts->wav_interpolator;
+        state->symbolCenter = state->symbolCenter * opts->wav_interpolator;
     }
 
     if (print_config_cli) {
         dsdneoUserConfig eff;
-        dsd_snapshot_opts_to_user_config(&opts, &state, &eff);
+        dsd_snapshot_opts_to_user_config(opts, state, &eff);
         dsd_user_config_render_ini(&eff, stdout);
         return 0;
     }
@@ -3120,34 +3126,34 @@ main(int argc, char** argv) {
         if (force_bootstrap_cli) {
             dsd_unsetenv("DSD_NEO_NO_BOOTSTRAP");
         }
-        bootstrap_interactive(&opts, &state);
+        bootstrap_interactive(opts, state);
     }
 
     /* Rebuild audio filters after CLI/config/bootstrap may have changed the output rate.
        Base coefficients on the analog monitor sample rate so cutoffs stay correct. */
     {
-        int filter_rate = analog_filter_rate_hz(&opts);
-        init_audio_filters(&state, filter_rate);
+        int filter_rate = analog_filter_rate_hz(opts);
+        init_audio_filters(state, filter_rate);
     }
 
     /* Initialize trunking state machines with user configuration.
        Must be done after all opts parsing so hangtime/timeouts are honored. */
-    p25_sm_init(&opts, &state);
-    dmr_sm_init(&opts, &state);
+    p25_sm_init(opts, state);
+    dmr_sm_init(opts, state);
 
     /* long-option normalization handled inside dsd_parse_args */
 
-    if (opts.resume > 0) {
-        openSerial(&opts, &state);
+    if (opts->resume > 0) {
+        openSerial(opts, state);
     }
 
-    if ((strncmp(opts.audio_in_dev, "m17udp", 6) == 0)) //M17 UDP Socket Input
+    if ((strncmp(opts->audio_in_dev, "m17udp", 6) == 0)) //M17 UDP Socket Input
     {
         LOG_NOTICE("M17 UDP IP Frame Input: ");
         char* curr;
         char* saveptr = NULL;
         char inbuf[1024];
-        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        strncpy(inbuf, opts->audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(inbuf, ":", &saveptr); //should be 'm17'
@@ -3157,26 +3163,26 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
-            strncpy(opts.m17_hostname, curr, 1023);
+            strncpy(opts->m17_hostname, curr, 1023);
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
-            opts.m17_portno = atoi(curr);
+            opts->m17_portno = atoi(curr);
         }
 
     M17ENDIN:
-        LOG_NOTICE("%s:", opts.m17_hostname);
-        LOG_NOTICE("%d \n", opts.m17_portno);
+        LOG_NOTICE("%s:", opts->m17_hostname);
+        LOG_NOTICE("%d \n", opts->m17_portno);
     }
 
-    if ((strncmp(opts.audio_in_dev, "udp", 3) == 0)) // UDP Direct Audio Input
+    if ((strncmp(opts->audio_in_dev, "udp", 3) == 0)) // UDP Direct Audio Input
     {
         LOG_NOTICE("UDP Direct Input: ");
         char* curr;
         char* saveptr = NULL;
         char inbuf[1024];
-        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        strncpy(inbuf, opts->audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(inbuf, ":", &saveptr); // 'udp'
@@ -3186,32 +3192,32 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // bind address
         if (curr != NULL) {
-            strncpy(opts.udp_in_bindaddr, curr, 1023);
-            opts.udp_in_bindaddr[1023] = '\0';
+            strncpy(opts->udp_in_bindaddr, curr, 1023);
+            opts->udp_in_bindaddr[1023] = '\0';
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // bind port
         if (curr != NULL) {
-            opts.udp_in_portno = atoi(curr);
+            opts->udp_in_portno = atoi(curr);
         }
 
     UDPINEND:
-        if (opts.udp_in_portno == 0) {
-            opts.udp_in_portno = 7355;
+        if (opts->udp_in_portno == 0) {
+            opts->udp_in_portno = 7355;
         }
-        if (opts.udp_in_bindaddr[0] == '\0') {
-            snprintf(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "%s", "127.0.0.1");
+        if (opts->udp_in_bindaddr[0] == '\0') {
+            snprintf(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
         }
-        LOG_NOTICE("%s:%d\n", opts.udp_in_bindaddr, opts.udp_in_portno);
+        LOG_NOTICE("%s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
     }
 
-    if ((strncmp(opts.audio_out_dev, "m17udp", 6) == 0)) //M17 UDP Socket Output
+    if ((strncmp(opts->audio_out_dev, "m17udp", 6) == 0)) //M17 UDP Socket Output
     {
         LOG_NOTICE("M17 UDP IP Frame Output: ");
         char* curr;
         char* saveptr = NULL;
         char outbuf[1024];
-        strncpy(outbuf, opts.audio_out_dev, sizeof(outbuf) - 1);
+        strncpy(outbuf, opts->audio_out_dev, sizeof(outbuf) - 1);
         outbuf[sizeof(outbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(outbuf, ":", &saveptr); //should be 'm17'
@@ -3221,28 +3227,28 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
-            strncpy(opts.m17_hostname, curr, 1023);
+            strncpy(opts->m17_hostname, curr, 1023);
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
-            opts.m17_portno = atoi(curr);
+            opts->m17_portno = atoi(curr);
         }
 
     M17ENDOUT:
-        LOG_NOTICE("%s:", opts.m17_hostname);
-        LOG_NOTICE("%d \n", opts.m17_portno);
-        opts.m17_use_ip = 1;     //tell the encoder to open the socket
-        opts.audio_out_type = 9; //set to null device
+        LOG_NOTICE("%s:", opts->m17_hostname);
+        LOG_NOTICE("%d \n", opts->m17_portno);
+        opts->m17_use_ip = 1;     //tell the encoder to open the socket
+        opts->audio_out_type = 9; //set to null device
     }
 
-    if ((strncmp(opts.audio_in_dev, "tcp", 3) == 0)) //tcp socket input from SDR++ and others
+    if ((strncmp(opts->audio_in_dev, "tcp", 3) == 0)) //tcp socket input from SDR++ and others
     {
         LOG_NOTICE("TCP Direct Link: ");
         char* curr;
         char* saveptr = NULL;
         char inbuf[1024];
-        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        strncpy(inbuf, opts->audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(inbuf, ":", &saveptr); //should be 'tcp'
@@ -3252,57 +3258,57 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //host address
         if (curr != NULL) {
-            strncpy(opts.tcp_hostname, curr, 1023);
+            strncpy(opts->tcp_hostname, curr, 1023);
             //shim to tie the hostname of the tcp input to the rigctl hostname (probably covers a vast majority of use cases)
             //in the future, I will rework part of this so that users can enter a hostname and port similar to how tcp and rtl strings work
-            memcpy(opts.rigctlhostname, opts.tcp_hostname, sizeof(opts.rigctlhostname));
+            memcpy(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //host port
         if (curr != NULL) {
-            opts.tcp_portno = atoi(curr);
+            opts->tcp_portno = atoi(curr);
         }
 
     TCPEND:
         if (exitflag == 1) {
-            cleanupAndExit(&opts, &state); //needed to break the loop on ctrl+c
+            cleanupAndExit(opts, state); //needed to break the loop on ctrl+c
         }
-        LOG_NOTICE("%s:", opts.tcp_hostname);
-        LOG_NOTICE("%d \n", opts.tcp_portno);
-        opts.tcp_sockfd = Connect(opts.tcp_hostname, opts.tcp_portno);
-        if (opts.tcp_sockfd != DSD_INVALID_SOCKET) {
-            opts.audio_in_type = 8;
+        LOG_NOTICE("%s:", opts->tcp_hostname);
+        LOG_NOTICE("%d \n", opts->tcp_portno);
+        opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
+        if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+            opts->audio_in_type = 8;
 
             LOG_NOTICE("TCP Connection Success!\n");
-            // openAudioInDevice(&opts); //do this to see if it makes it work correctly
+            // openAudioInDevice(opts); //do this to see if it makes it work correctly
         } else {
-            if (opts.frame_m17 == 1) {
+            if (opts->frame_m17 == 1) {
                 dsd_sleep_ms(1000);
                 goto TCPEND; //try again if using M17 encoder / decoder over TCP
             }
-            sprintf(opts.audio_in_dev, "%s", "pulse");
-            LOG_ERROR("TCP Connection Failure - Using %s Audio Input.\n", opts.audio_in_dev);
-            opts.audio_in_type = 0;
+            sprintf(opts->audio_in_dev, "%s", "pulse");
+            LOG_ERROR("TCP Connection Failure - Using %s Audio Input.\n", opts->audio_in_dev);
+            opts->audio_in_type = 0;
         }
     }
 
-    if (opts.use_rigctl == 1) {
-        opts.rigctl_sockfd = Connect(opts.rigctlhostname, opts.rigctlportno);
-        if (opts.rigctl_sockfd != DSD_INVALID_SOCKET) {
-            opts.use_rigctl = 1;
+    if (opts->use_rigctl == 1) {
+        opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
+        if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
+            opts->use_rigctl = 1;
         } else {
             LOG_ERROR("RIGCTL Connection Failure - RIGCTL Features Disabled\n");
-            opts.use_rigctl = 0;
+            opts->use_rigctl = 0;
         }
     }
 
-    if ((strncmp(opts.audio_in_dev, "rtltcp", 6) == 0)) // rtl_tcp networked RTL-SDR
+    if ((strncmp(opts->audio_in_dev, "rtltcp", 6) == 0)) // rtl_tcp networked RTL-SDR
     {
         LOG_NOTICE("RTL_TCP Input: ");
         char* curr;
         char* saveptr = NULL;
         char inbuf[1024];
-        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        strncpy(inbuf, opts->audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(inbuf, ":", &saveptr); // 'rtltcp'
@@ -3312,32 +3318,32 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // host
         if (curr != NULL) {
-            strncpy(opts.rtltcp_hostname, curr, 1023);
+            strncpy(opts->rtltcp_hostname, curr, 1023);
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // port
         if (curr != NULL) {
-            opts.rtltcp_portno = atoi(curr);
+            opts->rtltcp_portno = atoi(curr);
         }
 
         // Optional: freq:gain:ppm:bw:sql:vol (mirrors rtl: string semantics)
         curr = dsd_strtok_r(NULL, ":", &saveptr); // freq
         if (curr != NULL) {
-            opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
+            opts->rtlsdr_center_freq = (uint32_t)atofs(curr);
         } else {
             goto RTLTCPEND;
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // gain
         if (curr != NULL) {
-            opts.rtl_gain_value = atoi(curr);
+            opts->rtl_gain_value = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // ppm
         if (curr != NULL) {
-            opts.rtlsdr_ppm_error = atoi(curr);
+            opts->rtlsdr_ppm_error = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
@@ -3346,9 +3352,9 @@ main(int argc, char** argv) {
         if (curr != NULL) {
             int bw = atoi(curr);
             if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
-                opts.rtl_dsp_bw_khz = bw;
+                opts->rtl_dsp_bw_khz = bw;
             } else {
-                opts.rtl_dsp_bw_khz = 48;
+                opts->rtl_dsp_bw_khz = 48;
             }
         } else {
             goto RTLTCPEND;
@@ -3358,9 +3364,9 @@ main(int argc, char** argv) {
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
-                opts.rtl_squelch_level = dB_to_pwr(sq_val);
+                opts->rtl_squelch_level = dB_to_pwr(sq_val);
             } else {
-                opts.rtl_squelch_level = sq_val;
+                opts->rtl_squelch_level = sq_val;
             }
         } else {
             goto RTLTCPEND;
@@ -3368,7 +3374,7 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); // vol (1..3)
         if (curr != NULL) {
-            opts.rtl_volume_multiplier = atoi(curr);
+            opts->rtl_volume_multiplier = atoi(curr);
         } else {
             goto RTLTCPEND;
         }
@@ -3385,30 +3391,30 @@ main(int argc, char** argv) {
                         on = 0;
                     }
                 }
-                opts.rtl_bias_tee = on;
+                opts->rtl_bias_tee = on;
             }
         }
 
     RTLTCPEND:
-        if (opts.rtltcp_portno == 0) {
-            opts.rtltcp_portno = 1234;
+        if (opts->rtltcp_portno == 0) {
+            opts->rtltcp_portno = 1234;
         }
-        LOG_NOTICE("%s:%d", opts.rtltcp_hostname, opts.rtltcp_portno);
-        if (opts.rtl_bias_tee) {
+        LOG_NOTICE("%s:%d", opts->rtltcp_hostname, opts->rtltcp_portno);
+        if (opts->rtl_bias_tee) {
             LOG_NOTICE(" (bias=on)\n");
         } else {
             LOG_NOTICE("\n");
         }
-        opts.rtltcp_enabled = 1;
-        opts.audio_in_type = 3; // use RTL pipeline
+        opts->rtltcp_enabled = 1;
+        opts->audio_in_type = 3; // use RTL pipeline
     }
 
     // NOTE: Guard against matching "rtltcp" here; it shares the "rtl" prefix
-    // and opts.audio_in_dev has been tokenized by strtok above. Without this
+    // and opts->audio_in_dev has been tokenized by strtok above. Without this
     // guard, selecting rtltcp would also fall through to the local RTL path
     // and erroneously require a USB device, causing an early exit.
-    if ((strncmp(opts.audio_in_dev, "rtl", 3) == 0)
-        && (strncmp(opts.audio_in_dev, "rtltcp", 6) != 0)) //rtl dongle input
+    if ((strncmp(opts->audio_in_dev, "rtl", 3) == 0)
+        && (strncmp(opts->audio_in_dev, "rtltcp", 6) != 0)) //rtl dongle input
     {
         uint8_t rtl_ok = 0;
         //use to list out all detected RTL dongles
@@ -3420,7 +3426,7 @@ main(int argc, char** argv) {
         char* curr;
         char* saveptr = NULL;
         char inbuf[1024];
-        strncpy(inbuf, opts.audio_in_dev, sizeof(inbuf) - 1);
+        strncpy(inbuf, opts->audio_in_dev, sizeof(inbuf) - 1);
         inbuf[sizeof(inbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(inbuf, ":", &saveptr); //should be 'rtl'
@@ -3430,28 +3436,28 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl device number "-D"
         if (curr != NULL) {
-            opts.rtl_dev_index = atoi(curr);
+            opts->rtl_dev_index = atoi(curr);
         } else {
             goto RTLEND;
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl freq "-c"
         if (curr != NULL) {
-            opts.rtlsdr_center_freq = (uint32_t)atofs(curr);
+            opts->rtlsdr_center_freq = (uint32_t)atofs(curr);
         } else {
             goto RTLEND;
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl gain value "-G"
         if (curr != NULL) {
-            opts.rtl_gain_value = atoi(curr);
+            opts->rtl_gain_value = atoi(curr);
         } else {
             goto RTLEND;
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl ppm err "-P"
         if (curr != NULL) {
-            opts.rtlsdr_ppm_error = atoi(curr);
+            opts->rtlsdr_ppm_error = atoi(curr);
         } else {
             goto RTLEND;
         }
@@ -3464,9 +3470,9 @@ main(int argc, char** argv) {
             if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24
                 || bw == 48) // testing 4 and 16 as well for weak and/or nxdn48 systems
             {
-                opts.rtl_dsp_bw_khz = bw;
+                opts->rtl_dsp_bw_khz = bw;
             } else {
-                opts.rtl_dsp_bw_khz = 48; // default baseband when input omits/invalid
+                opts->rtl_dsp_bw_khz = 48; // default baseband when input omits/invalid
             }
         } else {
             goto RTLEND;
@@ -3476,21 +3482,21 @@ main(int argc, char** argv) {
         if (curr != NULL) {
             double sq_val = atof(curr);
             if (sq_val < 0.0) {
-                opts.rtl_squelch_level = dB_to_pwr(sq_val);
+                opts->rtl_squelch_level = dB_to_pwr(sq_val);
             } else {
-                opts.rtl_squelch_level = sq_val;
+                opts->rtl_squelch_level = sq_val;
             }
         } else {
             goto RTLEND;
         }
 
         // curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl udp port "-U"
-        // if (curr != NULL) opts.rtl_udp_port = atoi (curr);
+        // if (curr != NULL) opts->rtl_udp_port = atoi (curr);
         // else goto RTLEND;
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //rtl sample / volume multiplier
         if (curr != NULL) {
-            opts.rtl_volume_multiplier = atoi(curr);
+            opts->rtl_volume_multiplier = atoi(curr);
         } else {
             goto RTLEND;
         }
@@ -3507,7 +3513,7 @@ main(int argc, char** argv) {
                         on = 0;
                     }
                 }
-                opts.rtl_bias_tee = on;
+                opts->rtl_bias_tee = on;
             }
         }
 
@@ -3523,25 +3529,26 @@ main(int argc, char** argv) {
         for (int i = 0; i < device_count; i++) {
             rtlsdr_get_device_usb_strings(i, vendor, product, serial);
             LOG_NOTICE("  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
-            if (opts.rtl_dev_index == i) {
+            if (opts->rtl_dev_index == i) {
                 LOG_NOTICE("Selected Device #%d with Serial Number: %s \n", i, serial);
             }
         }
 
         // Guard against out-of-range index
-        if (opts.rtl_dev_index < 0 || opts.rtl_dev_index >= device_count) {
-            LOG_WARNING("Requested RTL device index %d out of range; using 0\n", opts.rtl_dev_index);
-            opts.rtl_dev_index = 0;
+        if (opts->rtl_dev_index < 0 || opts->rtl_dev_index >= device_count) {
+            LOG_WARNING("Requested RTL device index %d out of range; using 0\n", opts->rtl_dev_index);
+            opts->rtl_dev_index = 0;
         }
 
-        if (opts.rtl_volume_multiplier > 3 || opts.rtl_volume_multiplier < 0) {
-            opts.rtl_volume_multiplier = 1; //I wonder if you could flip polarity by using -1
+        if (opts->rtl_volume_multiplier > 3 || opts->rtl_volume_multiplier < 0) {
+            opts->rtl_volume_multiplier = 1; //I wonder if you could flip polarity by using -1
         }
 
-        LOG_NOTICE("RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%.1fdB VOL=%d%s\n", opts.rtl_dev_index,
-                   opts.rtlsdr_center_freq, opts.rtl_gain_value, opts.rtlsdr_ppm_error, opts.rtl_dsp_bw_khz,
-                   pwr_to_dB(opts.rtl_squelch_level), opts.rtl_volume_multiplier, opts.rtl_bias_tee ? " BIAS=on" : "");
-        opts.audio_in_type = 3;
+        LOG_NOTICE("RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%.1fdB VOL=%d%s\n", opts->rtl_dev_index,
+                   opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
+                   pwr_to_dB(opts->rtl_squelch_level), opts->rtl_volume_multiplier,
+                   opts->rtl_bias_tee ? " BIAS=on" : "");
+        opts->audio_in_type = 3;
 
         rtl_ok = 1;
 #endif
@@ -3549,8 +3556,8 @@ main(int argc, char** argv) {
         if (rtl_ok == 0) //not set, means rtl support isn't compiled/available
         {
             LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
-            sprintf(opts.audio_in_dev, "%s", "pulse");
-            opts.audio_in_type = 0;
+            sprintf(opts->audio_in_dev, "%s", "pulse");
+            opts->audio_in_type = 0;
         }
         UNUSED(vendor);
         UNUSED(product);
@@ -3558,22 +3565,22 @@ main(int argc, char** argv) {
         UNUSED(device_count);
     }
 
-    if ((strncmp(opts.audio_in_dev, "pulse", 5) == 0)) {
-        opts.audio_in_type = 0;
+    if ((strncmp(opts->audio_in_dev, "pulse", 5) == 0)) {
+        opts->audio_in_type = 0;
 
         //string yeet
-        parse_pulse_input_string(&opts, opts.audio_in_dev + 5);
+        parse_pulse_input_string(opts, opts->audio_in_dev + 5);
     }
 
     //UDP Socket Blaster Audio Output Setup
-    if ((strncmp(opts.audio_out_dev, "udp", 3) == 0)) {
+    if ((strncmp(opts->audio_out_dev, "udp", 3) == 0)) {
 
         //read in values
         LOG_NOTICE("UDP Blaster Output: ");
         char* curr;
         char* saveptr = NULL;
         char outbuf[1024];
-        strncpy(outbuf, opts.audio_out_dev, sizeof(outbuf) - 1);
+        strncpy(outbuf, opts->audio_out_dev, sizeof(outbuf) - 1);
         outbuf[sizeof(outbuf) - 1] = '\0';
 
         curr = dsd_strtok_r(outbuf, ":", &saveptr); //should be 'udp'
@@ -3583,124 +3590,124 @@ main(int argc, char** argv) {
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //udp blaster hostname
         if (curr != NULL) {
-            strncpy(opts.udp_hostname, curr, 1023); //set address to blast to
+            strncpy(opts->udp_hostname, curr, 1023); //set address to blast to
         }
 
         curr = dsd_strtok_r(NULL, ":", &saveptr); //udp blaster port
         if (curr != NULL) {
-            opts.udp_portno = atoi(curr);
+            opts->udp_portno = atoi(curr);
         }
 
     UDPEND:
-        LOG_NOTICE("%s:", opts.udp_hostname);
-        LOG_NOTICE("%d \n", opts.udp_portno);
+        LOG_NOTICE("%s:", opts->udp_hostname);
+        LOG_NOTICE("%d \n", opts->udp_portno);
 
-        int err = udp_socket_connect(&opts, &state);
+        int err = udp_socket_connect(opts, state);
         if (err < 0) {
             LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio :( \n");
-            sprintf(opts.audio_out_dev, "%s", "pulse");
-            opts.audio_out_type = 0;
+            sprintf(opts->audio_out_dev, "%s", "pulse");
+            opts->audio_out_type = 0;
         }
 
-        opts.audio_out_type = 8;
+        opts->audio_out_type = 8;
 
-        if (opts.monitor_input_audio == 1 || opts.frame_provoice == 1) {
-            err = udp_socket_connectA(&opts, &state);
+        if (opts->monitor_input_audio == 1 || opts->frame_provoice == 1) {
+            err = udp_socket_connectA(opts, state);
             if (err < 0) {
                 LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio Analog :( \n");
-                opts.udp_sockfdA = DSD_INVALID_SOCKET;
-                opts.monitor_input_audio = 0;
+                opts->udp_sockfdA = DSD_INVALID_SOCKET;
+                opts->monitor_input_audio = 0;
             } else {
                 LOG_NOTICE("UDP Blaster Output (Analog): ");
-                LOG_NOTICE("%s:", opts.udp_hostname);
-                LOG_NOTICE("%d \n", opts.udp_portno + 2);
+                LOG_NOTICE("%s:", opts->udp_hostname);
+                LOG_NOTICE("%d \n", opts->udp_portno + 2);
             }
 
             //this functionality is disabled when trunking EDACS, but we still use the behavior for analog channel monitoring
-            if (opts.frame_provoice == 1 && opts.p25_trunk == 1) {
-                opts.monitor_input_audio = 0;
+            if (opts->frame_provoice == 1 && opts->p25_trunk == 1) {
+                opts->monitor_input_audio = 0;
             }
         }
     }
 
-    if ((strncmp(opts.audio_out_dev, "pulse", 5) == 0)) {
-        opts.audio_out_type = 0;
+    if ((strncmp(opts->audio_out_dev, "pulse", 5) == 0)) {
+        opts->audio_out_type = 0;
 
         //string yeet
-        parse_pulse_output_string(&opts, opts.audio_out_dev + 5);
+        parse_pulse_output_string(opts, opts->audio_out_dev + 5);
     }
 
-    if ((strncmp(opts.audio_out_dev, "null", 4) == 0)) {
-        opts.audio_out_type = 9; //9 for NULL, or mute output
-        opts.audio_out = 0;      //turn off so we won't playSynthesized
+    if ((strncmp(opts->audio_out_dev, "null", 4) == 0)) {
+        opts->audio_out_type = 9; //9 for NULL, or mute output
+        opts->audio_out = 0;      //turn off so we won't playSynthesized
     }
 
-    if ((strncmp(opts.audio_out_dev, "-", 1) == 0)) {
-        opts.audio_out_fd = dsd_fileno(stdout); //DSD_STDOUT_FILENO;
-        opts.audio_out_type = 1;                //using 1 for stdout to match input stdin as 1
+    if ((strncmp(opts->audio_out_dev, "-", 1) == 0)) {
+        opts->audio_out_fd = dsd_fileno(stdout); //DSD_STDOUT_FILENO;
+        opts->audio_out_type = 1;                //using 1 for stdout to match input stdin as 1
         LOG_NOTICE("Audio Out Device: -\n");
     }
 
-    if (opts.playfiles == 1) {
-        opts.split = 1;
-        opts.playoffset = 0;
-        opts.playoffsetR = 0;
-        opts.delay = 0;
-        opts.pulse_digi_rate_out = 8000;
-        opts.pulse_digi_out_channels = 1;
-        if (opts.audio_out_type == 0) {
-            openPulseOutput(&opts);
+    if (opts->playfiles == 1) {
+        opts->split = 1;
+        opts->playoffset = 0;
+        opts->playoffsetR = 0;
+        opts->delay = 0;
+        opts->pulse_digi_rate_out = 8000;
+        opts->pulse_digi_out_channels = 1;
+        if (opts->audio_out_type == 0) {
+            openPulseOutput(opts);
         }
     }
 
     //this particular if-elseif-else could be rewritten to be a lot neater and simpler
-    else if (strcmp(opts.audio_in_dev, opts.audio_out_dev) != 0) {
-        opts.split = 1;
-        opts.playoffset = 0;
-        opts.playoffsetR = 0;
-        opts.delay = 0;
+    else if (strcmp(opts->audio_in_dev, opts->audio_out_dev) != 0) {
+        opts->split = 1;
+        opts->playoffset = 0;
+        opts->playoffsetR = 0;
+        opts->delay = 0;
 
         //open wav file should be handled directly by the -w switch now
-        // if (strlen(opts.wav_out_file) > 0 && opts.dmr_stereo_wav == 0)
-        //   openWavOutFile (&opts, &state);
+        // if (strlen(opts->wav_out_file) > 0 && opts->dmr_stereo_wav == 0)
+        //   openWavOutFile (opts, state);
 
         // else
 
-        openAudioInDevice(&opts);
+        openAudioInDevice(opts);
 
         // fprintf (stderr,"Press CTRL + C to close.\n");
     }
 
     else {
-        opts.split = 0;
-        opts.playoffset = 0;
-        opts.playoffsetR = 0;
-        opts.delay = 0;
-        openAudioInDevice(&opts);
+        opts->split = 0;
+        opts->playoffset = 0;
+        opts->playoffsetR = 0;
+        opts->delay = 0;
+        openAudioInDevice(opts);
     }
 
     signal(SIGINT, handler);
     signal(SIGTERM, handler);
 
     //read in any user supplied M17 CAN and/or CSD data
-    if ((strncmp(state.m17dat, "M17", 3) == 0)) {
+    if ((strncmp(state->m17dat, "M17", 3) == 0)) {
         //read in values
         //string in format of M17:can:src_csd:dst_csd:input_rate
 
         //check and capatalize any letters in the CSD
-        for (int i = 0; state.m17dat[i] != '\0'; i++) {
-            if (state.m17dat[i] >= 'a' && state.m17dat[i] <= 'z') {
-                state.m17dat[i] = state.m17dat[i] - 32;
+        for (int i = 0; state->m17dat[i] != '\0'; i++) {
+            if (state->m17dat[i] >= 'a' && state->m17dat[i] <= 'z') {
+                state->m17dat[i] = state->m17dat[i] - 32;
             }
         }
 
         LOG_NOTICE("M17 User Data: ");
         char* curr;
 
-        // if((strncmp(state.m17dat, "M17", 3) == 0))
+        // if((strncmp(state->m17dat, "M17", 3) == 0))
         // goto M17END;
 
-        curr = strtok(state.m17dat, ":"); //should be 'M17'
+        curr = strtok(state->m17dat, ":"); //should be 'M17'
         if (curr != NULL)
             ; //continue
         else {
@@ -3709,152 +3716,152 @@ main(int argc, char** argv) {
 
         curr = strtok(NULL, ":"); //m17 channel access number
         if (curr != NULL) {
-            state.m17_can_en = atoi(curr);
+            state->m17_can_en = atoi(curr);
         }
 
         curr = strtok(NULL, ":"); //m17 src address
         if (curr != NULL) {
-            strncpy(state.str50c, curr, 9); //only read first 9
-            state.str50c[9] = '\0';
+            strncpy(state->str50c, curr, 9); //only read first 9
+            state->str50c[9] = '\0';
         }
 
         curr = strtok(NULL, ":"); //m17 dst address
         if (curr != NULL) {
-            strncpy(state.str50b, curr, 9); //only read first 9
-            state.str50b[9] = '\0';
+            strncpy(state->str50b, curr, 9); //only read first 9
+            state->str50b[9] = '\0';
         }
 
         curr = strtok(NULL, ":"); //m17 input audio rate
         if (curr != NULL) {
-            state.m17_rate = atoi(curr);
+            state->m17_rate = atoi(curr);
         }
 
         curr = strtok(NULL, ":"); //m17 vox enable
         if (curr != NULL) {
-            state.m17_vox = atoi(curr);
+            state->m17_vox = atoi(curr);
         }
 
         // curr = strtok(NULL, ":"); //moved to in and out methods
         // if (curr != NULL)
-        //   opts.m17_use_ip = atoi(curr);
+        //   opts->m17_use_ip = atoi(curr);
 
     M17END:; //do nothing
 
         //check to make sure can value is no greater than 15 (4 bit value)
-        if (state.m17_can_en > 15) {
-            state.m17_can_en = 15;
+        if (state->m17_can_en > 15) {
+            state->m17_can_en = 15;
         }
 
         //if vox is greater than 1, assume user meant 'yes' and set to one
-        if (state.m17_vox > 1) {
-            state.m17_vox = 1;
+        if (state->m17_vox > 1) {
+            state->m17_vox = 1;
         }
 
         //debug print m17dat string
-        // fprintf (stderr, " %s;", state.m17dat);
+        // fprintf (stderr, " %s;", state->m17dat);
 
-        LOG_NOTICE(" M17:%d:%s:%s:%d;", state.m17_can_en, state.str50c, state.str50b, state.m17_rate);
-        if (state.m17_vox == 1) {
+        LOG_NOTICE(" M17:%d:%s:%s:%d;", state->m17_can_en, state->str50c, state->str50b, state->m17_rate);
+        if (state->m17_vox == 1) {
             LOG_NOTICE("VOX;");
         }
         LOG_NOTICE("\n");
     }
 
-    if (opts.playfiles == 1) {
+    if (opts->playfiles == 1) {
 
         // Use the effective argc (post long-option compaction) so the file
         // list aligns with state->optind from getopt.
-        playMbeFiles(&opts, &state, argc_effective, argv);
+        playMbeFiles(opts, state, argc_effective, argv);
     }
 
-    else if (opts.m17encoder == 1) {
+    else if (opts->m17encoder == 1) {
         //disable RRC filter for now
-        opts.use_cosine_filter = 0;
+        opts->use_cosine_filter = 0;
 
-        opts.pulse_digi_rate_out = 8000;
+        opts->pulse_digi_rate_out = 8000;
 
         //open any inputs, if not already opened
-        if (opts.audio_in_type == 0) {
-            openPulseInput(&opts);
+        if (opts->audio_in_type == 0) {
+            openPulseInput(opts);
         }
 
 #ifdef USE_RTLSDR
-        else if (opts.audio_in_type == 3) {
+        else if (opts->audio_in_type == 3) {
             if (g_rtl_ctx == NULL) {
-                if (rtl_stream_create(&opts, &g_rtl_ctx) < 0) {
+                if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
                     LOG_ERROR("Failed to create RTL stream.\n");
                 }
             }
             if (g_rtl_ctx && rtl_stream_start(g_rtl_ctx) < 0) {
                 LOG_ERROR("Failed to open RTL-SDR stream.\n");
             }
-            opts.rtl_started = 1;
+            opts->rtl_started = 1;
         }
 #endif
 
         //open any outputs, if not already opened
-        if (opts.audio_out_type == 0) {
-            openPulseOutput(&opts);
+        if (opts->audio_out_type == 0) {
+            openPulseOutput(opts);
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
-        if (opts.use_ncurses_terminal == 1) {
-            (void)ui_start(&opts, &state);
+        if (opts->use_ncurses_terminal == 1) {
+            (void)ui_start(opts, state);
         }
         //All input and output now opened and handled correctly, so let's not break things by tweaking
-        encodeM17STR(&opts, &state);
+        encodeM17STR(opts, state);
     }
 
-    else if (opts.m17encoderbrt == 1) {
-        opts.pulse_digi_rate_out = 8000;
+    else if (opts->m17encoderbrt == 1) {
+        opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
-        if (opts.audio_out_type == 0) {
-            openPulseOutput(&opts);
+        if (opts->audio_out_type == 0) {
+            openPulseOutput(opts);
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
-        if (opts.use_ncurses_terminal == 1) {
-            (void)ui_start(&opts, &state);
+        if (opts->use_ncurses_terminal == 1) {
+            (void)ui_start(opts, state);
         }
-        encodeM17BRT(&opts, &state);
+        encodeM17BRT(opts, state);
     }
 
-    else if (opts.m17encoderpkt == 1) {
+    else if (opts->m17encoderpkt == 1) {
         //disable RRC filter for now
-        opts.use_cosine_filter = 0;
+        opts->use_cosine_filter = 0;
 
-        opts.pulse_digi_rate_out = 8000;
+        opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
-        if (opts.audio_out_type == 0) {
-            openPulseOutput(&opts);
+        if (opts->audio_out_type == 0) {
+            openPulseOutput(opts);
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
-        if (opts.use_ncurses_terminal == 1) {
-            (void)ui_start(&opts, &state);
+        if (opts->use_ncurses_terminal == 1) {
+            (void)ui_start(opts, state);
         }
-        encodeM17PKT(&opts, &state);
+        encodeM17PKT(opts, state);
     }
 
-    else if (opts.m17decoderip == 1) {
-        opts.pulse_digi_rate_out = 8000;
+    else if (opts->m17decoderip == 1) {
+        opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
-        if (opts.audio_out_type == 0) {
-            openPulseOutput(&opts);
+        if (opts->audio_out_type == 0) {
+            openPulseOutput(opts);
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
-        if (opts.use_ncurses_terminal == 1) {
-            (void)ui_start(&opts, &state);
+        if (opts->use_ncurses_terminal == 1) {
+            (void)ui_start(opts, state);
         }
-        processM17IPF(&opts, &state);
+        processM17IPF(opts, state);
     }
 
     else {
         // Start UI thread before entering main decode loop when enabled
-        if (opts.use_ncurses_terminal == 1) {
-            (void)ui_start(&opts, &state);
+        if (opts->use_ncurses_terminal == 1) {
+            (void)ui_start(opts, state);
         }
-        liveScanner(&opts, &state);
+        liveScanner(opts, state);
     }
 
-    cleanupAndExit(&opts, &state);
+    cleanupAndExit(opts, state);
 
     return (0);
 }

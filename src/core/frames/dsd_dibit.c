@@ -433,7 +433,13 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
 #ifdef DSD_NEO_TEST_HOOKS
 uint8_t
 dsd_test_compute_cqpsk_reliability(float sym) {
-    dsd_state dummy = {0};
+    // Use static to avoid stack overflow - dsd_state is ~1.5MB
+    static dsd_state dummy;
+    static int initialized = 0;
+    if (!initialized) {
+        memset(&dummy, 0, sizeof(dummy));
+        initialized = 1;
+    }
     dummy.rf_mod = 1;
     return dmr_compute_reliability(&dummy, sym);
 }
