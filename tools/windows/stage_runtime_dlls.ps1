@@ -113,7 +113,7 @@ function Get-DependentDllNames {
         $lines = & $DumpbinPath /DEPENDENTS $BinaryPath 2>$null
         $names = $lines |
             ForEach-Object { $_.Trim() } |
-            Where-Object { $_ -match '^[A-Za-z0-9_.-]+\.dll$' }
+            Where-Object { $_ -match '^[A-Za-z0-9_.+-]+\.dll$' }
     } elseif ($ObjdumpPath) {
         $lines = & $ObjdumpPath -p $BinaryPath 2>$null
         $names = $lines |

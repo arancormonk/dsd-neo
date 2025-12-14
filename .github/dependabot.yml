@@ -6,7 +6,7 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     labels:
-      - "dependencies"
+      - "github_actions"
 
   - package-ecosystem: "vcpkg"
     directory: "/"

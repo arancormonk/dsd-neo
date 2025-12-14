@@ -112,7 +112,8 @@
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
-        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "VCPKG_APPLOCAL_DEPS": "OFF"
       }
     },
     {
@@ -132,6 +133,7 @@
         "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic-release",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "VCPKG_APPLOCAL_DEPS": "OFF",
         "BUILD_TESTING": "OFF",
         "DSD_ENABLE_LTO": "ON",
         "DSD_ENABLE_FAST_MATH": "ON"
