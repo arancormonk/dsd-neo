@@ -94,16 +94,16 @@ Requirements
 - C compiler with C11 and C++ compiler with C++14 support.
 - CMake ≥ 3.20.
 - Dependencies:
-  - Required: libsndfile, ITPP, ncurses (wide), PulseAudio.
+  - Required: libsndfile, ncurses (wide), PulseAudio.
   - Optional: librtlsdr (RTL‑SDR support), Codec2 (additional vocoder paths), help2man (man page generation).
   - Vocoder: prefers mbelib‑neo CMake package (`mbe-neo`); otherwise uses legacy `MBE` find module.
 
 OS package hints
 
 - Ubuntu/Debian (apt):
-  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev libitpp-dev librtlsdr-dev`
+  - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev`
 - macOS (Homebrew):
-  - `brew install cmake ninja libsndfile itpp ncurses pulseaudio librtlsdr codec2`
+  - `brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2`
 - Windows:
   - Preferred binary: the native MSVC ZIP. The MinGW ZIP is an alternative native build.
   - For a bundled POSIX runtime and launchers, use the portable Cygwin ZIP; see `packaging/windows-cygwin/README-windows.txt`.

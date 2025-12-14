@@ -8,7 +8,6 @@
   "dependencies": [
     "mbe-neo",
     "libsndfile",
-    "itpp",
     "portaudio",
     {
       "name": "rtlsdr",

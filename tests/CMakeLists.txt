@@ -108,7 +108,7 @@ add_test(NAME P25_P1_PDU_JSON COMMAND dsd-neo_test_p25_p1_pdu_json)
 # P25 P1 NID parity + NAC decode
 add_executable(dsd-neo_test_p25_p1_nid protocol/p25/test_p25_p1_nid.c)
 target_include_directories(dsd-neo_test_p25_p1_nid PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_p1_nid PRIVATE dsd-neo_proto_p25 ${ITPP_LIBRARY})
+target_link_libraries(dsd-neo_test_p25_p1_nid PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_NID COMMAND dsd-neo_test_p25_p1_nid)
 
 # P25 P1 LCW → SM dispatch (Group Voice Ch Update – Explicit)

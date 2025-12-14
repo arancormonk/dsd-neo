@@ -183,7 +183,6 @@ else()
     find_package(MBE REQUIRED)
     set(MBE_LINK_TARGET ${MBE_LIBRARY})
 endif()
-find_package(ITPP REQUIRED)
 find_package(RTLSDR)
 
 # Curses library selection:
@@ -233,7 +232,7 @@ endif()
 
 # Aggregate include directories; when using the modern package, we still add
 # the mbelib-neo leaf include directory so #include <mbelib.h> continues to work.
-set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${ITPP_INCLUDE_DIR} ${CURSES_INCLUDE_DIRS})
+set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${CURSES_INCLUDE_DIRS})
 if(MBE_INCLUDE_DIR)
     list(APPEND _PUBLIC_INCLUDES ${MBE_INCLUDE_DIR})
 endif()
@@ -251,7 +250,7 @@ else()
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
 endif()
 
-set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${ITPP_LIBRARY} ${AUDIO_LIBS} ${CURSES_LIBRARIES})
+set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS} ${CURSES_LIBRARIES})
 
 if(RTLSDR_FOUND)
     find_package(Threads)

@@ -32,7 +32,6 @@ jobs:
           set -euo pipefail
           echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare dependency environment
@@ -51,7 +50,7 @@ jobs:
         uses: actions/cache@v5.0.1
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             deps-${{ runner.os }}-
 
@@ -64,14 +63,6 @@ jobs:
             libsndfile pulseaudio fftw libusb ncurses
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
-          # ITPP may not be in core; try core first, then brewsci tap
-          if ! brew list --versions itpp >/dev/null 2>&1; then
-            brew install itpp || true
-          fi
-          if ! brew list --versions itpp >/dev/null 2>&1; then
-            brew tap brewsci/science || true
-            brew install brewsci/science/itpp || true
-          fi
           brew --version
           cmake --version
           pkg-config --version
@@ -159,40 +150,6 @@ jobs:
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
 
-      - name: Ensure ITPP (cached fallback if not found)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.itpp_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/itpp.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/itpp.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^itpp_sha=$want_sha$" "$mf"; then
-              echo "Using cached itpp in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached itpp does not match desired SHA; rebuilding"
-          else
-            if pkg-config --exists itpp; then
-              echo "Using system itpp"
-              exit 0
-            fi
-          fi
-          git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
-          git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
-          git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.10 \
-            -DBLA_VENDOR=Apple \
-            -DITPP_SHARED_LIB=ON \
-            -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/usr/bin/false
-          cmake --build /tmp/itpp/build -j
-          cmake --install /tmp/itpp/build
-
       - name: Ensure RTL-SDR (cached fallback if not found)
         shell: bash
         run: |
@@ -232,7 +189,6 @@ jobs:
           : > "$mf"
           echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
           echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "itpp_sha=${{ steps.dep-shas.outputs.itpp_sha }}" >> "$mf"
           echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
           echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 
@@ -241,7 +197,6 @@ jobs:
         run: |
           set -euxo pipefail
           pkg-config --modversion codec2 || true
-          pkg-config --modversion itpp || true
           pkg-config --modversion librtlsdr || true
           pkg-config --modversion libpulse || true
           pkg-config --modversion sndfile || true

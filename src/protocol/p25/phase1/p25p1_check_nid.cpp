@@ -2,18 +2,14 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
-#include <itpp/itcomm.h>
-
+#include <dsd-neo/fec/BCH_63_16.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
-
-using namespace itpp;
 
 // Ideas taken from http://op25.osmocom.org/trac/wiki.png/browser/op25/gr-op25/lib/decoder_ff_impl.cc
 // See also p25_training_guide.pdf page 48.
 // See also tia-102-baaa-a-project_25-fdma-common_air_interface.pdf page 40.
-// BCH encoder/decoder implementation from IT++. GNU GPL 3 license.
 
-itpp::BCH bch(63, 16, 11, "6 3 3 1 1 4 1 3 6 7 2 3 5 4 5 3", true);
+static BCH_63_16_11 bch;
 
 /**
  * Convenience class to calculate the parity of the DUID values. Keeps a table with the expected outcomes
@@ -48,15 +44,9 @@ int
 check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
     int result;
 
-    // Fill up with the given input
-    bvec input(63);
-    for (unsigned int i = 0; i < 63; i++) {
-        input[i] = bch_code[i];
-    }
-
-    // Decode it
-    bvec decoded, cw_isvalid;
-    bool ok = bch.decode(input, decoded, cw_isvalid);
+    // Decode using local BCH implementation
+    char decoded[16];
+    bool ok = bch.decode(bch_code, decoded);
 
     if (!ok) {
         // Decode failed

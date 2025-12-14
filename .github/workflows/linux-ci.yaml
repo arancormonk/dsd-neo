@@ -46,14 +46,13 @@ jobs:
           set -euxo pipefail
           echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         uses: actions/cache@v5.0.1
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             deps-${{ runner.os }}-
 
@@ -102,10 +101,10 @@ jobs:
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
 
-      - name: Install dependencies via APT when available (codec2, itpp, rtl-sdr)
+      - name: Install dependencies via APT when available (codec2, rtl-sdr)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev libitpp-dev librtlsdr-dev || true
+            libcodec2-dev librtlsdr-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
         run: |
@@ -154,32 +153,6 @@ jobs:
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
 
-      - name: Ensure ITPP (cached fallback if headers/libs not found)
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.itpp_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/itpp.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/itpp.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^itpp_sha=$want_sha$" "$mf"; then
-              echo "Using cached itpp in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached itpp does not match desired SHA; rebuilding"
-          else
-            if echo '#include <itpp/itcomm.h>' | gcc -E -I/usr/include - >/dev/null 2>&1; then
-              echo "Using system itpp"
-              exit 0
-            fi
-          fi
-          git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
-          git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
-          git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10
-          cmake --build /tmp/itpp/build -j
-          cmake --install /tmp/itpp/build
-
       - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
         run: |
           set -euxo pipefail
@@ -214,14 +187,12 @@ jobs:
           : > "$mf"
           echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
           echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "itpp_sha=${{ steps.dep-shas.outputs.itpp_sha }}" >> "$mf"
           echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
           echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 
       - name: Show dependency versions
         run: |
           pkg-config --modversion codec2 || true
-          pkg-config --modversion itpp || true
           pkg-config --modversion librtlsdr || true
           ldconfig -p | grep -E 'libsndfile|libpulse|ncursesw' || true
 
@@ -384,14 +355,13 @@ jobs:
           set -euxo pipefail
           echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         uses: actions/cache@v5.0.1
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             deps-${{ runner.os }}-
 
@@ -439,10 +409,10 @@ jobs:
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
 
-      - name: Install dependencies via APT when available (codec2, itpp, rtl-sdr)
+      - name: Install dependencies via APT when available (codec2, rtl-sdr)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev libitpp-dev librtlsdr-dev || true
+            libcodec2-dev librtlsdr-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
         run: |
@@ -491,32 +461,6 @@ jobs:
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
 
-      - name: Ensure ITPP (cached fallback if headers/libs not found)
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.itpp_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/itpp.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/itpp.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^itpp_sha=$want_sha$" "$mf"; then
-              echo "Using cached itpp in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached itpp does not match desired SHA; rebuilding"
-          else
-            if echo '#include <itpp/itcomm.h>' | gcc -E -I/usr/include - >/dev/null 2>&1; then
-              echo "Using system itpp"
-              exit 0
-            fi
-          fi
-          git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
-          git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
-          git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10
-          cmake --build /tmp/itpp/build -j
-          cmake --install /tmp/itpp/build
-
       - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
         run: |
           set -euxo pipefail
@@ -551,7 +495,6 @@ jobs:
           : > "$mf"
           echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
           echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "itpp_sha=${{ steps.dep-shas.outputs.itpp_sha }}" >> "$mf"
           echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
           echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 
@@ -632,14 +575,13 @@ jobs:
           set -euxo pipefail
           echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
         uses: actions/cache@v5.0.1
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             deps-${{ runner.os }}-
 
@@ -685,10 +627,10 @@ jobs:
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
 
-      - name: Install dependencies via APT when available (codec2, itpp, rtl-sdr)
+      - name: Install dependencies via APT when available (codec2, rtl-sdr)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev libitpp-dev librtlsdr-dev || true
+            libcodec2-dev librtlsdr-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
         run: |
@@ -737,32 +679,6 @@ jobs:
           cmake --build /tmp/codec2/build -j
           cmake --install /tmp/codec2/build
 
-      - name: Ensure ITPP (cached fallback if headers/libs not found)
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.itpp_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/itpp.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/itpp.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^itpp_sha=$want_sha$" "$mf"; then
-              echo "Using cached itpp in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached itpp does not match desired SHA; rebuilding"
-          else
-            if echo '#include <itpp/itcomm.h>' | gcc -E -I/usr/include - >/dev/null 2>&1; then
-              echo "Using system itpp"
-              exit 0
-            fi
-          fi
-          git clone --depth 1 https://github.com/arancormonk/itpp /tmp/itpp
-          git -C /tmp/itpp fetch --depth 1 origin "$want_sha"
-          git -C /tmp/itpp checkout "$want_sha"
-          cmake -S /tmp/itpp -B /tmp/itpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10
-          cmake --build /tmp/itpp/build -j
-          cmake --install /tmp/itpp/build
-
       - name: Ensure RTL-SDR (cached fallback if pkg-config not found)
         run: |
           set -euxo pipefail
@@ -797,7 +713,6 @@ jobs:
           : > "$mf"
           echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" >> "$mf"
           echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" >> "$mf"
-          echo "itpp_sha=${{ steps.dep-shas.outputs.itpp_sha }}" >> "$mf"
           echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" >> "$mf"
           echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 

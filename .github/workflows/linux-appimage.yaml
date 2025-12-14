@@ -78,7 +78,6 @@ jobs:
           set -euo pipefail
           echo "mbe_sha=$(git ls-remote https://github.com/arancormonk/mbelib-neo HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "codec2_sha=$(git ls-remote https://github.com/arancormonk/codec2 HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "itpp_sha=$(git ls-remote https://github.com/arancormonk/itpp HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "rtlsdr_sha=$(git ls-remote https://github.com/arancormonk/rtl-sdr HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare cache directories
@@ -91,7 +90,7 @@ jobs:
         uses: actions/cache@v5.0.1
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
-          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
@@ -139,7 +138,6 @@ jobs:
             -e VERSION='${{ steps.names.outputs.VER }}' \
             -e MBE_SHA='${{ steps.dep-shas.outputs.mbe_sha }}' \
             -e CODEC2_SHA='${{ steps.dep-shas.outputs.codec2_sha }}' \
-            -e ITPP_SHA='${{ steps.dep-shas.outputs.itpp_sha }}' \
             -e RTLSDR_SHA='${{ steps.dep-shas.outputs.rtlsdr_sha }}' \
             -e DEPS_DIR="/work/.deps/appimage-${{ matrix.arch }}" \
             -e CCACHE_DIR="/work/.ccache/appimage-${{ matrix.arch }}" \
@@ -169,11 +167,9 @@ jobs:
 
               : "${MBE_SHA:?MBE_SHA not set}"
               : "${CODEC2_SHA:?CODEC2_SHA not set}"
-              : "${ITPP_SHA:?ITPP_SHA not set}"
               : "${RTLSDR_SHA:?RTLSDR_SHA not set}"
               mbe_sha="$MBE_SHA"
               codec2_sha="$CODEC2_SHA"
-              itpp_sha="$ITPP_SHA"
               rtlsdr_sha="$RTLSDR_SHA"
 
               mkdir -p "$CCACHE_DIR"
@@ -216,14 +212,12 @@ jobs:
 
               build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha ""
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 codec2_sha ""
-              build_dep https://github.com/arancormonk/itpp "$itpp_sha" itpp itpp_sha "-DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF"
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"
 
               mf="$DEPS/.manifest"
               : > "$mf"
               echo "mbe_sha=$mbe_sha" >> "$mf"
               echo "codec2_sha=$codec2_sha" >> "$mf"
-              echo "itpp_sha=$itpp_sha" >> "$mf"
               echo "rtlsdr_sha=$rtlsdr_sha" >> "$mf"
               echo "updated=$(date -u +%FT%TZ)" >> "$mf"
 

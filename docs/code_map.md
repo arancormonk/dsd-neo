@@ -149,4 +149,4 @@ Top‑level build files: `CMakeLists.txt`, `CMakePresets.json`, `apps/CMakeLists
 
 External dependencies (resolved via CMake):
 
-- Required: LibSndFile, ITPP, ncurses (wide), PulseAudio; MBE vocoder (prefer `mbe-neo`, falls back to legacy `MBE`); optional: RTL‑SDR, CODEC2, PortAudio (for device listing only).
+- Required: LibSndFile, ncurses (wide), PulseAudio; MBE vocoder (prefer `mbe-neo`, falls back to legacy `MBE`); optional: RTL‑SDR, CODEC2, PortAudio (for device listing only).

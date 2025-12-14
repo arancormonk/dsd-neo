@@ -52,11 +52,9 @@ jobs:
         run: |
           $mbe = (git ls-remote https://github.com/arancormonk/mbelib-neo HEAD).Split("`t")[0]
           $codec2 = (git ls-remote https://github.com/arancormonk/codec2 HEAD).Split("`t")[0]
-          $itpp = (git ls-remote https://github.com/arancormonk/itpp HEAD).Split("`t")[0]
           $rtlsdr = (git ls-remote https://github.com/arancormonk/rtl-sdr HEAD).Split("`t")[0]
           "mbe_sha=$mbe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "codec2_sha=$codec2" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "itpp_sha=$itpp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "rtlsdr_sha=$rtlsdr" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Setup Cygwin
@@ -88,7 +86,7 @@ jobs:
         id: cygdeps-cache
         with:
           path: .cygdeps
-          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
           restore-keys: |
             cygdeps-${{ runner.os }}-
 
@@ -120,10 +118,9 @@ jobs:
         env:
           MBE_SHA: ${{ steps.dep-shas.outputs.mbe_sha }}
           CODEC2_SHA: ${{ steps.dep-shas.outputs.codec2_sha }}
-          ITPP_SHA: ${{ steps.dep-shas.outputs.itpp_sha }}
           RTLSDR_SHA: ${{ steps.dep-shas.outputs.rtlsdr_sha }}
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; : "${DEPS_PREFIX:?DEPS_PREFIX not set}"; mf="$DEPS_PREFIX/.manifest"; man_mbe=$(sed -n "s/^mbe_sha=//p" "$mf" 2>/dev/null || true); man_codec2=$(sed -n "s/^codec2_sha=//p" "$mf" 2>/dev/null || true); man_itpp=$(sed -n "s/^itpp_sha=//p" "$mf" 2>/dev/null || true); man_rtlsdr=$(sed -n "s/^rtlsdr_sha=//p" "$mf" 2>/dev/null || true); inst_mbe=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then inst_mbe=true; fi; inst_codec2=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then inst_codec2=true; fi; inst_itpp=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then inst_itpp=true; fi; inst_rtlsdr=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then inst_rtlsdr=true; fi; m_ok=false; c2_ok=false; i_ok=false; r_ok=false; [ "$inst_mbe" = true ] && [ -n "$man_mbe" ] && [ "$man_mbe" = "$MBE_SHA" ] && m_ok=true || true; [ "$inst_codec2" = true ] && [ -n "$man_codec2" ] && [ "$man_codec2" = "$CODEC2_SHA" ] && c2_ok=true || true; [ "$inst_itpp" = true ] && [ -n "$man_itpp" ] && [ "$man_itpp" = "$ITPP_SHA" ] && i_ok=true || true; [ "$inst_rtlsdr" = true ] && [ -n "$man_rtlsdr" ] && [ "$man_rtlsdr" = "$RTLSDR_SHA" ] && r_ok=true || true; build_mbe=true; [ "$m_ok" = true ] && build_mbe=false || true; build_codec2=true; [ "$c2_ok" = true ] && build_codec2=false || true; build_itpp=true; [ "$i_ok" = true ] && build_itpp=false || true; build_rtlsdr=true; [ "$r_ok" = true ] && build_rtlsdr=false || true; echo "build_mbe=$build_mbe" >> "$GITHUB_OUTPUT"; echo "build_codec2=$build_codec2" >> "$GITHUB_OUTPUT"; echo "build_itpp=$build_itpp" >> "$GITHUB_OUTPUT"; echo "build_rtlsdr=$build_rtlsdr" >> "$GITHUB_OUTPUT"; echo "Plan: mbe=$build_mbe codec2=$build_codec2 itpp=$build_itpp rtlsdr=$build_rtlsdr"'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; : "${DEPS_PREFIX:?DEPS_PREFIX not set}"; mf="$DEPS_PREFIX/.manifest"; man_mbe=$(sed -n "s/^mbe_sha=//p" "$mf" 2>/dev/null || true); man_codec2=$(sed -n "s/^codec2_sha=//p" "$mf" 2>/dev/null || true); man_rtlsdr=$(sed -n "s/^rtlsdr_sha=//p" "$mf" 2>/dev/null || true); inst_mbe=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc" ]; then inst_mbe=true; fi; inst_codec2=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/codec2.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/codec2.pc" ]; then inst_codec2=true; fi; inst_rtlsdr=false; if [ -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] || [ -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then inst_rtlsdr=true; fi; m_ok=false; c2_ok=false; r_ok=false; [ "$inst_mbe" = true ] && [ -n "$man_mbe" ] && [ "$man_mbe" = "$MBE_SHA" ] && m_ok=true || true; [ "$inst_codec2" = true ] && [ -n "$man_codec2" ] && [ "$man_codec2" = "$CODEC2_SHA" ] && c2_ok=true || true; [ "$inst_rtlsdr" = true ] && [ -n "$man_rtlsdr" ] && [ "$man_rtlsdr" = "$RTLSDR_SHA" ] && r_ok=true || true; build_mbe=true; [ "$m_ok" = true ] && build_mbe=false || true; build_codec2=true; [ "$c2_ok" = true ] && build_codec2=false || true; build_rtlsdr=true; [ "$r_ok" = true ] && build_rtlsdr=false || true; echo "build_mbe=$build_mbe" >> "$GITHUB_OUTPUT"; echo "build_codec2=$build_codec2" >> "$GITHUB_OUTPUT"; echo "build_rtlsdr=$build_rtlsdr" >> "$GITHUB_OUTPUT"; echo "Plan: mbe=$build_mbe codec2=$build_codec2 rtlsdr=$build_rtlsdr"'
 
       - name: Download mbelib-neo source (tarball)
         shell: pwsh
@@ -161,34 +158,21 @@ jobs:
         run: |
           C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/librtlsdr.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/librtlsdr.pc" ]; then echo "Extracting rtl-sdr.tar.gz in $WS"; tar -xzf rtl-sdr.tar.gz; D="rtl-sdr-master"; if [ ! -d "$D/src" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" rtl-sdr || true; git clone --depth 1 https://github.com/arancormonk/rtl-sdr.git rtl-sdr; D="rtl-sdr"; fi; echo "Using source dir: $D"; if ! grep -q "target_link_libraries(\s*convenience_static\s\+rtlsdr" "$D/src/CMakeLists.txt"; then echo "target_link_libraries(convenience_static rtlsdr)" >> "$D/src/CMakeLists.txt"; fi; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DINSTALL_UDEV_RULES=OFF; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached rtl-sdr in $DEPS_PREFIX"; fi'
 
-      - name: Download itpp source (tarball)
-        shell: pwsh
-        if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_itpp == 'true'
-        run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; cd "$(cygpath -u "$GITHUB_WORKSPACE")"; curl -L -o itpp.tar.gz https://github.com/arancormonk/itpp/archive/refs/heads/develop.tar.gz && ls -l itpp.tar.gz'
-
-      - name: Build itpp
-        shell: pwsh
-        if: steps.cygdeps-cache.outputs.cache-hit != 'true' && steps.dep-plan.outputs.build_itpp == 'true'
-        run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -euo pipefail; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; if [ ! -f "$DEPS_PREFIX/lib/pkgconfig/itpp.pc" ] && [ ! -f "$DEPS_PREFIX/lib64/pkgconfig/itpp.pc" ]; then echo "Extracting itpp.tar.gz in $WS"; tar -xzf itpp.tar.gz; D="itpp-develop"; if [ ! -d "$D/itpp" ]; then echo "Tarball extract missing expected tree; falling back to git clone"; rm -rf "$D" itpp || true; git clone --depth 1 https://github.com/arancormonk/itpp.git itpp; D="itpp"; fi; echo "Using source dir: $D"; mkdir -p "$D/build"; cmake -S "$D" -B "$D/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" -DCMAKE_POLICY_VERSION_MINIMUM=3.10 -DITPP_SHARED_LIB=ON -DHTML_DOCS=OFF -DDOXYGEN_EXECUTABLE=/bin/false; cmake --build "$D/build" -j; cmake --install "$D/build"; else echo "Using cached itpp in $DEPS_PREFIX"; fi'
-
       - name: Update cygdeps manifest
         shell: pwsh
         env:
           MBE_SHA: ${{ steps.dep-shas.outputs.mbe_sha }}
           CODEC2_SHA: ${{ steps.dep-shas.outputs.codec2_sha }}
-          ITPP_SHA: ${{ steps.dep-shas.outputs.itpp_sha }}
           RTLSDR_SHA: ${{ steps.dep-shas.outputs.rtlsdr_sha }}
         run: |
-          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -e; : "${DEPS_PREFIX:?}"; mkdir -p "$DEPS_PREFIX"; mf="$DEPS_PREFIX/.manifest"; : > "$mf"; echo "mbe_sha=$MBE_SHA" >> "$mf"; echo "codec2_sha=$CODEC2_SHA" >> "$mf"; echo "itpp_sha=$ITPP_SHA" >> "$mf"; echo "rtlsdr_sha=$RTLSDR_SHA" >> "$mf"; echo "updated=$(date -u +%FT%TZ)" >> "$mf"; echo "Wrote $mf"'
+          C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; set -e; : "${DEPS_PREFIX:?}"; mkdir -p "$DEPS_PREFIX"; mf="$DEPS_PREFIX/.manifest"; : > "$mf"; echo "mbe_sha=$MBE_SHA" >> "$mf"; echo "codec2_sha=$CODEC2_SHA" >> "$mf"; echo "rtlsdr_sha=$RTLSDR_SHA" >> "$mf"; echo "updated=$(date -u +%FT%TZ)" >> "$mf"; echo "Wrote $mf"'
 
       - name: Save cygdeps cache (explicit)
         if: steps.cygdeps-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5.0.1
         with:
           path: .cygdeps
-          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
 
       - name: Configure (Release)
         shell: pwsh
