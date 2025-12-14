@@ -84,7 +84,7 @@ jobs:
         run: C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; git config --global --add safe.directory "$(cygpath -u "$GITHUB_WORKSPACE")"'
 
       - name: Restore cygdeps cache
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v5.0.1
         id: cygdeps-cache
         with:
           path: .cygdeps
@@ -102,7 +102,7 @@ jobs:
           C:\\tools\\cygwin\\bin\\bash.exe -lc 'set -o igncr; WS="$(cygpath -u "$GITHUB_WORKSPACE")"; cd "$WS"; DEPS_PREFIX="$WS/.cygdeps"; CCACHE_DIR="$WS/.ccache-cygwin"; mkdir -p "$CCACHE_DIR"; echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"; echo "CMAKE_PREFIX_PATH=$DEPS_PREFIX:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"; echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig:$DEPS_PREFIX/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"; echo "PATH=$DEPS_PREFIX/bin:${PATH}" >> "$GITHUB_ENV"; echo "LD_LIBRARY_PATH=$DEPS_PREFIX/bin:$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"; echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"; echo "CC=ccache gcc" >> "$GITHUB_ENV"; echo "CXX=ccache g++" >> "$GITHUB_ENV"; echo "CCACHE_BASEDIR=$WS" >> "$GITHUB_ENV"; echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"; echo "CCACHE_SLOPPINESS=time_macros" >> "$GITHUB_ENV"'
 
       - name: Restore ccache (Cygwin)
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v5.0.1
         with:
           path: .ccache-cygwin
           key: ccache-${{ runner.os }}-${{ github.job }}-cygwin-${{ github.sha }}
@@ -185,7 +185,7 @@ jobs:
 
       - name: Save cygdeps cache (explicit)
         if: steps.cygdeps-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4.3.0
+        uses: actions/cache/save@v5.0.1
         with:
           path: .cygdeps
           key: cygdeps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.itpp_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
