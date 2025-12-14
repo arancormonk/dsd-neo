@@ -12,7 +12,10 @@
     "portaudio",
     {
       "name": "rtlsdr",
-      "platform": "windows"
+      "platform": "windows",
+      "features": [
+        "tools"
+      ]
     },
     {
       "name": "codec2",
