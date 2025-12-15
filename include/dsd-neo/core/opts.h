@@ -24,6 +24,23 @@
 #include <stdio.h>
 #include <time.h>
 
+/**
+ * @brief Audio input source types.
+ *
+ * These values identify how audio samples are acquired by the decoder.
+ */
+typedef enum {
+    AUDIO_IN_PULSE = 0,      ///< PulseAudio input
+    AUDIO_IN_STDIN = 1,      ///< Standard input (pipe)
+    AUDIO_IN_WAV = 2,        ///< WAV/audio file via libsndfile
+    AUDIO_IN_RTL = 3,        ///< RTL-SDR dongle (or RTL-TCP)
+    AUDIO_IN_SYMBOL_BIN = 4, ///< Dibit symbol capture .bin file
+    AUDIO_IN_UDP = 6,        ///< UDP PCM16LE stream
+    AUDIO_IN_TCP = 8,        ///< TCP PCM16LE stream
+    AUDIO_IN_NULL = 9,       ///< No audio device (special modes)
+    AUDIO_IN_SYMBOL_FLT = 44 ///< Float symbol .raw/.sym file
+} dsd_audio_in_type;
+
 struct dsd_opts {
     // Pointers and wide-aligned members first (minimize padding)
     FILE* mbe_in_f;
@@ -67,7 +84,7 @@ struct dsd_opts {
     int audio_in_fd;
     uint32_t rtlsdr_center_freq;
     int rtlsdr_ppm_error;
-    int audio_in_type;
+    dsd_audio_in_type audio_in_type; ///< Audio input source (see dsd_audio_in_type)
     int audio_out_fd;
     int audio_out_type; // 0 for pulse, 1 for file/stdout, 8 for UDP
     int split;

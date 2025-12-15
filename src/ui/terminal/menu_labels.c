@@ -45,7 +45,7 @@ io_rtl_active(void* ctx) {
     if (!c || !c->opts) {
         return false;
     }
-    return (c->opts->audio_in_type == 3);
+    return (c->opts->audio_in_type == AUDIO_IN_RTL);
 }
 
 #ifdef USE_RTLSDR
@@ -314,27 +314,28 @@ lbl_current_input(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
     const char* name;
     switch (c->opts->audio_in_type) {
-        case 0: name = "Pulse"; break;
-        case 1: name = "STDIN"; break;
-        case 2: name = "WAV/File"; break;
-        case 3: name = "RTL-SDR"; break;
-        case 4: name = "Symbol .bin"; break;
-        case 6: name = "UDP"; break;
-        case 8: name = "TCP"; break;
-        case 44: name = "Symbol Float"; break;
+        case AUDIO_IN_PULSE: name = "Pulse"; break;
+        case AUDIO_IN_STDIN: name = "STDIN"; break;
+        case AUDIO_IN_WAV: name = "WAV/File"; break;
+        case AUDIO_IN_RTL: name = "RTL-SDR"; break;
+        case AUDIO_IN_SYMBOL_BIN: name = "Symbol .bin"; break;
+        case AUDIO_IN_UDP: name = "UDP"; break;
+        case AUDIO_IN_TCP: name = "TCP"; break;
+        case AUDIO_IN_SYMBOL_FLT: name = "Symbol Float"; break;
         default: name = "?"; break;
     }
-    if (c->opts->audio_in_type == 8) {
+    if (c->opts->audio_in_type == AUDIO_IN_TCP) {
         int m = (n > 32) ? (int)(n - 32) : 0;
         snprintf(b, n, "Current Input: TCP %.*s:%d", m, c->opts->tcp_hostname, c->opts->tcp_portno);
-    } else if (c->opts->audio_in_type == 6) {
+    } else if (c->opts->audio_in_type == AUDIO_IN_UDP) {
         const char* addr = c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1";
         int m = (n > 32) ? (int)(n - 32) : 0;
         snprintf(b, n, "Current Input: UDP %.*s:%d", m, addr, c->opts->udp_in_portno);
-    } else if (c->opts->audio_in_type == 2 || c->opts->audio_in_type == 4 || c->opts->audio_in_type == 44) {
+    } else if (c->opts->audio_in_type == AUDIO_IN_WAV || c->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN
+               || c->opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
         int m = (n > 18) ? (int)(n - 18) : 0;
         snprintf(b, n, "Current Input: %.*s", m, c->opts->audio_in_dev);
-    } else if (c->opts->audio_in_type == 3) {
+    } else if (c->opts->audio_in_type == AUDIO_IN_RTL) {
         snprintf(b, n, "Current Input: RTL-SDR dev %d", c->opts->rtl_dev_index);
     } else {
         snprintf(b, n, "Current Input: %s", name);
@@ -377,7 +378,7 @@ lbl_input_volume(void* vctx, char* b, size_t n) {
 const char*
 lbl_tcp(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    int active = (c->opts->audio_in_type == 8 && c->opts->tcp_file_in != NULL);
+    int active = (c->opts->audio_in_type == AUDIO_IN_TCP && c->opts->tcp_file_in != NULL);
     if (c->opts->tcp_hostname[0] != '\0' && c->opts->tcp_portno > 0) {
         int m = (n > 32) ? (int)(n - 32) : 0;
         if (active) {
@@ -435,7 +436,7 @@ lbl_per_call_wav(void* vctx, char* b, size_t n) {
 const char*
 lbl_stop_symbol_playback(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    if (c->opts->symbolfile != NULL && c->opts->audio_in_type == 4) {
+    if (c->opts->symbolfile != NULL && c->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         if (c->opts->audio_in_dev[0] != '\0') {
             snprintf(b, n, "Stop Symbol Playback [Active: %s]", c->opts->audio_in_dev);
         } else {

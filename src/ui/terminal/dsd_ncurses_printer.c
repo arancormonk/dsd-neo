@@ -180,7 +180,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     int c = 0;
     int i = 0;
 
-    if (opts->audio_in_type != 1) //can't run getch/menu when using STDIN -
+    if (opts->audio_in_type != AUDIO_IN_STDIN) //can't run getch/menu when using STDIN -
     {
         c = getch(); // non-blocking (set once in ncursesOpen)
         if (c == KEY_RESIZE) {
@@ -238,7 +238,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     ui_print_header("Input Output");
-    if (opts->audio_in_type == 0) {
+    if (opts->audio_in_type == AUDIO_IN_PULSE) {
         printw("| Pulse Signal Input:  %i kHz; %i Ch; ", opts->pulse_digi_rate_in / 1000, opts->pulse_digi_in_channels);
         if (opts->pa_input_idx[0] != 0) {
             printw(" D: %s;", opts->pa_input_idx);
@@ -250,11 +250,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
     }
 
-    if (opts->audio_in_type == 4) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         printw("| Dibit Bin Input: %s \n", opts->audio_in_dev);
     }
 
-    if (opts->audio_in_type == 44) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
         printw("| Symbol Float Input: %s \n", opts->audio_in_dev);
     }
 
@@ -262,7 +262,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| M17 UDP IP Frame Input: %s:%d \n", opts->m17_hostname, opts->m17_portno);
     }
 
-    if (opts->audio_in_type == 8) {
+    if (opts->audio_in_type == AUDIO_IN_TCP) {
         printw("| TCP Signal Input: %s:%d; %d kHz; 1 Ch; ", opts->tcp_hostname, opts->tcp_portno,
                opts->wav_sample_rate / 1000);
         if (opts->use_rigctl == 1) {
@@ -272,7 +272,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
     }
 
-    if (opts->audio_in_type == 6) {
+    if (opts->audio_in_type == AUDIO_IN_UDP) {
         const char* host = (opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
         printw("| UDP Signal Input: %s:%d; %d kHz; 1 Ch; ", host, opts->udp_in_portno, opts->wav_sample_rate / 1000);
         if (opts->udp_in_packets == 0ULL) {
@@ -285,17 +285,17 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
     }
 
-    if (opts->audio_in_type == 2) {
+    if (opts->audio_in_type == AUDIO_IN_WAV) {
         printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate);
         printw(" IV: %iX;\n", opts->input_volume_multiplier);
     }
 
-    if (opts->audio_in_type == 1) {
+    if (opts->audio_in_type == AUDIO_IN_STDIN) {
         printw("| STDIN Standard Input: - Menu Disabled when using STDIN!\n");
         // printw ("| NCURSES Menu Disabled when using STDIN! - Use CTRL + C to Close. \n");
     }
 
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         printw("| RTL: %d;", opts->rtl_dev_index);
         /* Show applied tuner gain when available (actual driver value),
            otherwise fall back to requested value. */
@@ -404,7 +404,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw("Manual ");
         }
-        if (opts->audio_in_type != 3) {
+        if (opts->audio_in_type != AUDIO_IN_RTL) {
             printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
         }
         if (opts->use_lpf == 1) {
@@ -456,7 +456,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             } else {
                 printw("M ");
             }
-            if (opts->audio_in_type != 3) {
+            if (opts->audio_in_type != AUDIO_IN_RTL) {
                 printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
             }
             if (opts->use_lpf == 1) {
@@ -506,7 +506,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw("  |");
         }
-        if (opts->audio_in_type != 3 && state->m17_vox == 1) {
+        if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
             printw(" SQL: %.1f : %.1f dB;", pwr_to_dB(opts->rtl_pwr), pwr_to_dB(opts->rtl_squelch_level));
         }
         printw("\n");
@@ -540,7 +540,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
 #ifdef PRETTY_COLORS
-    if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+    if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
         printw("| Trunking -");
         if (opts->trunk_tune_group_calls == 0) {
             attron(COLOR_PAIR(2));
@@ -571,7 +571,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         // P25 metrics moved to dedicated 'P25 Metrics' section below.
     }
 #else //set on to UPPER CASE, off to lower case
-    if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+    if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
         printw("| Trunking -");
         if (opts->trunk_tune_group_calls == 0) {
             printw(" group(g)");
@@ -730,7 +730,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 #ifdef USE_RTLSDR
     /* Only show RTL-SDR section and render visualizers when RTL input is active */
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         ui_print_header("RTL-SDR Visual Aids");
         int nfft = rtl_stream_spectrum_get_size();
         /* Controls/status line: only show controls relevant to active views */
@@ -780,7 +780,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             level_div = 1;
         }
         level = (int)state->max / level_div; //only update on carrier present
-        if (opts->audio_in_type == 4) {
+        if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
             level = 50; //hard set when reading symbol bin files, otherwise, it will just be near zero
         }
         if (level > 100) {
@@ -926,8 +926,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 #endif
     printw("\n");
     /* In Level is only meaningful for non-RTL inputs (Pulse, WAV, TCP audio, UDP);
-       RTL-SDR and RTL-TCP (audio_in_type == 3) have their own power measurement. */
-    if (opts->audio_in_type != 3) {
+       RTL-SDR and RTL-TCP (audio_in_type == AUDIO_IN_RTL) have their own power measurement. */
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
         ui_print_kv_line("In Level", "[%02d%%]", level);
     }
     /* Quick hint for output mute toggle */

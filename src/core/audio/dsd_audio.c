@@ -585,7 +585,7 @@ openAudioOutDevice(dsd_opts* opts, int speed) {
         opts->audio_out_type = 0; /* Audio stream output */
     }
     if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
-        opts->audio_in_type = 0;
+        opts->audio_in_type = AUDIO_IN_PULSE;
     }
     fprintf(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
 }
@@ -601,7 +601,7 @@ openAudioInDevice(dsd_opts* opts) {
 
     // get info of device/file
     if (strncmp(opts->audio_in_dev, "-", 1) == 0) {
-        opts->audio_in_type = 1;
+        opts->audio_in_type = AUDIO_IN_STDIN;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
@@ -620,12 +620,12 @@ openAudioInDevice(dsd_opts* opts) {
     }
 
     else if (strncmp(opts->audio_in_dev, "m17udp", 6) == 0) {
-        opts->audio_in_type = 9; //NULL audio device
+        opts->audio_in_type = AUDIO_IN_NULL; //NULL audio device
     }
 
     else if (strncmp(opts->audio_in_dev, "udp", 3) == 0) {
         // UDP direct audio input (PCM16LE)
-        opts->audio_in_type = 6;
+        opts->audio_in_type = AUDIO_IN_UDP;
         // parse optional udp:addr:port string
         // default bind 127.0.0.1:7355 (matches TCP default)
         if (opts->udp_in_portno == 0) {
@@ -643,7 +643,7 @@ openAudioInDevice(dsd_opts* opts) {
     }
 
     else if (strncmp(opts->audio_in_dev, "tcp", 3) == 0) {
-        opts->audio_in_type = 8;
+        opts->audio_in_type = AUDIO_IN_TCP;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
@@ -662,7 +662,7 @@ openAudioInDevice(dsd_opts* opts) {
 
     // else if (strncmp(opts->audio_in_dev, "udp", 3) == 0)
     // {
-    //   opts->audio_in_type = 6;
+    //   opts->audio_in_type = AUDIO_IN_UDP;
     //   opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
     //   opts->audio_in_file_info->samplerate=opts->wav_sample_rate;
     //   opts->audio_in_file_info->channels=1;
@@ -679,23 +679,18 @@ openAudioInDevice(dsd_opts* opts) {
 
     else if (strncmp(opts->audio_in_dev, "rtl", 3) == 0) {
 #ifdef USE_RTLSDR
-        opts->audio_in_type = 3;
-#elif AERO_BUILD
-        opts->audio_in_type = 5;
-        sprintf(opts->audio_in_dev, "/dev/dsp");
+        opts->audio_in_type = AUDIO_IN_RTL;
 #else
-        opts->audio_in_type = 0;
+        opts->audio_in_type = AUDIO_IN_PULSE;
         sprintf(opts->audio_in_dev, "pulse");
 #endif
     } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
-        opts->audio_in_type = 0;
-    } else if ((strncmp(opts->audio_in_dev, "/dev/dsp", 8) == 0)) {
-        opts->audio_in_type = 5;
+        opts->audio_in_type = AUDIO_IN_PULSE;
     }
 
     //if no extension set, treat as named pipe or extensionless wav file -- bugfix for github issue #105
     else if (extension == NULL) {
-        opts->audio_in_type = 2;
+        opts->audio_in_type = AUDIO_IN_WAV;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
@@ -718,7 +713,7 @@ openAudioInDevice(dsd_opts* opts) {
         //debug
         fprintf(stderr, "Opening M17 .rrc headless wav file\n");
 
-        opts->audio_in_type = 2;
+        opts->audio_in_type = AUDIO_IN_WAV;
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
@@ -745,9 +740,9 @@ openAudioInDevice(dsd_opts* opts) {
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
-            opts->audio_in_type = 44; //float symbol input
+            opts->audio_in_type = AUDIO_IN_SYMBOL_FLT; //float symbol input
         } else {
-            opts->audio_in_type = 0;
+            opts->audio_in_type = AUDIO_IN_PULSE;
         }
     }
 
@@ -760,9 +755,9 @@ openAudioInDevice(dsd_opts* opts) {
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
-            opts->audio_in_type = 44; //float symbol input
+            opts->audio_in_type = AUDIO_IN_SYMBOL_FLT; //float symbol input
         } else {
-            opts->audio_in_type = 0;
+            opts->audio_in_type = AUDIO_IN_PULSE;
         }
     }
 
@@ -774,9 +769,9 @@ openAudioInDevice(dsd_opts* opts) {
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
-            opts->audio_in_type = 4; //symbol capture bin files
+            opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
         } else {
-            opts->audio_in_type = 0;
+            opts->audio_in_type = AUDIO_IN_PULSE;
         }
     }
     //open as wav file as last resort, wav files subseptible to sample rate issues if not 48000
@@ -787,7 +782,7 @@ openAudioInDevice(dsd_opts* opts) {
             exit(1);
         }
         if (S_ISREG(stat_buf.st_mode)) {
-            opts->audio_in_type = 2; //two now, seperating STDIN and wav files
+            opts->audio_in_type = AUDIO_IN_WAV; //two now, seperating STDIN and wav files
             opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
             if (opts->audio_in_file_info == NULL) {
                 LOG_ERROR("Error, couldn't allocate memory for audio input\n");
@@ -810,7 +805,6 @@ openAudioInDevice(dsd_opts* opts) {
         //open pulse audio if no bin or wav
         else //seems this condition is never met
         {
-            //opts->audio_in_type = 5; //not sure if this works or needs to openPulse here
             LOG_ERROR("Error, couldn't open input file.\n");
             exit(1);
         }

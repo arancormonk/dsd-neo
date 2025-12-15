@@ -70,7 +70,7 @@ enum UiCmdId {
     UI_CMD_COSINE_FILTER_TOGGLE = 108,
 
     // Heavy actions moved off UI thread
-    UI_CMD_TCP_CONNECT_AUDIO = 200, // use opts->tcp_hostname/port; sets audio_in_type=8
+    UI_CMD_TCP_CONNECT_AUDIO = 200, // use opts->tcp_hostname/port; sets audio_in_type=AUDIO_IN_TCP
     UI_CMD_RIGCTL_CONNECT = 201,    // uses opts->tcp_hostname/rigctlportno
     UI_CMD_RETURN_CC = 202,
     UI_CMD_CHANNEL_CYCLE = 203,
@@ -126,9 +126,9 @@ enum UiCmdId {
     UI_CMD_DSP_OUT_SET = 442,          // payload: char filename[]
     UI_CMD_SYMCAP_OPEN = 443,          // payload: char path[]
     UI_CMD_SYMBOL_IN_OPEN = 444,       // payload: char path[]
-    UI_CMD_INPUT_WAV_SET = 445,        // payload: char path[]; sets type=2
-    UI_CMD_INPUT_SYM_STREAM_SET = 446, // payload: char path[]; sets type=44
-    UI_CMD_INPUT_SET_PULSE = 447,      // sets audio_in_dev="pulse", type=0
+    UI_CMD_INPUT_WAV_SET = 445,        // payload: char path[]; sets type=AUDIO_IN_WAV
+    UI_CMD_INPUT_SYM_STREAM_SET = 446, // payload: char path[]; sets type=AUDIO_IN_SYMBOL_FLT
+    UI_CMD_INPUT_SET_PULSE = 447,      // sets audio_in_dev="pulse", type=AUDIO_IN_PULSE
 
     // Networking / device configs
     UI_CMD_UDP_OUT_CFG = 460,           // payload: struct { char host[256]; int32_t port; }

@@ -1382,7 +1382,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         }
 
         //if using rtl input, we can ask for the current frequency tuned
-        if (opts->audio_in_type == 3 && opts->p25_is_tuned == 0) {
+        if (opts->audio_in_type == AUDIO_IN_RTL && opts->p25_is_tuned == 0) {
             ccfreq = (long int)opts->rtlsdr_center_freq;
             if (ccfreq != 0) {
                 state->trunk_cc_freq = ccfreq;
@@ -1446,7 +1446,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         }
 
                         //rtl
-                        else if (opts->audio_in_type == 3) {
+                        else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                             if (g_rtl_ctx) {
                                 // ensure any queued audio tail plays before changing channels
@@ -1520,7 +1520,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         }
 
                         //rtl
-                        else if (opts->audio_in_type == 3) {
+                        else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                             if (g_rtl_ctx) {
                                 // ensure any queued audio tail plays before changing channels

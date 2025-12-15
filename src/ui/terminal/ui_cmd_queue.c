@@ -247,19 +247,19 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         case UI_CMD_CALL_ALERT_TOGGLE: opts->call_alert = opts->call_alert ? 0 : 1; break;
 
         case UI_CMD_CONST_TOGGLE: {
-            if (opts->audio_in_type == 3) {
+            if (opts->audio_in_type == AUDIO_IN_RTL) {
                 opts->constellation = opts->constellation ? 0 : 1;
             }
             break;
         }
         case UI_CMD_CONST_NORM_TOGGLE: {
-            if (opts->audio_in_type == 3 && opts->constellation == 1) {
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->constellation == 1) {
                 opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
             }
             break;
         }
         case UI_CMD_CONST_GATE_DELTA: {
-            if (opts->audio_in_type == 3 && opts->constellation == 1) {
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->constellation == 1) {
                 float d = 0.0f;
                 if (c->n >= (int)sizeof(float)) {
                     memcpy(&d, c->data, sizeof(float));
@@ -276,31 +276,31 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_EYE_TOGGLE: {
-            if (opts->audio_in_type == 3) {
+            if (opts->audio_in_type == AUDIO_IN_RTL) {
                 opts->eye_view = opts->eye_view ? 0 : 1;
             }
             break;
         }
         case UI_CMD_EYE_UNICODE_TOGGLE: {
-            if (opts->audio_in_type == 3 && opts->eye_view == 1) {
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->eye_view == 1) {
                 opts->eye_unicode = opts->eye_unicode ? 0 : 1;
             }
             break;
         }
         case UI_CMD_EYE_COLOR_TOGGLE: {
-            if (opts->audio_in_type == 3 && opts->eye_view == 1) {
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->eye_view == 1) {
                 opts->eye_color = opts->eye_color ? 0 : 1;
             }
             break;
         }
         case UI_CMD_FSK_HIST_TOGGLE: {
-            if (opts->audio_in_type == 3) {
+            if (opts->audio_in_type == AUDIO_IN_RTL) {
                 opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
             }
             break;
         }
         case UI_CMD_SPECTRUM_TOGGLE: {
-            if (opts->audio_in_type == 3) {
+            if (opts->audio_in_type == AUDIO_IN_RTL) {
                 opts->spectrum_view = opts->spectrum_view ? 0 : 1;
             }
             break;
@@ -310,7 +310,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (c->n >= (int)sizeof(int32_t)) {
                 memcpy(&d, c->data, sizeof(int32_t));
             }
-            if (opts->audio_in_type == 3 && opts->spectrum_view == 1) {
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->spectrum_view == 1) {
 #ifdef USE_RTLSDR
                 int n = rtl_stream_spectrum_get_size();
                 int want = n + d;
@@ -355,7 +355,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
             if (opts->tcp_sockfd != 0) {
                 // reset audio input stream
-                if (opts->audio_in_type == 0) {
+                if (opts->audio_in_type == AUDIO_IN_PULSE) {
                     closePulseInput(opts);
                 }
                 if (opts->audio_in_file_info) {
@@ -372,7 +372,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
                     if (opts->tcp_file_in != NULL) {
                         LOG_INFO("TCP Socket Connected Successfully.\n");
-                        opts->audio_in_type = 8; // TCP PCM16LE
+                        opts->audio_in_type = AUDIO_IN_TCP; // TCP PCM16LE
                     } else {
                         LOG_ERROR("Error, couldn't Connect to TCP with libsndfile: %s\n", sf_strerror(NULL));
                     }
@@ -413,7 +413,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     SetFreq(opts->rigctl_sockfd, f);
                 }
 #ifdef USE_RTLSDR
-                if (opts->audio_in_type == 3) {
+                if (opts->audio_in_type == AUDIO_IN_RTL) {
                     if (g_rtl_ctx) {
                         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
                         rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
@@ -515,7 +515,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->trunk_cc_freq = f;
             }
 #ifdef USE_RTLSDR
-            if (opts->p25_trunk == 1 && opts->audio_in_type == 3) {
+            if (opts->p25_trunk == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
                 noCarrier(opts, state);
                 if (g_rtl_ctx) {
                     long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
@@ -574,7 +574,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_CHANNEL_CYCLE: {
-            if (opts->use_rigctl == 1 || opts->audio_in_type == 3) {
+            if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
                 memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
                 memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
                 memset(state->active_channel, 0, sizeof(state->active_channel));
@@ -597,7 +597,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                             SetFreq(opts->rigctl_sockfd, cand);
                         }
 #ifdef USE_RTLSDR
-                        if (opts->audio_in_type == 3) {
+                        if (opts->audio_in_type == AUDIO_IN_RTL) {
                             if (g_rtl_ctx) {
                                 rtl_stream_tune(g_rtl_ctx, (uint32_t)cand);
                             }
@@ -629,7 +629,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                         SetFreq(opts->rigctl_sockfd, state->trunk_lcn_freq[state->lcn_freq_roll]);
                     }
 #ifdef USE_RTLSDR
-                    if (opts->audio_in_type == 3) {
+                    if (opts->audio_in_type == AUDIO_IN_RTL) {
                         if (g_rtl_ctx) {
                             rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
                         }
@@ -700,7 +700,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (S_ISREG(sb.st_mode)) {
                 opts->symbolfile = fopen(opts->audio_in_dev, "r");
                 if (opts->symbolfile) {
-                    opts->audio_in_type = 4;
+                    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
                 }
             }
             break;
@@ -733,20 +733,20 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         }
         case UI_CMD_STOP_PLAYBACK: {
             if (opts->symbolfile != NULL) {
-                if (opts->audio_in_type == 4) {
+                if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
                     fclose(opts->symbolfile);
                 }
                 opts->symbolfile = NULL;
             }
-            if (opts->audio_in_type == 2 && opts->audio_in_file) {
+            if (opts->audio_in_type == AUDIO_IN_WAV && opts->audio_in_file) {
                 sf_close(opts->audio_in_file);
                 opts->audio_in_file = NULL;
             }
             if (opts->audio_out_type == 0) {
-                opts->audio_in_type = 0;
+                opts->audio_in_type = AUDIO_IN_PULSE;
                 openPulseInput(opts);
             } else {
-                opts->audio_in_type = 5;
+                opts->audio_in_type = AUDIO_IN_STDIN;
             }
             break;
         }
@@ -796,7 +796,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
 #ifdef USE_RTLSDR
                 if (cfg.has_input && (cfg.input_source == DSDCFG_INPUT_RTL || cfg.input_source == DSDCFG_INPUT_RTLTCP)
-                    && old_audio_in_type == 3 && opts->audio_in_type == 3
+                    && old_audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
                     && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
                     if (cfg.input_source == DSDCFG_INPUT_RTL) {
                         if (cfg.rtl_device >= 0) {
@@ -868,7 +868,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 }
 #endif
 
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_TCP && old_audio_in_type == 8
+                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_TCP && old_audio_in_type == AUDIO_IN_TCP
                     && strncmp(old_audio_in_dev, "tcp", 3) == 0 && strncmp(opts->audio_in_dev, "tcp", 3) == 0
                     && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
                     if (cfg.tcp_host[0]) {
@@ -891,7 +891,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     }
                 }
 
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_UDP && old_audio_in_type == 6
+                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_UDP && old_audio_in_type == AUDIO_IN_UDP
                     && strncmp(old_audio_in_dev, "udp", 3) == 0 && strncmp(opts->audio_in_dev, "udp", 3) == 0
                     && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
                     if (cfg.udp_addr[0]) {
@@ -910,7 +910,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     }
                 }
 
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_FILE && old_audio_in_type == 2
+                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_FILE && old_audio_in_type == AUDIO_IN_WAV
                     && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
                     if (opts->audio_in_file) {
                         sf_close(opts->audio_in_file);
@@ -933,13 +933,13 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                             LOG_ERROR("Config: failed to open file input %s: %s\n", opts->audio_in_dev,
                                       sf_strerror(NULL));
                         } else {
-                            opts->audio_in_type = 2;
+                            opts->audio_in_type = AUDIO_IN_WAV;
                         }
                     }
                 }
 
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_PULSE && old_audio_in_type == 0
-                    && opts->audio_in_type == 0) {
+                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_PULSE && old_audio_in_type == AUDIO_IN_PULSE
+                    && opts->audio_in_type == AUDIO_IN_PULSE) {
                     if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0
                         || strncmp(old_audio_in_dev, "pulse", 5) != 0) {
                         closePulseInput(opts);
@@ -1065,7 +1065,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(opts->audio_in_dev) ? c->n : sizeof(opts->audio_in_dev) - 1;
                 memcpy(opts->audio_in_dev, c->data, n);
                 opts->audio_in_dev[n] = '\0';
-                opts->audio_in_type = 2;
+                opts->audio_in_type = AUDIO_IN_WAV;
             }
             break;
         }
@@ -1074,14 +1074,14 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(opts->audio_in_dev) ? c->n : sizeof(opts->audio_in_dev) - 1;
                 memcpy(opts->audio_in_dev, c->data, n);
                 opts->audio_in_dev[n] = '\0';
-                opts->audio_in_type = 44;
+                opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
             }
             break;
         }
         case UI_CMD_INPUT_SET_PULSE: {
             if (opts) {
                 snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-                opts->audio_in_type = 0;
+                opts->audio_in_type = AUDIO_IN_PULSE;
             }
             break;
         }
@@ -1124,7 +1124,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 snprintf(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", bind);
                 opts->udp_in_portno = port;
                 snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
-                opts->audio_in_type = 6;
+                opts->audio_in_type = AUDIO_IN_UDP;
             }
             break;
         }

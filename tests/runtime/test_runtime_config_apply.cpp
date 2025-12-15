@@ -32,7 +32,7 @@ main(void) {
     // Start from a known input/output so that config apply has something to
     // mutate. Use Pulse I/O to avoid depending on RTL or network resources.
     snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
-    opts.audio_in_type = 0;
+    opts.audio_in_type = AUDIO_IN_PULSE;
     snprintf(opts.audio_out_dev, sizeof opts.audio_out_dev, "%s", "pulse");
     opts.audio_out_type = 0;
 

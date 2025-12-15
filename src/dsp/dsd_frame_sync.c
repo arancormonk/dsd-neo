@@ -617,7 +617,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
          * Using fixed ±2.0 thresholds produces all 4 dibit values needed for P25 sync detection. */
         int cqpsk_4level = 0;
 #ifdef USE_RTLSDR
-        if (state->rf_mod == 1 && opts->audio_in_type == 3 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+        if (state->rf_mod == 1 && opts->audio_in_type == AUDIO_IN_RTL
+            && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
             int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
             rtl_stream_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
             if (dsp_cqpsk && dsp_ted) {
@@ -836,7 +837,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
 #endif
             // Legacy power-based pre-gate for some GFSK modes when using RTL input
-            if (opts->audio_in_type == 3 && opts->rtl_pwr < opts->rtl_squelch_level) {
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < opts->rtl_squelch_level) {
                 if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1
                     || opts->frame_m17 == 1) {
                     goto SYNC_TEST_END;

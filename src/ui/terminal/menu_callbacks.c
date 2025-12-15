@@ -925,7 +925,7 @@ cb_tcp_prebuf(void* v, int ok, int ms) {
         return;
     }
     env_set_int("DSD_NEO_TCP_PREBUF_MS", ms);
-    if (c && c->opts && c->opts->audio_in_type == 3) {
+    if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }
@@ -941,7 +941,7 @@ cb_tcp_rcvbuf(void* v, int ok, int sz) {
     } else {
         env_set_int("DSD_NEO_TCP_RCVBUF", sz);
     }
-    if (c && c->opts && c->opts->audio_in_type == 3) {
+    if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }
@@ -957,7 +957,7 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
     } else {
         env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
     }
-    if (c && c->opts && c->opts->audio_in_type == 3) {
+    if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }

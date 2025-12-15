@@ -261,7 +261,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
             long int ccfreq = 0;
             if (opts->use_rigctl == 1) {
                 ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
-            } else if (opts->audio_in_type == 3) {
+            } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                 ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
@@ -671,7 +671,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 }
 
                 //if using rtl input, we can ask for the current frequency tuned
-                if (opts->audio_in_type == 3 && opts->trunk_is_tuned == 0) //&& state->trunk_cc_freq == 0
+                if (opts->audio_in_type == AUDIO_IN_RTL && opts->trunk_is_tuned == 0) //&& state->trunk_cc_freq == 0
                 {
                     ccfreq = (long int)opts->rtlsdr_center_freq;
                     if (ccfreq != 0) {
@@ -2164,7 +2164,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     }
 
                                     //rtl
-                                    else if (opts->audio_in_type == 3) {
+                                    else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
 
                                         //may need the code below to TG hold (just in case SLC comes before a VLC or a VC6 EMB and immediately goes to the rest channel)
@@ -2523,7 +2523,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                             }
 
                             //rtl
-                            else if (opts->audio_in_type == 3) {
+                            else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
@@ -2711,7 +2711,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 }
 
                 //if using rtl input, we can ask for the current frequency tuned
-                if (opts->audio_in_type == 3) {
+                if (opts->audio_in_type == AUDIO_IN_RTL) {
                     ccfreq = (long int)opts->rtlsdr_center_freq;
                     if (ccfreq != 0) {
                         state->trunk_cc_freq = ccfreq;
@@ -2786,7 +2786,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                             if (state->trunk_chan_map[j + xpt_bank + 1] != 0) { // if we have a valid frequency
                                 // Common handling for rigctl or RTL input
-                                if (opts->use_rigctl == 1 || opts->audio_in_type == 3) {
+                                if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
                                     // TG hold handling (ensure lasttg/lasttgR tracked on tune)
                                     if (state->tg_hold != 0) {
                                         if ((j & 1) == 0) { // slot 1 LSN

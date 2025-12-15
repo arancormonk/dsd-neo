@@ -390,7 +390,7 @@ act_tcp_waitall(void* v) {
     const char* e = getenv("DSD_NEO_TCP_WAITALL");
     int on = (e && *e && *e != '0');
     dsd_setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
-    if (c && c->opts && c->opts->audio_in_type == 3) {
+    if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
 }

@@ -153,7 +153,7 @@ ui_handle_cosine_filter_toggle(dsd_opts* opts, dsd_state* state, const struct Ui
 static int
 ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)c;
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
             opts->rtl_volume_multiplier++;
         } else {

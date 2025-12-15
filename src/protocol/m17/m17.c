@@ -1806,7 +1806,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         }
 
         //read some audio samples from source and load them into an audio buffer
-        if (opts->audio_in_type == 0) //pulse audio
+        if (opts->audio_in_type == AUDIO_IN_PULSE) //pulse audio
         {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
@@ -1847,7 +1847,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        else if (opts->audio_in_type == 1) //stdin
+        else if (opts->audio_in_type == AUDIO_IN_STDIN) //stdin
         {
             int result = 0;
             for (i = 0; i < (int)nsam; i++) {
@@ -1903,7 +1903,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        else if (opts->audio_in_type == 8) //TCP
+        else if (opts->audio_in_type == AUDIO_IN_TCP) //TCP
         {
             int result = 0;
             for (i = 0; i < (int)nsam; i++) {
@@ -1957,7 +1957,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                 }
             }
-        } else if (opts->audio_in_type == 6) // UDP direct audio
+        } else if (opts->audio_in_type == AUDIO_IN_UDP) // UDP direct audio
         {
             int result = 1;
             for (i = 0; i < (int)nsam; i++) {
@@ -2015,7 +2015,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        else if (opts->audio_in_type == 3) //RTL
+        else if (opts->audio_in_type == AUDIO_IN_RTL) //RTL
         {
 #ifdef USE_RTLSDR
             for (i = 0; i < (int)nsam; i++) {
@@ -2358,7 +2358,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             }
 
             //debug show pulse input latency
-            // if (opts->audio_in_type == 0)
+            // if (opts->audio_in_type == AUDIO_IN_PULSE)
             // {
             //   unsigned long long int latency = pa_simple_get_latency (opts->pulse_digi_dev_in, NULL);
             //   fprintf (stderr, " Latency: %05lld;", latency);
@@ -3804,7 +3804,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
     //Tweaks and Enable Ncurses Terminal
     opts->dmr_stereo = 0;
-    opts->audio_in_type = 9; //NULL
+    opts->audio_in_type = AUDIO_IN_NULL; //NULL
 
     //NOTE: This Internal Handling is non-blocking and keeps the connection alive
     //in the event of the other end opening and closing often (exit and restart)

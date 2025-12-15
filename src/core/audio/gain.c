@@ -263,7 +263,7 @@ analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
 
     // RTL input (type 3) produces normalized [-1,1] samples and needs base scaling.
     // All other input types (WAV, Pulse, TCP, etc.) produce PCM16-scale samples.
-    float base_scale = (opts->audio_in_type == 3) ? 4800.0f : 1.0f;
+    float base_scale = (opts->audio_in_type == AUDIO_IN_RTL) ? 4800.0f : 1.0f;
 
     // User gain: 0% to 100% maps to 0x to 5x
     float user_gain = (opts->audio_gainA / 100.0f) * 5.0f;

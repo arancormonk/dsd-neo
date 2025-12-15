@@ -819,7 +819,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     // The state machine determines the correct SPS for the current DSP rate and channel type
     // and passes it directly.
 #ifdef USE_RTLSDR
-    if (opts->audio_in_type == 3 && ted_sps > 0) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
         rtl_stream_set_ted_sps(ted_sps);
         // Optional debug: log VC tuning parameters when CQPSK debug is enabled.
         {
@@ -848,7 +848,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
             SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
         }
         SetFreq(opts->rigctl_sockfd, freq);
-    } else if (opts->audio_in_type == 3) {
+    } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
         if (g_rtl_ctx) {
             rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
@@ -904,7 +904,7 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
             SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
         }
         SetFreq(opts->rigctl_sockfd, freq);
-    } else if (opts->audio_in_type == 3) {
+    } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
         // Set TED SPS for control channel BEFORE tuning so that demod_reset_on_retune()
         // (triggered by the controller thread after retune) uses the correct CC SPS,

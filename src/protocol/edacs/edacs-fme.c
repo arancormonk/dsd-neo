@@ -242,7 +242,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
     while (!exitflag && count > 0) {
         //this will only work on 48k/1 short output
-        if (opts->audio_in_type == 0) {
+        if (opts->audio_in_type == AUDIO_IN_PULSE) {
             for (i = 0; i < 960; i++) {
                 dsd_audio_read(opts->audio_in_stream, &sample, 1);
                 if (opts->input_volume_multiplier > 1) {
@@ -301,7 +301,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //reset for an extended period of time and overflows, may need to reset buffer occassionally here
 
         //TCP Input w/ Simple TCP Error Detection Implemented to prevent hard crash if TCP drops off
-        if (opts->audio_in_type == 8) {
+        if (opts->audio_in_type == AUDIO_IN_TCP) {
             for (i = 0; i < 960; i++) {
                 result = sf_read_short(opts->tcp_file_in, &sample, 1);
                 if (result == 0) {
@@ -367,7 +367,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         }
 
         // UDP direct input
-        else if (opts->audio_in_type == 6) {
+        else if (opts->audio_in_type == AUDIO_IN_UDP) {
             for (i = 0; i < 960; i++) {
                 if (!udp_input_read_sample(opts, &sample)) {
                     sample = 0;
@@ -418,7 +418,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
 //RTL Input
 #ifdef USE_RTLSDR
-        if (opts->audio_in_type == 3) {
+        if (opts->audio_in_type == AUDIO_IN_RTL) {
             for (i = 0; i < 960; i++) {
 #ifdef USE_RTLSDR
                 if (!g_rtl_ctx) {
@@ -943,7 +943,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
                             }
                             //if using rtl input, we can ask for the current frequency tuned
-                            if (opts->audio_in_type == 3) {
+                            if (opts->audio_in_type == AUDIO_IN_RTL) {
                                 lcnfreq = (long int)opts->rtlsdr_center_freq;
                                 if (lcnfreq != 0) {
                                     state->trunk_lcn_freq[state->edacs_cc_lcn - 1] = lcnfreq;
@@ -1278,7 +1278,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
                         //openwav file and do per call right here, should probably check as well to make sure we have a valid trunking method active (rigctl, rtl)
-                        if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                        if (opts->dmr_stereo_wav == 1
+                            && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                             if (is_digital == 1) {
                             } //just write to already open temp file to be renamed later
                             else //close the temp 8k wav file and open as 48k
@@ -1305,7 +1306,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        if (opts->audio_in_type == 3) //rtl dongle
+                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                         {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
@@ -1426,7 +1427,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
                         //openwav file and do per call right here, should probably check as well to make sure we have a valid trunking method active (rigctl, rtl)
-                        if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                        if (opts->dmr_stereo_wav == 1
+                            && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                             if (is_digital == 1) {
                             } //just write to already open temp file to be renamed later
                             else //close the temp 8k wav file and open as 48k
@@ -1453,7 +1455,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        if (opts->audio_in_type == 3) //rtl dongle
+                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                         {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
@@ -1560,7 +1562,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
                         //openwav file and do per call right here, should probably check as well to make sure we have a valid trunking method active (rigctl, rtl)
-                        if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                        if (opts->dmr_stereo_wav == 1
+                            && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                             if (is_digital == 1) {
                             } //just write to already open temp file to be renamed later
                             else //close the temp 8k wav file and open as 48k
@@ -1587,7 +1590,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        if (opts->audio_in_type == 3) //rtl dongle
+                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                         {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
@@ -1759,7 +1762,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                     {
                         //openwav file and do per call right here
-                        if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                        if (opts->dmr_stereo_wav == 1
+                            && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                             if (is_digital == 1) {
                             } //just write to already open temp file to be renamed later
                             else //close the temp 8k wav file and open as 48k
@@ -1792,7 +1796,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        if (opts->audio_in_type == 3) //rtl dongle
+                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                         {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
@@ -2072,7 +2076,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                         {
                             //openwav file and do per call right here
-                            if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                            if (opts->dmr_stereo_wav == 1
+                                && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                                 if (is_digital == 1) {
                                 } //just write to already open temp file to be renamed later
                                 else //close the temp 8k wav file and open as 48k
@@ -2106,7 +2111,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
                             }
 
-                            if (opts->audio_in_type == 3) //rtl dongle
+                            if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                             {
 #ifdef USE_RTLSDR
                                 // ensure any queued audio tail plays before changing channels
@@ -2212,7 +2217,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                         {
                             //openwav file and do per call right here
-                            if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                            if (opts->dmr_stereo_wav == 1
+                                && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                                 if (is_digital == 1) {
                                 } //just write to already open temp file to be renamed later
                                 else //close the temp 8k wav file and open as 48k
@@ -2244,7 +2250,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
                             }
 
-                            if (opts->audio_in_type == 3) //rtl dongle
+                            if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                             {
 #ifdef USE_RTLSDR
                                 if (g_rtl_ctx) {
@@ -2453,7 +2459,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
 
                                 //If using rtl input, we can ask for the current frequency tuned
-                                if (opts->audio_in_type == 3) {
+                                if (opts->audio_in_type == AUDIO_IN_RTL) {
                                     long int lcnfreq = (long int)opts->rtlsdr_center_freq;
                                     if (lcnfreq != 0) {
                                         state->trunk_lcn_freq[state->edacs_cc_lcn - 1] = lcnfreq;
@@ -2534,7 +2540,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 && state->trunk_lcn_freq[lcn - 1] != 0) //don't tune if zero (not loaded or otherwise)
                             {
                                 //openwav file and do per call right here
-                                if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3)) {
+                                if (opts->dmr_stereo_wav == 1
+                                    && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
                                     if (is_digital == 1) {
                                     } //just write to already open temp file to be renamed later
                                     else //close the temp 8k wav file and open as 48k
@@ -2571,7 +2578,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                     }
                                 }
 
-                                if (opts->audio_in_type == 3) //rtl dongle
+                                if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                                 {
 #ifdef USE_RTLSDR
                                     // ensure any queued audio tail plays before changing channels
@@ -2726,7 +2733,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         }
 
         //rtl
-        else if (opts->audio_in_type == 3) {
+        else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
             state->lasttg = 0;
             state->lastsrc = 0;

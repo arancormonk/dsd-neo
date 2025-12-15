@@ -73,7 +73,7 @@ static DSD_THREAD_RETURN_TYPE
             }
 
             int ch = ERR;
-            if (osnap->audio_in_type != 1) { // Avoid getch when stdin is input
+            if (osnap->audio_in_type != AUDIO_IN_STDIN) { // Avoid getch when stdin is input
                 ch = getch();
             }
 

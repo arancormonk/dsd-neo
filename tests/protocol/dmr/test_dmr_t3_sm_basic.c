@@ -58,9 +58,9 @@ static void
 init_opts_state(dsd_opts* opts, dsd_state* state) {
     memset(opts, 0, sizeof(*opts));
     memset(state, 0, sizeof(*state));
-    opts->trunk_enable = 1;  // enable trunking logic
-    opts->use_rigctl = 0;    // avoid IO during test
-    opts->audio_in_type = 0; // avoid RTL path
+    opts->trunk_enable = 1;               // enable trunking logic
+    opts->use_rigctl = 0;                 // avoid IO during test
+    opts->audio_in_type = AUDIO_IN_PULSE; // avoid RTL path
     opts->setmod_bw = 0;
     opts->trunk_hangtime = 0.0f;      // no hangtime delay for this test
     state->trunk_cc_freq = 851000000; // pretend CC

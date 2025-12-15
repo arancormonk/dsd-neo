@@ -457,7 +457,7 @@ dsd_test_compute_cqpsk_reliability(float sym) {
 static inline int
 is_cqpsk_active(dsd_opts* opts) {
 #ifdef USE_RTLSDR
-    if (opts && opts->audio_in_type == 3) {
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
         int cqpsk = 0, fll = 0, ted = 0;
         rtl_stream_dsp_get(&cqpsk, &fll, &ted);
         if (cqpsk && ted) {
@@ -752,7 +752,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 
     dibit = digitize(opts, state, symbol);
 
-    if (opts->audio_in_type == 4) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         //assign dibit from last symbol/dibit read from capture bin
         dibit = state->symbolc;
         if (state->use_throttle == 1) {
@@ -843,7 +843,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
     use_symbol(opts, state, symbol);
     dibit = digitize(opts, state, symbol);
 
-    if (opts->audio_in_type == 4) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         dibit = state->symbolc;
         if (state->use_throttle == 1) {
             dsd_sleep_ms(0); /* yield CPU */

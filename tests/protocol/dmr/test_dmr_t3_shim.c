@@ -84,7 +84,7 @@ init_env(dsd_opts* opts, dsd_state* state) {
     memset(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
     opts->use_rigctl = 0;
-    opts->audio_in_type = 0;
+    opts->audio_in_type = AUDIO_IN_PULSE;
     state->trunk_cc_freq = 851000000; // mock CC
 }
 

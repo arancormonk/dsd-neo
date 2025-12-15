@@ -106,7 +106,7 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
     }
     /* Only on RTL pipeline; synced use is gated by runtime toggle to avoid
        perturbing steady-state decoders unless explicitly allowed. */
-    if (opts->audio_in_type != 3) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -193,7 +193,7 @@ maybe_c4fm_clock(dsd_opts* opts, dsd_state* state, int have_sync, int mode, int 
  * Guards against oscillation using a small deadband and a cooldown period.
  *
  * Safety gates:
- *  - Only when using RTL input (audio_in_type == 3)
+ *  - Only when using RTL input (audio_in_type == AUDIO_IN_RTL)
  *  - Only when not currently synchronized (have_sync == 0)
  *  - Only for C4FM path (rf_mod == 0) to avoid QPSK perturbations
  */
@@ -204,7 +204,7 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
     if (freeze_window) {
         return; // explicit freeze requested
     }
-    if (opts->audio_in_type != 3) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
         return; // only when using RTL stream/demod pipeline
     }
     /* If synced, only run when explicitly allowed by runtime config. */
@@ -281,7 +281,7 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
  */
 static inline void
 maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
-    if (opts->audio_in_type != 3) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
         return; /* only for RTL input */
     }
     static unsigned int last_rate = 0;
@@ -406,7 +406,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     }
 #ifdef USE_RTLSDR
     int cqpsk_symbol_rate = 0;
-    if (opts->audio_in_type == 3 && state->rf_mod == 1) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
         int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
         rtl_stream_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
         if (dsp_cqpsk && dsp_ted) {
@@ -454,7 +454,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         // Read the new sample from the input
-        if (opts->audio_in_type == 0) //audio stream input
+        if (opts->audio_in_type == AUDIO_IN_PULSE) //audio stream input
         {
             short s = 0;
             if (opts->audio_in_stream) {
@@ -473,7 +473,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         //stdin only, wav files moving to new number
-        else if (opts->audio_in_type == 1) //won't work in windows, needs posix pipe (mintty)
+        else if (opts->audio_in_type == AUDIO_IN_STDIN) //won't work in windows, needs posix pipe (mintty)
         {
             short s = 0;
             result = sf_read_short(opts->audio_in_file, &s, 1);
@@ -494,7 +494,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
         //wav files, same but using seperate value so we can still manipulate ncurses menu
         //since we can not worry about getch/stdin conflict
-        else if (opts->audio_in_type == 2) {
+        else if (opts->audio_in_type == AUDIO_IN_WAV) {
             short s = 0;
             result = sf_read_short(opts->audio_in_file, &s, 1);
             if (opts->input_volume_multiplier > 1) {
@@ -513,15 +513,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
                 //open pulse input if we are pulse output AND using ncurses terminal
                 if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-                    opts->audio_in_type = 0; //set input type
-                    openPulseInput(opts);    //open pulse input
+                    opts->audio_in_type = AUDIO_IN_PULSE; //set input type
+                    openPulseInput(opts);                 //open pulse input
                 }
                 //else cleanup and exit
                 else {
                     cleanupAndExit(opts, state);
                 }
             }
-        } else if (opts->audio_in_type == 3) {
+        } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
             // Read demodulated stream here
             if (!g_rtl_ctx) {
@@ -543,7 +543,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         //tcp socket input from SDR++ -- now with 1 retry if connection is broken
-        else if (opts->audio_in_type == 8) {
+        else if (opts->audio_in_type == AUDIO_IN_TCP) {
 #ifdef __CYGWIN__
             short s = 0;
             result = sf_read_short(opts->tcp_file_in, &s, 1);
@@ -590,7 +590,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 sample = (float)s_retry;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
-                    opts->audio_in_type = 0; //set input type
+                    opts->audio_in_type = AUDIO_IN_PULSE; //set input type
                     opts->tcp_sockfd =
                         0; //added this line so we will know if it connected when using ncurses terminal keyboard shortcut
                     //openPulseInput(opts); //open pulse inpput
@@ -599,8 +599,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
                         fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                         fprintf(stderr, "Opening Pulse Audio Input.\n");
-                        opts->audio_in_type = 0; //set input type
-                        openPulseInput(opts);    //open pulse input
+                        opts->audio_in_type = AUDIO_IN_PULSE; //set input type
+                        openPulseInput(opts);                 //open pulse input
                     }
                     //else cleanup and exit
                     else {
@@ -674,7 +674,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 sample = (float)s_retry;
                 if (result == 0) {
                     sf_close(opts->tcp_file_in);
-                    opts->audio_in_type = 0; //set input type
+                    opts->audio_in_type = AUDIO_IN_PULSE; //set input type
                     opts->tcp_sockfd =
                         0; //added this line so we will know if it connected when using ncurses terminal keyboard shortcut
                     openPulseInput(opts); //open pulse inpput
@@ -686,7 +686,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
 
         // UDP direct audio input (PCM16LE over UDP)
-        else if (opts->audio_in_type == 6) {
+        else if (opts->audio_in_type == AUDIO_IN_UDP) {
             short s = 0;
             if (!udp_input_read_sample(opts, &s)) {
                 cleanupAndExit(opts, state);
@@ -716,7 +716,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
             /* Collect ~20 ms of audio based on current output Fs (defaults to 48 kHz; ~960 samples). */
             unsigned int analog_block = analog_out_cap;
-            if (opts->audio_in_type == 3) {
+            if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                 unsigned int Fs = 0;
                 if (g_rtl_ctx) {
@@ -746,7 +746,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
             if ((unsigned int)state->analog_sample_counter == analog_block) {
                 //measure input power for non-RTL inputs (use float path)
-                if (opts->audio_in_type != 3) {
+                if (opts->audio_in_type != AUDIO_IN_RTL) {
                     opts->rtl_pwr = raw_pwr_f(state->analog_out_f, (int)analog_block, 1);
                     // Optional: warn on persistently low input level
                     if (opts->input_warn_db < 0.0) {
@@ -801,7 +801,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
                 //Running PWR after filtering does remove the analog spike from the PWR value
                 //but noise floor noise will still produce higher values
-                // if (opts->audio_in_type != 3  && opts->monitor_input_audio == 1)
+                // if (opts->audio_in_type != AUDIO_IN_RTL  && opts->monitor_input_audio == 1)
                 //   opts->rtl_pwr = raw_pwr_f(state->analog_out_f, 960, 1);
 
                 //seems to be working now, but PWR values are lower on actual analog signal than on no signal but noise
@@ -1065,7 +1065,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 #endif
 
     //read dibit capture bin files
-    if (opts->audio_in_type == 4) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         //use fopen and read in a symbol, check op25 for clues
         if (opts->symbolfile == NULL) {
             fprintf(stderr, "Error Opening File %s\n", opts->audio_in_dev); //double check this
@@ -1076,19 +1076,19 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
         //fprintf(stderr, "%d", state->symbolc);
         if (feof(opts->symbolfile)) {
-            // opts->audio_in_type = 0; //switch to pulse after playback, ncurses terminal can initiate replay if wanted
+            // opts->audio_in_type = AUDIO_IN_PULSE; //switch to pulse after playback, ncurses terminal can initiate replay if wanted
             fclose(opts->symbolfile);
             fprintf(stderr, "\nEnd of %s\n", opts->audio_in_dev);
             //in debug mode, re-run .bin files over and over (look for memory leaks, etc)
             if (state->debug_mode == 1) {
                 opts->symbolfile = NULL;
                 opts->symbolfile = fopen(opts->audio_in_dev, "r");
-                opts->audio_in_type = 4; //symbol capture bin files
+                opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
             }
             //open pulse input if we are pulse output AND using ncurses terminal
             else if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-                opts->audio_in_type = 0; //set input type
-                openPulseInput(opts);    //open pulse input
+                opts->audio_in_type = AUDIO_IN_PULSE; //set input type
+                openPulseInput(opts);                 //open pulse input
             }
             //else cleanup and exit
             else {
@@ -1124,7 +1124,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     }
 
     //.raw or .sym float symbol files
-    if (opts->audio_in_type == 44) {
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
         float float_symbol = 0.0f;
         size_t read_count = fread(&float_symbol, sizeof(float), 1, opts->symbolfile); //sizeof(float) is 4 (usually)
         if (read_count != 1) {

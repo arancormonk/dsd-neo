@@ -94,7 +94,7 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
         return -1;
     }
     snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
-    opts->audio_in_type = 4; // symbol capture bin
+    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
     return 0;
 }
 
@@ -122,7 +122,7 @@ svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
         opts->symbolfile = NULL;
         return -1;
     }
-    opts->audio_in_type = 4; // symbol capture bin
+    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
     return 0;
 }
 
@@ -132,15 +132,15 @@ svc_stop_symbol_playback(dsd_opts* opts) {
         return;
     }
     if (opts->symbolfile != NULL) {
-        if (opts->audio_in_type == 4) {
+        if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
             fclose(opts->symbolfile);
         }
         opts->symbolfile = NULL;
     }
     if (opts->audio_out_type == 0) {
-        opts->audio_in_type = 0; // Pulse input
+        opts->audio_in_type = AUDIO_IN_PULSE;
     } else {
-        opts->audio_in_type = 5; // STDIN/raw
+        opts->audio_in_type = AUDIO_IN_STDIN;
     }
 }
 
@@ -167,7 +167,7 @@ svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
         return -1;
     }
     // Setup libsndfile RAW stream on the socket
-    opts->audio_in_type = 8;
+    opts->audio_in_type = AUDIO_IN_TCP;
     opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
     if (!opts->audio_in_file_info) {
         return -1;
@@ -181,9 +181,9 @@ svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
         LOG_ERROR("Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
         if (opts->audio_out_type == 0) {
             snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-            opts->audio_in_type = 0;
+            opts->audio_in_type = AUDIO_IN_PULSE;
         } else {
-            opts->audio_in_type = 5;
+            opts->audio_in_type = AUDIO_IN_STDIN;
         }
         return -1;
     }
@@ -374,7 +374,7 @@ svc_set_pulse_input(dsd_opts* opts, const char* index) {
         return -1;
     }
     snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-    opts->audio_in_type = 0;
+    opts->audio_in_type = AUDIO_IN_PULSE;
     char tmp[128];
     snprintf(tmp, sizeof tmp, "%s", index);
     parse_pulse_input_string(opts, tmp);
@@ -617,7 +617,7 @@ svc_rtl_enable_input(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    opts->audio_in_type = 3;
+    opts->audio_in_type = AUDIO_IN_RTL;
     /* Ensure an RTL stream is ready immediately when switching inputs. */
     return svc_rtl_restart(opts);
 }
@@ -638,7 +638,7 @@ svc_rtl_restart(dsd_opts* opts) {
 
     /* If RTL-SDR is the active input, immediately recreate and start the stream
        so changes take effect as soon as the user confirms the setting. */
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
             return -1;
         }
@@ -664,7 +664,7 @@ svc_rtl_set_dev_index(dsd_opts* opts, int index) {
     opts->rtl_dev_index = index;
     /* Changing device requires reopen */
     opts->rtl_needs_restart = 1;
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         (void)svc_rtl_restart(opts);
     }
     return 0;
@@ -696,7 +696,7 @@ svc_rtl_set_gain(dsd_opts* opts, int value) {
     opts->rtl_gain_value = value;
     /* Manual gain change requires reopen to apply */
     opts->rtl_needs_restart = 1;
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         (void)svc_rtl_restart(opts);
     }
     return 0;
@@ -728,7 +728,7 @@ svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
     opts->rtl_dsp_bw_khz = khz;
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         (void)svc_rtl_restart(opts);
     }
     return 0;

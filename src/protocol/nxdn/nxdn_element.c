@@ -133,7 +133,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
-                } else if (opts->audio_in_type == 3) {
+                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
@@ -152,7 +152,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
-                } else if (opts->audio_in_type == 3) {
+                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
@@ -171,7 +171,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
-                } else if (opts->audio_in_type == 3) {
+                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
@@ -191,7 +191,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
-                } else if (opts->audio_in_type == 3) {
+                } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
 #endif
@@ -246,7 +246,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
 
                 }
                 //rtl
-                else if (opts->audio_in_type == 3) {
+                else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     //extra safeguards due to sync issues with NXDN
                     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
@@ -694,7 +694,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             }
         }
         //if using rtl input, we can ask for the current frequency tuned
-        else if (opts->audio_in_type == 3) {
+        else if (opts->audio_in_type == AUDIO_IN_RTL) {
             ccfreq = (long int)opts->rtlsdr_center_freq;
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
@@ -805,7 +805,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 }
             }
             //rtl
-            else if (opts->audio_in_type == 3) {
+            else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                 //extra safeguards due to sync issues with NXDN
                 memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
@@ -1966,7 +1966,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                             }
                         }
                         //rtl
-                        else if (opts->audio_in_type == 3) {
+                        else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                             //extra safeguards due to sync issues with NXDN
                             memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));

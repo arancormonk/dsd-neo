@@ -471,7 +471,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         }
 
         //if using rtl input, we can ask for the current frequency tuned
-        else if (opts->audio_in_type == 3) {
+        else if (opts->audio_in_type == AUDIO_IN_RTL) {
             freq = (long int)opts->rtlsdr_center_freq;
         }
 

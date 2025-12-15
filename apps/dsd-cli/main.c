@@ -163,7 +163,7 @@ analog_filter_rate_hz(const dsd_opts* opts) {
         return 48000;
     }
 #ifdef USE_RTLSDR
-    if (opts->audio_in_type == 3 && g_rtl_ctx) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
         uint32_t Fs = rtl_stream_output_rate(g_rtl_ctx);
         if (Fs > 0) {
             return (int)Fs;
@@ -171,16 +171,15 @@ analog_filter_rate_hz(const dsd_opts* opts) {
     }
 #endif
     switch (opts->audio_in_type) {
-        case 0:
-        case 5:
+        case AUDIO_IN_PULSE:
             if (opts->pulse_digi_rate_in > 0) {
                 return opts->pulse_digi_rate_in;
             }
             break;
-        case 1:
-        case 2:
-        case 6:
-        case 8:
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_WAV:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP:
             if (opts->wav_sample_rate > 0) {
                 return opts->wav_sample_rate;
             }
@@ -879,7 +878,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 }
             }
             //rtl
-            if (opts->audio_in_type == 3) {
+            if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                 if (g_rtl_ctx) {
                     uint32_t rf = (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll];
@@ -942,7 +941,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                     state->dmr_rest_channel = -1; //maybe?
                 }
                 //rtl
-                else if (opts->audio_in_type == 3) {
+                else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     if (g_rtl_ctx) {
                         uint32_t rf = (uint32_t)cc;
@@ -1527,10 +1526,10 @@ initOpts(dsd_opts* opts) {
 //this may not matter so much, since its already checked later on
 //but better safe than sorry I guess
 #ifdef __CYGWIN__
-    opts->audio_in_type = 9;  //only assign when configured
-    opts->audio_out_type = 9; //only assign when configured
+    opts->audio_in_type = AUDIO_IN_NULL; //only assign when configured
+    opts->audio_out_type = 9;            //only assign when configured
 #else
-    opts->audio_in_type = 0;
+    opts->audio_in_type = AUDIO_IN_PULSE;
     opts->audio_out_type = 0;
 #endif
 
@@ -2592,7 +2591,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     }
 
 #ifdef USE_RTLSDR
-    if (opts->audio_in_type == 3) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (g_rtl_ctx == NULL) {
             if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create RTL stream.\n");
@@ -2606,7 +2605,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     }
 #endif
 
-    if (opts->audio_in_type == 0) {
+    if (opts->audio_in_type == AUDIO_IN_PULSE) {
         openPulseInput(opts);
     }
 
@@ -3272,7 +3271,7 @@ main(int argc, char** argv) {
         LOG_NOTICE("%d \n", opts->tcp_portno);
         opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
-            opts->audio_in_type = 8;
+            opts->audio_in_type = AUDIO_IN_TCP;
 
             LOG_NOTICE("TCP Connection Success!\n");
             // openAudioInDevice(opts); //do this to see if it makes it work correctly
@@ -3283,7 +3282,7 @@ main(int argc, char** argv) {
             }
             sprintf(opts->audio_in_dev, "%s", "pulse");
             LOG_ERROR("TCP Connection Failure - Using %s Audio Input.\n", opts->audio_in_dev);
-            opts->audio_in_type = 0;
+            opts->audio_in_type = AUDIO_IN_PULSE;
         }
     }
 
@@ -3401,7 +3400,7 @@ main(int argc, char** argv) {
             LOG_NOTICE("\n");
         }
         opts->rtltcp_enabled = 1;
-        opts->audio_in_type = 3; // use RTL pipeline
+        opts->audio_in_type = AUDIO_IN_RTL; // use RTL pipeline
     }
 
     // NOTE: Guard against matching "rtltcp" here; it shares the "rtl" prefix
@@ -3543,7 +3542,7 @@ main(int argc, char** argv) {
                    opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
                    pwr_to_dB(opts->rtl_squelch_level), opts->rtl_volume_multiplier,
                    opts->rtl_bias_tee ? " BIAS=on" : "");
-        opts->audio_in_type = 3;
+        opts->audio_in_type = AUDIO_IN_RTL;
 
         rtl_ok = 1;
 #endif
@@ -3552,7 +3551,7 @@ main(int argc, char** argv) {
         {
             LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
             sprintf(opts->audio_in_dev, "%s", "pulse");
-            opts->audio_in_type = 0;
+            opts->audio_in_type = AUDIO_IN_PULSE;
         }
         UNUSED(vendor);
         UNUSED(product);
@@ -3561,7 +3560,7 @@ main(int argc, char** argv) {
     }
 
     if ((strncmp(opts->audio_in_dev, "pulse", 5) == 0)) {
-        opts->audio_in_type = 0;
+        opts->audio_in_type = AUDIO_IN_PULSE;
 
         //string yeet
         parse_pulse_input_string(opts, opts->audio_in_dev + 5);
@@ -3776,12 +3775,12 @@ main(int argc, char** argv) {
         opts->pulse_digi_rate_out = 8000;
 
         //open any inputs, if not already opened
-        if (opts->audio_in_type == 0) {
+        if (opts->audio_in_type == AUDIO_IN_PULSE) {
             openPulseInput(opts);
         }
 
 #ifdef USE_RTLSDR
-        else if (opts->audio_in_type == 3) {
+        else if (opts->audio_in_type == AUDIO_IN_RTL) {
             if (g_rtl_ctx == NULL) {
                 if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
                     LOG_ERROR("Failed to create RTL stream.\n");
