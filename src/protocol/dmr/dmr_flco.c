@@ -505,8 +505,9 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
                 state->dmr_alias_char_size[0] = 0;
                 state->dmr_alias_format[0] = 0;
                 sprintf(state->generic_talker_alias[0], "%s", "");
-                // sprintf (state->event_history_s[0].Event_History_Items[0].alias, "%s", "BUMBLEBEETUNA");
                 memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+                state->dmr_embedded_gps[0][0] = '\0';
+                state->dmr_lrrp_gps[0][0] = '\0';
             }
             if (state->currentslot == 1) {
                 state->dmr_fidR = 0;
@@ -525,8 +526,9 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
                 state->dmr_alias_char_size[1] = 0;
                 state->dmr_alias_format[1] = 0;
                 sprintf(state->generic_talker_alias[1], "%s", "");
-                // sprintf (state->event_history_s[1].Event_History_Items[0].alias, "%s", "BUMBLEBEETUNA");
                 memset(state->dmr_pdu_sf[1], 0, sizeof(state->dmr_pdu_sf[1]));
+                state->dmr_embedded_gps[1][0] = '\0';
+                state->dmr_lrrp_gps[1][0] = '\0';
             }
         }
 

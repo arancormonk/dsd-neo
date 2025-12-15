@@ -508,6 +508,9 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->lastp25type = 0;
         state->err_str[0] = 0;
         sprintf(state->fsubtype, " TDULC        ");
+        // Clear GPS data on call termination
+        state->dmr_embedded_gps[0][0] = '\0';
+        state->dmr_lrrp_gps[0][0] = '\0';
         state->numtdulc++;
         if ((opts->resume > 0) && (state->numtdulc > opts->resume)) {
             resumeScan(opts, state);
@@ -532,6 +535,9 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->lastp25type = 0;
         state->err_str[0] = 0;
         sprintf(state->fsubtype, " TDU          ");
+        // Clear GPS data on call termination
+        state->dmr_embedded_gps[0][0] = '\0';
+        state->dmr_lrrp_gps[0][0] = '\0';
 
         processTDU(opts, state);
     } else if (strcmp(duid, "13") == 0) {

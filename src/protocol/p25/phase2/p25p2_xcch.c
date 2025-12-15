@@ -394,6 +394,10 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 state->aes_key_loaded[0] = 0;
                 // state->H = 0; //shim for above (this apply here?)
             }
+
+            // Clear GPS data for this slot
+            state->dmr_embedded_gps[0][0] = '\0';
+            state->dmr_lrrp_gps[0][0] = '\0';
         }
         if (slot == 1) {
 
@@ -439,6 +443,10 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
                 state->aes_key_loaded[1] = 0;
                 // state->H = 0; //shim for above (this apply here?)
             }
+
+            // Clear GPS data for this slot
+            state->dmr_embedded_gps[1][0] = '\0';
+            state->dmr_lrrp_gps[1][0] = '\0';
         }
 
         // Disable audio for this slot. Do not flush the jitter ring; let it
@@ -858,6 +866,10 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 state->aes_key_loaded[0] = 0;
                 // state->H = 0; //shim for above (this apply here?)
             }
+
+            // Clear GPS data for this slot
+            state->dmr_embedded_gps[0][0] = '\0';
+            state->dmr_lrrp_gps[0][0] = '\0';
         }
         if (state->currentslot == 1) {
 
@@ -896,6 +908,10 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
                 state->aes_key_loaded[1] = 0;
                 // state->H = 0; //shim for above (this apply here?)
             }
+
+            // Clear GPS data for this slot
+            state->dmr_embedded_gps[1][0] = '\0';
+            state->dmr_lrrp_gps[1][0] = '\0';
         }
 
         // Gate this slot so no new frames are queued; let jitter ring drain.

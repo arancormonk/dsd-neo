@@ -2499,10 +2499,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                                      .color_pair; //this is the color pair assignment for this line
             attron(COLOR_PAIR(4));
 
-            char text_string[2000];
-            memset(text_string, 0, sizeof(text_string));
-            snprintf(text_string, sizeof text_string, "%s", "BUMBLEBEETUNA");
-            if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].event_string, 13) != 0) {
+            if (state->event_history_s[slot].Event_History_Items[i % 255].event_string[0] != '\0') {
+                char text_string[2000];
                 memcpy(text_string, state->event_history_s[slot].Event_History_Items[i % 255].event_string,
                        string_size * sizeof(char));
                 text_string[string_size] = 0; //terminate string
@@ -2514,29 +2512,28 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("| #%03d \n", i % 255); //empty event, but since we can freely scroll now, keeps things uniform
             }
 
-            snprintf(text_string, sizeof text_string, "%s", "BUMBLEBEETUNA");
-            if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].text_message, 13) != 0) {
+            if (state->event_history_s[slot].Event_History_Items[i % 255].text_message[0] != '\0') {
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      %s\n", state->event_history_s[slot].Event_History_Items[i % 255].text_message);
                 attron(COLOR_PAIR(4));
             }
 
-            if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].alias, 13) != 0) {
+            if (state->event_history_s[slot].Event_History_Items[i % 255].alias[0] != '\0') {
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      Alias: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].alias);
                 attron(COLOR_PAIR(4));
             }
 
-            if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].gps_s, 13) != 0) {
+            if (state->event_history_s[slot].Event_History_Items[i % 255].gps_s[0] != '\0') {
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      GPS: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].gps_s);
                 attron(COLOR_PAIR(4));
             }
 
-            if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[i % 255].internal_str, 13) != 0) {
+            if (state->event_history_s[slot].Event_History_Items[i % 255].internal_str[0] != '\0') {
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      DSD-neo: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].internal_str);

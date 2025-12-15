@@ -495,13 +495,7 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
         snprintf(gi_str, sizeof(gi_str), "%s", "PRIVATE");
     }
 
-    uint8_t is_string = 0;
-    char emp_str[200];
-    memset(emp_str, 0, sizeof(emp_str));
-    snprintf(emp_str, sizeof(emp_str), "%s", "BUMBLEBEETUNA");
-    if (strncmp(emp_str, src_str, 13) != 0) {
-        is_string = 1;
-    }
+    uint8_t is_string = (src_str[0] != '\0') ? 1 : 0;
 
     // Prepare final filename now, but only rename if file is not empty header-only (44 bytes)
     char new_filename[2000];

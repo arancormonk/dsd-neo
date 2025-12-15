@@ -47,34 +47,22 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].svc = 0;
         event_struct->Event_History_Items[i].source_id = 0;
         event_struct->Event_History_Items[i].target_id = 0;
-        snprintf(event_struct->Event_History_Items[i].src_str, sizeof(event_struct->Event_History_Items[i].src_str),
-                 "%s", "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].tgt_str, sizeof(event_struct->Event_History_Items[i].tgt_str),
-                 "%s", "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].t_name, sizeof(event_struct->Event_History_Items[i].t_name), "%s",
-                 "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].s_name, sizeof(event_struct->Event_History_Items[i].s_name), "%s",
-                 "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].t_mode, sizeof(event_struct->Event_History_Items[i].t_mode), "%s",
-                 "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].s_mode, sizeof(event_struct->Event_History_Items[i].s_mode), "%s",
-                 "BUMBLEBEETUNA");
+        event_struct->Event_History_Items[i].src_str[0] = '\0';
+        event_struct->Event_History_Items[i].tgt_str[0] = '\0';
+        event_struct->Event_History_Items[i].t_name[0] = '\0';
+        event_struct->Event_History_Items[i].s_name[0] = '\0';
+        event_struct->Event_History_Items[i].t_mode[0] = '\0';
+        event_struct->Event_History_Items[i].s_mode[0] = '\0';
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
 
         memset(event_struct->Event_History_Items[i].pdu, 0, sizeof(event_struct->Event_History_Items[0].pdu));
-        snprintf(event_struct->Event_History_Items[i].sysid_string,
-                 sizeof(event_struct->Event_History_Items[i].sysid_string), "%s", "");
-        snprintf(event_struct->Event_History_Items[i].alias, sizeof(event_struct->Event_History_Items[i].alias), "%s",
-                 "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].gps_s, sizeof(event_struct->Event_History_Items[i].gps_s), "%s",
-                 "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].text_message,
-                 sizeof(event_struct->Event_History_Items[i].text_message), "%s", "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].event_string,
-                 sizeof(event_struct->Event_History_Items[i].event_string), "%s", "BUMBLEBEETUNA");
-        snprintf(event_struct->Event_History_Items[i].internal_str,
-                 sizeof(event_struct->Event_History_Items[i].internal_str), "%s", "BUMBLEBEETUNA");
+        event_struct->Event_History_Items[i].sysid_string[0] = '\0';
+        event_struct->Event_History_Items[i].alias[0] = '\0';
+        event_struct->Event_History_Items[i].gps_s[0] = '\0';
+        event_struct->Event_History_Items[i].text_message[0] = '\0';
+        event_struct->Event_History_Items[i].event_string[0] = '\0';
+        event_struct->Event_History_Items[i].internal_str[0] = '\0';
     }
 }
 
@@ -152,18 +140,16 @@ write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t 
         }
         fprintf(event_log_file, "\n");
 
-        char text_string[2000];
-        snprintf(text_string, sizeof text_string, "%s", "BUMBLEBEETUNA");
-        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].text_message, 13) != 0) {
+        if (state->event_history_s[slot].Event_History_Items[0].text_message[0] != '\0') {
             fprintf(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
         }
-        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].alias, 13) != 0) {
+        if (state->event_history_s[slot].Event_History_Items[0].alias[0] != '\0') {
             fprintf(event_log_file, " Talker Alias: %s \n", state->event_history_s[slot].Event_History_Items[0].alias);
         }
-        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].gps_s, 13) != 0) {
+        if (state->event_history_s[slot].Event_History_Items[0].gps_s[0] != '\0') {
             fprintf(event_log_file, " GPS: %s \n", state->event_history_s[slot].Event_History_Items[0].gps_s);
         }
-        if (strncmp(text_string, state->event_history_s[slot].Event_History_Items[0].internal_str, 13) != 0) {
+        if (state->event_history_s[slot].Event_History_Items[0].internal_str[0] != '\0') {
             fprintf(event_log_file, " DSD-neo: %s \n",
                     state->event_history_s[slot].Event_History_Items[0].internal_str);
         }
@@ -327,26 +313,14 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     //TODO: Flesh out more later on.
     uint32_t source_id = 0;
     uint32_t target_id = 0;
-    char src_str[200];
-    memset(src_str, 0, sizeof(src_str));
-    snprintf(src_str, sizeof src_str, "%s", "BUMBLEBEETUNA");
-    char tgt_str[200];
-    memset(tgt_str, 0, sizeof(tgt_str));
-    snprintf(tgt_str, sizeof tgt_str, "%s", "BUMBLEBEETUNA");
+    char src_str[200] = {0};
+    char tgt_str[200] = {0};
 
     //group import items
-    char t_name[200];
-    memset(t_name, 0, sizeof(t_name));
-    snprintf(t_name, sizeof t_name, "%s", "BUMBLEBEETUNA");
-    char s_name[200];
-    memset(s_name, 0, sizeof(s_name));
-    snprintf(s_name, sizeof s_name, "%s", "BUMBLEBEETUNA");
-    char t_mode[200];
-    memset(t_mode, 0, sizeof(t_mode));
-    snprintf(t_mode, sizeof t_mode, "%s", "BUMBLEBEETUNA");
-    char s_mode[200];
-    memset(s_mode, 0, sizeof(s_mode));
-    snprintf(s_mode, sizeof s_mode, "%s", "BUMBLEBEETUNA");
+    char t_name[200] = {0};
+    char s_name[200] = {0};
+    char t_mode[200] = {0};
+    char s_mode[200] = {0};
 
     uint16_t svc_opts = 0;
     uint8_t subtype = 0;
@@ -477,8 +451,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                     event_struct->Event_History_Items[0].text_message[k] = 0; //terminate
                 }
             } else {
-                snprintf(event_struct->Event_History_Items[0].text_message,
-                         sizeof event_struct->Event_History_Items[0].text_message, "%s", "BUMBLEBEETUNA");
+                event_struct->Event_History_Items[0].text_message[0] = '\0';
             }
 
             snprintf(sysid_string, sizeof sysid_string, "%s", "YSF");
