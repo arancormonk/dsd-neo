@@ -166,23 +166,16 @@ endif()
 # Dependencies
 find_package(LibSndFile REQUIRED)
 
-# Prefer modern mbelib-neo CMake package; fall back to legacy FindMBE
-set(USE_MBELIB_NEO FALSE)
-find_package(mbe-neo CONFIG QUIET)
-if(mbe-neo_FOUND)
-    set(USE_MBELIB_NEO TRUE)
-    if(TARGET mbe_neo::mbe_shared)
-        set(MBE_LINK_TARGET mbe_neo::mbe_shared)
-    else()
-        message(FATAL_ERROR "mbe-neo package found but exported targets are missing")
-    endif()
-    # Ensure includes for legacy-style #include <mbelib.h>
-    # by adding the directory that directly contains mbelib.h
-    find_path(MBE_INCLUDE_DIR NAMES mbelib.h PATH_SUFFIXES mbelib-neo)
+# Require mbelib-neo (no legacy mbelib fallback)
+find_package(mbe-neo CONFIG REQUIRED)
+if(TARGET mbe_neo::mbe_shared)
+    set(MBE_LINK_TARGET mbe_neo::mbe_shared)
 else()
-    find_package(MBE REQUIRED)
-    set(MBE_LINK_TARGET ${MBE_LIBRARY})
+    message(FATAL_ERROR "mbe-neo package found but exported targets are missing")
 endif()
+# Ensure includes for legacy-style #include <mbelib.h>
+# by adding the directory that directly contains mbelib.h
+find_path(MBE_INCLUDE_DIR NAMES mbelib.h PATH_SUFFIXES mbelib-neo)
 find_package(RTLSDR)
 
 # Curses library selection:

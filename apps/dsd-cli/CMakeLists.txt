@@ -36,12 +36,8 @@ if(CODEC2_FOUND)
     target_include_directories(dsd-neo SYSTEM PRIVATE ${CODEC2_INCLUDE_DIRS})
 endif()
 
-# Expose which MBE implementation we linked against to the code
-if(USE_MBELIB_NEO)
-    target_compile_definitions(dsd-neo PRIVATE USE_MBELIB_NEO)
-else()
-    target_compile_definitions(dsd-neo PRIVATE USE_LEGACY_MBELIB)
-endif()
+# mbelib-neo is always used (no legacy mbelib fallback)
+target_compile_definitions(dsd-neo PRIVATE USE_MBELIB_NEO)
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)

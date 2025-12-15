@@ -2863,8 +2863,7 @@ main(int argc, char** argv) {
         return 1;
     }
     int argc_effective = argc; // effective argc after runtime compaction
-    char versionstr[25];
-    mbe_printVersion(versionstr);
+    const char* versionstr = mbe_versionString();
 
     initOpts(opts);
     initState(state);
@@ -3106,11 +3105,7 @@ main(int argc, char** argv) {
     LOG_NOTICE("| Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
     LOG_NOTICE("------------------------------------------------------------------------------\n");
 
-#ifdef USE_MBELIB_NEO
     LOG_NOTICE("MBElib-neo Version: %s\n", versionstr);
-#else
-    LOG_NOTICE("MBElib Version: %s\n", versionstr);
-#endif
 
 #ifdef USE_CODEC2
     LOG_NOTICE("CODEC2 Support Enabled\n");

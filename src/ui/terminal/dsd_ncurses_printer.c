@@ -60,8 +60,7 @@
 // ui_is_locked_from_label provided by ncurses_internal.h
 
 // select_k_int_local provided by ncurses_internal.h
-// mbeversionstr, edacs_channel_tree defined in ncurses_init.c
-extern char mbeversionstr[25];
+// edacs_channel_tree defined in ncurses_init.c
 extern unsigned long long int edacs_channel_tree[33][6];
 
 // SNR history buffers and functions provided by ncurses_snr.h

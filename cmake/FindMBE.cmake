@@ -1,32 +1,24 @@
 ##
-# Try to find MBE (legacy) or mbelib-neo (modern)
+# Find mbelib-neo
 #
 # Defines on success:
-#  - MBE_FOUND:         System has an MBE-compatible library
+#  - MBE_FOUND:         System has mbelib-neo
 #  - MBE_INCLUDE_DIR:   Include directory to use with `#include <mbelib.h>`
 #  - MBE_LIBRARY:       Library to link against
 #
-# This finder supports both the legacy mbelib layout (header at include/mbelib.h,
-# library name "mbe"/"libmbe") and the new mbelib-neo layout (header at
-# include/mbelib-neo/mbelib.h, library name "mbe-neo").
+# Note: This module only supports mbelib-neo. Legacy mbelib is not supported.
+# Prefer using find_package(mbe-neo CONFIG) instead of this module.
 ##
 
-# Prefer mbelib-neo header layout, but accept legacy too. Using PATH_SUFFIXES
-# returns the directory that directly contains mbelib.h so that existing
-# includes of <mbelib.h> continue to work.
+# Find mbelib-neo header (PATH_SUFFIXES returns the directory containing mbelib.h)
 find_path(
   MBE_INCLUDE_DIR
   NAMES mbelib.h
   PATH_SUFFIXES mbelib-neo
 )
 
-# Library names in order of preference: modern first, then legacy.
-set(_MBE_CANDIDATE_LIB_NAMES
-  mbe-neo
-  mbe
-  libmbe
-)
-find_library(MBE_LIBRARY NAMES ${_MBE_CANDIDATE_LIB_NAMES})
+# Find mbelib-neo library only
+find_library(MBE_LIBRARY NAMES mbe-neo)
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(MBE DEFAULT_MSG MBE_LIBRARY MBE_INCLUDE_DIR)

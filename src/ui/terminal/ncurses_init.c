@@ -15,9 +15,6 @@
 
 #include <string.h>
 
-/* MBE library version string (populated by ncursesOpen) */
-char mbeversionstr[25];
-
 /* EDACS channel tree state (initialized in ncursesOpen) */
 unsigned long long int edacs_channel_tree[33][6];
 
@@ -33,7 +30,6 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
 
     // menu overlays are nonblocking and do not gate demod processing
-    mbe_printVersion(mbeversionstr);
     dsd_unicode_init_locale();
     initscr(); // Initialize NCURSES screen window
     // Improve ESC-key responsiveness and UI ergonomics
