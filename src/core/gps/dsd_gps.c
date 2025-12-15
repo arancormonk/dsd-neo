@@ -60,16 +60,16 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
 
     const char* deg_glyph = dsd_degrees_glyph();
 
-    //lat and lon calculations
+    //lat and lon calculations (two's complement conversion)
     if (lat_sign) {
-        lat = 0x800001 - lat;
+        lat = 0x800000 - lat;
         snprintf(latstr, sizeof latstr, "%s", "S");
         lat_sf = -1.0f;
     }
     latitude = ((double)lat * lat_unit);
 
     if (lon_sign) {
-        lon = 0x1000001 - lon;
+        lon = 0x1000000 - lon;
         snprintf(lonstr, sizeof lonstr, "%s", "W");
         lon_sf = -1.0f;
     }
@@ -661,15 +661,16 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     if (pf) {
         fprintf(stderr, " Protected");
     } else {
+        //two's complement conversion (ETSI TS 102 361-2 7.2.16/7.2.17)
         if (lat_sign) {
-            lat = 0x800001 - lat;
+            lat = 0x800000 - lat;
             snprintf(latstr, sizeof latstr, "%s", "S");
             lat_sf = -1.0f;
         }
         latitude = ((double)lat * lat_unit);
 
         if (lon_sign) {
-            lon = 0x1000001 - lon;
+            lon = 0x1000000 - lon;
             snprintf(lonstr, sizeof lonstr, "%s", "W");
             lon_sf = -1.0f;
         }
@@ -745,8 +746,7 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     fprintf(stderr, "%s", KNRM);
 }
 
-//This Function needs testing, is tested working for NW and NE lat and
-//long coordinates, but not for SE and SW coordinates
+//P25 Motorola APX GPS format (sign + magnitude encoding)
 void
 apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
@@ -765,8 +765,8 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     uint32_t lat_sign = lc_bits[24];
     uint32_t lat = (uint32_t)ConvertBitIntoBytes(&lc_bits[25], 23);
 
-    double lat_unit = 90.0f / 0x7FFFFF;
-    double lon_unit = 180.0f / 0x7FFFFF;
+    double lat_unit = 90.0 / 0x7FFFFF;
+    double lon_unit = 180.0 / 0x7FFFFF;
 
     char latstr[3];
     char lonstr[3];
@@ -781,16 +781,17 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
     if (pf) {
         fprintf(stderr, " Protected");
     } else {
-
+        //Latitude: value encodes 0-90 degrees, sign indicates hemisphere
         latitude = ((double)lat * lat_unit);
         if (lat_sign) {
-            latitude -= 90.0f;
+            latitude = -latitude;
             snprintf(latstr, sizeof latstr, "%s", "S");
         }
 
+        //Longitude: value encodes 0-180 degrees, sign indicates hemisphere via offset
         longitude = ((double)lon * lon_unit);
         if (lon_sign) {
-            longitude -= 180.0f;
+            longitude -= 180.0;
             snprintf(lonstr, sizeof lonstr, "%s", "W");
         }
 

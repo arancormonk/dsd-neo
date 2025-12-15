@@ -581,7 +581,6 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
     double lat_fin = 0.0; //calculated values
     double lon_fin = 0.0; //calculated values
     int lat_sign = 1;     //positive 1, or negative 1
-    int lon_sign = 1;     //positive 1, or negative 1
 
     uint16_t vel = 0;
     double velocity = 0;
@@ -754,23 +753,18 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
             }
 
             if (lat) {
-                //need to check these new calcs for accuracy accross the globe, both lat and lon
-
-                //two's compliment-ish testing on these bytes
-                if (lat & 0x80000000) //8
-                {
+                //Latitude: Sign + magnitude encoding - MSB indicates hemisphere, remaining bits are magnitude
+                //Based on SDRTrunk Point2d.java LRRP implementation
+                if (lat & 0x80000000) {
                     lat = lat & 0x7FFFFFFF;
                     lat_sign = -1;
-                    // lat = 0x80000000 - lat; //not sure why this doesn't work here like it does on lon, extra bit?
                 }
-                if (lon & 0x80000000) {
-                    lon = lon & 0x7FFFFFFF;
-                    lon_sign = -1;
-                    lon = 0x80000000 - lon;
-                }
-
                 lat_fin = (double)lat * lat_unit * lat_sign;
-                lon_fin = (double)lon * lon_unit * lon_sign;
+
+                //Longitude: Two's complement encoding (different from latitude per SDRTrunk testing)
+                //SDRTrunk notes: US data (positive lat, negative lon) and AUS data (negative lat, positive lon)
+                //required different handling - lat uses hemisphere flag, lon uses two's complement
+                lon_fin = (double)((int32_t)lon) * lon_unit;
 
                 fprintf(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat_fin, lon_fin, lat_fin, lon_fin);
             }
