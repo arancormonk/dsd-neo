@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -644,18 +645,9 @@ openAudioInDevice(dsd_opts* opts) {
 
     else if (strncmp(opts->audio_in_dev, "tcp", 3) == 0) {
         opts->audio_in_type = AUDIO_IN_TCP;
-        opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-        if (opts->audio_in_file_info == NULL) {
-            LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            exit(1);
-        }
-        opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-        opts->audio_in_file_info->channels = 1;
-        opts->audio_in_file_info->seekable = 0;
-        opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-        opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
-        if (opts->tcp_file_in == NULL) {
-            LOG_ERROR("Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
+        opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
+        if (opts->tcp_in_ctx == NULL) {
+            LOG_ERROR("Error, couldn't open TCP audio input\n");
             exit(1);
         }
     }

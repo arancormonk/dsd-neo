@@ -15,6 +15,7 @@
 #pragma once
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -65,7 +66,7 @@ struct dsd_opts {
     unsigned long long udp_in_packets; // received datagrams
     unsigned long long udp_in_bytes;   // received bytes
     unsigned long long udp_in_drops;   // dropped samples due to ring overflow
-    SNDFILE* tcp_file_in;
+    tcp_input_ctx* tcp_in_ctx;         ///< TCP audio input context (cross-platform)
 
     // Scalars and smaller integers
     int onesymbol;

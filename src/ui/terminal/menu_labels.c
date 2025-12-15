@@ -15,6 +15,7 @@
 #include "menu_items.h"
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
@@ -378,7 +379,7 @@ lbl_input_volume(void* vctx, char* b, size_t n) {
 const char*
 lbl_tcp(void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    int active = (c->opts->audio_in_type == AUDIO_IN_TCP && c->opts->tcp_file_in != NULL);
+    int active = (c->opts->audio_in_type == AUDIO_IN_TCP && tcp_input_is_valid(c->opts->tcp_in_ctx));
     if (c->opts->tcp_hostname[0] != '\0' && c->opts->tcp_portno > 0) {
         int m = (n > 32) ? (int)(n - 32) : 0;
         if (active) {

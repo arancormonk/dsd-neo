@@ -12,6 +12,7 @@
 #include <dsd-neo/ui/ui_snapshot.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -351,31 +352,26 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_TCP_CONNECT_AUDIO: {
-            // Attempt TCP audio connect; wrap with libsndfile
+            // Attempt TCP audio connect (cross-platform)
             opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
             if (opts->tcp_sockfd != 0) {
                 // reset audio input stream
                 if (opts->audio_in_type == AUDIO_IN_PULSE) {
                     closePulseInput(opts);
                 }
-                if (opts->audio_in_file_info) {
-                    // caller may reuse; we reallocate fresh
-                    free(opts->audio_in_file_info);
-                    opts->audio_in_file_info = NULL;
+                // Close existing TCP context if any
+                if (opts->tcp_in_ctx) {
+                    tcp_input_close(opts->tcp_in_ctx);
+                    opts->tcp_in_ctx = NULL;
                 }
-                opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-                if (opts->audio_in_file_info) {
-                    opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-                    opts->audio_in_file_info->channels = 1;
-                    opts->audio_in_file_info->seekable = 0;
-                    opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-                    opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
-                    if (opts->tcp_file_in != NULL) {
-                        LOG_INFO("TCP Socket Connected Successfully.\n");
-                        opts->audio_in_type = AUDIO_IN_TCP; // TCP PCM16LE
-                    } else {
-                        LOG_ERROR("Error, couldn't Connect to TCP with libsndfile: %s\n", sf_strerror(NULL));
-                    }
+                opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
+                if (opts->tcp_in_ctx != NULL) {
+                    LOG_INFO("TCP Socket Connected Successfully.\n");
+                    opts->audio_in_type = AUDIO_IN_TCP; // TCP PCM16LE
+                } else {
+                    LOG_ERROR("Error, couldn't open TCP audio input\n");
+                    dsd_socket_close(opts->tcp_sockfd);
+                    opts->tcp_sockfd = 0;
                 }
             } else {
                 LOG_ERROR("TCP Socket Connection Error.\n");
@@ -877,12 +873,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     if (cfg.tcp_port) {
                         opts->tcp_portno = cfg.tcp_port;
                     }
-                    if (opts->tcp_file_in) {
-                        sf_close(opts->tcp_file_in);
-                        opts->tcp_file_in = NULL;
+                    if (opts->tcp_in_ctx) {
+                        tcp_input_close(opts->tcp_in_ctx);
+                        opts->tcp_in_ctx = NULL;
                     }
                     if (opts->tcp_sockfd != 0) {
-                        close(opts->tcp_sockfd);
+                        dsd_socket_close(opts->tcp_sockfd);
                         opts->tcp_sockfd = 0;
                     }
                     if (svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno) != 0) {

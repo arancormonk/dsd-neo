@@ -24,6 +24,7 @@
  * 2024-03 rewrite EDACS standard parsing to spec, add reverse-engineered EA messages
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -303,9 +304,10 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //TCP Input w/ Simple TCP Error Detection Implemented to prevent hard crash if TCP drops off
         if (opts->audio_in_type == AUDIO_IN_TCP) {
             for (i = 0; i < 960; i++) {
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                result = tcp_input_read_sample(opts->tcp_in_ctx, &sample);
                 if (result == 0) {
-                    sf_close(opts->tcp_file_in);
+                    tcp_input_close(opts->tcp_in_ctx);
+                    opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
@@ -323,9 +325,10 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             for (i = 0; i < 960; i++) {
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                result = tcp_input_read_sample(opts->tcp_in_ctx, &sample);
                 if (result == 0) {
-                    sf_close(opts->tcp_file_in);
+                    tcp_input_close(opts->tcp_in_ctx);
+                    opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
@@ -343,9 +346,10 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             for (i = 0; i < 960; i++) {
-                result = sf_read_short(opts->tcp_file_in, &sample, 1);
+                result = tcp_input_read_sample(opts->tcp_in_ctx, &sample);
                 if (result == 0) {
-                    sf_close(opts->tcp_file_in);
+                    tcp_input_close(opts->tcp_in_ctx);
+                    opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);

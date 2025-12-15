@@ -21,6 +21,7 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
@@ -1909,7 +1910,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     short s = 0;
-                    result = sf_read_short(opts->tcp_file_in, &s, 1);
+                    result = tcp_input_read_sample(opts->tcp_in_ctx, &s);
                     sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
@@ -1923,7 +1924,8 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 }
                 voice1[i] = clip_float_to_short(sample);
                 if (result == 0) {
-                    sf_close(opts->tcp_file_in);
+                    tcp_input_close(opts->tcp_in_ctx);
+                    opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     exitflag = 1;
@@ -1935,7 +1937,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         short s = 0;
-                        result = sf_read_short(opts->tcp_file_in, &s, 1);
+                        result = tcp_input_read_sample(opts->tcp_in_ctx, &s);
                         sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {
@@ -1949,7 +1951,8 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                     voice2[i] = clip_float_to_short(sample);
                     if (result == 0) {
-                        sf_close(opts->tcp_file_in);
+                        tcp_input_close(opts->tcp_in_ctx);
+                        opts->tcp_in_ctx = NULL;
                         fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                         fprintf(stderr, "Closing DSD-neo.\n");
                         exitflag = 1;

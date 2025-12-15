@@ -45,6 +45,7 @@ endif()
 add_library(dsd-neo_io_audio)
 target_sources(dsd-neo_io_audio PRIVATE
   audio_backends/udp_input.c
+  audio_backends/tcp_input.c
 )
 
 # PulseAudio-specific device enumeration (only when not using PortAudio)
@@ -56,7 +57,8 @@ target_include_directories(dsd-neo_io_audio
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${_PUBLIC_INCLUDES}
 )
-target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime dsd-neo_platform)
+# tcp_input.c uses libsndfile on POSIX systems (not Windows native)
+target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime dsd-neo_platform ${LIBSNDFILE_LIBRARIES})
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)

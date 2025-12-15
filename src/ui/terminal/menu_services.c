@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/menu_services.h>
@@ -166,19 +167,13 @@ svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
     if (opts->tcp_sockfd == 0) {
         return -1;
     }
-    // Setup libsndfile RAW stream on the socket
+    // Setup TCP audio input (cross-platform)
     opts->audio_in_type = AUDIO_IN_TCP;
-    opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-    if (!opts->audio_in_file_info) {
-        return -1;
-    }
-    opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-    opts->audio_in_file_info->channels = 1;
-    opts->audio_in_file_info->seekable = 0;
-    opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->tcp_file_in = sf_open_fd(opts->tcp_sockfd, SFM_READ, opts->audio_in_file_info, 0);
-    if (opts->tcp_file_in == NULL) {
-        LOG_ERROR("Error, couldn't open TCP with libsndfile: %s\n", sf_strerror(NULL));
+    opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
+    if (opts->tcp_in_ctx == NULL) {
+        LOG_ERROR("Error, couldn't open TCP audio input\n");
+        dsd_socket_close(opts->tcp_sockfd);
+        opts->tcp_sockfd = 0;
         if (opts->audio_out_type == 0) {
             snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
             opts->audio_in_type = AUDIO_IN_PULSE;
