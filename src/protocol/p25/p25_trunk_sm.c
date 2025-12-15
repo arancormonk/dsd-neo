@@ -1284,13 +1284,21 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
         }
     }
 
-    // Prepare per-slot context
+    // Prepare per-slot context and clear encryption display variables for this slot
     if ((slot & 1) == 0) {
         state->lasttg = (uint32_t)tg;
         state->dmr_so = (uint16_t)svc_bits;
+        // Clear slot 0 encryption display variables to prevent stale UI
+        state->payload_algid = 0;
+        state->payload_keyid = 0;
+        state->payload_miP = 0;
     } else {
         state->lasttgR = (uint32_t)tg;
         state->dmr_soR = (uint16_t)svc_bits;
+        // Clear slot 1 encryption display variables to prevent stale UI
+        state->payload_algidR = 0;
+        state->payload_keyidR = 0;
+        state->payload_miN = 0;
     }
     state->gi[slot & 1] = 0;
 
