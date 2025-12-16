@@ -30,8 +30,8 @@ if [ ! -f "$PDB_FILE" ]; then
   fi
 fi
 
-# Collect files: sources and headers within the repo (excluding build directory)
-mapfile -t FILES < <(git ls-files '*.c' '*.h' ':!:build/**')
+# Collect files: sources and headers within the repo (excluding build and third-party)
+mapfile -t FILES < <(git ls-files '*.c' '*.h' ':!:build/**' ':!:src/third_party/**')
 if [ ${#FILES[@]} -eq 0 ]; then
   echo "No C sources/headers found to analyze."
   exit 0

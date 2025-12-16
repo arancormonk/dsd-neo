@@ -20,6 +20,8 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <string.h>
 
+#include <pffft.h>
+
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
 float g_spec_db[kSpecMaxN];
@@ -61,60 +63,20 @@ std::atomic<double> g_auto_ppm_est_ppm{0.0};
 std::atomic<int> g_auto_ppm_last_dir{0};
 std::atomic<int> g_auto_ppm_cooldown{0};
 
-/* Internal FFT helper (radix-2, in-place). */
-/**
- * @brief In-place radix-2 FFT used for spectrum snapshots.
- *
- * Operates on separate real and imaginary arrays containing N points,
- * performing bit-reversal and iterative butterflies.
- *
- * @param xr Real component buffer (modified in-place).
- * @param xi Imaginary component buffer (modified in-place).
- * @param N  Transform length (power of two).
- */
-static inline void
-fft_rad2(float* xr, float* xi, int N) {
-    int j = 0;
-    for (int i = 1; i < N; i++) {
-        int bit = N >> 1;
-        for (; (j & bit) != 0; bit >>= 1) {
-            j &= ~bit;
+static inline PFFFT_Setup*
+pffft_get_cached_setup(int N) {
+    static PFFFT_Setup* setup = nullptr;
+    static int setup_N = 0;
+    if (!setup || setup_N != N) {
+        if (setup) {
+            pffft_destroy_setup(setup);
+            setup = nullptr;
+            setup_N = 0;
         }
-        j |= bit;
-        if (i < j) {
-            float tr = xr[i];
-            float ti = xi[i];
-            xr[i] = xr[j];
-            xi[i] = xi[j];
-            xr[j] = tr;
-            xi[j] = ti;
-        }
+        setup = pffft_new_setup(N, PFFFT_COMPLEX);
+        setup_N = N;
     }
-    for (int len = 2; len <= N; len <<= 1) {
-        float ang = -2.0f * static_cast<float>(M_PI) / static_cast<float>(len);
-        float wlen_r = cosf(ang);
-        float wlen_i = sinf(ang);
-        for (int i = 0; i < N; i += len) {
-            float wr = 1.0f;
-            float wi = 0.0f;
-            int half = len >> 1;
-            for (int k = 0; k < half; k++) {
-                int j0 = i + k;
-                int j1 = j0 + half;
-                float ur = xr[j0];
-                float ui = xi[j0];
-                float vr = xr[j1] * wr - xi[j1] * wi;
-                float vi = xr[j1] * wi + xi[j1] * wr;
-                xr[j0] = ur + vr;
-                xi[j0] = ui + vi;
-                xr[j1] = ur - vr;
-                xi[j1] = ui - vi;
-                float nwr = wr * wlen_r - wi * wlen_i;
-                wi = wr * wlen_i + wi * wlen_r;
-                wr = nwr;
-            }
-        }
-    }
+    return setup;
 }
 
 /**
@@ -143,8 +105,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         N = kSpecMaxN;
     }
     /* Prepare last N complex samples (I/Q) with DC removal and Hann window */
-    static float xr[kSpecMaxN];
-    static float xi[kSpecMaxN];
+    alignas(16) static float z[2 * kSpecMaxN];
     int take = (pairs >= N) ? N : pairs;
     int start = (pairs - take);
     double sumI = 0.0;
@@ -158,9 +119,8 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     }
     float meanI = (take > 0) ? static_cast<float>(sumI / static_cast<double>(take)) : 0.0f;
     float meanQ = (take > 0) ? static_cast<float>(sumQ / static_cast<double>(take)) : 0.0f;
-    for (int n = 0; n < N; n++) {
-        xr[n] = 0.0f;
-        xi[n] = 0.0f;
+    for (int n = 0; n < (N << 1); n++) {
+        z[n] = 0.0f;
     }
     for (int n = 0; n < take; n++) {
         float w =
@@ -168,30 +128,37 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         int idx = start + n;
         float I = iq_interleaved[(size_t)(idx << 1) + 0];
         float Q = iq_interleaved[(size_t)(idx << 1) + 1];
-        xr[n] = w * (static_cast<float>(I) - meanI);
-        xi[n] = w * (static_cast<float>(Q) - meanQ);
+        z[(n << 1) + 0] = w * (static_cast<float>(I) - meanI);
+        z[(n << 1) + 1] = w * (static_cast<float>(Q) - meanQ);
     }
-    fft_rad2(xr, xi, N);
-    const float eps = 1e-12f;
-    for (int k = 0; k < N; k++) {
-        int kk = k + (N >> 1);
-        if (kk >= N) {
-            kk -= N;
+    auto update_spectrum = [&](auto&& re_at, auto&& im_at) {
+        const float eps = 1e-12f;
+        const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
+        for (int k = 0; k < N; k++) {
+            int kk = k + (N >> 1);
+            if (kk >= N) {
+                kk -= N;
+            }
+            float re = re_at(kk);
+            float im = im_at(kk);
+            float mag2 = re * re + im * im;
+            float db = 10.0f * log10f(mag2 + eps);
+            float prev = g_spec_db[k];
+            if (first) {
+                g_spec_db[k] = db;
+            } else {
+                g_spec_db[k] = 0.8f * prev + 0.2f * db;
+            }
         }
-        float re = xr[kk];
-        float im = xi[kk];
-        float mag2 = re * re + im * im;
-        float db = 10.0f * log10f(mag2 + eps);
-        float prev = g_spec_db[k];
-        if (g_spec_ready.load(std::memory_order_relaxed) == 0) {
-            g_spec_db[k] = db;
-        } else {
-            g_spec_db[k] = 0.8f * prev + 0.2f * db;
-        }
-    }
-    g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
-    g_spec_ready.store(1, std::memory_order_release);
+        g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
+        g_spec_ready.store(1, std::memory_order_release);
+    };
 
+    PFFFT_Setup* setup = pffft_get_cached_setup(N);
+    if (setup) {
+        pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
+        update_spectrum([&](int idx) { return z[(idx << 1) + 0]; }, [&](int idx) { return z[(idx << 1) + 1]; });
+    }
     /* Compute residual CFO from spectrum peak around DC using quadratic interp. */
     int i_max = 0;
     float p_max = -1e30f;
@@ -397,7 +364,7 @@ dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
  * @brief Configure the FFT size used for spectrum exports.
  *
  * The size is clamped to [64, kSpecMaxN] and rounded up to the next power of
- * two for the radix-2 implementation.
+ * two for the pffft complex transform.
  *
  * @param n Requested FFT length (bins).
  * @return Actual FFT length selected.

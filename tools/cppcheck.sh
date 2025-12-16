@@ -89,6 +89,7 @@ CPPCHECK_ARGS+=(
   --suppress=invalidPrintfArgType_sint
   --suppress=invalidPrintfArgType_uint
   --suppress=normalCheckLevelMaxBranches
+  -i src/third_party
 )
 
 LOG_FILE=".cppcheck.local.out"

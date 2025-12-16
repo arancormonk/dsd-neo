@@ -15,7 +15,7 @@ if(RTLSDR_FOUND)
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${_PUBLIC_INCLUDES} ${RTLSDR_INCLUDE_DIRS}
   )
-  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp)
+  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_dsp dsd-neo_pffft)
 
   # Warnings (configurable)
   if(DSD_ENABLE_WARNINGS)
