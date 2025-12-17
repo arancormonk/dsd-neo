@@ -772,14 +772,25 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     if (state->carrier == 1) {
         attron(COLOR_PAIR(3));
-        int level_div = 164; /* baseline scaling for C4FM/GFSK symbol magnitudes */
-        if (opts->mod_qpsk == 1 || state->rf_mod == 1) {
-            level_div = 82; /* CQPSK phase deltas peak near pi/4 (~4k), so use tighter scale */
+        if (opts->audio_in_type == AUDIO_IN_RTL) {
+            /* RTL discriminator output is a normalized phase delta (angle/π).
+               For C4FM/GFSK, typical symbol magnitudes are << 1.0 and depend on
+               the DSP base rate (opts->rtl_dsp_bw_khz). Scale so a nominal "full
+               deviation" C4FM signal (~±1.8 kHz) reads ~50% at V:1X, matching the
+               non-RTL In Level behavior. */
+            float bw_hz = (opts->rtl_dsp_bw_khz > 0) ? (float)opts->rtl_dsp_bw_khz * 1000.0f : 48000.0f;
+            float scale = bw_hz / 72.0f; /* 50 * bw_hz / (2 * 1800) */
+            level = (int)(state->max * scale);
+        } else {
+            int level_div = 164; /* baseline scaling for C4FM/GFSK symbol magnitudes */
+            if (opts->mod_qpsk == 1 || state->rf_mod == 1) {
+                level_div = 82; /* CQPSK phase deltas peak near pi/4 (~4k), so use tighter scale */
+            }
+            if (level_div < 1) {
+                level_div = 1;
+            }
+            level = (int)state->max / level_div; //only update on carrier present
         }
-        if (level_div < 1) {
-            level_div = 1;
-        }
-        level = (int)state->max / level_div; //only update on carrier present
         if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
             level = 50; //hard set when reading symbol bin files, otherwise, it will just be near zero
         }
@@ -925,9 +936,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     printw(" SNR: n/a []");
 #endif
     printw("\n");
-    /* In Level is only meaningful for non-RTL inputs (Pulse, WAV, TCP audio, UDP);
-       RTL-SDR and RTL-TCP (audio_in_type == AUDIO_IN_RTL) have their own power measurement. */
-    if (opts->audio_in_type != AUDIO_IN_RTL) {
+    /* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes.
+       Hide only for RTL QPSK where symbols are fixed ±1/±3 from differential demod. */
+    if (opts->audio_in_type != AUDIO_IN_RTL || state->rf_mod != 1) {
         ui_print_kv_line("In Level", "[%02d%%]", level);
     }
     /* Quick hint for output mute toggle */
