@@ -203,11 +203,10 @@ Common options:
 ## Configuration
 
 - INI‑style user config is implemented for stable defaults (input/output/mode/trunking); see `docs/config-system.md`.
-- Default path: `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`. Override with `--config <path>` or `DSD_NEO_CONFIG`.
-- Disable config loading with `--no-config` or `DSD_NEO_NO_CONFIG`.
+- Config loading is opt-in: use `--config` to enable (optionally with a path), or set `DSD_NEO_CONFIG=<path>`.
+- Default path (when `--config` is passed without a path): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
 - `--interactive-setup` forces the bootstrap wizard even when a config exists; `--print-config` dumps the effective config as INI.
-- When a config path is known, the final settings are autosaved on exit. A no‑arg run uses the config if present; otherwise it
-  falls back to the interactive setup (unless disabled).
+- When config is enabled, the final settings are autosaved on exit.
 
 ## Tests and Examples
 

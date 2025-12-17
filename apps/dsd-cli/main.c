@@ -2880,7 +2880,7 @@ main(int argc, char** argv) {
     exitflag = 0;
 
     // Optional: user configuration file (INI) -----------------------------
-    int disable_config_cli = 0;
+    int enable_config_cli = 0;
     int force_bootstrap_cli = 0;
     int print_config_cli = 0;
     int dump_template_cli = 0;
@@ -2892,11 +2892,12 @@ main(int argc, char** argv) {
     const char* validate_path_cli = NULL;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--no-config") == 0) {
-            disable_config_cli = 1;
-        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            config_path_cli = argv[i + 1];
-            i++;
+        if (strcmp(argv[i], "--config") == 0) {
+            enable_config_cli = 1;
+            // Optional path argument (if next arg doesn't start with '-')
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                config_path_cli = argv[++i];
+            }
         } else if (strcmp(argv[i], "--interactive-setup") == 0) {
             force_bootstrap_cli = 1;
         } else if (strcmp(argv[i], "--print-config") == 0) {
@@ -2917,7 +2918,6 @@ main(int argc, char** argv) {
         }
     }
 
-    int disable_config_env = is_truthy_env(getenv("DSD_NEO_NO_CONFIG"));
     const char* config_env = getenv("DSD_NEO_CONFIG");
 
     int user_cfg_loaded = 0;
@@ -2928,17 +2928,17 @@ main(int argc, char** argv) {
     s_user_config_save_enabled = 0;
     s_user_config_save_path[0] = '\0';
 
-    /* CLI should override environment: if the user provides an explicit
-     * --config PATH, honor it even when DSD_NEO_NO_CONFIG is set. The env
-     * disable flag only applies when no CLI path is given. */
-    if (!disable_config_cli && (config_path_cli || !disable_config_env)) {
+    /* Config loading is opt-in: only load if --config is passed (with or
+     * without a path) or if DSD_NEO_CONFIG env var is set. CLI takes
+     * precedence: --config without a path uses the default, ignoring env. */
+    if (enable_config_cli || (config_env && *config_env)) {
         const char* cfg_path = NULL;
         if (config_path_cli && *config_path_cli) {
             cfg_path = config_path_cli;
+        } else if (enable_config_cli) {
+            cfg_path = dsd_user_config_default_path();
         } else if (config_env && *config_env) {
             cfg_path = config_env;
-        } else {
-            cfg_path = dsd_user_config_default_path();
         }
 
         if (cfg_path && *cfg_path) {
@@ -2966,12 +2966,12 @@ main(int argc, char** argv) {
                 // Missing profile is fatal when --profile is specified
                 LOG_ERROR("Profile '%s' not found in config file %s\n", profile_cli, cfg_path);
                 return 1;
-            } else if (config_path_cli || config_env) {
+            } else if (config_path_cli || config_env || enable_config_cli) {
                 LOG_WARNING("Failed to load config file from %s; proceeding without config.\n", cfg_path);
             }
         }
     } else {
-        // Config loading was explicitly disabled; do not autosave either.
+        // Config loading was not requested; do not autosave either.
         s_user_config_save_enabled = 0;
         s_user_config_save_path[0] = '\0';
     }

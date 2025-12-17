@@ -31,12 +31,12 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 
 ## Configuration Files
 
-- Default path: `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`. Override with `--config <path>` or
-  `DSD_NEO_CONFIG=<path>`.
-- Disable config loading with `--no-config` or `DSD_NEO_NO_CONFIG=1`.
+- Config loading is opt-in: use `--config` to enable, optionally with a path (e.g. `--config /path/to/config.ini`).
+- Default path (when `--config` is passed without a path): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
+- Alternatively, set `DSD_NEO_CONFIG=<path>` environment variable to enable config loading.
 - `--interactive-setup` runs the wizard even when a config exists.
 - `--print-config` prints the effective config as INI after all env/CLI overrides.
-- When a config path is known, the final settings are autosaved on exit. See `docs/config-system.md` for details.
+- When config is enabled, the final settings are autosaved on exit. See `docs/config-system.md` for details.
 
 ## Inputs (`-i`)
 

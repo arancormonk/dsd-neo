@@ -186,27 +186,29 @@ source = "rtl"  # overrides anything from includes
 
 ## Config Discovery and Locations
 
-Config can be provided explicitly or discovered automatically:
+Config loading is **opt-in**. By default, no config file is loaded unless
+explicitly requested.
 
-### Explicit Path
+### Enabling Config
 
-- CLI: `--config /path/to/config.ini`
+- CLI: `--config` (uses default path) or `--config /path/to/config.ini`
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
 
-When both are present, CLI wins:
+When both are present, CLI path wins:
 
-1. `--config PATH`
+1. `--config PATH` (if path provided)
 2. `DSD_NEO_CONFIG`
+3. Default path (if `--config` without path)
 
-If the file cannot be read or parsed from an explicit path:
+If the file cannot be read or parsed:
 
 - Log a warning (path + reason).
 - Fall back to running **without** config (defaults + env + CLI).
 
 ### Default Path
 
-If neither `--config` nor `DSD_NEO_CONFIG` is set, we look for a default
-per-user config. Behavior:
+When `--config` is passed without a path argument, the default per-user
+config location is used:
 
 - On Unix-like systems:
   - If `$XDG_CONFIG_HOME` is set:
@@ -216,8 +218,8 @@ per-user config. Behavior:
 - On Windows:
   - `%APPDATA%\dsd-neo\config.ini`
 
-If the default file exists and is readable, it is loaded. If it does not
-exist, we skip config and run as today.
+If the default file does not exist, it will be created when settings are
+saved (e.g., after running the interactive setup wizard).
 
 ---
 
@@ -235,24 +237,6 @@ This ensures:
 - Config never overrides env or CLI.
 - Existing scripts and automation work unchanged.
 - Config provides convenient defaults that can be overridden when needed.
-
----
-
-## Opting Out of Config
-
-Users may want to bypass config entirely, for example when debugging:
-
-- CLI: `--no-config`
-- Environment: `DSD_NEO_NO_CONFIG=1`
-
-Behavior:
-
-- If `--no-config` is present, the application **does not attempt to
-  load** any config file (explicit or default).
-- If `DSD_NEO_NO_CONFIG` is set and no explicit `--config` path is
-  provided, config discovery and loading are skipped.
-- CLI always overrides environment for config loading: an explicit
-  `--config PATH` will be honored even when `DSD_NEO_NO_CONFIG` is set.
 
 ---
 
@@ -433,10 +417,10 @@ through selecting input, mode, trunking, and UI options.
 
 - When the wizard completes, settings are automatically saved to the
   config path (default or explicit).
-- If `--no-config` or `DSD_NEO_NO_CONFIG` is set, auto-save is disabled.
+- Auto-save only occurs when config is enabled (`--config` or `DSD_NEO_CONFIG`).
 - Outside the wizard, the app also auto-saves the effective settings at exit
-  whenever a config path is in use (CLI/env/default discovery). Disable config
-  loading to avoid having your file rewritten.
+  whenever a config path is in use. To avoid having your file rewritten,
+  simply run without the `--config` flag.
 
 ### Config and CLI Interaction
 
@@ -456,8 +440,7 @@ through selecting input, mode, trunking, and UI options.
 
 | Flag | Description |
 |------|-------------|
-| `--config PATH` | Use the given INI file as the config source |
-| `--no-config` | Disable all config loading |
+| `--config [PATH]` | Enable config loading; optionally specify path (uses default if omitted) |
 | `--print-config` | Print effective config (as INI) and exit |
 
 ### Template and Validation
