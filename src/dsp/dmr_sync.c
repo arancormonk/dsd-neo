@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -72,87 +73,41 @@ static const float DMR_SYNC_PATTERNS[DMR_SYNC_PATTERN_COUNT][DMR_SYNC_SYMBOLS] =
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Sample History Management
+ *
+ * DMR history functions delegate to the generic sync_calibration module.
+ * This provides a consistent API while allowing DMR-specific consumers
+ * (like CACH resampling) to continue using the familiar dmr_* API.
  * ───────────────────────────────────────────────────────────────────────────── */
 
 int
 dmr_sample_history_init(dsd_state* state) {
-    if (state == NULL) {
-        return -1;
-    }
-
-    /* Free existing buffer if present */
-    if (state->dmr_sample_history != NULL) {
-        free(state->dmr_sample_history);
-        state->dmr_sample_history = NULL;
-    }
-
-    state->dmr_sample_history_size = DMR_SAMPLE_HISTORY_SIZE;
-    state->dmr_sample_history = (float*)malloc(sizeof(float) * DMR_SAMPLE_HISTORY_SIZE);
-    if (state->dmr_sample_history == NULL) {
-        state->dmr_sample_history_size = 0;
-        return -1;
-    }
-
-    memset(state->dmr_sample_history, 0, sizeof(float) * DMR_SAMPLE_HISTORY_SIZE);
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
-
-    return 0;
+    return dsd_symbol_history_init(state, DMR_SAMPLE_HISTORY_SIZE);
 }
 
 void
 dmr_sample_history_free(dsd_state* state) {
-    if (state == NULL) {
-        return;
-    }
-
-    if (state->dmr_sample_history != NULL) {
-        free(state->dmr_sample_history);
-        state->dmr_sample_history = NULL;
-    }
-    state->dmr_sample_history_size = 0;
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    dsd_symbol_history_free(state);
 }
 
 void
 dmr_sample_history_reset(dsd_state* state) {
-    if (state == NULL || state->dmr_sample_history == NULL) {
-        return;
-    }
-
-    memset(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    dsd_symbol_history_reset(state);
 }
 
 void
 dmr_sample_history_push(dsd_state* state, float sample) {
-    if (state == NULL || state->dmr_sample_history == NULL) {
-        return;
-    }
-
-    state->dmr_sample_history[state->dmr_sample_history_head] = sample;
-    state->dmr_sample_history_head = (state->dmr_sample_history_head + 1) % state->dmr_sample_history_size;
-    if (state->dmr_sample_history_count < state->dmr_sample_history_size) {
-        state->dmr_sample_history_count++;
-    }
+    dsd_symbol_history_push(state, sample);
 }
 
 float
 dmr_sample_history_get(dsd_state* state, int offset) {
-    if (state == NULL || state->dmr_sample_history == NULL) {
-        return 0.0f;
+    /* DMR API uses offset convention where 0 = most recent, negative = older.
+     * Generic API uses 'back' where 0 = most recent, positive = older.
+     * Convert: back = -offset when offset <= 0 */
+    if (offset > 0) {
+        return 0.0f; /* Invalid: DMR API doesn't support positive offsets */
     }
-
-    /* offset is negative (0 = most recent, -1 = one before, etc.) */
-    int idx = state->dmr_sample_history_head - 1 + offset;
-    while (idx < 0) {
-        idx += state->dmr_sample_history_size;
-    }
-    idx = idx % state->dmr_sample_history_size;
-
-    return state->dmr_sample_history[idx];
+    return dsd_symbol_history_get_back(state, -offset);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

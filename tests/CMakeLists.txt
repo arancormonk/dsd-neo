@@ -748,6 +748,12 @@ target_include_directories(dsd-neo_test_sync_warm_start PRIVATE ${PROJECT_SOURCE
 target_link_libraries(dsd-neo_test_sync_warm_start PRIVATE dsd-neo_dsp m)
 add_test(NAME SYNC_WARM_START COMMAND dsd-neo_test_sync_warm_start)
 
+# Generic sync calibration module test
+add_executable(dsd-neo_test_sync_calibration dsp/test_sync_calibration.c)
+target_include_directories(dsd-neo_test_sync_calibration PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_sync_calibration PRIVATE dsd-neo_dsp m)
+add_test(NAME SYNC_CALIBRATION COMMAND dsd-neo_test_sync_calibration)
+
 # DMR resample-on-sync CACH re-digitization test
 add_executable(dsd-neo_test_dmr_resample_on_sync protocol/dmr/test_dmr_resample_on_sync.c)
 target_include_directories(dsd-neo_test_dmr_resample_on_sync PRIVATE ${PROJECT_SOURCE_DIR}/include)

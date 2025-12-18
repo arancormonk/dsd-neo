@@ -15,6 +15,7 @@ target_sources(dsd-neo_dsp PRIVATE
   dsd_symbol.c
   dsd_frame_sync.c
   dmr_sync.c
+  sync_calibration.c
 )
 
 # x86-64 SIMD sources with arch-specific flags
