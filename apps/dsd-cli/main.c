@@ -992,9 +992,13 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->dibit_buf_p = state->dibit_buf + 200;
     memset(state->dibit_buf, 0, sizeof(int) * 200);
     //dmr buffer
-    state->dmr_payload_p = state->dibit_buf + 200;
+    state->dmr_payload_p = state->dmr_payload_buf + 200;
     memset(state->dmr_payload_buf, 0, sizeof(int) * 200);
     memset(state->dmr_stereo_payload, 1, sizeof(int) * 144);
+    if (state->dmr_reliab_buf) {
+        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
+        memset(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
+    }
     //dmr buffer end
 
     //close MBE out files
