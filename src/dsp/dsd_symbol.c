@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
@@ -1077,16 +1078,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     }
 #endif
 
-    /* Store symbol in DMR sample history for resample-on-sync support.
+    /* Store symbol in history for resample-on-sync support.
      * This enables threshold calibration and CACH re-digitization when
-     * DMR sync is detected. Only active when buffer is allocated. */
-    if (state->dmr_sample_history != NULL && state->dmr_sample_history_size > 0) {
-        state->dmr_sample_history[state->dmr_sample_history_head] = symbol;
-        state->dmr_sample_history_head = (state->dmr_sample_history_head + 1) % state->dmr_sample_history_size;
-        if (state->dmr_sample_history_count < state->dmr_sample_history_size) {
-            state->dmr_sample_history_count++;
-        }
-    }
+     * DMR sync is detected. Uses the dmr_sync module's history buffer API. */
+    dmr_sample_history_push(state, symbol);
 
     state->symbolcnt++;
     return (symbol);

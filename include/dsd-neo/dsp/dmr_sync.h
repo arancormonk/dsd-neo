@@ -30,7 +30,7 @@ struct dsd_state;
  * Constants
  * ───────────────────────────────────────────────────────────────────────────── */
 
-#define DMR_SAMPLE_HISTORY_SIZE   2048 /* ~42ms at 48kHz, covers CACH + sync */
+#define DMR_SAMPLE_HISTORY_SIZE   2048 /* ~427ms at 4800 sym/s, covers CACH + sync + margin */
 #define DMR_SYNC_SYMBOLS          24   /* Sync pattern length in symbols */
 #define DMR_CACH_DIBITS           12   /* CACH length (6 dibits × 2 for interleave) */
 #define DMR_RESAMPLE_SYMBOLS      66   /* CACH + message prefix to resample */

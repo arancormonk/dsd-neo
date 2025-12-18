@@ -22,6 +22,7 @@
 #define _MAIN
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
@@ -1695,8 +1696,9 @@ initState(dsd_state* state) {
     memset(state->dmr_stereo_payload, 1, sizeof(int) * 144);
     //dmr buffer end
 
-    // DMR sample history buffer for resample-on-sync (SDRTrunk-style)
-    state->dmr_sample_history_size = 2048; // ~42ms at 48kHz
+    // Symbol history buffer for resample-on-sync (SDRTrunk-style)
+    // Note: Buffer stores symbols (one per dibit decision), not raw audio samples
+    state->dmr_sample_history_size = DMR_SAMPLE_HISTORY_SIZE; // ~427ms at 4800 sym/s
     state->dmr_sample_history = aligned_alloc_64(sizeof(float) * state->dmr_sample_history_size);
     if (state->dmr_sample_history) {
         memset(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);

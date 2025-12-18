@@ -742,6 +742,18 @@ target_include_directories(dsd-neo_test_cqpsk_reliability PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_cqpsk_reliability PRIVATE m)
 add_test(NAME CQPSK_RELIABILITY COMMAND dsd-neo_test_cqpsk_reliability)
 
+# DMR sync warm start threshold initialization test
+add_executable(dsd-neo_test_sync_warm_start dsp/test_sync_warm_start.c)
+target_include_directories(dsd-neo_test_sync_warm_start PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_sync_warm_start PRIVATE dsd-neo_dsp m)
+add_test(NAME SYNC_WARM_START COMMAND dsd-neo_test_sync_warm_start)
+
+# DMR resample-on-sync CACH re-digitization test
+add_executable(dsd-neo_test_dmr_resample_on_sync protocol/dmr/test_dmr_resample_on_sync.c)
+target_include_directories(dsd-neo_test_dmr_resample_on_sync PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_resample_on_sync PRIVATE dsd-neo_dsp m)
+add_test(NAME DMR_RESAMPLE_ON_SYNC COMMAND dsd-neo_test_dmr_resample_on_sync)
+
 # P25P2 reliability buffer test
 # Note: compiles p25p2_frame.c directly with stubs to avoid dragging in full library dependencies
 add_executable(dsd-neo_test_p25_p2_reliability

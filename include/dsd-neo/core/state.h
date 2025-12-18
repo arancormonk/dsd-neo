@@ -948,11 +948,12 @@ struct dsd_state {
      * improve first-frame decode accuracy. See dmr_sync.h for details.
      * ───────────────────────────────────────────────────────────────────────── */
 
-    /** Sample history circular buffer for retrospective resampling */
+    /** Symbol history circular buffer for retrospective resampling.
+     *  Stores symbol-rate floats (one per dibit decision), not raw audio samples. */
     float* dmr_sample_history;
     int dmr_sample_history_size;  /**< Buffer size (DMR_SAMPLE_HISTORY_SIZE) */
     int dmr_sample_history_head;  /**< Write index into circular buffer */
-    int dmr_sample_history_count; /**< Samples written (for underflow check) */
+    int dmr_sample_history_count; /**< Symbols written (for underflow check) */
 
     /** DMR equalizer for DC offset and gain correction */
     struct {
