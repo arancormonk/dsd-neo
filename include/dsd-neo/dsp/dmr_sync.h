@@ -42,10 +42,10 @@ struct dsd_state;
 #define DMR_EQUALIZER_MIN_GAIN    1.00f  /* Min gain (no attenuation) */
 
 /* Ideal symbol phases for DMR QPSK (in radians, but we use normalized levels) */
-#define DMR_SYMBOL_PLUS_3         3.0f
-#define DMR_SYMBOL_PLUS_1         1.0f
-#define DMR_SYMBOL_MINUS_1        -1.0f
-#define DMR_SYMBOL_MINUS_3        -3.0f
+#define DMR_SYMBOL_PLUS_3         (3.0f)
+#define DMR_SYMBOL_PLUS_1         (1.0f)
+#define DMR_SYMBOL_MINUS_1        (-1.0f)
+#define DMR_SYMBOL_MINUS_3        (-3.0f)
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
