@@ -941,6 +941,26 @@ struct dsd_state {
     // DMR: consecutive EMB decode failures per slot (hysteresis for robustness)
     uint8_t dmr_emb_err[2];
 
+    /* ─────────────────────────────────────────────────────────────────────────
+     * DMR Resample-on-Sync Support
+     *
+     * Implements SDRTrunk-style threshold calibration and CACH resampling to
+     * improve first-frame decode accuracy. See dmr_sync.h for details.
+     * ───────────────────────────────────────────────────────────────────────── */
+
+    /** Sample history circular buffer for retrospective resampling */
+    float* dmr_sample_history;
+    int dmr_sample_history_size;  /**< Buffer size (DMR_SAMPLE_HISTORY_SIZE) */
+    int dmr_sample_history_head;  /**< Write index into circular buffer */
+    int dmr_sample_history_count; /**< Samples written (for underflow check) */
+
+    /** DMR equalizer for DC offset and gain correction */
+    struct {
+        float balance;   /**< DC offset correction (added to samples) */
+        float gain;      /**< Amplitude scaling factor */
+        int initialized; /**< Whether equalizer has been calibrated */
+    } dmr_eq;
+
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
 };

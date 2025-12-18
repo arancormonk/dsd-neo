@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/dsp/dmr_sync.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -1511,6 +1512,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 10;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_BS_DATA);
                         return (10);
                     } else {
                         // inverted voice frame
@@ -1523,6 +1526,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 11;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_BS_VOICE);
                         return (11); //11
                     }
                 }
@@ -1550,6 +1555,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 33;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_DATA);
                         return (33);
                     } else {
                         // inverted voice frame
@@ -1562,6 +1569,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 32;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_VOICE);
                         return (32);
                     }
                 } /* End if(strcmp (synctest, DMR_DIRECT_MODE_TS1_DATA_SYNC) == 0) */
@@ -1580,6 +1589,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 33;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_DATA);
                         return (33);
                     } else {
                         // inverted voice frame
@@ -1592,6 +1603,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 32;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_VOICE);
                         return (32);
                     }
                 } /* End if(strcmp (synctest, DMR_DIRECT_MODE_TS2_DATA_SYNC) == 0) */
@@ -1622,6 +1635,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 12;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_BS_VOICE);
                         return (12);
                     }
 
@@ -1634,6 +1649,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 13;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_BS_DATA);
                         return (13);
                     }
                 }
@@ -1665,6 +1682,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 32;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_VOICE);
                         return (32); //treat Direct Mode same as MS mode for now
                     } else {
                         // inverted data frame
@@ -1673,6 +1692,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             //printFrameSync (opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
                         state->lastsynctype = 33;
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_DATA);
                         return (33);
                     }
                 } /* End if(strcmp (synctest, DMR_DIRECT_MODE_TS1_VOICE_SYNC) == 0) */
@@ -1704,6 +1725,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 32;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_VOICE);
                         return (32);
                     } else {
                         // inverted data frame
@@ -1713,6 +1736,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
                         state->lastsynctype = 33;
                         state->last_cc_sync_time = time(NULL);
+                        /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
+                        dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_DATA);
                         return (33);
                     }
                 } //End if(strcmp (synctest, DMR_DIRECT_MODE_TS2_VOICE_SYNC) == 0)

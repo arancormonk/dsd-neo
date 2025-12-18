@@ -1701,6 +1701,20 @@ initState(dsd_state* state) {
     memset(state->dmr_payload_buf, 0, sizeof(int) * 200);
     memset(state->dmr_stereo_payload, 1, sizeof(int) * 144);
     //dmr buffer end
+
+    // DMR sample history buffer for resample-on-sync (SDRTrunk-style)
+    state->dmr_sample_history_size = 2048; // ~42ms at 48kHz
+    state->dmr_sample_history = aligned_alloc_64(sizeof(float) * state->dmr_sample_history_size);
+    if (state->dmr_sample_history) {
+        memset(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
+    }
+    state->dmr_sample_history_head = 0;
+    state->dmr_sample_history_count = 0;
+
+    // DMR equalizer initialization
+    state->dmr_eq.balance = 0.0f;
+    state->dmr_eq.gain = 1.0f;
+    state->dmr_eq.initialized = 0;
     state->repeat = 0;
 
     //Bitmap Filtering Options

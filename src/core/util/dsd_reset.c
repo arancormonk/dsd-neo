@@ -70,6 +70,19 @@ resetState(dsd_state* state) {
         state->dmr_reliab_p = NULL;
     }
 
+    // DMR sample history buffer reset (resample-on-sync support)
+    // Note: Buffer allocation preserved, only reset indices and equalizer
+    if (state->dmr_sample_history && state->dmr_sample_history_size > 0) {
+        memset(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
+    }
+    state->dmr_sample_history_head = 0;
+    state->dmr_sample_history_count = 0;
+
+    // Reset DMR equalizer state
+    state->dmr_eq.balance = 0.0f;
+    state->dmr_eq.gain = 1.0f;
+    state->dmr_eq.initialized = 0;
+
     //Sync
     state->center = 0.0f;
     state->jitter = -1;
