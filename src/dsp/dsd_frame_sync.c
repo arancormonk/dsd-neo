@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -1054,6 +1055,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                     state->lastsynctype = 0;
                     state->last_cc_sync_time = now;
+                    /* Warm-start slicer thresholds on C4FM path (do not interfere with CQPSK) */
+                    if (state->rf_mod == 0) {
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+                    }
                     return (0);
                 }
                 if (strcmp(p25_sync_window, INV_P25P1_SYNC) == 0) {
@@ -1071,6 +1076,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                     state->lastsynctype = 1;
                     state->last_cc_sync_time = now;
+                    /* Warm-start slicer thresholds on C4FM path (do not interfere with CQPSK) */
+                    if (state->rf_mod == 0) {
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+                    }
                     return (1);
                 }
             }
