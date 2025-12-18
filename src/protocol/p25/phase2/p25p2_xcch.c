@@ -521,17 +521,12 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
 
             // Only set voice-active burst indicator when audio is allowed;
             // encrypted/locked-out calls should not influence audio routing
-#ifdef __CYGWIN__
-            if (opts->audio_out_type != 5)
-#endif
-            {
-                // SACCH uses inverted slot mapping; use 'slot' (not currentslot)
-                if (allow_audio) {
-                    if (slot == 0) {
-                        state->dmrburstL = 21;
-                    } else {
-                        state->dmrburstR = 21;
-                    }
+            // SACCH uses inverted slot mapping; use 'slot' (not currentslot)
+            if (allow_audio) {
+                if (slot == 0) {
+                    state->dmrburstL = 21;
+                } else {
+                    state->dmrburstR = 21;
                 }
             }
         }
@@ -971,22 +966,11 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
         // Release decision handled by SM tick based on hangtime/slot activity.
     }
     if (opcode == 0x4 && err == 0) {
-//disable to prevent blinking in ncurses terminal due to OSS preemption shim
-#ifdef __CYGWIN__
-        if (opts->audio_out_type != 5) {
-            if (state->currentslot == 0) {
-                state->dmrburstL = 21;
-            } else {
-                state->dmrburstR = 21;
-            }
-        }
-#else
         if (state->currentslot == 0) {
             state->dmrburstL = 21;
         } else {
             state->dmrburstR = 21;
         }
-#endif
 
         fprintf(stderr, " MAC_ACTIVE ");
         fprintf(stderr, "%s", KYEL);

@@ -10,7 +10,7 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # Platform detection and configuration
 include(Platform)
 # Curses/PDCurses selection - set early before find_package
-if(MINGW OR NOT (WIN32 AND NOT CYGWIN))
+if(MINGW OR NOT WIN32)
     # Prefer ncurses wide-character support (POSIX + MinGW/vcpkg ships ncursesw)
     set(CURSES_NEED_NCURSES TRUE)
     set(CURSES_NEED_WIDE TRUE)
@@ -180,8 +180,8 @@ find_package(RTLSDR)
 
 # Curses library selection:
 # - MSVC/native Windows: PDCurses
-# - MinGW/Cygwin/POSIX: ncurses via CMake's FindCurses
-if(WIN32 AND NOT CYGWIN AND NOT MINGW)
+# - MinGW/POSIX: ncurses via CMake's FindCurses
+if(WIN32 AND NOT MINGW)
     find_package(PDCurses REQUIRED)
     set(CURSES_LIBRARIES ${PDCURSES_LIBRARIES})
     set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
@@ -210,7 +210,7 @@ find_package(CODEC2)
 option(DSD_USE_PORTAUDIO "Use PortAudio for cross-platform audio (required on Windows)" OFF)
 
 # Windows requires PortAudio (no PulseAudio available)
-if(WIN32 AND NOT CYGWIN)
+if(WIN32)
     set(DSD_USE_PORTAUDIO ON CACHE BOOL "Use PortAudio on Windows" FORCE)
 endif()
 
@@ -235,7 +235,7 @@ set(AUDIO_SYSTEM_LIBS "")
 if(DSD_USE_PORTAUDIO)
     list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PORTAUDIO_LIBRARY})
-    if(WIN32 AND NOT CYGWIN)
+    if(WIN32)
         list(APPEND AUDIO_SYSTEM_LIBS winmm ole32 uuid setupapi)
     endif()
 else()

@@ -1445,10 +1445,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
             if (opts->floating_point == 0) {
-#ifdef __CYGWIN__
-                if (opts->audio_out == 1 && opts->slot1_on == 1)
-#endif
-                    processAudio(opts, state);
+                processAudio(opts, state);
             }
         }
 
@@ -1499,10 +1496,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
             if (opts->floating_point == 0) {
-#ifdef __CYGWIN__
-                if (opts->audio_out == 1 && opts->slot2_on == 1)
-#endif
-                    processAudioR(opts, state);
+                processAudioR(opts, state);
             }
         }
 

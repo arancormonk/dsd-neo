@@ -8,8 +8,8 @@
  * @brief TCP PCM16LE audio input backend implementation.
  *
  * Platform-specific handling:
- * - POSIX (Linux, macOS, Cygwin): Uses libsndfile sf_open_fd() to wrap socket
- * - Windows native (MSVC): Direct socket recv() with internal buffering
+ * - POSIX (Linux, macOS): Uses libsndfile sf_open_fd() to wrap socket
+ * - Windows native (MSVC/MinGW): Direct socket recv() with internal buffering
  */
 
 #include <dsd-neo/io/tcp_input.h>

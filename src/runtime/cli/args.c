@@ -493,9 +493,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
     argv[w] = NULL;
     // Reset getopt index and parse short options here (migrated)
-#ifndef __CYGWIN__
     extern int optind;
-#endif
     optind = 1;
 
     // Parse short options using compacted argv; reduce argc to new logical size
@@ -512,10 +510,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 static void
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
     int c;
-#ifndef __CYGWIN__
     extern char* optarg;
     extern int optind;
-#endif
     struct stat st = {0};
     char wav_file_directory[1024] = {0};
     char dsp_filename[1024] = {0};

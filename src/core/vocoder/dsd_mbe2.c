@@ -67,7 +67,6 @@ void
 soft_demod_ambe_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char ambe_d[49]) {
     /*
      * Avoid mbe_processAmbe3600x2450Framef():
-     * - Some Windows/Cygwin builds of mbelib-neo do not export this symbol from the shared library.
      * - Demodulate/ECC explicitly and then decode via mbe_processAmbe2450Dataf(), which is exported.
      */
     soft_demod_ambe2_ehr(state, ambe_fr, ambe_d);

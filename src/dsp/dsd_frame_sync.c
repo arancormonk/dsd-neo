@@ -328,9 +328,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     t = 0;
     synctest10[10] = 0;
     synctest[24] = 0;
-    synctest8[8] = 0; //M17, wasn't initialized or terminated (source of much pain and frustration in Cygwin)
+    synctest8[8] = 0;
     synctest12[12] = 0;
-    synctest16[16] = 0; //M17, wasn't initialized or terminated (source of much pain and frustration in Cygwin)
+    synctest16[16] = 0;
     synctest48[48] = 0;
     synctest32[32] = 0;
     synctest20[20] = 0;

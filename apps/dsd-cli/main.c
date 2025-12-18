@@ -1523,15 +1523,8 @@ initOpts(dsd_opts* opts) {
     /* DMR: relax CRC gating by default (others remain strict unless -F). */
     opts->dmr_crc_relaxed_default = 1;
 
-//this may not matter so much, since its already checked later on
-//but better safe than sorry I guess
-#ifdef __CYGWIN__
-    opts->audio_in_type = AUDIO_IN_NULL; //only assign when configured
-    opts->audio_out_type = 9;            //only assign when configured
-#else
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->audio_out_type = 0;
-#endif
 
     opts->lrrp_file_output = 0;
 
@@ -2311,11 +2304,7 @@ usage() {
     printf("                filename.bin for OP25/FME capture bin files\n");
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
     printf("                filename.wav -s 96000 for 96K/1 wav files (DSDPlus)\n");
-#ifdef __CYGWIN__
-    printf("                (Use single quotes '\\directory\\audio file.wav' when directories/spaces are present)\n");
-#else
     printf("                (Use single quotes '/directory/audio file.wav' when directories/spaces are present)\n");
-#endif
     // printf ("                (Windows - '\directory\audio file.wav' backslash, not forward slash)\n");
     printf("  -s <rate>     Sample Rate of wav input files (48000 or 96000) Mono only!\n");
     printf("      --input-volume <N>  Scale non-RTL input samples by N (integer 1..16).\n");
@@ -2861,12 +2850,8 @@ atofs(char* s) {
 
 int
 main(int argc, char** argv) {
-//optarg and optind already defined when using Cygwin, no need to do so again
-#ifdef __CYGWIN__
-#else
     extern char* optarg;
     extern int optind;
-#endif
     dsd_opts* opts = calloc(1, sizeof(dsd_opts));
     dsd_state* state = calloc(1, sizeof(dsd_state));
     if (!opts || !state) {

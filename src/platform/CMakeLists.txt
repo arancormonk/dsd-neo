@@ -3,7 +3,7 @@
 add_library(dsd-neo_platform)
 
 # Platform-specific sources
-if(WIN32 AND NOT CYGWIN)
+if(WIN32)
     target_sources(dsd-neo_platform PRIVATE
         threading_win32.c
         sockets_win32.c

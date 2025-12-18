@@ -510,7 +510,6 @@ decode_bch()
     }
 }
 
-//bugfix on 32-bit cygwin, probably overflowed here
 unsigned long long int messagepp = 0x0;
 
 //very simplified version, just to encode, get frame and compare

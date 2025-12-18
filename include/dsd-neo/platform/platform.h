@@ -10,14 +10,14 @@
  */
 
 /* Detect Windows */
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+#if defined(_WIN32) || defined(_WIN64)
 #define DSD_PLATFORM_WINDOWS 1
 #else
 #define DSD_PLATFORM_WINDOWS 0
 #endif
 
 /* Detect Linux */
-#if defined(__linux__) && !defined(__CYGWIN__)
+#if defined(__linux__)
 #define DSD_PLATFORM_LINUX 1
 #else
 #define DSD_PLATFORM_LINUX 0
@@ -30,16 +30,15 @@
 #define DSD_PLATFORM_MACOS 0
 #endif
 
-/* Detect POSIX-like systems (including Cygwin) */
-#if DSD_PLATFORM_LINUX || DSD_PLATFORM_MACOS || defined(__CYGWIN__) || defined(__FreeBSD__) || defined(__NetBSD__)     \
-    || defined(__OpenBSD__)
+/* Detect POSIX-like systems */
+#if DSD_PLATFORM_LINUX || DSD_PLATFORM_MACOS || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #define DSD_PLATFORM_POSIX 1
 #else
 #define DSD_PLATFORM_POSIX 0
 #endif
 
-/* Native Windows (not Cygwin) */
-#if defined(_WIN32) && !defined(__CYGWIN__)
+/* Native Windows */
+#if defined(_WIN32)
 #define DSD_PLATFORM_WIN_NATIVE 1
 #else
 #define DSD_PLATFORM_WIN_NATIVE 0

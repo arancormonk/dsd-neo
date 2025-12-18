@@ -1,12 +1,6 @@
 # - Try to find CODEC2
 # Once done this will define
 
-#Seems to work on Cygwin as well now -- more testing for may be required
-# Not sure what causes the 'Package 'codec2', required by 'virtual:world', not found' message, but seems to work anyways
-# -- Checking for module 'codec2'
-# --   Package 'codec2', required by 'virtual:world', not found
-# -- Found CODEC2: /usr/local/lib/libcodec2.dll.a
-
 if (NOT CODEC2_FOUND)
 
   find_package(PkgConfig)

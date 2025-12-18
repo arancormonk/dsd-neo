@@ -17,12 +17,12 @@
 #include <time.h>
 
 // Weak symbols are used to allow tests to override certain hooks.
-// On COFF targets (Cygwin/MinGW), weak definitions may not be pulled from
+// On COFF targets (MinGW), weak definitions may not be pulled from
 // static archives reliably, so keep public wrapper APIs strong there.
 #if defined(_MSC_VER)
 #define P25_WEAK_FALLBACK
 #define P25_WEAK_WRAPPER
-#elif defined(__CYGWIN__) || defined(__MINGW32__) || defined(__MINGW64__)
+#elif defined(__MINGW32__) || defined(__MINGW64__)
 #define P25_WEAK_FALLBACK __attribute__((weak))
 #define P25_WEAK_WRAPPER
 #else

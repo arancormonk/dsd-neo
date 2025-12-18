@@ -8,9 +8,9 @@
  * @brief TCP PCM16LE audio input backend.
  *
  * Provides a cross-platform abstraction for TCP audio input. On POSIX systems
- * (Linux, macOS, Cygwin), this uses libsndfile's sf_open_fd() to wrap the socket.
- * On native Windows (MSVC), sockets are not file descriptors, so we read directly
- * from the socket using recv() and buffer samples manually.
+ * (Linux, macOS), this uses libsndfile's sf_open_fd() to wrap the socket.
+ * On native Windows (MSVC/MinGW), sockets are not file descriptors, so we read
+ * directly from the socket using recv() and buffer samples manually.
  */
 
 #pragma once

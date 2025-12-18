@@ -736,8 +736,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
     }
 
     //Each EDACS outbound frame consists of two 40-bit (28-bit data, 12-bit BCH) messages. Each message is sent three
-    //times, with the middle message bitwise-inverted. We use unsigned long long int here to be safe in 32-bit cygwin (not
-    //sure if this was actually an issue).
+    //times, with the middle message bitwise-inverted. We use unsigned long long int here for 64-bit safety.
     unsigned long long int fr_1 = 0;
     unsigned long long int fr_2 = 0;
     unsigned long long int fr_3 = 0;

@@ -674,7 +674,6 @@ void
 processM17STR(dsd_opts* opts, dsd_state* state) {
 
     int i, x;
-    //overflow/memory issue returns in Cygwin for...reasons...
     uint8_t dbuf[384];         //384-bit frame - 16-bit (8 symbol) sync pattern (184 dibits)
     uint8_t m17_rnd_bits[368]; //368 bits that are still scrambled (randomized)
     uint8_t m17_int_bits[368]; //368 bits that are still interleaved
