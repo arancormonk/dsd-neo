@@ -1055,9 +1055,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                     state->lastsynctype = 0;
                     state->last_cc_sync_time = now;
-                    /* Warm-start slicer thresholds on C4FM path (do not interfere with CQPSK) */
+                    /* Sync-time calibration:
+                     * - C4FM: warm-start slicer thresholds
+                     * - CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 0) {
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+                    } else if (state->rf_mod == 1) {
+                        dsd_sync_warm_start_center_outer_only(opts, state, 24);
                     }
                     return (0);
                 }
@@ -1076,9 +1080,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     }
                     state->lastsynctype = 1;
                     state->last_cc_sync_time = now;
-                    /* Warm-start slicer thresholds on C4FM path (do not interfere with CQPSK) */
+                    /* Sync-time calibration:
+                     * - C4FM: warm-start slicer thresholds
+                     * - CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 0) {
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+                    } else if (state->rf_mod == 1) {
+                        dsd_sync_warm_start_center_outer_only(opts, state, 24);
                     }
                     return (1);
                 }
@@ -1113,6 +1121,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             printFrameSync(opts, state, "+X2-TDMA ", synctest_pos + 1, modulation);
                         }
                         state->lastsynctype = 2;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                         return (2);
                     } else {
                         // inverted voice frame
@@ -1124,6 +1134,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             state->firstframe = 1;
                         }
                         state->lastsynctype = 3;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                         return (3);
                     }
                 }
@@ -1142,6 +1154,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             state->firstframe = 1;
                         }
                         state->lastsynctype = 4;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                         return (4);
                     } else {
                         // inverted data frame
@@ -1150,6 +1164,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             printFrameSync(opts, state, "-X2-TDMA ", synctest_pos + 1, modulation);
                         }
                         state->lastsynctype = 5;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                         return (5);
                     }
                 }
@@ -1219,6 +1235,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     state->lastsynctype = 98;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                     fprintf(stderr, "\n");
                     return (98);
                 } else if (ham_piv <= M17_HAM_THRESH) {
@@ -1232,6 +1250,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     state->lastsynctype = 99;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                     fprintf(stderr, "\n");
                     return (99);
                 }
@@ -1245,6 +1265,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     if (state->lastsynctype == 86 || state->lastsynctype == 8) {
                         state->lastsynctype = 86;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                         return (86);
                     }
                     state->lastsynctype = 86;
@@ -1258,6 +1280,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     if (state->lastsynctype == 87 || state->lastsynctype == 9) {
                         state->lastsynctype = 87;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                         return (87);
                     }
                     state->lastsynctype = 87;
@@ -1276,6 +1300,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->min = ((state->min) + lmin) / 2;
                         if (state->lastsynctype == 16 || state->lastsynctype == 8) {
                             state->lastsynctype = 16;
+                            /* Warm-start slicer thresholds for improved decode */
+                            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                             return (16);
                         }
                         state->lastsynctype = 16;
@@ -1289,6 +1315,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->min = ((state->min) + lmin) / 2;
                         if (state->lastsynctype == 99) {
                             state->lastsynctype = 9;
+                            /* Warm-start slicer thresholds for improved decode */
+                            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                             return (9);
                         }
                         state->lastsynctype = 9;
@@ -1308,6 +1336,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->min = ((state->min) + lmin) / 2;
                         if (state->lastsynctype == 98) {
                             state->lastsynctype = 8;
+                            /* Warm-start slicer thresholds for improved decode */
+                            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                             return (8);
                         }
                         state->lastsynctype = 8;
@@ -1321,6 +1351,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->min = ((state->min) + lmin) / 2;
                         if (state->lastsynctype == 17 || state->lastsynctype == 9) {
                             state->lastsynctype = 17;
+                            /* Warm-start slicer thresholds for improved decode */
+                            dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                             return (17);
                         }
                         state->lastsynctype = 17;
@@ -1354,6 +1386,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             fprintf(stderr, "%s", KNRM);
                         }
                         state->last_cc_sync_time = time(NULL);
+                        /* CQPSK/QPSK: warm-start only center (DC bias) */
+                        if (state->rf_mod == 1) {
+                            dsd_sync_warm_start_center_outer_only(opts, state, 20);
+                        }
                         return (35); //35
                     }
                 }
@@ -1380,6 +1416,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                         state->lastsynctype = 36; //36
                         state->last_cc_sync_time = time(NULL);
+                        /* CQPSK/QPSK: warm-start only center (DC bias) */
+                        if (state->rf_mod == 1) {
+                            dsd_sync_warm_start_center_outer_only(opts, state, 20);
+                        }
                         return (36); //36
                     }
                 }
@@ -1405,6 +1445,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             printFrameSync(opts, state, "+dPMR ", synctest_pos + 1, modulation);
                         }
                         state->lastsynctype = 21;
+                        /* Warm-start slicer thresholds for improved CCH decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 12);
                         return (21);
                     }
                     if (strcmp(synctest12, DPMR_FRAME_SYNC_3) == 0) {
@@ -1431,6 +1473,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         }
 
                         state->lastsynctype = 25;
+                        /* Warm-start slicer thresholds for improved CCH decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 12);
                         return (25);
                     }
                     if (strcmp(synctest12, INV_DPMR_FRAME_SYNC_3) == 0) {
@@ -1781,6 +1825,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "+PV   ", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 14;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
                     return (14);
                 } else if ((strcmp(synctest32, INV_PROVOICE_SYNC) == 0)
                            || (strcmp(synctest32, INV_PROVOICE_EA_SYNC) == 0)) {
@@ -1792,6 +1838,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     sprintf(state->ftype, "ProVoice ");
                     printFrameSync(opts, state, "-PV   ", synctest_pos + 1, modulation);
                     state->lastsynctype = 15;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
                     return (15);
                 } else if (strcmp(synctest48, EDACS_SYNC) == 0) {
                     state->last_cc_sync_time = time(NULL);
@@ -1801,6 +1849,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     printFrameSync(opts, state, "-EDACS", synctest_pos + 1, modulation);
                     state->lastsynctype = 38;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
                     return (38);
                 } else if (strcmp(synctest48, INV_EDACS_SYNC) == 0) {
                     state->last_cc_sync_time = time(NULL);
@@ -1810,6 +1860,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     printFrameSync(opts, state, "+EDACS", synctest_pos + 1, modulation);
                     state->lastsynctype = 37;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
                     return (37);
                 } else if ((strcmp(synctest48, DOTTING_SEQUENCE_A) == 0)
                            || (strcmp(synctest48, DOTTING_SEQUENCE_B) == 0)) {
@@ -1833,6 +1885,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "+DSTAR VOICE ", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 6;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                     return (6);
                 }
                 if (strcmp(synctest, INV_DSTAR_SYNC) == 0) {
@@ -1845,6 +1899,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "-DSTAR VOICE ", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 7;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                     return (7);
                 }
                 if (strcmp(synctest, DSTAR_HD) == 0) {
@@ -1857,6 +1913,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "+DSTAR HEADER", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 18;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                     return (18);
                 }
                 if (strcmp(synctest, INV_DSTAR_HD) == 0) {
@@ -1869,6 +1927,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         printFrameSync(opts, state, "-DSTAR HEADER", synctest_pos + 1, modulation);
                     }
                     state->lastsynctype = 19;
+                    /* Warm-start slicer thresholds for improved decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
                     return (19);
                 }
 
@@ -1891,6 +1951,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     if (state->lastsynctype == 28) {
                         state->last_cc_sync_time = now;
+                        /* Warm-start slicer thresholds for improved LICH decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
                         return (28);
                     }
                     state->lastsynctype = 28;
@@ -1909,6 +1971,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     if (state->lastsynctype == 29) {
                         state->last_cc_sync_time = now;
+                        /* Warm-start slicer thresholds for improved LICH decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
                         return (29);
                     }
                     state->lastsynctype = 29;
@@ -1961,6 +2025,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             fprintf(stderr, "ALL CALL ");
                         }
                         state->lastsynctype = 15;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 16);
                         return (15);
                     }
                     state->lastsynctype = 15;
@@ -1999,6 +2065,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             fprintf(stderr, "ALL CALL ");
                         }
                         state->lastsynctype = 14;
+                        /* Warm-start slicer thresholds for improved decode */
+                        dsd_sync_warm_start_thresholds_outer_only(opts, state, 16);
                         return (14);
                     }
                     state->lastsynctype = 14;

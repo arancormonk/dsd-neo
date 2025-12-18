@@ -19,6 +19,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int
+float_compare_asc(const void* a, const void* b) {
+    float fa = *(const float*)a;
+    float fb = *(const float*)b;
+    if (fa < fb) {
+        return -1;
+    }
+    if (fa > fb) {
+        return 1;
+    }
+    return 0;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * Environment Variable Kill-Switch
  *
@@ -221,6 +234,100 @@ dsd_sync_warm_start_thresholds_outer_only(dsd_opts* opts, dsd_state* state, int 
             state->maxbuf[i] = state->max;
             state->minbuf[i] = state->min;
         }
+    }
+
+    return DSD_WARM_START_OK;
+}
+
+dsd_warm_start_result_t
+dsd_sync_warm_start_center_outer_only(dsd_opts* opts, dsd_state* state, int sync_len) {
+    UNUSED(opts);
+
+    if (!dsd_sync_warm_start_enabled()) {
+        return DSD_WARM_START_DISABLED;
+    }
+
+    if (state == NULL) {
+        return DSD_WARM_START_NULL_STATE;
+    }
+
+    if (sync_len <= 1) {
+        return DSD_WARM_START_DEGENERATE;
+    }
+
+    if (state->dmr_sample_history == NULL || state->dmr_sample_history_count < sync_len) {
+        return DSD_WARM_START_NO_HISTORY;
+    }
+
+    float stack_syms[64];
+    float* syms = stack_syms;
+    int free_syms = 0;
+
+    if (sync_len > (int)(sizeof(stack_syms) / sizeof(stack_syms[0]))) {
+        syms = (float*)malloc(sizeof(float) * (size_t)sync_len);
+        if (syms == NULL) {
+            return DSD_WARM_START_DEGENERATE;
+        }
+        free_syms = 1;
+    }
+
+    for (int i = 0; i < sync_len; i++) {
+        syms[i] = dsd_symbol_history_get_back(state, i);
+    }
+
+    qsort(syms, (size_t)sync_len, sizeof(float), float_compare_asc);
+
+    /* Split the bimodal distribution using the largest inter-sample gap. */
+    int split = -1;
+    float max_gap = -1.0f;
+    for (int i = 0; i < (sync_len - 1); i++) {
+        float gap = syms[i + 1] - syms[i];
+        if (gap > max_gap) {
+            max_gap = gap;
+            split = i;
+        }
+    }
+
+    if (split < 0 || split >= (sync_len - 1)) {
+        if (free_syms) {
+            free(syms);
+        }
+        return DSD_WARM_START_DEGENERATE;
+    }
+
+    int n_low = split + 1;
+    int n_high = sync_len - n_low;
+    if (n_low < 2 || n_high < 2) {
+        if (free_syms) {
+            free(syms);
+        }
+        return DSD_WARM_START_DEGENERATE;
+    }
+
+    float sum_low = 0.0f;
+    for (int i = 0; i < n_low; i++) {
+        sum_low += syms[i];
+    }
+    float sum_high = 0.0f;
+    for (int i = n_low; i < sync_len; i++) {
+        sum_high += syms[i];
+    }
+
+    float mean_low = sum_low / (float)n_low;
+    float mean_high = sum_high / (float)n_high;
+
+    float span = mean_high - mean_low;
+    if (fabsf(span) < DSD_WARM_START_MIN_SPAN) {
+        if (free_syms) {
+            free(syms);
+        }
+        return DSD_WARM_START_DEGENERATE;
+    }
+
+    state->center = (mean_low + mean_high) / 2.0f;
+
+    if (free_syms) {
+        free(syms);
     }
 
     return DSD_WARM_START_OK;

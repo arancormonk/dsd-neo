@@ -167,6 +167,28 @@ dsd_warm_start_result_t dsd_sync_warm_start_thresholds_outer_only(struct dsd_opt
                                                                   int sync_len);
 
 /**
+ * @brief Warm-start only the DC center estimate from an outer-only sync.
+ *
+ * CQPSK in dsd-neo uses a fixed-threshold slicer (see cqpsk_slice in
+ * src/core/frames/dsd_dibit.c) and subtracts state->center to remove DC bias
+ * before slicing. For this path, a safe sync-time calibration is to update
+ * only state->center, leaving the CQPSK decision thresholds unchanged.
+ *
+ * This function estimates the two outer symbol clusters from the last
+ * `sync_len` history entries and sets:
+ *   - state->center = (mean_low + mean_high) / 2
+ *
+ * It does not modify state->min/max/lmid/umid or reference values.
+ *
+ * @param opts Decoder options (unused today; may be NULL)
+ * @param state Decoder state to update
+ * @param sync_len Number of symbols in sync pattern
+ * @return Result code indicating success or reason for skip
+ */
+dsd_warm_start_result_t dsd_sync_warm_start_center_outer_only(struct dsd_opts* opts, struct dsd_state* state,
+                                                              int sync_len);
+
+/**
  * @brief Check if warm-start is enabled.
  *
  * Warm-start can be disabled via DSD_NEO_SYNC_WARMSTART=0 environment variable

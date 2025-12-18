@@ -201,6 +201,90 @@ test_warm_start_dc_offset(void) {
 }
 
 /**
+ * @brief Test CQPSK-safe "center-only" warm-start.
+ *
+ * This should update only state.center (DC bias estimate) and leave other
+ * thresholds unchanged.
+ */
+static void
+test_center_only_warm_start(void) {
+    printf("=== test_center_only_warm_start ===\n");
+
+    struct dsd_state state;
+    memset(&state, 0, sizeof(state));
+
+    struct dsd_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.msize = 64;
+
+    dsd_symbol_history_init(&state, 64);
+
+    /* Seed state with sentinel values to ensure only center changes. */
+    state.center = 123.0f;
+    state.max = 9.0f;
+    state.min = -9.0f;
+    state.umid = 7.0f;
+    state.lmid = -7.0f;
+    state.maxref = 8.0f;
+    state.minref = -8.0f;
+
+    /* Unbalanced outer-only sync (+3/-3) with DC offset (matches P25p1 characteristic imbalance). */
+    float dc = 0.5f;
+    for (int i = 0; i < 11; i++) {
+        dsd_symbol_history_push(&state, 3.0f + dc);
+    }
+    for (int i = 0; i < 13; i++) {
+        dsd_symbol_history_push(&state, -3.0f + dc);
+    }
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, &state, 24);
+    check_int("center_only result", DSD_WARM_START_OK, result);
+    check_float("center", dc, state.center, FLOAT_TOL);
+
+    /* Verify other thresholds are untouched. */
+    check_float("max unchanged", 9.0f, state.max, FLOAT_TOL);
+    check_float("min unchanged", -9.0f, state.min, FLOAT_TOL);
+    check_float("umid unchanged", 7.0f, state.umid, FLOAT_TOL);
+    check_float("lmid unchanged", -7.0f, state.lmid, FLOAT_TOL);
+    check_float("maxref unchanged", 8.0f, state.maxref, FLOAT_TOL);
+    check_float("minref unchanged", -8.0f, state.minref, FLOAT_TOL);
+
+    dsd_symbol_history_free(&state);
+    printf("test_center_only_warm_start: passed\n\n");
+}
+
+/**
+ * @brief Test center-only warm-start remains robust under a large DC bias.
+ */
+static void
+test_center_only_large_bias(void) {
+    printf("=== test_center_only_large_bias ===\n");
+
+    struct dsd_state state;
+    memset(&state, 0, sizeof(state));
+
+    struct dsd_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.msize = 64;
+
+    dsd_symbol_history_init(&state, 64);
+
+    /* DC bias large enough that both clusters are positive. */
+    float dc = 10.0f;
+    for (int i = 0; i < 10; i++) {
+        dsd_symbol_history_push(&state, 3.0f + dc);
+        dsd_symbol_history_push(&state, -3.0f + dc);
+    }
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, &state, 20);
+    check_int("center_only result", DSD_WARM_START_OK, result);
+    check_float("center", dc, state.center, FLOAT_TOL);
+
+    dsd_symbol_history_free(&state);
+    printf("test_center_only_large_bias: passed\n\n");
+}
+
+/**
  * @brief Test warm-start returns appropriate error when history is insufficient.
  */
 static void
@@ -393,6 +477,8 @@ main(void) {
     test_history_wraparound();
     test_warm_start_ideal();
     test_warm_start_dc_offset();
+    test_center_only_warm_start();
+    test_center_only_large_bias();
     test_warm_start_insufficient_history();
     test_warm_start_degenerate();
     test_warm_start_various_sync_lengths();
