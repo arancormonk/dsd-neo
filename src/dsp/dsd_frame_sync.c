@@ -1165,6 +1165,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     opts->inverted_ysf = 0;
                     state->lastsynctype = 30;
+                    /* Warm-start slicer thresholds for improved FICH decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
                     return (30);
                 } else if (strcmp(synctest20, INV_FUSION_SYNC) == 0) {
                     printFrameSync(opts, state, "-YSF ", synctest_pos + 1, modulation);
@@ -1174,6 +1176,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     opts->inverted_ysf = 1;
                     state->lastsynctype = 31;
+                    /* Warm-start slicer thresholds for improved FICH decode */
+                    dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
                     return (31);
                 }
             }
