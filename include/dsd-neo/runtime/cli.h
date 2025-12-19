@@ -37,8 +37,23 @@ extern "C" {
  */
 int dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc);
 
-/** @brief Print the CLI usage/help text. */
+/** @brief Print the CLI usage/help text and exit(0). */
 void dsd_cli_usage(void);
+
+/**
+ * @brief Run the DMR TIII LCN calculator one-shot utility.
+ *
+ * Parses frequencies from a CSV file and emits an LCN mapping to stdout.
+ * Uses environment variables for optional configuration:
+ *   - DSD_NEO_DMR_T3_STEP_HZ: Override inferred channel step
+ *   - DSD_NEO_DMR_T3_CC_FREQ: Anchor CC frequency
+ *   - DSD_NEO_DMR_T3_CC_LCN: Anchor CC LCN
+ *   - DSD_NEO_DMR_T3_START_LCN: Starting LCN when no anchor
+ *
+ * @param path Path to CSV file containing frequencies.
+ * @return 0 on success, non-zero on error.
+ */
+int dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path);
 
 /** @brief Enable FTZ/DAZ CPU modes when requested via env. */
 void dsd_bootstrap_enable_ftz_daz_if_enabled(void);

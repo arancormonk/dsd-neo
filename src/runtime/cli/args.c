@@ -25,12 +25,6 @@
 // Local helpers --------------------------------------------------------------
 static void dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state);
 
-void
-dsd_cli_usage(void) {
-    // Delegate to original full help in apps/dsd-cli/main.c to maintain parity
-    usage();
-}
-
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
@@ -240,9 +234,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (calc_start_cli) {
             dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
         }
-        // Run via existing helper in main.c
-        extern int run_t3_lcn_calc_from_csv(const char* path);
-        int rc = run_t3_lcn_calc_from_csv(calc_csv_cli);
+        // Run LCN calculator (now in runtime)
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);
         if (out_oneshot_rc) {
             *out_oneshot_rc = rc;
         }
@@ -251,8 +244,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 
     // Environment fallback
     if (calc_csv_env && *calc_csv_env) {
-        extern int run_t3_lcn_calc_from_csv(const char* path);
-        int rc = run_t3_lcn_calc_from_csv(calc_csv_env);
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_env);
         if (out_oneshot_rc) {
             *out_oneshot_rc = rc;
         }

@@ -459,8 +459,6 @@ void noCarrier(dsd_opts* opts, dsd_state* state);
 void initOpts(dsd_opts* opts);
 /** @brief Initialize decoder runtime state to defaults. */
 void initState(dsd_state* state);
-/** @brief Print CLI usage help text. */
-void usage();
 /** @brief Control live scanning/trunking loop across control channels. */
 void liveScanner(dsd_opts* opts, dsd_state* state);
 /** @brief Release resources and exit the program. */
