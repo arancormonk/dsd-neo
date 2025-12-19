@@ -18,7 +18,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/synctype.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -1205,8 +1205,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
 
     //DSTAR
-    if (lls == 6 || lls == 7 || lls == 18 || lls == 19) {
-        printw("| %s ", SyncTypes[lls]);
+    if (DSD_SYNC_IS_DSTAR(lls)) {
+        printw("| %s ", dsd_synctype_to_string(lls));
         printw("\n");
         printw("| RPT2: %s", state->dstar_rpt2);
         printw(" RPT1: %s", state->dstar_rpt1);

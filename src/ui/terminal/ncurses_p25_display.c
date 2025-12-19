@@ -11,7 +11,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/synctype.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -147,8 +147,8 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         /* Current vs previous sync types (helps spot stuck transitions) */
         int cur = lls;
         int prev = state->lastsynctype;
-        const char* cur_s = (cur >= 0 && cur < 44) ? SyncTypes[cur] : "-";
-        const char* prev_s = (prev >= 0 && prev < 44) ? SyncTypes[prev] : "-";
+        const char* cur_s = dsd_synctype_to_string(cur);
+        const char* prev_s = dsd_synctype_to_string(prev);
         printw("| Sync: cur:%s(%d) prev:%s(%d)\n", cur_s, cur, prev_s, prev);
         lines++;
 

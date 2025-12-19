@@ -17,6 +17,7 @@ target_sources(dsd-neo_core PRIVATE
   util/dsd_events.c
   util/dsd_alias.c
   util/dsd_reset.c
+  util/synctype.c
   file/dsd_file.c
   file/dsd_import.c
   gps/dsd_gps.c

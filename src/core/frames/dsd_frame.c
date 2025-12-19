@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #if !defined(NULL)
 #define NULL 0
 #endif
@@ -81,21 +82,21 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     }
 
     //NXDN FSW
-    if ((state->synctype == 28) || (state->synctype == 29)) {
+    if (DSD_SYNC_IS_NXDN(state->synctype)) {
         //MBEout restored, is not handled internally by nxdn_frame.c
         nxdn_frame(opts, state);
         return;
     }
 
     //DSTAR
-    else if ((state->synctype == 6) || (state->synctype == 7)) {
+    else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_DSTAR_VOICE_NEG)) {
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
         sprintf(state->fsubtype, " VOICE        ");
         processDSTAR(opts, state);
         return;
-    } else if ((state->synctype == 18) || (state->synctype == 19)) {
+    } else if ((state->synctype == DSD_SYNC_DSTAR_HD_POS) || (state->synctype == DSD_SYNC_DSTAR_HD_NEG)) {
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
@@ -104,8 +105,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         return;
     }
     //Start DMR Types
-    else if ((state->synctype >= 10 && state->synctype <= 13) || (state->synctype == 32) || (state->synctype == 33)
-             || (state->synctype == 34)) //32-34 DMR MS and RC
+    else if (DSD_SYNC_IS_DMR(state->synctype)) //BS 10-13, MS voice/data 32-33, RC 34
     {
 
         //print manufacturer strings to branding, disabled 0x10 moto other systems can use that fid set
@@ -143,11 +143,12 @@ processFrame(dsd_opts* opts, dsd_state* state) {
                 //fprintf (stderr,"inlvl: %2i%% ", (int)state->max / 164);
             }
         }
-        if ((state->synctype == 11) || (state->synctype == 12) || (state->synctype == 32)) //DMR Voice Modes
+        if ((state->synctype == DSD_SYNC_DMR_BS_VOICE_NEG) || (state->synctype == DSD_SYNC_DMR_BS_VOICE_POS)
+            || (state->synctype == DSD_SYNC_DMR_MS_VOICE)) //DMR Voice Modes
         {
 
             sprintf(state->fsubtype, " VOICE        ");
-            if (opts->dmr_stereo == 0 && state->synctype < 32) {
+            if (opts->dmr_stereo == 0 && state->synctype < DSD_SYNC_DMR_MS_VOICE) {
                 sprintf(state->slot1light, " slot1 ");
                 sprintf(state->slot2light, " slot2 ");
                 //we can safely open MBE on any MS or mono handling
@@ -282,7 +283,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         } else if (state->synctype == 76 || state->synctype == 77) {
         } //Not available yet
         //   processM17BRT(opts, state); //Not available yet
-        else if (state->synctype == 86 || state->synctype == 87) {
+        else if (state->synctype == DSD_SYNC_M17_PKT_POS || state->synctype == DSD_SYNC_M17_PKT_NEG) {
             processM17PKT(opts, state);
         } else {
             processM17LSF(opts, state);
@@ -290,7 +291,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         return;
     }
     //P25 P2
-    else if ((state->synctype == 35) || (state->synctype == 36)) {
+    else if (DSD_SYNC_IS_P25P2(state->synctype)) {
         //relocate MBEout to inside frame handling
         processP2(opts, state);
         return;

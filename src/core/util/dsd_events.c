@@ -12,7 +12,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
-#include <dsd-neo/core/synctype.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/git_ver.h>
 
 // Safe bounded copy helper that tolerates potential overlap
@@ -700,10 +700,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     }
 
     //system type string (P25, DMR, etc)
-    const char* sys_string = "Digital";
-    if (state->lastsynctype != -1) {
-        sys_string = SyncTypes[state->lastsynctype];
-    }
+    const char* sys_string = dsd_synctype_to_string(state->lastsynctype);
 
     //date and time strings
     char timestr[9];
