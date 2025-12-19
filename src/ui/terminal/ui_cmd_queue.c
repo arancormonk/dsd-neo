@@ -420,10 +420,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                 // Set symbol timing dynamically based on CC type and actual demod rate
                 int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-#ifdef USE_RTLSDR
-                int demod_rate = (int)rtl_stream_output_rate(NULL);
-#else
                 int demod_rate = 0;
+#ifdef USE_RTLSDR
+                if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
+                    demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+                }
 #endif
                 state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
                 state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
@@ -523,10 +524,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             state->last_cc_sync_time = time(NULL);
             // Set symbol timing dynamically based on CC type and actual demod rate
             if (state->p25_cc_is_tdma == 0) {
-#ifdef USE_RTLSDR
-                int demod_rate_tune = (int)rtl_stream_output_rate(NULL);
-#else
                 int demod_rate_tune = 0;
+#ifdef USE_RTLSDR
+                if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
+                    demod_rate_tune = (int)rtl_stream_output_rate(g_rtl_ctx);
+                }
 #endif
                 state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate_tune);
                 state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
@@ -639,10 +641,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                 // Set symbol timing dynamically based on CC type and actual demod rate
                 int sym_rate_roll = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-#ifdef USE_RTLSDR
-                int demod_rate_roll = (int)rtl_stream_output_rate(NULL);
-#else
                 int demod_rate_roll = 0;
+#ifdef USE_RTLSDR
+                if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
+                    demod_rate_roll = (int)rtl_stream_output_rate(g_rtl_ctx);
+                }
 #endif
                 state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate_roll, demod_rate_roll);
                 state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);

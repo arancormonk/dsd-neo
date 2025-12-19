@@ -40,6 +40,23 @@ extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 #include <stdint.h>
 #include <stdlib.h>
 
+static inline void
+dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+
+    int demod_rate = 0;
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
+        demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    }
+#endif
+
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+}
+
 /* Modulation auto-detect state (file scope for reset access).
  * Vote counters and Hamming distance tracking for C4FM/QPSK/GFSK switching.
  * These are atomic because trunk_tune_to_freq() resets them from the tuning
@@ -1562,12 +1579,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     /* Force GFSK mode and stable symbol timing for DMR unless user locked demod otherwise */
                     if (!opts->mod_cli_lock || opts->mod_gfsk) {
                         state->rf_mod = 2; /* GFSK */
-                        if (state->samplesPerSymbol != 10) {
-                            state->samplesPerSymbol = 10;
-                        }
-                        if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                            state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
-                        }
+                        dmr_set_symbol_timing(opts, state);
                     }
                     if (opts->inverted_dmr == 0) {
                         // data frame
@@ -1605,12 +1617,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->directmode = 1; //Direct mode
                     if (!opts->mod_cli_lock || opts->mod_gfsk) {
                         state->rf_mod = 2;
-                        if (state->samplesPerSymbol != 10) {
-                            state->samplesPerSymbol = 10;
-                        }
-                        if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                            state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
-                        }
+                        dmr_set_symbol_timing(opts, state);
                     }
                     if (opts->inverted_dmr == 0) {
                         // data frame
@@ -1682,12 +1689,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->directmode = 0;
                     if (!opts->mod_cli_lock || opts->mod_gfsk) {
                         state->rf_mod = 2;
-                        if (state->samplesPerSymbol != 10) {
-                            state->samplesPerSymbol = 10;
-                        }
-                        if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                            state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
-                        }
+                        dmr_set_symbol_timing(opts, state);
                     }
                     if (opts->inverted_dmr == 0) {
                         // voice frame
@@ -1730,12 +1732,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     {
                         if (!opts->mod_cli_lock || opts->mod_gfsk) {
                             state->rf_mod = 2;
-                            if (state->samplesPerSymbol != 10) {
-                                state->samplesPerSymbol = 10;
-                            }
-                            if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                                state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
-                            }
+                            dmr_set_symbol_timing(opts, state);
                         }
                         // voice frame
                         sprintf(state->ftype, "DMR ");
@@ -1773,12 +1770,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     {
                         if (!opts->mod_cli_lock || opts->mod_gfsk) {
                             state->rf_mod = 2;
-                            if (state->samplesPerSymbol != 10) {
-                                state->samplesPerSymbol = 10;
-                            }
-                            if (state->symbolCenter < 2 || state->symbolCenter > 8) {
-                                state->symbolCenter = 4; /* (sps-1)/2 for sps=10 */
-                            }
+                            dmr_set_symbol_timing(opts, state);
                         }
                         // voice frame
                         sprintf(state->ftype, "DMR ");
@@ -2101,12 +2093,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     // fprintf (stderr,"Press CTRL + C to close.\n");
                 }
 
-                /* Multi-rate SPS hunting: cycle through different symbol rates when no sync found.
-                 * This enables auto-detection of protocols with different baud rates:
-                 * - SPS=10 (4800 baud): P25p1, DMR, YSF, DSTAR, NXDN96, M17
-                 * - SPS=20 (2400 baud): NXDN48, dPMR
-                 * - SPS=5 (9600 baud): ProVoice/EDACS
-                 * - SPS=8 (6000 baud): P25p2, X2-TDMA
+                /* Multi-rate SPS hunting: cycle through common symbol rates when no sync found.
+                 * Tries 4800/2400/9600/6000 symbols/s (example SPS @48 kHz: 10/20/5/8).
                  * Only cycle if in auto mode and no carrier detected. */
                 if (state->carrier == 0 && !opts->mod_cli_lock) {
                     state->sps_hunt_counter++;
@@ -2118,22 +2106,21 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         int has_9600 = (opts->frame_provoice == 1);
                         int has_6000 = (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
 
-                        /* Cycle through SPS values based on enabled protocols */
-                        static const int sps_cycle[] = {10, 20, 5, 8};
-                        static const int sps_center[] = {4, 9, 2, 3};
+                        /* Cycle through symbol rates based on enabled protocols */
+                        static const int sym_rate_cycle[] = {4800, 2400, 9600, 6000};
                         int next_idx = (state->sps_hunt_idx + 1) % 4;
 
-                        /* Skip SPS values for protocols not enabled */
+                        /* Skip rates for protocols not enabled */
                         for (int tries = 0; tries < 4; tries++) {
-                            int sps = sps_cycle[next_idx];
+                            int sym_rate = sym_rate_cycle[next_idx];
                             int skip = 0;
-                            if (sps == 20 && !has_2400) {
+                            if (sym_rate == 2400 && !has_2400) {
                                 skip = 1;
                             }
-                            if (sps == 5 && !has_9600) {
+                            if (sym_rate == 9600 && !has_9600) {
                                 skip = 1;
                             }
-                            if (sps == 8 && !has_6000) {
+                            if (sym_rate == 6000 && !has_6000) {
                                 skip = 1;
                             }
                             if (!skip) {
@@ -2144,14 +2131,24 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
                         if (next_idx != state->sps_hunt_idx) {
                             state->sps_hunt_idx = next_idx;
-                            /* Scale by wav_interpolator to handle non-48kHz input rates.
-                             * At 96kHz input, wav_interpolator=2, so SPS values double. */
+                            /* Compute SPS from actual demodulator output rate when available (RTL path),
+                             * otherwise fall back to WAV interpolator scaling relative to 48 kHz. */
+                            int demod_rate = 0;
+#ifdef USE_RTLSDR
+                            if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
+                                demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+                            }
+#endif
                             int interp = opts->wav_interpolator > 0 ? opts->wav_interpolator : 1;
-                            state->samplesPerSymbol = sps_cycle[next_idx] * interp;
-                            state->symbolCenter = sps_center[next_idx] * interp;
+                            if (demod_rate <= 0 && opts->wav_decimator > 0) {
+                                demod_rate = opts->wav_decimator * interp;
+                            }
+                            int sym_rate = sym_rate_cycle[next_idx];
+                            state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
+                            state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
                             if (opts->verbose > 1) {
-                                fprintf(stderr, "SPS hunt: trying %d sps (base=%d, interp=%d)\n",
-                                        state->samplesPerSymbol, sps_cycle[next_idx], interp);
+                                fprintf(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol,
+                                        sym_rate, demod_rate);
                             }
                         }
                     }

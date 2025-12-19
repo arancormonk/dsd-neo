@@ -744,14 +744,24 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
         // Compute CC TED SPS dynamically based on actual demodulator output rate.
         // P25P1 CC = 4800 sym/s, P25P2 TDMA CC = 6000 sym/s.
         int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-        int demod_rate = (int)rtl_stream_output_rate(NULL);
+        int demod_rate = 0;
+#ifdef USE_RTLSDR
+        if (g_rtl_ctx) {
+            demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+        }
+#endif
         int cc_sps = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
         trunk_tune_to_cc(opts, state, cc, cc_sps);
     }
 
     // Set symbol timing for CC based on CC type and actual demodulator rate.
     // samplesPerSymbol is used by the legacy symbol slicer code.
-    int demod_rate = (int)rtl_stream_output_rate(NULL);
+    int demod_rate = 0;
+#ifdef USE_RTLSDR
+    if (g_rtl_ctx) {
+        demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    }
+#endif
     if (state->p25_cc_is_tdma == 0) {
         // P25P1 CC: 4800 sym/s
         state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
@@ -791,7 +801,12 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     // channel, causing decode failures. The symptom is: first P25P2 tune works,
     // but subsequent voice channel grants fail to lock with tanking EVM/SNR.
     // Only reset for P25P2 (ted_sps matching the TDMA symbol rate), not P25P1 or other modes.
-    int p25p2_demod_rate = (int)rtl_stream_output_rate(NULL);
+    int p25p2_demod_rate = 0;
+#ifdef USE_RTLSDR
+    if (g_rtl_ctx) {
+        p25p2_demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    }
+#endif
     int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, p25p2_demod_rate);
     if (ted_sps == p25p2_sps) {
         p25_p2_frame_reset();
