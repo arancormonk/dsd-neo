@@ -401,21 +401,10 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 opts->trunk_is_tuned = 0;
                 state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                 state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-                if (opts->use_rigctl == 1) {
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
+                {
                     long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    SetFreq(opts->rigctl_sockfd, f);
+                    io_control_set_freq(opts, state, f);
                 }
-#ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL) {
-                    if (state->rtl_ctx) {
-                        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                        rtl_stream_tune(state->rtl_ctx, (uint32_t)f);
-                    }
-                }
-#endif
                 state->last_cc_sync_time = time(NULL);
                 state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
                 // Set symbol timing dynamically based on CC type and actual demod rate
@@ -501,26 +490,13 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
             state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
 
-            // Rigctl retune
-            if (opts->p25_trunk == 1 && opts->use_rigctl == 1) {
+            // Retune to CC via io/control API
+            if (opts->p25_trunk == 1) {
                 noCarrier(opts, state);
-                if (opts->setmod_bw != 0) {
-                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                }
                 long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                SetFreq(opts->rigctl_sockfd, f);
+                io_control_set_freq(opts, state, f);
                 state->trunk_cc_freq = f;
             }
-#ifdef USE_RTLSDR
-            if (opts->p25_trunk == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
-                noCarrier(opts, state);
-                if (state->rtl_ctx) {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    rtl_stream_tune(state->rtl_ctx, (uint32_t)f);
-                    state->trunk_cc_freq = f;
-                }
-            }
-#endif
             state->last_cc_sync_time = time(NULL);
             // Set symbol timing dynamically based on CC type and actual demod rate
             if (state->p25_cc_is_tdma == 0) {
@@ -588,19 +564,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 if (opts->p25_prefer_candidates == 1) {
                     long cand = 0;
                     if (p25_sm_next_cc_candidate(state, &cand)) {
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd, cand);
-                        }
-#ifdef USE_RTLSDR
-                        if (opts->audio_in_type == AUDIO_IN_RTL) {
-                            if (state->rtl_ctx) {
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)cand);
-                            }
-                        }
-#endif
+                        io_control_set_freq(opts, state, cand);
                         LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
                         state->last_cc_sync_time = time(NULL);
                         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -620,19 +584,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     }
                 }
                 if (state->trunk_lcn_freq[state->lcn_freq_roll] != 0) {
-                    if (opts->use_rigctl == 1) {
-                        if (opts->setmod_bw != 0) {
-                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                        }
-                        SetFreq(opts->rigctl_sockfd, state->trunk_lcn_freq[state->lcn_freq_roll]);
-                    }
-#ifdef USE_RTLSDR
-                    if (opts->audio_in_type == AUDIO_IN_RTL) {
-                        if (state->rtl_ctx) {
-                            rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
-                        }
-                    }
-#endif
+                    io_control_set_freq(opts, state, state->trunk_lcn_freq[state->lcn_freq_roll]);
                     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n",
                              (double)state->trunk_lcn_freq[state->lcn_freq_roll] / 1000000);
                 }

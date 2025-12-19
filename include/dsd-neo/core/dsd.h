@@ -1255,6 +1255,19 @@ void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted
  */
 void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 
+/**
+ * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping).
+ *
+ * This is the canonical way for UI and non-trunking code to request frequency changes.
+ * For trunking voice/CC tuning, use trunk_tune_to_freq() or trunk_tune_to_cc() instead.
+ *
+ * @param opts Decoder options with tuning configuration.
+ * @param state Decoder state (required for RTL tuning, may be NULL for rigctl-only).
+ * @param freq Target frequency in Hz.
+ * @return 0 on success, -1 on error.
+ */
+int io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
+
 //initialize static float filter memory
 /** @brief Initialize static root-raised-cosine filter memory. */
 void init_rrc_filter_memory();

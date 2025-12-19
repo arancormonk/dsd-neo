@@ -1432,35 +1432,11 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
                     //tune to the current rest channel so we can observe its channel status csbks for the TG on hold
                     if (state->trunk_cc_freq != 0) {
-                        //RIGCTL
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            SetFreq(opts->rigctl_sockfd, state->trunk_cc_freq);
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                            opts->p25_is_tuned = 0;
-                            state->last_cc_sync_time = time(NULL);
-                            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                            dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-                        }
-
-                        //rtl
-                        else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-                            if (state->rtl_ctx) {
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_cc_freq);
-                            }
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                            opts->p25_is_tuned = 0;
-                            dsd_mark_cc_sync(state);
-                            dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-#endif
-                        }
+                        // Use centralized io/control tuning API
+                        trunk_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+                        opts->p25_is_tuned = 0;
+                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+                        dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                     }
                 }
             }
@@ -1506,35 +1482,11 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
                     //tune to the current rest channel so we can observe its channel status csbks for the TG on hold
                     if (state->trunk_cc_freq != 0) {
-                        //RIGCTL
-                        if (opts->use_rigctl == 1) {
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            SetFreq(opts->rigctl_sockfd, state->trunk_cc_freq);
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                            opts->p25_is_tuned = 0;
-                            dsd_mark_cc_sync(state);
-                            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                            dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-                        }
-
-                        //rtl
-                        else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-                            if (state->rtl_ctx) {
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_cc_freq);
-                            }
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                            opts->p25_is_tuned = 0;
-                            dsd_mark_cc_sync(state);
-                            dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-#endif
-                        }
+                        // Use centralized io/control tuning API
+                        trunk_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+                        opts->p25_is_tuned = 0;
+                        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+                        dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                     }
                 }
             }

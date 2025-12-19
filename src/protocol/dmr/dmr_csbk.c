@@ -2127,84 +2127,25 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                                 if (state->trunk_chan_map[j + 1] != 0) //if we have a valid frequency
                                 {
-                                    //RIGCTL
-                                    if (opts->use_rigctl == 1) {
-
-                                        //may need the code below to TG hold (just in case SLC comes before a VLC or a VC6 EMB and immediately goes to the rest channel)
-                                        //disable or tweak code below if these are reversed somehow or causes issues
-                                        if (state->tg_hold != 0) {
-                                            if ((j & 1) == 0) //slot 1 LSN
-                                            {
-                                                state->lasttg = t_tg[j];
-                                                // state->lastsrc = source;
-                                            } else //slot 2 LSN
-                                            {
-                                                state->lasttgR = t_tg[j];
-                                                // state->lastsrcR = source;
-                                            }
-                                            //end TG set on tune
+                                    //DMR-specific TG assignment for TG hold
+                                    if (state->tg_hold != 0) {
+                                        if ((j & 1) == 0) //slot 1 LSN
+                                        {
+                                            state->lasttg = t_tg[j];
+                                        } else //slot 2 LSN
+                                        {
+                                            state->lasttgR = t_tg[j];
                                         }
-                                        if (GetCurrentFreq(opts->rigctl_sockfd) != state->trunk_chan_map[j + 1]) {
-                                            dmr_reset_blocks(
-                                                opts,
-                                                state); //reset all block gathering since we are tuning away from current frequency
-                                        }
-                                        if (opts->setmod_bw != 0) {
-                                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                        }
-                                        SetFreq(opts->rigctl_sockfd, state->trunk_chan_map[j + 1]);
-                                        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] =
-                                            state->trunk_chan_map[j + 1];
-                                        opts->trunk_is_tuned = 1; // set tuned so we don't keep tuning nonstop
-                                        state->last_vc_sync_time = time(NULL);
-                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                                        j = 11; //break loop
                                     }
 
-                                    //rtl
-                                    else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-
-                                        //may need the code below to TG hold (just in case SLC comes before a VLC or a VC6 EMB and immediately goes to the rest channel)
-                                        //disable or tweak code below if these are reversed somehow or causes issues
-                                        if (state->tg_hold != 0) {
-                                            if ((j & 1) == 0) //slot 1 LSN
-                                            {
-                                                state->lasttg = t_tg[j];
-                                                // state->lastsrc = source;
-                                            } else //slot 2 LSN
-                                            {
-                                                state->lasttgR = t_tg[j];
-                                                // state->lastsrcR = source;
-                                            }
-                                            //end TG set on tune
-                                        }
-                                        uint32_t temp = (uint32_t)state->trunk_chan_map[j + 1];
-                                        if (opts->rtlsdr_center_freq != temp) {
-                                            dmr_reset_blocks(
-                                                opts,
-                                                state); //reset all block gathering since we are tuning away from current frequency
-                                            if (state->rtl_ctx) {
-                                                rtl_stream_tune(
-                                                    state->rtl_ctx,
-                                                    (uint32_t)state->trunk_chan_map
-                                                        [j
-                                                         + 1]); //unlike rigctl, using this actually interrupts signal decodes (rtl_clean_queue)
-                                            }
-                                            //debug print for tuning verification
-                                            // fprintf (stderr, "\n RTL LSN/TG to tune to: %d - %d", j+1, t_tg[j]);
-                                        }
-                                        // else fprintf (stderr, "\n DONT RTL LSN/TG to tune to: %d - %d", j+1, t_tg[j]); //debug
-                                        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] =
-                                            state->trunk_chan_map[j + 1];
-                                        opts->trunk_is_tuned = 1;
-                                        state->last_vc_sync_time = time(NULL);
-                                        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-                                        j = 11; //break loop
-#endif
+                                    // Reset blocks if tuning away
+                                    if (opts->rtlsdr_center_freq != (uint32_t)state->trunk_chan_map[j + 1]) {
+                                        dmr_reset_blocks(opts, state);
                                     }
+
+                                    // Use centralized io/control tuning API
+                                    trunk_tune_to_freq(opts, state, state->trunk_chan_map[j + 1], 0);
+                                    j = 11; //break loop
                                 }
                             }
                         }
@@ -2506,38 +2447,10 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         && (strcmp(mode, "DE") != 0)) {
                         if (state->trunk_chan_map[lcn] != 0) //if we have a valid frequency
                         {
-                            //RIGCTL
-                            if (opts->use_rigctl == 1) {
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                if (opts->setmod_bw != 0) {
-                                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                }
-                                SetFreq(opts->rigctl_sockfd, state->trunk_chan_map[lcn]);
-                                state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
-                                opts->trunk_is_tuned = 1; //set tuned so we don't keep tuning nonstop
-                                state->is_con_plus = 1;   //flag on
-                                state->last_vc_sync_time = time(
-                                    NULL); //bugfix: set sync here so we don't immediately tune back to CC constantly.
-                                dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-                            }
-
-                            //rtl
-                            else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                if (state->rtl_ctx) {
-                                    rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_chan_map[lcn]);
-                                }
-                                state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
-                                opts->trunk_is_tuned = 1; //set tuned so we don't keep tuning nonstop
-                                state->is_con_plus = 1;   //flag on
-                                state->last_vc_sync_time = time(
-                                    NULL); //bugfix: set sync here so we don't immediately tune back to CC constantly.
-                                dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
-#endif
-                            }
+                            // Use centralized io/control tuning API
+                            trunk_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
+                            state->is_con_plus = 1;        //flag on
+                            dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                         }
                     }
                 }

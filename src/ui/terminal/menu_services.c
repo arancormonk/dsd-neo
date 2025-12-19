@@ -669,11 +669,8 @@ svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     if (!opts) {
         return -1;
     }
-    opts->rtlsdr_center_freq = hz;
-    if (state && state->rtl_ctx) {
-        rtl_stream_tune(state->rtl_ctx, hz);
-    }
-    return 0;
+    // Use centralized io/control tuning API for both RTL and rigctl
+    return io_control_set_freq(opts, state, (long int)hz);
 }
 
 int

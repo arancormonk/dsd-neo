@@ -1293,36 +1293,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
-                        if (opts->use_rigctl == 1) {
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd,
-                                    state->trunk_lcn_freq[lcn - 1]); //minus one because the lcn index starts at zero
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, group, lcn);
-                            }
-                        }
-
-                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                        {
-#ifdef USE_RTLSDR
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (state->rtl_ctx) {
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                            }
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, group, lcn);
-                            }
-#endif
+                        // Use centralized io/control tuning API (lcn index starts at zero)
+                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        state->edacs_tuned_lcn = lcn;
+                        if (is_digital == 0) {
+                            edacs_analog(opts, state, group, lcn);
                         }
                     }
                 }
@@ -1442,36 +1417,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
-                        if (opts->use_rigctl == 1) {
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd,
-                                    state->trunk_lcn_freq[lcn - 1]); //minus one because the lcn index starts at zero
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, target, lcn);
-                            }
-                        }
-
-                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                        {
-#ifdef USE_RTLSDR
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (state->rtl_ctx) {
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                            }
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, target, lcn);
-                            }
-#endif
+                        // Use centralized io/control tuning API (lcn index starts at zero)
+                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        state->edacs_tuned_lcn = lcn;
+                        if (is_digital == 0) {
+                            edacs_analog(opts, state, target, lcn);
                         }
                     }
                 }
@@ -1577,36 +1527,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
-                        if (opts->use_rigctl == 1) {
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd,
-                                    state->trunk_lcn_freq[lcn - 1]); //minus one because the lcn index starts at zero
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, -1, lcn);
-                            }
-                        }
-
-                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                        {
-#ifdef USE_RTLSDR
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (state->rtl_ctx) {
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                            }
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, -1, lcn);
-                            }
-#endif
+                        // Use centralized io/control tuning API (lcn index starts at zero)
+                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        state->edacs_tuned_lcn = lcn;
+                        if (is_digital == 0) {
+                            edacs_analog(opts, state, -1, lcn);
                         }
                     }
                 }
@@ -1777,42 +1702,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
                         }
 
-                        if (opts->use_rigctl == 1) {
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            //only set bandwidth IF we have an original one to fall back to (experimental, but requires user to set the -B 12000 or -B 24000 value manually)
-                            if (opts->setmod_bw != 0) {
-                                if (is_digital == 0) {
-                                    SetModulation(opts->rigctl_sockfd,
-                                                  7000); //narrower bandwidth, but has issues with dotting sequence
-                                } else {
-                                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                }
-                            }
-
-                            SetFreq(opts->rigctl_sockfd,
-                                    state->trunk_lcn_freq[lcn - 1]); //minus one because our index starts at zero
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, group, lcn);
-                            }
-                        }
-
-                        if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                        {
-#ifdef USE_RTLSDR
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (state->rtl_ctx) {
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                            }
-                            state->edacs_tuned_lcn = lcn;
-                            opts->p25_is_tuned = 1;
-                            if (is_digital == 0) {
-                                edacs_analog(opts, state, group, lcn);
-                            }
-#endif
+                        // Use centralized io/control tuning API (lcn index starts at zero)
+                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        state->edacs_tuned_lcn = lcn;
+                        if (is_digital == 0) {
+                            edacs_analog(opts, state, group, lcn);
                         }
                     }
                 }
@@ -2092,42 +1986,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
                             }
 
-                            if (opts->use_rigctl == 1) {
-                                //only set bandwidth IF we have an original one to fall back to (experimental, but requires user to set the -B 12000 or -B 24000 value manually)
-                                if (opts->setmod_bw != 0) {
-                                    if (is_digital == 0) {
-                                        SetModulation(opts->rigctl_sockfd,
-                                                      7000); //narrower bandwidth, but has issues with dotting sequence
-                                    } else {
-                                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                    }
-                                }
-
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                SetFreq(opts->rigctl_sockfd,
-                                        state->trunk_lcn_freq[lcn - 1]); //minus one because our index starts at zero
-                                state->edacs_tuned_lcn = lcn;
-                                opts->p25_is_tuned = 1;
-                                if (is_digital == 0) {
-                                    edacs_analog(opts, state, target, lcn);
-                                }
-                            }
-
-                            if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                            {
-#ifdef USE_RTLSDR
-                                // ensure any queued audio tail plays before changing channels
-                                dsd_drain_audio_output(opts);
-                                if (state->rtl_ctx) {
-                                    rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                                }
-                                state->edacs_tuned_lcn = lcn;
-                                opts->p25_is_tuned = 1;
-                                if (is_digital == 0) {
-                                    edacs_analog(opts, state, target, lcn);
-                                }
-#endif
+                            // Use centralized io/control tuning API (lcn index starts at zero)
+                            trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                            state->edacs_tuned_lcn = lcn;
+                            if (is_digital == 0) {
+                                edacs_analog(opts, state, target, lcn);
                             }
                         }
                     }
@@ -2233,38 +2096,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
                             }
 
-                            if (opts->use_rigctl == 1) {
-                                //only set bandwidth IF we have an original one to fall back to (experimental, but requires user to set the -B 12000 or -B 24000 value manually)
-                                if (opts->setmod_bw != 0) {
-                                    if (is_digital == 0) {
-                                        SetModulation(opts->rigctl_sockfd,
-                                                      7000); //narrower bandwidth, but has issues with dotting sequence
-                                    } else {
-                                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                    }
-                                }
-
-                                SetFreq(opts->rigctl_sockfd,
-                                        state->trunk_lcn_freq[lcn - 1]); //minus one because our index starts at zero
-                                state->edacs_tuned_lcn = lcn;
-                                opts->p25_is_tuned = 1;
-                                if (is_digital == 0) {
-                                    edacs_analog(opts, state, target, lcn);
-                                }
-                            }
-
-                            if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                            {
-#ifdef USE_RTLSDR
-                                if (state->rtl_ctx) {
-                                    rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                                }
-                                state->edacs_tuned_lcn = lcn;
-                                opts->p25_is_tuned = 1;
-                                if (is_digital == 0) {
-                                    edacs_analog(opts, state, target, lcn);
-                                }
-#endif
+                            // Use centralized io/control tuning API (lcn index starts at zero)
+                            trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                            state->edacs_tuned_lcn = lcn;
+                            if (is_digital == 0) {
+                                edacs_analog(opts, state, target, lcn);
                             }
                         }
                     }
@@ -2557,44 +2393,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                     }
                                 }
 
-                                if (opts->use_rigctl == 1) {
-                                    //only set bandwidth IF we have an original one to fall back to (experimental, but requires user to set the -B 12000 or -B 24000 value manually)
-                                    if (opts->setmod_bw != 0) {
-                                        if (is_digital == 0) {
-                                            SetModulation(
-                                                opts->rigctl_sockfd,
-                                                7000); //narrower bandwidth, but has issues with dotting sequence
-                                        } else {
-                                            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                                        }
-                                    }
-
-                                    // ensure any queued audio tail plays before changing channels
-                                    dsd_drain_audio_output(opts);
-                                    SetFreq(
-                                        opts->rigctl_sockfd,
-                                        state->trunk_lcn_freq[lcn - 1]); //minus one because our index starts at zero
-                                    state->edacs_tuned_lcn = lcn;
-                                    opts->p25_is_tuned = 1;
-                                    if (is_digital == 0) {
-                                        edacs_analog(opts, state, 0, lcn);
-                                    }
-                                }
-
-                                if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
-                                {
-#ifdef USE_RTLSDR
-                                    // ensure any queued audio tail plays before changing channels
-                                    dsd_drain_audio_output(opts);
-                                    if (state->rtl_ctx) {
-                                        rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
-                                    }
-                                    state->edacs_tuned_lcn = lcn;
-                                    opts->p25_is_tuned = 1;
-                                    if (is_digital == 0) {
-                                        edacs_analog(opts, state, 0, lcn);
-                                    }
-#endif
+                                // Use centralized io/control tuning API (lcn index starts at zero)
+                                trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                                state->edacs_tuned_lcn = lcn;
+                                if (is_digital == 0) {
+                                    edacs_analog(opts, state, 0, lcn);
                                 }
                             }
                         }
@@ -2712,50 +2515,20 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
 
     //jump back to CC here
     if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+        // Use centralized io/control tuning API
+        trunk_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+        opts->p25_is_tuned = 0;
 
-        //rigctl
-        if (opts->use_rigctl == 1) {
-            state->lasttg = 0;
-            state->lastsrc = 0;
-            state->payload_algid = 0;
-            state->payload_keyid = 0;
-            state->payload_miP = 0;
-            //reset some strings
-            snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
-            snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
-            snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
-            snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
-            opts->p25_is_tuned = 0;
-            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-            if (opts->setmod_bw != 0) {
-                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-            }
-            // ensure any queued audio tail plays before changing channels
-            dsd_drain_audio_output(opts);
-            SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
-        }
-
-        //rtl
-        else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-            state->lasttg = 0;
-            state->lastsrc = 0;
-            state->payload_algid = 0;
-            state->payload_keyid = 0;
-            state->payload_miP = 0;
-            //reset some strings
-            snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
-            snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
-            snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
-            snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
-            opts->p25_is_tuned = 0;
-            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-            if (state->rtl_ctx) {
-                // ensure any queued audio tail plays before changing channels
-                dsd_drain_audio_output(opts);
-                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->p25_cc_freq);
-            }
-#endif
-        }
+        // EDACS-specific state cleanup
+        state->lasttg = 0;
+        state->lastsrc = 0;
+        state->payload_algid = 0;
+        state->payload_keyid = 0;
+        state->payload_miP = 0;
+        snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
+        snprintf(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
+        snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
+        snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     }
 }

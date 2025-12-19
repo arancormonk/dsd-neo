@@ -225,48 +225,20 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
 
             //tune back to CC here - save about 1-2 seconds
             if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
-                //rigctl
-                if (opts->use_rigctl == 1) {
-                    //extra safeguards due to sync issues with NXDN
-                    memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                    memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                    memset(state->active_channel, 0, sizeof(state->active_channel));
-                    opts->p25_is_tuned = 0;
-                    if (opts->setmod_bw != 0) {
-                        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                    }
-                    SetFreq(opts->rigctl_sockfd, state->p25_cc_freq);
+                // Use centralized io/control tuning API
+                trunk_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+                opts->p25_is_tuned = 0;
 
-                    state->nxdn_last_rid = 0;
-                    state->nxdn_last_tg = 0;
-                    if (state->M == 0) {
-                        state->nxdn_cipher_type = 0;
-                    }
-                    sprintf(state->nxdn_call_type, "%s", "");
-
+                // NXDN-specific state cleanup
+                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+                memset(state->active_channel, 0, sizeof(state->active_channel));
+                state->nxdn_last_rid = 0;
+                state->nxdn_last_tg = 0;
+                if (state->M == 0) {
+                    state->nxdn_cipher_type = 0;
                 }
-                //rtl
-                else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-                    //extra safeguards due to sync issues with NXDN
-                    memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                    memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                    memset(state->active_channel, 0, sizeof(state->active_channel));
-                    opts->p25_is_tuned = 0;
-                    if (state->rtl_ctx) {
-                        rtl_stream_tune(state->rtl_ctx, (uint32_t)state->p25_cc_freq);
-                    }
-
-                    state->nxdn_last_rid = 0;
-                    state->nxdn_last_tg = 0;
-                    if (state->M == 0) {
-                        state->nxdn_cipher_type = 0;
-                    }
-                    sprintf(state->nxdn_call_type, "%s", "");
-#endif
-                }
-
-                state->last_cc_sync_time = now; //allow tuners a second to catch up, particularly rtl input
+                sprintf(state->nxdn_call_type, "%s", "");
             }
 
             // #endif
@@ -751,112 +723,48 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0
             && freq != 0) //if we aren't already on a VC and have a valid frequency
         {
-            //rigctl
-            if (opts->use_rigctl == 1) {
-                //extra safeguards due to sync issues with NXDN
-                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                state->lastsynctype = -1;
-                state->last_cc_sync_time = now;
-                state->last_vc_sync_time = now;
-                //
+            // Use centralized io/control tuning API
+            trunk_tune_to_freq(opts, state, freq, 0);
 
-                if (opts->setmod_bw != 0) {
-                    SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                }
-                SetFreq(opts->rigctl_sockfd, freq);
-                state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                opts->p25_is_tuned = 1; //set to 1 to set as currently tuned so we don't keep tuning nonstop
+            // NXDN-specific state setup
+            memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+            memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+            state->lastsynctype = -1;
 
-                //set rid and tg when we actually tune to it
-                //only assign rid if not spare and not reserved (happens on private calls, unsure of its significance)
-                if ((VoiceCallOption & 0xF) < 4) { //ideally, only want 0, 2, or 3
-                    state->nxdn_last_rid = SourceUnitID;
-                }
-                state->nxdn_last_tg = DestinationID;
-                sprintf(state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(CallType));
-
-                if (CallType == 3) {
-                    state->gi[0] = 1; //Private Call
-                    //unassign these, sometimes, when trunking, these may be reversed by the time listened,
-                    //and this will plant an extra private call in the event_history
-                    state->nxdn_last_rid = 0;
-                    state->nxdn_last_tg = 0;
-                } else {
-                    state->gi[0] = 0; //Group Call
-                }
-
-                //Call String for Per Call WAV File
-                sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
-                if (CCOption & 0x80) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
-                }
-
-                //check the rkey array for a scrambler key value
-                //TGT ID and Key ID could clash though if csv or system has both with different keys
-                if (state->rkey_array[DestinationID] != 0) {
-                    state->R = state->rkey_array[DestinationID];
-                    fprintf(stderr, " %s", KYEL);
-                    fprintf(stderr, " Key Loaded: %lld", state->rkey_array[DestinationID]);
-                    state->payload_miN = state->R; //should be okay to load here, will test
-                }
-                if (state->M == 1) {
-                    state->nxdn_cipher_type = 0x1;
-                }
+            //set rid and tg when we actually tune to it
+            //only assign rid if not spare and not reserved (happens on private calls, unsure of its significance)
+            if ((VoiceCallOption & 0xF) < 4) { //ideally, only want 0, 2, or 3
+                state->nxdn_last_rid = SourceUnitID;
             }
-            //rtl
-            else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-                //extra safeguards due to sync issues with NXDN
-                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                state->lastsynctype = -1;
-                state->last_cc_sync_time = now;
-                state->last_vc_sync_time = now;
-                //
+            state->nxdn_last_tg = DestinationID;
+            sprintf(state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(CallType));
 
-                if (state->rtl_ctx) {
-                    rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-                }
-                state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                opts->p25_is_tuned = 1;
+            if (CallType == 3) {
+                state->gi[0] = 1; //Private Call
+                //unassign these, sometimes, when trunking, these may be reversed by the time listened,
+                //and this will plant an extra private call in the event_history
+                state->nxdn_last_rid = 0;
+                state->nxdn_last_tg = 0;
+            } else {
+                state->gi[0] = 0; //Group Call
+            }
 
-                //set rid and tg when we actually tune to it
-                //only assign rid if not spare and not reserved (happens on private calls, unsure of its significance)
-                if ((VoiceCallOption & 0xF) < 4) { //ideally, only want 0, 2, or 3
-                    state->nxdn_last_rid = SourceUnitID;
-                }
-                state->nxdn_last_tg = DestinationID;
-                sprintf(state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(CallType));
+            //Call String for Per Call WAV File
+            sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
+            if (CCOption & 0x80) {
+                dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
+            }
 
-                if (CallType == 3) {
-                    state->gi[0] = 1; //Private Call
-                    //unassign these, sometimes, when trunking, these may be reversed by the time listened,
-                    //and this will plant an extra private call in the event_history
-                    state->nxdn_last_rid = 0;
-                    state->nxdn_last_tg = 0;
-                } else {
-                    state->gi[0] = 0; //Group Call
-                }
-
-                //Call String for Per Call WAV File
-                sprintf(state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
-                if (CCOption & 0x80) {
-                    dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
-                }
-
-                //check the rkey array for a scrambler key value
-                //TGT ID and Key ID could clash though if csv or system has both with different keys
-                if (state->rkey_array[DestinationID] != 0) {
-                    state->R = state->rkey_array[DestinationID];
-                    fprintf(stderr, " %s", KYEL);
-                    fprintf(stderr, " Key Loaded: %lld", state->rkey_array[DestinationID]);
-                    state->payload_miN = state->R; //should be okay to load here, will test
-                }
-                if (state->M == 1) {
-                    state->nxdn_cipher_type = 0x1;
-                }
-#endif
+            //check the rkey array for a scrambler key value
+            //TGT ID and Key ID could clash though if csv or system has both with different keys
+            if (state->rkey_array[DestinationID] != 0) {
+                state->R = state->rkey_array[DestinationID];
+                fprintf(stderr, " %s", KYEL);
+                fprintf(stderr, " Key Loaded: %lld", state->rkey_array[DestinationID]);
+                state->payload_miN = state->R; //should be okay to load here, will test
+            }
+            if (state->M == 1) {
+                state->nxdn_cipher_type = 0x1;
             }
         }
     }
@@ -1939,58 +1847,21 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                 {
                     //will need to monitor, 1 second may be too long on idas, may need to try 0 or manipulate another way
                     if (state->p25_cc_freq != 0 && ((time(NULL) - state->last_vc_sync_time) > 1) && freq != 0) {
-                        //rigctl
-                        if (opts->use_rigctl == 1) {
-                            //extra safeguards due to sync issues with NXDN
-                            memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                            memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                            state->lastsynctype = -1;
-                            state->last_cc_sync_time = time(NULL);
-                            state->last_vc_sync_time = time(NULL); //should we use this here, or not?
-                            //
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (opts->setmod_bw != 0) {
-                                SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-                            }
-                            SetFreq(opts->rigctl_sockfd, freq);
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                            opts->p25_is_tuned = 1;
-                            //check the rkey array for a scrambler key value
-                            //TGT ID and Key ID could clash though if csv or system has both with different keys
-                            if (state->rkey_array[id] != 0) {
-                                state->R = state->rkey_array[id];
-                            }
-                            if (state->M == 1) {
-                                state->nxdn_cipher_type = 0x1;
-                            }
+                        // Use centralized io/control tuning API
+                        trunk_tune_to_freq(opts, state, freq, 0);
+
+                        // NXDN-specific state setup
+                        memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+                        memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+                        state->lastsynctype = -1;
+
+                        //check the rkey array for a scrambler key value
+                        //TGT ID and Key ID could clash though if csv or system has both with different keys
+                        if (state->rkey_array[id] != 0) {
+                            state->R = state->rkey_array[id];
                         }
-                        //rtl
-                        else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
-                            //extra safeguards due to sync issues with NXDN
-                            memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                            memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                            state->lastsynctype = -1;
-                            state->last_cc_sync_time = time(NULL);
-                            state->last_vc_sync_time = time(NULL); //should we use this here, or not?
-                            //
-                            // ensure any queued audio tail plays before changing channels
-                            dsd_drain_audio_output(opts);
-                            if (state->rtl_ctx) {
-                                rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-                            }
-                            state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-                            opts->p25_is_tuned = 1;
-                            //check the rkey array for a scrambler key value
-                            //TGT ID and Key ID could clash though if csv or system has both with different keys
-                            if (state->rkey_array[id] != 0) {
-                                state->R = state->rkey_array[id];
-                            }
-                            if (state->M == 1) {
-                                state->nxdn_cipher_type = 0x1;
-                            }
-#endif
+                        if (state->M == 1) {
+                            state->nxdn_cipher_type = 0x1;
                         }
                     }
                 }
