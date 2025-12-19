@@ -15,7 +15,7 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <errno.h>
 
-extern "C" volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
+extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 #ifdef USE_RTLSDR
 extern "C" int dsd_rtl_stream_should_exit(void);
 #endif

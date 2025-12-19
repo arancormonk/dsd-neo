@@ -10,7 +10,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
-extern volatile uint8_t exitflag;
+/* exitflag declared in dsd.h, defined in src/runtime/exitflag.c */
 
 static dsd_thread_t g_p25_sm_wd_thread;
 static atomic_int g_p25_sm_wd_running = 0;

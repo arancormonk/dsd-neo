@@ -38,7 +38,7 @@
 
 #include <stdint.h>
 
-// Forward declarations from main file (exit flag shared with core)
+// Shutdown signaling (defined in src/runtime/exitflag.c)
 extern "C" volatile uint8_t exitflag;
 
 // Internal RTL device structure

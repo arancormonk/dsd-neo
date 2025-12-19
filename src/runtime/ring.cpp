@@ -16,7 +16,7 @@
 #include <dsd-neo/runtime/ring.h>
 #include <errno.h>
 
-extern "C" volatile uint8_t exitflag; // defined in apps/dsd-cli/main.c
+extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 
 /**
  * @brief Write up to count samples, blocking until space is available.

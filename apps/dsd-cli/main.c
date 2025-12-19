@@ -54,13 +54,7 @@
 #include <rtl-sdr.h>
 #endif
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-volatile uint8_t exitflag; //fix for issue #136
-#ifdef __cplusplus
-}
-#endif
+/* exitflag is defined in src/runtime/exitflag.c and declared in dsd.h */
 #ifdef USE_RTLSDR
 struct RtlSdrContext* g_rtl_ctx = NULL; /* global orchestrator context */
 #endif

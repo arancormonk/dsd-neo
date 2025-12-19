@@ -6,6 +6,7 @@ target_sources(dsd-neo_runtime PRIVATE
   config_user.cpp
   config_schema.c
   config_expand.c
+  exitflag.c
   log.cpp
   mem.cpp
   comp.c
