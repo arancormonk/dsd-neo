@@ -28,6 +28,9 @@ WINDOW* ui_make_window(int h, int w, int y, int x);
 /** @brief Destroy a window and null the caller's pointer. */
 void ui_destroy_window(WINDOW** win);
 
+/** @brief Commit all pending window updates to the physical screen (double buffering). */
+void ui_commit_frame(void);
+
 /** @brief Set a transient status/footer message (printf-style). */
 void ui_statusf(const char* fmt, ...);
 /** @brief Copy active status into buf when not expired at `now`; returns 1 if copied. */

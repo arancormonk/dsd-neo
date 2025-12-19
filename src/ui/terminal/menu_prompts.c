@@ -309,7 +309,7 @@ ui_prompt_render(void) {
     mvwprintw(win, 1, 2, "%s", title);
     mvwprintw(win, 3, 2, "> %s", g_prompt.buf ? g_prompt.buf : "");
     mvwprintw(win, h - 2, 2, "Enter=OK  Esc/q=Cancel");
-    wrefresh(win);
+    wnoutrefresh(win);
 }
 
 // ---- Help implementations ----
@@ -386,7 +386,7 @@ ui_help_render(void) {
     mvwprintw(hw, 1, 2, "Help:");
     mvwprintw(hw, 3, 2, "%s", t);
     mvwprintw(hw, h - 2, 2, "Press any key to continue...");
-    wrefresh(hw);
+    wnoutrefresh(hw);
 }
 
 // ---- Chooser implementations ----
@@ -527,5 +527,5 @@ ui_chooser_render(void) {
         }
     }
     mvwprintw(win, h - 2, 2, "%s", footer);
-    wrefresh(win);
+    wnoutrefresh(win);
 }

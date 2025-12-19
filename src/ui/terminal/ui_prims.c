@@ -27,7 +27,7 @@ ui_make_window(int h, int w, int y, int x) {
         keypad(win, TRUE);
         wtimeout(win, 0); // non-blocking by default
         box(win, 0, 0);
-        wrefresh(win);
+        wnoutrefresh(win);
     }
     return win;
 }
@@ -38,6 +38,11 @@ ui_destroy_window(WINDOW** win) {
         delwin(*win);
         *win = NULL;
     }
+}
+
+void
+ui_commit_frame(void) {
+    doupdate();
 }
 
 // ---------------- Status message ----------------

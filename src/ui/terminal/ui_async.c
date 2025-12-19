@@ -8,6 +8,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_prims.h>
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -83,6 +84,7 @@ static DSD_THREAD_RETURN_TYPE
                 }
                 // Keep overlays updated each frame
                 ui_menu_tick(g_ui_opts, g_ui_state);
+                ui_commit_frame();
             } else {
                 if (ch == KEY_RESIZE) {
 #if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
@@ -112,6 +114,7 @@ static DSD_THREAD_RETURN_TYPE
                     ncursesPrinter((dsd_opts*)osnap, g_ui_state);
                 }
                 atomic_store(&g_ui_in_context, 0);
+                ui_commit_frame();
                 last_draw_ns = now_ns;
             }
         }

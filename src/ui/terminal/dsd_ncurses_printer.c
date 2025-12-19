@@ -2556,7 +2556,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
     attroff(COLOR_PAIR(4)); //cyan for history
 
-    refresh();
+    wnoutrefresh(stdscr);
 
     // Draw menu overlay last so it sits above base UI
     if (ui_menu_is_open()) {

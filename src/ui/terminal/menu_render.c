@@ -108,7 +108,7 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
     } else {
         ui_status_clear_if_expired(now);
     }
-    wrefresh(menu_win);
+    wnoutrefresh(menu_win);
 }
 
 int
