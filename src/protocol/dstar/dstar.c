@@ -7,9 +7,7 @@
 #include <dsd-neo/protocol/dstar/dstar_const.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
+#include <dsd-neo/runtime/telemetry.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 

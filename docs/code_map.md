@@ -23,6 +23,21 @@ High‑level layout with module responsibilities and libraries. All public heade
 - Responsibilities: config, logging, aligned memory, rings, worker pools, RT scheduling, git version
   - Build files: `src/runtime/CMakeLists.txt`
 
+### Telemetry Hooks (DSP/Protocol → UI)
+
+The runtime module defines telemetry hook interfaces in `include/dsd-neo/runtime/telemetry.h` that allow DSP and protocol code to publish state snapshots without depending on UI internals. DSP and protocol code should include this header rather than UI headers directly.
+
+**Available hooks:**
+
+- `ui_publish_snapshot(state)` — publish demod state for UI rendering
+- `ui_publish_opts_snapshot(opts)` — publish options when they change
+- `ui_request_redraw()` — request UI refresh
+- `ui_publish_both_and_redraw(opts, state)` — convenience combo
+
+**Weak stub pattern:** The runtime provides weak no‑op implementations (`src/runtime/ui_async_stubs.c`) so headless builds and unit tests link without requiring the UI module. When the terminal UI is linked, strong definitions in `src/ui/terminal/` override these stubs.
+
+**Dependency direction:** DSP/Protocol → Runtime (hooks) ← UI (implementations). This keeps DSP UI‑agnostic while allowing state propagation.
+
 ## DSP
 
 - Path: `src/dsp`, `include/dsd-neo/dsp`

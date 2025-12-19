@@ -33,9 +33,7 @@ extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <locale.h>
 #include <stdint.h>
 #include <stdlib.h>

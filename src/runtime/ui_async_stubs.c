@@ -3,14 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-// Weak, no-op stubs for async UI hooks used by hot decode paths.
+// Weak, no-op stubs for telemetry hooks used by hot decode paths.
 // These satisfy unit tests and libraries that do not link the UI module.
 // When the terminal UI is linked, strong definitions in
 // src/ui/terminal/ui_async.c and ui_snapshot.c override these.
 
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
+#include <dsd-neo/runtime/telemetry.h>
 
 #ifdef __GNUC__
 #define DSD_WEAK __attribute__((weak))

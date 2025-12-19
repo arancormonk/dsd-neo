@@ -19,9 +19,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
+#include <dsd-neo/runtime/telemetry.h>
 
 // Clear per-slot audio gates, small audio rings, encryption indicators, and
 // UI call banners for both logical slots. Intended for use on call teardown

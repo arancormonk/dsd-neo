@@ -23,9 +23,8 @@
 #endif
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 #include <math.h>
 
 static inline short

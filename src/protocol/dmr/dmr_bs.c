@@ -15,9 +15,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
+#include <dsd-neo/runtime/telemetry.h>
 
 // #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
 
