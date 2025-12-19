@@ -55,9 +55,6 @@
 #endif
 
 /* exitflag is defined in src/runtime/exitflag.c and declared in dsd.h */
-#ifdef USE_RTLSDR
-struct RtlSdrContext* g_rtl_ctx = NULL; /* global orchestrator context */
-#endif
 
 // Local caches to avoid redundant device I/O in hot paths
 static long int s_last_rigctl_freq = -1;
@@ -150,13 +147,13 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-analog_filter_rate_hz(const dsd_opts* opts) {
+analog_filter_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     if (!opts) {
         return 48000;
     }
 #ifdef USE_RTLSDR
-    if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
-        uint32_t Fs = rtl_stream_output_rate(g_rtl_ctx);
+    if (opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx) {
+        uint32_t Fs = rtl_stream_output_rate(state->rtl_ctx);
         if (Fs > 0) {
             return (int)Fs;
         }
@@ -872,10 +869,10 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
             //rtl
             if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
-                if (g_rtl_ctx) {
+                if (state->rtl_ctx) {
                     uint32_t rf = (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll];
                     if (rf != s_last_rtl_freq) {
-                        rtl_stream_tune(g_rtl_ctx, rf);
+                        rtl_stream_tune(state->rtl_ctx, rf);
                         s_last_rtl_freq = rf;
                     }
                 }
@@ -935,10 +932,10 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 //rtl
                 else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
-                    if (g_rtl_ctx) {
+                    if (state->rtl_ctx) {
                         uint32_t rf = (uint32_t)cc;
                         if (rf != s_last_rtl_freq) {
-                            rtl_stream_tune(g_rtl_ctx, rf);
+                            rtl_stream_tune(state->rtl_ctx, rf);
                             s_last_rtl_freq = rf;
                         }
                     }
@@ -1707,6 +1704,9 @@ initState(dsd_state* state) {
     state->dmr_eq.initialized = 0;
     state->repeat = 0;
 
+    // RTL-SDR stream context (initialized to NULL; lifecycle managed by caller)
+    state->rtl_ctx = NULL;
+
     //Bitmap Filtering Options
     state->audio_smoothing = 0;
 
@@ -2274,12 +2274,12 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 
 #ifdef USE_RTLSDR
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (g_rtl_ctx == NULL) {
-            if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
+        if (state->rtl_ctx == NULL) {
+            if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create RTL stream.\n");
             }
         }
-        if (g_rtl_ctx && rtl_stream_start(g_rtl_ctx) < 0) {
+        if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
             LOG_ERROR("Failed to open RTL-SDR stream.\n");
         }
         opts->rtl_started = 1;
@@ -2454,10 +2454,10 @@ cleanupAndExit(dsd_opts* opts, dsd_state* state) {
 
 #ifdef USE_RTLSDR
     if (opts->rtl_started == 1) {
-        if (g_rtl_ctx) {
-            rtl_stream_stop(g_rtl_ctx);
-            rtl_stream_destroy(g_rtl_ctx);
-            g_rtl_ctx = NULL;
+        if (state->rtl_ctx) {
+            rtl_stream_stop(state->rtl_ctx);
+            rtl_stream_destroy(state->rtl_ctx);
+            state->rtl_ctx = NULL;
         }
     }
 #endif
@@ -2804,7 +2804,7 @@ main(int argc, char** argv) {
     /* Rebuild audio filters after CLI/config/bootstrap may have changed the output rate.
        Base coefficients on the analog monitor sample rate so cutoffs stay correct. */
     {
-        int filter_rate = analog_filter_rate_hz(opts);
+        int filter_rate = analog_filter_rate_hz(opts, state);
         init_audio_filters(state, filter_rate);
     }
 
@@ -3459,12 +3459,12 @@ main(int argc, char** argv) {
 
 #ifdef USE_RTLSDR
         else if (opts->audio_in_type == AUDIO_IN_RTL) {
-            if (g_rtl_ctx == NULL) {
-                if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
+            if (state->rtl_ctx == NULL) {
+                if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                     LOG_ERROR("Failed to create RTL stream.\n");
                 }
             }
-            if (g_rtl_ctx && rtl_stream_start(g_rtl_ctx) < 0) {
+            if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to open RTL-SDR stream.\n");
             }
             opts->rtl_started = 1;

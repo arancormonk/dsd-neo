@@ -2186,9 +2186,9 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                             dmr_reset_blocks(
                                                 opts,
                                                 state); //reset all block gathering since we are tuning away from current frequency
-                                            if (g_rtl_ctx) {
+                                            if (state->rtl_ctx) {
                                                 rtl_stream_tune(
-                                                    g_rtl_ctx,
+                                                    state->rtl_ctx,
                                                     (uint32_t)state->trunk_chan_map
                                                         [j
                                                          + 1]); //unlike rigctl, using this actually interrupts signal decodes (rtl_clean_queue)
@@ -2527,8 +2527,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 #ifdef USE_RTLSDR
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
-                                if (g_rtl_ctx) {
-                                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_chan_map[lcn]);
+                                if (state->rtl_ctx) {
+                                    rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_chan_map[lcn]);
                                 }
                                 state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
                                 opts->trunk_is_tuned = 1; //set tuned so we don't keep tuning nonstop

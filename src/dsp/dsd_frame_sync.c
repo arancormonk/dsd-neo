@@ -48,8 +48,8 @@ dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
 
     int demod_rate = 0;
 #ifdef USE_RTLSDR
-    if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
-        demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
 #endif
 
@@ -2135,8 +2135,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                              * otherwise fall back to WAV interpolator scaling relative to 48 kHz. */
                             int demod_rate = 0;
 #ifdef USE_RTLSDR
-                            if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
-                                demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+                            if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+                                demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
                             }
 #endif
                             int interp = opts->wav_interpolator > 0 ? opts->wav_interpolator : 1;

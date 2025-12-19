@@ -1132,8 +1132,8 @@ rtl_toggle_auto_ppm(void* v) {
 
 void
 rtl_toggle_tuner_autogain(void* v) {
-    UNUSED(v);
-    if (g_rtl_ctx) {
+    UiCtx* c = (UiCtx*)v;
+    if (c && c->state && c->state->rtl_ctx) {
         UiDspPayload p = {.op = UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
         ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
     } else {

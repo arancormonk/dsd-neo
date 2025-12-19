@@ -605,28 +605,27 @@ svc_toggle_inv_m17(dsd_opts* opts) {
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
-extern struct RtlSdrContext* g_rtl_ctx;
 
 int
-svc_rtl_enable_input(dsd_opts* opts) {
-    if (!opts) {
+svc_rtl_enable_input(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
         return -1;
     }
     opts->audio_in_type = AUDIO_IN_RTL;
     /* Ensure an RTL stream is ready immediately when switching inputs. */
-    return svc_rtl_restart(opts);
+    return svc_rtl_restart(opts, state);
 }
 
 int
-svc_rtl_restart(dsd_opts* opts) {
-    if (!opts) {
+svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
         return -1;
     }
     /* Stop and destroy any existing stream context. */
-    if (g_rtl_ctx) {
-        rtl_stream_soft_stop(g_rtl_ctx);
-        rtl_stream_destroy(g_rtl_ctx);
-        g_rtl_ctx = NULL;
+    if (state->rtl_ctx) {
+        rtl_stream_soft_stop(state->rtl_ctx);
+        rtl_stream_destroy(state->rtl_ctx);
+        state->rtl_ctx = NULL;
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
@@ -634,12 +633,12 @@ svc_rtl_restart(dsd_opts* opts) {
     /* If RTL-SDR is the active input, immediately recreate and start the stream
        so changes take effect as soon as the user confirms the setting. */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (rtl_stream_create(opts, &g_rtl_ctx) < 0) {
+        if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
             return -1;
         }
-        if (rtl_stream_start(g_rtl_ctx) < 0) {
-            rtl_stream_destroy(g_rtl_ctx);
-            g_rtl_ctx = NULL;
+        if (rtl_stream_start(state->rtl_ctx) < 0) {
+            rtl_stream_destroy(state->rtl_ctx);
+            state->rtl_ctx = NULL;
             return -1;
         }
         opts->rtl_started = 1;
@@ -649,8 +648,8 @@ svc_rtl_restart(dsd_opts* opts) {
 }
 
 int
-svc_rtl_set_dev_index(dsd_opts* opts, int index) {
-    if (!opts) {
+svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
+    if (!opts || !state) {
         return -1;
     }
     if (index < 0) {
@@ -660,26 +659,26 @@ svc_rtl_set_dev_index(dsd_opts* opts, int index) {
     /* Changing device requires reopen */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)svc_rtl_restart(opts);
+        (void)svc_rtl_restart(opts, state);
     }
     return 0;
 }
 
 int
-svc_rtl_set_freq(dsd_opts* opts, uint32_t hz) {
+svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     if (!opts) {
         return -1;
     }
     opts->rtlsdr_center_freq = hz;
-    if (g_rtl_ctx) {
-        rtl_stream_tune(g_rtl_ctx, hz);
+    if (state && state->rtl_ctx) {
+        rtl_stream_tune(state->rtl_ctx, hz);
     }
     return 0;
 }
 
 int
-svc_rtl_set_gain(dsd_opts* opts, int value) {
-    if (!opts) {
+svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
+    if (!opts || !state) {
         return -1;
     }
     if (value < 0) {
@@ -692,7 +691,7 @@ svc_rtl_set_gain(dsd_opts* opts, int value) {
     /* Manual gain change requires reopen to apply */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)svc_rtl_restart(opts);
+        (void)svc_rtl_restart(opts, state);
     }
     return 0;
 }
@@ -713,8 +712,8 @@ svc_rtl_set_ppm(dsd_opts* opts, int ppm) {
 }
 
 int
-svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
-    if (!opts) {
+svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz) {
+    if (!opts || !state) {
         return -1;
     }
     if (khz != 4 && khz != 6 && khz != 8 && khz != 12 && khz != 16 && khz != 24 && khz != 48) {
@@ -724,7 +723,7 @@ svc_rtl_set_bandwidth(dsd_opts* opts, int khz) {
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)svc_rtl_restart(opts);
+        (void)svc_rtl_restart(opts, state);
     }
     return 0;
 }
@@ -753,12 +752,12 @@ svc_rtl_set_volume_mult(dsd_opts* opts, int mult) {
 }
 
 int
-svc_rtl_set_bias_tee(dsd_opts* opts, int on) {
+svc_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
     opts->rtl_bias_tee = on ? 1 : 0;
-    if (g_rtl_ctx) {
+    if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active */
         return rtl_stream_set_bias_tee(opts->rtl_bias_tee);
     }
@@ -766,14 +765,14 @@ svc_rtl_set_bias_tee(dsd_opts* opts, int on) {
 }
 
 int
-svc_rtltcp_set_autotune(dsd_opts* opts, int on) {
+svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
     opts->rtltcp_autotune = on ? 1 : 0;
     /* Update env so future restarts inherit */
     dsd_setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
-    if (g_rtl_ctx) {
+    if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active */
         rtl_stream_set_rtltcp_autotune(opts->rtltcp_autotune);
     }
@@ -781,14 +780,14 @@ svc_rtltcp_set_autotune(dsd_opts* opts, int on) {
 }
 
 int
-svc_rtl_set_auto_ppm(dsd_opts* opts, int on) {
+svc_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
     opts->rtl_auto_ppm = on ? 1 : 0;
     /* Update env for persistence */
     dsd_setenv("DSD_NEO_AUTO_PPM", on ? "1" : "0", 1);
-    if (g_rtl_ctx) {
+    if (state && state->rtl_ctx) {
         rtl_stream_set_auto_ppm(on ? 1 : 0);
     }
     return 0;

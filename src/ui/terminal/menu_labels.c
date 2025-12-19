@@ -991,7 +991,7 @@ lbl_rtl_auto_ppm(void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     int on = c->opts->rtl_auto_ppm ? 1 : 0;
     /* If stream active, reflect runtime state */
-    if (g_rtl_ctx) {
+    if (c->state && c->state->rtl_ctx) {
         extern int rtl_stream_get_auto_ppm(void);
         on = rtl_stream_get_auto_ppm();
     }
@@ -1001,9 +1001,9 @@ lbl_rtl_auto_ppm(void* v, char* b, size_t n) {
 
 const char*
 lbl_rtl_tuner_autogain(void* v, char* b, size_t n) {
-    UNUSED(v);
+    UiCtx* c = (UiCtx*)v;
     int on = 0;
-    if (g_rtl_ctx) {
+    if (c->state && c->state->rtl_ctx) {
         on = rtl_stream_get_tuner_autogain();
     } else {
         const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");

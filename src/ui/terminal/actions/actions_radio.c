@@ -46,8 +46,8 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         // P25P1 QPSK: 4800 sym/s - compute SPS from actual demod rate
 #ifdef USE_RTLSDR
         int demod_rate = 0;
-        if (g_rtl_ctx) {
-            demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+        if (state->rtl_ctx) {
+            demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
         }
 #else
         int demod_rate = 0;
@@ -70,8 +70,8 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
     // P25P2 TDMA: 6000 sym/s - compute SPS from actual demod rate
 #ifdef USE_RTLSDR
     int demod_rate = 0;
-    if (g_rtl_ctx) {
-        demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    if (state->rtl_ctx) {
+        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
 #else
     int demod_rate = 0;

@@ -1415,12 +1415,6 @@ void LFSR128d(dsd_state* state);
 extern "C" {
 #endif
 
-#ifdef USE_RTLSDR
-/* Orchestrator C shim context pointer (set in main when using rtl_stream_* API) */
-struct RtlSdrContext; /* forward declaration to avoid extra includes here */
-extern struct RtlSdrContext* g_rtl_ctx;
-#endif
-
 //Phase 2 RS/FEC Functions
 /** @brief Correct P25p2 ESS payload using external ezpwd RS(63,35). */
 int ez_rs28_ess(int payload[96], int parity[168]); //ezpwd bridge for FME

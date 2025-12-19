@@ -746,8 +746,8 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
         int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
         int demod_rate = 0;
 #ifdef USE_RTLSDR
-        if (g_rtl_ctx) {
-            demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+        if (state->rtl_ctx) {
+            demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
         }
 #endif
         int cc_sps = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
@@ -758,8 +758,8 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     // samplesPerSymbol is used by the legacy symbol slicer code.
     int demod_rate = 0;
 #ifdef USE_RTLSDR
-    if (g_rtl_ctx) {
-        demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    if (state->rtl_ctx) {
+        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
 #endif
     if (state->p25_cc_is_tdma == 0) {
@@ -803,8 +803,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     // Only reset for P25P2 (ted_sps matching the TDMA symbol rate), not P25P1 or other modes.
     int p25p2_demod_rate = 0;
 #ifdef USE_RTLSDR
-    if (g_rtl_ctx) {
-        p25p2_demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+    if (state->rtl_ctx) {
+        p25p2_demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
     }
 #endif
     int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, p25p2_demod_rate);
@@ -865,8 +865,8 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
         SetFreq(opts->rigctl_sockfd, freq);
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
-        if (g_rtl_ctx) {
-            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
+        if (state->rtl_ctx) {
+            rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
         }
 #endif
     }
@@ -930,8 +930,8 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
             rtl_stream_clear_ted_sps_override();
             rtl_stream_set_ted_sps_no_override(ted_sps);
         }
-        if (g_rtl_ctx) {
-            rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
+        if (state->rtl_ctx) {
+            rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
         }
 #endif
     }

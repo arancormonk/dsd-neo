@@ -38,6 +38,9 @@ typedef struct mbe_parms mbe_parms;
 typedef struct mbe_parms mbe_parms;
 #endif
 
+/* Forward declaration for RTL-SDR stream context (opaque, always present in ABI) */
+struct RtlSdrContext;
+
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 // The dsd_state structure is intentionally organized by functional groups for clarity
@@ -290,7 +293,8 @@ struct dsd_state {
     struct CODEC2* codec2_1600; //M17 halfrate
 #endif
     void* rc2_context;
-    time_t ui_msg_expire; // epoch seconds when ui_msg should stop displaying
+    struct RtlSdrContext* rtl_ctx; // RTL-SDR stream context (NULL when unused; unconditional for ABI stability)
+    time_t ui_msg_expire;          // epoch seconds when ui_msg should stop displaying
     // AES key segments
     unsigned long long int A1[2];
     unsigned long long int A2[2];

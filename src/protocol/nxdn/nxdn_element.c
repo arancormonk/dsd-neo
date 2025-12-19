@@ -253,8 +253,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                     memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
                     memset(state->active_channel, 0, sizeof(state->active_channel));
                     opts->p25_is_tuned = 0;
-                    if (g_rtl_ctx) {
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                    if (state->rtl_ctx) {
+                        rtl_stream_tune(state->rtl_ctx, (uint32_t)state->p25_cc_freq);
                     }
 
                     state->nxdn_last_rid = 0;
@@ -815,8 +815,8 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                 state->last_vc_sync_time = now;
                 //
 
-                if (g_rtl_ctx) {
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
+                if (state->rtl_ctx) {
+                    rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
                 }
                 state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
                 opts->p25_is_tuned = 1;
@@ -1977,8 +1977,8 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                             //
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)freq);
+                            if (state->rtl_ctx) {
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
                             opts->p25_is_tuned = 1;

@@ -425,12 +425,12 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         if (opts->audio_in_type == AUDIO_IN_RTL) {
             for (i = 0; i < 960; i++) {
 #ifdef USE_RTLSDR
-                if (!g_rtl_ctx) {
+                if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
                 }
                 {
                     int got = 0;
-                    if (rtl_stream_read(g_rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
+                    if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                     }
                 }
@@ -443,12 +443,12 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
             for (i = 0; i < 960; i++) {
 #ifdef USE_RTLSDR
-                if (!g_rtl_ctx) {
+                if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
                 }
                 {
                     int got = 0;
-                    if (rtl_stream_read(g_rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
+                    if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                     }
                 }
@@ -461,12 +461,12 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
             for (i = 0; i < 960; i++) {
 #ifdef USE_RTLSDR
-                if (!g_rtl_ctx) {
+                if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
                 }
                 {
                     int got = 0;
-                    if (rtl_stream_read(g_rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
+                    if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                     }
                 }
@@ -477,7 +477,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 analog3[i] = clip_float_to_short(rtl_sample);
             }
             //the rtl pwr value works properly without needing a 'hard' squelch value
-            pwr = g_rtl_ctx ? rtl_stream_return_pwr(g_rtl_ctx) : 0;
+            pwr = state->rtl_ctx ? rtl_stream_return_pwr(state->rtl_ctx) : 0;
         }
 #endif
 
@@ -1314,8 +1314,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                            if (state->rtl_ctx) {
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
                             state->edacs_tuned_lcn = lcn;
                             opts->p25_is_tuned = 1;
@@ -1463,8 +1463,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                            if (state->rtl_ctx) {
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
                             state->edacs_tuned_lcn = lcn;
                             opts->p25_is_tuned = 1;
@@ -1598,8 +1598,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                            if (state->rtl_ctx) {
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
                             state->edacs_tuned_lcn = lcn;
                             opts->p25_is_tuned = 1;
@@ -1804,8 +1804,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                             // ensure any queued audio tail plays before changing channels
                             dsd_drain_audio_output(opts);
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                            if (state->rtl_ctx) {
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                             }
                             state->edacs_tuned_lcn = lcn;
                             opts->p25_is_tuned = 1;
@@ -2119,8 +2119,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
-                                if (g_rtl_ctx) {
-                                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                                if (state->rtl_ctx) {
+                                    rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                                 }
                                 state->edacs_tuned_lcn = lcn;
                                 opts->p25_is_tuned = 1;
@@ -2256,8 +2256,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             if (opts->audio_in_type == AUDIO_IN_RTL) //rtl dongle
                             {
 #ifdef USE_RTLSDR
-                                if (g_rtl_ctx) {
-                                    rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                                if (state->rtl_ctx) {
+                                    rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                                 }
                                 state->edacs_tuned_lcn = lcn;
                                 opts->p25_is_tuned = 1;
@@ -2586,8 +2586,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                                     // ensure any queued audio tail plays before changing channels
                                     dsd_drain_audio_output(opts);
-                                    if (g_rtl_ctx) {
-                                        rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
+                                    if (state->rtl_ctx) {
+                                        rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[lcn - 1]);
                                     }
                                     state->edacs_tuned_lcn = lcn;
                                     opts->p25_is_tuned = 1;
@@ -2750,10 +2750,10 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
             snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
             opts->p25_is_tuned = 0;
             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-            if (g_rtl_ctx) {
+            if (state->rtl_ctx) {
                 // ensure any queued audio tail plays before changing channels
                 dsd_drain_audio_output(opts);
-                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->p25_cc_freq);
+                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->p25_cc_freq);
             }
 #endif
         }

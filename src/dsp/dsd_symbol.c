@@ -288,8 +288,8 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
     }
     static unsigned int last_rate = 0;
     unsigned int Fs = 0;
-    if (g_rtl_ctx) {
-        Fs = rtl_stream_output_rate(g_rtl_ctx);
+    if (state->rtl_ctx) {
+        Fs = rtl_stream_output_rate(state->rtl_ctx);
     }
     if (Fs == 0 || Fs == last_rate) {
         return;
@@ -526,15 +526,15 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
             // Read demodulated stream here
-            if (!g_rtl_ctx) {
+            if (!state->rtl_ctx) {
                 cleanupAndExit(opts, state);
             }
             int got = 0;
-            if (rtl_stream_read(g_rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
+            if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
                 cleanupAndExit(opts, state);
             }
             //update root means square power level
-            opts->rtl_pwr = rtl_stream_return_pwr(g_rtl_ctx);
+            opts->rtl_pwr = rtl_stream_return_pwr(state->rtl_ctx);
             /* Skip volume multiplier for CQPSK symbols - they're already properly
              * scaled by qpsk_differential_demod (phase * 4/π giving ±1, ±3 symbols).
              * The volume multiplier is meant for FM audio amplitude, not symbol levels. */
@@ -651,8 +651,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                 unsigned int Fs = 0;
-                if (g_rtl_ctx) {
-                    Fs = rtl_stream_output_rate(g_rtl_ctx);
+                if (state->rtl_ctx) {
+                    Fs = rtl_stream_output_rate(state->rtl_ctx);
                 }
                 if (Fs > 0) {
                     analog_block = (unsigned int)(((uint64_t)Fs * 20 + 999) / 1000); /* ~20 ms */

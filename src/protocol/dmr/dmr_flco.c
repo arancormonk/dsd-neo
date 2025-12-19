@@ -1450,10 +1450,10 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         //rtl
                         else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
-                            if (g_rtl_ctx) {
+                            if (state->rtl_ctx) {
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_cc_freq);
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_cc_freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;
@@ -1524,10 +1524,10 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         //rtl
                         else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
-                            if (g_rtl_ctx) {
+                            if (state->rtl_ctx) {
                                 // ensure any queued audio tail plays before changing channels
                                 dsd_drain_audio_output(opts);
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_cc_freq);
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_cc_freq);
                             }
                             state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                             opts->p25_is_tuned = 0;

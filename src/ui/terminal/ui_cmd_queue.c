@@ -410,9 +410,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 }
 #ifdef USE_RTLSDR
                 if (opts->audio_in_type == AUDIO_IN_RTL) {
-                    if (g_rtl_ctx) {
+                    if (state->rtl_ctx) {
                         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                        rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
+                        rtl_stream_tune(state->rtl_ctx, (uint32_t)f);
                     }
                 }
 #endif
@@ -422,8 +422,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
                 int demod_rate = 0;
 #ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
-                    demod_rate = (int)rtl_stream_output_rate(g_rtl_ctx);
+                if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+                    demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
                 }
 #endif
                 state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
@@ -514,9 +514,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 #ifdef USE_RTLSDR
             if (opts->p25_trunk == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
                 noCarrier(opts, state);
-                if (g_rtl_ctx) {
+                if (state->rtl_ctx) {
                     long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    rtl_stream_tune(g_rtl_ctx, (uint32_t)f);
+                    rtl_stream_tune(state->rtl_ctx, (uint32_t)f);
                     state->trunk_cc_freq = f;
                 }
             }
@@ -526,8 +526,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (state->p25_cc_is_tdma == 0) {
                 int demod_rate_tune = 0;
 #ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
-                    demod_rate_tune = (int)rtl_stream_output_rate(g_rtl_ctx);
+                if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+                    demod_rate_tune = (int)rtl_stream_output_rate(state->rtl_ctx);
                 }
 #endif
                 state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate_tune);
@@ -596,8 +596,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                         }
 #ifdef USE_RTLSDR
                         if (opts->audio_in_type == AUDIO_IN_RTL) {
-                            if (g_rtl_ctx) {
-                                rtl_stream_tune(g_rtl_ctx, (uint32_t)cand);
+                            if (state->rtl_ctx) {
+                                rtl_stream_tune(state->rtl_ctx, (uint32_t)cand);
                             }
                         }
 #endif
@@ -628,8 +628,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     }
 #ifdef USE_RTLSDR
                     if (opts->audio_in_type == AUDIO_IN_RTL) {
-                        if (g_rtl_ctx) {
-                            rtl_stream_tune(g_rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
+                        if (state->rtl_ctx) {
+                            rtl_stream_tune(state->rtl_ctx, (uint32_t)state->trunk_lcn_freq[state->lcn_freq_roll]);
                         }
                     }
 #endif
@@ -643,8 +643,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 int sym_rate_roll = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
                 int demod_rate_roll = 0;
 #ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL && g_rtl_ctx) {
-                    demod_rate_roll = (int)rtl_stream_output_rate(g_rtl_ctx);
+                if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+                    demod_rate_roll = (int)rtl_stream_output_rate(state->rtl_ctx);
                 }
 #endif
                 state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate_roll, demod_rate_roll);
@@ -863,7 +863,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                         }
                         opts->rtltcp_enabled = 1;
                     }
-                    (void)svc_rtl_restart(opts);
+                    (void)svc_rtl_restart(opts, state);
                 }
 #endif
 
@@ -1128,38 +1128,38 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_RTL_ENABLE_INPUT: {
-            if (opts) {
-                svc_rtl_enable_input(opts);
+            if (opts && state) {
+                svc_rtl_enable_input(opts, state);
             }
             break;
         }
         case UI_CMD_RTL_RESTART: {
-            if (opts) {
-                svc_rtl_restart(opts);
+            if (opts && state) {
+                svc_rtl_restart(opts, state);
             }
             break;
         }
         case UI_CMD_RTL_SET_DEV: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_dev_index(opts, v);
+                svc_rtl_set_dev_index(opts, state, v);
             }
             break;
         }
         case UI_CMD_RTL_SET_FREQ: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_freq(opts, (uint32_t)v);
+                svc_rtl_set_freq(opts, state, (uint32_t)v);
             }
             break;
         }
         case UI_CMD_RTL_SET_GAIN: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_gain(opts, v);
+                svc_rtl_set_gain(opts, state, v);
             }
             break;
         }
@@ -1172,10 +1172,10 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_RTL_SET_BW: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_bandwidth(opts, v);
+                svc_rtl_set_bandwidth(opts, state, v);
             }
             break;
         }
@@ -1196,26 +1196,26 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_RTL_SET_BIAS_TEE: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t on = 0;
                 memcpy(&on, c->data, sizeof on);
-                svc_rtl_set_bias_tee(opts, on);
+                svc_rtl_set_bias_tee(opts, state, on);
             }
             break;
         }
         case UI_CMD_RTLTCP_SET_AUTOTUNE: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t on = 0;
                 memcpy(&on, c->data, sizeof on);
-                svc_rtltcp_set_autotune(opts, on);
+                svc_rtltcp_set_autotune(opts, state, on);
             }
             break;
         }
         case UI_CMD_RTL_SET_AUTO_PPM: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
+            if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t on = 0;
                 memcpy(&on, c->data, sizeof on);
-                svc_rtl_set_auto_ppm(opts, on);
+                svc_rtl_set_auto_ppm(opts, state, on);
             }
             break;
         }

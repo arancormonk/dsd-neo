@@ -173,29 +173,29 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 #ifdef USE_RTLSDR
 // RTL-SDR configuration and lifecycle helpers
 /** @brief Switch active input to RTL-SDR and restart the stream. */
-int svc_rtl_enable_input(dsd_opts* opts);
+int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
-int svc_rtl_restart(dsd_opts* opts);
+int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
-int svc_rtl_set_dev_index(dsd_opts* opts, int index);
+int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 /** @brief Tune RTL center frequency (Hz), applying live when stream active. */
-int svc_rtl_set_freq(dsd_opts* opts, uint32_t hz);
+int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
-int svc_rtl_set_gain(dsd_opts* opts, int value);
+int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /** @brief Set RTL PPM correction (clamped to ±200). */
 int svc_rtl_set_ppm(dsd_opts* opts, int ppm);
 /** @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), clamping and restarting if needed. */
-int svc_rtl_set_bandwidth(dsd_opts* opts, int khz);
+int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz);
 /** @brief Set RTL squelch threshold in dB, converting to power units. */
 int svc_rtl_set_sql_db(dsd_opts* opts, double dB);
 /** @brief Set RTL volume multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 /** @brief Toggle RTL bias tee (applied live when stream active). */
-int svc_rtl_set_bias_tee(dsd_opts* opts, int on);
+int svc_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, int on);
 /** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
-int svc_rtltcp_set_autotune(dsd_opts* opts, int on);
+int svc_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, int on);
 /** @brief Toggle spectrum-based auto PPM and propagate to env/stream. */
-int svc_rtl_set_auto_ppm(dsd_opts* opts, int on);
+int svc_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, int on);
 #endif
 
 #ifdef __cplusplus
