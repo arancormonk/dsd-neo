@@ -827,9 +827,12 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
         power += bb[i] * bb[i];
     }
 
-    /* Normalize by power */
+    /* Normalize by power (GNU Radio fll_band_edge_cc_impl::design_filter()).
+     *
+     * Note: GNU Radio divides by the sum of squares (power), not sqrt(power).
+     * This affects the band-edge error magnitude and thus the effective loop gain. */
     if (power > 0.0f) {
-        float norm = 1.0f / sqrtf(power);
+        float norm = 1.0f / power;
         for (int i = 0; i < n_taps; i++) {
             bb[i] *= norm;
         }

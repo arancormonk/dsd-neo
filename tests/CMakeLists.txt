@@ -497,6 +497,11 @@ target_include_directories(dsd-neo_test_dsp_fll PRIVATE ${PROJECT_SOURCE_DIR}/in
 target_link_libraries(dsd-neo_test_dsp_fll PRIVATE dsd-neo_dsp m)
 add_test(NAME DSP_FLL COMMAND dsd-neo_test_dsp_fll)
 
+add_executable(dsd-neo_test_dsp_fll_band_edge dsp/test_dsp_fll_band_edge.cpp)
+target_include_directories(dsd-neo_test_dsp_fll_band_edge PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_fll_band_edge PRIVATE dsd-neo_dsp m)
+add_test(NAME DSP_FLL_BAND_EDGE COMMAND dsd-neo_test_dsp_fll_band_edge)
+
 add_executable(dsd-neo_test_dsp_ted dsp/test_dsp_ted.cpp)
 target_include_directories(dsd-neo_test_dsp_ted PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dsp_ted PRIVATE dsd-neo_dsp)
