@@ -116,9 +116,9 @@ extern "C" {
 /* ============================================================================
  * Generic / Special
  * ============================================================================ */
-#define DSD_SYNC_ANALOG           39 /**< Generic analog signal */
-#define DSD_SYNC_DIGITAL          40 /**< Generic digital signal */
-#define DSD_SYNC_NONE             -1 /**< No sync / uninitialized */
+#define DSD_SYNC_ANALOG           39   /**< Generic analog signal */
+#define DSD_SYNC_DIGITAL          40   /**< Generic digital signal */
+#define DSD_SYNC_NONE             (-1) /**< No sync / uninitialized */
 
 /* ============================================================================
  * Protocol Classification Helper Macros

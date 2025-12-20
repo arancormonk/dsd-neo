@@ -71,7 +71,6 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 
 void
 NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent) {
-    const time_t now = time(NULL);
     uint8_t MessageType;
     /* Get the "Message Type" field */
     MessageType = (ElementsContent[2] & 1) << 5;
