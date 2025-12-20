@@ -73,8 +73,8 @@ static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_i
 #define DEFAULT_SAMPLE_RATE 48000
 #define DEFAULT_BUF_LENGTH  (1 * 16384)
 #define MAXIMUM_OVERSAMPLE  16
-#define MAXIMUM_BUF_LENGTH  (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
-#define AUTO_GAIN           -100
+#define MAXIMUM_BUF_LENGTH  ((size_t)(MAXIMUM_OVERSAMPLE) * (size_t)(DEFAULT_BUF_LENGTH))
+#define AUTO_GAIN           (-100)
 #define BUFFER_DUMP         4096
 
 #define FREQUENCIES_LIMIT   1000
@@ -773,7 +773,7 @@ demod_reset_on_retune(struct demod_state* s) {
             float fll_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
             float costas_freq_hz =
                 s->costas_state.freq
-                * ((float)(s->rate_out / (s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
+                * (((float)s->rate_out / (float)(s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
             fprintf(stderr,
                     "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_freq=%.1fHz fll_phase=%.3f costas_freq=%.1fHz "
                     "costas_phase=%.3f gardner_omega=%.3f gardner_mu=%.3f\n",
@@ -1460,8 +1460,6 @@ static DSD_THREAD_RETURN_TYPE
                             }
                         }
                     }
-                    /* Record that we updated C4FM within this loop */
-                    c4fm_updated = true;
                 }
             }
             /* If no C4FM update occurred for a while, synthesize a value from the eye buffer */
@@ -2746,11 +2744,10 @@ dsd_rtl_stream_open(dsd_opts* opts) {
             int coef_q15 = (int)lrint(alpha * (double)(1 << 15));
             if (coef_q15 < 1) {
                 coef_q15 = 1;
-            }
-            if (coef_q15 > ((1 << 15) - 1)) {
+            } else if (coef_q15 > ((1 << 15) - 1)) {
                 coef_q15 = ((1 << 15) - 1);
             }
-            demod.deemph_a = (float)alpha;
+            demod.deemph_a = (float)((double)coef_q15 / (double)(1 << 15));
         }
     }
 
@@ -3390,10 +3387,12 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
             if (time_ok) {
                 bool snr_improved = (gate_snr_db > (prev_demod_snr_db + eval_snr_margin_db));
                 bool snr_worsened = (gate_snr_db + eval_snr_margin_db < prev_demod_snr_db);
-                if (snr_improved) {
+                bool accept = snr_improved || (!snr_worsened && (cur_abs_df + eval_margin_hz < prev_abs_df));
+                bool flip = snr_worsened || (cur_abs_df > prev_abs_df + eval_margin_hz);
+                if (accept) {
                     dir_calibrated = last_dir_applied;
                     awaiting_eval = 0;
-                } else if (snr_worsened) {
+                } else if (flip) {
                     int target_ppm = last_ppm_after - 2 * last_dir_applied * last_step_size;
                     if (target_ppm > ppm_limit) {
                         target_ppm = ppm_limit;
@@ -3403,28 +3402,13 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
                     }
                     if (target_ppm != opts->rtlsdr_ppm_error) {
                         opts->rtlsdr_ppm_error = target_ppm;
-                        LOG_INFO("AUTO-PPM(spectrum): flip dir (SNR %.1f->%.1f dB). ppm->%d\n", prev_demod_snr_db,
-                                 gate_snr_db, target_ppm);
-                    }
-                    dir_calibrated = -last_dir_applied;
-                    awaiting_eval = 0;
-                    next_allowed = now + std::chrono::milliseconds(throttle_ms);
-                    g_auto_ppm_cooldown.store(throttle_ms / 10, std::memory_order_relaxed);
-                } else if (cur_abs_df + eval_margin_hz < prev_abs_df) {
-                    dir_calibrated = last_dir_applied;
-                    awaiting_eval = 0;
-                } else if (cur_abs_df > prev_abs_df + eval_margin_hz) {
-                    int target_ppm = last_ppm_after - 2 * last_dir_applied * last_step_size;
-                    if (target_ppm > ppm_limit) {
-                        target_ppm = ppm_limit;
-                    }
-                    if (target_ppm < -ppm_limit) {
-                        target_ppm = -ppm_limit;
-                    }
-                    if (target_ppm != opts->rtlsdr_ppm_error) {
-                        opts->rtlsdr_ppm_error = target_ppm;
-                        LOG_INFO("AUTO-PPM(spectrum): flip dir (|df| %.1f->%.1f Hz). ppm->%d\n", prev_abs_df,
-                                 cur_abs_df, target_ppm);
+                        if (snr_worsened) {
+                            LOG_INFO("AUTO-PPM(spectrum): flip dir (SNR %.1f->%.1f dB). ppm->%d\n", prev_demod_snr_db,
+                                     gate_snr_db, target_ppm);
+                        } else {
+                            LOG_INFO("AUTO-PPM(spectrum): flip dir (|df| %.1f->%.1f Hz). ppm->%d\n", prev_abs_df,
+                                     cur_abs_df, target_ppm);
+                        }
                     }
                     dir_calibrated = -last_dir_applied;
                     awaiting_eval = 0;

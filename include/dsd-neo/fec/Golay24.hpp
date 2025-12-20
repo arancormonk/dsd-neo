@@ -161,7 +161,6 @@ class Golay24 {
             {
                 if (j > 0) /* restore last trial bit */
                 {
-                    cw = cwsaver ^ mask;
                     mask += mask; /* point to next bit */
                 }
                 cw = cwsaver ^ mask; /* flip next trial bit */
@@ -174,11 +173,12 @@ class Golay24 {
                 (*errors_detected)++;
                 for (i = 0; i < 23; i++) /* check syndrome of each cyclic shift */
                 {
-                    if ((*errs = weight(s)) <= w) /* syndrome matches error pattern */
+                    *errs = weight(s);
+                    if (*errs <= w) /* syndrome matches error pattern */
                     {
                         cw = cw ^ s;              /* remove errors */
                         cw = rotate_right(cw, i); /* unrotate data */
-                        return (s = cw);
+                        return cw;
                     } else {
                         cw = rotate_left(cw, 1); /* rotate to next pattern */
                         s = syndrome(cw);        /* calc new syndrome */
@@ -268,12 +268,13 @@ class DSDGolay24 : public Golay24 {
         // Data needs to be packed with the 12 bits of parity as the most significant
         // bits and 12 bits of data as the less significant. All these discovered by trial and error.
         for (unsigned int i = 0; i < 12; i++) {
-            assert(parity[11 - i] == 0 || parity[11 - i] == 1);
+            unsigned int pbit = (unsigned int)(unsigned char)parity[11 - i];
+            assert(pbit == 0 || pbit == 1);
             codeword <<= 1;
-            codeword |= parity[11 - i];
+            codeword |= pbit;
         }
         for (unsigned int i = 0; i < length; i++) {
-            char bit = word[length - 1 - i];
+            unsigned int bit = (unsigned int)(unsigned char)word[length - 1 - i];
             assert(bit == 0 || bit == 1);
             codeword <<= 1;
             codeword |= bit;
@@ -300,7 +301,7 @@ class DSDGolay24 : public Golay24 {
 
         // encode the hex bits into a codeword
         for (unsigned int i = 0; i < length; i++) {
-            int bit = word[length - 1 - i];
+            unsigned int bit = (unsigned int)(unsigned char)word[length - 1 - i];
             assert(bit == 0 || bit == 1);
             codeword <<= 1;
             codeword |= bit;

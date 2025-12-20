@@ -2043,8 +2043,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                             //NOTE: Consider only adding this if user toggled or else
                             //lots of short data bursts blink in and out
-                            if (1 == 1) //opts->trunk_tune_private_calls
-                            {
+                            if (opts->trunk_tune_private_calls == 1) {
                                 sprintf(cap_active, "LSN:%d PC:%d; ", i + 1, tg);
                                 dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
                             }

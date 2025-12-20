@@ -1302,7 +1302,7 @@ full_demod(struct demod_state* d) {
      * Industry standard: DSP pipeline always flows at constant rate. Squelch is a metadata
      * flag, not a flow stopper. This keeps downstream consumers (frame sync, UI updates)
      * running smoothly even when squelched. Decoders will simply fail to find sync on zeros. */
-    if (d->channel_squelch_level > 0.0f && d->channel_pwr < d->channel_squelch_level) {
+    if (d->lowpassed && d->lp_len > 0 && d->channel_squelch_level > 0.0f && d->channel_pwr < d->channel_squelch_level) {
         d->channel_squelched = 1;
         d->squelch_gate_open = 0;
         /* Zero the buffer so downstream sees silence */

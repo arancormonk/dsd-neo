@@ -24,7 +24,7 @@
 //extern "C" {
 //#endif
 
-#ifndef _MAIN
+#ifndef DSD_NEO_MAIN
 extern const int dPmrW[36];
 extern const int dPmrX[36];
 extern const int dPmrY[36];

@@ -24,7 +24,7 @@
  * X2TDMA AMBE interleave schedule
  */
 
-#ifndef _MAIN
+#ifndef DSD_NEO_MAIN
 extern const int aW[36];
 extern const int aX[36];
 extern const int aY[36];

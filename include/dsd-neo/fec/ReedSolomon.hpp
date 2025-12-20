@@ -58,6 +58,7 @@
  */
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 
 template <int TT>
@@ -490,17 +491,17 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
         int output[63];
 
         // First put the parity data, 16 hex words
-        for (unsigned int i = 0; i < 16; i++) {
+        for (size_t i = 0; i < 16; i++) {
             input[i] = bin_to_hex(hex_parity + i * 6);
         }
 
         // Then the 20 hex words of data
-        for (unsigned int i = 16; i < 16 + 20; i++) {
+        for (size_t i = 16; i < 16 + 20; i++) {
             input[i] = bin_to_hex(hex_data + (i - 16) * 6);
         }
 
         // Fill up with zeros to complete the 47 expected hex words of data
-        for (unsigned int i = 16 + 20; i < 63; i++) {
+        for (size_t i = 16 + 20; i < 63; i++) {
             input[i] = 0;
         }
 
@@ -509,7 +510,7 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
 
         // Convert it back to binary and put it into hex_data. If decode failed we should have
         // the input unchanged.
-        for (unsigned int i = 16; i < 16 + 20; i++) {
+        for (size_t i = 16; i < 16 + 20; i++) {
             hex_to_bin(output[i], hex_data + (i - 16) * 6);
         }
 
@@ -587,12 +588,12 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
         int output[63];
 
         // Put the 20 hex words of data
-        for (unsigned int i = 0; i < 20; i++) {
+        for (size_t i = 0; i < 20; i++) {
             input[i] = bin_to_hex(hex_data + i * 6);
         }
 
         // Fill up with zeros to complete the 47 expected hex words of data
-        for (unsigned int i = 20; i < 47; i++) {
+        for (size_t i = 20; i < 47; i++) {
             input[i] = 0;
         }
 
@@ -600,7 +601,7 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
         ReedSolomon_63<8>::encode(input, output);
 
         // Convert it back to binary form and put it into the parity
-        for (unsigned int i = 0; i < 16; i++) {
+        for (size_t i = 0; i < 16; i++) {
             hex_to_bin(output[i], out_hex_parity + i * 6);
         }
     }
@@ -631,17 +632,17 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
         int output[63];
 
         // First put the parity data, 12 hex words
-        for (unsigned int i = 0; i < 12; i++) {
+        for (size_t i = 0; i < 12; i++) {
             input[i] = bin_to_hex(hex_parity + i * 6);
         }
 
         // Then the 12 hex words of data
-        for (unsigned int i = 12; i < 12 + 12; i++) {
+        for (size_t i = 12; i < 12 + 12; i++) {
             input[i] = bin_to_hex(hex_data + (i - 12) * 6);
         }
 
         // Fill up with zeros to complete the 51 expected hex words of data
-        for (unsigned int i = 12 + 12; i < 63; i++) {
+        for (size_t i = 12 + 12; i < 63; i++) {
             input[i] = 0;
         }
 
@@ -650,7 +651,7 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
 
         // Convert it back to binary and put it into hex_data. If decode failed we should have
         // the input unchanged.
-        for (unsigned int i = 12; i < 12 + 12; i++) {
+        for (size_t i = 12; i < 12 + 12; i++) {
             hex_to_bin(output[i], hex_data + (i - 12) * 6);
         }
 
@@ -715,12 +716,12 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
         int output[63];
 
         // Put the 12 hex words of data
-        for (unsigned int i = 0; i < 12; i++) {
+        for (size_t i = 0; i < 12; i++) {
             input[i] = bin_to_hex(hex_data + i * 6);
         }
 
         // Fill up with zeros to complete the 51 expected hex words of data
-        for (unsigned int i = 12; i < 51; i++) {
+        for (size_t i = 12; i < 51; i++) {
             input[i] = 0;
         }
 
@@ -728,7 +729,7 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
         ReedSolomon_63<6>::encode(input, output);
 
         // Convert it back to binary form and put it into the parity
-        for (unsigned int i = 0; i < 12; i++) {
+        for (size_t i = 0; i < 12; i++) {
             hex_to_bin(output[i], out_hex_parity + i * 6);
         }
     }
@@ -759,17 +760,17 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
         int output[63];
 
         // First put the parity data, 8 hex words
-        for (unsigned int i = 0; i < 8; i++) {
+        for (size_t i = 0; i < 8; i++) {
             input[i] = bin_to_hex(hex_parity + i * 6);
         }
 
         // Then the 16 hex words of data
-        for (unsigned int i = 8; i < 8 + 16; i++) {
+        for (size_t i = 8; i < 8 + 16; i++) {
             input[i] = bin_to_hex(hex_data + (i - 8) * 6);
         }
 
         // Fill up with zeros to complete the 55 expected hex words of data
-        for (unsigned int i = 8 + 16; i < 63; i++) {
+        for (size_t i = 8 + 16; i < 63; i++) {
             input[i] = 0;
         }
 
@@ -778,7 +779,7 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
 
         // Convert it back to binary and put it into hex_data. If decode failed we should have
         // the input unchanged.
-        for (unsigned int i = 8; i < 8 + 16; i++) {
+        for (size_t i = 8; i < 8 + 16; i++) {
             hex_to_bin(output[i], hex_data + (i - 8) * 6);
         }
 
@@ -845,12 +846,12 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
         int output[63];
 
         // Put the 16 hex words of data
-        for (unsigned int i = 0; i < 16; i++) {
+        for (size_t i = 0; i < 16; i++) {
             input[i] = bin_to_hex(hex_data + i * 6);
         }
 
         // Fill up with zeros to complete the 55 expected hex words of data
-        for (unsigned int i = 16; i < 55; i++) {
+        for (size_t i = 16; i < 55; i++) {
             input[i] = 0;
         }
 
@@ -858,7 +859,7 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
         ReedSolomon_63<4>::encode(input, output);
 
         // Convert it back to binary form and put it into the parity
-        for (unsigned int i = 0; i < 8; i++) {
+        for (size_t i = 0; i < 8; i++) {
             hex_to_bin(output[i], out_hex_parity + i * 6);
         }
     }

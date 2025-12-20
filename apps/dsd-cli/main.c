@@ -19,7 +19,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#define _MAIN
+#define DSD_NEO_MAIN
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/dsp/dmr_sync.h>

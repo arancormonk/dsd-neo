@@ -760,7 +760,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 *state->dmr_reliab_p = dmr_compute_reliability(state, symbol);
                 state->dmr_reliab_p++;
             }
-        } else if (1 == 1) {
+        } else {
             if (symbol > state->center) {
                 if (symbol > state->umid) {
                     *state->dmr_payload_p = 1; // +3
@@ -1382,61 +1382,56 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             strncpy(synctest20, (synctest_p - 19), 20);
             const char* p25p2_sync_window = synctest20;
             if (opts->frame_p25p2 == 1) {
-                if (0 == 0) {
-                    if (strcmp(p25p2_sync_window, P25P2_SYNC) == 0) {
-                        state->carrier = 1;
-                        state->offset = synctest_pos;
-                        state->max = ((state->max) + lmax) / 2;
-                        state->min = ((state->min) + lmin) / 2;
-                        opts->inverted_p2 = 0;
-                        state->lastsynctype = 35; //35
-                        if (opts->errorbars == 1) {
-                            printFrameSync(opts, state, "+P25p2", synctest_pos + 1, modulation);
-                        }
-                        if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
-                            printFrameInfo(opts, state);
-                        } else {
-                            fprintf(stderr, "%s", KRED);
-                            fprintf(stderr, " P2 Missing Parameters            ");
-                            fprintf(stderr, "%s", KNRM);
-                        }
-                        state->last_cc_sync_time = time(NULL);
-                        /* CQPSK/QPSK: warm-start only center (DC bias) */
-                        if (state->rf_mod == 1) {
-                            dsd_sync_warm_start_center_outer_only(opts, state, 20);
-                        }
-                        return (35); //35
+                if (strcmp(p25p2_sync_window, P25P2_SYNC) == 0) {
+                    state->carrier = 1;
+                    state->offset = synctest_pos;
+                    state->max = ((state->max) + lmax) / 2;
+                    state->min = ((state->min) + lmin) / 2;
+                    opts->inverted_p2 = 0;
+                    state->lastsynctype = 35; //35
+                    if (opts->errorbars == 1) {
+                        printFrameSync(opts, state, "+P25p2", synctest_pos + 1, modulation);
                     }
+                    if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
+                        printFrameInfo(opts, state);
+                    } else {
+                        fprintf(stderr, "%s", KRED);
+                        fprintf(stderr, " P2 Missing Parameters            ");
+                        fprintf(stderr, "%s", KNRM);
+                    }
+                    state->last_cc_sync_time = time(NULL);
+                    /* CQPSK/QPSK: warm-start only center (DC bias) */
+                    if (state->rf_mod == 1) {
+                        dsd_sync_warm_start_center_outer_only(opts, state, 20);
+                    }
+                    return (35); //35
                 }
             }
             if (opts->frame_p25p2 == 1) {
-                if (0 == 0) {
-                    //S-ISCH VCH
-                    if (strcmp(p25p2_sync_window, INV_P25P2_SYNC) == 0) {
-                        state->carrier = 1;
-                        state->offset = synctest_pos;
-                        state->max = ((state->max) + lmax) / 2;
-                        state->min = ((state->min) + lmin) / 2;
-                        opts->inverted_p2 = 1;
-                        if (opts->errorbars == 1) {
-                            printFrameSync(opts, state, "-P25p2", synctest_pos + 1, modulation);
-                        }
-                        if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
-                            printFrameInfo(opts, state);
-                        } else {
-                            fprintf(stderr, "%s", KRED);
-                            fprintf(stderr, " P2 Missing Parameters            ");
-                            fprintf(stderr, "%s", KNRM);
-                        }
-
-                        state->lastsynctype = 36; //36
-                        state->last_cc_sync_time = time(NULL);
-                        /* CQPSK/QPSK: warm-start only center (DC bias) */
-                        if (state->rf_mod == 1) {
-                            dsd_sync_warm_start_center_outer_only(opts, state, 20);
-                        }
-                        return (36); //36
+                //S-ISCH VCH
+                if (strcmp(p25p2_sync_window, INV_P25P2_SYNC) == 0) {
+                    state->carrier = 1;
+                    state->offset = synctest_pos;
+                    state->max = ((state->max) + lmax) / 2;
+                    state->min = ((state->min) + lmin) / 2;
+                    opts->inverted_p2 = 1;
+                    if (opts->errorbars == 1) {
+                        printFrameSync(opts, state, "-P25p2", synctest_pos + 1, modulation);
                     }
+                    if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
+                        printFrameInfo(opts, state);
+                    } else {
+                        fprintf(stderr, "%s", KRED);
+                        fprintf(stderr, " P2 Missing Parameters            ");
+                        fprintf(stderr, "%s", KNRM);
+                    }
+                    state->lastsynctype = 36; //36
+                    state->last_cc_sync_time = time(NULL);
+                    /* CQPSK/QPSK: warm-start only center (DC bias) */
+                    if (state->rf_mod == 1) {
+                        dsd_sync_warm_start_center_outer_only(opts, state, 20);
+                    }
+                    return (36); //36
                 }
             }
 

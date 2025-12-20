@@ -463,7 +463,7 @@ void initState(dsd_state* state);
 void liveScanner(dsd_opts* opts, dsd_state* state);
 /** @brief Release resources and exit the program. */
 void cleanupAndExit(dsd_opts* opts, dsd_state* state);
-#ifdef _MAIN
+#ifdef DSD_NEO_MAIN
 /** @brief Program entry point for the dsd-neo CLI application. */
 int main(int argc, char** argv);
 #endif

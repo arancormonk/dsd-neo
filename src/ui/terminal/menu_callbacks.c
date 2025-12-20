@@ -1043,7 +1043,7 @@ chooser_free_lists(const char** names, char** bufs, int n, const char** labels) 
         free((void*)names);
     }
     if (bufs) {
-        free(bufs);
+        free((void*)bufs);
     }
 }
 

@@ -20,7 +20,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MAIN
+#ifndef DSD_NEO_MAIN
 
 extern const int pW[142];
 extern const int pX[142];

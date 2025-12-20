@@ -1994,16 +1994,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int channelr = (MAC[6 + len_a] << 8) | MAC[7 + len_a];
             int sysclass = MAC[8 + len_a];
 
-            if (1 == 1) //state->p2_is_lcch == 1
-            {
+            // state->p2_is_lcch == 1
+            fprintf(stderr, "\n Secondary Control Channel Broadcast - Explicit\n");
+            fprintf(stderr, "  RFSS [%03d] SITE ID [%03d] CHAN-T [%04X] CHAN-R [%04X] SSC [%02X]", rfssid, siteid,
+                    channelt, channelr, sysclass);
 
-                fprintf(stderr, "\n Secondary Control Channel Broadcast - Explicit\n");
-                fprintf(stderr, "  RFSS [%03d] SITE ID [%03d] CHAN-T [%04X] CHAN-R [%04X] SSC [%02X]", rfssid, siteid,
-                        channelt, channelr, sysclass);
-
-                process_channel_to_freq(opts, state, channelt);
-                process_channel_to_freq(opts, state, channelr);
-            }
+            process_channel_to_freq(opts, state, channelt);
+            process_channel_to_freq(opts, state, channelr);
 
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;
@@ -2019,16 +2016,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int sysclass2 = MAC[9 + len_a];
             long int freq1 = 0;
             long int freq2 = 0;
-            if (1 == 1) //state->p2_is_lcch == 1
-            {
+            // state->p2_is_lcch == 1
+            fprintf(stderr, "\n Secondary Control Channel Broadcast - Implicit\n");
+            fprintf(stderr, "  RFSS[%03d] SITE ID [%03d] CHAN1 [%04X] SSC [%02X] CHAN2 [%04X] SSC [%02X]", rfssid,
+                    siteid, channel1, sysclass1, channel2, sysclass2);
 
-                fprintf(stderr, "\n Secondary Control Channel Broadcast - Implicit\n");
-                fprintf(stderr, "  RFSS[%03d] SITE ID [%03d] CHAN1 [%04X] SSC [%02X] CHAN2 [%04X] SSC [%02X]", rfssid,
-                        siteid, channel1, sysclass1, channel2, sysclass2);
-
-                freq1 = process_channel_to_freq(opts, state, channel1);
-                freq2 = process_channel_to_freq(opts, state, channel2);
-            }
+            freq1 = process_channel_to_freq(opts, state, channel1);
+            freq2 = process_channel_to_freq(opts, state, channel2);
 
             //place the cc freq into the list at index 0 if 0 is empty so we can hunt for rotating CCs without user LCN list
             if (state->trunk_lcn_freq[1] == 0) {
@@ -2082,7 +2076,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
             uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
             mfid90_wacn >>= 4;
-            uint16_t mfid90_sys = ((MAC[12 + len_a] << 16) & 0x0F00) | (MAC[12 + len_a] << 8);
+            uint16_t mfid90_sys = (uint16_t)(((MAC[12 + len_a] & 0x0F) << 8) | MAC[13 + len_a]);
             fprintf(stderr, " EXT - FQSUID: %05X:%03X.%d", mfid90_wacn, mfid90_sys, src);
 
             if (slot == 0) {

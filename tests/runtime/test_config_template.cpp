@@ -13,6 +13,38 @@
 
 #include <dsd-neo/runtime/config.h>
 
+static char*
+read_tmpfile_contents(FILE* tmp, size_t* out_size) {
+    if (fseek(tmp, 0, SEEK_END) != 0) {
+        return NULL;
+    }
+    long size_long = ftell(tmp);
+    if (size_long < 0) {
+        return NULL;
+    }
+    if (fseek(tmp, 0, SEEK_SET) != 0) {
+        return NULL;
+    }
+
+    size_t size = (size_t)size_long;
+    char* content = (char*)malloc(size + 1);
+    if (!content) {
+        return NULL;
+    }
+
+    size_t read = fread(content, 1, size, tmp);
+    if (read != size && ferror(tmp)) {
+        free(content);
+        return NULL;
+    }
+
+    content[read] = '\0';
+    if (out_size) {
+        *out_size = read;
+    }
+    return content;
+}
+
 static int
 test_template_generates_output(void) {
     FILE* tmp = tmpfile();
@@ -24,6 +56,11 @@ test_template_generates_output(void) {
     dsd_user_config_render_template(tmp);
 
     // Check that something was written
+    if (fseek(tmp, 0, SEEK_END) != 0) {
+        fprintf(stderr, "FAIL: fseek() failed\n");
+        fclose(tmp);
+        return 1;
+    }
     long size = ftell(tmp);
     if (size <= 0) {
         fprintf(stderr, "FAIL: template output is empty\n");
@@ -46,22 +83,12 @@ test_template_contains_sections(void) {
     dsd_user_config_render_template(tmp);
 
     // Read back the content
-    rewind(tmp);
-    char* content = NULL;
     size_t content_size = 0;
-
-    fseek(tmp, 0, SEEK_END);
-    content_size = (size_t)ftell(tmp);
-    rewind(tmp);
-
-    content = (char*)malloc(content_size + 1);
+    char* content = read_tmpfile_contents(tmp, &content_size);
     if (!content) {
         fclose(tmp);
         return 1;
     }
-
-    size_t read = fread(content, 1, content_size, tmp);
-    content[read] = '\0';
     fclose(tmp);
 
     int rc = 0;
@@ -99,19 +126,12 @@ test_template_contains_keys(void) {
     dsd_user_config_render_template(tmp);
 
     // Read back the content
-    rewind(tmp);
-    fseek(tmp, 0, SEEK_END);
-    size_t content_size = (size_t)ftell(tmp);
-    rewind(tmp);
-
-    char* content = (char*)malloc(content_size + 1);
+    size_t content_size = 0;
+    char* content = read_tmpfile_contents(tmp, &content_size);
     if (!content) {
         fclose(tmp);
         return 1;
     }
-
-    size_t read = fread(content, 1, content_size, tmp);
-    content[read] = '\0';
     fclose(tmp);
 
     int rc = 0;
@@ -149,19 +169,12 @@ test_template_contains_descriptions(void) {
     dsd_user_config_render_template(tmp);
 
     // Read back the content
-    rewind(tmp);
-    fseek(tmp, 0, SEEK_END);
-    size_t content_size = (size_t)ftell(tmp);
-    rewind(tmp);
-
-    char* content = (char*)malloc(content_size + 1);
+    size_t content_size = 0;
+    char* content = read_tmpfile_contents(tmp, &content_size);
     if (!content) {
         fclose(tmp);
         return 1;
     }
-
-    size_t read = fread(content, 1, content_size, tmp);
-    content[read] = '\0';
     fclose(tmp);
 
     int rc = 0;
@@ -188,19 +201,12 @@ test_template_is_valid_ini(void) {
     dsd_user_config_render_template(tmp);
 
     // Read back the content
-    rewind(tmp);
-    fseek(tmp, 0, SEEK_END);
-    size_t content_size = (size_t)ftell(tmp);
-    rewind(tmp);
-
-    char* content = (char*)malloc(content_size + 1);
+    size_t content_size = 0;
+    char* content = read_tmpfile_contents(tmp, &content_size);
     if (!content) {
         fclose(tmp);
         return 1;
     }
-
-    size_t read = fread(content, 1, content_size, tmp);
-    content[read] = '\0';
     fclose(tmp);
 
     int rc = 0;

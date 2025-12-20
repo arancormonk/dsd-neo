@@ -251,6 +251,7 @@ dsd_audio_enumerate_devices(dsd_audio_device* inputs, dsd_audio_device* outputs,
                     goto cleanup;
                 }
                 break;
+            default: set_error("Internal error: unexpected enumeration state"); goto cleanup;
         }
 
         pa_mainloop_iterate(ml, 1, NULL);

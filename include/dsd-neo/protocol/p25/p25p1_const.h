@@ -20,7 +20,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MAIN
+#ifndef DSD_NEO_MAIN
 
 extern const int iW[72];
 extern const int iX[72];

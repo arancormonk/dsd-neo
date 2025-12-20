@@ -78,6 +78,11 @@ openSerial(dsd_opts* opts, dsd_state* state) {
         case 57600: baud = B57600; break;
         case 115200: baud = B115200; break;
         case 230400: baud = B230400; break;
+        default:
+            if (opts->serial_baud > 0) {
+                LOG_WARN("Unsupported baud rate %d; defaulting to 115200", opts->serial_baud);
+            }
+            break;
     }
     if (opts->serial_baud > 0) {
         cfsetospeed(&tty, baud);

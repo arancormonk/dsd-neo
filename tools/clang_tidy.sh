@@ -3,11 +3,39 @@ set -euo pipefail
 
 # Run clang-tidy locally in a way that mirrors CI:
 # - Ensures a compile_commands.json database exists (dev-debug preset)
-# - Analyzes both sources and headers using the repo's .clang-tidy
-# - Fails if any clang-analyzer-* or bugprone-* diagnostics are found
+# - Analyzes translation units in the compilation database using the repo's .clang-tidy
+# - Fails if any diagnostics are emitted as errors (WarningsAsErrors), or if clang-tidy can't process a file
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT_DIR"
+
+usage() {
+  cat <<'USAGE'
+Usage: tools/clang_tidy.sh [--strict] [--all-commands]
+
+Options:
+  --strict        Use .clang-tidy.strict (broader check set).
+  --all-commands  Use the full compile_commands.json as-is. Note: if a source file
+                  appears multiple times in the compilation database (e.g., built
+                  for multiple targets), clang-tidy may process it multiple times
+                  and its progress counter can exceed the unique file count.
+USAGE
+}
+
+STRICT=0
+ALL_COMMANDS=0
+for arg in "$@"; do
+  case "$arg" in
+    --strict) STRICT=1 ;;
+    --all-commands) ALL_COMMANDS=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
 
 if ! command -v clang-tidy >/dev/null 2>&1; then
   echo "clang-tidy not found. Please install it (e.g., apt-get install clang-tidy)." >&2
@@ -30,14 +58,139 @@ if [ ! -f "$PDB_FILE" ]; then
   fi
 fi
 
-# Collect files: sources and headers within the repo (excluding build and third-party)
-mapfile -t FILES < <(git ls-files '*.c' '*.h' ':!:build/**' ':!:src/third_party/**')
+# Collect translation units from the compilation database (excluding build and third-party).
+# clang-tidy may process a file multiple times if it has multiple compile commands.
+PDB_FILE="$PDB_DIR/compile_commands.json"
+TIDY_PDB_DIR="$PDB_DIR"
+TIDY_PDB_TEMP_DIR=""
+if command -v python3 >/dev/null 2>&1; then
+  if [[ $ALL_COMMANDS -eq 0 ]]; then
+    TIDY_PDB_TEMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t dsd-neo-clang-tidy)
+    trap 'rm -rf "$TIDY_PDB_TEMP_DIR" 2>/dev/null || true' EXIT
+    TIDY_PDB_DIR="$TIDY_PDB_TEMP_DIR"
+  fi
+
+  mapfile -t FILES < <(python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" <<'PY'
+import json
+import pathlib
+import shlex
+import sys
+
+pdb_path = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2]).resolve()
+out_dir = pathlib.Path(sys.argv[3]) if sys.argv[3] else None
+all_commands = bool(int(sys.argv[4]))
+
+try:
+    data = json.loads(pdb_path.read_text())
+except Exception as exc:
+    raise SystemExit(f"Failed to read {pdb_path}: {exc}")
+
+
+def normalize_file(entry):
+    file_field = entry.get("file")
+    if not file_field:
+        return None, None
+
+    file_path = pathlib.Path(file_field)
+    if not file_path.is_absolute():
+        directory = entry.get("directory") or str(pdb_path.parent)
+        file_path = pathlib.Path(directory) / file_path
+    try:
+        file_path = file_path.resolve()
+    except Exception:
+        file_path = file_path.absolute()
+
+    try:
+        rel = file_path.relative_to(root)
+    except ValueError:
+        return None, None
+
+    if rel.parts and rel.parts[0] == "build":
+        return None, None
+    if len(rel.parts) >= 2 and rel.parts[0] == "src" and rel.parts[1] == "third_party":
+        return None, None
+
+    return str(rel), str(file_path)
+
+
+entries_by_rel = {}
+total_entries = 0
+for entry in data:
+    rel, abs_path = normalize_file(entry)
+    if not rel:
+        continue
+    total_entries += 1
+    entries_by_rel.setdefault(rel, []).append(entry)
+
+unique_files = sorted(entries_by_rel.keys())
+multi_cmd_files = sum(1 for cmds in entries_by_rel.values() if len(cmds) > 1)
+extra_cmds = sum(len(cmds) - 1 for cmds in entries_by_rel.values() if len(cmds) > 1)
+
+print(
+    f"Compilation database entries: {total_entries} (unique files: {len(unique_files)}, "
+    f"files with multiple commands: {multi_cmd_files}, extra commands: {extra_cmds})",
+    file=sys.stderr,
+)
+
+
+def score_entry(rel_path, entry):
+    cmd = entry.get("command") or ""
+    args = entry.get("arguments")
+    tokens = []
+    if args:
+        tokens = list(args)
+    elif cmd:
+        try:
+            tokens = shlex.split(cmd)
+        except Exception:
+            tokens = cmd.split()
+
+    score = 0
+    # Prefer non-test compile commands when available.
+    if any("/tests/" in t or t.startswith("tests/") for t in tokens):
+        score -= 1000
+    if any("tests/" in t for t in tokens if t.startswith("-I")):
+        score -= 250
+    # Prefer shared-library/object build flags.
+    if "-fPIC" in tokens:
+        score += 50
+    if "-fPIE" in tokens:
+        score -= 10
+    # Prefer commands with more explicit defines/includes (tends to match real builds).
+    score += sum(1 for t in tokens if t.startswith("-D"))
+    score += sum(1 for t in tokens if t.startswith("-I"))
+    # Tiebreaker: longer command line tends to be more complete.
+    score += min(len(tokens), 500) // 10
+    return score
+
+
+if out_dir and not all_commands:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selected = []
+    for rel in unique_files:
+        cmds = entries_by_rel[rel]
+        best = max(cmds, key=lambda e: score_entry(rel, e))
+        selected.append(best)
+
+    out_path = out_dir / "compile_commands.json"
+    out_path.write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
+    print(f"Wrote deduped compile database: {out_path} ({len(selected)} entries)", file=sys.stderr)
+
+for path in unique_files:
+    print(path)
+PY
+  )
+else
+  echo "python3 not found; falling back to git ls-files (may include files not in compile database)." >&2
+  mapfile -t FILES < <(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' ':!:build/**' ':!:src/third_party/**')
+fi
 if [ ${#FILES[@]} -eq 0 ]; then
-  echo "No C sources/headers found to analyze."
+  echo "No source files found to analyze."
   exit 0
 fi
 
-echo "Using compilation database: $PDB_DIR"
+echo "Using compilation database: $TIDY_PDB_DIR"
 echo "Analyzing ${#FILES[@]} files with clang-tidy..."
 echo "clang-tidy version:"
 clang-tidy --version | sed -n '1,2p'
@@ -47,7 +200,7 @@ LOG_FILE=".clang-tidy.local.out"
 
 # Optional strict mode: use alternate config enabling extra checks
 CONFIG_FILE=".clang-tidy"
-if [[ ${1-} == "--strict" ]]; then
+if [[ $STRICT -eq 1 ]]; then
   if [[ -f .clang-tidy.strict ]]; then
     CONFIG_FILE=".clang-tidy.strict"
     echo "Strict mode: using config $CONFIG_FILE"
@@ -63,16 +216,19 @@ else
   echo "Config file not found: $CONFIG_FILE (clang-tidy will use built-in defaults)"
 fi
 
-clang-tidy -p "$PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" >/dev/null || true
+clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" >/dev/null || true
 
-# Fail only on curated high-signal checks (must align with WarningsAsErrors)
-ERROR_REGEX='\[(clang-analyzer[^]]*|security-[^]]*|bugprone-(macro-parentheses|branch-clone|integer-division|signed-char-misuse|implicit-widening-of-multiplication-result|unsafe-functions|too-small-loop-variable|suspicious-string-compare)|misc-redundant-expression|cert-(str34-c|flp30-c))[^]]*\]$'
-if rg -n "$ERROR_REGEX" "$LOG_FILE" >/dev/null; then
-  echo "clang-tidy found curated analyzer/security/bugprone issues. See $LOG_FILE for details." >&2
-  # Print a brief summary of counts by check for convenience
-  echo "Summary (error checks):" >&2
-  rg -n "$ERROR_REGEX" "$LOG_FILE" | sed -E 's/.*\[([^]]+)\]$/\1/' | awk -F',' '{print $1}' | sort | uniq -c | sort -nr >&2
+# Fail on error diagnostics (WarningsAsErrors) and on clang-tidy processing failures.
+if rg -n "error:" "$LOG_FILE" >/dev/null; then
+  echo "clang-tidy emitted diagnostics treated as errors. See $LOG_FILE for details." >&2
+  echo "Summary (errors by check):" >&2
+  rg -n "error:.*\\[[^]]+\\]$" "$LOG_FILE" | sed -E 's/.*\[([^]]+)\]$/\1/' | awk -F',' '{print $1}' | sort | uniq -c | sort -nr >&2
+  exit 1
+fi
+if rg -n "^Error while processing " "$LOG_FILE" >/dev/null; then
+  echo "clang-tidy failed to process one or more files. See $LOG_FILE for details." >&2
+  rg -n "^Error while processing " "$LOG_FILE" >&2 || true
   exit 1
 fi
 
-echo "clang-tidy clean for curated error checks. Full output in $LOG_FILE"
+echo "clang-tidy clean for error diagnostics. Full output in $LOG_FILE"

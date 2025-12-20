@@ -127,8 +127,9 @@ mmse_interp_cc(const float* dl, float mu, float* out_r, float* out_j) {
     float sj[MMSE_NTAPS];
 
     for (int k = 0; k < MMSE_NTAPS; k++) {
-        sr[k] = dl[k * 2];
-        sj[k] = dl[k * 2 + 1];
+        const size_t kk = (size_t)k;
+        sr[k] = dl[kk * 2];
+        sj[k] = dl[kk * 2 + 1];
     }
 
     *out_r = mmse_interp_8tap(sr, mu);
@@ -363,8 +364,9 @@ op25_gardner_cc(struct demod_state* d) {
             mu -= 1.0f;
 
             /* Get input sample - NO NCO rotation */
-            float in_r = iq_in[i * 2];
-            float in_j = iq_in[i * 2 + 1];
+            const size_t ii = (size_t)i;
+            float in_r = iq_in[ii * 2];
+            float in_j = iq_in[ii * 2 + 1];
 
             /* NaN check (matches OP25) */
             if (IS_NAN(in_r)) {
@@ -376,10 +378,12 @@ op25_gardner_cc(struct demod_state* d) {
 
             /* Push to delay line at both dl_index and dl_index + twice_sps
              * This is OP25's circular buffer trick for wrap-free interpolation */
-            dl[dl_index * 2] = in_r;
-            dl[dl_index * 2 + 1] = in_j;
-            dl[(dl_index + twice_sps) * 2] = in_r;
-            dl[(dl_index + twice_sps) * 2 + 1] = in_j;
+            const size_t dl_i = (size_t)dl_index;
+            const size_t dl_i2 = (size_t)dl_index + (size_t)twice_sps;
+            dl[dl_i * 2] = in_r;
+            dl[dl_i * 2 + 1] = in_j;
+            dl[dl_i2 * 2] = in_r;
+            dl[dl_i2 * 2 + 1] = in_j;
 
             dl_index++;
             if (dl_index >= twice_sps) {
@@ -420,11 +424,11 @@ op25_gardner_cc(struct demod_state* d) {
 
         /* OP25: interp_samp_mid at dl_index (mid-symbol point) */
         float mid_r, mid_j;
-        mmse_interp_cc(&dl[dl_index * 2], mu, &mid_r, &mid_j);
+        mmse_interp_cc(dl + (size_t)dl_index * 2, mu, &mid_r, &mid_j);
 
         /* OP25: interp_samp at dl_index + half_sps (symbol point) */
         float sym_r, sym_j;
-        mmse_interp_cc(&dl[(dl_index + half_sps) * 2], half_mu, &sym_r, &sym_j);
+        mmse_interp_cc(dl + (size_t)(dl_index + half_sps) * 2, half_mu, &sym_r, &sym_j);
 
         /* OP25 Gardner error: (last - current) * mid
          * From gardner_cc_impl.cc lines 169-172 */
@@ -527,15 +531,16 @@ op25_diff_phasor_cc(struct demod_state* d) {
     float prev_j = d->cqpsk_diff_prev_j;
 
     for (int n = 0; n < pairs; n++) {
-        float cur_r = iq[n * 2];
-        float cur_j = iq[n * 2 + 1];
+        const size_t nn = (size_t)n;
+        float cur_r = iq[nn * 2];
+        float cur_j = iq[nn * 2 + 1];
 
         /* y = x * conj(prev) = (cur_r + j*cur_j) * (prev_r - j*prev_j) */
         float out_r = cur_r * prev_r + cur_j * prev_j;
         float out_j = cur_j * prev_r - cur_r * prev_j;
 
-        iq[n * 2] = out_r;
-        iq[n * 2 + 1] = out_j;
+        iq[nn * 2] = out_r;
+        iq[nn * 2 + 1] = out_j;
 
         prev_r = cur_r;
         prev_j = cur_j;
@@ -632,8 +637,9 @@ op25_costas_loop_cc(struct demod_state* d) {
     const float min_phase = -max_phase;
 
     for (int n = 0; n < pairs; n++) {
-        float in_r = iq[n * 2];
-        float in_j = iq[n * 2 + 1];
+        const size_t nn = (size_t)n;
+        float in_r = iq[nn * 2];
+        float in_j = iq[nn * 2 + 1];
 
         /* OP25: nco_out = gr_expj(-d_phase)
          * From costas_loop_cc_impl.cc line 146 */
@@ -678,8 +684,8 @@ op25_costas_loop_cc(struct demod_state* d) {
         }
 
         /* Write carrier-corrected output */
-        iq[n * 2] = out_r;
-        iq[n * 2 + 1] = out_j;
+        iq[nn * 2] = out_r;
+        iq[nn * 2 + 1] = out_j;
     }
 
     /* Save state */
@@ -1090,8 +1096,9 @@ op25_fll_band_edge_cc(struct demod_state* d) {
     int delay_idx = f->delay_idx;
 
     for (int n = 0; n < pairs; n++) {
-        float in_r = iq[n * 2];
-        float in_i = iq[n * 2 + 1];
+        const size_t nn = (size_t)n;
+        float in_r = iq[nn * 2];
+        float in_i = iq[nn * 2 + 1];
 
         /* NCO rotation: out = in * exp(+j*phase)
          * From GNU Radio fll_band_edge_cc_impl.cc:
@@ -1186,8 +1193,8 @@ op25_fll_band_edge_cc(struct demod_state* d) {
         }
 
         /* Write output */
-        iq[n * 2] = out_r;
-        iq[n * 2 + 1] = out_i;
+        iq[nn * 2] = out_r;
+        iq[nn * 2 + 1] = out_i;
     }
 
     /* Save state */

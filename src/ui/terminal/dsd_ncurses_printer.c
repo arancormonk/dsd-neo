@@ -1246,7 +1246,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("DST: ");
         if (state->m17_dst == 0xFFFFFFFFFFFF) {
             printw("BROADCAST ");
-        } else if (state->m17_dst != 0 && state->m17_dst >= 0xEE6B28000000) {
+        } else if (state->m17_dst >= 0xEE6B28000000) {
             printw("RESERVED (%012llx) ", state->m17_dst);
         } else {
             printw("%s", state->m17_dst_str);
@@ -1256,7 +1256,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("| ");
 
         printw("SRC: ");
-        if (state->m17_src != 0 && state->m17_src >= 0xEE6B28000000) {
+        if (state->m17_src >= 0xEE6B28000000) {
             printw("RESERVED (%012llx)", state->m17_src);
         } else {
             printw("%s", state->m17_src_str);
@@ -1509,7 +1509,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
 
         //Active Trunking Channels (NXDN and IDAS)
-        if (1 == 1) //opts->p25_trunk
+        /* opts->p25_trunk */
         {
             printw("\n");
             printw("| ");
@@ -2057,7 +2057,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
             printw("\n");
 
-            if (1 == 1) //opts->p25_trunk == 1
+            /* opts->p25_trunk == 1 */
             {
                 printw("|        | "); //Active Trunking Channels
 

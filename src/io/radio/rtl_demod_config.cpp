@@ -180,21 +180,13 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     /* Mode-specific adjustments */
     if (mode == DEMOD_ANALOG) {
         s->downsample_passes = 1;
-        s->custom_atan = 0;
         s->deemph = 1;
-        s->rate_out2 = rtl_dsp_bw_hz;
-    } else if (mode == DEMOD_RO2) {
-        s->downsample_passes = 0;
-        s->custom_atan = 0;
-        s->deemph = (p && p->deemph_default) ? 1 : 0;
-        s->rate_out2 = rtl_dsp_bw_hz;
     } else {
-        /* Digital default */
         s->downsample_passes = 0;
-        s->custom_atan = 0;
         s->deemph = (p && p->deemph_default) ? 1 : 0;
-        s->rate_out2 = rtl_dsp_bw_hz;
     }
+    s->custom_atan = 0;
+    s->rate_out2 = rtl_dsp_bw_hz;
 
     /* Legacy discriminator path removed; keep placeholders NULL. */
     s->discriminator = NULL;
@@ -472,14 +464,10 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
             }
             /* Choose symbol rate by mode; keep explicit branches for narrow paths. */
             int sym_rate = 4800; /* generic 4.8 ksps */
-            if (opts->frame_p25p1 == 1) {
-                sym_rate = 4800;
-            } else if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
+            if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
                 sym_rate = 6000;
             } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
                 sym_rate = 2400;
-            } else if (opts->frame_provoice == 1) {
-                sym_rate = 4800;
             }
             if (Fs_cx < (sym_rate * 2)) {
                 LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
@@ -674,14 +662,10 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int sps = 0;
     if (opts) {
         int sym_rate = 4800;
-        if (opts->frame_p25p1 == 1) {
-            sym_rate = 4800;
-        } else if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
+        if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
             sym_rate = 6000;
         } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
             sym_rate = 2400;
-        } else if (opts->frame_provoice == 1) {
-            sym_rate = 4800;
         }
         if (Fs_cx < (sym_rate * 2)) {
             LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx, sym_rate);

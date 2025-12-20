@@ -307,6 +307,7 @@ test_cach_redigitize(void) {
             case 1: test_symbols[i] = 1.0f; break;  /* -> dibit 0 */
             case 2: test_symbols[i] = -1.0f; break; /* -> dibit 2 */
             case 3: test_symbols[i] = -3.0f; break; /* -> dibit 3 */
+            default: test_symbols[i] = 0.0f; break;
         }
     }
 

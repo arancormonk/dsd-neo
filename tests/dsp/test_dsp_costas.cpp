@@ -53,7 +53,7 @@ test_basic_passthrough(void) {
     const int sps = 5;
     const int n_syms = 64;
     const int pairs = n_syms * sps;
-    float* buf = (float*)malloc(pairs * 2 * sizeof(float));
+    float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
         fprintf(stderr, "alloc failed\n");
         return 1;
@@ -62,8 +62,8 @@ test_basic_passthrough(void) {
     /* Fill with constant-phase symbols at 45° */
     const float a = 0.5f;
     for (int k = 0; k < pairs; k++) {
-        buf[2 * k + 0] = a; /* I = 0.5 */
-        buf[2 * k + 1] = a; /* Q = 0.5 */
+        buf[(size_t)k * 2 + 0] = a; /* I = 0.5 */
+        buf[(size_t)k * 2 + 1] = a; /* Q = 0.5 */
     }
 
     demod_state* s = alloc_state();
@@ -110,8 +110,8 @@ test_basic_passthrough(void) {
     /* Output symbols should have reasonable magnitudes */
     float mag_sum = 0.0f;
     for (int k = 0; k < out_pairs; k++) {
-        float I = buf[2 * k];
-        float Q = buf[2 * k + 1];
+        float I = buf[(size_t)k * 2];
+        float Q = buf[(size_t)k * 2 + 1];
         mag_sum += sqrtf(I * I + Q * Q);
     }
     float avg_mag = mag_sum / (float)out_pairs;
@@ -138,7 +138,7 @@ test_cfo_tracking(void) {
     const int sps = 5;
     const int n_syms = 128;
     const int pairs = n_syms * sps;
-    float* buf = (float*)malloc(pairs * 2 * sizeof(float));
+    float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
         fprintf(stderr, "alloc failed\n");
         return 1;
@@ -149,8 +149,8 @@ test_cfo_tracking(void) {
     double ph = 0.0;
     const double r = 0.5;
     for (int k = 0; k < pairs; k++) {
-        buf[2 * k + 0] = (float)(r * cos(ph));
-        buf[2 * k + 1] = (float)(r * sin(ph));
+        buf[(size_t)k * 2 + 0] = (float)(r * cos(ph));
+        buf[(size_t)k * 2 + 1] = (float)(r * sin(ph));
         ph += dtheta;
     }
 
@@ -292,15 +292,15 @@ static int
 test_ted_initialization(void) {
     const int sps = 5;
     const int pairs = 100;
-    float* buf = (float*)malloc(pairs * 2 * sizeof(float));
+    float* buf = (float*)malloc((size_t)pairs * 2 * sizeof(float));
     if (!buf) {
         fprintf(stderr, "alloc failed\n");
         return 1;
     }
 
     for (int k = 0; k < pairs; k++) {
-        buf[2 * k + 0] = 0.5f;
-        buf[2 * k + 1] = 0.5f;
+        buf[(size_t)k * 2 + 0] = 0.5f;
+        buf[(size_t)k * 2 + 1] = 0.5f;
     }
 
     demod_state* s = alloc_state();

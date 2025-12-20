@@ -20,7 +20,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _MAIN
+#ifndef DSD_NEO_MAIN
 extern const int rW[36];
 extern const int rX[36];
 extern const int rY[36];

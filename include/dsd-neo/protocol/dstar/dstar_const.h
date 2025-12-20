@@ -24,7 +24,7 @@
  *  dstar interleave experiments
  */
 
-#ifndef _MAIN
+#ifndef DSD_NEO_MAIN
 
 extern const int dW[72];
 extern const int dX[72];

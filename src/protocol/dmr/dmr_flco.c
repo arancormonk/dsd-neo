@@ -693,52 +693,49 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         //REMUS! Uncomment Line Below if desired
         // else strcat (state->call_string[slot], "          ");
 
-        if (1 == 1) //fid == 0x10
+        /* Check the "Service Option" bits */
+        if ((fid == 0x10) && (so & 0x20)) //Motorola FID 0x10 Only
         {
-            /* Check the "Service Option" bits */
-            if ((fid == 0x10) && (so & 0x20)) //Motorola FID 0x10 Only
+            //REMUS! Uncomment Line Below if desired
+            // strcat (state->call_string[slot], " TXI");
+            fprintf(stderr, "TXI ");
+        }
+        if ((fid == 0x10) && (so & 0x10)) //Motorola FID 0x10 Only
+        {
+            //REMUS! Uncomment Line Below if desired
+            // strcat (state->call_string[slot], " RPT");
+            fprintf(
+                stderr,
+                "RPT "); //Short way of saying the next SF's VC6 will be pre-empted/repeat frames for the TXI backwards channel
+        }
+        if (so & 0x08) {
+            //REMUS! Uncomment Line Below if desired
+            // strcat (state->call_string[slot], "-BC   ");
+            fprintf(stderr, "Broadcast ");
+        }
+        if (so & 0x04) {
+            //REMUS! Uncomment Line Below if desired
+            // strcat (state->call_string[slot], "-OVCM ");
+            fprintf(stderr, "OVCM ");
+        }
+        if (so & 0x03) {
+            if ((so & 0x03) == 0x01) {
+                //REMUS! Uncomment Line Below if desired
+                // strcat (state->call_string[slot], "-P1");
+                fprintf(stderr, "Priority 1 ");
+            } else if ((so & 0x03) == 0x02) {
+                //REMUS! Uncomment Line Below if desired
+                // strcat (state->call_string[slot], "-P2");
+                fprintf(stderr, "Priority 2 ");
+            } else if ((so & 0x03) == 0x03) {
+                //REMUS! Uncomment Line Below if desired
+                // strcat (state->call_string[slot], "-P3");
+                fprintf(stderr, "Priority 3 ");
+            } else /* We should never go here */
             {
                 //REMUS! Uncomment Line Below if desired
-                // strcat (state->call_string[slot], " TXI");
-                fprintf(stderr, "TXI ");
-            }
-            if ((fid == 0x10) && (so & 0x10)) //Motorola FID 0x10 Only
-            {
-                //REMUS! Uncomment Line Below if desired
-                // strcat (state->call_string[slot], " RPT");
-                fprintf(
-                    stderr,
-                    "RPT "); //Short way of saying the next SF's VC6 will be pre-empted/repeat frames for the TXI backwards channel
-            }
-            if (so & 0x08) {
-                //REMUS! Uncomment Line Below if desired
-                // strcat (state->call_string[slot], "-BC   ");
-                fprintf(stderr, "Broadcast ");
-            }
-            if (so & 0x04) {
-                //REMUS! Uncomment Line Below if desired
-                // strcat (state->call_string[slot], "-OVCM ");
-                fprintf(stderr, "OVCM ");
-            }
-            if (so & 0x03) {
-                if ((so & 0x03) == 0x01) {
-                    //REMUS! Uncomment Line Below if desired
-                    // strcat (state->call_string[slot], "-P1");
-                    fprintf(stderr, "Priority 1 ");
-                } else if ((so & 0x03) == 0x02) {
-                    //REMUS! Uncomment Line Below if desired
-                    // strcat (state->call_string[slot], "-P2");
-                    fprintf(stderr, "Priority 2 ");
-                } else if ((so & 0x03) == 0x03) {
-                    //REMUS! Uncomment Line Below if desired
-                    // strcat (state->call_string[slot], "-P3");
-                    fprintf(stderr, "Priority 3 ");
-                } else /* We should never go here */
-                {
-                    //REMUS! Uncomment Line Below if desired
-                    // strcat (state->call_string[slot], "  ");
-                    fprintf(stderr, "No Priority ");
-                }
+                // strcat (state->call_string[slot], "  ");
+                fprintf(stderr, "No Priority ");
             }
         }
 
@@ -1024,6 +1021,7 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
                 case 1: model_str = "Small"; break;
                 case 2: model_str = "Large"; break;
                 case 3: model_str = "Huge"; break;
+                default: break;
             }
             if (slco == 0x2) {
                 fprintf(stderr, " SLC C_SYS_PARMS (single) Model=%s", model_str);

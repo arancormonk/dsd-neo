@@ -47,25 +47,28 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
 
     /* Copy history (interleave from split buffers) */
     for (int k = 0; k < hist_len; k++) {
-        scratch[2 * k] = hist_i[k];
-        scratch[2 * k + 1] = hist_q[k];
+        const size_t kk = (size_t)k;
+        scratch[2 * kk] = hist_i[k];
+        scratch[2 * kk + 1] = hist_q[k];
     }
 
     /* Copy input (already interleaved) */
-    std::memcpy(scratch + 2 * hist_len, in, (size_t)N * 2 * sizeof(float));
+    std::memcpy(scratch + (size_t)hist_len * 2, in, (size_t)N * 2 * sizeof(float));
 
     /* Tail padding to preserve lastI/lastQ behavior */
     float lastI = (N > 0) ? in[(N - 1) << 1] : 0.0f;
     float lastQ = (N > 0) ? in[((N - 1) << 1) + 1] : 0.0f;
     for (int k = 0; k < pad; k++) {
-        scratch[2 * (hist_len + N + k)] = lastI;
-        scratch[2 * (hist_len + N + k) + 1] = lastQ;
+        const size_t kk = (size_t)hist_len + (size_t)N + (size_t)k;
+        scratch[2 * kk] = lastI;
+        scratch[2 * kk + 1] = lastQ;
     }
 
     /* Branch-free sample access (index is always valid due to padding) */
     auto get_iq = [&](int idx, float& xi, float& xq) {
-        xi = scratch[2 * idx];
-        xq = scratch[2 * idx + 1];
+        const size_t ii = (size_t)idx;
+        xi = scratch[2 * ii];
+        xq = scratch[2 * ii + 1];
     };
 
     /* Process 4 complex samples at a time (8 floats) */
@@ -200,25 +203,28 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
 
     /* Copy history (interleave from split buffers) */
     for (int k = 0; k < left_len; k++) {
-        scratch[2 * k] = hist_i[k];
-        scratch[2 * k + 1] = hist_q[k];
+        const size_t kk = (size_t)k;
+        scratch[2 * kk] = hist_i[k];
+        scratch[2 * kk + 1] = hist_q[k];
     }
 
     /* Copy input (already interleaved) */
-    std::memcpy(scratch + 2 * left_len, in, (size_t)ch_len * 2 * sizeof(float));
+    std::memcpy(scratch + (size_t)left_len * 2, in, (size_t)ch_len * 2 * sizeof(float));
 
     /* Tail padding to preserve lastI/lastQ behavior */
     float lastI = (ch_len > 0) ? in[in_len - 2] : 0.0f;
     float lastQ = (ch_len > 0) ? in[in_len - 1] : 0.0f;
     for (int k = 0; k < pad; k++) {
-        scratch[2 * (left_len + ch_len + k)] = lastI;
-        scratch[2 * (left_len + ch_len + k) + 1] = lastQ;
+        const size_t kk = (size_t)left_len + (size_t)ch_len + (size_t)k;
+        scratch[2 * kk] = lastI;
+        scratch[2 * kk + 1] = lastQ;
     }
 
     /* Branch-free sample access (index is always valid due to padding) */
     auto get_iq = [&](int idx, float& xi, float& xq) {
-        xi = scratch[2 * idx];
-        xq = scratch[2 * idx + 1];
+        const size_t ii = (size_t)idx;
+        xi = scratch[2 * ii];
+        xq = scratch[2 * ii + 1];
     };
 
     /* Process 4 output samples at a time */

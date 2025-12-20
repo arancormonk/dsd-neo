@@ -426,7 +426,7 @@ static DSD_THREAD_RETURN_TYPE
     }
     if (const char* es = getenv("DSD_NEO_TCP_BUFSZ")) {
         long v = atol(es);
-        if (v > 4096 && v < (32 * 1024 * 1024)) {
+        if (v > 4096 && v < (32L * 1024L * 1024L)) {
             BUFSZ = (size_t)v;
         }
     }
@@ -445,11 +445,9 @@ static DSD_THREAD_RETURN_TYPE
     }
     /* Autotune can override BUFSZ/WAITALL adaptively. Initial state considers env, but
        each loop consults s->tcp_autotune so UI/runtime toggles take effect live. */
-    int autotune_init = s->tcp_autotune;
-    if (!autotune_init) {
+    if (!s->tcp_autotune) {
         const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
         if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
-            autotune_init = 1;
             s->tcp_autotune = 1; /* make it observable to loop */
         }
     }
@@ -501,7 +499,6 @@ static DSD_THREAD_RETURN_TYPE
                 }
             }
             /* Either closed, hard error, or too many consecutive timeouts. */
-            consec_timeouts = 0;
             fprintf(stderr, "rtl_tcp: input stalled; attempting to reconnect to %s:%d...\n", s->host, s->port);
             /* Preserve current device state to replay after reconnect */
             const uint32_t prev_freq = s->freq;
@@ -1421,7 +1418,7 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
         return -1;
     }
 
-#define AUTO_GAIN -100
+#define AUTO_GAIN (-100)
     dev->gain = gain;
     if (dev->backend == 0) {
         if (!dev->dev) {

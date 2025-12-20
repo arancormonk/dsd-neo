@@ -233,8 +233,9 @@ mmse_interp_cc_8tap(const float* dl, float mu, float* out_r, float* out_j) {
 
     /* Extract 8 consecutive samples directly (no wrap needed due to doubled storage) */
     for (int k = 0; k < MMSE_NTAPS; k++) {
-        sr[k] = dl[k * 2];
-        sj[k] = dl[k * 2 + 1];
+        const size_t kk = (size_t)k;
+        sr[k] = dl[kk * 2];
+        sj[k] = dl[kk * 2 + 1];
     }
 
     *out_r = mmse_interp_8tap(sr, mu);
@@ -416,8 +417,9 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
         while (mu > 1.0f && i < nc) {
             mu -= 1.0f;
             /* Get input sample, sanitize NaN */
-            float in_r = x[i * 2];
-            float in_j = x[i * 2 + 1];
+            const size_t ii = (size_t)i;
+            float in_r = x[ii * 2];
+            float in_j = x[ii * 2 + 1];
             if (IS_NAN(in_r)) {
                 in_r = 0.0f;
             }
@@ -426,10 +428,12 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
             }
             /* OP25: Write sample at both dl_index and dl_index + twice_sps
              * This allows interpolator to read 8 consecutive samples without wrap */
-            dl[dl_index * 2] = in_r;
-            dl[dl_index * 2 + 1] = in_j;
-            dl[(dl_index + twice_sps) * 2] = in_r;
-            dl[(dl_index + twice_sps) * 2 + 1] = in_j;
+            const size_t dl_i = (size_t)dl_index;
+            const size_t dl_i2 = (size_t)dl_index + (size_t)twice_sps;
+            dl[dl_i * 2] = in_r;
+            dl[dl_i * 2 + 1] = in_j;
+            dl[dl_i2 * 2] = in_r;
+            dl[dl_i2 * 2 + 1] = in_j;
             dl_index++;
             if (dl_index >= twice_sps) {
                 dl_index = 0;
@@ -482,11 +486,11 @@ gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, 
 
         /* Interpolate at mid-symbol point using 8-tap MMSE (for Gardner error) */
         float mid_r, mid_j;
-        mmse_interp_cc_8tap(&dl[dl_index * 2], mu, &mid_r, &mid_j);
+        mmse_interp_cc_8tap(dl + (size_t)dl_index * 2, mu, &mid_r, &mid_j);
 
         /* Interpolate at optimal symbol point (half symbol later) */
         float sym_r, sym_j;
-        mmse_interp_cc_8tap(&dl[(dl_index + half_sps) * 2], half_mu, &sym_r, &sym_j);
+        mmse_interp_cc_8tap(dl + (size_t)(dl_index + half_sps) * 2, half_mu, &sym_r, &sym_j);
 
         /* OP25 Gardner error: (last - current) * mid
          * Note: OP25 has NO mute logic - always compute error and update tracking. */

@@ -11,6 +11,7 @@
  * are used to feed payload/parity bit arrays.
  */
 
+#include <exception>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -49,7 +50,7 @@ expect_lt(const char* tag, int got, int maxv) {
 }
 
 int
-main(void) {
+main(void) try {
     int rc = 0;
     ezpwd::RS<63, 35> rs;
 
@@ -127,4 +128,11 @@ main(void) {
     }
 
     return rc;
+} catch (const std::exception& e) {
+
+    fprintf(stderr, "Unhandled exception: %s\n", e.what());
+    return 1;
+} catch (...) {
+    fprintf(stderr, "Unhandled exception\n");
+    return 1;
 }

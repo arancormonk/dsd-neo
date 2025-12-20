@@ -136,15 +136,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     c.c4fm_clk_is_set = env_is_set(clk);
     c.c4fm_clk_mode = 0;
     if (c.c4fm_clk_is_set && clk && clk[0] != '\0') {
-        if (dsd_strcasecmp(clk, "off") == 0 || strcmp(clk, "0") == 0) {
-            c.c4fm_clk_mode = 0;
-        } else if (dsd_strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
+        if (dsd_strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
             c.c4fm_clk_mode = 1;
         } else if (dsd_strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
             c.c4fm_clk_mode = 2;
-        } else {
-            /* Unrecognized → keep off */
-            c.c4fm_clk_mode = 0;
         }
     }
     c.c4fm_clk_sync_is_set = env_is_set(clk_sync);

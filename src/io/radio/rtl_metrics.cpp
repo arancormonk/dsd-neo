@@ -185,7 +185,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
                 delta = +0.5;
             }
         }
-        double center = static_cast<double>(N / 2);
+        double center = static_cast<double>(N) / 2.0;
         double k_off = (static_cast<double>(i_max) + delta) - center;
         df_spec_hz = (out_rate_hz > 0) ? (k_off * static_cast<double>(out_rate_hz) / static_cast<double>(N)) : 0.0;
     }

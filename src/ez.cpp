@@ -72,7 +72,6 @@ ez_rs28_ess(int payload[96], int parity[168]) {
     //convert ESS_B back to bits
     k = 0;
     for (i = 0; i < 16; i++) {
-        b = 0;
         for (j = 0; j < 6; j++) {
             b = (ESS_B[i] >> (5 - j) & 0x1);
             payload[k] = b;
@@ -187,7 +186,6 @@ ez_rs28_facch(int payload[156], int parity[114]) {
     k = 0;
     for (i = 0; i < 26; i++) //26*6=156 bits
     {
-        b = 0;
         for (j = 0; j < 6; j++) {
             b = (HB[i + 9] >> (5 - j) & 0x1); //+9 to mach our starting position
             payload[k] = b;
@@ -235,7 +233,6 @@ ez_rs28_sacch(int payload[180], int parity[132]) {
     k = 0;
     for (i = 0; i < 30; i++) //30*6=180 bits
     {
-        b = 0;
         for (j = 0; j < 6; j++) {
             b = (HBS[i + 5] >> (5 - j) & 0x1); //+5 to mach our starting position
             payload[k] = b;

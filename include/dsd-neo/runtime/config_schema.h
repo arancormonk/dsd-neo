@@ -38,12 +38,12 @@ typedef enum {
 typedef struct {
     const char* section;     /**< Section name (e.g., "input", "output") */
     const char* key;         /**< Key name (e.g., "source", "rtl_device") */
-    dsdcfg_type_t type;      /**< Value type */
     const char* description; /**< Human-readable description */
     const char* default_str; /**< Default value as string (for template) */
+    const char* allowed;     /**< Pipe-separated allowed values (for ENUM) */
+    dsdcfg_type_t type;      /**< Value type */
     int min_val;             /**< Minimum value (for INT type) */
     int max_val;             /**< Maximum value (for INT type, 0 = no max) */
-    const char* allowed;     /**< Pipe-separated allowed values (for ENUM) */
     int deprecated;          /**< Non-zero if key is deprecated */
 } dsdcfg_schema_entry_t;
 

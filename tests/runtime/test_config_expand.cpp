@@ -156,6 +156,9 @@ test_combined_expansion(void) {
         return 0;
     }
 
+    char home_copy[512];
+    snprintf(home_copy, sizeof(home_copy), "%s", home);
+
     setenv("DSD_TEST_DIR", "configs", 1);
 
     // Combine ~ and $VAR
@@ -166,7 +169,7 @@ test_combined_expansion(void) {
     }
 
     char expected[512];
-    snprintf(expected, sizeof(expected), "%s/configs/test.ini", home);
+    snprintf(expected, sizeof(expected), "%s/configs/test.ini", home_copy);
     if (strcmp(buf, expected) != 0) {
         fprintf(stderr, "FAIL: combined expansion failed, expected '%s', got '%s'\n", expected, buf);
         return 1;

@@ -611,9 +611,9 @@ io_set_pulse_out(void* vctx) {
     const char** names = (const char**)calloc(16, sizeof(char*));
     char** bufs = (char**)calloc(16, sizeof(char*));
     if (!labels || !names || !bufs) {
-        free(labels);
-        free(names);
-        free(bufs);
+        free((void*)labels);
+        free((void*)names);
+        free((void*)bufs);
         ui_statusf("Out of memory");
         return;
     }
@@ -634,9 +634,9 @@ io_set_pulse_out(void* vctx) {
         n++;
     }
     if (n == 0) {
-        free(labels);
-        free(names);
-        free(bufs);
+        free((void*)labels);
+        free((void*)names);
+        free((void*)bufs);
         ui_statusf("No Pulse outputs found");
         return;
     }
@@ -647,9 +647,9 @@ io_set_pulse_out(void* vctx) {
             free((void*)names[i]);
             free(bufs[i]);
         }
-        free(labels);
-        free(names);
-        free(bufs);
+        free((void*)labels);
+        free((void*)names);
+        free((void*)bufs);
         ui_statusf("Out of memory");
         return;
     }
@@ -675,9 +675,9 @@ io_set_pulse_in(void* vctx) {
     const char** names = (const char**)calloc(16, sizeof(char*));
     char** bufs = (char**)calloc(16, sizeof(char*));
     if (!labels || !names || !bufs) {
-        free(labels);
-        free(names);
-        free(bufs);
+        free((void*)labels);
+        free((void*)names);
+        free((void*)bufs);
         ui_statusf("Out of memory");
         return;
     }
@@ -697,9 +697,9 @@ io_set_pulse_in(void* vctx) {
         n++;
     }
     if (n == 0) {
-        free(labels);
-        free(names);
-        free(bufs);
+        free((void*)labels);
+        free((void*)names);
+        free((void*)bufs);
         ui_statusf("No Pulse inputs found");
         return;
     }
@@ -710,9 +710,9 @@ io_set_pulse_in(void* vctx) {
             free((void*)names[i]);
             free(bufs[i]);
         }
-        free(labels);
-        free(names);
-        free(bufs);
+        free((void*)labels);
+        free((void*)names);
+        free((void*)bufs);
         ui_statusf("Out of memory");
         return;
     }

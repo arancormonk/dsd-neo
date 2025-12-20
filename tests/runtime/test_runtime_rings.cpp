@@ -28,6 +28,16 @@ dsd_rtl_stream_should_exit(void) {
 }
 
 static int
+float_arrays_equal(const float* a, const float* b, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 test_input_ring_wrap_and_read(void) {
     const size_t cap = 8;
     struct input_ring_state r;
@@ -80,7 +90,7 @@ test_input_ring_wrap_and_read(void) {
         return 1;
     }
     const float expect[6] = {40, 50, 60, 70, 80, 90};
-    if (memcmp(out, expect, sizeof(expect)) != 0) {
+    if (!float_arrays_equal(out, expect, sizeof(expect) / sizeof(expect[0]))) {
         fprintf(stderr, "input_ring: wrap/read sequence mismatch\n");
         return 1;
     }
@@ -205,7 +215,7 @@ test_output_ring_wrap_and_read(void) {
         return 1;
     }
     const float expect[6] = {4, 5, 6, 7, 8, 9};
-    if (memcmp(out, expect, sizeof(expect)) != 0) {
+    if (!float_arrays_equal(out, expect, sizeof(expect) / sizeof(expect[0]))) {
         fprintf(stderr, "output_ring: wrap/read sequence mismatch\n");
         return 1;
     }

@@ -207,6 +207,7 @@ invert_dibit(int dibit) {
         case 1: return 3;
         case 2: return 0;
         case 3: return 1;
+        default: break;
     }
 
     // Error, shouldn't be here

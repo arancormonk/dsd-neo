@@ -293,9 +293,18 @@ test_snapshot_persists_demod_lock(void) {
         return 1;
     }
     dsd_user_config_render_ini(&snap, tmp);
-    rewind(tmp);
     char buf[512];
+    if (fseek(tmp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "fseek failed\n");
+        fclose(tmp);
+        return 1;
+    }
     size_t n = fread(buf, 1, sizeof buf - 1, tmp);
+    if (n == 0 && ferror(tmp)) {
+        fprintf(stderr, "fread failed\n");
+        fclose(tmp);
+        return 1;
+    }
     buf[n] = '\0';
     fclose(tmp);
 
