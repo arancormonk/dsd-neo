@@ -41,6 +41,9 @@ typedef struct mbe_parms mbe_parms;
 /* Forward declaration for RTL-SDR stream context (opaque, always present in ABI) */
 struct RtlSdrContext;
 
+/* Forward declaration for Codec2 context (opaque, always present in ABI) */
+struct CODEC2;
+
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 // The dsd_state structure is intentionally organized by functional groups for clarity
@@ -287,11 +290,9 @@ struct dsd_state {
     unsigned long long int m17_src;
     //event history itemized per slot
     Event_History_I* event_history_s;
-//Codec2
-#ifdef USE_CODEC2
-    struct CODEC2* codec2_3200; //M17 fullrate
-    struct CODEC2* codec2_1600; //M17 halfrate
-#endif
+    // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
+    struct CODEC2* codec2_3200; // M17 fullrate
+    struct CODEC2* codec2_1600; // M17 halfrate
     void* rc2_context;
     struct RtlSdrContext* rtl_ctx; // RTL-SDR stream context (NULL when unused; unconditional for ABI stability)
     time_t ui_msg_expire;          // epoch seconds when ui_msg should stop displaying

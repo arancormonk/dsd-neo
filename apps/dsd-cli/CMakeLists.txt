@@ -24,6 +24,8 @@ target_link_libraries(dsd-neo PRIVATE
   dsd-neo_proto_p25
   dsd-neo_runtime
   dsd-neo_io_audio
+  dsd-neo_feature_rtlsdr
+  dsd-neo_feature_codec2
   ${LIBS})
 
 # Target include directories (prefer target-scoped over global)

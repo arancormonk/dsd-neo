@@ -37,7 +37,7 @@ target_include_directories(dsd-neo_runtime
 )
 
 # Link platform abstraction library for threading primitives
-target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform)
+target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform dsd-neo_feature_rtlsdr)
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)

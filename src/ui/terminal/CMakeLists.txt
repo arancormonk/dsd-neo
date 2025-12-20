@@ -40,7 +40,7 @@ target_include_directories(dsd-neo_ui_terminal
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(dsd-neo_ui_terminal PUBLIC dsd-neo_core dsd-neo_runtime)
+target_link_libraries(dsd-neo_ui_terminal PUBLIC dsd-neo_core dsd-neo_runtime dsd-neo_feature_rtlsdr)
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)

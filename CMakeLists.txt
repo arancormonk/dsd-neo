@@ -245,11 +245,24 @@ endif()
 
 set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS} ${CURSES_LIBRARIES})
 
+# -----------------------------------------------------------------------------
+# Optional feature interface targets
+#
+# These INTERFACE libraries carry compile definitions and include paths for
+# optional features. Link them only to targets that require the feature,
+# avoiding global add_definitions() that leak into unrelated libraries/tests.
+# -----------------------------------------------------------------------------
+
 if(RTLSDR_FOUND)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
     list(APPEND _PUBLIC_INCLUDES ${RTLSDR_INCLUDE_DIRS})
-    add_definitions(-DUSE_RTLSDR)
+
+    # Interface target for USE_RTLSDR compile definition
+    add_library(dsd-neo_feature_rtlsdr INTERFACE)
+    target_compile_definitions(dsd-neo_feature_rtlsdr INTERFACE USE_RTLSDR)
+    target_include_directories(dsd-neo_feature_rtlsdr SYSTEM INTERFACE ${RTLSDR_INCLUDE_DIRS})
+
     # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
     include(CheckSymbolExists)
     set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
@@ -263,14 +276,23 @@ if(RTLSDR_FOUND)
     unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
     unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
     if(HAVE_RTLSDR_BIAS_TEE)
-        add_definitions(-DUSE_RTLSDR_BIAS_TEE)
+        target_compile_definitions(dsd-neo_feature_rtlsdr INTERFACE USE_RTLSDR_BIAS_TEE)
     endif()
-endif(RTLSDR_FOUND)
+else()
+    # Provide a stub interface target so linking remains unconditional upstream
+    add_library(dsd-neo_feature_rtlsdr INTERFACE)
+endif()
 
 if(CODEC2_FOUND)
     list(APPEND LIBS ${CODEC2_LIBRARIES})
-    add_definitions(-DUSE_CODEC2)
-endif(CODEC2_FOUND)
+
+    # Interface target for USE_CODEC2 compile definition
+    add_library(dsd-neo_feature_codec2 INTERFACE)
+    target_compile_definitions(dsd-neo_feature_codec2 INTERFACE USE_CODEC2)
+else()
+    # Provide a stub interface target so linking remains unconditional upstream
+    add_library(dsd-neo_feature_codec2 INTERFACE)
+endif()
 
 if(AUDIO_SYSTEM_LIBS)
     list(APPEND LIBS ${AUDIO_SYSTEM_LIBS})

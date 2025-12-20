@@ -56,7 +56,7 @@ target_include_directories(dsd-neo_dsp
   PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_dsp PUBLIC dsd-neo_runtime)
+target_link_libraries(dsd-neo_dsp PUBLIC dsd-neo_runtime dsd-neo_feature_rtlsdr)
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)

@@ -11,7 +11,7 @@ target_include_directories(dsd-neo_proto_m17
   PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_proto_m17 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core)
+target_link_libraries(dsd-neo_proto_m17 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core dsd-neo_feature_rtlsdr dsd-neo_feature_codec2)
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)
