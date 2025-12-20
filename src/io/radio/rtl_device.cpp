@@ -27,6 +27,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
+#include <excpt.h>
+#endif
+
 #if DSD_PLATFORM_POSIX
 #include <strings.h>
 #include <unistd.h>
@@ -280,7 +284,18 @@ static DSD_THREAD_RETURN_TYPE
     dongle_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
+#if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
+    __try {
+        rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr,
+                "ERROR: libusb exception in rtlsdr_read_async (MSVC/Windows). "
+                "Check that the bundled libusb/librtlsdr DLLs match the build and the device driver is installed.\n");
+        exitflag = 1;
+    }
+#else
     rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
+#endif
     DSD_THREAD_RETURN;
 }
 
@@ -1172,7 +1187,19 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->tuner_xtal_hz = 0;
     dev->if_gain_count = 0;
 
-    int r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
+    int r = 0;
+#if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
+    __try {
+        r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr,
+                "ERROR: libusb exception in rtlsdr_open (MSVC/Windows). "
+                "Check that the bundled libusb/librtlsdr DLLs match the build and the device driver is installed.\n");
+        r = -1;
+    }
+#else
+    r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
+#endif
     if (r < 0) {
         fprintf(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
         free(dev);

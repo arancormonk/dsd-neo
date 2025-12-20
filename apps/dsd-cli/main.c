@@ -3191,7 +3191,17 @@ main(int argc, char** argv) {
 
     RTLEND:
 
-        device_count = rtlsdr_get_device_count();
+#if defined(_MSC_VER) && defined(_WIN32)
+        __try {
+            device_count = (int)rtlsdr_get_device_count();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            LOG_ERROR("RTL: libusb exception during device enumeration.\n");
+            device_count = 0;
+            exitflag = 1;
+        }
+#else
+        device_count = (int)rtlsdr_get_device_count();
+#endif
         if (!device_count) {
             LOG_ERROR("No supported devices found.\n");
             exitflag = 1;
@@ -3199,7 +3209,17 @@ main(int argc, char** argv) {
             LOG_NOTICE("Found %d device(s):\n", device_count);
         }
         for (int i = 0; i < device_count; i++) {
-            rtlsdr_get_device_usb_strings(i, vendor, product, serial);
+#if defined(_MSC_VER) && defined(_WIN32)
+            __try {
+                (void)rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                snprintf(vendor, sizeof(vendor), "%s", "unknown");
+                snprintf(product, sizeof(product), "%s", "unknown");
+                snprintf(serial, sizeof(serial), "%s", "unknown");
+            }
+#else
+            (void)rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
+#endif
             LOG_NOTICE("  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
             if (opts->rtl_dev_index == i) {
                 LOG_NOTICE("Selected Device #%d with Serial Number: %s \n", i, serial);
