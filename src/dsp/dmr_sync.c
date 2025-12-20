@@ -146,7 +146,7 @@ dmr_extract_sync_symbols(dsd_state* state, float offset, float sps, float symbol
     /* Extract 24 symbols from history, oldest first */
     for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
         /* Symbol position: offset points to end of sync, go back 23..0 symbols */
-        int sym_offset = (int)(offset - (DMR_SYNC_SYMBOLS - 1 - i));
+        int sym_offset = (int)(offset - (DMR_SYNC_SYMBOLS - 1 - i) * sps);
         symbols[i] = dmr_sample_history_get(state, sym_offset);
     }
 }

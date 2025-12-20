@@ -71,9 +71,6 @@ int dsd_rtl_stream_get_rtltcp_autotune(void);
 static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
 #define DEFAULT_SAMPLE_RATE 48000
-#define DEFAULT_BUF_LENGTH  (1 * 16384)
-#define MAXIMUM_OVERSAMPLE  16
-#define MAXIMUM_BUF_LENGTH  ((size_t)(MAXIMUM_OVERSAMPLE) * (size_t)(DEFAULT_BUF_LENGTH))
 #define AUTO_GAIN           (-100)
 #define BUFFER_DUMP         4096
 
