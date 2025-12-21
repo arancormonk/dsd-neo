@@ -36,7 +36,7 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
         return;
     }
 
-    std::va_list args;
+    va_list args;
     va_start(args, format);
     /* Format into a temporary buffer first so we can apply ASCII fallback if needed. */
     char buf[4096];
