@@ -547,23 +547,35 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 void
 dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU) {
 
-    uint16_t message_len = 0;
     uint8_t slot = state->currentslot;
-    uint8_t lrrp_confidence =
-        0; //variable to increment based on number of tokens found, the more, the higher the confidence level
+    if (!DMR_PDU || len < 2) {
+        return;
+    }
+
+    // Match SDRTrunk: header is 2 bytes (type + payload length), tokens start at offset +2.
     uint8_t lrrp_type = DMR_PDU[0];
+    uint8_t payload_len = DMR_PDU[1];
+
     uint8_t is_request = 0;
     uint8_t is_response = 0;
-
-    //source/dest and ports (this is grabbed in the IP decoding phase)
-    if (source != 0) {
-        lrrp_confidence++;
+    switch (lrrp_type) {
+        case 0x0F: // Triggered Location Stop Request
+        case 0x05: // Immediate Location Request
+        case 0x09: // Triggered Location Start Request
+        case 0x14: // Protocol Version Request
+            is_request = 1;
+            break;
+        case 0x07: // Immediate Location Response
+        case 0x0B: // Triggered Location Start Response
+        case 0x0D: // Triggered Location
+        case 0x11: // Triggered Location Stop Response
+        case 0x15: // Protocol Version Response
+            is_response = 1;
+            break;
+        default: break;
     }
-    if (dest != 0) {
-        lrrp_confidence++;
-    }
 
-    //time
+    // decoded time (token 0x34)
     uint16_t year = 0;
     uint16_t month = 0;
     uint16_t day = 0;
@@ -571,111 +583,96 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
     uint16_t minute = 0;
     uint16_t second = 0;
 
-    //lat-long-radius-alt
-    uint32_t lat = 0;
-    uint32_t lon = 0;
-    uint16_t rad = 0;     //raw radius value (scaled by 0.01 for meters)
-    uint32_t alt = 0;     //raw altitude value (24-bit for point3d, 16-bit for circle3d)
-    uint16_t alt_acc = 0; //altitude accuracy for circle3d (scaled by 0.01 for meters)
-    double lat_unit = (double)180 / (double)4294967295;
-    double lon_unit = (double)360 / (double)4294967295;
-    double lat_fin = 0.0;     //calculated values
-    double lon_fin = 0.0;     //calculated values
-    double rad_fin = 0.0;     //radius in meters (after 0.01 scaling)
-    double alt_fin = 0.0;     //altitude in meters (after 0.01 scaling)
-    double alt_acc_fin = 0.0; //altitude accuracy in meters
-    int lat_sign = 1;         //positive 1, or negative 1
+    // decoded position (point/circle 2D/3D)
+    uint32_t lat_raw = 0;
+    uint32_t lon_raw = 0;
+    uint16_t rad_raw = 0;
+    uint32_t alt_raw = 0;
+    uint16_t alt_acc_raw = 0;
+    uint8_t have_pos = 0;
+    uint8_t have_rad = 0;
+    uint8_t have_alt = 0;
+    uint8_t have_alt_acc = 0;
 
-    double velocity = 0; //speed in mph (raw value * 0.01 per SDRTrunk)
+    // speed/heading
+    double velocity_mph = 0.0; // units are 1/100 mph per SDRTrunk Speed.java
     uint8_t vel_set = 0;
+    uint16_t heading_deg = 0; // degrees, 2-degree increments per SDRTrunk Heading.java
+    uint8_t heading_set = 0;
 
-    //track, direction, degrees
-    uint8_t degrees = 0;
-    uint8_t deg_set = 0;
+    // Token parsing bounds: clamp to available bytes so malformed/truncated packets can't overrun.
+    size_t avail = (size_t)len;
+    size_t token_avail = (avail > 2u) ? (avail - 2u) : 0u;
+    size_t token_len = (size_t)payload_len;
+    if (token_len > token_avail) {
+        token_len = token_avail;
+    }
 
-    const char* deg_glyph = dsd_degrees_glyph();
+    size_t idx = 2;
+    size_t remaining = token_len;
 
-    //debug passed LRRP message
-    // fprintf (stderr, "\n LRRP (Debug): ");
-    // for (uint16_t i = 0; i < len; i++)
-    //   fprintf (stderr, "%02X ", DMR_PDU[i]);
+    // Parse tokens sequentially (SDRTrunk TokenFactory-style) so variable-length tokens don't break alignment.
+    while (remaining > 0 && idx < avail) {
+        uint8_t token = DMR_PDU[idx];
+        size_t adv = 1;
 
-    //start looking for tokens
-    for (uint16_t i = 0; i < len; i++) {
-        uint8_t token = DMR_PDU[i];
+        // Requests can contain request-parameter tokens; otherwise tokens are requested-element bytes.
+        // We only need robust skipping here so we don't desync on variable-length tokens.
+        if (!is_response) {
+            switch (token) {
+                case 0x22: { // IDENTITY (variable-length)
+                    if (remaining < 2) {
+                        remaining = 0;
+                        break;
+                    }
+                    size_t payload = (size_t)DMR_PDU[idx + 1];
+                    adv = 2u + payload;
+                    if (adv > remaining) {
+                        adv = remaining;
+                    }
+                } break;
+                case 0x4A: // TRIGGER_DISTANCE (len 1)
+                case 0x31: // TRIGGER_PERIODIC (len 1)
+                case 0x78: // TRIGGER_ON_MOVE (len 1)
+                case 0x61: // REQUEST_61 (len 1)
+                case 0x73: // REQUEST_73 (len 1)
+                    adv = (remaining >= 2) ? 2 : remaining;
+                    break;
+                default: adv = 1; break;
+            }
+
+            idx += adv;
+            remaining -= adv;
+            continue;
+        }
+
         switch (token) {
-            case 0x0F:      //Triggered Location Stop Request
-            case 0x05:      //Immediate Location Request
-            case 0x09:      //Triggered Location Start Request
-            case 0x14:      //Protocol Version Request
-                if (i == 0) //see if this is the first octet, otherwise, can't verify this is going to work
-                {
-                    message_len = DMR_PDU[i + 1];
-                    i = len; //go to end
-                    lrrp_confidence++;
-                    is_request = 1;
+            case 0x22: { // IDENTITY (variable-length)
+                if (remaining < 2) {
+                    remaining = 0;
+                    break;
                 }
-                break;
-            case 0x07:      //Immediate Location Response
-            case 0x0B:      //Triggered Location Start Response
-            case 0x0D:      //Triggered Location
-            case 0x11:      //Triggered Location Stop Response
-            case 0x15:      //Protocol Version Response
-                if (i == 0) //see if this is the first octet, otherwise, can't verify this is going to work
-                {
-                    message_len = DMR_PDU[i + 1];
-                    i += 3; //next byte is len, then next two are usually 0x22 0xXX or 0x23 0xXX
-                    lrrp_confidence++;
-                    is_response = 1;
+                size_t payload = (size_t)DMR_PDU[idx + 1];
+                adv = 2u + payload;
+                if (adv > remaining) {
+                    adv = remaining;
                 }
+            } break;
+            case 0x23: // UNKNOWN_23 (len 1)
+                adv = (remaining >= 2) ? 2 : remaining;
                 break;
+            case 0x34: // TIMESTAMP (len 5)
+            case 0x35: // TIMESTAMP variant observed in the wild
+                adv = (remaining >= 6) ? 6 : remaining;
+                if (adv == 6 && year == 0) {
+                    year = (uint16_t)((DMR_PDU[idx + 1] << 6) + (DMR_PDU[idx + 2] >> 2));
+                    month = (uint16_t)(((DMR_PDU[idx + 2] & 0x3) << 2) + ((DMR_PDU[idx + 3] & 0xC0) >> 6));
+                    day = (uint16_t)(((DMR_PDU[idx + 3] & 0x3E) >> 1));
+                    hour = (uint16_t)(((DMR_PDU[idx + 3] & 0x01) << 4) + ((DMR_PDU[idx + 4] & 0xF0) >> 4));
+                    minute = (uint16_t)(((DMR_PDU[idx + 4] & 0x0F) << 2) + ((DMR_PDU[idx + 5] & 0xC0) >> 6));
+                    second = (uint16_t)((DMR_PDU[idx + 5] & 0x3F));
 
-            //tokens
-            case 0x51: //circle-2d (11 bytes: token + 4 lat + 4 lon + 2 radius)
-                if (message_len > 0 && lat == 0) {
-                    lat = ((uint32_t)DMR_PDU[i + 1] << 24) | ((uint32_t)DMR_PDU[i + 2] << 16)
-                          | ((uint32_t)DMR_PDU[i + 3] << 8) | DMR_PDU[i + 4];
-                    lon = ((uint32_t)DMR_PDU[i + 5] << 24) | ((uint32_t)DMR_PDU[i + 6] << 16)
-                          | ((uint32_t)DMR_PDU[i + 7] << 8) | DMR_PDU[i + 8];
-                    rad = ((uint16_t)DMR_PDU[i + 9] << 8) | DMR_PDU[i + 10];
-                    i += 10;
-                    if (lat > 0 && lon > 0) {
-                        lrrp_confidence++;
-                    } else {
-                        lat = 0;
-                    }
-                }
-                break;
-            case 0x55: //circle-3d (16 bytes: token + 4 lat + 4 lon + 2 radius + 2 alt + 2 alt_acc + 1 unknown)
-                if (message_len > 0 && lat == 0) {
-                    lat = ((uint32_t)DMR_PDU[i + 1] << 24) | ((uint32_t)DMR_PDU[i + 2] << 16)
-                          | ((uint32_t)DMR_PDU[i + 3] << 8) | DMR_PDU[i + 4];
-                    lon = ((uint32_t)DMR_PDU[i + 5] << 24) | ((uint32_t)DMR_PDU[i + 6] << 16)
-                          | ((uint32_t)DMR_PDU[i + 7] << 8) | DMR_PDU[i + 8];
-                    rad = ((uint16_t)DMR_PDU[i + 9] << 8) | DMR_PDU[i + 10];
-                    alt = ((uint16_t)DMR_PDU[i + 11] << 8) | DMR_PDU[i + 12];
-                    alt_acc = ((uint16_t)DMR_PDU[i + 13] << 8) | DMR_PDU[i + 14];
-                    i += 15;
-                    if (lat > 0 && lon > 0) {
-                        lrrp_confidence++;
-                    } else {
-                        lat = 0;
-                    }
-                }
-                break;
-
-            case 0x34: //Time
-            case 0x35: //Time
-                if (message_len > 0 && year == 0) {
-                    year = (DMR_PDU[i + 1] << 6) + (DMR_PDU[i + 2] >> 2);
-                    month = ((DMR_PDU[i + 2] & 0x3) << 2) + ((DMR_PDU[i + 3] & 0xC0) >> 6);
-                    day = ((DMR_PDU[i + 3] & 0x30) >> 1) + ((DMR_PDU[i + 3] & 0x0E) >> 1);
-                    hour = ((DMR_PDU[i + 3] & 0x01) << 4) + ((DMR_PDU[i + 4] & 0xF0) >> 4);
-                    minute = ((DMR_PDU[i + 4] & 0x0F) << 2) + ((DMR_PDU[i + 5] & 0xC0) >> 6);
-                    second = (DMR_PDU[i + 5] & 0x3F);
-                    i += 5;
-                    // Validate decoded timestamp and fall back to system time if out-of-range.
-                    // Accept only years in [2000, 2037] to avoid epoch edge cases and bogus decodes.
+                    // Validate decoded timestamp; ignore if out-of-range to avoid bogus decodes.
                     int valid = 1;
                     if (!(month >= 1 && month <= 12)) {
                         valid = 0;
@@ -686,207 +683,232 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                     if (!(hour <= 23 && minute <= 59 && second <= 59)) {
                         valid = 0;
                     }
+                    // Accept only years in [2000, 2037] to avoid epoch edge cases and bogus decodes.
                     if (!(year >= 2000 && year <= 2037)) {
                         valid = 0;
                     }
-                    if (valid) {
-                        lrrp_confidence++;
-                    } else {
-                        // Invalidate decoded time so downstream uses system time fallback.
+                    if (!valid) {
                         year = month = day = hour = minute = second = 0;
                     }
                 }
                 break;
+            case 0x36: // VERSION (len 1)
+                adv = (remaining >= 2) ? 2 : remaining;
+                break;
+            case 0x37: { // RESPONSE (2 or 3 bytes)
+                if (remaining < 2) {
+                    remaining = 0;
+                    break;
+                }
+                int extended = (DMR_PDU[idx + 1] & 0x80) ? 1 : 0;
+                adv = extended ? 3u : 2u;
+                if (adv > remaining) {
+                    adv = remaining;
+                }
+            } break;
+            case 0x38: // SUCCESS (len 0)
+                adv = 1;
+                break;
 
-            case 0x66: //point-2d (9 bytes: token + 4 lat + 4 lon)
-                if (message_len > 0 && lat == 0) {
-                    lat = ((uint32_t)DMR_PDU[i + 1] << 24) | ((uint32_t)DMR_PDU[i + 2] << 16)
-                          | ((uint32_t)DMR_PDU[i + 3] << 8) | DMR_PDU[i + 4];
-                    lon = ((uint32_t)DMR_PDU[i + 5] << 24) | ((uint32_t)DMR_PDU[i + 6] << 16)
-                          | ((uint32_t)DMR_PDU[i + 7] << 8) | DMR_PDU[i + 8];
-                    i += 8;
-                    lrrp_confidence++;
+            case 0x51: // CIRCLE_2D (len 10)
+                adv = (remaining >= 11) ? 11 : remaining;
+                if (adv == 11 && !have_pos) {
+                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
+                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
+                    rad_raw = ((uint16_t)DMR_PDU[idx + 9] << 8) | (uint16_t)DMR_PDU[idx + 10];
+                    have_pos = 1;
+                    have_rad = 1;
                 }
                 break;
-            case 0x69: //point-3d (12 bytes: token + 4 lat + 4 lon + 3 altitude)
-            case 0x6A: //point-3d variant
-                if (message_len > 0 && lat == 0) {
-                    lat = ((uint32_t)DMR_PDU[i + 1] << 24) | ((uint32_t)DMR_PDU[i + 2] << 16)
-                          | ((uint32_t)DMR_PDU[i + 3] << 8) | DMR_PDU[i + 4];
-                    lon = ((uint32_t)DMR_PDU[i + 5] << 24) | ((uint32_t)DMR_PDU[i + 6] << 16)
-                          | ((uint32_t)DMR_PDU[i + 7] << 8) | DMR_PDU[i + 8];
-                    //altitude is 24-bit per SDRTrunk Point3d.java (bits 72-95)
-                    alt = ((uint32_t)DMR_PDU[i + 9] << 16) | ((uint32_t)DMR_PDU[i + 10] << 8) | DMR_PDU[i + 11];
-                    i += 11;
-                    if (lat > 0 && lon > 0) {
-                        lrrp_confidence++;
-                    } else {
-                        lat = 0;
-                    }
+            case 0x55: // CIRCLE_3D (len 15, plus 1 unknown trailing byte)
+                adv = (remaining >= 16) ? 16 : remaining;
+                if (adv == 16 && !have_pos) {
+                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
+                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
+                    rad_raw = ((uint16_t)DMR_PDU[idx + 9] << 8) | (uint16_t)DMR_PDU[idx + 10];
+                    alt_raw = ((uint16_t)DMR_PDU[idx + 11] << 8) | (uint16_t)DMR_PDU[idx + 12];
+                    alt_acc_raw = ((uint16_t)DMR_PDU[idx + 13] << 8) | (uint16_t)DMR_PDU[idx + 14];
+                    have_pos = 1;
+                    have_rad = 1;
+                    have_alt = 1;
+                    have_alt_acc = 1;
                 }
                 break;
-            case 0x36: //protocol-version
-                i += 1;
-                //lrrp_confidence++;
+            case 0x66: // POINT_2D (len 8)
+                adv = (remaining >= 9) ? 9 : remaining;
+                if (adv == 9 && !have_pos) {
+                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
+                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
+                    have_pos = 1;
+                }
                 break;
-            //speed/velocity - units are 1/100 mph per SDRTrunk Speed.java
-            case 0x70: //speed-virt
-            case 0x6C: //speed-hor
-                if (message_len > 0 && vel_set == 0) {
-                    velocity = ((double)((DMR_PDU[i + 1] << 8) | DMR_PDU[i + 2])) * 0.01; //mph
+            case 0x69: // POINT_3D (len 11)
+            case 0x6A: // POINT_3D variant observed
+                adv = (remaining >= 12) ? 12 : remaining;
+                if (adv == 12 && !have_pos) {
+                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
+                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
+                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
+                    // altitude is 24-bit per SDRTrunk Point3d.java (bits 72-95)
+                    alt_raw = ((uint32_t)DMR_PDU[idx + 9] << 16) | ((uint32_t)DMR_PDU[idx + 10] << 8)
+                              | (uint32_t)DMR_PDU[idx + 11];
+                    have_pos = 1;
+                    have_alt = 1;
+                }
+                break;
+
+            case 0x6C: // SPEED (len 2)
+                adv = (remaining >= 3) ? 3 : remaining;
+                if (adv == 3 && !vel_set) {
+                    velocity_mph = ((double)(((uint16_t)DMR_PDU[idx + 1] << 8) | (uint16_t)DMR_PDU[idx + 2])) * 0.01;
                     vel_set = 1;
-                    i += 2;
-                    lrrp_confidence++;
                 }
                 break;
-            case 0x56: //direction-hor
-                if (message_len > 0 && deg_set == 0) {
-                    degrees = DMR_PDU[i + 1] * 2;
-                    deg_set = 1;
-                    i += 1;
-                    lrrp_confidence++;
+            case 0x56: // HEADING (len 1), 2-degree increments
+                adv = (remaining >= 2) ? 2 : remaining;
+                if (adv == 2 && !heading_set) {
+                    heading_deg = (uint16_t)DMR_PDU[idx + 1] * 2u;
+                    heading_set = 1;
                 }
                 break;
 
-            //unknown tokens
-            default:
-                //do nothing
-                break;
+            default: adv = 1; break;
         }
+
+        idx += adv;
+        remaining -= adv;
     }
 
-    if (message_len > 0) {
+    // Establish SRC if not provided in the LRRP wrapper.
+    if (!source) {
+        source = (uint32_t)state->dmr_lrrp_source[state->currentslot];
+    }
+
+    // Compute scaled values (matches SDRTrunk Point2d/Speed/Heading conversions).
+    double lat_fin = 0.0;
+    double lon_fin = 0.0;
+    double rad_fin = 0.0;
+    double alt_fin = 0.0;
+    double alt_acc_fin = 0.0;
+    if (have_pos) {
+        const double lat_unit = 180.0 / 4294967295.0;
+        const double lon_unit = 360.0 / 4294967295.0;
+
+        // Latitude: sign + magnitude (MSB indicates hemisphere, remaining bits are magnitude)
+        int lat_sign = 1;
+        uint32_t lat_mag = lat_raw;
+        if (lat_mag & 0x80000000u) {
+            lat_mag &= 0x7FFFFFFFu;
+            lat_sign = -1;
+        }
+        lat_fin = (double)lat_mag * lat_unit * (double)lat_sign;
+
+        // Longitude: two's complement signed 32-bit
+        lon_fin = (double)((int32_t)lon_raw) * lon_unit;
+    }
+    if (have_rad) {
+        rad_fin = (double)rad_raw * 0.01;
+    }
+    if (have_alt) {
+        alt_fin = (double)alt_raw * 0.01;
+    }
+    if (have_alt_acc) {
+        alt_acc_fin = (double)alt_acc_raw * 0.01;
+    }
+
+    // Emit details (stderr) and write to LRRP mapping/logging file.
+    if (payload_len > 0) {
         fprintf(stderr, "%s", KYEL);
 
-        if (lrrp_confidence >= 3) //minimal of src, dst, and message len indicator
-        {
+        if (year) {
+            fprintf(stderr, "\n");
+            fprintf(stderr, " Time:");
+            fprintf(stderr, " %04d.%02d.%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
+        }
 
-            if (year) {
-                fprintf(stderr, "\n");
-                fprintf(stderr, " Time:");
-                fprintf(stderr, " %04d.%02d.%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
+        if (have_pos) {
+            fprintf(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat_fin, lon_fin, lat_fin, lon_fin);
+        }
+        if (have_rad) {
+            fprintf(stderr, "\n Radius: %.2lfm", rad_fin);
+        }
+        if (have_alt) {
+            fprintf(stderr, "\n Altitude: %.2lfm", alt_fin);
+        }
+        if (have_alt_acc) {
+            fprintf(stderr, "\n Alt Accuracy: %.2lfm", alt_acc_fin);
+        }
+        if (vel_set) {
+            fprintf(stderr, "\n Speed: %.2lf mph %.2lf km/h %.2lf m/s", velocity_mph, (velocity_mph * 1.60934),
+                    (velocity_mph * 0.44704));
+        }
+        if (heading_set) {
+            const char* deg_glyph = dsd_degrees_glyph();
+            fprintf(stderr, "\n Track: %d%s", (int)heading_deg, deg_glyph);
+        }
+
+        // Write to LRRP file if a lat/lon is present; timestamps always use system time for consistency.
+        if (opts->lrrp_file_output == 1 && lat_fin != 0.0 && lon_fin != 0.0) {
+            char timestr[9];
+            char datestr[11];
+            getTimeC_buf(timestr);
+            getDateS_buf(datestr);
+
+            FILE* pFile = fopen(opts->lrrp_out_file, "a");
+            if (pFile != NULL) {
+                fprintf(pFile, "%s\t%s\t", datestr, timestr);
+                fprintf(pFile, "%08d\t", source);
+                fprintf(pFile, "%.5lf\t", lat_fin);
+                fprintf(pFile, "%.5lf\t", lon_fin);
+                fprintf(pFile, "%.3lf\t ", (velocity_mph * 1.60934)); // mph -> km/h
+                fprintf(pFile, "%d\t", (int)heading_deg);
+                fprintf(pFile, "\n");
+                fclose(pFile);
             }
+        }
 
-            if (lat) {
-                //Latitude: Sign + magnitude encoding - MSB indicates hemisphere, remaining bits are magnitude
-                //Based on SDRTrunk Point2d.java LRRP implementation
-                if (lat & 0x80000000) {
-                    lat = lat & 0x7FFFFFFF;
-                    lat_sign = -1;
-                }
-                lat_fin = (double)lat * lat_unit * lat_sign;
+        // Save to string for ncurses
+        char velstr[20];
+        char degstr[20];
+        char lrrpstr[100];
+        sprintf(lrrpstr, "%s", "");
+        sprintf(velstr, "%s", "");
+        sprintf(degstr, "%s", "");
 
-                //Longitude: Two's complement encoding (different from latitude per SDRTrunk testing)
-                //SDRTrunk notes: US data (positive lat, negative lon) and AUS data (negative lat, positive lon)
-                //required different handling - lat uses hemisphere flag, lon uses two's complement
-                lon_fin = (double)((int32_t)lon) * lon_unit;
-
-                fprintf(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat_fin, lon_fin, lat_fin, lon_fin);
-            }
-
-            if (rad) {
-                rad_fin = (double)rad * 0.01; //radius in meters per SDRTrunk
-                fprintf(stderr, "\n Radius: %.2lfm", rad_fin);
-            }
-            if (alt) {
-                alt_fin = (double)alt * 0.01; //altitude in meters per SDRTrunk
-                fprintf(stderr, "\n Altitude: %.2lfm", alt_fin);
-            }
-            if (alt_acc) {
-                alt_acc_fin = (double)alt_acc * 0.01; //altitude accuracy in meters
-                fprintf(stderr, "\n Alt Accuracy: %.2lfm", alt_acc_fin);
-            }
-            if (vel_set) {
-                //velocity is now in mph per SDRTrunk Speed.java
-                fprintf(stderr, "\n Speed: %.2lf mph %.2lf km/h %.2lf m/s", velocity, (velocity * 1.60934),
-                        (velocity * 0.44704));
-            }
-
-            if (deg_set) {
-                fprintf(stderr, "\n Track: %d%s", degrees, deg_glyph);
-            }
-
-            //write to LRRP file, if a lat/lon is present
-            if (opts->lrrp_file_output == 1 && lat_fin != 0.0f && lon_fin != 0.0f) {
-                char timestr[9];
-                char datestr[11];
-                getTimeC_buf(timestr);
-                getDateS_buf(datestr);
-
-                //open file by name that is supplied in the ncurses terminal, or cli
-                FILE* pFile; //file pointer
-                pFile = fopen(opts->lrrp_out_file, "a");
-                if (pFile != NULL) {
-                    //LRRP file timestamps always use system time for consistency
-                    fprintf(pFile, "%s\t%s\t", datestr, timestr);
-
-                    //write data header source if not available in lrrp data
-                    if (!source) {
-                        fprintf(pFile, "%08lld\t",
-                                state->dmr_lrrp_source[state->currentslot]); //source address from data header
-                    }
-                    if (source) {
-                        fprintf(pFile, "%08d\t",
-                                source); //add source form decoded audio if available, else its from the header
-                    }
-
-                    /* stack buffers; no free */
-
-                    fprintf(pFile, "%.5lf\t", lat_fin);
-                    fprintf(pFile, "%.5lf\t", lon_fin);
-                    fprintf(pFile, "%.3lf\t ", (velocity * 1.60934)); //velocity is mph, convert to km/h for file
-                    fprintf(pFile, "%d\t", degrees);
-
-                    fprintf(pFile, "\n");
-                    fclose(pFile);
-                }
-            }
-
-            //save to string for ncurses
-            if (!source) {
-                source = state->dmr_lrrp_source[state->currentslot];
-            }
-            char velstr[20];
-            char degstr[20];
-            char lrrpstr[100];
-            sprintf(lrrpstr, "%s", "");
-            sprintf(velstr, "%s", "");
-            sprintf(degstr, "%s", "");
-            if (lat) {
-                sprintf(lrrpstr, "LRRP SRC: %0d; (%lf, %lf)", source, lat_fin, lon_fin);
-            } else if (is_request) {
-                sprintf(lrrpstr, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
-            } else if (is_response) {
-                sprintf(lrrpstr, "LRRP SRC: %0d; Response to TGT: %d;", source, dest);
-            } else {
-                sprintf(lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;; ", lrrp_type, source, dest);
-            }
-            if (vel_set) {
-                sprintf(velstr, " %.2lf km/h", velocity * 1.60934); //velocity is mph, convert to km/h
-            }
-            if (deg_set) {
-                sprintf(degstr, " %d%s  ", degrees, deg_glyph);
-            }
-            sprintf(state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
-
-            if (!lat) {
-                fprintf(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
-            }
-
+        if (have_pos) {
+            sprintf(lrrpstr, "LRRP SRC: %0d; (%lf, %lf)", source, lat_fin, lon_fin);
+        } else if (is_request) {
+            sprintf(lrrpstr, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
+        } else if (is_response) {
+            sprintf(lrrpstr, "LRRP SRC: %0d; Response to TGT: %d;", source, dest);
         } else {
-            char lrrpstr[100];
-            sprintf(lrrpstr, "%s", "");
-            sprintf(lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", lrrp_type, source, dest);
-            sprintf(state->dmr_lrrp_gps[slot], "%s", lrrpstr);
+            sprintf(lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, lrrp_type, dest);
+        }
+
+        if (vel_set) {
+            sprintf(velstr, " %.2lf km/h", velocity_mph * 1.60934);
+        }
+        if (heading_set) {
+            const char* deg_glyph = dsd_degrees_glyph();
+            sprintf(degstr, " %d%s  ", (int)heading_deg, deg_glyph);
+        }
+
+        sprintf(state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
+
+        if (!have_pos) {
             fprintf(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
         }
 
-    }
-
-    else {
+    } else {
         char lrrpstr[100];
-        sprintf(lrrpstr, "%s", "");
-        sprintf(lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", lrrp_type, source, dest);
+        sprintf(lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, lrrp_type, dest);
         sprintf(state->dmr_lrrp_gps[slot], "%s", lrrpstr);
         fprintf(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
     }

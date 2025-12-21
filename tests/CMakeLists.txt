@@ -672,6 +672,14 @@ add_executable(dsd-neo_test_dmr_lrrp_time_valid
 target_include_directories(dsd-neo_test_dmr_lrrp_time_valid PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LRRP_TIME_VALID COMMAND dsd-neo_test_dmr_lrrp_time_valid)
 
+# DMR LRRP: token alignment (do not assume 0x22 preamble)
+add_executable(dsd-neo_test_dmr_lrrp_token_alignment
+  protocol/dmr/test_dmr_lrrp_token_alignment.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_token_alignment PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LRRP_TOKEN_ALIGNMENT COMMAND dsd-neo_test_dmr_lrrp_token_alignment)
+
 # DMR LOCN: invalid decoded date should fall back to system time
 add_executable(dsd-neo_test_dmr_locn_time_fallback
   protocol/dmr/test_dmr_locn_time_fallback.c

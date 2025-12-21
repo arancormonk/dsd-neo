@@ -149,8 +149,8 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             dmr_talker_alias_lc_blocks(opts, state, slot, flco - 5, lc_bits);
         }
 
-        //Embedded GPS
-        if (!protected_lc && (fid == 0 || fid == 0x68) && fid == 0 && type == 3 && flco == 0x08) {
+        //Embedded GPS (standard + Hytera)
+        if (!protected_lc && (fid == 0 || fid == 0x68) && type == 3 && flco == 0x08) {
             is_gps = 1;
             dmr_embedded_gps(opts, state, lc_bits);
         }
