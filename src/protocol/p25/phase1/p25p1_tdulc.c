@@ -243,8 +243,11 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     //or stale slot value from p2 and then decoding a pdu
     state->currentslot = 0;
 
-    // SM event: TDU (P1 terminator with LC)
-    p25_sm_emit_tdu(opts, state);
+    // SM event: TDULC is a non-voice boundary and may carry mid-call updates (e.g., LCW 0x44).
+    // Do not treat TDULC as a definitive call termination; call termination is handled by LCW 0x4F
+    // when present. Clearing voice activity here allows hangtime/grant-timeout to manage teardown
+    // without immediately bouncing back to the control channel.
+    p25_sm_emit_idle(opts, state, 0);
 
     // Clear call flags for single-carrier channel
     state->p25_call_emergency[0] = 0;

@@ -248,6 +248,15 @@ endif()
 target_link_libraries(dsd-neo_test_p25_p1_tdulc PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P1_TDULC COMMAND dsd-neo_test_p25_p1_tdulc)
 
+# P25 P1 TDULC should not force immediate CC return
+add_executable(dsd-neo_test_p25_p1_tdulc_no_cc_bounce protocol/p25/test_p25_p1_tdulc_no_cc_bounce.c)
+target_include_directories(dsd-neo_test_p25_p1_tdulc_no_cc_bounce PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25 ${_PUBLIC_INCLUDES})
+if(RTLSDR_FOUND)
+    target_include_directories(dsd-neo_test_p25_p1_tdulc_no_cc_bounce SYSTEM PRIVATE ${RTLSDR_INCLUDE_DIRS})
+endif()
+target_link_libraries(dsd-neo_test_p25_p1_tdulc_no_cc_bounce PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P1_TDULC_NO_CC_BOUNCE COMMAND dsd-neo_test_p25_p1_tdulc_no_cc_bounce)
+
 # P25 P1 IMBE interleave schedule tests
 add_executable(dsd-neo_test_p25_p1_interleave protocol/p25/test_p25_p1_interleave.c)
 target_include_directories(dsd-neo_test_p25_p1_interleave PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/p25 ${_PUBLIC_INCLUDES})
