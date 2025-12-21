@@ -699,8 +699,6 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                 }
             } break;
             case 0x23: // UNKNOWN_23 (len 1)
-                adv = (remaining >= 2) ? 2 : remaining;
-                break;
             case 0x31: // TRIGGER_PERIODIC (len 1)
             case 0x4A: // TRIGGER_DISTANCE (len 1)
             case 0x78: // TRIGGER_ON_MOVE (len 1)
