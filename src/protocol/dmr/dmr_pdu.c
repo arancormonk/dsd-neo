@@ -294,10 +294,11 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PD
 void
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 
-    uint8_t slot = state->currentslot;
     if (!opts || !state || !input || len < 20) {
         return;
     }
+
+    uint8_t slot = state->currentslot;
 
     //the IPv4 Header
     uint8_t version = input[0] >> 4; //may need to read ahead and get this value before coming here
