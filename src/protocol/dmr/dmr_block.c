@@ -1419,7 +1419,8 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                     //len calc
                     uint16_t ctr = state->data_byte_ctr[slot];
                     uint8_t poc = state->data_block_poc[slot];
-                    uint16_t len = ctr - poc - 4 - 7 - 3;
+                    // Exclude pad octets + CRC32 and the 7-byte MNIS header; keep the 3-byte packet prefix (SDRTrunk).
+                    uint16_t len = ctr - poc - 4 - 7;
 
                     //sanity check
                     if (len > 150) {

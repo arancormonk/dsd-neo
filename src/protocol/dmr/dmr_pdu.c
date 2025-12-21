@@ -295,6 +295,9 @@ void
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 
     uint8_t slot = state->currentslot;
+    if (!opts || !state || !input || len < 20) {
+        return;
+    }
 
     //the IPv4 Header
     uint8_t version = input[0] >> 4; //may need to read ahead and get this value before coming here
@@ -309,6 +312,18 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     uint8_t prot = input[9];
     uint16_t hsum = (input[10] << 8) | input[11];
 
+    // Header length in bytes (IHL is in 32-bit words).
+    size_t ip_header_len = (size_t)ihl * 4u;
+    if (version != 4 || ihl < 5 || ip_header_len > (size_t)len) {
+        return;
+    }
+
+    // Clamp to IP total length to ignore padding beyond the IP packet.
+    size_t effective_len = (size_t)len;
+    if ((size_t)tlen >= ip_header_len && (size_t)tlen <= effective_len) {
+        effective_len = (size_t)tlen;
+    }
+
     if (opts->payload == 1) {
         fprintf(stderr,
                 "\n IPv%d; IHL: %d; Type of Service: %d; Total Len: %d; IP ID: %04X; Flags: %X;\n Fragment Offset: %d; "
@@ -319,8 +334,12 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     //take a look at the src, dst, and port indicated (assuming both ports will match)
     uint32_t src24 = (input[13] << 16) | (input[14] << 8) | input[15];
     uint32_t dst24 = (input[17] << 16) | (input[18] << 8) | input[19];
-    uint16_t port1 = (input[20] << 8) | input[21];
-    uint16_t port2 = (input[22] << 8) | input[23];
+    uint16_t port1 = 0;
+    uint16_t port2 = 0;
+    if (prot == 0x11 && effective_len >= ip_header_len + 8u) {
+        port1 = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
+        port2 = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
+    }
     fprintf(stderr, "\n SRC(24): %08d; IP: %03d.%03d.%03d.%03d; ", src24, input[12], input[13], input[14], input[15]);
     if (prot == 0x11) {
         fprintf(stderr, "Port: %04d; ", port1);
@@ -333,9 +352,13 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     //IP Protocol List: https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
     if (prot == 0x01) //ICMP
     {
-        uint8_t icmp_type = input[20];
-        uint8_t icmp_code = input[21];
-        uint16_t icmp_chk = port2;
+        if (effective_len < ip_header_len + 4u) {
+            return;
+        }
+
+        uint8_t icmp_type = input[ip_header_len + 0];
+        uint8_t icmp_code = input[ip_header_len + 1];
+        uint16_t icmp_chk = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
         fprintf(stderr, "\n ICMP Protocol; Type: %02X; Code: %02X; Checksum: %02X;", icmp_type, icmp_code, icmp_chk);
         if (icmp_type == 3) {
             fprintf(stderr, " Destination");
@@ -352,21 +375,35 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
         }
         //see: https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol
         //look at attached message, if present
-        if (input[28] == 0x45) //if another chained IPv4 header and/or message
+        size_t attached_off = ip_header_len + 8u;
+        if (effective_len > attached_off && input[attached_off] == 0x45) //if another chained IPv4 header and/or message
         {
             fprintf(stderr, "\n ------------Attached Message-------------");
-            decode_ip_pdu(opts, state, len - 28, input + 28);
+            size_t rem = effective_len - attached_off;
+            if (rem > UINT16_MAX) {
+                rem = UINT16_MAX;
+            }
+            decode_ip_pdu(opts, state, (uint16_t)rem, input + attached_off);
         }
 
     }
 
     else if (prot == 0x11) //UDP
     {
+        if (effective_len < ip_header_len + 8u) {
+            sprintf(state->dmr_lrrp_gps[slot], "Truncated UDP;");
+            watchdog_event_datacall(opts, state, src24, dst24, state->dmr_lrrp_gps[slot], slot);
+            return;
+        }
+
+        port1 = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
+        port2 = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
         uint16_t udp_len =
-            (input[24] << 8)
-            | input
-                [25]; //This UDP Length information element is the length in bytes of this user datagram including this header and the application data (no IP header)
-        uint16_t udp_chk = (input[26] << 8) | input[27];
+            (uint16_t)((input[ip_header_len + 4] << 8)
+                       | input
+                           [ip_header_len
+                            + 5]); //This UDP Length information element is the length in bytes of this user datagram including this header and the application data (no IP header)
+        uint16_t udp_chk = (uint16_t)((input[ip_header_len + 6] << 8) | input[ip_header_len + 7]);
         fprintf(stderr, "\n UDP Protocol; Datagram Len: %d; UDP Checksum: %04X; ", udp_len, udp_chk);
 
         //if dst port and src prt don't match, then make it so
@@ -374,21 +411,27 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             port1 = port2;
         }
 
+        size_t udp_payload_off = ip_header_len + 8u;
+        size_t udp_payload_len = 0;
+        if (udp_len >= 8u) {
+            udp_payload_len = (size_t)udp_len - 8u;
+        }
+        size_t max_payload_len = (effective_len > udp_payload_off) ? (effective_len - udp_payload_off) : 0u;
+        if (udp_payload_len > max_payload_len) {
+            udp_payload_len = max_payload_len;
+        }
+        uint16_t payload_len = (udp_payload_len > UINT16_MAX) ? UINT16_MAX : (uint16_t)udp_payload_len;
+        uint8_t* payload = input + udp_payload_off;
+
         if (port1 == 231 && port2 == 231) {
             fprintf(stderr, "Cellocator;");
             sprintf(state->dmr_lrrp_gps[slot], "Cellocator SRC: %d; DST: %d;", src24, dst24);
-            if (len > 28) {
-                decode_cellocator(opts, state, input + 28, len - 28);
+            if (payload_len > 0) {
+                decode_cellocator(opts, state, payload, (int)payload_len);
             }
         } else if (port1 == 4001 && port2 == 4001) {
-            //sanity check
-            if (len > 33) {
-                len -= 33;
-            }
-
             fprintf(stderr, "LRRP;");
-            dmr_lrrp(opts, state, len, src24, dst24,
-                     input + 28); //len is offset with IP and UDP header lens, 4 CRC, and 1 for the 0D token
+            dmr_lrrp(opts, state, payload_len, src24, dst24, payload);
             state->event_history_s[slot].Event_History_Items[0].color_pair =
                 4; //Remus, add this line to a decode to change its line color
         } else if (port1 == 4004 && port2 == 4004) {
@@ -400,42 +443,46 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             fprintf(stderr, "ARS;");
             //TODO: ARS Decoder
             sprintf(state->dmr_lrrp_gps[slot], "ARS SRC: %d; DST: %d; ", src24, dst24);
-            utf8_to_text(state, 0, 10, input + 28); //seen some ARS radio IDs in ASCII/ISO7/UTF8 format here
+            uint16_t ars_len = (payload_len < 10) ? payload_len : 10;
+            utf8_to_text(state, 0, ars_len, payload); //seen some ARS radio IDs in ASCII/ISO7/UTF8 format here
         } else if (port1 == 4007 && port2 == 4007) {
-            int tms_len = (input[28] << 8) | input[29];
+            int tms_len = 0;
+            if (payload_len >= 2) {
+                tms_len = (payload[0] << 8) | payload[1];
+            }
             fprintf(stderr, " TMS ");
             fprintf(stderr, "Len: %d; ", tms_len);
 
             //loosely based on information found here: https://github.com/OK-DMR/ok-dmrlib/blob/master/okdmr/dmrlib/motorola/text_messaging_service.py
             //look at header and any optional values (simplified version)
-            int tms_ptr = 30;
-            uint8_t tms_hdr = input[tms_ptr++]; //first header
+            int tms_ptr = 2;
+            uint8_t tms_hdr = payload[tms_ptr++]; //first header
             uint8_t tms_ack = (tms_hdr >> 0) & 0xF;
             if (opts->payload == 1) {
                 fprintf(stderr, "HDR: %02X; ", tms_hdr);
             }
 
             //optional address len and address value
-            uint8_t tms_adl = input[tms_ptr++];
+            uint8_t tms_adl = payload[tms_ptr++];
             if (tms_adl != 0) {
                 //the encoding seems to start at the adl (len) byte, but does not include it
                 //so, to get the decoder to work, we well go back one byte and zero it out
                 tms_ptr--; //back up one position
-                input[tms_ptr] = 0;
+                payload[tms_ptr] = 0;
                 fprintf(stderr, "Address Len: %d; Address: ", tms_adl);
                 utf16_to_text(state, 1, tms_adl - 4,
-                              input + tms_ptr); //addresses seem to have an extra .4 value on end (4 octets)
-                input[tms_ptr] = tms_adl;       //restore this byte
-                tms_ptr += tms_adl;             //the len value seems to include the len byte
-                tms_ptr += 1;                   //advance the ptr back to negate the negation
+                              payload + tms_ptr); //addresses seem to have an extra .4 value on end (4 octets)
+                payload[tms_ptr] = tms_adl;       //restore this byte
+                tms_ptr += tms_adl;               //the len value seems to include the len byte
+                tms_ptr += 1;                     //advance the ptr back to negate the negation
                 fprintf(stderr, "; ");
             }
 
             //any additional headers (don't care)
-            uint8_t tms_more = input[tms_ptr] >> 7;
+            uint8_t tms_more = payload[tms_ptr] >> 7;
             while (tms_more) {
-                uint8_t tms_b1 = input[tms_ptr++];
-                uint8_t tms_b2 = input[tms_ptr];
+                uint8_t tms_b1 = payload[tms_ptr++];
+                uint8_t tms_b2 = payload[tms_ptr];
                 if (opts->payload == 1) {
                     fprintf(stderr, "B1: %02X; B2: %02X; ", tms_b1, tms_b2);
                 }
@@ -453,24 +500,24 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
                 }
 
                 //sanity check on tms_len at this point (fix offset for below)
-                if (tms_len > 31) {
-                    tms_len -= (tms_ptr - 31);
+                if (tms_len > 3) {
+                    tms_len -= (tms_ptr - 3);
                 }
 
                 //the first utf16 char seems to be encoded as XXYY where XX is not part of the
                 //encoding for the character, so zero that byte out and restore it later
                 tms_ptr -= 2; //back up two positions
-                uint8_t temp = input[tms_ptr];
-                input[tms_ptr] = 0;
+                uint8_t temp = payload[tms_ptr];
+                payload[tms_ptr] = 0;
 
                 //debug
                 if (opts->payload == 1) {
                     fprintf(stderr, "Ptr: %d; Len: %d;", tms_ptr, tms_len);
                 }
                 fprintf(stderr, "\n Text: ");
-                utf16_to_text(state, 1, tms_len, input + tms_ptr);
+                utf16_to_text(state, 1, tms_len, payload + tms_ptr);
 
-                input[tms_ptr] = temp; //restore byte
+                payload[tms_ptr] = temp; //restore byte
             } else {
                 dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "Acknowledgment;");
                 fprintf(stderr, "Acknowledgment;");
@@ -494,31 +541,21 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
         }
         //ETSI specific -- unknown entry value, assuming +28
         else if (port1 == 5016 && port2 == 5016) {
-            //sanity check
-            if (len > 29) {
-                len -= 29;
-            }
-
             fprintf(stderr, "ETSI TMS;");
             sprintf(state->dmr_lrrp_gps[slot], "ETSI TMS SRC: %d; DST: %d; ", src24, dst24);
-            utf16_to_text(state, 1, len, input + 28);
+            utf16_to_text(state, 1, payload_len, payload);
         } else if (port1 == 5017 && port2 == 5017) {
-            //sanity check
-            if (len > 32) {
-                len -= 32;
-            }
-
             uint8_t bits[127 * 12 * 8];
             memset(bits, 0, sizeof(bits));
-            unpack_byte_array_into_bit_array(input + 28, bits, len * sizeof(uint8_t));
+            unpack_byte_array_into_bit_array(payload, bits, payload_len * sizeof(uint8_t));
             lip_protocol_decoder(opts, state, bits);
         }
         //known P25 Ports
         else if (port1 == 49198 && port2 == 49198) {
             sprintf(state->dmr_lrrp_gps[slot], "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ",
                     input[12], input[13], input[14], input[15], input[16], input[17], input[18], input[19]);
-            fprintf(stderr, "P25 Tier 2 Location Service;");      //LRRP
-            dmr_lrrp(opts, state, len, src24, dst24, input + 28); //same offsets as DMR variety (unknown)
+            fprintf(stderr, "P25 Tier 2 Location Service;"); //LRRP
+            dmr_lrrp(opts, state, payload_len, src24, dst24, payload);
         } else {
             sprintf(state->dmr_lrrp_gps[slot], "IP SRC: %d.%d.%d.%d:%d; DST: %d.%d.%d.%d:%d; Unknown UDP Port;",
                     input[12], input[13], input[14], input[15], port1, input[16], input[17], input[18], input[19],

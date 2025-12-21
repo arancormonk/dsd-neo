@@ -680,6 +680,14 @@ add_executable(dsd-neo_test_dmr_lrrp_token_alignment
 target_include_directories(dsd-neo_test_dmr_lrrp_token_alignment PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LRRP_TOKEN_ALIGNMENT COMMAND dsd-neo_test_dmr_lrrp_token_alignment)
 
+# DMR LRRP: IP/UDP header lengths (IHL/UDP len) must bound LRRP payload
+add_executable(dsd-neo_test_dmr_lrrp_ip_udp_lengths
+  protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_ip_udp_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LRRP_IP_UDP_LENGTHS COMMAND dsd-neo_test_dmr_lrrp_ip_udp_lengths)
+
 # DMR LOCN: invalid decoded date should fall back to system time
 add_executable(dsd-neo_test_dmr_locn_time_fallback
   protocol/dmr/test_dmr_locn_time_fallback.c

@@ -374,8 +374,8 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     uint32_t tmin = (seconds % 3600U) / 60U;
     uint32_t tsec = seconds % 60U;
 
-    // Heading: 9-bit field (0-359 deg, best-effort)
-    uint16_t heading = (uint16_t)ConvertBitIntoBytes(&input[gps_off + 95], 9) % 360U;
+    // Heading: 9-bit field (0-359 degrees per SDRTrunk; keep raw)
+    uint16_t heading = (uint16_t)ConvertBitIntoBytes(&input[gps_off + 95], 9);
 
     // Sanity check
     if (fabs(latitude) > 90.0 || fabs(longitude) > 180.0) {
