@@ -689,6 +689,22 @@ add_executable(dsd-neo_test_dmr_lrrp_token_alignment
 target_include_directories(dsd-neo_test_dmr_lrrp_token_alignment PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LRRP_TOKEN_ALIGNMENT COMMAND dsd-neo_test_dmr_lrrp_token_alignment)
 
+# DMR LRRP: response token lengths must be skipped as units (no payload-byte desync)
+add_executable(dsd-neo_test_dmr_lrrp_response_token_lengths
+  protocol/dmr/test_dmr_lrrp_response_token_lengths.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_response_token_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LRRP_RESPONSE_TOKEN_LENGTHS COMMAND dsd-neo_test_dmr_lrrp_response_token_lengths)
+
+# DMR LRRP: position token selection should match SDRTrunk token-type ordering
+add_executable(dsd-neo_test_dmr_lrrp_position_token_precedence
+  protocol/dmr/test_dmr_lrrp_position_token_precedence.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_position_token_precedence PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+add_test(NAME DMR_LRRP_POSITION_TOKEN_PRECEDENCE COMMAND dsd-neo_test_dmr_lrrp_position_token_precedence)
+
 # DMR LRRP: IP/UDP header lengths (IHL/UDP len) must bound LRRP payload
 add_executable(dsd-neo_test_dmr_lrrp_ip_udp_lengths
   protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
@@ -704,6 +720,15 @@ add_executable(dsd-neo_test_dmr_locn_time_fallback
 )
 target_include_directories(dsd-neo_test_dmr_locn_time_fallback PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LOCN_TIME_FALLBACK COMMAND dsd-neo_test_dmr_locn_time_fallback)
+
+# DMR embedded GPS: position error mapping (ETSI 7.2.15) matches SDRTrunk
+add_executable(dsd-neo_test_dmr_embedded_gps_position_error
+  protocol/dmr/test_dmr_embedded_gps_position_error.c
+  ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+)
+target_include_directories(dsd-neo_test_dmr_embedded_gps_position_error PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_embedded_gps_position_error PRIVATE m)
+add_test(NAME DMR_EMBEDDED_GPS_POSITION_ERROR COMMAND dsd-neo_test_dmr_embedded_gps_position_error)
 
 # FEC core (Hamming/Golay/QR) block code tests
 add_executable(dsd-neo_test_fec_block_codes fec/test_fec_block_codes.c)

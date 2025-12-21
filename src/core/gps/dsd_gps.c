@@ -645,18 +645,27 @@ dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]) {
 
             //7.2.15 Position Error: 2 * 10^pos_err via LUT
             static const uint32_t pow10_lut[8] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u};
-            unsigned int position_error = (unsigned int)(2u * pow10_lut[pos_err & 7]);
+            unsigned int position_error = 0;
+            if (pos_err <= 0x5) {
+                position_error = (unsigned int)(2u * pow10_lut[pos_err]);
+            }
             if (pos_err == 0x7) {
                 fprintf(stderr, "\n  Position Error: Unknown or Invalid");
+            } else if (pos_err == 0x6) {
+                fprintf(stderr, "\n  Position Error: More than 200km");
             } else {
                 fprintf(stderr, "\n  Position Error: Less than %dm", position_error);
             }
 
             //save to array for ncurses
-            if (pos_err != 0x7) {
+            if (pos_err <= 0x5) {
                 snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
                          "GPS: %.5lf%s%s %.5lf%s%s Err: %dm", latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr,
                          position_error);
+            } else if (pos_err == 0x6) {
+                snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                         "GPS: %.5lf%s%s %.5lf%s%s Err: >200km", latitude, deg_glyph, latstr, longitude, deg_glyph,
+                         lonstr);
             } else {
                 snprintf(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
                          "GPS: %.5lf%s%s %.5lf%s%s Unknown Pos Err", latitude, deg_glyph, latstr, longitude, deg_glyph,

@@ -630,6 +630,9 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
     uint8_t have_rad = 0;
     uint8_t have_alt = 0;
     uint8_t have_alt_acc = 0;
+    // Match SDRTrunk PacketUtil: tokens are sorted by TokenType and the first Point2d-derived token wins.
+    // TokenType order for position tokens is: CIRCLE_2D, CIRCLE_3D, POINT_2D, POINT_3D.
+    uint8_t pos_best_rank = 0xFFu;
 
     // speed/heading
     double velocity_mph = 0.0; // units are 1/100 mph per SDRTrunk Speed.java
@@ -698,8 +701,24 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
             case 0x23: // UNKNOWN_23 (len 1)
                 adv = (remaining >= 2) ? 2 : remaining;
                 break;
+            case 0x31: // TRIGGER_PERIODIC (len 1)
+            case 0x4A: // TRIGGER_DISTANCE (len 1)
+            case 0x78: // TRIGGER_ON_MOVE (len 1)
+            case 0x61: // REQUEST_61 (len 1)
+            case 0x73: // REQUEST_73 (len 1)
+                adv = (remaining >= 2) ? 2 : remaining;
+                break;
+            case 0x42: // TRIGGER_GPIO (len 0)
+            case 0x3A: // REQUEST_3A (len 0)
+            case 0x50: // ALTITUDE_ACCURACY (len 0, unimplemented in SDRTrunk)
+            case 0x52: // TIME (len 0, unimplemented in SDRTrunk)
+            case 0x54: // ALTITUDE (len 0, unimplemented in SDRTrunk)
+            case 0x57: // HORIZONTAL_DIRECTION (len 0, unimplemented in SDRTrunk)
+            case 0x62: // REQUEST_62 (len 0)
+            case 0x64: // REQUEST_64 (len 0)
+                adv = 1;
+                break;
             case 0x34: // TIMESTAMP (len 5)
-            case 0x35: // TIMESTAMP variant observed in the wild
                 adv = (remaining >= 6) ? 6 : remaining;
                 if (adv == 6 && year == 0) {
                     year = (uint16_t)((DMR_PDU[idx + 1] << 6) + (DMR_PDU[idx + 2] >> 2));
@@ -749,19 +768,25 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
 
             case 0x51: // CIRCLE_2D (len 10)
                 adv = (remaining >= 11) ? 11 : remaining;
-                if (adv == 11 && !have_pos) {
+                if (adv == 11 && pos_best_rank > 0u) {
+                    pos_best_rank = 0u;
                     lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
                               | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
                     lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
                               | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
                     rad_raw = ((uint16_t)DMR_PDU[idx + 9] << 8) | (uint16_t)DMR_PDU[idx + 10];
+                    alt_raw = 0;
+                    alt_acc_raw = 0;
                     have_pos = 1;
                     have_rad = 1;
+                    have_alt = 0;
+                    have_alt_acc = 0;
                 }
                 break;
             case 0x55: // CIRCLE_3D (len 15, plus 1 unknown trailing byte)
                 adv = (remaining >= 16) ? 16 : remaining;
-                if (adv == 16 && !have_pos) {
+                if (adv == 16 && pos_best_rank > 1u) {
+                    pos_best_rank = 1u;
                     lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
                               | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
                     lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
@@ -777,18 +802,25 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                 break;
             case 0x66: // POINT_2D (len 8)
                 adv = (remaining >= 9) ? 9 : remaining;
-                if (adv == 9 && !have_pos) {
+                if (adv == 9 && pos_best_rank > 2u) {
+                    pos_best_rank = 2u;
                     lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
                               | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
                     lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
                               | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
+                    rad_raw = 0;
+                    alt_raw = 0;
+                    alt_acc_raw = 0;
                     have_pos = 1;
+                    have_rad = 0;
+                    have_alt = 0;
+                    have_alt_acc = 0;
                 }
                 break;
             case 0x69: // POINT_3D (len 11)
-            case 0x6A: // POINT_3D variant observed
                 adv = (remaining >= 12) ? 12 : remaining;
-                if (adv == 12 && !have_pos) {
+                if (adv == 12 && pos_best_rank > 3u) {
+                    pos_best_rank = 3u;
                     lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
                               | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
                     lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
@@ -796,8 +828,12 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                     // altitude is 24-bit per SDRTrunk Point3d.java (bits 72-95)
                     alt_raw = ((uint32_t)DMR_PDU[idx + 9] << 16) | ((uint32_t)DMR_PDU[idx + 10] << 8)
                               | (uint32_t)DMR_PDU[idx + 11];
+                    rad_raw = 0;
+                    alt_acc_raw = 0;
                     have_pos = 1;
+                    have_rad = 0;
                     have_alt = 1;
+                    have_alt_acc = 0;
                 }
                 break;
 
