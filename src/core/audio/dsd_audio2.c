@@ -71,6 +71,46 @@ write_audio_out(int fd, const void* buf, size_t bytes) {
     (void)written;
 }
 
+static int
+p25p2_s16_frames_have_audio(short frames[18][160]) {
+    for (int j = 0; j < 18; j++) {
+        for (int i = 0; i < 160; i++) {
+            if (frames[j][i] != 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+void
+dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    // This helper is specifically for the short/int16 P25p2 SS18 path.
+    if (opts->floating_point != 0 || opts->pulse_digi_rate_out != 8000) {
+        return;
+    }
+
+    int has_l = p25p2_s16_frames_have_audio(state->s_l4);
+    int has_r = p25p2_s16_frames_have_audio(state->s_r4);
+    if (!(has_l || has_r)) {
+        return;
+    }
+
+    // The SS18 mixer uses p25_p2_audio_allowed as its per-slot gate.
+    // At release, MAC_END/IDLE may already have cleared the gate; the
+    // s_l4/s_r4 buffers only contain decoded audio when a slot was allowed at
+    // decode time, so gate playback based on actual buffered audio presence.
+    state->p25_p2_audio_allowed[0] = has_l ? 1 : 0;
+    state->p25_p2_audio_allowed[1] = has_r ? 1 : 0;
+
+    playSynthesizedVoiceSS18(opts, state);
+    state->voice_counter[0] = 0;
+    state->voice_counter[1] = 0;
+}
+
 //NOTE: Tones produce ringing sound when put through the hpf_d, may want to look into tweaking it,
 //or looking for a way to store is_tone by glancing at ambe_d values and not running hpf_d on them
 

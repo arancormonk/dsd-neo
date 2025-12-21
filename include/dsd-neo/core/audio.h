@@ -124,6 +124,9 @@ void audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t
 /** @brief Simple P25 P2 per-slot mixer gate used by tests (maps p25_p2_audio_allowed -> enc flags). */
 int dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR);
 
+/** @brief Flush partially buffered P25p2 SS18 audio on call end/release. */
+void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
+
 /** @brief Talkgroup/whitelist/TG-hold gating for mono mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out);
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */

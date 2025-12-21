@@ -853,6 +853,12 @@ target_include_directories(dsd-neo_test_p25p1_soft_golay PRIVATE ${PROJECT_SOURC
 target_link_libraries(dsd-neo_test_p25p1_soft_golay PRIVATE dsd-neo_fec)
 add_test(NAME P25P1_SOFT_GOLAY COMMAND dsd-neo_test_p25p1_soft_golay)
 
+# P25 P2: flush partial SS18 audio on release
+add_executable(dsd-neo_test_p25_p2_release_partial_audio protocol/p25/test_p25_p2_release_partial_audio.c)
+target_include_directories(dsd-neo_test_p25_p2_release_partial_audio PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_p2_release_partial_audio PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_RELEASE_PARTIAL_AUDIO COMMAND dsd-neo_test_p25_p2_release_partial_audio)
+
 # Config system tests
 add_executable(dsd-neo_test_config_expand runtime/test_config_expand.cpp)
 target_include_directories(dsd-neo_test_config_expand PRIVATE ${PROJECT_SOURCE_DIR}/include)

@@ -642,6 +642,12 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
  * Release to CC
  * ============================================================================ */
 
+#if !defined(_MSC_VER)
+// Optional P25p2 short-call audio flush helper implemented in core audio.
+// When not linked (e.g., some unit tests), this resolves to NULL.
+extern void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) __attribute__((weak));
+#endif
+
 static void
 do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
     if (!ctx) {
@@ -692,6 +698,15 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     ctx->release_count++;
     ctx->cc_return_count++;
+
+#if !defined(_MSC_VER)
+    // P25p2 short-call robustness: flush any partially buffered audio before
+    // clearing slot gates and retuning, so short transmissions that end before
+    // a full superframe still produce audible output.
+    if (ctx->vc_is_tdma && opts && state && dsd_p25p2_flush_partial_audio) {
+        dsd_p25p2_flush_partial_audio(opts, state);
+    }
+#endif
 
     // Clear legacy state fields
     if (state) {

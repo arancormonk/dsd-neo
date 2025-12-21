@@ -110,11 +110,13 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
 #ifdef TRACE_DSD
     state->debug_prefix = '\0';
 #endif
-    //check for enc, then always run below step and mute at the point of playing audio so we can still dump the frames
-    if (state->payload_algid != 0x80) {
+    // Check for encryption to support muting policy. Treat ALGID 0x00 and 0x80
+    // as clear/unknown, and only flag ENC when we positively identify a
+    // non-clear ALGID. This avoids losing late-entry/short calls where the
+    // ESS arrives after the first voice frames.
+    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
         state->dmr_encL = 1;
-    }
-    if (state->payload_algid == 0x80) {
+    } else {
         state->dmr_encL = 0;
     }
 

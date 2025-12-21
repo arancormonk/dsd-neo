@@ -21,17 +21,52 @@
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/telemetry.h>
 
+static int
+p25_p2_s16_frames_have_audio(short frames[18][160]) {
+    for (int j = 0; j < 18; j++) {
+        for (int i = 0; i < 160; i++) {
+            if (frames[j][i] != 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 // Clear per-slot audio gates, small audio rings, encryption indicators, and
 // UI call banners for both logical slots. Intended for use on call teardown
 // before returning to the control channel.
 static void
-p25_p2_teardown_call(dsd_state* state) {
+p25_p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
+    // Flush any partial superframe worth of decoded audio so short calls
+    // (or late-entry captures that end before a full superframe) still
+    // produce audible output in int16 mode.
+    if (opts && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
+        int has_l = p25_p2_s16_frames_have_audio(state->s_l4);
+        int has_r = p25_p2_s16_frames_have_audio(state->s_r4);
+        if (has_l || has_r) {
+            // At teardown, slot gates may already be cleared by MAC_END/IDLE.
+            // The s_l4/s_r4 buffers only contain decoded audio when a slot was
+            // allowed at decode time, so use buffer presence as the playback
+            // gate here to avoid dropping the tail of short clear calls.
+            state->p25_p2_audio_allowed[0] = has_l ? 1 : 0;
+            state->p25_p2_audio_allowed[1] = has_r ? 1 : 0;
+            playSynthesizedVoiceSS18(opts, state);
+        }
+        state->voice_counter[0] = 0;
+        state->voice_counter[1] = 0;
+    }
+
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     p25_p2_audio_ring_reset(state, -1);
+    // Clear buffered short audio frames to avoid replaying stale samples on
+    // subsequent short calls that never reach the normal SS18 playback path.
+    memset(state->s_l4, 0, sizeof(state->s_l4));
+    memset(state->s_r4, 0, sizeof(state->s_r4));
     state->p25_p2_last_mac_active[0] = 0;
     state->p25_p2_last_mac_active[1] = 0;
     state->p25_p2_last_end_ptt[0] = 0;
@@ -987,7 +1022,7 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                     if (dt_since_tune >= vc_grace) {
                         fprintf(stderr, "Return to CC; \n");
                         state->p25_sm_force_release = 1;
-                        p25_p2_teardown_call(state);
+                        p25_p2_teardown_call(opts, state);
                         p25_sm_on_release(opts, state);
                     } else {
                         fprintf(stderr, "Defer (VC grace); stay on VC. \n");
@@ -1399,7 +1434,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // perform the centralized release now that LCCH processing has
             // cleared per-slot audio gates.
             if (p2_pending_release) {
-                p25_p2_teardown_call(state);
+                p25_p2_teardown_call(opts, state);
                 p25_sm_on_release(opts, state);
             }
         } else if (duid_decoded == 4) {
@@ -1511,7 +1546,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         }
         if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {
             state->p25_sm_force_release = 1;
-            p25_p2_teardown_call(state);
+            p25_p2_teardown_call(opts, state);
             p25_sm_on_release(opts, state);
         }
     }

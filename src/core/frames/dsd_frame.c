@@ -469,28 +469,25 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         // Logical Link Data Unit 2
         state->dmrburstL = 27;
         state->currentslot = 0;
-        if (state->lastp25type != 1) {
-            if (opts->errorbars == 1) {
-                printFrameInfo(opts, state);
-                fprintf(stderr, "\n Ignoring LDU2 not preceeded by LDU1\n");
-            }
-            state->lastp25type = 0;
-            sprintf(state->fsubtype, "              ");
-        } else {
-            if (opts->errorbars == 1) {
-                printFrameInfo(opts, state);
+        if (opts->errorbars == 1) {
+            printFrameInfo(opts, state);
+            if (state->lastp25type != 1) {
+                // Late entry: short calls or mid-call tuning can land on an
+                // LDU2 first. Decode it anyway so voice isn't lost.
+                fprintf(stderr, " LDU2 (late entry)  ");
+            } else {
                 fprintf(stderr, " LDU2  ");
             }
-            if (opts->mbe_out_dir[0] != 0) {
-                if (opts->mbe_out_f == NULL) {
-                    openMbeOutFile(opts, state);
-                }
-            }
-            state->lastp25type = 2;
-            sprintf(state->fsubtype, " LDU2         ");
-            state->numtdulc = 0;
-            processLDU2(opts, state);
         }
+        if (opts->mbe_out_dir[0] != 0) {
+            if (opts->mbe_out_f == NULL) {
+                openMbeOutFile(opts, state);
+            }
+        }
+        state->lastp25type = 2;
+        sprintf(state->fsubtype, " LDU2         ");
+        state->numtdulc = 0;
+        processLDU2(opts, state);
     } else if (strcmp(duid, "33") == 0) {
         // Terminator with subsequent Link Control
         state->dmrburstL = 28;
