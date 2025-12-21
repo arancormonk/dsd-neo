@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -119,6 +120,10 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
 
 // Forward declaration for do_release (used by handle_enc)
 static void do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+
+// Serialize release-to-CC operations to avoid duplicate retunes when multiple
+// threads (watchdog tick + decoder) request release concurrently.
+static atomic_int g_p25_sm_release_lock = 0;
 
 static inline double
 now_monotonic(void) {
@@ -643,6 +648,29 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         return;
     }
 
+    // Avoid double-return-to-CC thrash if multiple callers attempt to release at
+    // nearly the same time (e.g., explicit call termination + watchdog tick).
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
+        return;
+    }
+
+    // Only do a hardware return-to-CC when we are (or believe we are) tuned to
+    // a voice channel. This makes repeated release requests idempotent.
+    int opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+    if (ctx->state != P25_SM_TUNED && !opts_tuned) {
+        if (state) {
+            state->p25_sm_force_release = 0;
+        }
+        atomic_store(&g_p25_sm_release_lock, 0);
+        return;
+    }
+
+    // Clear any pending forced-release request; we're handling teardown now.
+    if (state) {
+        state->p25_sm_force_release = 0;
+    }
+
     sm_log(opts, state, reason);
 
     // Clear all slot state
@@ -690,6 +718,8 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     // Transition to ON_CC state
     set_state(ctx, opts, state, P25_SM_ON_CC, "release->cc");
+
+    atomic_store(&g_p25_sm_release_lock, 0);
 }
 
 /* ============================================================================

@@ -159,5 +159,13 @@ main(void) {
     p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
     rc |= expect_true("LCW_0x4F_release", g_return_to_cc_called >= 1 && opts.p25_is_tuned == 0);
 
+    // Regression: some systems populate the MFID/reserved octet even when the LCW is standard
+    // (e.g., implicit MFID formats). Ensure 0x4F still releases even when byte 1 is non-zero.
+    opts.p25_is_tuned = 1;
+    set_bits_msb(lcw, 8, 8, 0x90); // non-standard value in octet 1
+    g_return_to_cc_called = 0;
+    p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+    rc |= expect_true("LCW_0x4F_release_nonzero_mfid_octet", g_return_to_cc_called >= 1 && opts.p25_is_tuned == 0);
+
     return rc;
 }

@@ -43,8 +43,9 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
     uint8_t lc_mfid = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 8);    //mfid
     uint8_t lc_svcopt = (uint8_t)ConvertBitIntoBytes(&LCW_bits[16], 8); //service options
     uint8_t lc_pf = LCW_bits[0];                                        //protect flag
-    uint8_t lc_sf = LCW_bits[1];                                        //Implicit / Explicit MFID Format
-    UNUSED2(lc_opcode, lc_sf);
+    uint8_t lc_sf = LCW_bits[1]; // Implicit / Explicit MFID Format (SF bit in PB/SF/LCO)
+    int mfid_is_implicit = (lc_sf == 1);
+    int is_standard_mfid = mfid_is_implicit || lc_mfid == 0 || lc_mfid == 1;
 
     if (lc_pf == 1) //check the protect flag -- if set, its an encrypted lcw
     {
@@ -60,8 +61,8 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             fprintf(stderr, " LCW");
         }
 
-        //check to see if we need to run these as MFID 0 or 1 only (standard)
-        if (lc_mfid == 0 || lc_mfid == 1) //lc_mfid == 0
+        // Standard MFID: explicit MFID=0/1, or implicit MFID (SF=1)
+        if (is_standard_mfid) // explicit MFID==0/1, or implicit MFID (SF=1)
         {
 
             //check the service options on applicable formats
@@ -381,7 +382,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
             }
 
             // Return to control channel (call termination)
-            else if (lc_format == 0x4F) //# Call Termination/Cancellation
+            else if (lc_opcode == 0x0F) //# Call Termination/Cancellation
             {
                 uint32_t tgt =
                     (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24); //can be individual, or all units (0xFFFFFF)
@@ -392,6 +393,52 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                     // per-slot audio gates when an explicit call termination is received.
                     state->p25_sm_force_release = 1;
                     p25_sm_on_release(opts, state);
+                }
+            }
+
+            // This lc_format doesn't use the MFID field
+            else if (lc_format == 0x57) {
+                fprintf(stderr, " Extended Function Command");
+            }
+
+            // This lc_format doesn't use the MFID field
+            else if (lc_format == 0x58) {
+                uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
+                uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
+                fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
+                if (iden < 16 && base != 0) {
+                    uint32_t old = state->p25_base_freq[iden];
+                    if (old != base) {
+                        state->p25_base_freq[iden] = base; // store in 5 kHz units
+                        fprintf(stderr, " (updated)");
+                    }
+                    // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
+                    // Trust as confirmed only when on current CC; otherwise mark unconfirmed.
+                    state->p25_iden_wacn[iden] = state->p2_wacn;
+                    state->p25_iden_sysid[iden] = state->p2_sysid;
+                    state->p25_iden_rfss[iden] = state->p2_rfssid;
+                    state->p25_iden_site[iden] = state->p2_siteid;
+                    state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
+                }
+            }
+
+            // This lc_format doesn't use the MFID field
+            else if (lc_format == 0x59) {
+                uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
+                uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
+                fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
+                if (iden < 16 && base != 0) {
+                    uint32_t old = state->p25_base_freq[iden];
+                    if (old != base) {
+                        state->p25_base_freq[iden] = base; // store in 5 kHz units
+                        fprintf(stderr, " (updated)");
+                    }
+                    // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
+                    state->p25_iden_wacn[iden] = state->p2_wacn;
+                    state->p25_iden_sysid[iden] = state->p2_sysid;
+                    state->p25_iden_rfss[iden] = state->p2_rfssid;
+                    state->p25_iden_site[iden] = state->p2_siteid;
+                    state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
                 }
             }
 
@@ -412,72 +459,6 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
         //0xFFFFFD - System Default (FNE Calling Functions, Registration, Mobility)
         //0xFFFFFE - Registration Default (registration transactions from SU)
         //0xFFFFFF - All Units
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x42) {
-            fprintf(stderr, " Conventional Fallback Indication");
-        }
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x57) {
-            fprintf(stderr, " Extended Function Command");
-        }
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x58) {
-            uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
-            uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-            fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
-            if (iden < 16 && base != 0) {
-                uint32_t old = state->p25_base_freq[iden];
-                if (old != base) {
-                    state->p25_base_freq[iden] = base; // store in 5 kHz units
-                    fprintf(stderr, " (updated)");
-                }
-                // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
-                // Trust as confirmed only when on current CC; otherwise mark unconfirmed.
-                state->p25_iden_wacn[iden] = state->p2_wacn;
-                state->p25_iden_sysid[iden] = state->p2_sysid;
-                state->p25_iden_rfss[iden] = state->p2_rfssid;
-                state->p25_iden_site[iden] = state->p2_siteid;
-                state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
-            }
-        }
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x59) {
-            uint8_t iden = (uint8_t)ConvertBitIntoBytes(&LCW_bits[8], 4);
-            uint32_t base = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 32);
-            fprintf(stderr, " Channel Identifier Update VU; Iden: %X; Base: %d;", iden, base * 5);
-            if (iden < 16 && base != 0) {
-                uint32_t old = state->p25_base_freq[iden];
-                if (old != base) {
-                    state->p25_base_freq[iden] = base; // store in 5 kHz units
-                    fprintf(stderr, " (updated)");
-                }
-                // Record provenance for LCW-learned IDENs so trunk SM can enforce site confirmation.
-                state->p25_iden_wacn[iden] = state->p2_wacn;
-                state->p25_iden_sysid[iden] = state->p2_sysid;
-                state->p25_iden_rfss[iden] = state->p2_rfssid;
-                state->p25_iden_site[iden] = state->p2_siteid;
-                state->p25_iden_trust[iden] = (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0) ? 2 : 1;
-            }
-        }
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x61) {
-            fprintf(stderr, " Secondary Control Channel Broadcast");
-        }
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x62) {
-            fprintf(stderr, " Adjacent Site Status Broadcast");
-        }
-
-        //This lc_format doesn't use the MFID field
-        else if (lc_format == 0x63) {
-            fprintf(stderr, " RFSS Status Broadcast");
-        }
 
         //MFID 90 Embedded GPS
         else if (lc_mfid == 0x90 && lc_opcode == 0x6) {
