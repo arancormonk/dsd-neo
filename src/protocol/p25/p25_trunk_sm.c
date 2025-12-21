@@ -516,7 +516,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
 
         if (can_release) {
             // All active slots terminated - release immediately like P25P1 Call Termination
-            do_release(ctx, opts, state, "p2-call-end");
+            do_release(ctx, opts, state, "call-end");
         }
     }
 }
