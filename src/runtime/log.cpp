@@ -40,6 +40,7 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     va_start(args, format);
     /* Format into a temporary buffer first so we can apply ASCII fallback if needed. */
     char buf[4096];
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
     vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
