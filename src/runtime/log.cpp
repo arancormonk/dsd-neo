@@ -38,17 +38,9 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
 
     std::va_list args;
     va_start(args, format);
-    /* Copy the va_list for any library implementations that may traverse it */
-    std::va_list args_copy;
-#if defined(__cplusplus)
-    va_copy(args_copy, args);
-#else
-    va_copy(args_copy, args);
-#endif
     /* Format into a temporary buffer first so we can apply ASCII fallback if needed. */
     char buf[4096];
-    vsnprintf(buf, sizeof(buf), format, args_copy);
-    va_end(args_copy);
+    vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
     if (dsd_unicode_supported()) {

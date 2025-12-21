@@ -932,7 +932,7 @@ static DSD_THREAD_RETURN_TYPE
             continue;
         }
         /* Read a block from input ring */
-        int got = input_ring_read_block(&input_ring, d->input_cb_buf, MAXIMUM_BUF_LENGTH);
+        int got = input_ring_read_block(&input_ring, d->input_cb_buf, static_cast<size_t>(MAXIMUM_BUF_LENGTH));
         if (got <= 0) {
             continue;
         }
@@ -3087,7 +3087,7 @@ dsd_rtl_stream_soft_stop(void) {
  *
  * @param out   Destination buffer for audio samples.
  * @param count Maximum number of samples to read.
- * @param opts  Decoder options (used for runtime PPM changes).
+ * @param opts  Decoder options (must not be NULL; used for runtime PPM changes).
  * @param state Decoder state (unused).
  * @return Number of samples read (>=1), 0 if count==0, or -1 on exit.
  */
@@ -3099,6 +3099,9 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
     }
     /* If stream is being torn down, abort read promptly. */
     if (!output.buffer || (g_stream && g_stream->should_exit.load())) {
+        return -1;
+    }
+    if (!opts) {
         return -1;
     }
 
