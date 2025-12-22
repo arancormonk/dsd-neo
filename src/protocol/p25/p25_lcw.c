@@ -534,6 +534,14 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
         else if (lc_mfid == 0x90 && lc_opcode == 0xF) {
             uint32_t src = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
             fprintf(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
+            // Motorola systems may signal end-of-call via MFID90 Talker EOT
+            // rather than standard implicit-MFID Call Termination (0x4F).
+            // Treat this as an explicit release when trunk-following.
+            memset(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+            if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+                state->p25_sm_force_release = 1;
+                p25_sm_on_release(opts, state);
+            }
         }
 
         //look for these in logs

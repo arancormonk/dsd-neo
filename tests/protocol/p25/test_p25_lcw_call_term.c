@@ -167,5 +167,16 @@ main(void) {
     p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
     rc |= expect_true("LCW_0x4F_release_nonzero_mfid_octet", g_return_to_cc_called >= 1 && opts.p25_is_tuned == 0);
 
+    // Motorola systems may emit MFID90 Talker EOT (format 0x0F, MFID 0x90) in place of standard call termination.
+    // Ensure it also triggers an explicit release when trunk-following.
+    opts.p25_is_tuned = 1;
+    set_bits_msb(lcw, 0, 8, 0x0F);       // lc_format (PB=0,SF=0,LCO=0x0F)
+    set_bits_msb(lcw, 8, 8, 0x90);       // lc_mfid (Motorola)
+    set_bits_msb(lcw, 16, 8, 0x00);      // lc_svcopt
+    set_bits_msb(lcw, 48, 24, 0x000123); // SRC (for logging)
+    g_return_to_cc_called = 0;
+    p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+    rc |= expect_true("LCW_MFID90_TalkerEOT_release", g_return_to_cc_called >= 1 && opts.p25_is_tuned == 0);
+
     return rc;
 }
