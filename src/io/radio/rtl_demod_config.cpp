@@ -662,8 +662,15 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     int sps = 0;
     if (opts) {
         int sym_rate = 4800;
-        if (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) {
-            sym_rate = 6000;
+        /* When mod_qpsk is set (e.g., -mq for P25P1 CQPSK), use 4800 sym/s.
+         * When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
+         * When both P25P1 and P25P2 are enabled (trunking mode), default to
+         * P25P1 rate (4800) since CC is typically encountered first; the trunk
+         * state machine will override via ted_sps_override when tuning to P25P2 VC. */
+        if (opts->mod_qpsk == 1) {
+            sym_rate = 4800; /* P25P1 CQPSK */
+        } else if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0) {
+            sym_rate = 6000; /* P25P2/X2-TDMA only */
         } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) {
             sym_rate = 2400;
         }
