@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'USAGE'
-Usage: tools/clang_tidy.sh [--strict] [--all-commands]
+Usage: tools/clang_tidy.sh [--strict] [--all-commands] [--] [files...]
 
 Options:
   --strict        Use .clang-tidy.strict (broader check set).
@@ -19,21 +19,29 @@ Options:
                   appears multiple times in the compilation database (e.g., built
                   for multiple targets), clang-tidy may process it multiple times
                   and its progress counter can exceed the unique file count.
+
+Arguments:
+  files...        Optional list of translation units to analyze (e.g., src/foo.c).
+                  When omitted, analyzes all translation units in the compilation
+                  database. Non-translation-unit paths (e.g., headers) are ignored.
 USAGE
 }
 
 STRICT=0
 ALL_COMMANDS=0
-for arg in "$@"; do
-  case "$arg" in
-    --strict) STRICT=1 ;;
-    --all-commands) ALL_COMMANDS=1 ;;
+REQUESTED_FILES=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --strict) STRICT=1; shift ;;
+    --all-commands) ALL_COMMANDS=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *)
-      echo "Unknown option: $arg" >&2
+    --) shift; REQUESTED_FILES+=("$@"); break ;;
+    -*)
+      echo "Unknown option: $1" >&2
       usage >&2
       exit 2
       ;;
+    *) REQUESTED_FILES+=("$1"); shift ;;
   esac
 done
 
@@ -70,7 +78,7 @@ if command -v python3 >/dev/null 2>&1; then
     TIDY_PDB_DIR="$TIDY_PDB_TEMP_DIR"
   fi
 
-  mapfile -t FILES < <(python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" <<'PY'
+  mapfile -t FILES < <(python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" "${REQUESTED_FILES[@]}" <<'PY'
 import json
 import pathlib
 import shlex
@@ -80,6 +88,7 @@ pdb_path = pathlib.Path(sys.argv[1])
 root = pathlib.Path(sys.argv[2]).resolve()
 out_dir = pathlib.Path(sys.argv[3]) if sys.argv[3] else None
 all_commands = bool(int(sys.argv[4]))
+requested = sys.argv[5:]
 
 try:
     data = json.loads(pdb_path.read_text())
@@ -165,11 +174,58 @@ def score_entry(rel_path, entry):
     return score
 
 
+def normalize_requested(path_str):
+    p = pathlib.Path(path_str)
+    if not p.is_absolute():
+        p = (root / p).resolve()
+    try:
+        rel = p.relative_to(root)
+    except ValueError:
+        return None
+    rel_str = rel.as_posix()
+    if rel.parts and rel.parts[0] == "build":
+        return None
+    if len(rel.parts) >= 2 and rel.parts[0] == "src" and rel.parts[1] == "third_party":
+        return None
+    return rel_str
+
+
+requested_rel = []
+if requested:
+    seen = set()
+    for p in requested:
+        rel = normalize_requested(p)
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        requested_rel.append(rel)
+
+
+def is_translation_unit(path):
+    suffix = pathlib.Path(path).suffix.lower()
+    return suffix in {".c", ".cc", ".cpp", ".cxx"}
+
+
+selected_files = unique_files
+if requested_rel:
+    requested_tus = [p for p in requested_rel if is_translation_unit(p)]
+    missing = [p for p in requested_tus if p not in entries_by_rel]
+    if missing:
+        print(
+            "Skipping files not present in compilation database:\n  "
+            + "\n  ".join(missing),
+            file=sys.stderr,
+        )
+    selected_files = sorted(p for p in requested_tus if p in entries_by_rel)
+
+
 if out_dir and not all_commands:
     out_dir.mkdir(parents=True, exist_ok=True)
     selected = []
-    for rel in unique_files:
-        cmds = entries_by_rel[rel]
+    for rel in selected_files:
+        cmds = entries_by_rel.get(rel)
+        if not cmds:
+            continue
         best = max(cmds, key=lambda e: score_entry(rel, e))
         selected.append(best)
 
@@ -177,16 +233,34 @@ if out_dir and not all_commands:
     out_path.write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
     print(f"Wrote deduped compile database: {out_path} ({len(selected)} entries)", file=sys.stderr)
 
-for path in unique_files:
+for path in selected_files:
     print(path)
 PY
   )
 else
-  echo "python3 not found; falling back to git ls-files (may include files not in compile database)." >&2
-  mapfile -t FILES < <(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' ':!:build/**' ':!:src/third_party/**')
+  if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
+    echo "python3 not found; analyzing requested files without compilation database filtering." >&2
+    FILES=()
+    for f in "${REQUESTED_FILES[@]}"; do
+      f="${f#./}"
+      case "$f" in
+        build/*|src/third_party/*) continue ;;
+      esac
+      case "$f" in
+        *.c|*.cc|*.cpp|*.cxx) FILES+=("$f") ;;
+      esac
+    done
+  else
+    echo "python3 not found; falling back to git ls-files (may include files not in compile database)." >&2
+    mapfile -t FILES < <(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' ':!:build/**' ':!:src/third_party/**')
+  fi
 fi
 if [ ${#FILES[@]} -eq 0 ]; then
-  echo "No source files found to analyze."
+  if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
+    echo "No translation units found to analyze from requested paths."
+  else
+    echo "No source files found to analyze."
+  fi
   exit 0
 fi
 

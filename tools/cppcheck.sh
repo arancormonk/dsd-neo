@@ -15,10 +15,25 @@ if ! command -v cppcheck >/dev/null 2>&1; then
 fi
 
 # Parse arguments
+usage() {
+  cat <<'USAGE'
+Usage: tools/cppcheck.sh [--strict] [--verbose|-v] [--] [files...]
+
+Options:
+  --strict    Enable all checks and treat warnings as errors.
+  --verbose   Show detailed output during analysis.
+
+Arguments:
+  files...    Optional list of translation units to analyze (e.g., src/foo.c).
+              When omitted, analyzes the src/ and include/ trees.
+USAGE
+}
+
 STRICT=0
 VERBOSE=0
+REQUESTED_FILES=()
 while [[ $# -gt 0 ]]; do
-  case $1 in
+  case "$1" in
     --strict)
       STRICT=1
       shift
@@ -28,17 +43,22 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --help|-h)
-      echo "Usage: $0 [OPTIONS]"
-      echo ""
-      echo "Options:"
-      echo "  --strict    Enable all checks and treat warnings as errors"
-      echo "  --verbose   Show detailed output during analysis"
-      echo "  -h, --help  Show this help message"
+      usage
       exit 0
       ;;
+    --)
+      shift
+      REQUESTED_FILES+=("$@")
+      break
+      ;;
     *)
-      echo "Unknown option: $1" >&2
-      exit 1
+      if [[ "$1" == -* ]]; then
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 1
+      fi
+      REQUESTED_FILES+=("$1")
+      shift
       ;;
   esac
 done
@@ -94,14 +114,41 @@ CPPCHECK_ARGS+=(
 
 LOG_FILE=".cppcheck.local.out"
 
-echo "Analyzing src/ and include/ directories..."
+FILES=()
+if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
+  for f in "${REQUESTED_FILES[@]}"; do
+    f="${f#./}"
+    case "$f" in
+      build/*|src/third_party/*) continue ;;
+    esac
+    case "$f" in
+      *.c|*.cc|*.cpp|*.cxx) FILES+=("$f") ;;
+    esac
+  done
+
+  if [[ ${#FILES[@]} -eq 0 ]]; then
+    echo "No translation units found to analyze from requested paths."
+    exit 0
+  fi
+
+  mapfile -t FILES < <(printf '%s\n' "${FILES[@]}" | sort -u)
+  echo "Analyzing ${#FILES[@]} file(s) with cppcheck..."
+else
+  echo "Analyzing src/ and include/ directories..."
+fi
 echo ""
+
+# Select analysis targets.
+CPPCHECK_TARGETS=(src/ include/)
+if [[ ${#FILES[@]} -gt 0 ]]; then
+  CPPCHECK_TARGETS=("${FILES[@]}")
+fi
 
 # Run cppcheck and capture output
 # Use --template for consistent output format
 if cppcheck "${CPPCHECK_ARGS[@]}" \
   --template='{file}:{line}: {severity}: {message} [{id}]' \
-  src/ include/ 2>&1 | tee "$LOG_FILE"; then
+  "${CPPCHECK_TARGETS[@]}" 2>&1 | tee "$LOG_FILE"; then
   echo ""
   echo "cppcheck passed. Full output in $LOG_FILE"
 else

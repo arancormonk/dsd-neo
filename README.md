@@ -232,7 +232,7 @@ Common options:
 
 - Format: `tools/format.sh` (requires `clang-format`; see `.clang-format`).
 - Static analysis: `tools/clang_tidy.sh` (use `--strict` for extra checks) or `clang-tidy -p build/dev-debug <files>`.
-- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit.
+- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and clang‑tidy/cppcheck on push.
 
 ## Contributing
 
