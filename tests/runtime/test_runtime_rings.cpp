@@ -19,8 +19,6 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/ring.h>
 
-/* exitflag is now defined in dsd-neo_runtime (src/runtime/exitflag.c) */
-
 /* RTL-SDR stream exit shim (when USE_RTLSDR is enabled in runtime) */
 extern "C" int
 dsd_rtl_stream_should_exit(void) {

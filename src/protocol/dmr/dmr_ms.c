@@ -327,8 +327,6 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
         vc++;
 
-        //reset emb components (no-op values previously assigned were unused)
-
         //this is necessary because we need to skip and collect dibits, not just skip them
         if (vc > 6) {
             goto END;

@@ -52,24 +52,7 @@
 /* file_compat.h provides portable file descriptor operations */
 #include <dsd-neo/platform/file_compat.h>
 
-// s_stderr_suppressed, s_saved_stderr_fd moved to ncurses_init.c
-
-// gamma mapping now provided by ui_prims
-// swap_int_local, select_k_int_local, cmp_int_asc provided by ncurses_internal.h
-
-// ui_is_locked_from_label provided by ncurses_internal.h
-
-// select_k_int_local provided by ncurses_internal.h
-// edacs_channel_tree defined in ncurses_init.c
 extern unsigned long long int edacs_channel_tree[33][6];
-
-// SNR history buffers and functions provided by ncurses_snr.h
-// drawing helpers now provided by ui_prims
-
-// ui_is_iden_channel, ui_match_iden_channel provided by ncurses_p25_display.h
-
-/* Map IDEN nibble (0..15) to a color pair in 21..28 (wrap by 8) */
-// iden color helper now provided by ui_prims
 
 /* Small helpers to align key/value fields to a consistent value column. */
 static inline void
@@ -103,9 +86,6 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
     addch('\n');
 }
 
-// SNR functions (snr_hist_push, print_snr_sparkline, print_snr_meter) provided by ncurses_snr.h
-// cmp_int_asc provided by ncurses_internal.h
-
 char* DMRBusrtTypes[32] = {
     "PI       ", "VLC      ", "TLC      ", "CSBK     ", "MBCH     ", "MBCC     ", "DATA     ",
     "R12D     ", "R34D     ", "IDLE     ", "R1_D     ", "ERR      ", "DUID ERR ", "R-S ERR  ",
@@ -124,32 +104,7 @@ char* DMRBusrtTypes[32] = {
 
 };
 
-// ncursesOpen provided by ncurses_init.c
-
-/* Alias for shared last synctype tracking (defined in ncurses_utils.c) */
 #define lls ncurses_last_synctype
-
-// DSP and visualizer functions (print_dsp_status, print_constellation_view,
-// print_eye_view, print_fsk_hist_view, print_spectrum_view, cmp_int_asc)
-// provided by ncurses_dsp_display.h and ncurses_visualizers.h
-
-// compute_p25p1_voice_avg_err, compute_p25p2_voice_avg_err provided by ncurses_p25_display.h
-
-/* Forward decls now provided by headers */
-// ui_guess_active_vc_freq provided by ncurses_p25_display.h
-// compute_percentiles_u8 provided by ncurses_internal.h
-
-// ui_print_p25_metrics provided by ncurses_p25_display.h
-
-// ui_print_p25_cc_candidates provided by ncurses_p25_display.h
-
-// ui_print_p25_neighbors provided by ncurses_p25_display.h
-
-// ui_print_p25_iden_plan provided by ncurses_p25_display.h
-
-// ui_guess_active_vc_freq provided by ncurses_p25_display.h
-
-// ui_print_learned_lcns provided by ncurses_trunk_display.h
 
 /* Factor render function. For now this function simply wraps
  * the legacy drawing path; the body will be migrated here later
@@ -158,7 +113,7 @@ static void
 ui_draw_frame(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    /* Drawing implementation lives in the legacy block below and will be
+    /* Drawing implementation lives in the block below and will be
        moved here in a follow-up to keep behavior identical. */
 }
 
@@ -568,7 +523,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
-        // P25 metrics moved to dedicated 'P25 Metrics' section below.
     }
 #else //set on to UPPER CASE, off to lower case
     if (opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
@@ -599,7 +553,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         } else {
             printw(" - Black List Mode\n");
         }
-        // P25 metrics moved to dedicated 'P25 Metrics' section below.
     }
 #endif
 //print additional information for EDACS modes and toggles
@@ -813,7 +766,6 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         const char* modlab = (state->rf_mod == 1) ? "QPSK" : (state->rf_mod == 2) ? "GFSK" : "C4FM";
         printw("[%s][%d] \n", modlab, (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
     }
-    /* (RTL-SDR controls moved to dedicated section above) */
     if (opts->m17encoder == 1) {
         printw("| Encoding:    [%s] \n", opts->output_name);
     }
@@ -2566,5 +2518,3 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     //handle input
     ncurses_input_handler(opts, state, c);
 }
-
-// ncursesClose provided by ncurses_init.c

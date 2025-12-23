@@ -48,11 +48,6 @@ target_sources(dsd-neo_io_audio PRIVATE
   audio_backends/tcp_input.c
 )
 
-# PulseAudio-specific device enumeration (only when not using PortAudio)
-# Note: pulse_devices.c functionality is now in platform/audio_pulse.c
-# and pa_devs.c is PortAudio-specific, so neither are needed with the
-# new abstraction layer.
-
 target_include_directories(dsd-neo_io_audio
   PUBLIC ${PROJECT_SOURCE_DIR}/include
   PRIVATE ${_PUBLIC_INCLUDES}

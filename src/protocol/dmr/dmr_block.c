@@ -1349,22 +1349,6 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                     }
                 }
 
-                //reset alg/keyid/mi //TD_LC should "SHOULD" catch this
-                // if (state->currentslot == 0)
-                // {
-                //   state->payload_mi = 0;
-                //   state->payload_algid = 0;
-                //   state->payload_keyid = 0;
-                //   state->dmr_so = 0;
-                // }
-                // else
-                // {
-                //   state->payload_miR = 0;
-                //   state->payload_algidR = 0;
-                //   state->payload_keyidR = 0;
-                //   state->dmr_soR = 0;
-                // }
-
             } //end enc check
 #endif
             //End DMR Data PDU Decryption

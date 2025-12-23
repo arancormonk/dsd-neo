@@ -39,8 +39,6 @@ __attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
 #include <string.h>
 #include <vector>
 
-/* demod_state now provided by include/dsp/demod_state.h */
-
 /* Macros and constants from the original file */
 #ifndef MAXIMUM_OVERSAMPLE
 #define MAXIMUM_OVERSAMPLE 16
@@ -82,8 +80,6 @@ static inline const T*
 assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
     return p;
 }
-
-/* HB_TAPS and hb_q15_taps provided by dsp/halfband.h */
 
 /* Fixed channel low-pass for high-rate mode.
  *

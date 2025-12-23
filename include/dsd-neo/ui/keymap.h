@@ -35,7 +35,7 @@
 #define DSD_KEY_FSK_HIST         'K'
 
 // Spectrum analyzer (FFT)
-#define DSD_KEY_SPECTRUM         'f' // moved from 's' to avoid clash with Stop Playback
+#define DSD_KEY_SPECTRUM         'f'
 #define DSD_KEY_SPEC_DEC         ','
 #define DSD_KEY_SPEC_INC         '.'
 

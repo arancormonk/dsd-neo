@@ -112,9 +112,6 @@ p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len)
     process_MAC_VPDU(&opts, &state, type, MAC);
 }
 
-// Note: LCW test helper moved to a dedicated TU to avoid dragging LCW dependencies
-// into callers that only use other helpers from this file.
-
 // Simplified P25p1 LDU audio gating decision helper.
 // Returns 1 when audio should be allowed under the current encryption state,
 // or 0 when audio should remain muted. Mirrors the policy in p25p1_ldu2.c:

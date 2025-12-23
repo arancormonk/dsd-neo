@@ -290,14 +290,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             pwr = raw_pwr(analog3, 960, 1);
         }
 
-        //NOTE: The core dumps observed previously were due to SDR++ Remote Server connection dropping due to Internet/Other issues
-        //and unlike in the main livescanner loop where it just hangs, this loop will cause a core dump. The observed issue
-        //has not occurred when using SDR++ on local hardware, just the remote server software over the Internet.
-
-        //NOTE: The fix below does not apply to above observed issue, as the TCP connection will not drop, there will just
-        //not be a sample to read in and it hangs on sf_short read until it crashes out, the fix below will prevent issues
-        //when SDR++ is closed locally, or the TCP connection closes suddenly.
-
         //NOTE: Observed two segfaults on EDACS STM analog when doing radio tests or otherwise holding the radio
         //open for extremely long periods of time, could be an issue in digitize where dibit_buf_p is not
         //reset for an extended period of time and overflows, may need to reset buffer occassionally here
@@ -482,7 +474,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         }
 #endif
 
-        //digitize analog samples for a dotting sequence check -- moved here before filtering is applied
+        //digitize analog samples for a dotting sequence check
         unsigned long long int sr = 0;
         for (i = 0; i < 960; i += 5) //Samples Per Symbol is 5, so incrememnt every 5
         {
@@ -1952,12 +1944,9 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 break;
                             }
                         }
-                        //moved to below, we want the TG HOLD to override either group or individual calls
-                        //
-                        //
                     }
 
-                    //TG hold on EDACS STD/NET -- block non-matching abstract target (moved here to fix tuning that occurs on I-CALL during TG HOLD)
+                    //TG hold on EDACS STD/NET -- block non-matching abstract target
                     if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
                         snprintf(mode, sizeof mode, "%s", "B");
                     }

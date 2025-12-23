@@ -69,7 +69,6 @@ enum UiCmdId {
     UI_CMD_INPUT_MONITOR_TOGGLE = 107,
     UI_CMD_COSINE_FILTER_TOGGLE = 108,
 
-    // Heavy actions moved off UI thread
     UI_CMD_TCP_CONNECT_AUDIO = 200, // use opts->tcp_hostname/port; sets audio_in_type=AUDIO_IN_TCP
     UI_CMD_RIGCTL_CONNECT = 201,    // uses opts->tcp_hostname/rigctlportno
     UI_CMD_RETURN_CC = 202,
@@ -108,7 +107,6 @@ enum UiCmdId {
     UI_CMD_EVENT_LOG_DISABLE = 402, // disable event log file output
     UI_CMD_EVENT_LOG_SET = 403,     // payload: char path[]
 
-    // Misc toggles moved to demod thread
     UI_CMD_CRC_RELAX_TOGGLE = 420,
     UI_CMD_LCW_RETUNE_TOGGLE = 421,
     UI_CMD_P25_CC_CAND_TOGGLE = 423,

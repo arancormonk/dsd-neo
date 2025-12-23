@@ -174,7 +174,6 @@ main(int argc, char** argv) {
         state->config_autosave_path[0] = '\0';
     }
 
-    // Phase 1: long-option and env parsing moved into runtime CLI helper
     {
         int oneshot_rc = 0;
         int early_rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &oneshot_rc);

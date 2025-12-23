@@ -50,7 +50,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
         W = 32;
     }
     /* Make the constellation a bit taller by default for readability */
-    int H = rows / 2; /* previously rows/3 */
+    int H = rows / 2;
     if (H < 12) {
         H = 12;
     }
@@ -538,8 +538,6 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 #endif
 }
-
-/* cmp_int_asc moved to ncurses_utils.c */
 
 void
 print_eye_view(dsd_opts* opts, dsd_state* state) {
@@ -1058,8 +1056,6 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 #endif
 }
-
-/* cmp_int_asc definition moved to ncurses_utils.c */
 
 void
 print_fsk_hist_view(void) {

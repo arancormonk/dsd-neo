@@ -785,7 +785,6 @@ openAudioInDevice(dsd_opts* opts) {
             opts->audio_in_file_info->channels = 1;
             opts->audio_in_file_info->seekable = 0;
             opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-            //
             opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
 
             if (opts->audio_in_file == NULL) {

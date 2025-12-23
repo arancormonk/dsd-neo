@@ -451,7 +451,6 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
         info[(2 * i) + 99] = (1 & dibit);        // bit 0
     }
 
-    //
     dmr_data_burst_handler_ex(opts, state, (uint8_t*)info, burst, rel98);
 
     //don't run cach on simplex or mono

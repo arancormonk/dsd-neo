@@ -197,16 +197,6 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
             //Calculate variable len bits determined by non-zero octets
             int16_t num_bits = 56; //starting value is the static bit count on the fqsuid
 
-            // //evaluate the storage and determine how many octets/bits are present at this point (fall back to this if needed)
-            // for (int16_t i = 0; i < 368; i++) //(3072-128)/8
-            // {
-            //   uint8_t byte = (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][72+56+(i*8)], 8);
-            //   if (byte == 0)
-            //     break;
-            //   else
-            //     num_bits += 8;
-            // }
-
             //evaluate the storage and determine how many octets/bits are present at this point (expanded to two octets each, CRC with a 00xx pattern failed this)
             for (int16_t i = 0; i < 184; i++) //(3072-128)/16
             {
@@ -308,16 +298,6 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
             //Calculate variable len bits determined by non-zero octets
             int16_t num_bits = 56; //starting value is the static bit count on the fqsuid
-
-            // //evaluate the storage and determine how many octets/bits are present at this point (fall back to this if needed)
-            // for (int16_t i = 0; i < 368; i++) //(3072-128)/8
-            // {
-            //   uint8_t byte = (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][72+56+(i*8)], 8);
-            //   if (byte == 0)
-            //     break;
-            //   else
-            //     num_bits += 8;
-            // }
 
             //evaluate the storage and determine how many octets/bits are present at this point (expanded to two octets each, CRC with a 00xx pattern failed this)
             for (int16_t i = 0; i < 184; i++) //(3072-128)/16
@@ -423,19 +403,6 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
             // Update the accumulator
             accumulator += encoded[i] + 1;
         }
-
-        // //debug, dump just the encoded alias portion
-        // fprintf (stderr, "\n Encoded: ");
-        // for (int16_t i = 0; i < num_bytes; i++)
-        //   fprintf (stderr, "%02X", encoded[i]);
-
-        // //debug, dump the decoded payload as hex octets
-        // fprintf (stderr, "\n Decoded: ");
-        // for (int16_t i = 0; i < num_bytes; i++)
-        //   fprintf (stderr, "%02X", decoded[i]);
-
-        //dump the decoded payload as long chars
-        // fprintf (stderr, "\n");
         fprintf(stderr, " Alias: ");
         for (int i = 0; i < num_bytes / 2; i++) {
             uint16_t ch = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
@@ -526,8 +493,6 @@ apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t
 }
 
 //end Motorola P25 OTA Alias Decoding
-
-//TODO: Migrate Other OTA Alias functions here
 
 void
 l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {

@@ -234,7 +234,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (calc_start_cli) {
             dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
         }
-        // Run LCN calculator (now in runtime)
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);
         if (out_oneshot_rc) {
             *out_oneshot_rc = rc;
@@ -507,9 +506,6 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
     struct stat st = {0};
     char wav_file_directory[1024] = {0};
     char dsp_filename[1024] = {0};
-    /* unused temps kept to mirror original parsing scope */
-    // legacy local used by previous parsing; no longer needed
-
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:"
                        "89:Ek:I:J:Oj^"))

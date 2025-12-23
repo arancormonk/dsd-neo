@@ -494,8 +494,6 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 //process embedded link control
                 fprintf(stderr, "\n");
                 dmr_data_burst_handler(opts, state, (uint8_t*)dummy_bits, 0xEB);
-                //check the single burst/reverse channel opportunity -- moved
-                // dmr_sbrc (opts, state, power);
             }
 
             if (internalslot == 1 && vc2 == 6) {
@@ -506,8 +504,6 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 //process embedded link control
                 fprintf(stderr, "\n");
                 dmr_data_burst_handler(opts, state, (uint8_t*)dummy_bits, 0xEB);
-                //check the single burst/reverse channel opportunity -- moved
-                // dmr_sbrc (opts, state, power);
             }
 
             if (opts->payload == 1) {
@@ -693,7 +689,6 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
         // Tick the trunking state machine to handle hangtime/release logic
         dmr_sm_tick(opts, state);
 
-        //
         if (timestr != NULL) {
             free(timestr);
             timestr = NULL;
@@ -752,9 +747,6 @@ END:
         //failsafe to reset all data header and blocks when bad tact or emb
         dmr_reset_blocks(opts, state);
     }
-
-    //
-    /* stack buffer; no free */
 
     //reset static ks counter
     state->static_ks_counter[0] = 0;

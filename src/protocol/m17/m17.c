@@ -1478,7 +1478,6 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     if (strcmp(d40, "ALL") == 0) {
         dst = 0xFFFFFFFFFFFF;
     }
-    //end
 
     int i, j, k, x;                   //basic utility counters
     float sample = 0.0f;              //individual audio sample from source
@@ -1495,7 +1494,6 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     //Open UDP port to default or user defined values, if enabled
     int sock_err;
     if (opts->m17_use_ip == 1) {
-        //
         sock_err = udp_socket_connectM17(opts, state);
         if (sock_err < 0) {
             fprintf(stderr, "Error Configuring UDP Socket for M17 IP Frame :( \n");
@@ -3169,7 +3167,6 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     //Open UDP port to default or user defined values, if enabled
     int sock_err;
     if (opts->m17_use_ip == 1) {
-        //
         sock_err = udp_socket_connectM17(opts, state);
         if (sock_err < 0) {
             fprintf(stderr, "Error Configuring UDP Socket for M17 IP Frame :( \n");

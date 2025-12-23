@@ -354,7 +354,6 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
         setvbuf(opts->mbe_out_f, NULL, _IOFBF, (size_t)64u * 1024u);
     }
 
-    //
     fprintf(opts->mbe_out_f, "%s", ext);
     /* header write will be flushed later on close */
     /* stack buffers; no free */
@@ -409,7 +408,6 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
         setvbuf(opts->mbe_out_fR, NULL, _IOFBF, (size_t)64u * 1024u);
     }
 
-    //
     fprintf(opts->mbe_out_fR, "%s", ext);
     /* header write will be flushed later on close */
     /* stack buffers; no free */

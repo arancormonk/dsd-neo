@@ -160,20 +160,6 @@ resetState(dsd_state* state) {
 
     //unsure if these are still used or ever were used,
     // memset (state->aout_max_buf, 0, sizeof (float) * 200);
-    // state->aout_max_buf_p = state->aout_max_buf;
-    // state->aout_max_buf_idx = 0;
-
-    // //MBE Specific
-    // //free the memory before allocating it again -- may not use this
-    // free (state->cur_mp);
-    // free (state->prev_mp);
-    // free (state->prev_mp_enhanced);
-
-    // //memory allocation and init on mbe -- may not use this
-    // state->cur_mp = malloc (sizeof (mbe_parms));
-    // state->prev_mp = malloc (sizeof (mbe_parms));
-    // state->prev_mp_enhanced = malloc (sizeof (mbe_parms));
-    // mbe_initMbeParms (state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
 
     //rest the heurestics, we want to do this on each tune, each RF frequency can deviate quite a bit in strength
     initialize_p25_heuristics(&state->p25_heuristics);

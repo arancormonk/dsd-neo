@@ -343,7 +343,6 @@ struct dsd_state {
     short s_ru[160 * 6];     //single sample right
     short s_l4u[4][160 * 6]; //quad sample for up to a P25p2 4V
     short s_r4u[4][160 * 6]; //quad sample for up to a P25p2 4V
-    //end
     int audio_out_idx;
     int audio_out_idx2;
     int audio_out_idxR;
@@ -550,7 +549,6 @@ struct dsd_state {
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
 
-    //event history itemized per slot (moved near top)
     /* Event_History_I* event_history_s; */
 
     //new audio filter structs
@@ -703,7 +701,7 @@ struct dsd_state {
     // 0=unknown, 1=on CC, 2=on VC (grant-following or armed), 3=hang, 4=hunting CC
     int p25_sm_mode;
 
-    // Retune backoff bookkeeping (moved from static file-scope into state for determinism)
+    // Retune backoff bookkeeping
     // Blocks immediate re-tune to same VC/slot after a recent return
     time_t p25_retune_block_until;
     long p25_retune_block_freq;

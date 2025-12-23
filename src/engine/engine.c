@@ -691,15 +691,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->playoffsetR = 0;
         opts->delay = 0;
 
-        //open wav file should be handled directly by the -w switch now
-        // if (strlen(opts->wav_out_file) > 0 && opts->dmr_stereo_wav == 0)
-        //   openWavOutFile (opts, state);
-
-        // else
-
         openAudioInDevice(opts);
-
-        // fprintf (stderr,"Press CTRL + C to close.\n");
     }
 
     else {
@@ -766,10 +758,6 @@ dsd_engine_parse_m17_userdata(dsd_opts* opts, dsd_state* state) {
         if (curr != NULL) {
             state->m17_vox = atoi(curr);
         }
-
-        // curr = strtok(NULL, ":"); //moved to in and out methods
-        // if (curr != NULL)
-        //   opts->m17_use_ip = atoi(curr);
 
     M17END:; //do nothing
 
@@ -1456,10 +1444,6 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
             state->debug_prefix = '\0';
 #endif
 
-            // // recalibrate center/umid/lmid
-            // state->center = ((state->max) + (state->min)) / 2;
-            // state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-            // state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
             // Drain again between frames to reduce latency
             ui_drain_cmds(opts, state);
             state->synctype = getFrameSync(opts, state);

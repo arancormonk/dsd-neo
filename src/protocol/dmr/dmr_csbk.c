@@ -1481,30 +1481,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 dmr_gateway_identifier(ahoy_source, ahoy_target);
 
                 //log ahoy as a data call event //re-enable this if you want, but it can clog up the event history
-                // if (state->currentslot == 0)
-                // {
-                //   state->lastsrc = ahoy_source;
-                //   state->lasttg = ahoy_target;
-                // }
-                // else
-                // {
-                //   state->lastsrcR = ahoy_source;
-                //   state->lasttgR = ahoy_target;
-                // }
-                // watchdog_event_datacall (opts, state, ahoy_source, ahoy_target, ahoy_str, state->currentslot);
-                // if (state->currentslot == 0)
-                // {
-                //   state->lastsrc = 0;
-                //   state->lasttg = 0;
-                // }
-                // else
-                // {
-                //   state->lastsrcR = 0;
-                //   state->lasttgR = 0;
-                // }
-                // watchdog_event_history(opts, state, 0);
-                // watchdog_event_current(opts, state, 0);
-                //end ahoy logging
             }
 
             if (csbk_o == 42) {
@@ -2063,9 +2039,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                     sprintf(state->dmr_site_parms, "%s", "");
 
                     fprintf(stderr, "%s", KNRM);
-
-                    //Skip tuning group calls if group calls are disabled -- moved to individual switches in the parsing phase
-                    // if (opts->trunk_tune_group_calls == 0) goto SKIPCAP;
 
                     //Test allowing a group in the white list to preempt a call in progress and tune to a white listed call
                     if (opts->trunk_use_allow_list == 1) {
