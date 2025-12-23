@@ -10,12 +10,13 @@ target_sources(dsd-neo_dsp PRIVATE
   ted.cpp
   firdes.cpp
   simd_widen.cpp
-  simd_fir.cpp
-  dsd_filters.c
-  dsd_symbol.c
-  dsd_frame_sync.c
-  dmr_sync.c
-  sync_calibration.c
+	  simd_fir.cpp
+	  dsd_filters.c
+	  symbol_levels.c
+	  dsd_symbol.c
+	  dsd_frame_sync.c
+	  dmr_sync.c
+	  sync_calibration.c
 )
 
 # x86-64 SIMD sources with arch-specific flags

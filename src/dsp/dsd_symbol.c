@@ -22,6 +22,7 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
@@ -1028,31 +1029,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
         }
 
-        //assign symbol/dibit values based on modulation type
-        if (state->rf_mod == 2) //GFSK
-        {
-            symbol = state->symbolc;
-            if (state->symbolc == 0) {
-                symbol = -3.0f; //-1
-            }
-            if (state->symbolc == 1) {
-                symbol = -1.0f; //-3
-            }
-        } else //everything else
-        {
-            if (state->symbolc == 0) {
-                symbol = 1.0f; //-1
-            }
-            if (state->symbolc == 1) {
-                symbol = 3.0f; //-3
-            }
-            if (state->symbolc == 2) {
-                symbol = -1.0f; //1
-            }
-            if (state->symbolc == 3) {
-                symbol = -3.0f; //3
-            }
-        }
+        // Map capture dibit values (0..3) back to nominal symbol levels.
+        // The .bin capture format stores dibits, not raw discriminator samples, so this mapping must
+        // be stable regardless of the current demod mode (rf_mod).
+        symbol = dsd_symbol_level_from_dibit((uint8_t)state->symbolc);
     }
 
     //.raw or .sym float symbol files
