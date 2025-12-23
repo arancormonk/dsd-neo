@@ -6,8 +6,18 @@ set -euo pipefail
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$repo_root"
 
+remote_name="${1:-origin}"
+
 zeros="0000000000000000000000000000000000000000"
-empty_tree=$(git hash-object -t tree /dev/null)
+
+remote_head_ref=$(git symbolic-ref -q "refs/remotes/${remote_name}/HEAD" 2>/dev/null || true)
+if [[ -z "$remote_head_ref" ]]; then
+  if git show-ref --verify --quiet "refs/remotes/${remote_name}/main"; then
+    remote_head_ref="refs/remotes/${remote_name}/main"
+  elif git show-ref --verify --quiet "refs/remotes/${remote_name}/master"; then
+    remote_head_ref="refs/remotes/${remote_name}/master"
+  fi
+fi
 
 changed_paths=()
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -16,12 +26,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
 
-  base_sha="$remote_sha"
-  if [[ "$remote_sha" == "$zeros" ]]; then
-    base_sha="$empty_tree"
+  # Tags are often pushed in bulk and aren't useful for static analysis gating.
+  if [[ "$local_ref" == refs/tags/* ]]; then
+    continue
   fi
 
-  mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "$base_sha" "$local_sha" || true)
+  if [[ "$remote_sha" == "$zeros" ]]; then
+    # New branch/ref: compare against remote default branch when possible; otherwise, don't analyze the whole repo.
+    if [[ -n "$remote_head_ref" ]]; then
+      mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${remote_head_ref}...${local_sha}" || true)
+    else
+      echo "pre-push: cannot determine ${remote_name} default branch; skipping static analysis for ${local_ref}." >&2
+      continue
+    fi
+  else
+    mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${remote_sha}...${local_sha}" || true)
+  fi
   changed_paths+=("${diff_files[@]}")
 done
 
