@@ -713,6 +713,14 @@ add_executable(dsd-neo_test_dmr_lrrp_ip_udp_lengths
 target_include_directories(dsd-neo_test_dmr_lrrp_ip_udp_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LRRP_IP_UDP_LENGTHS COMMAND dsd-neo_test_dmr_lrrp_ip_udp_lengths)
 
+# DMR LRRP: coordinate formula comparison (RadioReference vs ok-dmrlib vs dsd-neo)
+add_executable(dsd-neo_test_dmr_lrrp_coordinate_formulas
+  protocol/dmr/test_dmr_lrrp_coordinate_formulas.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_coordinate_formulas PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_lrrp_coordinate_formulas PRIVATE m)
+add_test(NAME DMR_LRRP_COORDINATE_FORMULAS COMMAND dsd-neo_test_dmr_lrrp_coordinate_formulas)
+
 # DMR LOCN: invalid decoded date should fall back to system time
 add_executable(dsd-neo_test_dmr_locn_time_fallback
   protocol/dmr/test_dmr_locn_time_fallback.c

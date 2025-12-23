@@ -870,20 +870,11 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
     double alt_fin = 0.0;
     double alt_acc_fin = 0.0;
     if (have_pos) {
-        const double lat_unit = 180.0 / 4294967295.0;
-        const double lon_unit = 360.0 / 4294967295.0;
-
-        // Latitude: sign + magnitude (MSB indicates hemisphere, remaining bits are magnitude)
-        int lat_sign = 1;
-        uint32_t lat_mag = lat_raw;
-        if (lat_mag & 0x80000000u) {
-            lat_mag &= 0x7FFFFFFFu;
-            lat_sign = -1;
-        }
-        lat_fin = (double)lat_mag * lat_unit * (double)lat_sign;
-
-        // Longitude: two's complement signed 32-bit
-        lon_fin = (double)((int32_t)lon_raw) * lon_unit;
+        // Two's complement signed 32-bit for both coordinates.
+        // Formula: lat = raw * 90 / 2^31, lon = raw * 180 / 2^31
+        // Reference: RadioReference forum, ok-dmrlib
+        lat_fin = ((double)((int32_t)lat_raw) * 90.0) / 2147483648.0;
+        lon_fin = ((double)((int32_t)lon_raw) * 180.0) / 2147483648.0;
     }
     if (have_rad) {
         rad_fin = (double)rad_raw * 0.01;
