@@ -10,6 +10,7 @@ target_link_libraries(dsd-neo PRIVATE
   dsd-neo_dsp
   dsd-neo_io_radio
   dsd-neo_io_control
+  dsd-neo_engine
   dsd-neo_core
   dsd-neo_ui_terminal
   dsd-neo_proto_dstar

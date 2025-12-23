@@ -20,6 +20,7 @@ target_sources(dsd-neo_runtime PRIVATE
   cli/oneshot_dmr_t3.c
   bootstrap/system.c
   bootstrap/audio.c
+  bootstrap/interactive.c
   ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
   ui_async_stubs.c
 )

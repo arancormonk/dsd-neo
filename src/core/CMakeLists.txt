@@ -14,6 +14,7 @@ target_sources(dsd-neo_core PRIVATE
   frames/dsd_dibit.c
   time/dsd_time.c
   util/dsd_misc.c
+  util/dsd_init.c
   util/dsd_events.c
   util/dsd_alias.c
   util/dsd_reset.c

@@ -409,6 +409,12 @@ struct dsd_state {
     int errs2R;
     int mbe_file_type;
     int optind;
+    // CLI argv/argc snapshot for file playback modes (set by frontend)
+    int cli_argc_effective;
+    char** cli_argv;
+    // User config autosave state (set by frontend when config is active)
+    int config_autosave_enabled;
+    char config_autosave_path[1024];
     int numtdulc;
     int firstframe;
     char slot0light[8];

@@ -61,6 +61,8 @@ void dsd_bootstrap_enable_ftz_daz_if_enabled(void);
 void dsd_bootstrap_choose_audio_output(dsd_opts* opts);
 /** @brief Select default audio input device when not explicitly set. */
 void dsd_bootstrap_choose_audio_input(dsd_opts* opts);
+/** @brief Run the interactive bootstrap wizard when no CLI args/config are present. */
+void dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
