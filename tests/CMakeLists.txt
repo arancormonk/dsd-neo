@@ -689,19 +689,27 @@ add_executable(dsd-neo_test_dmr_lrrp_token_alignment
 target_include_directories(dsd-neo_test_dmr_lrrp_token_alignment PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LRRP_TOKEN_ALIGNMENT COMMAND dsd-neo_test_dmr_lrrp_token_alignment)
 
-# DMR LRRP: response token lengths must be skipped as units (no payload-byte desync)
-add_executable(dsd-neo_test_dmr_lrrp_response_token_lengths
-  protocol/dmr/test_dmr_lrrp_response_token_lengths.c
-  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
-)
-target_include_directories(dsd-neo_test_dmr_lrrp_response_token_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
-add_test(NAME DMR_LRRP_RESPONSE_TOKEN_LENGTHS COMMAND dsd-neo_test_dmr_lrrp_response_token_lengths)
+	# DMR LRRP: response token lengths must be skipped as units (no payload-byte desync)
+	add_executable(dsd-neo_test_dmr_lrrp_response_token_lengths
+	  protocol/dmr/test_dmr_lrrp_response_token_lengths.c
+	  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+	)
+	target_include_directories(dsd-neo_test_dmr_lrrp_response_token_lengths PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+	add_test(NAME DMR_LRRP_RESPONSE_TOKEN_LENGTHS COMMAND dsd-neo_test_dmr_lrrp_response_token_lengths)
 
-# DMR LRRP: position token selection should match SDRTrunk token-type ordering
-add_executable(dsd-neo_test_dmr_lrrp_position_token_precedence
-  protocol/dmr/test_dmr_lrrp_position_token_precedence.c
-  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
-)
+	# DMR LRRP: resync when unexpected prefix byte masquerades as token id
+	add_executable(dsd-neo_test_dmr_lrrp_resync_prefix
+	  protocol/dmr/test_dmr_lrrp_resync_prefix.c
+	  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+	)
+	target_include_directories(dsd-neo_test_dmr_lrrp_resync_prefix PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+	add_test(NAME DMR_LRRP_RESYNC_PREFIX COMMAND dsd-neo_test_dmr_lrrp_resync_prefix)
+
+	# DMR LRRP: position token selection should match SDRTrunk token-type ordering
+	add_executable(dsd-neo_test_dmr_lrrp_position_token_precedence
+	  protocol/dmr/test_dmr_lrrp_position_token_precedence.c
+	  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+	)
 target_include_directories(dsd-neo_test_dmr_lrrp_position_token_precedence PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
 add_test(NAME DMR_LRRP_POSITION_TOKEN_PRECEDENCE COMMAND dsd-neo_test_dmr_lrrp_position_token_precedence)
 

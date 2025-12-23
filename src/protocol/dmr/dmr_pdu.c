@@ -581,6 +581,323 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     watchdog_event_datacall(opts, state, src24, dst24, state->dmr_lrrp_gps[slot], slot);
 }
 
+typedef struct {
+    // decoded time (token 0x34)
+    uint16_t year;
+    uint16_t month;
+    uint16_t day;
+    uint16_t hour;
+    uint16_t minute;
+    uint16_t second;
+
+    // decoded position (point/circle 2D/3D)
+    uint32_t lat_raw;
+    uint32_t lon_raw;
+    uint16_t rad_raw;
+    uint32_t alt_raw;
+    uint16_t alt_acc_raw;
+    uint8_t have_pos;
+    uint8_t have_rad;
+    uint8_t have_alt;
+    uint8_t have_alt_acc;
+    // TokenType order for position tokens: CIRCLE_2D, CIRCLE_3D, POINT_2D, POINT_3D.
+    uint8_t pos_best_rank;
+
+    // speed/heading
+    double velocity_mph; // units are 1/100 mph per SDRTrunk Speed.java
+    uint8_t vel_set;
+    uint16_t heading_deg; // degrees, 2-degree increments per SDRTrunk Heading.java
+    uint8_t heading_set;
+
+    // parser quality metrics
+    int known_tokens;
+    int unknown_tokens;
+    int truncated_tokens;
+} dmr_lrrp_parse_result;
+
+static void
+dmr_lrrp_parse_result_init(dmr_lrrp_parse_result* r) {
+    memset(r, 0, sizeof(*r));
+    r->pos_best_rank = 0xFFu;
+}
+
+static void
+dmr_lrrp_parse_response_tokens(const uint8_t* pdu, size_t avail, size_t idx_start, size_t remaining,
+                               dmr_lrrp_parse_result* r) {
+    size_t idx = idx_start;
+    while (remaining > 0 && idx < avail) {
+        uint8_t token = pdu[idx];
+        size_t need = 1;
+        int known = 1;
+
+        switch (token) {
+            case 0x22: { // IDENTITY (variable-length; includes payload length byte)
+                if (remaining < 2) {
+                    need = remaining;
+                    r->truncated_tokens++;
+                    break;
+                }
+                size_t payload = (size_t)pdu[idx + 1];
+                need = 2u + payload;
+                if (need > remaining) {
+                    need = remaining;
+                    r->truncated_tokens++;
+                }
+            } break;
+
+            case 0x23: // UNKNOWN_23 (len 1)
+            case 0x31: // TRIGGER_PERIODIC (len 1)
+            case 0x4A: // TRIGGER_DISTANCE (len 1)
+            case 0x78: // TRIGGER_ON_MOVE (len 1)
+            case 0x61: // REQUEST_61 (len 1)
+            case 0x73: // REQUEST_73 (len 1)
+                need = (remaining >= 2) ? 2u : remaining;
+                if (need != 2u) {
+                    r->truncated_tokens++;
+                }
+                break;
+
+            case 0x42: // TRIGGER_GPIO (len 0)
+            case 0x3A: // REQUEST_3A (len 0)
+            case 0x50: // ALTITUDE_ACCURACY (len 0, unimplemented in SDRTrunk)
+            case 0x52: // TIME (len 0, unimplemented in SDRTrunk)
+            case 0x54: // ALTITUDE (len 0, unimplemented in SDRTrunk)
+            case 0x57: // HORIZONTAL_DIRECTION (len 0, unimplemented in SDRTrunk)
+            case 0x62: // REQUEST_62 (len 0)
+            case 0x64: // REQUEST_64 (len 0)
+            case 0x38: // SUCCESS (len 0)
+                need = 1;
+                break;
+
+            case 0x34: // TIMESTAMP (len 5)
+                need = (remaining >= 6) ? 6u : remaining;
+                if (need != 6u) {
+                    r->truncated_tokens++;
+                }
+                if (need == 6u && r->year == 0) {
+                    r->year = (uint16_t)((pdu[idx + 1] << 6) + (pdu[idx + 2] >> 2));
+                    r->month = (uint16_t)(((pdu[idx + 2] & 0x3) << 2) + ((pdu[idx + 3] & 0xC0) >> 6));
+                    r->day = (uint16_t)(((pdu[idx + 3] & 0x3E) >> 1));
+                    r->hour = (uint16_t)(((pdu[idx + 3] & 0x01) << 4) + ((pdu[idx + 4] & 0xF0) >> 4));
+                    r->minute = (uint16_t)(((pdu[idx + 4] & 0x0F) << 2) + ((pdu[idx + 5] & 0xC0) >> 6));
+                    r->second = (uint16_t)((pdu[idx + 5] & 0x3F));
+
+                    // Validate decoded timestamp; ignore if out-of-range to avoid bogus decodes.
+                    int valid = 1;
+                    if (!(r->month >= 1 && r->month <= 12)) {
+                        valid = 0;
+                    }
+                    if (!(r->day >= 1 && r->day <= 31)) {
+                        valid = 0;
+                    }
+                    if (!(r->hour <= 23 && r->minute <= 59 && r->second <= 59)) {
+                        valid = 0;
+                    }
+                    // Accept only years in [2000, 2037] to avoid epoch edge cases and bogus decodes.
+                    if (!(r->year >= 2000 && r->year <= 2037)) {
+                        valid = 0;
+                    }
+                    if (!valid) {
+                        r->year = r->month = r->day = r->hour = r->minute = r->second = 0;
+                    }
+                }
+                break;
+
+            case 0x36: // VERSION (len 1)
+                need = (remaining >= 2) ? 2u : remaining;
+                if (need != 2u) {
+                    r->truncated_tokens++;
+                }
+                break;
+
+            case 0x37: { // RESPONSE (2 or 3 bytes)
+                if (remaining < 2) {
+                    need = remaining;
+                    r->truncated_tokens++;
+                    break;
+                }
+                int extended = (pdu[idx + 1] & 0x80) ? 1 : 0;
+                size_t full = extended ? 3u : 2u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                }
+            } break;
+
+            case 0x51: { // CIRCLE_2D (len 10)
+                size_t full = 11u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                    break;
+                }
+                if (r->pos_best_rank > 0u) {
+                    r->pos_best_rank = 0u;
+                    r->lat_raw = ((uint32_t)pdu[idx + 1] << 24) | ((uint32_t)pdu[idx + 2] << 16)
+                                 | ((uint32_t)pdu[idx + 3] << 8) | (uint32_t)pdu[idx + 4];
+                    r->lon_raw = ((uint32_t)pdu[idx + 5] << 24) | ((uint32_t)pdu[idx + 6] << 16)
+                                 | ((uint32_t)pdu[idx + 7] << 8) | (uint32_t)pdu[idx + 8];
+                    r->rad_raw = ((uint16_t)pdu[idx + 9] << 8) | (uint16_t)pdu[idx + 10];
+                    r->alt_raw = 0;
+                    r->alt_acc_raw = 0;
+                    r->have_pos = 1;
+                    r->have_rad = 1;
+                    r->have_alt = 0;
+                    r->have_alt_acc = 0;
+                }
+            } break;
+
+            case 0x55: { // CIRCLE_3D (len 15; trailing byte ignored)
+                size_t full = 16u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                    break;
+                }
+                if (r->pos_best_rank > 1u) {
+                    r->pos_best_rank = 1u;
+                    r->lat_raw = ((uint32_t)pdu[idx + 1] << 24) | ((uint32_t)pdu[idx + 2] << 16)
+                                 | ((uint32_t)pdu[idx + 3] << 8) | (uint32_t)pdu[idx + 4];
+                    r->lon_raw = ((uint32_t)pdu[idx + 5] << 24) | ((uint32_t)pdu[idx + 6] << 16)
+                                 | ((uint32_t)pdu[idx + 7] << 8) | (uint32_t)pdu[idx + 8];
+                    r->rad_raw = ((uint16_t)pdu[idx + 9] << 8) | (uint16_t)pdu[idx + 10];
+                    r->alt_raw = ((uint16_t)pdu[idx + 11] << 8) | (uint16_t)pdu[idx + 12];
+                    r->alt_acc_raw = ((uint16_t)pdu[idx + 13] << 8) | (uint16_t)pdu[idx + 14];
+                    r->have_pos = 1;
+                    r->have_rad = 1;
+                    r->have_alt = 1;
+                    r->have_alt_acc = 1;
+                }
+            } break;
+
+            case 0x66: { // POINT_2D (len 8)
+                size_t full = 9u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                    break;
+                }
+                if (r->pos_best_rank > 2u) {
+                    r->pos_best_rank = 2u;
+                    r->lat_raw = ((uint32_t)pdu[idx + 1] << 24) | ((uint32_t)pdu[idx + 2] << 16)
+                                 | ((uint32_t)pdu[idx + 3] << 8) | (uint32_t)pdu[idx + 4];
+                    r->lon_raw = ((uint32_t)pdu[idx + 5] << 24) | ((uint32_t)pdu[idx + 6] << 16)
+                                 | ((uint32_t)pdu[idx + 7] << 8) | (uint32_t)pdu[idx + 8];
+                    r->rad_raw = 0;
+                    r->alt_raw = 0;
+                    r->alt_acc_raw = 0;
+                    r->have_pos = 1;
+                    r->have_rad = 0;
+                    r->have_alt = 0;
+                    r->have_alt_acc = 0;
+                }
+            } break;
+
+            case 0x69: { // POINT_3D (len 11)
+                size_t full = 12u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                    break;
+                }
+                if (r->pos_best_rank > 3u) {
+                    r->pos_best_rank = 3u;
+                    r->lat_raw = ((uint32_t)pdu[idx + 1] << 24) | ((uint32_t)pdu[idx + 2] << 16)
+                                 | ((uint32_t)pdu[idx + 3] << 8) | (uint32_t)pdu[idx + 4];
+                    r->lon_raw = ((uint32_t)pdu[idx + 5] << 24) | ((uint32_t)pdu[idx + 6] << 16)
+                                 | ((uint32_t)pdu[idx + 7] << 8) | (uint32_t)pdu[idx + 8];
+                    // altitude is 24-bit per SDRTrunk Point3d.java (bits 72-95)
+                    r->alt_raw =
+                        ((uint32_t)pdu[idx + 9] << 16) | ((uint32_t)pdu[idx + 10] << 8) | (uint32_t)pdu[idx + 11];
+                    r->rad_raw = 0;
+                    r->alt_acc_raw = 0;
+                    r->have_pos = 1;
+                    r->have_rad = 0;
+                    r->have_alt = 1;
+                    r->have_alt_acc = 0;
+                }
+            } break;
+
+            case 0x6C: { // SPEED (len 2)
+                size_t full = 3u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                    break;
+                }
+                if (!r->vel_set) {
+                    r->velocity_mph = ((double)(((uint16_t)pdu[idx + 1] << 8) | (uint16_t)pdu[idx + 2])) * 0.01;
+                    r->vel_set = 1;
+                }
+            } break;
+
+            case 0x56: { // HEADING (len 1), 2-degree increments
+                size_t full = 2u;
+                need = (remaining >= full) ? full : remaining;
+                if (need != full) {
+                    r->truncated_tokens++;
+                    break;
+                }
+                if (!r->heading_set) {
+                    r->heading_deg = (uint16_t)pdu[idx + 1] * 2u;
+                    r->heading_set = 1;
+                }
+            } break;
+
+            default:
+                known = 0;
+                need = 1;
+                break;
+        }
+
+        if (known) {
+            r->known_tokens++;
+        } else {
+            r->unknown_tokens++;
+        }
+
+        idx += need;
+        remaining -= need;
+    }
+}
+
+static int
+dmr_lrrp_parse_score(const dmr_lrrp_parse_result* r, size_t prefix_skip) {
+    int score = 0;
+    score -= (int)prefix_skip * 5;
+    score += r->known_tokens * 10;
+    score -= r->unknown_tokens;
+    score -= r->truncated_tokens * 50;
+
+    if (r->have_pos) {
+        score += 1000 - ((int)r->pos_best_rank * 10);
+        // Penalize (0,0) which often shows up as a desync / bogus decode.
+        if (r->lat_raw == 0u && r->lon_raw == 0u) {
+            score -= 200;
+        }
+    }
+    if (r->year) {
+        score += 100;
+    }
+    if (r->vel_set) {
+        score += 50;
+    }
+    if (r->heading_set) {
+        score += 50;
+    }
+    if (r->have_rad) {
+        score += 20;
+    }
+    if (r->have_alt) {
+        score += 20;
+    }
+    if (r->have_alt_acc) {
+        score += 20;
+    }
+
+    return score;
+}
+
 //The contents of this function are mostly trial and error
 void
 dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU) {
@@ -613,33 +930,8 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
         default: break;
     }
 
-    // decoded time (token 0x34)
-    uint16_t year = 0;
-    uint16_t month = 0;
-    uint16_t day = 0;
-    uint16_t hour = 0;
-    uint16_t minute = 0;
-    uint16_t second = 0;
-
-    // decoded position (point/circle 2D/3D)
-    uint32_t lat_raw = 0;
-    uint32_t lon_raw = 0;
-    uint16_t rad_raw = 0;
-    uint32_t alt_raw = 0;
-    uint16_t alt_acc_raw = 0;
-    uint8_t have_pos = 0;
-    uint8_t have_rad = 0;
-    uint8_t have_alt = 0;
-    uint8_t have_alt_acc = 0;
-    // Match SDRTrunk PacketUtil: tokens are sorted by TokenType and the first Point2d-derived token wins.
-    // TokenType order for position tokens is: CIRCLE_2D, CIRCLE_3D, POINT_2D, POINT_3D.
-    uint8_t pos_best_rank = 0xFFu;
-
-    // speed/heading
-    double velocity_mph = 0.0; // units are 1/100 mph per SDRTrunk Speed.java
-    uint8_t vel_set = 0;
-    uint16_t heading_deg = 0; // degrees, 2-degree increments per SDRTrunk Heading.java
-    uint8_t heading_set = 0;
+    dmr_lrrp_parse_result best;
+    dmr_lrrp_parse_result_init(&best);
 
     // Token parsing bounds: clamp to available bytes so malformed/truncated packets can't overrun.
     size_t avail = (size_t)len;
@@ -649,213 +941,32 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
         token_len = token_avail;
     }
 
-    size_t idx = 2;
-    size_t remaining = token_len;
-
-    // Parse tokens sequentially (SDRTrunk TokenFactory-style) so variable-length tokens don't break alignment.
-    while (remaining > 0 && idx < avail) {
-        uint8_t token = DMR_PDU[idx];
-        size_t adv = 1;
-
-        // Requests can contain request-parameter tokens; otherwise tokens are requested-element bytes.
-        // We only need robust skipping here so we don't desync on variable-length tokens.
-        if (!is_response) {
-            switch (token) {
-                case 0x22: { // IDENTITY (variable-length)
-                    if (remaining < 2) {
-                        remaining = 0;
-                        break;
-                    }
-                    size_t payload = (size_t)DMR_PDU[idx + 1];
-                    adv = 2u + payload;
-                    if (adv > remaining) {
-                        adv = remaining;
-                    }
-                } break;
-                case 0x4A: // TRIGGER_DISTANCE (len 1)
-                case 0x31: // TRIGGER_PERIODIC (len 1)
-                case 0x78: // TRIGGER_ON_MOVE (len 1)
-                case 0x61: // REQUEST_61 (len 1)
-                case 0x73: // REQUEST_73 (len 1)
-                    adv = (remaining >= 2) ? 2 : remaining;
-                    break;
-                default: adv = 1; break;
+    int want_response_parse = is_response;
+    if (!want_response_parse && !is_request && token_len > 0) {
+        // Some real-world packets have nonstandard type values; treat as a response only if a position token is present.
+        for (size_t i = 0; i < token_len && (2u + i) < avail; i++) {
+            uint8_t b = DMR_PDU[2u + i];
+            if (b == 0x51 || b == 0x55 || b == 0x66 || b == 0x69) {
+                want_response_parse = 1;
+                break;
             }
-
-            idx += adv;
-            remaining -= adv;
-            continue;
         }
+    }
 
-        switch (token) {
-            case 0x22: { // IDENTITY (variable-length)
-                if (remaining < 2) {
-                    remaining = 0;
-                    break;
-                }
-                size_t payload = (size_t)DMR_PDU[idx + 1];
-                adv = 2u + payload;
-                if (adv > remaining) {
-                    adv = remaining;
-                }
-            } break;
-            case 0x23: // UNKNOWN_23 (len 1)
-            case 0x31: // TRIGGER_PERIODIC (len 1)
-            case 0x4A: // TRIGGER_DISTANCE (len 1)
-            case 0x78: // TRIGGER_ON_MOVE (len 1)
-            case 0x61: // REQUEST_61 (len 1)
-            case 0x73: // REQUEST_73 (len 1)
-                adv = (remaining >= 2) ? 2 : remaining;
-                break;
-            case 0x42: // TRIGGER_GPIO (len 0)
-            case 0x3A: // REQUEST_3A (len 0)
-            case 0x50: // ALTITUDE_ACCURACY (len 0, unimplemented in SDRTrunk)
-            case 0x52: // TIME (len 0, unimplemented in SDRTrunk)
-            case 0x54: // ALTITUDE (len 0, unimplemented in SDRTrunk)
-            case 0x57: // HORIZONTAL_DIRECTION (len 0, unimplemented in SDRTrunk)
-            case 0x62: // REQUEST_62 (len 0)
-            case 0x64: // REQUEST_64 (len 0)
-                adv = 1;
-                break;
-            case 0x34: // TIMESTAMP (len 5)
-                adv = (remaining >= 6) ? 6 : remaining;
-                if (adv == 6 && year == 0) {
-                    year = (uint16_t)((DMR_PDU[idx + 1] << 6) + (DMR_PDU[idx + 2] >> 2));
-                    month = (uint16_t)(((DMR_PDU[idx + 2] & 0x3) << 2) + ((DMR_PDU[idx + 3] & 0xC0) >> 6));
-                    day = (uint16_t)(((DMR_PDU[idx + 3] & 0x3E) >> 1));
-                    hour = (uint16_t)(((DMR_PDU[idx + 3] & 0x01) << 4) + ((DMR_PDU[idx + 4] & 0xF0) >> 4));
-                    minute = (uint16_t)(((DMR_PDU[idx + 4] & 0x0F) << 2) + ((DMR_PDU[idx + 5] & 0xC0) >> 6));
-                    second = (uint16_t)((DMR_PDU[idx + 5] & 0x3F));
-
-                    // Validate decoded timestamp; ignore if out-of-range to avoid bogus decodes.
-                    int valid = 1;
-                    if (!(month >= 1 && month <= 12)) {
-                        valid = 0;
-                    }
-                    if (!(day >= 1 && day <= 31)) {
-                        valid = 0;
-                    }
-                    if (!(hour <= 23 && minute <= 59 && second <= 59)) {
-                        valid = 0;
-                    }
-                    // Accept only years in [2000, 2037] to avoid epoch edge cases and bogus decodes.
-                    if (!(year >= 2000 && year <= 2037)) {
-                        valid = 0;
-                    }
-                    if (!valid) {
-                        year = month = day = hour = minute = second = 0;
-                    }
-                }
-                break;
-            case 0x36: // VERSION (len 1)
-                adv = (remaining >= 2) ? 2 : remaining;
-                break;
-            case 0x37: { // RESPONSE (2 or 3 bytes)
-                if (remaining < 2) {
-                    remaining = 0;
-                    break;
-                }
-                int extended = (DMR_PDU[idx + 1] & 0x80) ? 1 : 0;
-                adv = extended ? 3u : 2u;
-                if (adv > remaining) {
-                    adv = remaining;
-                }
-            } break;
-            case 0x38: // SUCCESS (len 0)
-                adv = 1;
-                break;
-
-            case 0x51: // CIRCLE_2D (len 10)
-                adv = (remaining >= 11) ? 11 : remaining;
-                if (adv == 11 && pos_best_rank > 0u) {
-                    pos_best_rank = 0u;
-                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
-                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
-                    rad_raw = ((uint16_t)DMR_PDU[idx + 9] << 8) | (uint16_t)DMR_PDU[idx + 10];
-                    alt_raw = 0;
-                    alt_acc_raw = 0;
-                    have_pos = 1;
-                    have_rad = 1;
-                    have_alt = 0;
-                    have_alt_acc = 0;
-                }
-                break;
-            case 0x55: // CIRCLE_3D (len 15, plus 1 unknown trailing byte)
-                adv = (remaining >= 16) ? 16 : remaining;
-                if (adv == 16 && pos_best_rank > 1u) {
-                    pos_best_rank = 1u;
-                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
-                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
-                    rad_raw = ((uint16_t)DMR_PDU[idx + 9] << 8) | (uint16_t)DMR_PDU[idx + 10];
-                    alt_raw = ((uint16_t)DMR_PDU[idx + 11] << 8) | (uint16_t)DMR_PDU[idx + 12];
-                    alt_acc_raw = ((uint16_t)DMR_PDU[idx + 13] << 8) | (uint16_t)DMR_PDU[idx + 14];
-                    have_pos = 1;
-                    have_rad = 1;
-                    have_alt = 1;
-                    have_alt_acc = 1;
-                }
-                break;
-            case 0x66: // POINT_2D (len 8)
-                adv = (remaining >= 9) ? 9 : remaining;
-                if (adv == 9 && pos_best_rank > 2u) {
-                    pos_best_rank = 2u;
-                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
-                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
-                    rad_raw = 0;
-                    alt_raw = 0;
-                    alt_acc_raw = 0;
-                    have_pos = 1;
-                    have_rad = 0;
-                    have_alt = 0;
-                    have_alt_acc = 0;
-                }
-                break;
-            case 0x69: // POINT_3D (len 11)
-                adv = (remaining >= 12) ? 12 : remaining;
-                if (adv == 12 && pos_best_rank > 3u) {
-                    pos_best_rank = 3u;
-                    lat_raw = ((uint32_t)DMR_PDU[idx + 1] << 24) | ((uint32_t)DMR_PDU[idx + 2] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 3] << 8) | (uint32_t)DMR_PDU[idx + 4];
-                    lon_raw = ((uint32_t)DMR_PDU[idx + 5] << 24) | ((uint32_t)DMR_PDU[idx + 6] << 16)
-                              | ((uint32_t)DMR_PDU[idx + 7] << 8) | (uint32_t)DMR_PDU[idx + 8];
-                    // altitude is 24-bit per SDRTrunk Point3d.java (bits 72-95)
-                    alt_raw = ((uint32_t)DMR_PDU[idx + 9] << 16) | ((uint32_t)DMR_PDU[idx + 10] << 8)
-                              | (uint32_t)DMR_PDU[idx + 11];
-                    rad_raw = 0;
-                    alt_acc_raw = 0;
-                    have_pos = 1;
-                    have_rad = 0;
-                    have_alt = 1;
-                    have_alt_acc = 0;
-                }
-                break;
-
-            case 0x6C: // SPEED (len 2)
-                adv = (remaining >= 3) ? 3 : remaining;
-                if (adv == 3 && !vel_set) {
-                    velocity_mph = ((double)(((uint16_t)DMR_PDU[idx + 1] << 8) | (uint16_t)DMR_PDU[idx + 2])) * 0.01;
-                    vel_set = 1;
-                }
-                break;
-            case 0x56: // HEADING (len 1), 2-degree increments
-                adv = (remaining >= 2) ? 2 : remaining;
-                if (adv == 2 && !heading_set) {
-                    heading_deg = (uint16_t)DMR_PDU[idx + 1] * 2u;
-                    heading_set = 1;
-                }
-                break;
-
-            default: adv = 1; break;
+    if (want_response_parse) {
+        // Resync: some packets include prefix bytes that can masquerade as token ids and desync parsing.
+        const size_t max_skip = 6u;
+        int best_score = -1000000;
+        for (size_t skip = 0; skip <= max_skip && skip <= token_len; skip++) {
+            dmr_lrrp_parse_result cur;
+            dmr_lrrp_parse_result_init(&cur);
+            dmr_lrrp_parse_response_tokens(DMR_PDU, avail, 2u + skip, token_len - skip, &cur);
+            int score = dmr_lrrp_parse_score(&cur, skip);
+            if (score > best_score) {
+                best_score = score;
+                best = cur;
+            }
         }
-
-        idx += adv;
-        remaining -= adv;
     }
 
     // Establish SRC if not provided in the LRRP wrapper.
@@ -869,52 +980,53 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
     double rad_fin = 0.0;
     double alt_fin = 0.0;
     double alt_acc_fin = 0.0;
-    if (have_pos) {
+    if (best.have_pos) {
         // Two's complement signed 32-bit for both coordinates.
         // Formula: lat = raw * 90 / 2^31, lon = raw * 180 / 2^31
         // Reference: RadioReference forum, ok-dmrlib
-        lat_fin = ((double)((int32_t)lat_raw) * 90.0) / 2147483648.0;
-        lon_fin = ((double)((int32_t)lon_raw) * 180.0) / 2147483648.0;
+        lat_fin = ((double)((int32_t)best.lat_raw) * 90.0) / 2147483648.0;
+        lon_fin = ((double)((int32_t)best.lon_raw) * 180.0) / 2147483648.0;
     }
-    if (have_rad) {
-        rad_fin = (double)rad_raw * 0.01;
+    if (best.have_rad) {
+        rad_fin = (double)best.rad_raw * 0.01;
     }
-    if (have_alt) {
-        alt_fin = (double)alt_raw * 0.01;
+    if (best.have_alt) {
+        alt_fin = (double)best.alt_raw * 0.01;
     }
-    if (have_alt_acc) {
-        alt_acc_fin = (double)alt_acc_raw * 0.01;
+    if (best.have_alt_acc) {
+        alt_acc_fin = (double)best.alt_acc_raw * 0.01;
     }
 
     // Emit details (stderr) and write to LRRP mapping/logging file.
     if (payload_len > 0) {
         fprintf(stderr, "%s", KYEL);
 
-        if (year) {
+        if (best.year) {
             fprintf(stderr, "\n");
             fprintf(stderr, " Time:");
-            fprintf(stderr, " %04d.%02d.%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
+            fprintf(stderr, " %04d.%02d.%02d %02d:%02d:%02d", best.year, best.month, best.day, best.hour, best.minute,
+                    best.second);
         }
 
-        if (have_pos) {
+        if (best.have_pos) {
             fprintf(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat_fin, lon_fin, lat_fin, lon_fin);
         }
-        if (have_rad) {
+        if (best.have_rad) {
             fprintf(stderr, "\n Radius: %.2lfm", rad_fin);
         }
-        if (have_alt) {
+        if (best.have_alt) {
             fprintf(stderr, "\n Altitude: %.2lfm", alt_fin);
         }
-        if (have_alt_acc) {
+        if (best.have_alt_acc) {
             fprintf(stderr, "\n Alt Accuracy: %.2lfm", alt_acc_fin);
         }
-        if (vel_set) {
-            fprintf(stderr, "\n Speed: %.2lf mph %.2lf km/h %.2lf m/s", velocity_mph, (velocity_mph * 1.60934),
-                    (velocity_mph * 0.44704));
+        if (best.vel_set) {
+            fprintf(stderr, "\n Speed: %.2lf mph %.2lf km/h %.2lf m/s", best.velocity_mph,
+                    (best.velocity_mph * 1.60934), (best.velocity_mph * 0.44704));
         }
-        if (heading_set) {
+        if (best.heading_set) {
             const char* deg_glyph = dsd_degrees_glyph();
-            fprintf(stderr, "\n Track: %d%s", (int)heading_deg, deg_glyph);
+            fprintf(stderr, "\n Track: %d%s", (int)best.heading_deg, deg_glyph);
         }
 
         // Write to LRRP file if a lat/lon is present; timestamps always use system time for consistency.
@@ -930,8 +1042,8 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                 fprintf(pFile, "%08d\t", source);
                 fprintf(pFile, "%.5lf\t", lat_fin);
                 fprintf(pFile, "%.5lf\t", lon_fin);
-                fprintf(pFile, "%.3lf\t ", (velocity_mph * 1.60934)); // mph -> km/h
-                fprintf(pFile, "%d\t", (int)heading_deg);
+                fprintf(pFile, "%.3lf\t ", (best.velocity_mph * 1.60934)); // mph -> km/h
+                fprintf(pFile, "%d\t", (int)best.heading_deg);
                 fprintf(pFile, "\n");
                 fclose(pFile);
             }
@@ -945,7 +1057,7 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
         sprintf(velstr, "%s", "");
         sprintf(degstr, "%s", "");
 
-        if (have_pos) {
+        if (best.have_pos) {
             sprintf(lrrpstr, "LRRP SRC: %0d; (%lf, %lf)", source, lat_fin, lon_fin);
         } else if (is_request) {
             sprintf(lrrpstr, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
@@ -955,17 +1067,17 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
             sprintf(lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, lrrp_type, dest);
         }
 
-        if (vel_set) {
-            sprintf(velstr, " %.2lf km/h", velocity_mph * 1.60934);
+        if (best.vel_set) {
+            sprintf(velstr, " %.2lf km/h", best.velocity_mph * 1.60934);
         }
-        if (heading_set) {
+        if (best.heading_set) {
             const char* deg_glyph = dsd_degrees_glyph();
-            sprintf(degstr, " %d%s  ", (int)heading_deg, deg_glyph);
+            sprintf(degstr, " %d%s  ", (int)best.heading_deg, deg_glyph);
         }
 
         sprintf(state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
 
-        if (!have_pos) {
+        if (!best.have_pos) {
             fprintf(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
         }
 
