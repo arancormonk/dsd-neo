@@ -1476,8 +1476,14 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     }
 
 #ifdef USE_CODEC2
-    codec2_destroy(state->codec2_1600);
-    codec2_destroy(state->codec2_3200);
+    if (state->codec2_1600) {
+        codec2_destroy(state->codec2_1600);
+        state->codec2_1600 = NULL;
+    }
+    if (state->codec2_3200) {
+        codec2_destroy(state->codec2_3200);
+        state->codec2_3200 = NULL;
+    }
 #endif
 
     //watchdog event at this point

@@ -289,6 +289,7 @@ if(CODEC2_FOUND)
     # Interface target for USE_CODEC2 compile definition
     add_library(dsd-neo_feature_codec2 INTERFACE)
     target_compile_definitions(dsd-neo_feature_codec2 INTERFACE USE_CODEC2)
+    target_include_directories(dsd-neo_feature_codec2 SYSTEM INTERFACE ${CODEC2_INCLUDE_DIRS})
 else()
     # Provide a stub interface target so linking remains unconditional upstream
     add_library(dsd-neo_feature_codec2 INTERFACE)
