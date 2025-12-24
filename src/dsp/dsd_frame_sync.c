@@ -26,6 +26,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 /* Forward declaration for reliability computation (defined in dsd_dibit.c) */
 extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
@@ -223,11 +224,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         // Detect current P25 activity via last observed sync type (P25p1: 0/1;
         // P25p2: 35/36) and maintain a small grace window after last P25
         // observation so watchdog fallbacks still run on brief fades.
-        int p25_by_sync = (state
-                           && (state->lastsynctype == 0 || state->lastsynctype == 1 || state->lastsynctype == 35
-                               || state->lastsynctype == 36))
-                              ? 1
-                              : 0;
+        int p25_by_sync = (state && DSD_SYNC_IS_P25(state->lastsynctype)) ? 1 : 0;
         if (p25_by_sync) {
             last_p25_seen = now;
         }
@@ -321,12 +318,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         t_max = 12; //based on Frame_Sync_2 pattern
     } else if (opts->frame_m17 == 1) {
         t_max = 8;
-    } else if (state->lastsynctype == 30 || state->lastsynctype == 31) {
+    } else if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
         t_max = 20; //20 on YSF
     }
     //if Phase 2, then only 19
-    else if (state->lastsynctype == 35 || state->lastsynctype == 36
-             || (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1)) {
+    else if (DSD_SYNC_IS_P25P2(state->lastsynctype) || (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1)) {
         t_max = 19; //Phase 2 S-ISCH and TDMA VC from trunk grant are only 19
     } else {
         t_max = 24; //24 for everything else
@@ -1068,7 +1064,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "+P25p1", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 0;
+                    state->lastsynctype = DSD_SYNC_P25P1_POS;
                     state->last_cc_sync_time = now;
                     /* Sync-time calibration:
                      * - C4FM: warm-start slicer thresholds
@@ -1078,7 +1074,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     } else if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 24);
                     }
-                    return (0);
+                    return DSD_SYNC_P25P1_POS;
                 }
                 if (strcmp(p25_sync_window, INV_P25P1_SYNC) == 0) {
                     state->carrier = 1;
@@ -1093,7 +1089,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "-P25p1 ", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 1;
+                    state->lastsynctype = DSD_SYNC_P25P1_NEG;
                     state->last_cc_sync_time = now;
                     /* Sync-time calibration:
                      * - C4FM: warm-start slicer thresholds
@@ -1103,7 +1099,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     } else if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 24);
                     }
-                    return (1);
+                    return DSD_SYNC_P25P1_NEG;
                 }
             }
             /* When DMR/dPMR/NXDN are enabled targets, proactively disable FM AGC/limiter which can
@@ -1135,23 +1131,23 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             printFrameSync(opts, state, "+X2-TDMA ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 2;
+                        state->lastsynctype = DSD_SYNC_X2TDMA_DATA_POS;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                        return (2);
+                        return DSD_SYNC_X2TDMA_DATA_POS;
                     } else {
                         // inverted voice frame
                         sprintf(state->ftype, "X2-TDMA");
                         if (opts->errorbars == 1) {
                             printFrameSync(opts, state, "-X2-TDMA ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 3) {
+                        if (state->lastsynctype != DSD_SYNC_X2TDMA_VOICE_NEG) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 3;
+                        state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_NEG;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                        return (3);
+                        return DSD_SYNC_X2TDMA_VOICE_NEG;
                     }
                 }
                 if ((strcmp(synctest, X2TDMA_BS_VOICE_SYNC) == 0) || (strcmp(synctest, X2TDMA_MS_VOICE_SYNC) == 0)) {
@@ -1165,23 +1161,23 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             printFrameSync(opts, state, "+X2-TDMA ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 4) {
+                        if (state->lastsynctype != DSD_SYNC_X2TDMA_VOICE_POS) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 4;
+                        state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                        return (4);
+                        return DSD_SYNC_X2TDMA_VOICE_POS;
                     } else {
                         // inverted data frame
                         sprintf(state->ftype, "X2-TDMA");
                         if (opts->errorbars == 1) {
                             printFrameSync(opts, state, "-X2-TDMA ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 5;
+                        state->lastsynctype = DSD_SYNC_X2TDMA_DATA_NEG;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                        return (5);
+                        return DSD_SYNC_X2TDMA_DATA_NEG;
                     }
                 }
             }
@@ -1195,10 +1191,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     opts->inverted_ysf = 0;
-                    state->lastsynctype = 30;
+                    state->lastsynctype = DSD_SYNC_YSF_POS;
                     /* Warm-start slicer thresholds for improved FICH decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
-                    return (30);
+                    return DSD_SYNC_YSF_POS;
                 } else if (strcmp(synctest20, INV_FUSION_SYNC) == 0) {
                     printFrameSync(opts, state, "-YSF ", synctest_pos + 1, modulation);
                     state->carrier = 1;
@@ -1206,10 +1202,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     opts->inverted_ysf = 1;
-                    state->lastsynctype = 31;
+                    state->lastsynctype = DSD_SYNC_YSF_NEG;
                     /* Warm-start slicer thresholds for improved FICH decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
-                    return (31);
+                    return DSD_SYNC_YSF_NEG;
                 }
             }
             //end YSF sync
@@ -1249,11 +1245,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
-                    state->lastsynctype = 98;
+                    state->lastsynctype = DSD_SYNC_M17_PRE_POS;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                     fprintf(stderr, "\n");
-                    return (98);
+                    return DSD_SYNC_M17_PRE_POS;
                 } else if (ham_piv <= M17_HAM_THRESH) {
                     /* Inverted polarity preamble detected */
                     if (state->m17_polarity != 2) {
@@ -1264,11 +1260,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
-                    state->lastsynctype = 99;
+                    state->lastsynctype = DSD_SYNC_M17_PRE_NEG;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
                     fprintf(stderr, "\n");
-                    return (99);
+                    return DSD_SYNC_M17_PRE_NEG;
                 }
 
                 /* PKT frame detection */
@@ -1278,13 +1274,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
-                    if (state->lastsynctype == 86 || state->lastsynctype == 8) {
-                        state->lastsynctype = 86;
+                    if (state->lastsynctype == DSD_SYNC_M17_PKT_POS || state->lastsynctype == DSD_SYNC_M17_STR_POS) {
+                        state->lastsynctype = DSD_SYNC_M17_PKT_POS;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-                        return (86);
+                        return DSD_SYNC_M17_PKT_POS;
                     }
-                    state->lastsynctype = 86;
+                    state->lastsynctype = DSD_SYNC_M17_PKT_POS;
                     fprintf(stderr, "\n");
                 } else if (ham_brt <= M17_HAM_THRESH && is_inverted) {
                     /* BRT is inverse of PKT */
@@ -1293,19 +1289,19 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
-                    if (state->lastsynctype == 87 || state->lastsynctype == 9) {
-                        state->lastsynctype = 87;
+                    if (state->lastsynctype == DSD_SYNC_M17_PKT_NEG || state->lastsynctype == DSD_SYNC_M17_STR_NEG) {
+                        state->lastsynctype = DSD_SYNC_M17_PKT_NEG;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-                        return (87);
+                        return DSD_SYNC_M17_PKT_NEG;
                     }
-                    state->lastsynctype = 87;
+                    state->lastsynctype = DSD_SYNC_M17_PKT_NEG;
                     fprintf(stderr, "\n");
                 }
 
                 /* STR frame detection - note: M17_STR pattern = inverted M17_LSF
-                 * Normal polarity: STR pattern means stream frame
-                 * Inverted polarity: STR pattern means LSF (because it's the inverse) */
+	                 * Normal polarity: STR pattern means stream frame
+	                 * Inverted polarity: STR pattern means LSF (because it's the inverse) */
                 if (ham_str <= M17_HAM_THRESH) {
                     if (!is_inverted) {
                         printFrameSync(opts, state, "+M17 STR", synctest_pos + 1, modulation);
@@ -1313,13 +1309,14 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
                         state->min = ((state->min) + lmin) / 2;
-                        if (state->lastsynctype == 16 || state->lastsynctype == 8) {
-                            state->lastsynctype = 16;
+                        if (state->lastsynctype == DSD_SYNC_M17_LSF_POS
+                            || state->lastsynctype == DSD_SYNC_M17_STR_POS) {
+                            state->lastsynctype = DSD_SYNC_M17_STR_POS;
                             /* Warm-start slicer thresholds for improved decode */
                             dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-                            return (16);
+                            return DSD_SYNC_M17_STR_POS;
                         }
-                        state->lastsynctype = 16;
+                        state->lastsynctype = DSD_SYNC_M17_STR_POS;
                         fprintf(stderr, "\n");
                     } else {
                         /* Inverted: STR pattern is actually LSF */
@@ -1328,20 +1325,20 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
                         state->min = ((state->min) + lmin) / 2;
-                        if (state->lastsynctype == 99) {
-                            state->lastsynctype = 9;
+                        if (state->lastsynctype == DSD_SYNC_M17_PRE_NEG) {
+                            state->lastsynctype = DSD_SYNC_M17_LSF_NEG;
                             /* Warm-start slicer thresholds for improved decode */
                             dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-                            return (9);
+                            return DSD_SYNC_M17_LSF_NEG;
                         }
-                        state->lastsynctype = 9;
+                        state->lastsynctype = DSD_SYNC_M17_LSF_NEG;
                         fprintf(stderr, "\n");
                     }
                 }
 
                 /* LSF frame detection - note: M17_LSF pattern = inverted M17_STR
-                 * Normal polarity: LSF pattern means link setup frame
-                 * Inverted polarity: LSF pattern means stream frame */
+	                 * Normal polarity: LSF pattern means link setup frame
+	                 * Inverted polarity: LSF pattern means stream frame */
                 if (ham_lsf <= M17_HAM_THRESH) {
                     if (!is_inverted) {
                         printFrameSync(opts, state, "+M17 LSF", synctest_pos + 1, modulation);
@@ -1349,13 +1346,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
                         state->min = ((state->min) + lmin) / 2;
-                        if (state->lastsynctype == 98) {
-                            state->lastsynctype = 8;
+                        if (state->lastsynctype == DSD_SYNC_M17_PRE_POS) {
+                            state->lastsynctype = DSD_SYNC_M17_LSF_POS;
                             /* Warm-start slicer thresholds for improved decode */
                             dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-                            return (8);
+                            return DSD_SYNC_M17_LSF_POS;
                         }
-                        state->lastsynctype = 8;
+                        state->lastsynctype = DSD_SYNC_M17_LSF_POS;
                         fprintf(stderr, "\n");
                     } else {
                         /* Inverted: LSF pattern is actually STR */
@@ -1364,13 +1361,14 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         state->offset = synctest_pos;
                         state->max = ((state->max) + lmax) / 2;
                         state->min = ((state->min) + lmin) / 2;
-                        if (state->lastsynctype == 17 || state->lastsynctype == 9) {
-                            state->lastsynctype = 17;
+                        if (state->lastsynctype == DSD_SYNC_M17_LSF_NEG
+                            || state->lastsynctype == DSD_SYNC_M17_STR_NEG) {
+                            state->lastsynctype = DSD_SYNC_M17_STR_NEG;
                             /* Warm-start slicer thresholds for improved decode */
                             dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-                            return (17);
+                            return DSD_SYNC_M17_STR_NEG;
                         }
-                        state->lastsynctype = 17;
+                        state->lastsynctype = DSD_SYNC_M17_STR_NEG;
                         fprintf(stderr, "\n");
                     }
                 }
@@ -1388,7 +1386,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     opts->inverted_p2 = 0;
-                    state->lastsynctype = 35; //35
+                    state->lastsynctype = DSD_SYNC_P25P2_POS;
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "+P25p2", synctest_pos + 1, modulation);
                     }
@@ -1404,7 +1402,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 20);
                     }
-                    return (35); //35
+                    return DSD_SYNC_P25P2_POS;
                 }
             }
             if (opts->frame_p25p2 == 1) {
@@ -1425,13 +1423,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         fprintf(stderr, " P2 Missing Parameters            ");
                         fprintf(stderr, "%s", KNRM);
                     }
-                    state->lastsynctype = 36; //36
+                    state->lastsynctype = DSD_SYNC_P25P2_NEG;
                     state->last_cc_sync_time = time(NULL);
                     /* CQPSK/QPSK: warm-start only center (DC bias) */
                     if (state->rf_mod == 1) {
                         dsd_sync_warm_start_center_outer_only(opts, state, 20);
                     }
-                    return (36); //36
+                    return DSD_SYNC_P25P2_NEG;
                 }
             }
 
@@ -1454,10 +1452,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             printFrameSync(opts, state, "+dPMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 21;
+                        state->lastsynctype = DSD_SYNC_DPMR_FS2_POS;
                         /* Warm-start slicer thresholds for improved CCH decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 12);
-                        return (21);
+                        return DSD_SYNC_DPMR_FS2_POS;
                     }
                     if (strcmp(synctest12, DPMR_FRAME_SYNC_3) == 0) {
                         //fprintf (stderr, "+dPMR FS3 \n");
@@ -1482,10 +1480,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             printFrameSync(opts, state, "-dPMR ", synctest_pos + 1, modulation);
                         }
 
-                        state->lastsynctype = 25;
+                        state->lastsynctype = DSD_SYNC_DPMR_FS2_NEG;
                         /* Warm-start slicer thresholds for improved CCH decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 12);
-                        return (25);
+                        return DSD_SYNC_DPMR_FS2_NEG;
                     }
                     if (strcmp(synctest12, INV_DPMR_FRAME_SYNC_3) == 0) {
                         //fprintf (stderr, "-dPMR FS3 \n");
@@ -1513,21 +1511,21 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             //printFrameSync (opts, state, "+DMR MS Data", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 33) //33
+                        if (state->lastsynctype != DSD_SYNC_DMR_MS_DATA) //33
                         {
                             //state->firstframe = 1;
                         }
-                        state->lastsynctype = 33; //33
+                        state->lastsynctype = DSD_SYNC_DMR_MS_DATA; //33
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_MS_DATA);
-                        return (33); //33
-                    } else           //inverted MS voice frame
+                        return DSD_SYNC_DMR_MS_DATA; //33
+                    } else                           //inverted MS voice frame
                     {
                         sprintf(state->ftype, "DMR MS");
-                        state->lastsynctype = 32;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_MS_VOICE);
-                        return (32);
+                        return DSD_SYNC_DMR_MS_VOICE;
                     }
                 }
 
@@ -1545,20 +1543,20 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             //printFrameSync (opts, state, "+DMR MS Voice", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 32) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_MS_VOICE) {
                             //state->firstframe = 1;
                         }
-                        state->lastsynctype = 32;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_MS_VOICE);
-                        return (32);
+                        return DSD_SYNC_DMR_MS_VOICE;
                     } else //inverted MS data frame
                     {
                         sprintf(state->ftype, "DMR MS");
-                        state->lastsynctype = 33;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_MS_DATA);
-                        return (33);
+                        return DSD_SYNC_DMR_MS_DATA;
                     }
                 }
 
@@ -1580,25 +1578,25 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             printFrameSync(opts, state, "+DMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 10;
+                        state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_BS_DATA);
-                        return (10);
+                        return DSD_SYNC_DMR_BS_DATA_POS;
                     } else {
                         // inverted voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 11) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_NEG) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 11;
+                        state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_NEG;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_BS_VOICE);
-                        return (11); //11
+                        return DSD_SYNC_DMR_BS_VOICE_NEG; //11
                     }
                 }
                 if (strcmp(synctest, DMR_DIRECT_MODE_TS1_DATA_SYNC) == 0) {
@@ -1618,25 +1616,25 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             //printFrameSync (opts, state, "+DMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 33;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_DATA);
-                        return (33);
+                        return DSD_SYNC_DMR_MS_DATA;
                     } else {
                         // inverted voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1) {
                             //printFrameSync (opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 11) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_NEG) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 32;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_VOICE);
-                        return (32);
+                        return DSD_SYNC_DMR_MS_VOICE;
                     }
                 } /* End if(strcmp (synctest, DMR_DIRECT_MODE_TS1_DATA_SYNC) == 0) */
                 if (strcmp(synctest, DMR_DIRECT_MODE_TS2_DATA_SYNC) == 0) {
@@ -1652,25 +1650,25 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1) {
                             //printFrameSync (opts, state, "+DMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 33;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_DATA);
-                        return (33);
+                        return DSD_SYNC_DMR_MS_DATA;
                     } else {
                         // inverted voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 11) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_NEG) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 32;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_VOICE);
-                        return (32);
+                        return DSD_SYNC_DMR_MS_VOICE;
                     }
                 } /* End if(strcmp (synctest, DMR_DIRECT_MODE_TS2_DATA_SYNC) == 0) */
                 //if((strcmp (synctest, DMR_MS_VOICE_SYNC) == 0) || (strcmp (synctest, DMR_BS_VOICE_SYNC) == 0))
@@ -1690,14 +1688,14 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "+DMR ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 12) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_POS) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 12;
+                        state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_BS_VOICE);
-                        return (12);
+                        return DSD_SYNC_DMR_BS_VOICE_POS;
                     }
 
                     else {
@@ -1707,11 +1705,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         {
                             printFrameSync(opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 13;
+                        state->lastsynctype = DSD_SYNC_DMR_BS_DATA_NEG;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_BS_DATA);
-                        return (13);
+                        return DSD_SYNC_DMR_BS_DATA_NEG;
                     }
                 }
                 if (strcmp(synctest, DMR_DIRECT_MODE_TS1_VOICE_SYNC) == 0) {
@@ -1732,24 +1730,24 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "+DMR ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 12) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_POS) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 32;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_VOICE);
-                        return (32); //treat Direct Mode same as MS mode for now
+                        return DSD_SYNC_DMR_MS_VOICE; //treat Direct Mode same as MS mode for now
                     } else {
                         // inverted data frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 33;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS1_DATA);
-                        return (33);
+                        return DSD_SYNC_DMR_MS_DATA;
                     }
                 } /* End if(strcmp (synctest, DMR_DIRECT_MODE_TS1_VOICE_SYNC) == 0) */
                 if (strcmp(synctest, DMR_DIRECT_MODE_TS2_VOICE_SYNC) == 0) {
@@ -1770,25 +1768,25 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "+DMR ", synctest_pos + 1, modulation);
                         }
-                        if (state->lastsynctype != 12) {
+                        if (state->lastsynctype != DSD_SYNC_DMR_BS_VOICE_POS) {
                             state->firstframe = 1;
                         }
-                        state->lastsynctype = 32;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_VOICE);
-                        return (32);
+                        return DSD_SYNC_DMR_MS_VOICE;
                     } else {
                         // inverted data frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
                             //printFrameSync (opts, state, "-DMR ", synctest_pos + 1, modulation);
                         }
-                        state->lastsynctype = 33;
+                        state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
                         state->last_cc_sync_time = time(NULL);
                         /* Resample-on-sync: calibrate thresholds and re-digitize CACH */
                         dmr_resample_on_sync(opts, state, DMR_SYNC_DM_TS2_DATA);
-                        return (33);
+                        return DSD_SYNC_DMR_MS_DATA;
                     }
                 } //End if(strcmp (synctest, DMR_DIRECT_MODE_TS2_VOICE_SYNC) == 0)
             } //End if (opts->frame_dmr == 1)
@@ -1809,10 +1807,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "+PV   ", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 14;
+                    state->lastsynctype = DSD_SYNC_PROVOICE_POS;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
-                    return (14);
+                    return DSD_SYNC_PROVOICE_POS;
                 } else if ((strcmp(synctest32, INV_PROVOICE_SYNC) == 0)
                            || (strcmp(synctest32, INV_PROVOICE_EA_SYNC) == 0)) {
                     state->last_cc_sync_time = now;
@@ -1822,10 +1820,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     sprintf(state->ftype, "ProVoice ");
                     printFrameSync(opts, state, "-PV   ", synctest_pos + 1, modulation);
-                    state->lastsynctype = 15;
+                    state->lastsynctype = DSD_SYNC_PROVOICE_NEG;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
-                    return (15);
+                    return DSD_SYNC_PROVOICE_NEG;
                 } else if (strcmp(synctest48, EDACS_SYNC) == 0) {
                     state->last_cc_sync_time = time(NULL);
                     state->carrier = 1;
@@ -1833,10 +1831,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     printFrameSync(opts, state, "-EDACS", synctest_pos + 1, modulation);
-                    state->lastsynctype = 38;
+                    state->lastsynctype = DSD_SYNC_EDACS_NEG;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
-                    return (38);
+                    return DSD_SYNC_EDACS_NEG;
                 } else if (strcmp(synctest48, INV_EDACS_SYNC) == 0) {
                     state->last_cc_sync_time = time(NULL);
                     state->carrier = 1;
@@ -1844,10 +1842,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     printFrameSync(opts, state, "+EDACS", synctest_pos + 1, modulation);
-                    state->lastsynctype = 37;
+                    state->lastsynctype = DSD_SYNC_EDACS_POS;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
-                    return (37);
+                    return DSD_SYNC_EDACS_POS;
                 } else if ((strcmp(synctest48, DOTTING_SEQUENCE_A) == 0)
                            || (strcmp(synctest48, DOTTING_SEQUENCE_B) == 0)) {
                     //only print and execute Dotting Sequence if Trunking and Tuned so we don't get multiple prints on this
@@ -1869,10 +1867,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "+DSTAR VOICE ", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 6;
+                    state->lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                    return (6);
+                    return DSD_SYNC_DSTAR_VOICE_POS;
                 }
                 if (strcmp(synctest, INV_DSTAR_SYNC) == 0) {
                     state->carrier = 1;
@@ -1883,10 +1881,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "-DSTAR VOICE ", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 7;
+                    state->lastsynctype = DSD_SYNC_DSTAR_VOICE_NEG;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                    return (7);
+                    return DSD_SYNC_DSTAR_VOICE_NEG;
                 }
                 if (strcmp(synctest, DSTAR_HD) == 0) {
                     state->carrier = 1;
@@ -1897,10 +1895,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "+DSTAR HEADER", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 18;
+                    state->lastsynctype = DSD_SYNC_DSTAR_HD_POS;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                    return (18);
+                    return DSD_SYNC_DSTAR_HD_POS;
                 }
                 if (strcmp(synctest, INV_DSTAR_HD) == 0) {
                     state->carrier = 1;
@@ -1911,10 +1909,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     if (opts->errorbars == 1) {
                         printFrameSync(opts, state, "-DSTAR HEADER", synctest_pos + 1, modulation);
                     }
-                    state->lastsynctype = 19;
+                    state->lastsynctype = DSD_SYNC_DSTAR_HD_NEG;
                     /* Warm-start slicer thresholds for improved decode */
                     dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-                    return (19);
+                    return DSD_SYNC_DSTAR_HD_NEG;
                 }
 
             }
@@ -1934,13 +1932,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
-                    if (state->lastsynctype == 28) {
+                    if (state->lastsynctype == DSD_SYNC_NXDN_POS) {
                         state->last_cc_sync_time = now;
                         /* Warm-start slicer thresholds for improved LICH decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
-                        return (28);
+                        return DSD_SYNC_NXDN_POS;
                     }
-                    state->lastsynctype = 28;
+                    state->lastsynctype = DSD_SYNC_NXDN_POS;
                 }
 
                 else if (
@@ -1954,13 +1952,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->offset = synctest_pos;
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
-                    if (state->lastsynctype == 29) {
+                    if (state->lastsynctype == DSD_SYNC_NXDN_NEG) {
                         state->last_cc_sync_time = now;
                         /* Warm-start slicer thresholds for improved LICH decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
-                        return (29);
+                        return DSD_SYNC_NXDN_NEG;
                     }
-                    state->lastsynctype = 29;
+                    state->lastsynctype = DSD_SYNC_NXDN_NEG;
                 }
             }
 
@@ -1977,7 +1975,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 strncpy(pvc_rxs, (synctest_p - 7), 8);      //copy string value of RX Address
                 if ((strcmp(synctest32, INV_PROVOICE_CONV_SHORT) == 0)) {
                     if (state->lastsynctype
-                        == 15) //use this condition, like NXDN, to migitage false positives due to short sync pattern
+                        == DSD_SYNC_PROVOICE_NEG) // mitigate false positives due to short sync pattern
                     {
                         state->carrier = 1;
                         state->offset = synctest_pos;
@@ -2009,15 +2007,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (pvc_txa == 172) {
                             fprintf(stderr, "ALL CALL ");
                         }
-                        state->lastsynctype = 15;
+                        state->lastsynctype = DSD_SYNC_PROVOICE_NEG;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 16);
-                        return (15);
+                        return DSD_SYNC_PROVOICE_NEG;
                     }
-                    state->lastsynctype = 15;
+                    state->lastsynctype = DSD_SYNC_PROVOICE_NEG;
                 } else if ((strcmp(synctest32, PROVOICE_CONV_SHORT) == 0)) {
                     if (state->lastsynctype
-                        == 14) //use this condition, like NXDN, to migitage false positives due to short sync pattern
+                        == DSD_SYNC_PROVOICE_POS) // mitigate false positives due to short sync pattern
                     {
                         state->carrier = 1;
                         state->offset = synctest_pos;
@@ -2049,12 +2047,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         if (pvc_txa == 172) {
                             fprintf(stderr, "ALL CALL ");
                         }
-                        state->lastsynctype = 14;
+                        state->lastsynctype = DSD_SYNC_PROVOICE_POS;
                         /* Warm-start slicer thresholds for improved decode */
                         dsd_sync_warm_start_thresholds_outer_only(opts, state, 16);
-                        return (14);
+                        return DSD_SYNC_PROVOICE_POS;
                     }
-                    state->lastsynctype = 14;
+                    state->lastsynctype = DSD_SYNC_PROVOICE_POS;
                 }
             }
 #endif //End Provoice Conventional
@@ -2078,7 +2076,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             noCarrier(opts, state);
         }
 
-        if (state->lastsynctype != 1) {
+        if (state->lastsynctype != DSD_SYNC_P25P1_NEG) {
 
             if (synctest_pos >= 1800) {
                 if ((opts->errorbars == 1) && (opts->verbose > 1) && (state->carrier == 1)) {

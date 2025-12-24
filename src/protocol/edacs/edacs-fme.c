@@ -24,6 +24,7 @@
  * 2024-03 rewrite EDACS standard parsing to spec, add reverse-engineered EA messages
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
@@ -2491,7 +2492,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     fprintf(stderr, "EOT; \n");
 
     //watchdog event at this point
-    state->lastsynctype = 38;
+    state->lastsynctype = DSD_SYNC_EDACS_NEG;
     watchdog_event_history(opts, state, 0);
     watchdog_event_current(opts, state, 0);
 

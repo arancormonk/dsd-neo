@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 
 static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
@@ -1483,8 +1484,8 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
     //reset some parameters if CAC continues to fail
     if (cac_fail > 10) {
         //simple reset
-        state->synctype = 0;
-        state->lastsynctype = -1;
+        state->synctype = DSD_SYNC_P25P1_POS;
+        state->lastsynctype = DSD_SYNC_NONE;
         state->carrier = 0;
         state->last_cc_sync_time = time(NULL) + 2; //probably not necesary
         cac_fail = 0;                              //reset
@@ -1492,7 +1493,7 @@ nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]) {
         //more advanced modulator reset
         state->center = 0.0f;
         state->jitter = -1;
-        state->synctype = -1;
+        state->synctype = DSD_SYNC_NONE;
         state->min = -4.0f;
         state->max = 4.0f;
         state->lmid = 0.0f;
@@ -2313,14 +2314,14 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
     }
 
     if (cac_fail > 10) {
-        state->synctype = 0;
-        state->lastsynctype = -1;
+        state->synctype = DSD_SYNC_P25P1_POS;
+        state->lastsynctype = DSD_SYNC_NONE;
         state->carrier = 0;
         state->last_cc_sync_time = time(NULL) + 2;
         cac_fail = 0;
         state->center = 0.0f;
         state->jitter = -1;
-        state->synctype = -1;
+        state->synctype = DSD_SYNC_NONE;
         state->min = -4.0f;
         state->max = 4.0f;
         state->lmid = 0.0f;

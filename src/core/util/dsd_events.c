@@ -182,20 +182,19 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         source_id = state->lastsrcR;
     }
 
-    //if DMR BS or P25P2, then flag the swrite, so write can append slot value to event history log //|| state->lastsynctype == 32 || state->lastsynctype == 33 || state->lastsynctype == 34　MS
-    if (state->lastsynctype == 10 || state->lastsynctype == 11 || state->lastsynctype == 12 || state->lastsynctype == 13
-        || state->lastsynctype == 35 || state->lastsynctype == 36) {
+    //If DMR BS or P25P2, then flag the swrite, so write can append slot value to event history log
+    if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_P25P2(state->lastsynctype)) {
         swrite = 1;
     }
 
     if (slot == 0) //BUGFIX: generic catch on FDMA systems so that we don't write duplicate data to slot 2 event history
     {
         //NXDN RID (TODO: Changeover to lastsrc later on)
-        if (state->lastsynctype == 28 || state->lastsynctype == 29) {
+        if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
             source_id = state->nxdn_last_rid;
         }
 
-        if (state->lastsynctype == 30 || state->lastsynctype == 31) //YSF Fusion
+        if (DSD_SYNC_IS_YSF(state->lastsynctype)) //YSF Fusion
         {
             source_id = 0;
             if (strncmp(state->ysf_src, "          ", 10) != 0) //if this field does not have ten spaces in it
@@ -206,14 +205,13 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             }
         }
 
-        if (state->lastsynctype == 8 || state->lastsynctype == 9 || state->lastsynctype == 16
-            || state->lastsynctype == 17) //M17 STR
+        if (state->lastsynctype == DSD_SYNC_M17_STR_POS || state->lastsynctype == DSD_SYNC_M17_STR_NEG
+            || state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) //M17 STR
         {
             source_id = (uint32_t)state->m17_src;
         }
 
-        if (state->lastsynctype == 6 || state->lastsynctype == 7 || state->lastsynctype == 18
-            || state->lastsynctype == 19) //DSTAR
+        if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) //DSTAR
         {
             source_id = 0;
             for (uint8_t i = 0; i < 12; i++) {
@@ -226,9 +224,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             }
         }
 
-        if (state->lastsynctype == 20 || state->lastsynctype == 24 || state->lastsynctype == 21
-            || state->lastsynctype == 25 || state->lastsynctype == 22 || state->lastsynctype == 26
-            || state->lastsynctype == 23 || state->lastsynctype == 27) //dPMR
+        if (DSD_SYNC_IS_DPMR(state->lastsynctype)) //dPMR
         {
             source_id = 0;
             for (uint8_t i = 0; i < 20; i++) {
@@ -241,8 +237,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             }
         }
 
-        if (state->lastsynctype == 14 || state->lastsynctype == 15 || state->lastsynctype == 37
-            || state->lastsynctype == 38) //EDACS Calls
+        if (DSD_SYNC_IS_EDACS(state->lastsynctype)) //EDACS Calls
         {
             source_id = 0;
             if (opts->p25_is_tuned == 1) {
@@ -388,8 +383,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         snprintf(sysid_string, sizeof sysid_string, "P25_%03X", sys_id3);
     }
 
-    if (state->lastsynctype == 10 || state->lastsynctype == 11 || state->lastsynctype == 12 || state->lastsynctype == 13
-        || state->lastsynctype == 32 || state->lastsynctype == 33 || state->lastsynctype == 34) {
+    if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
         sys_id1 = state->dmr_t3_syscode;
         sys_id2 = state->dmr_color_code;
 
@@ -403,7 +397,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     if (slot == 0) //BUGFIX: generic catch on FDMA systems so that we don't write duplicate data to slot 2 event history
     {
         //NXDN RID (TODO: Changeover to lastsrc and lasttg later on)
-        if (state->lastsynctype == 28 || state->lastsynctype == 29) {
+        if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
             source_id = state->nxdn_last_rid;
             target_id = state->nxdn_last_tg;
             if (state->nxdn_cipher_type != 0) {
@@ -425,7 +419,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             }
         }
 
-        if (state->lastsynctype == 30 || state->lastsynctype == 31) //YSF Fusion
+        if (DSD_SYNC_IS_YSF(state->lastsynctype)) //YSF Fusion
         {
             source_id = 0;
             if (strncmp(state->ysf_src, "          ", 10) != 0) //if this field does not have ten spaces in it
@@ -485,8 +479,8 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             snprintf(tgt_str, sizeof tgt_str, "%s", temp_str);
         }
 
-        if (state->lastsynctype == 8 || state->lastsynctype == 9 || state->lastsynctype == 16
-            || state->lastsynctype == 17) //M17 STR
+        if (state->lastsynctype == DSD_SYNC_M17_STR_POS || state->lastsynctype == DSD_SYNC_M17_STR_NEG
+            || state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) //M17 STR
         {
             target_id = (uint32_t)state->m17_dst;
             source_id = (uint32_t)state->m17_src;
@@ -496,8 +490,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             snprintf(tgt_str, sizeof tgt_str, "%s", state->m17_dst_csd);
         }
 
-        if (state->lastsynctype == 6 || state->lastsynctype == 7 || state->lastsynctype == 18
-            || state->lastsynctype == 19) //DSTAR
+        if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) //DSTAR
         {
             source_id = 0;
             for (uint8_t i = 0; i < 12; i++) {
@@ -540,9 +533,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             snprintf(tgt_str, sizeof tgt_str, "%s", temp_str);
         }
 
-        if (state->lastsynctype == 20 || state->lastsynctype == 24 || state->lastsynctype == 21
-            || state->lastsynctype == 25 || state->lastsynctype == 22 || state->lastsynctype == 26
-            || state->lastsynctype == 23 || state->lastsynctype == 27) //dPMR
+        if (DSD_SYNC_IS_DPMR(state->lastsynctype)) //dPMR
         {
             source_id = 0;
             for (uint8_t i = 0; i < 20; i++) {
@@ -560,8 +551,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             snprintf(tgt_str, sizeof tgt_str, "%s", state->dpmr_target_id);
         }
 
-        if (state->lastsynctype == 14 || state->lastsynctype == 15 || state->lastsynctype == 37
-            || state->lastsynctype == 38) //EDACS Calls
+        if (DSD_SYNC_IS_EDACS(state->lastsynctype)) //EDACS Calls
         {
             source_id = 0;
             if (opts->p25_is_tuned == 1) {
@@ -711,7 +701,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     if (source_id != 0) {
         event_struct->Event_History_Items[0].write = 0;
         state->event_history_s[slot].Event_History_Items[0].color_pair = color_pair;
-        if (state->lastsynctype != -1) {
+        if (state->lastsynctype != DSD_SYNC_NONE) {
             event_struct->Event_History_Items[0].systype = state->lastsynctype;
         } else {
             event_struct->Event_History_Items[0].systype = 39; //generic digital call
@@ -758,13 +748,12 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     //WIP: Seperate Voice Call Event Strings when SRC/TGT values are numerical,
     //and a seperate one for when they are string values (M17, YSF, DSTAR, and dPMR, or use special formatting)
-    if (state->lastsynctype == 30
-        || state->lastsynctype == 31) //YSF Fusion //TODO: Data calls dumping a lot of events as VOICE
+    if (DSD_SYNC_IS_YSF(state->lastsynctype)) //YSF Fusion //TODO: Data calls dumping a lot of events as VOICE
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
         snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string,
                  state->ysf_tgt, state->ysf_src);
-    } else if (state->lastsynctype == 16 || state->lastsynctype == 17) //M17
+    } else if (state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) //M17
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
         if (state->m17_dst == 0xFFFFFFFFFFFF) {
@@ -774,15 +763,12 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr,
                      sys_string, state->m17_dst_str, state->m17_src_str, state->m17_can);
         }
-    } else if (state->lastsynctype == 6 || state->lastsynctype == 7 || state->lastsynctype == 18
-               || state->lastsynctype == 19) //DSTAR
+    } else if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) //DSTAR
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
         snprintf(event_string, sizeof event_string, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string,
                  state->dstar_dst, state->dstar_src);
-    } else if (state->lastsynctype == 20 || state->lastsynctype == 24 || state->lastsynctype == 21
-               || state->lastsynctype == 25 || state->lastsynctype == 22 || state->lastsynctype == 26
-               || state->lastsynctype == 23 || state->lastsynctype == 27) //dPMR
+    } else if (DSD_SYNC_IS_DPMR(state->lastsynctype)) //dPMR
     {
         //TODO: See if we can add some decoded data as well in the future to an event string
         snprintf(event_string, sizeof event_string, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr,
@@ -793,8 +779,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                 strncat(event_string, "Scrambler Enc; ", rem);
             }
         }
-    } else if (state->lastsynctype == 14 || state->lastsynctype == 15 || state->lastsynctype == 37
-               || state->lastsynctype == 38) //EDACS Calls
+    } else if (DSD_SYNC_IS_EDACS(state->lastsynctype)) //EDACS Calls
     {
         svc_opts = state->edacs_vc_call_type;
         char sup_str[200];
@@ -893,9 +878,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             sprintf(event_string, "%s %s %s AFS: %s (%04d); %s LCN: %02d; Site: %d; %s; ", datestr, timestr, sys_string,
                     afs_str, afs, lid_str, channel, sys_id1, sup_str);
         }
-    } else if (state->lastsynctype == 10 || state->lastsynctype == 11 || state->lastsynctype == 12
-               || state->lastsynctype == 13 || state->lastsynctype == 32 || state->lastsynctype == 33
-               || state->lastsynctype == 34) //DMR
+    } else if (DSD_SYNC_IS_DMR(state->lastsynctype)) //DMR
     {
         if (sys_id1) {
             sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr, timestr, sys_string,
@@ -993,8 +976,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             }
         }
 
-    } else if (state->lastsynctype == 0 || state->lastsynctype == 1 || state->lastsynctype == 35
-               || state->lastsynctype == 36) {
+    } else if (DSD_SYNC_IS_P25(state->lastsynctype)) {
         if (sys_id1) {
             sprintf(event_string, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ", datestr,
                     timestr, sys_string, target_id, source_id, sys_id3, sys_id1, sys_id2, sys_id4, sys_id5);
@@ -1037,7 +1019,7 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         }
     }
 
-    else if (state->lastsynctype == 28 || state->lastsynctype == 29) {
+    else if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
         if (sys_id1) {
             snprintf(event_string, sizeof event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; SYS: %d.%d; ",
                      datestr, timestr, sys_string, target_id, source_id, sys_id3, sys_id2, sys_id1);

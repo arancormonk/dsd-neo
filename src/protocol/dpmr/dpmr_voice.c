@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dpmr/dpmr_const.h>
 
 void
@@ -435,9 +436,9 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
             //check to see if we are using scrambler
             if (state->dPMRVoiceFS2Frame.Version[o] == 3) //!= 0
             {
-                state->synctype = 28;           //fake it as nxdn
-                state->nxdn_cipher_type = 0x01; //turn on nxdn scrambler cipher
-                state->dmr_encL = 1;            //flag on enc bit here so we can mute if no key provided
+                state->synctype = DSD_SYNC_NXDN_POS; //fake it as nxdn
+                state->nxdn_cipher_type = 0x01;      //turn on nxdn scrambler cipher
+                state->dmr_encL = 1;                 //flag on enc bit here so we can mute if no key provided
             }
 
             //flag back off if key is provided

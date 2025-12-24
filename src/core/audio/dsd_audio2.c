@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <math.h>
@@ -563,7 +564,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     encL = 0;
 
     //Enc Checkdown -- P25p1 when run with -ft -y switch
-    if (state->synctype == 0 || state->synctype == 1) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
         if (state->payload_algid != 0 && state->payload_algid != 0x80) {
             encL = 1;
         }
@@ -659,7 +660,7 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     int encL = 0;
 
     //Enc Checkdown -- P25p1 when run with -ft -y switch
-    if (state->synctype == 0 || state->synctype == 1) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
         if (state->payload_algid != 0 && state->payload_algid != 0x80) {
             encL = 1;
         }
@@ -909,7 +910,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     encL = 0;
 
     //Enc Checkdown -- P25p1 when run with -ft switch
-    if (state->synctype == 0 || state->synctype == 1) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
         if (state->payload_algid != 0 && state->payload_algid != 0x80) {
             encL = 1;
         }

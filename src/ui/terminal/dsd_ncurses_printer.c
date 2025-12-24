@@ -154,12 +154,12 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     //Variable reset/set section
 
     //set lls sync types
-    if (state->synctype >= 0) {
+    if (state->synctype != DSD_SYNC_NONE) {
         lls = state->synctype;
     }
 
     //EDACS Channel Tree
-    if ((lls == 14 || lls == 15 || lls == 37 || lls == 38) && state->carrier == 1) {
+    if (DSD_SYNC_IS_EDACS(lls) && state->carrier == 1) {
 
         if (state->edacs_vc_lcn != -1) {
             edacs_channel_tree[state->edacs_vc_lcn][0] = lls;
@@ -897,8 +897,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     ui_print_kv_line("Output (x)", "[%s]", (opts->audio_out == 0) ? "Muted" : "On");
 
     /* Hide generic Voice Error line when P25 is active, but keep slot toggles */
-    int is_p25p1_active = (lls == 0 || lls == 1);
-    int is_p25p2_active = (lls == 35 || lls == 36);
+    int is_p25p1_active = DSD_SYNC_IS_P25P1(lls);
+    int is_p25p2_active = DSD_SYNC_IS_P25P2(lls);
     int is_p25_active = is_p25p1_active || is_p25p2_active;
 
     if (opts->dmr_stereo == 0) {
@@ -967,8 +967,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     /* Dedicated P25 metrics section (toggle in menu) */
     {
-        int is_p25p1 = (lls == 0 || lls == 1);
-        int is_p25p2 = (lls == 35 || lls == 36);
+        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
         if (opts->show_p25_metrics == 1 && (is_p25p1 || is_p25p2)) {
             ui_print_header("P25 Metrics");
             (void)ui_print_p25_metrics(opts, state);
@@ -998,8 +998,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     /* P25 affiliations (RIDs registered on the system) */
     {
-        int is_p25p1 = (lls == 0 || lls == 1);
-        int is_p25p2 = (lls == 35 || lls == 36);
+        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
         if (opts->show_p25_affiliations == 1 && (is_p25p1 || is_p25p2)) {
             ui_print_header("P25 Affiliations");
             // Compose a recent-first list of up to 20 RIDs
@@ -1079,8 +1079,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     /* P25 Group Affiliation (RID ↔ TG) */
     {
-        int is_p25p1 = (lls == 0 || lls == 1);
-        int is_p25p2 = (lls == 35 || lls == 36);
+        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
         if (opts->show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2)) {
             ui_print_header("P25 Group Affiliation");
             int idxs[512];
@@ -1173,7 +1173,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     //M17
-    if (lls == 8 || lls == 9 || lls == 16 || lls == 17) {
+    if (lls == DSD_SYNC_M17_STR_POS || lls == DSD_SYNC_M17_STR_NEG || lls == DSD_SYNC_M17_LSF_POS
+        || lls == DSD_SYNC_M17_LSF_NEG) {
 
         printw("| ");
         printw("M17: ");
@@ -1244,7 +1245,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     //YSF
-    if (lls == 30 || lls == 31) {
+    if (DSD_SYNC_IS_YSF(lls)) {
         // printw ("\n");
         printw("| ");
         printw("Fusion - ");
@@ -1327,7 +1328,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     //NXDN
-    if (lls == 28 || lls == 29) {
+    if (DSD_SYNC_IS_NXDN(lls)) {
         if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
             idas = 1;
         }
@@ -1512,10 +1513,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     //P25 and DMR BS/MS
-    if (lls == 0 || lls == 1 || lls == 12 || lls == 13 || lls == 10 || lls == 11 || lls == 32 || lls == 33 || lls == 34
-        || lls == 35 || lls == 36) {
+    if (DSD_SYNC_IS_P25(lls) || DSD_SYNC_IS_DMR(lls)) {
         printw("| ");
-        if (lls > 1 && lls < 30) {
+        if (DSD_SYNC_IS_DMR_BS(lls)) {
             printw("DMR BS - DCC: %02i; ", state->dmr_color_code);
             // printw ("%s %s", state->dmr_branding, state->dmr_branding_sub);
             printw("%s ", state->dmr_branding);
@@ -1531,9 +1531,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 printw("Freq: %.06lf MHz", (double)f / 1000000);
             }
 
-        } else if (lls == 32 || lls == 33 || lls == 34) {
+        } else if (DSD_SYNC_IS_DMR_MS(lls)) {
             printw("DMR MS - DCC: %02i; ", state->dmr_color_code);
-        } else if (lls == 0 || lls == 1) //P1
+        } else if (DSD_SYNC_IS_P25P1(lls)) //P1
         {
             // Clarify identifiers to avoid confusion when SYSID and NAC
             // happen to have the same numeric value on some systems.
@@ -1561,7 +1561,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 }
             }
 
-        } else if (lls == 35 || lls == 36) //P2
+        } else if (DSD_SYNC_IS_P25P2(lls)) //P2
         {
             // Clarify identifiers to avoid confusion when SYSID and NAC
             // happen to have the same numeric value on some systems.
@@ -2085,7 +2085,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     } //end DMR BS Types
 
     //dPMR
-    if (lls == 20 || lls == 21 || lls == 22 || lls == 23 || lls == 24 || lls == 25 || lls == 26 || lls == 27) {
+    if (DSD_SYNC_IS_DPMR(lls)) {
         printw("| DCC: [%i] ", state->dpmr_color_code);
         printw("TGT: [%s] SRC: [%s] ", state->dpmr_target_id, state->dpmr_caller_id);
         printw("\n| ");
@@ -2105,7 +2105,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 
     //EDACS and ProVoice
-    if (lls == 14 || lls == 15 || lls == 37 || lls == 38) {
+    if (DSD_SYNC_IS_EDACS(lls)) {
         attroff(COLOR_PAIR(3)); //colors off for EDACS
         if (state->edacs_site_id != 0) {
             if (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0) {

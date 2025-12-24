@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
@@ -1357,7 +1358,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
                     sizeof eh->Event_History_Items[0].internal_str)
             != 0) {
             if (opts->event_out_file[0] != '\0') {
-                uint8_t swrite = (state->lastsynctype == 35 || state->lastsynctype == 36) ? 1 : 0;
+                uint8_t swrite = DSD_SYNC_IS_P25P2(state->lastsynctype) ? 1 : 0;
                 write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite,
                                         eh->Event_History_Items[0].event_string);
             }

@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/io/tcp_input.h>
@@ -57,8 +58,8 @@ select_window_c4fm(const dsd_state* state, int* l_edge, int* r_edge, int freeze_
     int l = 2;
     int r = 2;
     if (!freeze_window) {
-        if (state->synctype == 30 || state->synctype == 31 || (state->lastsynctype >= 10 && state->lastsynctype <= 13)
-            || state->lastsynctype == 32 || state->lastsynctype == 33) {
+        if (DSD_SYNC_IS_YSF(state->synctype) || DSD_SYNC_IS_DMR_BS(state->lastsynctype)
+            || state->lastsynctype == DSD_SYNC_DMR_MS_VOICE || state->lastsynctype == DSD_SYNC_DMR_MS_DATA) {
             l = 1; // YSF, DMR, some NXDN cases
         } else {
             l = 2; // P25 and NXDN96 prefer wider left window
@@ -818,36 +819,29 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
        and timing recovery in complex baseband; additional FIRs here distort the
        {-3,-1,+1,+3} levels and break the slicer. */
         if (opts->use_cosine_filter && !cqpsk_symbol_rate) {
-            if ((state->lastsynctype >= 10 && state->lastsynctype <= 13) || state->lastsynctype == 32
-                || state->lastsynctype == 33 || state->lastsynctype == 34 || state->lastsynctype == 30
-                || state->lastsynctype == 31) {
+            if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
+                || DSD_SYNC_IS_YSF(state->lastsynctype)) {
                 sample = dmr_filter(sample, state->samplesPerSymbol);
             }
 
-            else if (state->lastsynctype == 8 || state->lastsynctype == 9 || state->lastsynctype == 16
-                     || state->lastsynctype == 17 || state->lastsynctype == 86 || state->lastsynctype == 87
-                     || state->lastsynctype == 98 || state->lastsynctype == 99) {
+            else if (state->lastsynctype == DSD_SYNC_M17_STR_POS || state->lastsynctype == DSD_SYNC_M17_STR_NEG
+                     || state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG
+                     || state->lastsynctype == DSD_SYNC_M17_PKT_POS || state->lastsynctype == DSD_SYNC_M17_PKT_NEG
+                     || state->lastsynctype == DSD_SYNC_M17_PRE_POS || state->lastsynctype == DSD_SYNC_M17_PRE_NEG) {
                 sample = m17_filter(sample, state->samplesPerSymbol);
             }
 
             // Apply matched filter to P25 Phase 1 (C4FM)
-            else if (state->lastsynctype == 0 || state->lastsynctype == 1) {
+            else if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
                 // OP25-compatible sinc de-emphasis filter
                 sample = p25_filter(sample, state->samplesPerSymbol);
             }
 
-            else if (state->lastsynctype == 20 || state->lastsynctype == 21 || state->lastsynctype == 22
-                     || state->lastsynctype == 23 || state->lastsynctype == 24 || state->lastsynctype == 25
-                     || state->lastsynctype == 26 || state->lastsynctype == 27 || state->lastsynctype == 28
-                     || state->lastsynctype == 29) //||
-            //state->lastsynctype == 35 || state->lastsynctype == 36) //phase 2 C4FM disc tap input
-            {
+            else if (DSD_SYNC_IS_DPMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->lastsynctype)) {
                 //if(state->samplesPerSymbol == 20)
                 if (opts->frame_nxdn48 == 1) {
                     sample = nxdn_filter(sample, state->samplesPerSymbol);
-                }
-                //else if (state->lastsynctype >= 20 && state->lastsynctype <=27) //this the right range?
-                else if (opts->frame_dpmr == 1) {
+                } else if (opts->frame_dpmr == 1) {
                     sample = dpmr_filter(sample, state->samplesPerSymbol);
                 } else if (state->samplesPerSymbol == 8) //phase 2 cqpsk
                 {
@@ -869,11 +863,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 if ((state->jitter < 0) && (state->rf_mod == 1)) { // first spike out of place
                     state->jitter = i;
                 }
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
+                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
                     fprintf(stderr, "O");
                 }
             } else {
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
+                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
                     fprintf(stderr, "+");
                 }
                 if ((state->jitter < 0) && (state->lastsample < state->center)
@@ -886,11 +880,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 if ((state->jitter < 0) && (state->rf_mod == 1)) { // first spike out of place
                     state->jitter = i;
                 }
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
+                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
                     fprintf(stderr, "X");
                 }
             } else {
-                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
+                if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
                     fprintf(stderr, "-");
                 }
                 if ((state->jitter < 0) && (state->lastsample > state->center)
@@ -968,7 +962,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         symbol = 0.0f;
     }
 
-    if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != -1)) {
+    if ((opts->symboltiming == 1) && (have_sync == 0) && (state->lastsynctype != DSD_SYNC_NONE)) {
         if (state->jitter >= 0) {
             fprintf(stderr, " %i\n", state->jitter);
         } else {

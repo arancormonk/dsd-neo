@@ -20,6 +20,7 @@
 #include <math.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/timing.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -142,7 +143,7 @@ use_symbol(dsd_opts* opts, dsd_state* state, float symbol) {
     // Continuous update of min/max
     // - QPSK: always (as before)
     // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
-    if (state->rf_mod == 1 || (state->rf_mod == 0 && (state->lastsynctype == 0 || state->lastsynctype == 1))) {
+    if (state->rf_mod == 1 || (state->rf_mod == 0 && DSD_SYNC_IS_P25P1(state->lastsynctype))) {
         if (cap >= 2) {
             lmin = (sbuf2[0] + sbuf2[1]) / 2.0f;
             lmax = (sbuf2[(cap - 1)] + sbuf2[(cap - 2)]) / 2.0f;
@@ -525,7 +526,8 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
 int
 digitize(dsd_opts* opts, dsd_state* state, float symbol) {
     // determine dibit state
-    if ((state->synctype == 6) || (state->synctype == 14) || (state->synctype == 18) || (state->synctype == 37))
+    if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_PROVOICE_POS)
+        || (state->synctype == DSD_SYNC_DSTAR_HD_POS) || (state->synctype == DSD_SYNC_EDACS_POS))
 
     {
         //  6 +D-STAR
@@ -542,8 +544,8 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             state->dibit_buf_p++;
             return (1); // +3
         }
-    } else if ((state->synctype == 7) || (state->synctype == 15) || (state->synctype == 19)
-               || (state->synctype == 38)) {
+    } else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) || (state->synctype == DSD_SYNC_PROVOICE_NEG)
+               || (state->synctype == DSD_SYNC_DSTAR_HD_NEG) || (state->synctype == DSD_SYNC_EDACS_NEG)) {
         //  7 -D-STAR
         // 15 -ProVoice
         // 19 -D-STAR_HD
@@ -560,10 +562,13 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
         }
     }
 
-    else if ((state->synctype == 1) || (state->synctype == 3) || (state->synctype == 5) || (state->synctype == 9)
-             || (state->synctype == 11) || (state->synctype == 13) || (state->synctype == 17) || (state->synctype == 29)
-             || (state->synctype == 31) || (state->synctype == 77) || (state->synctype == 87) || (state->synctype == 36)
-             || (state->synctype == 99))
+    else if ((state->synctype == DSD_SYNC_P25P1_NEG) || (state->synctype == DSD_SYNC_X2TDMA_VOICE_NEG)
+             || (state->synctype == DSD_SYNC_X2TDMA_DATA_NEG) || (state->synctype == DSD_SYNC_M17_STR_NEG)
+             || (state->synctype == DSD_SYNC_DMR_BS_VOICE_NEG) || (state->synctype == DSD_SYNC_DMR_BS_DATA_NEG)
+             || (state->synctype == DSD_SYNC_M17_LSF_NEG) || (state->synctype == DSD_SYNC_NXDN_NEG)
+             || (state->synctype == DSD_SYNC_YSF_NEG) || (state->synctype == DSD_SYNC_M17_BRT_NEG)
+             || (state->synctype == DSD_SYNC_M17_PKT_NEG) || (state->synctype == DSD_SYNC_P25P2_NEG)
+             || (state->synctype == DSD_SYNC_M17_PRE_NEG))
 
     {
         //  1 -P25p1
@@ -587,9 +592,11 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
         /* Prefer the fixed CQPSK slicer whenever the CQPSK DSP path is active and
          * we are hunting/decoding P25 (Phase 1 or 2). This keeps the sync search
          * aligned even before synctype is fully resolved. */
-        int want_cqpsk_slice = is_cqpsk_active(opts) && state->rf_mod == 1
-                               && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == 1
-                                   || state->synctype == 36 || state->lastsynctype == 1 || state->lastsynctype == 36);
+        int want_cqpsk_slice =
+            is_cqpsk_active(opts) && state->rf_mod == 1
+            && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == DSD_SYNC_P25P1_NEG
+                || state->synctype == DSD_SYNC_P25P2_NEG || state->lastsynctype == DSD_SYNC_P25P1_NEG
+                || state->lastsynctype == DSD_SYNC_P25P2_NEG);
         if (want_cqpsk_slice) {
             float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
             dibit = cqpsk_slice_aligned(sym);
@@ -597,9 +604,7 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             debug_log_cqpsk_slice(dibit, symbol, state);
         }
 
-        //testing again, either on Voice channels only (when tuned) or with trunk disabled
-        // if (state->synctype == 1 && (opts->p25_is_tuned == 1 || opts->p25_trunk == 0) && opts->use_heuristics == 1)
-        if (valid == 0 && state->synctype == 1 && opts->use_heuristics == 1) {
+        if (valid == 0 && state->synctype == DSD_SYNC_P25P1_NEG && opts->use_heuristics == 1) {
             // Use the P25p1 heuristics if available
             valid = estimate_symbol(state->rf_mod, &(state->inv_p25_heuristics), state->last_dibit, symbol, &dibit);
         }
@@ -664,9 +669,11 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
         /* Prefer the fixed CQPSK slicer whenever the CQPSK DSP path is active and
          * we are hunting/decoding P25 (Phase 1 or 2). This keeps the sync search
          * aligned even before synctype is fully resolved. */
-        int want_cqpsk_slice = is_cqpsk_active(opts) && state->rf_mod == 1
-                               && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == 0
-                                   || state->synctype == 35 || state->lastsynctype == 0 || state->lastsynctype == 35);
+        int want_cqpsk_slice =
+            is_cqpsk_active(opts) && state->rf_mod == 1
+            && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == DSD_SYNC_P25P1_POS
+                || state->synctype == DSD_SYNC_P25P2_POS || state->lastsynctype == DSD_SYNC_P25P1_POS
+                || state->lastsynctype == DSD_SYNC_P25P2_POS);
         if (want_cqpsk_slice) {
             float sym = symbol - state->center; /* remove DC bias before fixed-threshold slice */
             dibit = cqpsk_slice_aligned(sym);
@@ -674,9 +681,7 @@ digitize(dsd_opts* opts, dsd_state* state, float symbol) {
             debug_log_cqpsk_slice(dibit, symbol, state);
         }
 
-        //testing again, either on Voice channels only (when tuned) or with trunk disabled
-        // if (state->synctype == 0 && (opts->p25_is_tuned == 1 || opts->p25_trunk == 0) && opts->use_heuristics == 1)
-        if (valid == 0 && state->synctype == 0 && opts->use_heuristics == 1) {
+        if (valid == 0 && state->synctype == DSD_SYNC_P25P1_POS && opts->use_heuristics == 1) {
             // Use the P25p1 heuristics if available
             valid = estimate_symbol(state->rf_mod, &(state->p25_heuristics), state->last_dibit, symbol, &dibit);
         }

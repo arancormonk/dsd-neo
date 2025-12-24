@@ -55,8 +55,8 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
     }
     // Suppress IDEN classification when not on a P25 system
     int lls = state->synctype;
-    int is_p25p1 = (lls == 0 || lls == 1);
-    int is_p25p2 = (lls == 35 || lls == 36);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
     if (!(is_p25p1 || is_p25p2)) {
         return 0;
     }
@@ -140,8 +140,8 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     int lines = 0;
-    int is_p25p1 = (lls == 0 || lls == 1);
-    int is_p25p2 = (lls == 35 || lls == 36);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
 
     if (is_p25p1 || is_p25p2) {
         /* Current vs previous sync types (helps spot stuck transitions) */

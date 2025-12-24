@@ -9,6 +9,7 @@
  * 2023-07 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 /* thx gr-ysf fr_vch_decoder_bb_impl.cc * Copyright 2015 Mathias Weyland */
 // I hold Sylvain Munaut in high esteem for figuring this out.
@@ -627,7 +628,7 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
     const int *w, *x, *y, *z;
 
     int st = state->synctype;
-    state->synctype = 28;
+    state->synctype = DSD_SYNC_NXDN_POS;
 
     uint8_t b1, b2;
     for (; start < stop; start++) {
@@ -1092,7 +1093,7 @@ processYSF(dsd_opts* opts, dsd_state* state) {
 
             //fake it as P25p1 and sent to processMBEFrame
             st = state->synctype;
-            state->synctype = 0; //P25p1
+            state->synctype = DSD_SYNC_P25P1_POS; //P25p1
             processMbeFrame(opts, state, imbe_fr, NULL, NULL);
             state->synctype = st;
 

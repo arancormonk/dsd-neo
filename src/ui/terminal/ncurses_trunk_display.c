@@ -10,6 +10,7 @@
 #include <dsd-neo/ui/ncurses_trunk_display.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
 #include <dsd-neo/ui/ui_prims.h>
 
@@ -193,9 +194,9 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
 
     // Legend for IDEN color/suffix (P25 systems only)
     {
-        int lls = state ? state->synctype : -1;
-        int is_p25p1 = (lls == 0 || lls == 1);
-        int is_p25p2 = (lls == 35 || lls == 36);
+        int lls = state ? state->synctype : DSD_SYNC_NONE;
+        int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
+        int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
         if (is_p25p1 || is_p25p2) {
             ui_print_lborder_green();
             printw(" Legend: IDEN colors ");

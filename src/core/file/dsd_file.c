@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>   //for ambe+2 fr
 #include <dsd-neo/protocol/p25/p25p1_const.h> //for imbe fr (7200)
 #include <dsd-neo/runtime/log.h>
@@ -320,11 +321,11 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     getDate_buf(datestr);
 
     //phase 1 and provoice
-    if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
+    if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
         snprintf(ext, sizeof ext, "%s", ".imb");
     }
     //d-star
-    else if ((state->synctype == 6) || (state->synctype == 7) || (state->synctype == 18) || (state->synctype == 19)) {
+    else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
         snprintf(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
     }
     //dmr, nxdn, phase 2, x2-tdma
@@ -374,11 +375,11 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     getDate_buf(datestr);
 
     //phase 1 and provoice
-    if ((state->synctype == 0) || (state->synctype == 1) || (state->synctype == 14) || (state->synctype == 15)) {
+    if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
         snprintf(ext, sizeof ext, "%s", ".imb");
     }
     //d-star
-    else if ((state->synctype == 6) || (state->synctype == 7) || (state->synctype == 18) || (state->synctype == 19)) {
+    else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
         snprintf(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
     }
     //dmr, nxdn, phase 2, x2-tdma
@@ -1180,8 +1181,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     state->lastsrc = 0;
     state->lasttg = 0;
     state->gi[0] = -1;
-    state->synctype = -1;
-    state->lastsynctype = -1;
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NONE;
 
     //watchdog for event history
     watchdog_event_history(opts, state, 0);
@@ -1244,8 +1245,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
                 rc4_db = 267;
                 rc4_mod = 13;
 
-                state->synctype = 0;
-                state->lastsynctype = 0;
+                state->synctype = DSD_SYNC_P25P1_POS;
+                state->lastsynctype = DSD_SYNC_P25P1_POS;
             }
 
             if (strncmp("APCO25-PHASE2", str_buffer, 13) == 0) {
@@ -1256,8 +1257,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
                 rc4_db = 256;
                 rc4_mod = 13;
 
-                state->synctype = 35;
-                state->lastsynctype = 35;
+                state->synctype = DSD_SYNC_P25P2_POS;
+                state->lastsynctype = DSD_SYNC_P25P2_POS;
             }
 
             if (strncmp("DMR", str_buffer, 3) == 0) {
@@ -1268,12 +1269,12 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
                 rc4_db = 256;
                 rc4_mod = 9;
 
-                state->synctype = 10;
-                state->lastsynctype = 10;
+                state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+                state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
             }
 
             //open .imb or .amb file, if desired, but only after setting a synctype
-            if (state->synctype != -1) {
+            if (state->synctype != DSD_SYNC_NONE) {
                 //if converting to .amb or .imb, open that file format as well
                 if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
                     openMbeOutFile(opts, state);

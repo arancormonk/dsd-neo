@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
@@ -420,7 +421,7 @@ initState(dsd_state* state) {
     //state->wav_out_bytes = 0;
     state->center = 0;
     state->jitter = -1;
-    state->synctype = -1;
+    state->synctype = DSD_SYNC_NONE;
     state->min = -15000;
     state->max = 15000;
     state->lmid = 0;
@@ -446,7 +447,7 @@ initState(dsd_state* state) {
     state->symbolcnt = 0;
     state->symbolc = 0; //
     state->rf_mod = 0;
-    state->lastsynctype = -1;
+    state->lastsynctype = DSD_SYNC_NONE;
     state->lastp25type = 0;
     state->offset = 0;
     state->carrier = 0;

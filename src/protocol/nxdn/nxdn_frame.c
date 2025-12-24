@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 
 // #define NXDN_DEBUG_LICH   //print LICH debug info on err on payload == 1
@@ -143,7 +144,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "  Lich Off Bit Fill Error: %d / 8; \n", lich_off_hex);
         }
 #endif
-        state->lastsynctype = -1; //set to -1 so we don't jump back here too quickly
+        state->lastsynctype = DSD_SYNC_NONE; //set to NONE so we don't jump back here too quickly
         goto END;
     }
 #endif
@@ -166,7 +167,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "  Lich Parity Error %02X / %04X\n", lich_full, lich_bits_hex);
         }
 #endif
-        state->lastsynctype = -1;
+        state->lastsynctype = DSD_SYNC_NONE;
         goto END;
     }
 
@@ -184,7 +185,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             fprintf(stderr, "  Simplex/Inbound NXDN lich on trunking system - type 0x%02X\n", lich);
         }
 #endif
-        state->lastsynctype = -1; //set to -1 so we don't jump back here too quickly
+        state->lastsynctype = DSD_SYNC_NONE; //set to NONE so we don't jump back here too quickly
         goto END;
     }
 
@@ -309,7 +310,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             //reset the sacch field, we probably got a false sync and need to wipe or give a bad crc
             memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
             memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-            state->lastsynctype = -1; //set to -1 so we don't jump back here too quickly
+            state->lastsynctype = DSD_SYNC_NONE; //set to NONE so we don't jump back here too quickly
             goto END;
             break;
     } // end of switch(lich)
@@ -690,8 +691,8 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 END:
 
     //if rejected sync, reset carrier and synctype as well
-    if (state->lastsynctype == -1) {
+    if (state->lastsynctype == DSD_SYNC_NONE) {
         state->carrier = 0;
-        state->synctype = -1;
+        state->synctype = DSD_SYNC_NONE;
     }
 }

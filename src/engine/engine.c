@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -966,7 +967,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     }
 
     state->jitter = -1;
-    state->lastsynctype = -1;
+    state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
     state->max = 15000;
     state->min = -15000;
@@ -1422,7 +1423,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
             last_min = state->min;
         }
 
-        while (state->synctype != -1) {
+        while (state->synctype != DSD_SYNC_NONE) {
             // Drain UI commands during active decoding so hotkeys work in-call
             ui_drain_cmds(opts, state);
 

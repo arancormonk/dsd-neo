@@ -15,6 +15,7 @@
 //moving all audio handling and decryption to seperate files for simplicity (eventually)
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 //the initial functions will ONLY return demodulated ambe or imbe frames, THAT'S IT!
 //decryption and audio handling etc will be handled at a different area
@@ -91,7 +92,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     UNUSED(i);
 
     //P25p1, YSF FR, NXDN EFR
-    if (state->synctype == 0 || state->synctype == 1) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
         soft_demod_imbe7200(state, imbe_fr, imbe_d);
         //handle decryption here
         //print IMBE frame
@@ -116,7 +117,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     }
 
     //ProVoice
-    else if (state->synctype == 14 || state->synctype == 15) {
+    else if (DSD_SYNC_IS_PROVOICE(state->synctype)) {
         soft_demod_imbe7100(state, imbe7100_fr, imbe_d);
         //nothing to do
 
@@ -129,7 +130,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     }
 
     //D-STAR AMBE
-    else if (state->synctype == 6 || state->synctype == 7) {
+    else if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
         soft_demod_ambe_dstar(opts, state, ambe_fr, ambe_d);
         if (opts->payload == 1) {
             PrintAMBEData(opts, state, ambe_d);
@@ -160,7 +161,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     }
 
     //X2-TDMA AMBE
-    else if (state->synctype >= 2 && state->synctype <= 5) {
+    else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
         soft_demod_ambe_x2(opts, state, ambe_fr, ambe_d);
         if (opts->payload == 1) {
             PrintAMBEData(opts, state, ambe_d);

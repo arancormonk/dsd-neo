@@ -11,6 +11,7 @@ target_sources(dsd-neo_core PRIVATE
   vocoder/dsd_mbe.c
   vocoder/dsd_mbe2.c
   frames/dsd_frame.c
+  frames/protocol_dispatch.c
   frames/dsd_dibit.c
   time/dsd_time.c
   util/dsd_misc.c

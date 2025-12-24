@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -248,7 +249,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             //might only want to do these on a grant update, and not a grant by itself?
             if (opts->p25_trunk == 0) {
                 //P1 FDMA
-                if (state->synctype == 0 || state->synctype == 1) {
+                if (DSD_SYNC_IS_P25P1(state->synctype)) {
                     state->p25_vc_freq[0] = freq;
                 }
                 //P2 TDMA
@@ -314,7 +315,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (opts->p25_trunk == 0) {
                 if (sgroup == state->lasttg || sgroup == state->lasttgR) {
                     //P1 FDMA
-                    if (state->synctype == 0 || state->synctype == 1) {
+                    if (DSD_SYNC_IS_P25P1(state->synctype)) {
                         state->p25_vc_freq[0] = freq;
                     }
                     //P2 TDMA
@@ -421,7 +422,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (opts->p25_trunk == 0) {
                     if (tunable_group == state->lasttg || tunable_group == state->lasttgR) {
                         //P1 FDMA
-                        if (state->synctype == 0 || state->synctype == 1) {
+                        if (DSD_SYNC_IS_P25P1(state->synctype)) {
                             state->p25_vc_freq[0] = tunable_freq;
                         }
                         //P2 TDMA
@@ -532,7 +533,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (opts->p25_trunk == 0) {
                 if (group == state->lasttg || group == state->lasttgR) {
                     //P1 FDMA
-                    if (state->synctype == 0 || state->synctype == 1) {
+                    if (DSD_SYNC_IS_P25P1(state->synctype)) {
                         state->p25_vc_freq[0] = freq;
                     }
                     //P2 TDMA
@@ -660,7 +661,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (opts->p25_trunk == 0) {
                 if ((uint32_t)target == (uint32_t)state->lasttg || (uint32_t)target == (uint32_t)state->lasttgR) {
                     //P1 FDMA
-                    if (state->synctype == 0 || state->synctype == 1) {
+                    if (DSD_SYNC_IS_P25P1(state->synctype)) {
                         state->p25_vc_freq[0] = freq;
                     }
                     //P2 TDMA
@@ -742,7 +743,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (opts->p25_trunk == 0) {
                 if (target == state->lasttg || target == state->lasttgR) {
                     //P1 FDMA
-                    if (state->synctype == 0 || state->synctype == 1) {
+                    if (DSD_SYNC_IS_P25P1(state->synctype)) {
                         state->p25_vc_freq[0] = freq;
                     }
                     //P2 TDMA
@@ -923,7 +924,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (opts->p25_trunk == 0) {
                     if (tunable_group == state->lasttg || tunable_group == state->lasttgR) {
                         //P1 FDMA
-                        if (state->synctype == 0 || state->synctype == 1) {
+                        if (DSD_SYNC_IS_P25P1(state->synctype)) {
                             state->p25_vc_freq[0] = tunable_freq;
                         }
                         //P2 TDMA
@@ -1127,7 +1128,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (opts->p25_trunk == 0) {
                     if (tunable_group == state->lasttg || tunable_group == state->lasttgR) {
                         //P1 FDMA
-                        if (state->synctype == 0 || state->synctype == 1) {
+                        if (DSD_SYNC_IS_P25P1(state->synctype)) {
                             state->p25_vc_freq[0] = tunable_freq;
                         }
                         //P2 TDMA
@@ -1229,7 +1230,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 if (opts->p25_trunk == 0) {
                     if (tunable_group == state->lasttg || tunable_group == state->lasttgR) {
                         //P1 FDMA
-                        if (state->synctype == 0 || state->synctype == 1) {
+                        if (DSD_SYNC_IS_P25P1(state->synctype)) {
                             state->p25_vc_freq[0] = tunable_freq;
                         }
                         //P2 TDMA
@@ -1336,7 +1337,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (opts->p25_trunk == 0) {
                 if (group == state->lasttg || group == state->lasttgR) {
                     //P1 FDMA
-                    if (state->synctype == 0 || state->synctype == 1) {
+                    if (DSD_SYNC_IS_P25P1(state->synctype)) {
                         state->p25_vc_freq[0] = freq1;
                     }
                     //P2 TDMA
@@ -1424,7 +1425,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             if (opts->p25_trunk == 0) {
                 if (target == state->lasttg || target == state->lasttgR) {
                     //P1 FDMA
-                    if (state->synctype == 0 || state->synctype == 1) {
+                    if (DSD_SYNC_IS_P25P1(state->synctype)) {
                         state->p25_vc_freq[0] = freq;
                     }
                     //P2 TDMA
@@ -1442,7 +1443,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int dac = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
             int target = (MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a];
             //P25p1 TSBK is shifted slightly on these two values
-            if (state->synctype == 0 || state->synctype == 1) {
+            if (DSD_SYNC_IS_P25P1(state->synctype)) {
                 dac = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
                 target = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
             }

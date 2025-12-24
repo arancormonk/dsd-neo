@@ -12,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -464,7 +465,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         if (opts->p25_trunk == 0) {
             if ((int)target == state->lasttg || (int)target == state->lasttgR) {
                 //P1 FDMA
-                if (state->synctype == 0 || state->synctype == 1) {
+                if (DSD_SYNC_IS_P25P1(state->synctype)) {
                     state->p25_vc_freq[0] = freq;
                 }
                 //P2 TDMA

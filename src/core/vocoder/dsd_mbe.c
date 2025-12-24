@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/bp.h>
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/pc4.h>
 #include <dsd-neo/crypto/rc2.h>
 
@@ -87,7 +88,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                 readImbe4400Data(opts, state, imbe_d);
                 mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                          state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-                if (state->synctype == 0 || state->synctype == 1) {
+                if (DSD_SYNC_IS_P25P1(state->synctype)) {
                     int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
                     if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
                         len = (int)sizeof(state->p25_p1_voice_err_hist);
@@ -240,7 +241,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
     //end set playback mode for this frame
 
-    if ((state->synctype == 0) || (state->synctype == 1)) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
         //  0 +P25p1
         //  1 -P25p1
         state->errs = mbe_eccImbe7200x4400C0(imbe_fr);
@@ -395,7 +396,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-        if (state->synctype == 0 || state->synctype == 1) {
+        if (DSD_SYNC_IS_P25P1(state->synctype)) {
             int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
             if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
                 len = (int)sizeof(state->p25_p1_voice_err_hist);
@@ -424,7 +425,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         {
             saveImbe4400Data(opts, state, imbe_d);
         }
-    } else if ((state->synctype == 14) || (state->synctype == 15)) //pV Sync
+    } else if (DSD_SYNC_IS_PROVOICE(state->synctype)) //pV Sync
     {
 
         state->errs = mbe_eccImbe7100x4400C0(imbe7100_fr);
@@ -440,7 +441,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         mbe_convertImbe7100to7200(imbe_d);
         mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-        if (state->synctype == 0 || state->synctype == 1) {
+        if (DSD_SYNC_IS_P25P1(state->synctype)) {
             int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;
             if (len > (int)sizeof(state->p25_p1_voice_err_hist)) {
                 len = (int)sizeof(state->p25_p1_voice_err_hist);
@@ -458,7 +459,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         if (opts->mbe_out_f != NULL) {
             saveImbe4400Data(opts, state, imbe_d);
         }
-    } else if ((state->synctype == 6) || (state->synctype == 7)) {
+    } else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_DSTAR_VOICE_NEG)) {
         mbe_processAmbe3600x2400Framef(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_fr,
                                        ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
         if (opts->payload == 1) {
@@ -467,7 +468,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         if (opts->mbe_out_f != NULL) {
             saveAmbe2450Data(opts, state, ambe_d);
         }
-    } else if ((state->synctype == 28) || (state->synctype == 29)) //was 8 and 9
+    } else if (DSD_SYNC_IS_NXDN(state->synctype)) //was 8 and 9
     {
 
         state->errs = mbe_eccAmbe3600x2450C0(ambe_fr);
@@ -551,7 +552,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
         mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                  state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-        if (state->synctype == 35 || state->synctype == 36) {
+        if (DSD_SYNC_IS_P25P2(state->synctype)) {
             int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
             if (len2 > 64) {
                 len2 = 64;
@@ -850,7 +851,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             //P25p2 RC4 Handling, VCH 0
             if (state->currentslot == 0 && state->payload_algid == 0xAA && state->R != 0
-                && ((state->synctype == 35) || (state->synctype == 36))) {
+                && DSD_SYNC_IS_P25P2(state->synctype)) {
                 uint8_t cipher[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
                 uint8_t plain[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
                 uint8_t rckey[13] = {0x00, 0x00, 0x00, 0x00, 0x00, // <- RC4 Key
@@ -957,7 +958,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                      state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-            if (state->synctype == 35 || state->synctype == 36) {
+            if (DSD_SYNC_IS_P25P2(state->synctype)) {
                 int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
                 if (len2 > 64) {
                     len2 = 64;
@@ -1260,7 +1261,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             //P25p2 RC4 Handling, VCH 1
             if (state->currentslot == 1 && state->payload_algidR == 0xAA && state->RR != 0
-                && ((state->synctype == 35) || (state->synctype == 36))) {
+                && DSD_SYNC_IS_P25P2(state->synctype)) {
                 uint8_t cipher[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
                 uint8_t plain[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
                 uint8_t rckey[13] = {0x00, 0x00, 0x00, 0x00, 0x00, // <- RC4 Key
@@ -1367,7 +1368,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             mbe_processAmbe2450Dataf(state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_d,
                                      state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);
-            if (state->synctype == 35 || state->synctype == 36) {
+            if (DSD_SYNC_IS_P25P2(state->synctype)) {
                 int len2 = state->p25_p2_voice_err_hist_len > 0 ? state->p25_p2_voice_err_hist_len : 50;
                 if (len2 > 64) {
                     len2 = 64;
@@ -1417,7 +1418,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
 
         //second checkdown for P25p2 WACN, SYSID, and CC set
-        if (state->synctype == 35 || state->synctype == 36) {
+        if (DSD_SYNC_IS_P25P2(state->synctype)) {
             if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
                 state->dmr_encL = 1;
             }
@@ -1468,7 +1469,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
 
         //second checkdown for P25p2 WACN, SYSID, and CC set
-        if (state->synctype == 35 || state->synctype == 36) {
+        if (DSD_SYNC_IS_P25P2(state->synctype)) {
             if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
                 state->dmr_encR = 1;
             }
@@ -1509,7 +1510,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     // opposite slot is encrypted.
     if (opts->dmr_mono == 0 && opts->dmr_stereo == 0) {
         int allow_other = 0;
-        int is_p25p2 = (state->synctype == 35 || state->synctype == 36);
+        int is_p25p2 = DSD_SYNC_IS_P25P2(state->synctype);
         if (is_p25p2) {
             allow_other = (state->p25_p2_audio_allowed[state->currentslot] != 0);
         } else {
@@ -1544,7 +1545,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         //if using anything but DMR Stereo, borrowing state->dmr_encL to signal enc or clear for other types
         if (opts->wav_out_f != NULL && opts->dmr_stereo == 0) {
             int allow_wav = 0;
-            int is_p25p2 = (state->synctype == 35 || state->synctype == 36);
+            int is_p25p2 = DSD_SYNC_IS_P25P2(state->synctype);
             if (is_p25p2) {
                 allow_wav = (state->p25_p2_audio_allowed[state->currentslot] != 0);
             } else {

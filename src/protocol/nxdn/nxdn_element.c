@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #ifdef USE_RTLSDR
@@ -728,7 +729,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             // NXDN-specific state setup
             memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
             memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-            state->lastsynctype = -1;
+            state->lastsynctype = DSD_SYNC_NONE;
 
             //set rid and tg when we actually tune to it
             //only assign rid if not spare and not reserved (happens on private calls, unsure of its significance)
@@ -1852,7 +1853,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                         // NXDN-specific state setup
                         memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
                         memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                        state->lastsynctype = -1;
+                        state->lastsynctype = DSD_SYNC_NONE;
 
                         //check the rkey array for a scrambler key value
                         //TGT ID and Key ID could clash though if csv or system has both with different keys

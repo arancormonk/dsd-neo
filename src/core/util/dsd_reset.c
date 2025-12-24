@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 //fixed the memory leak, but now random segfaults occur -- double free or corruption (out) or (!prev)
@@ -86,7 +87,7 @@ resetState(dsd_state* state) {
     //Sync
     state->center = 0.0f;
     state->jitter = -1;
-    state->synctype = -1;
+    state->synctype = DSD_SYNC_NONE;
     state->min = -4.0f;
     state->max = 4.0f;
     state->lmid = 0.0f;
@@ -122,7 +123,7 @@ resetState(dsd_state* state) {
     state->sps_hunt_counter = 0;
     state->sps_hunt_idx = 0;
 
-    state->lastsynctype = -1;
+    state->lastsynctype = DSD_SYNC_NONE;
     state->lastp25type = 0;
     state->offset = 0;
     state->carrier = 0;

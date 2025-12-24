@@ -22,6 +22,7 @@
 #define main dsd_neo_main_decl
 #include <dsd-neo/core/dsd.h>
 #undef main
+#include <dsd-neo/core/synctype_ids.h>
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
 // Trunk SM hooks capture
@@ -350,7 +351,7 @@ main(void) {
     state.tg_hold = 0;
     int lastsrc = 0x00ABCDEF;
     state.lastsrc = (unsigned long long)lastsrc;
-    state.synctype = 0;
+    state.synctype = DSD_SYNC_P25P1_POS;
     state.p25_chan_iden = 1;
     state.p25_chan_type[1] = 1;
     state.p25_chan_tdma[1] = 0;

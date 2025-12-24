@@ -19,6 +19,7 @@
 
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -290,7 +291,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 long int freq = 0;
 
                 //all of these messages share the same format (thankfully)
-                if (!(csbk_o == 56 && state->synctype == 33)) {
+                if (!(csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA)) {
                     fprintf(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
                 }
 
@@ -1601,7 +1602,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 fprintf(stderr, "Target [%d] - Source [%d] ", target, source);
             }
 
-            if (csbk_o == 56 && state->synctype == 33) //only run on MS Data sync pattern
+            if (csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA) //only run on MS Data sync pattern
             {
                 fprintf(stderr, "\n");
                 fprintf(stderr, " BS Outbound Activation (BS_Dwn_Act) - ");

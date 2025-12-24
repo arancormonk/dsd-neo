@@ -10,6 +10,7 @@
 #include <dsd-neo/ui/ncurses_internal.h>
 
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 
@@ -18,7 +19,7 @@
 #include <string.h>
 
 /* Shared state: last sync type seen by the UI (updated by ncursesPrinter) */
-int ncurses_last_synctype = -1;
+int ncurses_last_synctype = DSD_SYNC_NONE;
 
 int
 ui_unicode_supported(void) {

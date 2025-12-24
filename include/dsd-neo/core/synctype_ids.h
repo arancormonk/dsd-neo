@@ -137,6 +137,9 @@ extern "C" {
 /** Check if synctype is any P25 (Phase 1 or Phase 2) */
 #define DSD_SYNC_IS_P25(s)        (DSD_SYNC_IS_P25P1(s) || DSD_SYNC_IS_P25P2(s))
 
+/** Check if synctype is X2-TDMA */
+#define DSD_SYNC_IS_X2TDMA(s)     ((s) >= DSD_SYNC_X2TDMA_DATA_POS && (s) <= DSD_SYNC_X2TDMA_DATA_NEG)
+
 /** Check if synctype is DMR Base Station */
 #define DSD_SYNC_IS_DMR_BS(s)                                                                                          \
     ((s) == DSD_SYNC_DMR_BS_DATA_POS || (s) == DSD_SYNC_DMR_BS_VOICE_NEG || (s) == DSD_SYNC_DMR_BS_VOICE_POS           \
@@ -162,18 +165,22 @@ extern "C" {
      || (s) == DSD_SYNC_M17_PRE_NEG)
 
 /** Check if synctype is NXDN */
-#define DSD_SYNC_IS_NXDN(s) ((s) == DSD_SYNC_NXDN_POS || (s) == DSD_SYNC_NXDN_NEG)
+#define DSD_SYNC_IS_NXDN(s)       ((s) == DSD_SYNC_NXDN_POS || (s) == DSD_SYNC_NXDN_NEG)
 
 /** Check if synctype is YSF */
-#define DSD_SYNC_IS_YSF(s)  ((s) == DSD_SYNC_YSF_POS || (s) == DSD_SYNC_YSF_NEG)
+#define DSD_SYNC_IS_YSF(s)        ((s) == DSD_SYNC_YSF_POS || (s) == DSD_SYNC_YSF_NEG)
 
 /** Check if synctype is dPMR */
-#define DSD_SYNC_IS_DPMR(s) ((s) >= DSD_SYNC_DPMR_FS1_POS && (s) <= DSD_SYNC_DPMR_FS4_NEG)
+#define DSD_SYNC_IS_DPMR(s)       ((s) >= DSD_SYNC_DPMR_FS1_POS && (s) <= DSD_SYNC_DPMR_FS4_NEG)
+
+/** Check if synctype is ProVoice */
+#define DSD_SYNC_IS_PROVOICE(s)   ((s) == DSD_SYNC_PROVOICE_POS || (s) == DSD_SYNC_PROVOICE_NEG)
+
+/** Check if synctype is EDACS */
+#define DSD_SYNC_IS_EDACS_ONLY(s) ((s) == DSD_SYNC_EDACS_POS || (s) == DSD_SYNC_EDACS_NEG)
 
 /** Check if synctype is EDACS/ProVoice */
-#define DSD_SYNC_IS_EDACS(s)                                                                                           \
-    ((s) == DSD_SYNC_PROVOICE_POS || (s) == DSD_SYNC_PROVOICE_NEG || (s) == DSD_SYNC_EDACS_POS                         \
-     || (s) == DSD_SYNC_EDACS_NEG)
+#define DSD_SYNC_IS_EDACS(s)      (DSD_SYNC_IS_PROVOICE(s) || DSD_SYNC_IS_EDACS_ONLY(s))
 
 /** Check if synctype is inverted (negative polarity) */
 #define DSD_SYNC_IS_INVERTED(s)                                                                                        \

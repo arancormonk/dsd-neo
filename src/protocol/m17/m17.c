@@ -13,6 +13,7 @@
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
@@ -719,8 +720,6 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     if (lich_err == 0) {
         M17prepareStream(opts, state, m17_bits);
     }
-
-    // if (lich_err != 0) state->lastsynctype = -1; //disable
 
     //ending linebreak
     fprintf(stderr, "\n");
@@ -2313,7 +2312,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
         {
             //Enable Carrier, synctype, etc
             state->carrier = 1;
-            state->synctype = 8;
+            state->synctype = DSD_SYNC_M17_STR_POS;
 
             //send LSF frame once, if new encode session
             if (new_lsf == 1) {
@@ -2514,7 +2513,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             lich_cnt = 0;
             fsn = 0;
             state->carrier = 0;
-            state->synctype = -1;
+            state->synctype = DSD_SYNC_NONE;
 
             //update timestamp
             ts = time(NULL);
@@ -3865,7 +3864,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             //Enable Carrier, synctype, etc
             state->carrier = 1;
-            state->synctype = 8;
+            state->synctype = DSD_SYNC_M17_STR_POS;
 
             //convert bytes to bits
             k = 0;
@@ -4011,7 +4010,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
             memset(ip_frame, 0, sizeof(ip_frame));
 
             state->carrier = 0;
-            state->synctype = -1;
+            state->synctype = DSD_SYNC_NONE;
         }
 
         else if (memcmp(ip_frame, eotx, 4) == 0) {
@@ -4040,7 +4039,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
             //drop carrier and sync
             state->carrier = 0;
-            state->synctype = -1;
+            state->synctype = DSD_SYNC_NONE;
         }
 
         else if (memcmp(ip_frame, ping, 4) == 0) {
