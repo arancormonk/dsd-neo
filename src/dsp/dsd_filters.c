@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <math.h>
+#include <string.h>
 
 #define FIR_MAX_TAPS 1024
 

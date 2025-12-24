@@ -12,7 +12,9 @@
  * history infrastructure to provide a clean API for all supported protocols.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 
 #include <math.h>

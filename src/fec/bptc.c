@@ -11,7 +11,8 @@
  */
 
 /* Include ------------------------------------------------------------------*/
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/bptc.h>
 
 /* Define -------------------------------------------------------------------*/
 

@@ -33,6 +33,7 @@
 // Forward declarations for core types used widely across the codebase.
 // These provide incomplete types for pointer/reference users without
 // forcing inclusion of the full state/options definitions.
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -67,8 +68,11 @@
 #include <sndfile.h>
 
 #include <dsd-neo/protocol/dmr/dmr_block.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
+
+#include <dsd-neo/crypto/aes.h>
 
 /* PulseAudio headers only included when using PulseAudio backend on POSIX */
 #if DSD_PLATFORM_POSIX && !defined(DSD_USE_PORTAUDIO)
@@ -82,6 +86,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/control.h>
 
@@ -100,138 +105,11 @@
 /*
  * Frame sync patterns
  */
-
-//M17 Sync Patterns
-#define M17_LSF                        "11113313"
-#define M17_STR                        "33331131"
-//alternating with last symbol opposite of first symbol of LSF
-#define M17_PRE                        "31313131"
-#define M17_PIV                        "13131313"
-#define M17_PRE_LSF                    "3131313133331131" //Preamble + LSF
-#define M17_PIV_LSF                    "1313131311113313" //Preamble + LSF
-#define M17_BRT                        "31331111"
-#define M17_PKT                        "13113333"
-
-#define FUSION_SYNC                    "31111311313113131131"
-#define INV_FUSION_SYNC                "13333133131331313313"
-
-#define INV_P25P1_SYNC                 "333331331133111131311111"
-#define P25P1_SYNC                     "111113113311333313133333"
-
-#define P25P2_SYNC                     "11131131111333133333"
-#define INV_P25P2_SYNC                 "33313313333111311111"
-
-#define X2TDMA_BS_VOICE_SYNC           "113131333331313331113311"
-#define X2TDMA_BS_DATA_SYNC            "331313111113131113331133"
-#define X2TDMA_MS_DATA_SYNC            "313113333111111133333313"
-#define X2TDMA_MS_VOICE_SYNC           "131331111333333311111131"
-
-#define DSTAR_HD                       "131313131333133113131111"
-#define INV_DSTAR_HD                   "313131313111311331313333"
-#define DSTAR_SYNC                     "313131313133131113313111"
-#define INV_DSTAR_SYNC                 "131313131311313331131333"
-
-#define NXDN_MS_DATA_SYNC              "313133113131111333"
-#define INV_NXDN_MS_DATA_SYNC          "131311331313333111"
-#define INV_NXDN_BS_DATA_SYNC          "131311331313333131"
-#define NXDN_BS_DATA_SYNC              "313133113131111313"
-#define NXDN_MS_VOICE_SYNC             "313133113131113133"
-#define INV_NXDN_MS_VOICE_SYNC         "131311331313331311"
-#define INV_NXDN_BS_VOICE_SYNC         "131311331313331331"
-#define NXDN_BS_VOICE_SYNC             "313133113131113113"
-
-#define DMR_BS_DATA_SYNC               "313333111331131131331131"
-#define DMR_BS_VOICE_SYNC              "131111333113313313113313"
-#define DMR_MS_DATA_SYNC               "311131133313133331131113"
-#define DMR_MS_VOICE_SYNC              "133313311131311113313331"
-
-//Part 1-A CAI 4.4.4 (FSW only - Late Entry - Marginal Signal)
-#define NXDN_FSW                       "3131331131"
-#define INV_NXDN_FSW                   "1313113313"
-//Part 1-A CAI 4.4.3 Preamble Last 9 plus FSW (start of RDCH)
-#define NXDN_PANDFSW                   "3131133313131331131" //19 symbols
-#define INV_NXDN_PANDFSW               "1313311131313113313" //19 symbols
-
-#define DMR_RESERVED_SYNC              "131331111133133133311313"
-
-#define DMR_DIRECT_MODE_TS1_DATA_SYNC  "331333313111313133311111"
-#define DMR_DIRECT_MODE_TS1_VOICE_SYNC "113111131333131311133333"
-#define DMR_DIRECT_MODE_TS2_DATA_SYNC  "311311111333113333133311"
-#define DMR_DIRECT_MODE_TS2_VOICE_SYNC "133133333111331111311133"
-
-#define INV_PROVOICE_SYNC              "31313111333133133311331133113311"
-#define PROVOICE_SYNC                  "13131333111311311133113311331133"
-#define INV_PROVOICE_EA_SYNC           "13313133113113333311313133133311"
-#define PROVOICE_EA_SYNC               "31131311331331111133131311311133"
-
-//EDACS/PV EOT dotting sequence
-#define DOTTING_SEQUENCE_A             "131313131313131313131313131313131313131313131313" //0xAAAA...
-#define DOTTING_SEQUENCE_B             "313131313131313131313131313131313131313131313131" //0x5555...
-
-//define the provoice conventional string pattern to default 85/85 if not enabled, else mute it so we won't double sync on accident in frame_sync
-#ifdef PVCONVENTIONAL
-#define PROVOICE_CONV                                                                                                  \
-    "00000000000000000000000000000000" //all zeroes should be unobtainable string in the frame_sync synctests
-#define INV_PROVOICE_CONV                                                                                              \
-    "00000000000000000000000000000000" //all zeroes should be unobtainable string in the frame_sync synctests
-#else
-#define PROVOICE_CONV     "13131333111311311313131313131313" //TX 85 RX 85 (default programming value)
-#define INV_PROVOICE_CONV "31313111333133133131313131313131" //TX 85 RX 85 (default programming value)
-#endif
-//we use the short sync instead of the default 85/85 when PVCONVENTIONAL is defined by cmake
-#define PROVOICE_CONV_SHORT     "1313133311131131" //16-bit short pattern, last 16-bits change based on TX an RX values
-#define INV_PROVOICE_CONV_SHORT "3131311133313313"
-//In this pattern (inverted polarity, the norm for PV) 3 is bit 0, and 1 is bit 1 (2 level GFSK)
-//same pattern   //TX     //RX
-// Sync Pattern = 3131311133313313 31331131 31331131 TX/RX 77  -- 31331131 symbol = 01001101 binary = 77 decimal
-// Sync Pattern = 3131311133313313 33333333 33333333 TX/RX 0   -- 33333333 symbol = 00000000 binary = 0 decimal
-// Sync Pattern = 3131311133313313 33333331 33333331 TX/RX 1   -- 33333331 symbol = 00000001 binary = 1 decimal
-// Sync Pattern = 3131311133313313 13131133 13131133 TX/RX 172 -- 13131133 symbol = 10101100 binary = 172 decimal
-// Sync Pattern = 3131311133313313 11333111 11333111 TX/RX 199 -- 11333111 symbol = 11000111 binary = 199 decimal
-// Sync Pattern = 3131311133313313 31313131 31313131 TX/RX 85  -- 31313131 symbol = 01010101 binary = 85 decimal
-
-#define EDACS_SYNC              "313131313131313131313111333133133131313131313131"
-#define INV_EDACS_SYNC          "131313131313131313131333111311311313131313131313"
-
-//flags for EDACS call type
-#define EDACS_IS_VOICE          0x01
-#define EDACS_IS_DIGITAL        0x02
-#define EDACS_IS_EMERGENCY      0x04
-#define EDACS_IS_GROUP          0x08
-#define EDACS_IS_INDIVIDUAL     0x10
-#define EDACS_IS_ALL_CALL       0x20
-#define EDACS_IS_INTERCONNECT   0x40
-#define EDACS_IS_TEST_CALL      0x80
-#define EDACS_IS_AGENCY_CALL    0x100
-#define EDACS_IS_FLEET_CALL     0x200
-
-#define DPMR_FRAME_SYNC_1       "111333331133131131111313"
-#define DPMR_FRAME_SYNC_2       "113333131331"
-#define DPMR_FRAME_SYNC_3       "133131333311"
-#define DPMR_FRAME_SYNC_4       "333111113311313313333131"
-
-/* dPMR Frame Sync 1 to 4 - Inverted */
-#define INV_DPMR_FRAME_SYNC_1   "333111113311313313333131"
-#define INV_DPMR_FRAME_SYNC_2   "331111313113"
-#define INV_DPMR_FRAME_SYNC_3   "311313111133"
-#define INV_DPMR_FRAME_SYNC_4   "111333331133131131111313"
+#include <dsd-neo/core/sync_patterns.h>
 
 /*
  * function prototypes
  */
-
-/**
- * @brief Parse a user-supplied hex string into an octet buffer.
- *
- * Converts ASCII hex into bytes with bounds checking; excess characters are
- * ignored once out_cap is reached.
- *
- * @param input  Null-terminated hex string.
- * @param output Destination buffer for parsed bytes.
- * @param out_cap Capacity of @p output in bytes.
- * @return Number of bytes written (<= out_cap).
- */
-uint16_t parse_raw_user_string(char* input, uint8_t* output, size_t out_cap);
 
 /**
  * @brief Consume the next dibit from the buffered symbol stream.
@@ -570,23 +448,6 @@ float m17_filter(float sample, int samples_per_symbol);
 float p25_filter(float sample, int samples_per_symbol);
 
 //utility functions
-/** @brief Pack a little-endian bit vector into bytes. */
-uint64_t ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength);
-/** @brief Convert packed bits into an integer output buffer. */
-uint64_t convert_bits_into_output(uint8_t* input, int len);
-/** @brief Pack an array of bits into bytes (length multiple of 8). */
-void pack_bit_array_into_byte_array(uint8_t* input, uint8_t* output, int len);
-/** @brief Pack bits into bytes when length is not a multiple of 8. */
-void pack_bit_array_into_byte_array_asym(uint8_t* input, uint8_t* output, int len);
-/** @brief Unpack a byte array into individual bits (LSB-first). */
-void unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len);
-
-//ambe pack and unpack functions
-/** @brief Pack AMBE bits into a contiguous byte buffer. */
-void pack_ambe(char* input, uint8_t* output, int len);
-/** @brief Unpack AMBE bytes back into bit form. */
-void unpack_ambe(uint8_t* input, char* ambe);
-
 /** @brief Initialize ncurses UI and related windows. */
 void ncursesOpen(dsd_opts* opts, dsd_state* state);
 /** @brief Render ncurses UI panels for the current snapshot. */
@@ -941,47 +802,6 @@ void decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len
 /** @brief Decode ARS (automatic registration service) payloads. */
 void decode_ars(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 
-//Time and Date Functions
-/** @brief Return current time as HHMMSS string (static buffer). */
-char* getTime();
-/** @brief Return current time as HH:MM:SS string (static buffer). */
-char* getTimeC();
-/** @brief Return time_t as HH:MM:SS string (static buffer). */
-char* getTimeN(time_t t);
-/** @brief Return time_t as HHMMSS string (static buffer). */
-char* getTimeF(time_t t);
-/** @brief Return current date as YYYYMMDD string (static buffer). */
-char* getDate();
-/** @brief Return current date as YYYY-MM-DD string (static buffer). */
-char* getDateH();
-/** @brief Return current date as YYYY/MM/DD string (static buffer). */
-char* getDateS();
-/** @brief Return date for given time_t as YYYY-MM-DD string (static buffer). */
-char* getDateN(time_t t);
-/** @brief Return date for given time_t as YYYYMMDD string (static buffer). */
-char* getDateF(time_t t);
-
-/* Buffer-based, non-allocating variants (sizes include NUL): */
-/** @brief Write HHMMSS time into caller-provided buffer. */
-void getTime_buf(char out[7]); /* HHmmss */
-/** @brief Write HH:MM:SS time into caller-provided buffer. */
-void getTimeC_buf(char out[9]); /* HH:MM:SS */
-/** @brief Write HH:MM:SS for given time_t into caller-provided buffer. */
-void getTimeN_buf(time_t t, char out[9]);
-/** @brief Write HHMMSS for given time_t into caller-provided buffer. */
-void getTimeF_buf(time_t t, char out[7]);
-
-/** @brief Write YYYYMMDD date into caller-provided buffer. */
-void getDate_buf(char out[9]); /* YYYYMMDD */
-/** @brief Write YYYY-MM-DD date into caller-provided buffer. */
-void getDateH_buf(char out[11]); /* YYYY-MM-DD */
-/** @brief Write YYYY/MM/DD date into caller-provided buffer. */
-void getDateS_buf(char out[11]); /* YYYY/MM/DD */
-/** @brief Write YYYY-MM-DD date for given time_t into caller-provided buffer. */
-void getDateN_buf(time_t t, char out[11]);
-/** @brief Write YYYYMMDD date for given time_t into caller-provided buffer. */
-void getDateF_buf(time_t t, char out[9]);
-
 //event history functions
 /** @brief Initialize event history ring buffer bounds. */
 void init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop);
@@ -1288,22 +1108,6 @@ void des_multi_keystream_output(unsigned long long int mi, unsigned long long in
                                 int len);
 /** @brief Generate Triple-DES keystream for given MI/key into output buffer. */
 void tdea_multi_keystream_output(unsigned long long int mi, uint8_t* key, uint8_t* output, int type, int len);
-
-//AES function prototypes
-/** @brief Generate AES OFB keystream blocks for the given IV/key. */
-void aes_ofb_keystream_output(uint8_t* iv, uint8_t* key, uint8_t* output, int type, int nblocks);
-/** @brief Encrypt/decrypt payload in AES-ECB mode (byte-wise). */
-void aes_ecb_bytewise_payload_crypt(uint8_t* input, uint8_t* key, uint8_t* output, int type, int de);
-/** @brief Encrypt/decrypt payload in AES-CBC mode (byte-wise). */
-void aes_cbc_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks,
-                                    int de);
-/** @brief Encrypt/decrypt payload in AES-CFB mode (byte-wise). */
-void aes_cfb_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* in, uint8_t* out, int type, int nblocks,
-                                    int de);
-/** @brief Encrypt/decrypt payload in AES-CTR mode (byte-wise counter). */
-void aes_ctr_bytewise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int type);
-/** @brief Encrypt/decrypt payload in AES-CTR mode (bit-wise counter). */
-void aes_ctr_bitwise_payload_crypt(uint8_t* iv, uint8_t* key, uint8_t* payload, int type);
 
 //Tytera / Retevis / Anytone / Kenwood / Misc DMR Encryption Modes
 /** @brief Build Tytera 16-bit AMBE2 keystream for the specified frame. */

@@ -19,22 +19,38 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol_levels.h>
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+
 #include <math.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
+#include <sndfile.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern dsd_socket_t Connect(char* hostname, int portno);
+extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
 
 static inline short
 float_to_int16_clip(float v) {

@@ -9,10 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define main              dsd_neo_dummy_main_decl
-#define MBELIB_NO_HEADERS 1
-#include <dsd-neo/core/dsd.h>
-#undef main
+#include <dsd-neo/fec/block_codes.h>
 
 static void
 set_bits_from_u32(unsigned char* dst_bits, int nbits, unsigned int v) {

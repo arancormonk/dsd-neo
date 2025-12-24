@@ -19,7 +19,11 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #ifdef USE_RTLSDR
@@ -27,17 +31,31 @@
 #endif
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype_ids.h>
-
-/* Forward declaration for reliability computation (defined in dsd_dibit.c) */
-extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/telemetry.h>
+
 #include <locale.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* Forward declaration for reliability computation (defined in dsd_dibit.c) */
+extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
+extern float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
+extern int comp(const void* a, const void* b);
+extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
+extern void eot_cc(dsd_opts* opts, dsd_state* state);
+extern void noCarrier(dsd_opts* opts, dsd_state* state);
+extern void printFrameInfo(dsd_opts* opts, dsd_state* state);
+extern void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
+extern void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 
 static inline void
 dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {

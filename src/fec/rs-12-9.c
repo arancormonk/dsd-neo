@@ -26,7 +26,7 @@
 
 //#include DEFAULTCONFIG
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/fec/rs_12_9.h>
 
 //#include <libs/daemon/console.h>
 

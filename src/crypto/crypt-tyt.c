@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/pc4.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
+
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 //interleaved code words for AMBE+2 (as it arrives over the air)
 void

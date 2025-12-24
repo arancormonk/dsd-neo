@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
+
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/state.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 void
 ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input) {

@@ -16,7 +16,8 @@
  * - CACH re-digitization with corrected thresholds
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 

@@ -9,10 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define main              dsd_neo_dummy_main_decl
-#define MBELIB_NO_HEADERS 1
-#include <dsd-neo/core/dsd.h>
-#undef main
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/bptc.h>
+#include <dsd-neo/fec/rs_12_9.h>
 
 static void
 set_bits_from_u32_u8(uint8_t* dst_bits, int nbits, unsigned int v) {
@@ -130,8 +129,6 @@ test_bptc_16x2(void) {
     }
 
     // Build InputInterleavedData by inverting placement applied in BPTC_16x2_Extract_Data
-    extern const uint8_t DeInterleaveReverseChannelBptc[];
-    extern const uint8_t DeInterleaveReverseChannelBptcPlacement[];
     uint8_t interleaved[32];
     for (int i = 0; i < 32; i++) {
         interleaved[i] = dmat[DeInterleaveReverseChannelBptcPlacement[DeInterleaveReverseChannelBptc[i]]];
@@ -168,7 +165,6 @@ test_bptc_196x96_deinterleave(void) {
         in[i] = (uint8_t)((i * 37) & 1U);
     }
     BPTCDeInterleaveDMRData(in, out);
-    extern const uint8_t BPTCDeInterleavingIndex[];
     for (int i = 0; i < 196; i++) {
         uint32_t j = BPTCDeInterleavingIndex[i];
         assert(out[j] == (in[i] & 1U));

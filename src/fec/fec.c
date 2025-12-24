@@ -15,7 +15,11 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.          //
 ///////////////////////////////////////////////////////////////////////////////////
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/fec/block_codes.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 unsigned char Hamming_7_4_m_corr[8]; //!< single bit error correction by syndrome index
 
@@ -639,7 +643,7 @@ rand_test_20_8() //from dforsi as a pull request to DSDcc
     unsigned char codeword[20], xcodeword[20];
     int idx1, idx2, idx3 = 0;
     int dataIn, dataOut = 0;
-    UNUSED(dataIn); //don't know why its reporting dataIn as unused for
+    (void)dataIn; // don't know why it's reporting dataIn as unused for
     int passCount = 0, failCount = 0, parityFailCount = 0;
 
     // Run multiple times, to randomly corrupt different bits

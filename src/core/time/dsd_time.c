@@ -13,7 +13,11 @@
 // Note: Callers must free the returned strings from alloc variants.
 // All helpers zero-fill on localtime() failure; non-allocating variants are provided.
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/time_format.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 //get HHmmss timestamp no colon (file operations)
 char*
