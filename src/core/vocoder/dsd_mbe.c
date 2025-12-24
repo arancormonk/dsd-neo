@@ -25,6 +25,8 @@
 #include <dsd-neo/crypto/pc4.h>
 #include <dsd-neo/crypto/rc2.h>
 
+#include <mbelib.h>
+
 //NOTE: This set of functions will be reorganized and simplified (hopefully) or at least
 //a more logical flow will be established to jive with the new audio handling
 

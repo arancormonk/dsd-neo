@@ -3,8 +3,6 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
-
 int
 comp(const void* a, const void* b) {
     const float fa = *((const float*)a);

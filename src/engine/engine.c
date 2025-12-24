@@ -17,6 +17,9 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/ui_async.h>
+
+#include <mbelib.h>
+
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>

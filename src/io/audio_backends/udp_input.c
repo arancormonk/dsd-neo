@@ -16,8 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/runtime/exitflag.h>
 
 /** @brief Simple single-producer/single-consumer ring for PCM16 samples. */
 typedef struct udp_input_ring {

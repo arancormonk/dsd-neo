@@ -11,6 +11,8 @@
 #include <dsd-neo/core/dsd.h>
 #include <dsd-neo/core/synctype_ids.h>
 
+#include <mbelib.h>
+
 /* thx gr-ysf fr_vch_decoder_bb_impl.cc * Copyright 2015 Mathias Weyland */
 // I hold Sylvain Munaut in high esteem for figuring this out.
 uint8_t fr_interleave[144] = {

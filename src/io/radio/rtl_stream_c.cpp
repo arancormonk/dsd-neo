@@ -16,8 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/opts.h>
+
 extern "C" {
-#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 // Local forward declarations for legacy helpers used under the hood
 void dsd_rtl_stream_clear_output(void);

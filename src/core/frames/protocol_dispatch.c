@@ -8,6 +8,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 
+#include <mbelib.h>
+
 static int
 matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);

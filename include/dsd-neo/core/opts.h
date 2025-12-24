@@ -20,10 +20,16 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 
-#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+
+/* Forward declarations for libsndfile handle/info types. */
+struct sf_private_tag;
+typedef struct sf_private_tag SNDFILE;
+
+struct SF_INFO;
+typedef struct SF_INFO SF_INFO;
 
 /**
  * @brief Audio input source types.

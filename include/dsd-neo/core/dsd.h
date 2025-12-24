@@ -37,26 +37,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
-//ANSII Color Characters in Terminal -- Disable by using cmake -DCOLORSLOGS=Off ..
-#ifdef PRETTY_COLORS_LOGS
-#define KNRM "\x1B[0m"
-#define KRED "\x1B[31m"
-#define KGRN "\x1B[32m"
-#define KYEL "\x1B[33m"
-#define KBLU "\x1B[34m"
-#define KMAG "\x1B[35m"
-#define KCYN "\x1B[36m"
-#define KWHT "\x1B[37m"
-#else
-#define KNRM ""
-#define KRED ""
-#define KGRN ""
-#define KYEL ""
-#define KBLU ""
-#define KMAG ""
-#define KCYN ""
-#define KWHT ""
-#endif
+#include <dsd-neo/runtime/colors.h>
 
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -85,7 +66,9 @@
 #include <math.h>
 #include <sndfile.h>
 
+#include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25p2_frame.h>
 
 /* PulseAudio headers only included when using PulseAudio backend on POSIX */
 #if DSD_PLATFORM_POSIX && !defined(DSD_USE_PORTAUDIO)
@@ -97,7 +80,10 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/io/control.h>
 
 #ifdef USE_RTLSDR
 #include <rtl-sdr.h>
@@ -109,13 +95,7 @@
 #include <codec2/codec2.h>
 #endif
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-extern volatile uint8_t exitflag; //fix for issue #136
-#ifdef __cplusplus
-}
-#endif
+#include <dsd-neo/runtime/exitflag.h> // fix for issue #136
 
 /*
  * Frame sync patterns
@@ -444,13 +424,10 @@ void processFrame(dsd_opts* opts, dsd_state* state);
  * @param frametype Human-friendly frame type string.
  * @param offset Bit offset into the buffer where sync was found.
  * @param modulation Modulation label (e.g., C4FM, QPSK).
- */
+	 */
 void printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation);
 /** @brief Scan for a valid frame sync pattern and return its type. */
 int getFrameSync(dsd_opts* opts, dsd_state* state);
-/** @brief Reset modulation auto-detect state for fresh channel acquisition.
- *  Call when tuning to a new frequency to clear stale ham/vote tracking. */
-void dsd_frame_sync_reset_mod_state(void);
 /** @brief Comparator helper for qsort on symbol buffers. */
 int comp(const void* a, const void* b);
 /** @brief Handle carrier drop/reset conditions and clear state. */
@@ -930,8 +907,6 @@ void dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[]
 void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
 /** @brief Handle a compact UDP-compressed DMR PDU. */
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
-/** @brief Reset in-flight multi-block DMR assembly state. */
-void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 /** @brief Decode DMR LRRP (location reporting) payload. */
 void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU);
 /** @brief Decode DMR location (LOCN) payload. */
@@ -1167,15 +1142,6 @@ void p25_reset_iden_tables(dsd_state* state);
 // Promote any IDENs whose provenance matches the current site to trusted (2)
 /** @brief Promote IDEN entries matching the current site to trusted state. */
 void p25_confirm_idens_for_current_site(dsd_state* state);
-// Reset P25P2 frame processing global state (bit buffers, counters, ESS/FACCH/SACCH buffers)
-/** @brief Reset all P25P2 frame processing global state variables.
- *
- * Must be called when tuning to a new P25P2 voice channel to clear stale data
- * from the previous channel. Without this, subsequent voice channel grants fail
- * to lock with tanking EVM/SNR because the decoder processes new channel data
- * using stale buffers from the previous channel.
- */
-void p25_p2_frame_reset(void);
 
 //P25 CRC Functions
 // Accept a pointer to a bitvector (values 0/1) of length `len` plus trailing CRC bits.
@@ -1232,67 +1198,15 @@ unsigned long long int edacs_bch(unsigned long long int message);
 /** @brief Handle EDACS end-of-transmission and return to control channel. */
 void eot_cc(dsd_opts* opts, dsd_state* state); //end of TX return to CC
 
-//Generic Tuning Functions
-/** @brief Return to configured control channel after a voice call. */
-void return_to_cc(dsd_opts* opts, dsd_state* state);
-// Common VC tuning helper: performs rigctl/RTL tune and updates trunk/p25 fields.
-/**
- * @brief Tune to a specific voice/control frequency via rigctl/RTL helper.
- * @param opts Decoder options with tuning configuration.
- * @param state Decoder state to update.
- * @param freq Target frequency in Hz.
- * @param ted_sps TED samples-per-symbol to set (0 = no override, let protocol layer compute).
- */
-void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-// Control Channel tuning helper used by P25 state machine during CC hunt.
-// Tunes rigctl/RTL to the provided frequency without marking voice-tuned.
-/**
- * @brief Tune to a control channel without flagging voice-follow state.
- * @param opts Decoder options with tuning configuration.
- * @param state Decoder state to update.
- * @param freq Target control channel frequency in Hz.
- * @param ted_sps TED samples-per-symbol to set (0 = no override).
- */
-void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-
-/**
- * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping).
- *
- * This is the canonical way for UI and non-trunking code to request frequency changes.
- * For trunking voice/CC tuning, use trunk_tune_to_freq() or trunk_tune_to_cc() instead.
- *
- * @param opts Decoder options with tuning configuration.
- * @param state Decoder state (required for RTL tuning, may be NULL for rigctl-only).
- * @param freq Target frequency in Hz.
- * @return 0 on success, -1 on error.
- */
-int io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
-
 //initialize static float filter memory
 /** @brief Initialize static root-raised-cosine filter memory. */
 void init_rrc_filter_memory();
 
 //misc audio filtering for analog
-#ifdef __cplusplus
-extern "C" {
-#endif
-/** @brief Compute RMS over a sample buffer with stride. */
-double raw_rms(const short* samples, int len, int step);
-/** @brief Compute mean power over a sample buffer with stride. */
-double raw_pwr(const short* samples, int len, int step);
-/** @brief Compute mean power over a float sample buffer with stride. */
-double raw_pwr_f(const float* samples, int len, int step);
-/** @brief Convert mean power (normalized) to dBFS, clamped to [-120,0]. */
-double pwr_to_dB(double mean_power);
-/** @brief Convert dBFS to normalized mean power. */
-double dB_to_pwr(double dB);
-#ifdef __cplusplus
-}
-#endif
 /**
- * @brief Initialize or refresh audio-domain filters with the current sample rate.
- *
- * @param state Decoder state owning the filter instances.
+	 * @brief Initialize or refresh audio-domain filters with the current sample rate.
+	 *
+	 * @param state Decoder state owning the filter instances.
  * @param sample_rate_hz Analog monitor sample rate in Hz; if <=0 defaults to 48000 Hz.
  *        Digital voice filters are initialized at 8000 Hz.
  */

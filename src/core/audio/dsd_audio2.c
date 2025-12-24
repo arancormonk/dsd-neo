@@ -16,6 +16,9 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+
+#include <mbelib.h>
+
 #include <math.h>
 
 /* Write int16 audio using the abstraction layer */

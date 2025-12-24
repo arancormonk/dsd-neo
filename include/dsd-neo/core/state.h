@@ -21,22 +21,9 @@
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
-#if !defined(MBELIB_NO_HEADERS)
-#if defined(__has_include)
-#if __has_include(<mbelib.h>)
-#include <mbelib.h>
-#else
-#define MBELIB_NO_HEADERS 1
-// Forward declare when headers are not available in unit tests/CI
-typedef struct mbe_parms mbe_parms;
-#endif
-#else
-#include <mbelib.h>
-#endif
-#else
-// Forward declare when headers are not available in unit tests/CI
-typedef struct mbe_parms mbe_parms;
-#endif
+/* Forward declaration for mbelib decoder state (opaque in public API). */
+struct mbe_parameters;
+typedef struct mbe_parameters mbe_parms;
 
 /* Forward declaration for RTL-SDR stream context (opaque, always present in ABI) */
 struct RtlSdrContext;

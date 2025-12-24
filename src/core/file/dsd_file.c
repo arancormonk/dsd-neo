@@ -25,6 +25,8 @@
 #include <dsd-neo/protocol/p25/p25p1_const.h> //for imbe fr (7200)
 #include <dsd-neo/runtime/log.h>
 
+#include <mbelib.h>
+
 void
 saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
     int i, j, k;

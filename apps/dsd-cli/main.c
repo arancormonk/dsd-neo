@@ -34,6 +34,9 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
+
+#include <mbelib.h>
+
 #include <stdlib.h>
 
 /* exitflag is defined in src/runtime/exitflag.c and declared in dsd.h */

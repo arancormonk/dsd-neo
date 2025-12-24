@@ -12,10 +12,14 @@
  */
 
 #include <dsd-neo/io/rtl_stream.h>
+
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state_fwd.h>
+
+#include <stdlib.h>
 #include <string.h>
 
 extern "C" {
-#include <dsd-neo/core/dsd.h>
 // Local forward declarations for legacy functions now hidden from public headers
 int dsd_rtl_stream_open(dsd_opts* opts);
 void dsd_rtl_stream_close(void);

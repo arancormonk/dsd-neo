@@ -11,8 +11,25 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/log.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#if DSD_PLATFORM_POSIX && !defined(DSD_USE_PORTAUDIO)
+#include <pulse/error.h>
+#include <pulse/introspect.h>
+#include <pulse/pulseaudio.h>
+#include <pulse/simple.h>
+
+typedef struct pa_devicelist_t {
+    uint32_t index;
+    char name[512];
+    char description[256];
+    int initialized;
+} pa_devicelist_t;
 
 /**
  * @brief PulseAudio context state callback used during device enumeration.
@@ -276,3 +293,10 @@ pulse_list() {
     }
     return 0;
 }
+#else
+int
+pulse_list() {
+    LOG_ERROR("PulseAudio device enumeration is not available in this build.\n");
+    return 1;
+}
+#endif

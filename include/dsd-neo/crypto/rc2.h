@@ -6,7 +6,7 @@
 #ifndef RETEVIS_AP
 #define RETEVIS_AP
 
-#include <dsd-neo/core/dsd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define n1 264

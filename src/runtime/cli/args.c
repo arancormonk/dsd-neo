@@ -6,7 +6,14 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
 
 #include <ctype.h>

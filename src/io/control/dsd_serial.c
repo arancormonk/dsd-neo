@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/log.h>
+
+#include <stdio.h>
+#include <stdlib.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
 /* Windows: Serial port support is stubbed for now. */

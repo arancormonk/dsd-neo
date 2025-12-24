@@ -9,6 +9,8 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 
+#include <mbelib.h>
+
 // Small helpers to efficiently set fixed-width strings
 static inline void
 set_spaces(char* buf, size_t count) {
