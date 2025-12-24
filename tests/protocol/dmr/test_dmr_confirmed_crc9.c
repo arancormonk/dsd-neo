@@ -5,7 +5,8 @@
 
 /*
  * Confirmed data CRC-9 bit-span/order tests for DMR.
- * Verifies ETSI-conformant spans for R1/2 and R1 confirmed blocks.
+ * Verifies confirmed data CRC spans used by decoder:
+ * information bits plus DBSN (7 bits), MSB-first.
  */
 
 #include <assert.h>
@@ -48,8 +49,15 @@ test_r12_confirmed_crc9(void) {
         bits[16 + i] = payload[i];
     }
 
-    // Compute CRC9 over 80 info bits (ETSI)
-    uint16_t crc9 = ComputeCrc9Bit(payload, 80);
+    // Compute CRC9 over 80 info bits + 7 DBSN bits
+    uint8_t span[87];
+    for (unsigned i = 0; i < 80; i++) {
+        span[i] = payload[i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[80 + i] = bits[i];
+    }
+    uint16_t crc9 = ComputeCrc9Bit(span, 87);
 
     // Apply mask per code path for 1/2-rate confirmed: 0x0F0
     uint16_t masked = (uint16_t)(crc9 ^ 0x0F0);
@@ -60,12 +68,25 @@ test_r12_confirmed_crc9(void) {
     // Emulate extraction/compare performed in handler
     uint32_t ext = (uint32_t)ConvertBitIntoBytes(&bits[7], 9);
     ext ^= 0x0F0;
-    uint16_t cmp = ComputeCrc9Bit(&bits[16], 80);
+    // Rebuild span for CRC (payload + DBSN)
+    for (unsigned i = 0; i < 80; i++) {
+        span[i] = bits[16 + i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[80 + i] = bits[i];
+    }
+    uint16_t cmp = ComputeCrc9Bit(span, 87);
     assert(ext == cmp);
 
     // Negative test: flip a payload bit and ensure mismatch
     bits[16 + 7] ^= 1;
-    cmp = ComputeCrc9Bit(&bits[16], 80);
+    for (unsigned i = 0; i < 80; i++) {
+        span[i] = bits[16 + i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[80 + i] = bits[i];
+    }
+    cmp = ComputeCrc9Bit(span, 87);
     assert(ext != cmp);
 }
 
@@ -100,8 +121,15 @@ test_r1_confirmed_crc9(void) {
         info[100 + i] = payload[80 + i];
     }
 
-    // Compute CRC9 over 176 info bits
-    uint16_t crc9 = ComputeCrc9Bit(payload, 176);
+    // Compute CRC9 over 176 info bits + 7 DBSN bits
+    uint8_t span[183];
+    for (unsigned i = 0; i < 176; i++) {
+        span[i] = payload[i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[176 + i] = info[i];
+    }
+    uint16_t crc9 = ComputeCrc9Bit(span, 183);
     uint16_t masked = (uint16_t)(crc9 ^ 0x10F);
     append_bits(info, 7, masked & 0x1FF, 9);
 
@@ -109,8 +137,7 @@ test_r1_confirmed_crc9(void) {
     uint32_t ext = (uint32_t)ConvertBitIntoBytes(&info[7], 9);
     ext ^= 0x10F;
 
-    // Rebuild contiguous info span for CRC (bits 16..95, 100..195)
-    uint8_t span[176];
+    // Rebuild contiguous span for CRC: info bits + DBSN
     unsigned k = 0;
     for (unsigned i = 16; i < 96; i++) {
         span[k++] = info[i];
@@ -118,8 +145,11 @@ test_r1_confirmed_crc9(void) {
     for (unsigned i = 100; i < 196; i++) {
         span[k++] = info[i];
     }
-    assert(k == 176);
-    uint16_t cmp = ComputeCrc9Bit(span, 176);
+    for (unsigned i = 0; i < 7; i++) {
+        span[k++] = info[i];
+    }
+    assert(k == 183);
+    uint16_t cmp = ComputeCrc9Bit(span, k);
     assert(ext == cmp);
 
     // Negative test: flip a payload bit and ensure mismatch
@@ -131,7 +161,10 @@ test_r1_confirmed_crc9(void) {
     for (unsigned i = 100; i < 196; i++) {
         span[k++] = info[i];
     }
-    cmp = ComputeCrc9Bit(span, 176);
+    for (unsigned i = 0; i < 7; i++) {
+        span[k++] = info[i];
+    }
+    cmp = ComputeCrc9Bit(span, k);
     assert(ext != cmp);
 }
 
@@ -153,18 +186,37 @@ test_r34_confirmed_crc9(void) {
     for (unsigned i = 0; i < 128; i++) {
         bits[16 + i] = payload[i];
     }
-    // compute and mask (3/4 uses mask 0x1FF in code)
-    uint16_t crc9 = ComputeCrc9Bit(payload, 128);
+    // Compute CRC9 over 128 info bits + 7 DBSN bits
+    uint8_t span[135];
+    for (unsigned i = 0; i < 128; i++) {
+        span[i] = payload[i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[128 + i] = bits[i];
+    }
+    uint16_t crc9 = ComputeCrc9Bit(span, 135);
     uint16_t masked = (uint16_t)(crc9 ^ 0x1FF);
     append_bits(bits, 7, masked & 0x1FF, 9);
     // emulate extraction and compare
     uint32_t ext = (uint32_t)ConvertBitIntoBytes(&bits[7], 9);
     ext ^= 0x1FF;
-    uint16_t cmp = ComputeCrc9Bit(&bits[16], 128);
+    for (unsigned i = 0; i < 128; i++) {
+        span[i] = bits[16 + i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[128 + i] = bits[i];
+    }
+    uint16_t cmp = ComputeCrc9Bit(span, 135);
     assert(ext == cmp);
     // flip one info bit
     bits[16 + 12] ^= 1;
-    cmp = ComputeCrc9Bit(&bits[16], 128);
+    for (unsigned i = 0; i < 128; i++) {
+        span[i] = bits[16 + i];
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        span[128 + i] = bits[i];
+    }
+    cmp = ComputeCrc9Bit(span, 135);
     assert(ext != cmp);
 }
 

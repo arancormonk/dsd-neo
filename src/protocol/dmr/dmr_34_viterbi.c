@@ -39,9 +39,12 @@ hamming4(uint8_t a, uint8_t b) {
 // s_constellation_map[nibble] == point
 static const uint8_t s_unmap_point_to_nibble[16] = {2, 10, 7, 15, 14, 6, 11, 3, 13, 5, 8, 0, 1, 9, 4, 12};
 
-int
-dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
+static int
+decode_hard_impl(const uint8_t* dibits98, int force_end_state, int end_state, uint8_t out_bytes18[18]) {
     if (!dibits98 || !out_bytes18) {
+        return -1;
+    }
+    if (force_end_state && (end_state < 0 || end_state > 7)) {
         return -1;
     }
 
@@ -66,10 +69,10 @@ dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
     }
 
     // Step 4: Viterbi over 8 states, time 49, transitions: prev_state -> next_state = tribit (0..7)
-    // Branch metric: Hamming distance between expected point and observed point.
+    // Branch metric: Hamming distance between expected and observed point codes.
     enum { T = 49, S = 8 };
 
-    const int INF = 1e9;
+    const int INF = 1000000000;
     int metric_prev[S];
     int metric_curr[S];
     uint8_t backptr[T][S];
@@ -102,13 +105,20 @@ dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
         }
     }
 
-    // Step 5: traceback from best end state
+    // Step 5: traceback from best/forced end state
     int best_s = 0;
-    int best_m = metric_prev[0];
-    for (int s = 1; s < S; s++) {
-        if (metric_prev[s] < best_m) {
-            best_m = metric_prev[s];
-            best_s = s;
+    if (force_end_state) {
+        best_s = end_state;
+        if (metric_prev[best_s] >= INF) {
+            return -1;
+        }
+    } else {
+        int best_m = metric_prev[0];
+        for (int s = 1; s < S; s++) {
+            if (metric_prev[s] < best_m) {
+                best_m = metric_prev[s];
+                best_s = s;
+            }
         }
     }
 
@@ -134,10 +144,23 @@ dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
     return 0;
 }
 
-// Soft-decision variant using per-dibit reliability.
 int
-dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, uint8_t out_bytes18[18]) {
+dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
+    return decode_hard_impl(dibits98, 0, 0, out_bytes18);
+}
+
+int
+dmr_r34_viterbi_decode_endstate(const uint8_t* dibits98, int end_state, uint8_t out_bytes18[18]) {
+    return decode_hard_impl(dibits98, 1, end_state, out_bytes18);
+}
+
+static int
+decode_soft_impl(const uint8_t* dibits98, const uint8_t* reliab98, int force_end_state, int end_state,
+                 uint8_t out_bytes18[18]) {
     if (!dibits98 || !reliab98 || !out_bytes18) {
+        return -1;
+    }
+    if (force_end_state && (end_state < 0 || end_state > 7)) {
         return -1;
     }
 
@@ -147,17 +170,12 @@ dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, ui
         dibits_dei[s_interleave[i]] = (uint8_t)(dibits98[i] & 0x3u);
     }
 
-    // Step 2: pack dibits into 49 nibbles and gather reliabilities for hi/lo dibits
+    // Step 2: pack dibits into 49 nibbles
     uint8_t nibs[49];
-    uint8_t rhi[49], rlo[49];
     for (int i = 0; i < 49; i++) {
         uint8_t d0 = dibits_dei[i * 2 + 0] & 0x3u;
         uint8_t d1 = dibits_dei[i * 2 + 1] & 0x3u;
         nibs[i] = (uint8_t)((d0 << 2) | d1);
-        // reliabilities correspond to original (pre-deinterleave) positions
-        // We need to fetch reliabilities consistent with deinterleave remap.
-        // Since deinterleave used: dei[interleave[i]] = input[i], we reconstruct
-        // by building an inverse mapping here.
     }
 
     // Build reliability arrays for deinterleaved indices
@@ -166,6 +184,9 @@ dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, ui
         // dei[interleave[i]] = input[i] => reliab_dei[interleave[i]] = reliab98[i]
         reliab_dei[s_interleave[i]] = reliab98[i];
     }
+
+    uint8_t rhi[49];
+    uint8_t rlo[49];
     for (int i = 0; i < 49; i++) {
         rhi[i] = reliab_dei[i * 2 + 0];
         rlo[i] = reliab_dei[i * 2 + 1];
@@ -174,7 +195,7 @@ dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, ui
     // Step 3: Viterbi with weighted branch metric in nibble space
     enum { T = 49, S = 8 };
 
-    const int INF = 1e9;
+    const int INF = 1000000000;
     int metric_prev[S];
     int metric_curr[S];
     uint8_t backptr[T][S];
@@ -223,13 +244,20 @@ dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, ui
         }
     }
 
-    // Step 4: traceback
+    // Step 4: traceback from best/forced end state
     int best_s = 0;
-    int best_m = metric_prev[0];
-    for (int s = 1; s < S; s++) {
-        if (metric_prev[s] < best_m) {
-            best_m = metric_prev[s];
-            best_s = s;
+    if (force_end_state) {
+        best_s = end_state;
+        if (metric_prev[best_s] >= INF) {
+            return -1;
+        }
+    } else {
+        int best_m = metric_prev[0];
+        for (int s = 1; s < S; s++) {
+            if (metric_prev[s] < best_m) {
+                best_m = metric_prev[s];
+                best_s = s;
+            }
         }
     }
 
@@ -250,6 +278,213 @@ dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, ui
         out_bytes18[g * 3 + 1] = (uint8_t)((temp >> 8) & 0xFF);
         out_bytes18[g * 3 + 2] = (uint8_t)(temp & 0xFF);
     }
+    return 0;
+}
+
+// Soft-decision variant using per-dibit reliability.
+int
+dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, uint8_t out_bytes18[18]) {
+    return decode_soft_impl(dibits98, reliab98, 0, 0, out_bytes18);
+}
+
+int
+dmr_r34_viterbi_decode_soft_endstate(const uint8_t* dibits98, const uint8_t* reliab98, int end_state,
+                                     uint8_t out_bytes18[18]) {
+    return decode_soft_impl(dibits98, reliab98, 1, end_state, out_bytes18);
+}
+
+int
+dmr_r34_viterbi_decode_list(const uint8_t* dibits98, const uint8_t* reliab98, dmr_r34_candidate* out_candidates,
+                            int max_candidates, int* out_count) {
+    if (!dibits98 || !out_candidates || !out_count || max_candidates <= 0) {
+        return -1;
+    }
+
+    // Step 1: deinterleave dibits using schedule
+    uint8_t dibits_dei[98];
+    for (int i = 0; i < 98; i++) {
+        dibits_dei[s_interleave[i]] = (uint8_t)(dibits98[i] & 0x3u);
+    }
+
+    // Step 2: pack dibits into 49 nibbles
+    uint8_t nibs[49];
+    for (int i = 0; i < 49; i++) {
+        uint8_t d0 = dibits_dei[i * 2 + 0] & 0x3u;
+        uint8_t d1 = dibits_dei[i * 2 + 1] & 0x3u;
+        nibs[i] = (uint8_t)((d0 << 2) | d1);
+    }
+
+    // Step 3: build per-nibble reliability weights (hi/lo dibit)
+    uint8_t rhi[49];
+    uint8_t rlo[49];
+    const int weighted = (reliab98 != NULL);
+    if (weighted) {
+        uint8_t reliab_dei[98];
+        for (int i = 0; i < 98; i++) {
+            reliab_dei[s_interleave[i]] = reliab98[i];
+        }
+        for (int i = 0; i < 49; i++) {
+            rhi[i] = reliab_dei[i * 2 + 0];
+            rlo[i] = reliab_dei[i * 2 + 1];
+        }
+    } else {
+        // Unweighted: mismatch/no-mismatch in nibble space.
+        for (int i = 0; i < 49; i++) {
+            rhi[i] = 1;
+            rlo[i] = 1;
+        }
+    }
+
+    // Precompute expected nibbles for all transitions.
+    uint8_t expect_nib_tbl[8][8];
+    for (int ps = 0; ps < 8; ps++) {
+        for (int ns = 0; ns < 8; ns++) {
+            uint8_t expect_point = s_fsm[ps * 8 + ns];
+            expect_nib_tbl[ps][ns] = s_unmap_point_to_nibble[expect_point];
+        }
+    }
+
+    enum { T = 49, S = 8, K = 32 };
+
+    const int INF = 1000000000;
+
+    int metric_prev[S][K];
+    int metric_curr[S][K];
+    uint8_t back_state[T][S][K];
+    uint8_t back_rank[T][S][K];
+
+    for (int s = 0; s < S; s++) {
+        for (int r = 0; r < K; r++) {
+            metric_prev[s][r] = INF;
+        }
+    }
+    metric_prev[0][0] = 0;
+
+    for (int t = 0; t < T; t++) {
+        for (int s = 0; s < S; s++) {
+            for (int r = 0; r < K; r++) {
+                metric_curr[s][r] = INF;
+            }
+        }
+
+        for (int ps = 0; ps < S; ps++) {
+            for (int pr = 0; pr < K; pr++) {
+                int m0 = metric_prev[ps][pr];
+                if (m0 >= INF) {
+                    continue;
+                }
+                for (int ns = 0; ns < S; ns++) {
+                    int cost = 0;
+                    if (!weighted) {
+                        uint8_t x = (uint8_t)(expect_nib_tbl[ps][ns] ^ nibs[t]);
+                        int bitcnt = ((x >> 0) & 1u) + ((x >> 1) & 1u) + ((x >> 2) & 1u) + ((x >> 3) & 1u);
+                        // Hard-decision lexicographic metric:
+                        // prioritize minimizing symbol mismatches, then break ties by bit mismatches.
+                        // Using 256 ensures one symbol error outweighs any possible bitcount difference across the block.
+                        cost = (x != 0) ? (256 + bitcnt) : 0;
+                    } else {
+                        uint8_t x = (uint8_t)(expect_nib_tbl[ps][ns] ^ nibs[t]);
+                        if (x & 0x8) {
+                            cost += rhi[t];
+                        }
+                        if (x & 0x4) {
+                            cost += rhi[t];
+                        }
+                        if (x & 0x2) {
+                            cost += rlo[t];
+                        }
+                        if (x & 0x1) {
+                            cost += rlo[t];
+                        }
+                    }
+                    int m = m0 + cost;
+
+                    // Insert into top-K list for state ns (sorted ascending).
+                    for (int rr = 0; rr < K; rr++) {
+                        if (m <= metric_curr[ns][rr]) {
+                            for (int sh = K - 1; sh > rr; sh--) {
+                                metric_curr[ns][sh] = metric_curr[ns][sh - 1];
+                                back_state[t][ns][sh] = back_state[t][ns][sh - 1];
+                                back_rank[t][ns][sh] = back_rank[t][ns][sh - 1];
+                            }
+                            metric_curr[ns][rr] = m;
+                            back_state[t][ns][rr] = (uint8_t)ps;
+                            back_rank[t][ns][rr] = (uint8_t)pr;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (int s = 0; s < S; s++) {
+            for (int r = 0; r < K; r++) {
+                metric_prev[s][r] = metric_curr[s][r];
+            }
+        }
+    }
+
+    // Gather final candidates (state, rank) with their metric, then sort.
+    struct cand_idx {
+        int metric;
+        uint8_t state;
+        uint8_t rank;
+    };
+    struct cand_idx idx[S * K];
+    int idx_n = 0;
+    for (int s = 0; s < S; s++) {
+        for (int r = 0; r < K; r++) {
+            if (metric_prev[s][r] < INF) {
+                idx[idx_n].metric = metric_prev[s][r];
+                idx[idx_n].state = (uint8_t)s;
+                idx[idx_n].rank = (uint8_t)r;
+                idx_n++;
+            }
+        }
+    }
+
+    // Simple insertion sort by metric (idx_n is small, <= 64).
+    for (int i = 1; i < idx_n; i++) {
+        struct cand_idx key = idx[i];
+        int j = i - 1;
+        while (j >= 0 && idx[j].metric > key.metric) {
+            idx[j + 1] = idx[j];
+            j--;
+        }
+        idx[j + 1] = key;
+    }
+
+    int out_n = idx_n;
+    if (out_n > max_candidates) {
+        out_n = max_candidates;
+    }
+
+    for (int ci = 0; ci < out_n; ci++) {
+        uint8_t states[T];
+        int s = idx[ci].state;
+        int r = idx[ci].rank;
+        for (int t = T - 1; t >= 0; t--) {
+            states[t] = (uint8_t)s;
+            int ps = (int)back_state[t][s][r];
+            int pr = (int)back_rank[t][s][r];
+            s = ps;
+            r = pr;
+        }
+
+        // Pack first 48 tribits (states[0..47]) into 18 bytes.
+        for (int g = 0; g < 6; g++) {
+            uint32_t temp = 0;
+            for (int k = 0; k < 8; k++) {
+                temp = (temp << 3) | (uint32_t)(states[g * 8 + k] & 0x7u);
+            }
+            out_candidates[ci].bytes18[g * 3 + 0] = (uint8_t)((temp >> 16) & 0xFF);
+            out_candidates[ci].bytes18[g * 3 + 1] = (uint8_t)((temp >> 8) & 0xFF);
+            out_candidates[ci].bytes18[g * 3 + 2] = (uint8_t)(temp & 0xFF);
+        }
+        out_candidates[ci].metric = idx[ci].metric;
+    }
+
+    *out_count = out_n;
     return 0;
 }
 

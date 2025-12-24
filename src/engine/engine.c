@@ -1379,8 +1379,11 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     init_event_history(&state->event_history_s[0], 0, 1);
 
     if (opts->event_out_file[0] != 0) {
-        char* timestr = getTimeN(time(NULL));
-        char* datestr = getDateN(time(NULL));
+        time_t now = time(NULL);
+        char timestr[9];
+        char datestr[11];
+        getTimeN_buf(now, timestr);
+        getDateN_buf(now, datestr);
         char event_string[2000];
         memset(event_string, 0, sizeof(event_string));
         snprintf(event_string, sizeof event_string, "%s %s DSD-neo Started and Event History Initialized;", datestr,
@@ -1390,15 +1393,6 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
         snprintf(event_string, sizeof event_string, "%s %s Any decoded voice calls or data calls display here;",
                  datestr, timestr);
         write_event_to_log_file(opts, state, 0, 0, event_string);
-
-        if (timestr != NULL) {
-            free(timestr);
-            timestr = NULL;
-        }
-        if (datestr != NULL) {
-            free(datestr);
-            datestr = NULL;
-        }
     }
 
     //test P25 moto alias by loading in test vectors captured from a system and dumped on forum (see dsd_gps.c)

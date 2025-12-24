@@ -176,8 +176,8 @@ initOpts(dsd_opts* opts) {
     opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
     opts->aggressive_framesync = 1;
-    /* DMR: relax CRC gating by default (others remain strict unless -F). */
-    opts->dmr_crc_relaxed_default = 1;
+    /* DMR: strict CRC gating by default (use -F to relax, like other protocols). */
+    opts->dmr_crc_relaxed_default = 0;
 
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->audio_out_type = 0;

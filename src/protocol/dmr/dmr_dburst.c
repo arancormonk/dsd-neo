@@ -306,13 +306,15 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             CRCExtracted = (uint32_t)ConvertBitIntoBytes(&BPTCDmrDataBit[7], 9); //extract CRC from data
             CRCExtracted = CRCExtracted ^ crcmask;
 
-            // ETSI TS 102 361-1/-3: For confirmed 1/2-rate blocks, CRC-9 covers
-            // the 80 information bits only (10 octets), MSB-first. Do not include DBSN.
+            // Confirmed data CRC-9 covers information bits plus DBSN (7 bits), MSB-first.
             for (i = 0; i < 80; i++) {
                 confdatabits[i] = BPTCDmrDataBit[i + 16];
             }
+            for (i = 0; i < 7; i++) {
+                confdatabits[i + 80] = BPTCDmrDataBit[i];
+            }
 
-            CRCComputed = ComputeCrc9Bit(confdatabits, 80);
+            CRCComputed = ComputeCrc9Bit(confdatabits, 87);
             if (CRCExtracted == CRCComputed) {
                 CRCCorrect = 1;
                 state->data_block_crc_valid[slot][blockcounter] = 1;
@@ -451,17 +453,104 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             tdibits[i] = (info[((size_t)i * 2)] << 1) | info[((size_t)i * 2) + 1];
         }
 
+        // Decode R34 block. Prefer Viterbi (soft when available), but for confirmed data we
+        // can CRC-aid the selection since different decoders can disagree under marginal SNR.
         uint8_t TrellisReturn[18];
+        uint8_t TrellisSoft[18];
+        uint8_t TrellisHard[18];
+        uint8_t TrellisLegacy[18];
         memset(TrellisReturn, 0, sizeof(TrellisReturn));
-        // Prefer normative Viterbi decoder; use soft metrics if available; fall back to legacy on error
-        int vrc = -1;
-        if (reliab98 != NULL) {
-            vrc = dmr_r34_viterbi_decode_soft(tdibits, reliab98, TrellisReturn);
+        memset(TrellisSoft, 0, sizeof(TrellisSoft));
+        memset(TrellisHard, 0, sizeof(TrellisHard));
+        memset(TrellisLegacy, 0, sizeof(TrellisLegacy));
+
+        int have_soft = 0;
+        int have_hard = 0;
+
+        if (reliab98 != NULL && dmr_r34_viterbi_decode_soft(tdibits, reliab98, TrellisSoft) == 0) {
+            have_soft = 1;
         }
-        if (vrc != 0) {
-            if (dmr_r34_viterbi_decode(tdibits, TrellisReturn) != 0) {
-                (void)dmr_34(tdibits, TrellisReturn);
+        if (dmr_r34_viterbi_decode(tdibits, TrellisHard) == 0) {
+            have_hard = 1;
+        }
+        (void)dmr_34(tdibits, TrellisLegacy);
+
+        if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
+            // Symbol-bin captures are already hard decisions; prefer the legacy trellis search
+            // (matches dsd-fme behavior and avoids CRC collisions in top-K selection).
+            memcpy(TrellisReturn, TrellisLegacy, sizeof(TrellisReturn));
+        } else if (state->data_conf_data[slot] == 1) {
+            // Confirmed data: CRC-aided list-Viterbi selection (top-K candidates).
+            dmr_r34_candidate list[256];
+            int list_n = 0;
+            if (dmr_r34_viterbi_decode_list(tdibits, reliab98, list, (int)(sizeof(list) / sizeof(list[0])), &list_n)
+                    == 0
+                && list_n > 0) {
+                const int have_expected_dbsn = state->data_dbsn_have[slot] != 0;
+                const uint8_t expected_dbsn = state->data_dbsn_expected[slot];
+                int best_crc_dbsn = -1;
+                int best_dbsn = -1;
+                int best_crc = -1;
+                for (int ci = 0; ci < list_n; ci++) {
+                    // Build bit array for CRC check.
+                    memset(DMR_PDU_bits, 0, sizeof(DMR_PDU_bits));
+                    for (i = 0, j = 0; i < 18; i++, j += 8) {
+                        DMR_PDU_bits[j + 0] = (list[ci].bytes18[i] >> 7) & 0x01;
+                        DMR_PDU_bits[j + 1] = (list[ci].bytes18[i] >> 6) & 0x01;
+                        DMR_PDU_bits[j + 2] = (list[ci].bytes18[i] >> 5) & 0x01;
+                        DMR_PDU_bits[j + 3] = (list[ci].bytes18[i] >> 4) & 0x01;
+                        DMR_PDU_bits[j + 4] = (list[ci].bytes18[i] >> 3) & 0x01;
+                        DMR_PDU_bits[j + 5] = (list[ci].bytes18[i] >> 2) & 0x01;
+                        DMR_PDU_bits[j + 6] = (list[ci].bytes18[i] >> 1) & 0x01;
+                        DMR_PDU_bits[j + 7] = (list[ci].bytes18[i] >> 0) & 0x01;
+                    }
+
+                    const uint8_t cand_dbsn = (uint8_t)ConvertBitIntoBytes(&DMR_PDU_bits[0], 7);
+                    uint32_t cand_ext = (uint32_t)ConvertBitIntoBytes(&DMR_PDU_bits[7], 9) ^ crcmask;
+                    for (i = 0; i < 128; i++) {
+                        confdatabits[i] = DMR_PDU_bits[i + 16];
+                    }
+                    for (i = 0; i < 7; i++) {
+                        confdatabits[i + 128] = DMR_PDU_bits[i];
+                    }
+                    uint32_t cand_comp = ComputeCrc9Bit(confdatabits, 135);
+
+                    const int cand_crc_ok = (cand_ext == cand_comp);
+
+                    if (have_expected_dbsn && cand_dbsn == expected_dbsn) {
+                        if (best_dbsn < 0) {
+                            best_dbsn = ci;
+                        }
+                        if (cand_crc_ok) {
+                            best_crc_dbsn = ci;
+                            break;
+                        }
+                    }
+
+                    if (cand_crc_ok && best_crc < 0) {
+                        best_crc = ci;
+                    }
+                }
+
+                int chosen_i = 0;
+                if (best_crc_dbsn >= 0) {
+                    chosen_i = best_crc_dbsn;
+                } else if (best_dbsn >= 0) {
+                    chosen_i = best_dbsn;
+                } else if (best_crc >= 0) {
+                    chosen_i = best_crc;
+                }
+
+                memcpy(TrellisReturn, list[chosen_i].bytes18, sizeof(TrellisReturn));
+            } else {
+                // Fallback: soft->hard->legacy.
+                const uint8_t* chosen = have_soft ? TrellisSoft : (have_hard ? TrellisHard : TrellisLegacy);
+                memcpy(TrellisReturn, chosen, sizeof(TrellisReturn));
             }
+        } else {
+            // Unconfirmed: no CRC aid available. Prefer soft->hard->legacy.
+            const uint8_t* chosen = have_soft ? TrellisSoft : (have_hard ? TrellisHard : TrellisLegacy);
+            memcpy(TrellisReturn, chosen, sizeof(TrellisReturn));
         }
         IrrecoverableErrors = 0;
 
@@ -502,12 +591,15 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             CRCExtracted = CRCExtracted ^ crcmask;
 
             //reorganize the DMR_PDU_bits array into confdatabits, just for CRC9 check
-            // ETSI: For confirmed 3/4-rate blocks, CRC-9 covers 128 information bits (16 octets), MSB-first.
+            // Confirmed data CRC-9 covers information bits plus DBSN (7 bits), MSB-first.
             for (i = 0; i < 128; i++) {
                 confdatabits[i] = DMR_PDU_bits[i + 16];
             }
+            for (i = 0; i < 7; i++) {
+                confdatabits[i + 128] = DMR_PDU_bits[i];
+            }
 
-            CRCComputed = ComputeCrc9Bit(confdatabits, 128);
+            CRCComputed = ComputeCrc9Bit(confdatabits, 135);
             if (CRCExtracted == CRCComputed) {
                 CRCCorrect = 1;
                 state->data_block_crc_valid[slot][blockcounter] = 1;
@@ -568,7 +660,10 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
             for (i = 100; i < 196; i++) {
                 confdatabits[k++] = info[i]; //second half
             }
-            // ETSI: For confirmed rate 1 blocks, CRC-9 covers 176 information bits (22 octets), MSB-first.
+            for (i = 0; i < 7; i++) {
+                confdatabits[k++] = info[i]; //DBSN
+            }
+            // Confirmed data CRC-9 covers information bits plus DBSN (7 bits), MSB-first.
             CRCComputed = ComputeCrc9Bit(confdatabits, k);
 
             if (CRCExtracted == CRCComputed) {
@@ -586,21 +681,28 @@ dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], u
         memcpy(DMR_PDU_bits, info, sizeof(DMR_PDU_bits));
     }
 
-    // Enforce confirmed data DBSN sequencing before assembling multi-block data.
-    // Only enforce in strict (aggressive) mode; allow relaxed mode to attempt
-    // best-effort assembly for ARS/LRRP resilience on marginal signals.
+    // Track (and optionally enforce) confirmed data DBSN sequencing before assembling multi-block data.
+    // In relaxed mode, seed DBSN expectation even on CRC-failed first blocks to help disambiguate later blocks.
     if ((databurst == 0x07 || databurst == 0x08 || databurst == 0x0A) && state->data_conf_data[slot] == 1
-        && CRCCorrect == 1 && dbsn_valid && opts->aggressive_framesync == 1) {
+        && dbsn_valid) {
         if (!state->data_dbsn_have[slot]) {
-            state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
-            state->data_dbsn_have[slot] = 1;
-        } else if (dbsn_for_seq != state->data_dbsn_expected[slot]) {
-            fprintf(stderr, "%s DBSN Seq Err: got %u expected %u %s", KRED, dbsn_for_seq,
-                    state->data_dbsn_expected[slot], KNRM);
-            dmr_reset_blocks(opts, state);
-            return; // do not assemble out-of-sequence block
-        } else {
-            state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
+            if (CRCCorrect == 1 || opts->aggressive_framesync == 0) {
+                state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
+                state->data_dbsn_have[slot] = 1;
+            }
+        } else if (CRCCorrect == 1) {
+            if (dbsn_for_seq != state->data_dbsn_expected[slot]) {
+                if (opts->aggressive_framesync == 1) {
+                    fprintf(stderr, "%s DBSN Seq Err: got %u expected %u %s", KRED, dbsn_for_seq,
+                            state->data_dbsn_expected[slot], KNRM);
+                    dmr_reset_blocks(opts, state);
+                    return; // do not assemble out-of-sequence block
+                }
+                // Relaxed mode: resync expected DBSN and continue best-effort assembly.
+                state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
+            } else {
+                state->data_dbsn_expected[slot] = (uint8_t)((dbsn_for_seq + 1) & 0x7F);
+            }
         }
     }
 

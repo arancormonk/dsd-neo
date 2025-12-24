@@ -695,6 +695,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             case 'F':
                 opts->aggressive_framesync = 0;
+                opts->dmr_crc_relaxed_default = 1;
                 LOG_NOTICE("%s", KYEL);
                 LOG_NOTICE("Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");
                 LOG_NOTICE("Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");

@@ -205,8 +205,8 @@ struct dsd_opts {
     short int lrrp_file_output;
     short int dmr_mute_encL;
     short int dmr_mute_encR;
-    /* DMR: relax CRC gating by default (ignore final CRC when no irrecoverable errors).
-       This improves continuity on RAS/marginal signals without affecting other protocols. */
+    /* DMR: when set, relax CRC gating (ignore final CRC when no irrecoverable errors).
+       Off by default; enabled via -F like other protocols. */
     uint8_t dmr_crc_relaxed_default;
     int frame_ysf;
     int inverted_ysf;
