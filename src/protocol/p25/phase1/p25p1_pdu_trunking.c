@@ -11,12 +11,22 @@
  * 2025-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
+#include <dsd-neo/runtime/colors.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 //trunking data delivered via PDU format
 void

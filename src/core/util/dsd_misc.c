@@ -10,8 +10,20 @@
  *
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
+
 #include <math.h>
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+uint16_t q_abs_diff(const uint16_t v1, const uint16_t v2);
+uint32_t viterbi_chainback(uint8_t* out, size_t pos, uint16_t len);
+void viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos);
+void viterbi_reset(void);
 
 static const int PARITY[] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
                              1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
@@ -591,7 +603,7 @@ pbf_f(dsd_state* state, float* input, int len) {
 
 //Generic RMS function derived from RTL_FM (RTL_SDR) RMS code (doesnt' really work correctly outside of RTL)
 double
-raw_rms(const int16_t* samples, int len, int step) //use samplespersymbol as len
+raw_rms(const short* samples, int len, int step) //use samplespersymbol as len
 {
     double mp = raw_pwr(samples, len, step);
     if (mp < 0.0) {
@@ -605,7 +617,7 @@ raw_rms(const int16_t* samples, int len, int step) //use samplespersymbol as len
  * Computes a DC-corrected average of squares to avoid costly sqrt operations.
  */
 double
-raw_pwr(const int16_t* samples, int len, int step) {
+raw_pwr(const short* samples, int len, int step) {
     double p = 0.0;
     double t = 0.0;
     int count = 0;

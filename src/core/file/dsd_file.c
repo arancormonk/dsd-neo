@@ -19,13 +19,30 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>   //for ambe+2 fr
 #include <dsd-neo/protocol/p25/p25p1_const.h> //for imbe fr (7200)
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <mbelib.h>
+#include <sndfile.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 void
 saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {

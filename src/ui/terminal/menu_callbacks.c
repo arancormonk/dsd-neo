@@ -14,7 +14,8 @@
 #include "menu_internal.h"
 #include "menu_prompts.h"
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/menu_core.h>

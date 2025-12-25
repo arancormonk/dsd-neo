@@ -15,8 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MBELIB_NO_HEADERS 1
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/fec/block_codes.h>
 
 static void
 bits_from_byte(unsigned char b, unsigned char out[8]) {

@@ -10,8 +10,8 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/ncurses.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>

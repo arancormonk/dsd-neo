@@ -16,8 +16,18 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 void
 processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {

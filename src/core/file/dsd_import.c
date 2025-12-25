@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/log.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #define BSIZE 999
 
 int

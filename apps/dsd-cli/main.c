@@ -21,7 +21,9 @@
 
 #define DSD_NEO_MAIN
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
@@ -31,15 +33,17 @@
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <mbelib.h>
 
+#include <stdio.h>
 #include <stdlib.h>
-
-/* exitflag is defined in src/runtime/exitflag.c and declared in dsd.h */
+#include <string.h>
 
 int
 pretty_colors() {

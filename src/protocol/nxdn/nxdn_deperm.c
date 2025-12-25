@@ -23,9 +23,32 @@
  * Boston, MA 02110-1301, USA.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/fec/trellis.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
+#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
+void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent);
+void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction);
+int load_i(const uint8_t val[], int len);
+uint8_t crc6(const uint8_t buf[], int len);
+uint16_t crc12f(const uint8_t buf[], int len);
+uint16_t crc15(const uint8_t buf[], int len);
+uint16_t crc16cac(const uint8_t buf[], int len);
+uint8_t crc7_scch(uint8_t bits[], int len);
 
 static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
     2,   5,   6,   7,   10,  12,  14,  16,  17,  22,  23,  25,  26,  27,  28,  30,  33,  34,  36,  37,  38,  41,  45,

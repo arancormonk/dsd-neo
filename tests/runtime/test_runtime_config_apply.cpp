@@ -18,9 +18,9 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 
-extern "C" {
-#include <dsd-neo/core/dsd.h>
-}
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 int
 main(void) {

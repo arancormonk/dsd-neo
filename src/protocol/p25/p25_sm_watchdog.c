@@ -3,14 +3,17 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/exitflag.h>
 
-/* exitflag declared in dsd.h, defined in src/runtime/exitflag.c */
+#include <stdlib.h>
+
+/* exitflag declared in runtime/exitflag.h, defined in src/runtime/exitflag.c */
 
 static dsd_thread_t g_p25_sm_wd_thread;
 static atomic_int g_p25_sm_wd_running = 0;

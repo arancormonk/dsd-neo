@@ -7,9 +7,11 @@
  * Lightweight test-only helper to invoke LCW decoder with minimal state.
  */
 
-#include <string.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <string.h>
 
 void
 p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq) {

@@ -34,11 +34,16 @@
 // These provide incomplete types for pointer/reference users without
 // forcing inclusion of the full state/options definitions.
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/comp.h>
 
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -67,12 +72,29 @@
 #include <math.h>
 #include <sndfile.h>
 
+#include <dsd-neo/fec/trellis.h>
+#include <dsd-neo/fec/viterbi.h>
+
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/protocol/nxdn/nxdn_voice.h>
+#include <dsd-neo/protocol/p25/p25_12.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
+#include <dsd-neo/protocol/p25/p25_lfsr.h>
+#include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 
 #include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/rc4.h>
 
 /* PulseAudio headers only included when using PulseAudio backend on POSIX */
 #if DSD_PLATFORM_POSIX && !defined(DSD_USE_PORTAUDIO)
@@ -83,11 +105,14 @@
 #endif
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/io/control.h>
 
 #ifdef USE_RTLSDR
@@ -110,279 +135,39 @@
 /*
  * function prototypes
  */
-
-/**
- * @brief Consume the next dibit from the buffered symbol stream.
- *
- * Applies current slicer thresholds to the latest symbol and advances the
- * internal buffer cursor.
- *
- * @param opts Decoder options.
- * @param state Decoder state containing symbol buffers and thresholds.
- * @return Dibit value [0,3]; negative on shutdown/EOF.
- */
-int getDibit(dsd_opts* opts, dsd_state* state);
-/**
- * @brief Consume the next dibit and optionally return the raw analog symbol.
- *
- * @param opts Decoder options.
- * @param state Decoder state containing symbol buffers and thresholds.
- * @param out_analog_signal [out] Raw symbol value when non-NULL.
- * @return Dibit value [0,3]; negative on shutdown/EOF.
- */
-int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
-/**
- * @brief Get the next dibit along with its reliability value.
- *
- * This function reads the next dibit and returns the associated reliability
- * (0=uncertain, 255=confident) via out_reliability.
- *
- * @param opts Decoder options.
- * @param state Decoder state containing symbol buffers and thresholds.
- * @param out_reliability [out] Reliability value when non-NULL.
- * @return Dibit value [0,3]; negative on shutdown/EOF.
- */
-int getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability);
-/**
- * @brief Get the next dibit and store the soft symbol for Viterbi decoding.
- *
- * This function reads the next dibit while also recording the raw float
- * symbol value in state->soft_symbol_buf for later soft-decision FEC.
- *
- * @param opts Decoder options.
- * @param state Decoder state containing symbol buffers and thresholds.
- * @param out_soft_symbol [out] Raw float symbol value when non-NULL.
- * @return Dibit value [0,3]; negative on shutdown/EOF.
- */
-int getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
-/**
- * @brief Mark the start of a new frame for soft symbol collection.
- *
- * Call this before reading dibits for a frame that will use soft-decision
- * Viterbi decoding. The soft_symbol_frame_start index is recorded.
- *
- * @param state Decoder state.
- */
-void soft_symbol_frame_begin(dsd_state* state);
-/**
- * @brief Convert a soft symbol to Viterbi cost (0x0000 = strong 0, 0xFFFF = strong 1).
- *
- * Maps a float symbol value to a 16-bit Viterbi soft metric based on the
- * symbol's position relative to slicer thresholds. Symbols near decision
- * boundaries produce metrics near 0x7FFF (uncertain), while symbols far
- * from boundaries produce metrics near 0x0000 or 0xFFFF (confident).
- *
- * @param symbol Raw float symbol value.
- * @param state Decoder state containing slicer thresholds.
- * @param bit_position 0 for MSB of dibit, 1 for LSB of dibit.
- * @return 16-bit Viterbi cost metric.
- */
-uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);
-/**
- * @brief Convert a GMSK (binary) soft symbol to Viterbi cost.
- *
- * For GMSK modulation where each symbol represents a single bit.
- * Maps based on distance from center threshold.
- * 0x0000 = strong 0 (below center), 0xFFFF = strong 1 (above center).
- *
- * @param symbol Raw float symbol value.
- * @param state Decoder state containing center threshold.
- * @return 16-bit Viterbi cost metric.
- */
-uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
-/**
- * @brief Map a raw symbol to a dibit using the active thresholds.
- *
- * @param opts Decoder options.
- * @param state Decoder state owning slicer thresholds.
- * @param symbol Raw symbol magnitude.
- * @return Dibit value [0,3].
- */
-int digitize(dsd_opts* opts, dsd_state* state, float symbol);
-
-/** @brief Skip @p count dibits from the input stream without processing. */
-void skipDibit(dsd_opts* opts, dsd_state* state, int count);
-/** @brief Append an IMBE 4400 frame to the configured mbe output file. */
-void saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d);
-/** @brief Append an AMBE 2450 frame (slot 1) to the configured mbe output file. */
-void saveAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
-/** @brief Append an AMBE 2450 frame (slot 2) to the configured mbe output file. */
-void saveAmbe2450DataR(dsd_opts* opts, dsd_state* state, char* ambe_d); //tdma slot 2
-/** @brief Debug-print AMBE payload for inspection. */
-void PrintAMBEData(dsd_opts* opts, dsd_state* state, char* ambe_d);
-/** @brief Debug-print IMBE payload for inspection. */
-void PrintIMBEData(dsd_opts* opts, dsd_state* state, char* imbe_d);
-/** @brief Read one IMBE 4400 frame from an mbe input source. */
-int readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d);
-/** @brief Read one AMBE 2450 frame from an mbe input source. */
-int readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
-/** @brief Load active key material from the keyring into working slot buffers. */
-void keyring(dsd_opts* opts, dsd_state* state);
-/** @brief Populate key arrays from an SDRTrunk JSON export. */
-void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
 /** @brief Pretty-print AMBE2 codeword (forward order). */
 void ambe2_codeword_print_f(dsd_opts* opts, char ambe_fr[4][24]);
 /** @brief Pretty-print AMBE2 codeword (backward order). */
 void ambe2_codeword_print_b(dsd_opts* opts, char ambe_fr[4][24]);
 /** @brief Pretty-print AMBE2 codeword with indices. */
 void ambe2_codeword_print_i(dsd_opts* opts, char ambe_fr[4][24]);
-/** @brief Open mbe input file (stdin or path) based on opts. */
-void openMbeInFile(dsd_opts* opts, dsd_state* state);
-/** @brief Close mbe output file for slot 1 if open. */
-void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
-/** @brief Close mbe output file for slot 2 if open. */
-void closeMbeOutFileR(dsd_opts* opts, dsd_state* state); //tdma slot 2
-/** @brief Open mbe output file for slot 1 when configured. */
-void openMbeOutFile(dsd_opts* opts, dsd_state* state);
-/** @brief Open mbe output file for slot 2 when configured. */
-void openMbeOutFileR(dsd_opts* opts, dsd_state* state); //tdma slot 2
-/** @brief Open per-call WAV output (mono). */
-void openWavOutFile(dsd_opts* opts, dsd_state* state);
-/** @brief Open slot 1 WAV output (mono). */
-void openWavOutFileL(dsd_opts* opts, dsd_state* state);
-/** @brief Open slot 2 WAV output (mono). */
-void openWavOutFileR(dsd_opts* opts, dsd_state* state);
-/** @brief Open stereo WAV output for TDMA decoded speech. */
-void openWavOutFileLR(dsd_opts* opts, dsd_state* state); //stereo wav file for tdma decoded speech
-/** @brief Open raw WAV output (unnormalized capture). */
-void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
-/**
- * @brief Create a WAV file in the provided directory using a temporary filename.
- *
- * @param dir Target directory for the new file.
- * @param temp_filename Scratch buffer to hold the temporary basename (modified).
- * @param sample_rate Sample rate to write into the WAV header.
- * @param ext File extension selector (implementation-specific).
- * @return SNDFILE handle on success; NULL on failure.
- */
-SNDFILE* open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uint8_t ext);
-/** @brief Close a WAV file handle and return NULL for chaining. */
-SNDFILE* close_wav_file(SNDFILE* wav_file);
-/**
- * @brief Close and atomically rename a temporary WAV file to its final name.
- *
- * @param wav_file Open sndfile handle to close.
- * @param wav_out_filename Final basename to rename to.
- * @param dir Destination directory.
- * @param event_struct Optional event metadata for per-call files.
- * @return NULL for convenience.
- */
-SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, Event_History_I* event_struct);
-/**
- * @brief Close and delete a WAV file that should be discarded.
- *
- * @param wav_file Open sndfile handle to close.
- * @param wav_out_filename Path to remove after close.
- * @return NULL for convenience.
- */
-SNDFILE* close_and_delete_wav_file(SNDFILE* wav_file, char* wav_out_filename);
-/** @brief Open symbol logging output when enabled. */
-void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
-/** @brief Close symbol logging output if open. */
-void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);
-/** @brief Rotate the active symbol output file (close + reopen). */
-void rotate_symbol_out_file(dsd_opts* opts, dsd_state* state);
 /** @brief Write one synthesized raw sample to the configured output sinks. */
 void writeRawSample(dsd_opts* opts, dsd_state* state, short sample);
-/** @brief Close per-call WAV output (mono) if open. */
-void closeWavOutFile(dsd_opts* opts, dsd_state* state);
-/** @brief Close slot 1 WAV output (mono) if open. */
-void closeWavOutFileL(dsd_opts* opts, dsd_state* state);
-/** @brief Close slot 2 WAV output (mono) if open. */
-void closeWavOutFileR(dsd_opts* opts, dsd_state* state);
-/** @brief Close raw WAV output (unnormalized capture) if open. */
-void closeWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 /** @brief Print current frame metadata to the console/TTY. */
 void printFrameInfo(dsd_opts* opts, dsd_state* state);
 /** @brief Core frame dispatcher: identify sync and decode the payload. */
 void processFrame(dsd_opts* opts, dsd_state* state);
-/**
- * @brief Emit diagnostic information about detected frame sync.
- *
- * @param frametype Human-friendly frame type string.
- * @param offset Bit offset into the buffer where sync was found.
- * @param modulation Modulation label (e.g., C4FM, QPSK).
-	 */
-void printFrameSync(dsd_opts* opts, dsd_state* state, char* frametype, int offset, char* modulation);
-/** @brief Scan for a valid frame sync pattern and return its type. */
-int getFrameSync(dsd_opts* opts, dsd_state* state);
-/** @brief Comparator helper for qsort on symbol buffers. */
-int comp(const void* a, const void* b);
 /** @brief Handle carrier drop/reset conditions and clear state. */
 void noCarrier(dsd_opts* opts, dsd_state* state);
-/** @brief Initialize decoder options to defaults. */
-void initOpts(dsd_opts* opts);
-/** @brief Initialize decoder runtime state to defaults. */
-void initState(dsd_state* state);
 /** @brief Control live scanning/trunking loop across control channels. */
 void liveScanner(dsd_opts* opts, dsd_state* state);
-/** @brief Release resources and exit the program. */
-void cleanupAndExit(dsd_opts* opts, dsd_state* state);
 #ifdef DSD_NEO_MAIN
 /** @brief Program entry point for the dsd-neo CLI application. */
 int main(int argc, char** argv);
 #endif
 /** @brief Play one or more mbe files listed on argv through the decoder. */
 void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
-/**
- * @brief Decode an AMBE/IMBE frame trio into synthesized audio.
- *
- * @param imbe_fr P25/IMBE codewords (8x23).
- * @param ambe_fr DMR/AMBE codewords (4x24).
- * @param imbe7100_fr Extended IMBE 7100 codewords (7x24).
- */
-void processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
-                     char imbe7100_fr[7][24]);
 /** @brief Open serial/rigctl connection based on CLI options. */
 void openSerial(dsd_opts* opts, dsd_state* state);
 /** @brief Resume scanning mode after hang timers expire. */
 void resumeScan(dsd_opts* opts, dsd_state* state);
-/**
- * @brief Read the next symbol value from the demodulator path.
- * @param have_sync Non-zero when symbol timing is synchronized.
- * @return Raw symbol magnitude.
- */
-float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 /** @brief Legacy linear upsampler for analog monitor audio. */
 void upsample(dsd_state* state, float invalue);
 /** @brief Full D-STAR voice/data processing pipeline entry point. */
 void processDSTAR(dsd_opts* opts, dsd_state* state);
 
-//new cleaner, sleaker, nicer mbe handler...maybe -- wrap around ifdef later on with cmake options
-/**
- * @brief Unified AMBE/IMBE decoder entry point for mixed frame layouts.
- *
- * Decodes whichever payloads are present (IMBE/AMBE/IMBE7100) and emits
- * synthesized audio into the output buffers.
- */
-void soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]);
 /** @brief Generate a diagnostic tone into the provided sample buffer. */
 void soft_tonef(float samp[160], int n, int ID, int AD);
-
-//new p25lcw
-/** @brief Decode and display a P25 link control word (LCW). */
-void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
-//new p25 1/2 rate decoder
-/**
- * @brief Decode P25 1/2-rate trellis-encoded payload into 12 symbols.
- *
- * @param input Input dibits.
- * @param treturn [out] Decoded 12-symbol output.
- * @return Error count/status from the trellis decoder.
- */
-int p25_12(uint8_t* input, uint8_t treturn[12]);
-/**
- * @brief Soft-decision P25 1/2-rate trellis decoder.
- *
- * Same algorithm as p25_12() but weights bit mismatches by reliability values.
- *
- * @param input Input dibits (98).
- * @param reliab98 Per-dibit reliability (0=uncertain, 255=confident).
- * @param treturn [out] Decoded 12-symbol output.
- * @return Normalized error metric from the trellis decoder.
- */
-int p25_12_soft(uint8_t* input, const uint8_t* reliab98, uint8_t treturn[12]);
-// P25 LSD FEC is provided via <dsd-neo/protocol/p25/p25_lsd.h>
 
 /** @brief Decode and display P25 LCW information from the current frame. */
 void processP25lcw(dsd_opts* opts, dsd_state* state, char* lcformat, char* mfid, char* lcinfo);
@@ -462,126 +247,7 @@ void ncursesClose();
 //new NXDN Functions start here!
 /** @brief Decode one NXDN frame (voice/data) from the incoming dibits. */
 void nxdn_frame(dsd_opts* opts, dsd_state* state);
-/** @brief Descramble NXDN dibit stream in-place using LFSR. */
-void nxdn_descramble(uint8_t dibits[], int len);
-//nxdn deinterleaving/depuncturing functions
-/** @brief Deinterleave FACCH bits into their original order. */
-void nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]);
-/**
- * @brief Soft-decision variant of nxdn_deperm_facch.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
-/** @brief Deinterleave SACCH bits into their original order. */
-void nxdn_deperm_sacch(dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
-/**
- * @brief Soft-decision variant of nxdn_deperm_sacch.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
-/** @brief Deinterleave CAC bits into their original order. */
-void nxdn_deperm_cac(dsd_opts* opts, dsd_state* state, uint8_t bits[300]);
-/**
- * @brief Soft-decision variant of nxdn_deperm_cac.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
-/** @brief Deinterleave FACCH2/UDCH blocks based on type. */
-void nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uint8_t type);
-/**
- * @brief Soft-decision variant of nxdn_deperm_facch2_udch.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
-                                  uint8_t type);
-//type-d 'idas' deinterleaving/depuncturing functions
-/** @brief Deinterleave SCCH bits (type-D) with direction flag. */
-void nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t direction);
-/**
- * @brief Soft-decision variant of nxdn_deperm_scch.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
-                           uint8_t direction);
-/** @brief Deinterleave FACCH3/UDCH2 (type-D) blocks. */
-void nxdn_deperm_facch3_udch2(dsd_opts* opts, dsd_state* state, uint8_t bits[288], uint8_t type);
-/**
- * @brief Soft-decision variant of nxdn_deperm_facch3_udch2.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
-                                   uint8_t type);
-//DCR Mode
-/** @brief Deinterleave SACCH2 block for DCR mode. */
-void nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
-/**
- * @brief Soft-decision variant of nxdn_deperm_sacch2.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_sacch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
-/** @brief Deinterleave PICH/TCH block for DCR mode. */
-void nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]);
-/**
- * @brief Soft-decision variant of nxdn_deperm_pich_tch.
- * @param reliab Per-bit reliability values (0=uncertain, 255=confident).
- */
-void nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
-//MT and Voice
-/** @brief Decode NXDN message type header. */
-void nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType);
-/** @brief Decode NXDN voice frames from the provided dibit buffer with reliability. */
-void nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab);
-//Osmocom OP25 12 Rate Trellis Decoder (for NXDN, M17, YSF, etc)
-/** @brief Trellis-decode a 1/2-rate convolutional codeword. */
-void trellis_decode(uint8_t result[], const uint8_t source[], int result_len);
-
-//OP25 NXDN CRC functions
-/** @brief Load a buffer into an integer accumulator (helper for CRC). */
-int load_i(const uint8_t val[], int len);
-/** @brief Compute NXDN CRC6 over the provided buffer. */
-uint8_t crc6(const uint8_t buf[], int len);
-/** @brief Compute NXDN CRC12f over the provided buffer. */
-uint16_t crc12f(const uint8_t buf[], int len);
-/** @brief Compute NXDN CRC15 over the provided buffer. */
-uint16_t crc15(const uint8_t buf[], int len);
-/** @brief Compute NXDN CAC CRC16 over the provided buffer. */
-uint16_t crc16cac(const uint8_t buf[], int len);
-/** @brief Compute NXDN SCCH CRC7 (converted from OP25 CRC6 routine). */
-uint8_t crc7_scch(uint8_t bits[], int len); //converted from op25 crc6
-
-/* NXDN Convolution functions */
-/** @brief Initialize convolutional decoder state. */
-void CNXDNConvolution_start(void);
-/** @brief Push one pair of encoded bits into the convolutional decoder. */
-void CNXDNConvolution_decode(uint8_t s0, uint8_t s1);
-/**
- * @brief Soft-decision variant of CNXDNConvolution_decode.
- *
- * @param s0, s1 Observed soft values (0..2 range).
- * @param r0, r1 Reliability weights (0..255, higher = more confident).
- */
-void CNXDNConvolution_decode_soft(uint8_t s0, uint8_t s1, uint8_t r0, uint8_t r1);
-/** @brief Chain back through the decoded trellis to recover bits. */
-void CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits);
-/** @brief Encode input bits using the NXDN convolutional code. */
-void CNXDNConvolution_encode(const unsigned char* in, unsigned char* out, unsigned int nBits);
-/** @brief Reset convolutional codec state. */
-void CNXDNConvolution_init();
-
-//libM17 viterbi decoder
-/** @brief Decode a convolutional codeword using the libM17 Viterbi decoder. */
-uint32_t viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len);
-/** @brief Decode a punctured convolutional codeword using Viterbi. */
-uint32_t viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct, const uint16_t in_len,
-                                  const uint16_t p_len);
-/** @brief Push one symbol pair into the incremental Viterbi decoder. */
-void viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos);
-/** @brief Perform chainback on the current Viterbi path metric buffer. */
-uint32_t viterbi_chainback(uint8_t* out, size_t pos, uint16_t len);
-/** @brief Reset the libM17 Viterbi decoder state. */
-void viterbi_reset(void);
-/** @brief Absolute difference helper for branch metric computations. */
-uint16_t q_abs_diff(const uint16_t v1, const uint16_t v2);
+/* NXDN helpers are declared in narrow headers. */
 
 //keeping these
 /** @brief Decode an NXDN SACCH block including CRC checks. */
@@ -773,27 +439,6 @@ void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, u
 /** @brief Decode DMR location (LOCN) payload. */
 void dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
 
-//p25 pdu handling
-/** @brief Decrypt a P25 PDU payload using the provided algorithm/key. */
-uint8_t p25_decrypt_pdu(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t alg_id, uint16_t key_id,
-                        unsigned long long int mi, int len);
-/** @brief Decode an encrypted ES header and return SAP/type pointers. */
-uint8_t p25_decode_es_header(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* sap, int* ptr, int len);
-/** @brief Decode alternate ES header variant. */
-uint8_t p25_decode_es_header_2(dsd_opts* opts, dsd_state* state, uint8_t* input, int* ptr, int len);
-/** @brief Decode extended addressing fields from a P25 PDU. */
-void p25_decode_extended_address(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* sap, int* ptr);
-/** @brief Decode a P25 trunking PDU payload. */
-void p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte);
-/** @brief Decode a P25 PDU header. */
-void p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, uint8_t* input);
-/** @brief Decode a P25 PDU data payload. */
-void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
-/** @brief Decode RSP (response) field from a trunking message. */
-void p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string);
-/** @brief Map SAP value to a printable description. */
-void p25_decode_sap(uint8_t SAP, char* sap_string);
-
 //misc pdu
 /** @brief Decode an encapsulated IP PDU carried in voice/data bursts. */
 void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
@@ -857,14 +502,9 @@ uint8_t crc3(uint8_t bits[], unsigned int len);
 /** @brief Compute 4-bit CRC for SB/RC payloads. */
 uint8_t crc4(uint8_t bits[], unsigned int len);
 
-//LFSR and LFSRP code courtesy of https://github.com/mattames/LFSR/
+//LFSR code courtesy of https://github.com/mattames/LFSR/
 /** @brief Advance legacy LFSR state for encryption bit expansion. */
 void LFSR(dsd_state* state);
-/** @brief Advance legacy LFSRP state (alternate polynomial). */
-void LFSRP(dsd_state* state);
-
-/** @brief Expand buffer using LFSR bits (N-bit variant). */
-void LFSRN(char* BufferIn, char* BufferOut, dsd_state* state);
 /** @brief Expand 64-bit MI into stream via LFSR. */
 void LFSR64(dsd_state* state);
 
@@ -940,40 +580,11 @@ void reset_dibit_buffer(dsd_state* state);
 /** @brief Decode and populate D-STAR header fields. */
 void dstar_header_decode(dsd_state* state, int radioheaderbuffer[660]);
 
-//P25 PDU Handler
-/** @brief Process a P25 MAC VPDU block of the given type. */
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
-
 //P25 xCCH Handlers (SACCH, FACCH, LCCH)
 /** @brief Process P25 SACCH MAC PDU payload. */
 void process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]);
 /** @brief Process P25 FACCH MAC PDU payload. */
 void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]);
-
-//P25 Channel to Frequency
-/** @brief Convert P25 channel number to center frequency in Hz. */
-long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
-// Format a short suffix for P25 channel showing FDMA-equivalent channel and slot
-/** @brief Format a channel suffix string for P25 channel/slot display. */
-void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
-// Reset all P25 IDEN tables (type/tdma/spacing/base/offset) when system identity changes
-/** @brief Reset all cached P25 IDEN tables after system identity changes. */
-void p25_reset_iden_tables(dsd_state* state);
-// Promote any IDENs whose provenance matches the current site to trusted (2)
-/** @brief Promote IDEN entries matching the current site to trusted state. */
-void p25_confirm_idens_for_current_site(dsd_state* state);
-
-//P25 CRC Functions
-// Accept a pointer to a bitvector (values 0/1) of length `len` plus trailing CRC bits.
-// The functions do not modify the input; callers may pass any suitably sized buffer.
-/** @brief Validate LB CRC16 for the provided payload+CRC bit vector. */
-int crc16_lb_bridge(const int* payload, int len);
-/** @brief Validate XB CRC12 for the provided payload+CRC bit vector. */
-int crc12_xb_bridge(const int* payload, int len);
-
-//NXDN Channel to Frequency, Courtesy of IcomIcR20 on RR Forums
-/** @brief Convert NXDN channel number to center frequency in Hz. */
-long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
 
 //rigctl functions and TCP/UDP functions
 /** @brief Print an error message and exit. */
@@ -1095,20 +706,6 @@ int udp_socket_connectM17(dsd_opts* opts, dsd_state* state);
 /** @brief Blast M17 audio samples over UDP. */
 int m17_socket_blaster(dsd_opts* opts, dsd_state* state, size_t nsam, void* data);
 
-//RC4 function prototypes
-/** @brief Decrypt an RC4-encrypted voice payload after discarding @p drop bytes. */
-void rc4_voice_decrypt(int drop, uint8_t keylength, uint8_t messagelength, uint8_t key[], uint8_t cipher[],
-                       uint8_t plain[]);
-/** @brief Generate RC4 keystream blocks after discarding @p drop bytes. */
-void rc4_block_output(int drop, int keylen, int meslen, uint8_t* key, uint8_t* output_blocks);
-
-//DES function prototypes
-/** @brief Generate DES keystream for given MI/key into output buffer. */
-void des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                                int len);
-/** @brief Generate Triple-DES keystream for given MI/key into output buffer. */
-void tdea_multi_keystream_output(unsigned long long int mi, uint8_t* key, uint8_t* output, int type, int len);
-
 //Tytera / Retevis / Anytone / Kenwood / Misc DMR Encryption Modes
 /** @brief Build Tytera 16-bit AMBE2 keystream for the specified frame. */
 void tyt16_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24], int fnum);
@@ -1162,80 +759,8 @@ int ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int 
 /** @brief Lookup ISCH codeword index from 40-bit hash. */
 int isch_lookup(uint64_t isch); //isch map lookup
 
-// P25p2 audio jitter ring helpers (inline for simple state access)
-/**
- * @brief Reset Phase 2 audio jitter ring for one or both slots.
- *
- * @param state Decoder state containing jitter rings.
- * @param slot Slot index (0/1) or negative to reset both.
- */
-static inline void
-p25_p2_audio_ring_reset(dsd_state* state, int slot) {
-    if (!state) {
-        return;
-    }
-    if (slot < 0 || slot > 1) {
-        // reset both
-        state->p25_p2_audio_ring_head[0] = state->p25_p2_audio_ring_tail[0] = 0;
-        state->p25_p2_audio_ring_count[0] = 0;
-        state->p25_p2_audio_ring_head[1] = state->p25_p2_audio_ring_tail[1] = 0;
-        state->p25_p2_audio_ring_count[1] = 0;
-        memset(state->p25_p2_audio_ring, 0, sizeof(state->p25_p2_audio_ring));
-        return;
-    }
-    state->p25_p2_audio_ring_head[slot] = 0;
-    state->p25_p2_audio_ring_tail[slot] = 0;
-    state->p25_p2_audio_ring_count[slot] = 0;
-    memset(state->p25_p2_audio_ring[slot], 0, sizeof(state->p25_p2_audio_ring[slot]));
-}
-
-/**
- * @brief Push one 160-sample float frame into the Phase 2 jitter ring.
- *
- * Drops the oldest frame when the ring is full to keep latency bounded.
- *
- * @return 1 on success, 0 on invalid input.
- */
-static inline int
-p25_p2_audio_ring_push(dsd_state* state, int slot, const float* frame160) {
-    if (!state || !frame160 || slot < 0 || slot > 1) {
-        return 0;
-    }
-    // Drop oldest on overflow to keep bounded latency
-    if (state->p25_p2_audio_ring_count[slot] >= 3) {
-        // advance head (pop) to make room
-        state->p25_p2_audio_ring_head[slot] = (state->p25_p2_audio_ring_head[slot] + 1) % 3;
-        state->p25_p2_audio_ring_count[slot]--;
-    }
-    int idx = state->p25_p2_audio_ring_tail[slot];
-    memcpy(state->p25_p2_audio_ring[slot][idx], frame160, 160 * sizeof(float));
-    state->p25_p2_audio_ring_tail[slot] = (state->p25_p2_audio_ring_tail[slot] + 1) % 3;
-    state->p25_p2_audio_ring_count[slot]++;
-    return 1;
-}
-
-/**
- * @brief Pop one 160-sample float frame from the Phase 2 jitter ring.
- *
- * When empty, fills out160 with zeros and returns 0.
- *
- * @return 1 when a frame was returned; 0 when empty/invalid.
- */
-static inline int
-p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160) {
-    if (!state || !out160 || slot < 0 || slot > 1) {
-        return 0;
-    }
-    if (state->p25_p2_audio_ring_count[slot] <= 0) {
-        memset(out160, 0, 160 * sizeof(float));
-        return 0;
-    }
-    int idx = state->p25_p2_audio_ring_head[slot];
-    memcpy(out160, state->p25_p2_audio_ring[slot][idx], 160 * sizeof(float));
-    state->p25_p2_audio_ring_head[slot] = (state->p25_p2_audio_ring_head[slot] + 1) % 3;
-    state->p25_p2_audio_ring_count[slot]--;
-    return 1;
-}
+// P25p2 audio jitter ring helpers (narrow header)
+#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 
 #ifdef __cplusplus
 }

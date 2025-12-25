@@ -16,7 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 
 #define FLOAT_TOL 0.01f

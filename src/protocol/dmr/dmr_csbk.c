@@ -17,15 +17,29 @@
  * 2023-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/colors.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #define PCLEAR_TUNE_AWAY //disable if slower return is preferred
 
 // Safe append helper: appends src to dst within dstsz, NUL-terminating
@@ -55,11 +69,8 @@ dmr_format_chan_suffix(int slot_index, char* out, size_t outsz) {
     snprintf(out, outsz, " (TDMA S%d)", (slot_index % 2) + 1);
 }
 
-// Forward decls for event helpers
-void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
-void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
-void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,
-                             uint8_t slot);
+void dmr_gateway_identifier(uint32_t source, uint32_t target);
+void dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int csbk_fid, int type);
 
 // Attempt to fill missing LCNs heuristically from learned anchors.
 static void

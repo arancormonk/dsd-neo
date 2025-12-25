@@ -17,8 +17,19 @@
 //TODO: Test USBD LIP Decoder with Real World Samples (if/when available)
 //TODO: Test UDT NMEA and LIP Decoders with Real World Samples (if/when available)
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/fec/bptc.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdio.h>
+#include <string.h>
 
 void
 dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,

@@ -19,15 +19,25 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
-
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
+#include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 void
 processLDU1(dsd_opts* opts, dsd_state* state) {

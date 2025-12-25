@@ -13,11 +13,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
-#undef main
 
 // Strong stubs
 static int g_return_to_cc_called = 0;

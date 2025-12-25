@@ -3,13 +3,27 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
 #include <mbelib.h>
+
+#ifdef USE_CODEC2
+#include <codec2/codec2.h>
+#endif
 
 // Small helpers to efficiently set fixed-width strings
 static inline void

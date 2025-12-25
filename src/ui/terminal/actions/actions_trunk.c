@@ -5,7 +5,8 @@
 
 /* UI command actions — trunking domain */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ui_cmd_dispatch.h>
 
 static int

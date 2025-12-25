@@ -3,12 +3,32 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/frame.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/protocol_dispatch.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/edacs/edacs.h>
+#include <dsd-neo/protocol/m17/m17.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/protocol/x2tdma/x2tdma.h>
+#include <dsd-neo/protocol/ysf/ysf.h>
+#include <dsd-neo/runtime/colors.h>
 
 #include <mbelib.h>
+
+#include <stdio.h>
+#include <string.h>
 
 static int
 matches_p25p1(int synctype) {

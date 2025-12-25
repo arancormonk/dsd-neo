@@ -12,8 +12,10 @@
  */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 

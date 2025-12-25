@@ -8,10 +8,25 @@
  * LWVMOBILE
  * 2023-07 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/runtime/colors.h>
 
 #include <mbelib.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 /* thx gr-ysf fr_vch_decoder_bb_impl.cc * Copyright 2015 Mathias Weyland */
 // I hold Sylvain Munaut in high esteem for figuring this out.

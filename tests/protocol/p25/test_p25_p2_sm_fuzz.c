@@ -15,8 +15,8 @@
 #include <string.h>
 #include <time.h>
 
-#define MBELIB_NO_HEADERS 1
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 // Strong stubs to observe tunes and releases

@@ -19,7 +19,13 @@
 //Originally found at - https://github.com/LouisErigHerve/dsd
 //Modified for use in DSD-FME
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/vocoder.h>
+
+#include <stdint.h>
+#include <string.h>
 
 const int nW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
                     0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};

@@ -77,7 +77,7 @@ typedef struct {
 } Event_History;
 
 //event history for number of each items above
-typedef struct {
+typedef struct Event_History_I {
     Event_History Event_History_Items[255];
 } Event_History_I;
 

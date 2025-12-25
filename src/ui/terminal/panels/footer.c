@@ -11,7 +11,7 @@
 #include <dsd-neo/platform/curses_compat.h>
 #include <time.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>

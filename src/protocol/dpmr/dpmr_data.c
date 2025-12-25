@@ -16,7 +16,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <stdint.h>
 
 /* Convert the Channel code (24 bit) into a valid
  * dPMR color code [0..63]

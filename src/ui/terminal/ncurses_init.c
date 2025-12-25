@@ -7,9 +7,10 @@
  * ncurses initialization and cleanup
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <dsd-neo/ui/ncurses.h>
 
 #include <dsd-neo/platform/curses_compat.h>
 

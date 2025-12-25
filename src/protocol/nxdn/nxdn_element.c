@@ -15,14 +15,43 @@
  ============================================================================
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+
+void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent);
+void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_Alias(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, uint8_t* Message);
+void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t direction);
+char* NXDN_Call_Type_To_Str(uint8_t CallType);
+void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
+char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
+void nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType);
 
 void
 NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {

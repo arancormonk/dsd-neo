@@ -8,11 +8,13 @@
  * 4-state model: IDLE, ON_CC, TUNED, HUNTING
  */
 
-#include <dsd-neo/core/dsd.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 // Minimal stubs for testing
 static dsd_opts g_opts;

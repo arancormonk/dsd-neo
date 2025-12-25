@@ -14,9 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);

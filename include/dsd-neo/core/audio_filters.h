@@ -23,6 +23,8 @@ void lpf(dsd_state* state, short* input, int len);
 void lpf_f(dsd_state* state, float* input, int len);
 void hpf(dsd_state* state, short* input, int len);
 void hpf_f(dsd_state* state, float* input, int len);
+void hpf_dL(dsd_state* state, short* input, int len);
+void hpf_dR(dsd_state* state, short* input, int len);
 void pbf(dsd_state* state, short* input, int len);
 void pbf_f(dsd_state* state, float* input, int len);
 

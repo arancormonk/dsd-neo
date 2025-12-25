@@ -11,22 +11,40 @@
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/frame.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
+
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <sndfile.h>
+
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ui_dsp_cmd.h>
 #endif
-#include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>

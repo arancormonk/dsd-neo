@@ -25,6 +25,7 @@ void retevis_rc2_keystream_creation(dsd_state* state, char* input);
 void ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input);
 void anytone_bp_keystream_creation(dsd_state* state, char* input);
 void straight_mod_xor_keystream_creation(dsd_state* state, char* input);
+void tyt16_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24], int fnum);
 
 #ifdef __cplusplus
 }

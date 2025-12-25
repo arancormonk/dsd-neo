@@ -9,9 +9,13 @@
 
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/ui/ui_prims.h>
+
+#include <stdarg.h>
+#include <string.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -38,8 +42,6 @@ ui_print_label_pad(const char* label) {
         addch(' ');
     }
 }
-
-#include <stdarg.h>
 
 static void
 ui_print_kv_line(const char* label, const char* fmt, ...) {

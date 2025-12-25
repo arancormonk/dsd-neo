@@ -16,7 +16,15 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 void
 processX2TDMAdata(dsd_opts* opts, dsd_state* state) {

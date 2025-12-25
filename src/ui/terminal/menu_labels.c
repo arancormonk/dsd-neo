@@ -14,7 +14,9 @@
 #include "menu_internal.h"
 #include "menu_items.h"
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -26,10 +28,6 @@
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
-#endif
-
-#ifndef UNUSED
-#define UNUSED(x) (void)(x)
 #endif
 
 // ---- Visibility/predicate functions ----

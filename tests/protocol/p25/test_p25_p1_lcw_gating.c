@@ -9,11 +9,13 @@
  * disabled.
  */
 
-#include <dsd-neo/core/dsd.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;

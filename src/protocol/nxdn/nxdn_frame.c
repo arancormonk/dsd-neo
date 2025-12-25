@@ -23,9 +23,23 @@
  * Boston, MA 02110-1301, USA.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/protocol/nxdn/nxdn_voice.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 // #define NXDN_DEBUG_LICH   //print LICH debug info on err on payload == 1
 #define NXDN_LICH_OFFBITS //use the offbits to help determine sync status (disable if bad signal / bad sample)

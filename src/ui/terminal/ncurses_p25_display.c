@@ -9,8 +9,10 @@
 
 #include <dsd-neo/ui/ncurses_p25_display.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>

@@ -10,10 +10,11 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #ifdef USE_RTLSDR

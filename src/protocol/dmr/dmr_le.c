@@ -7,7 +7,17 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/bptc.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdio.h>
+#include <string.h>
 
 //gather ambe_fr mi fragments for processing
 void

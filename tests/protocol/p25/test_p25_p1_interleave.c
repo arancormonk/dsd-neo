@@ -13,10 +13,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-// Avoid dsd.h main symbol conflict while pulling in p25p1_const externs
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
 // Local copy of the IMBE interleave schedule to validate mapping logic
 static const int IW[72] = {0, 2, 4, 1, 3, 5, 0, 2, 4, 1, 3, 6, 0, 2, 4, 1, 3, 6, 0, 2, 4, 1, 3, 6,
                            0, 2, 4, 1, 3, 6, 0, 2, 4, 1, 3, 6, 0, 2, 5, 1, 3, 6, 0, 2, 5, 1, 3, 6,

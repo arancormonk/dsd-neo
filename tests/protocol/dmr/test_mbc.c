@@ -15,10 +15,8 @@
 #include <stdint.h>
 #include <string.h>
 
-// Avoid pulling in a conflicting main() prototype from dsd.h
-#define main dsd_neo_dummy_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 // Forward-declare internal symbol so we can poke the assembler directly.

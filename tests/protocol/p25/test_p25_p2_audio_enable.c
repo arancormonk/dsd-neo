@@ -14,10 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// Avoid pulling main() from dsd.h
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 // Gate policy helper (from test shim)
 int p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded);

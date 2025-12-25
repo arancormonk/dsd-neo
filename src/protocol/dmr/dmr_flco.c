@@ -10,10 +10,26 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdio.h>
+#include <string.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
+void dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]);
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif

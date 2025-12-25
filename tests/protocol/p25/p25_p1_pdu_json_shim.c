@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include <string.h>
 
-// Ensure our tests/ dir is visible first so dsd.h can include the local mbelib.h stub
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 

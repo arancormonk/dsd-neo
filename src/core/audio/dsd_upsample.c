@@ -10,7 +10,8 @@
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/state.h>
 
 // Produce 6 short samples (48k) for every 1 short sample (8k)
 // Uses linear interpolation between prev and invalue for smoother output.

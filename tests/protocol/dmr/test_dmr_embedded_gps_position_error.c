@@ -15,7 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/unicode.h>
+
+void dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
 
 // Minimal stubs for direct link with dsd_gps.c
 uint64_t

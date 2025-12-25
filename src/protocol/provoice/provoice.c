@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/provoice/provoice_const.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 // #define PVDEBUG
 

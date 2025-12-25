@@ -13,14 +13,14 @@
  * still audible.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#undef main
 
 // Minimal IO stubs (avoid actual tuning/audio devices in unit tests)
 bool

@@ -18,7 +18,7 @@
  *   bits16[8..15]  = parity bits (bit 8 is MSB of parity byte)
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 
 // Parity lookup from legacy implementation in p25_crc.c

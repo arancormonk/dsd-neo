@@ -11,12 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// Avoid pulling main() from dsd.h in test binary
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
-
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/state.h>
 
 static int
 expect_eq(const char* tag, int got, int want) {

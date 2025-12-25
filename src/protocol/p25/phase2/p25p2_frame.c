@@ -12,14 +12,33 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/fec/ez.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
-#include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/protocol/p25/p25_lfsr.h>
+#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_xcch.h>
+#include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
+#include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/telemetry.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 static int
 p25_p2_s16_frames_have_audio(short frames[18][160]) {

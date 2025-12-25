@@ -11,7 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 // Forward declaration for the MAC VPDU handler under test
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);

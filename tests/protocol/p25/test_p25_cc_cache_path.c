@@ -14,10 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
-
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 
 static int

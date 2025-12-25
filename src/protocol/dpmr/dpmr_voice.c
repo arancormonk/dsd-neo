@@ -16,9 +16,28 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dpmr/dpmr_const.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+int32_t GetdPmrColorCode(uint8_t ChannelCodeBit[24]);
+void ScrambledPMRBit(uint32_t* LfsrValue, uint8_t* BufferIn, uint8_t* BufferOut, uint32_t NbOfBitToScramble);
+void DeInterleave6x12DPmrBit(uint8_t* BufferIn, uint8_t* BufferOut);
+uint8_t CRC7BitdPMR(uint8_t* BufferIn, uint32_t BitLength);
+void ConvertAirInterfaceID(uint32_t AI_ID, uint8_t ID[8]);
 
 void
 processdPMRvoice(dsd_opts* opts, dsd_state* state) {

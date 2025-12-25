@@ -3,13 +3,24 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <dsd-neo/runtime/telemetry.h>
 
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
+void processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd);
 
 //simplified DSTAR
 void

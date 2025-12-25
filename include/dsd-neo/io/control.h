@@ -24,6 +24,8 @@ void return_to_cc(dsd_opts* opts, dsd_state* state);
 void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 void trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 int io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
+void resumeScan(dsd_opts* opts, dsd_state* state);
+void openSerial(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

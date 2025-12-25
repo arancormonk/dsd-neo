@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+
+#include <stdio.h>
 
 #ifdef TRACE_DSD
 static void

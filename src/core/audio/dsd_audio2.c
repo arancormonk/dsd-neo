@@ -12,14 +12,24 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 
 #include <mbelib.h>
 
+#include <sndfile.h>
+
 #include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
 /* Write int16 audio using the abstraction layer */
 static void

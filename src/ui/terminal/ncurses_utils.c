@@ -9,7 +9,7 @@
 
 #include <dsd-neo/ui/ncurses_internal.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/unicode.h>

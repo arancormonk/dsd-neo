@@ -17,11 +17,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// Use real dsd types; local mbelib.h stub in tests/ satisfies mbelib include
-// Avoid main() prototype in dsd.h colliding with our test main
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 void processTDULC(dsd_opts* opts, dsd_state* state);
 

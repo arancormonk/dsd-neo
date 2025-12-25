@@ -18,8 +18,8 @@
  *   - menu_env.c / menu_env.h
  */
 
-#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/menu_defs.h>

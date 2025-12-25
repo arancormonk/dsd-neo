@@ -10,7 +10,8 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <stdint.h>
+#include <string.h>
 
 //modified from the LEH ComputeCrcCCITT to accept variable len buffer bits
 uint16_t

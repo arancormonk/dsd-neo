@@ -16,8 +16,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/runtime/unicode.h>
 
 // Stubs to keep test self-contained and avoid pulling heavy deps
 const char*

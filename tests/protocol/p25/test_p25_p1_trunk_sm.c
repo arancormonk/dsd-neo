@@ -15,7 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 
 // Stubs for rigctl/rtl to avoid external I/O

@@ -8,8 +8,12 @@
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ui_cmd_dispatch.h>
+
+#include <stdio.h>
 
 static int
 ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {

@@ -2,9 +2,14 @@
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
-#include <dsd-neo/core/dsd.h>
+
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 //fixed the memory leak, but now random segfaults occur -- double free or corruption (out) or (!prev)
 void

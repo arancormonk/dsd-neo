@@ -19,13 +19,32 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/bp.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/cleanup.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/pc4.h>
 #include <dsd-neo/crypto/rc2.h>
+#include <dsd-neo/crypto/rc4.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/exitflag.h>
 
 #include <mbelib.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 //NOTE: This set of functions will be reorganized and simplified (hopefully) or at least
 //a more logical flow will be established to jive with the new audio handling

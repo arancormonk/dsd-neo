@@ -12,7 +12,9 @@
  */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 
 #include <math.h>
 #include <stddef.h>

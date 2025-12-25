@@ -3,9 +3,23 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/frame.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -15,6 +29,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/ui_async.h>
 
@@ -28,6 +43,17 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <rtl-sdr.h>
+#endif
+
+extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
+extern void CNXDNConvolution_init(void);
+extern void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
+extern void processM17IPF(dsd_opts* opts, dsd_state* state);
+extern void encodeM17STR(dsd_opts* opts, dsd_state* state);
+extern void encodeM17BRT(dsd_opts* opts, dsd_state* state);
+extern void encodeM17PKT(dsd_opts* opts, dsd_state* state);
+#ifdef USE_CODEC2
+void codec2_destroy(struct CODEC2* codec2_state);
 #endif
 
 // Local caches to avoid redundant device I/O in hot paths

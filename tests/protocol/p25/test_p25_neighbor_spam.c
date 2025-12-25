@@ -15,11 +15,10 @@
 #include <string.h>
 #include <time.h>
 
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#undef main
 
 // Stubs for radio control
 bool

@@ -3,7 +3,15 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>

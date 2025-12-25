@@ -6,29 +6,32 @@
 // Minimal DMR SM smoke test: grant tunes to VC; tick handles release.
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 
 // Rigctl/RTL and CC-return stubs to avoid external I/O and core linkage
 bool
-SetFreq(int sockfd, long int freq) {
+SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
     return false;
 }
 
 bool
-SetModulation(int sockfd, int bandwidth) {
+SetModulation(dsd_socket_t sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return false;
 }
 
 long int
-GetCurrentFreq(int sockfd) {
+GetCurrentFreq(dsd_socket_t sockfd) {
     (void)sockfd;
     return 0;
 }

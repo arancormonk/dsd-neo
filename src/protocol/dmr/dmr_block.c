@@ -12,8 +12,23 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bp.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/rc4.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/pdu.h>
+#include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/unicode.h>
+
+#include <stdio.h>
+#include <string.h>
 
 #define DMR_PDU_DECRYPTION //disable to skip attempting to decrypt DMR PDUs
 

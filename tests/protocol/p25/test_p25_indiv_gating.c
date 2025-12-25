@@ -9,10 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#undef main
 
 bool
 SetFreq(int sockfd, long int freq) {

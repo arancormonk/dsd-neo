@@ -9,7 +9,8 @@
  * reused by tests and UI code without pulling in tuning policy.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 
@@ -18,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 int
 p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {

@@ -8,12 +8,17 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 // --- Stubs for external symbols referenced by dmr_csbk.c ---
 
@@ -58,21 +63,21 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
 
 // Rig/RTL helpers
 bool
-SetFreq(int sockfd, long int freq) {
+SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     (void)freq;
     return false;
 }
 
 bool
-SetModulation(int sockfd, int bandwidth) {
+SetModulation(dsd_socket_t sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return false;
 }
 
 long int
-GetCurrentFreq(int sockfd) {
+GetCurrentFreq(dsd_socket_t sockfd) {
     (void)sockfd;
     return 0;
 }

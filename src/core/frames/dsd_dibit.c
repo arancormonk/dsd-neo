@@ -16,17 +16,26 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <assert.h>
-#include <math.h>
-
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/comp.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+
+#include <assert.h>
+#include <math.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static void
 print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {

@@ -14,10 +14,17 @@
 //new and simplified/organized ambe and imbe handling
 //moving all audio handling and decryption to seperate files for simplicity (eventually)
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 
 #include <mbelib.h>
+
+#include <stdint.h>
+#include <string.h>
 
 //the initial functions will ONLY return demodulated ambe or imbe frames, THAT'S IT!
 //decryption and audio handling etc will be handled at a different area

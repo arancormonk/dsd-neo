@@ -12,21 +12,50 @@
  * LWVMOBILE
  * 2024-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/cleanup.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/viterbi.h>
+#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
+#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/ui_async.h>
+
+#ifdef USE_CODEC2
+#include <codec2/codec2.h>
+#endif
+
 #include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <sndfile.h>
+
+void decodeM17PKT(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 
 static inline short
 clip_float_to_short(float v) {

@@ -9,7 +9,7 @@
 
 #include <dsd-neo/ui/ncurses_snr.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 
 #include <dsd-neo/platform/curses_compat.h>

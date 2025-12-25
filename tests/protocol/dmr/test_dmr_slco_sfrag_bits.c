@@ -13,8 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define MBELIB_NO_HEADERS 1
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 static void
 slc17_build(uint8_t slc[17], uint8_t slco, uint8_t ts1_act, uint8_t ts2_act) {

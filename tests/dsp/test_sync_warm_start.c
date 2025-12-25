@@ -18,7 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 
 /* Tolerance for floating point comparisons */

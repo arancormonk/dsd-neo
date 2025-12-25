@@ -11,8 +11,19 @@
  * 2023-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/unicode.h>
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 void
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {

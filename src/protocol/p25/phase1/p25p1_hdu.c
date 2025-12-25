@@ -16,14 +16,24 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
-
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 /**
  * Read a dibit and retrieve both analog signal value and reliability.

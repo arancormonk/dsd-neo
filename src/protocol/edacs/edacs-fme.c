@@ -23,18 +23,43 @@
  * ilyacodes
  * 2024-03 rewrite EDACS standard parsing to spec, add reverse-engineered EA messages
  *-----------------------------------------------------------------------------*/
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/cleanup.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/runtime/telemetry.h>
 #include <math.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <sndfile.h>
+
+unsigned long long int edacs_bch(unsigned long long int message);
 
 static inline short
 clip_float_to_short(float v) {

@@ -9,11 +9,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-
-#define main dsd_neo_main_decl
-#include <dsd-neo/core/dsd.h>
-#undef main
 
 /* Import reliability buffers from p25p2_frame.c */
 extern uint8_t p2reliab[700];

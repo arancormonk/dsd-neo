@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 typedef struct dsd_state dsd_state;
+typedef struct Event_History_I Event_History_I;
 
 #ifdef __cplusplus
 }

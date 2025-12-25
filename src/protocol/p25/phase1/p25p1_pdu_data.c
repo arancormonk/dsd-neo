@@ -10,7 +10,24 @@
  * 2025-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/rc4.h>
+#include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/protocol/pdu.h>
+#include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/config.h>
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 static inline void
 dsd_append(char* dst, size_t dstsz, const char* src) {
@@ -23,8 +40,6 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
     }
     snprintf(dst + len, dstsz - len, "%s", src);
 }
-
-#include <dsd-neo/runtime/config.h>
 
 static void
 p25_emit_pdu_json_if_enabled(uint8_t fmt, uint8_t sap, uint8_t mfid, uint8_t io, uint32_t llid, uint8_t blks,

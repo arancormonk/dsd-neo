@@ -12,7 +12,10 @@
 //Hamming17123, crc7, crc8, crc8ok functions
 //Original Souce - https://github.com/boatbod/op25
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/fec/rs_12_9.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
+#include <string.h>
 
 //modified to accept variable payload size and len
 uint16_t

@@ -9,8 +9,11 @@
 #include <stdint.h>
 #include <string.h>
 
-#define MBELIB_NO_HEADERS 1
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/fec/rs_12_9.h>
+#include <dsd-neo/runtime/unicode.h>
 
 // Forward under test
 extern void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[],

@@ -11,9 +11,20 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/git_ver.h>
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 // Safe bounded copy helper that tolerates potential overlap
 static inline void

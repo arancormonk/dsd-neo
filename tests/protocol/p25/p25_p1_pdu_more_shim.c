@@ -5,9 +5,13 @@
 
 /* Test-side shim to decode P25p1 PDU data with minimal Event History backing. */
 
+#include <stdint.h>
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+
+void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 
 void
 p25_test_p1_pdu_data_decode_with_evh(const unsigned char* input, int len) {

@@ -3,8 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 void
 dstar_header_decode(dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_CODED_BITS]) {

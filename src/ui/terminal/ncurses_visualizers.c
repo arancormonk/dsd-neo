@@ -10,7 +10,9 @@
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ui_prims.h>
 
 #include <dsd-neo/platform/curses_compat.h>

@@ -19,9 +19,15 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/protocol_dispatch.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/colors.h>
+
+#include <stdio.h>
+#include <string.h>
 #if !defined(NULL)
 #define NULL 0
 #endif

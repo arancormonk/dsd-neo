@@ -21,8 +21,9 @@
  * several 4FSK systems.
  */
 
-#include <dsd-neo/core/dsd.h>
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
+
+#include <string.h>
 
 // P25 MBF 3/4 dibit deinterleave schedule (placeholder: matches DMR 3/4)
 static const uint8_t p25_mbf34_interleave[98] = {

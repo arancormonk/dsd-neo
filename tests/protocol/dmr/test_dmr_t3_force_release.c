@@ -8,12 +8,17 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 // Stubs and helpers (same pattern as other DMR tests)
 uint64_t
@@ -65,21 +70,21 @@ rtl_stream_tune(struct RtlSdrContext* c, uint32_t f) {
 }
 
 bool
-SetFreq(int fd, long int f) {
+SetFreq(dsd_socket_t fd, long int f) {
     (void)fd;
     (void)f;
     return false;
 }
 
 bool
-SetModulation(int fd, int bw) {
+SetModulation(dsd_socket_t fd, int bw) {
     (void)fd;
     (void)bw;
     return false;
 }
 
 long int
-GetCurrentFreq(int fd) {
+GetCurrentFreq(dsd_socket_t fd) {
     (void)fd;
     return 0;
 }

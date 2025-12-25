@@ -16,10 +16,14 @@
 #include "menu_prompts.h"
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
@@ -35,10 +39,6 @@
 
 #if defined(__SSE__) || defined(__SSE2__)
 #include <xmmintrin.h>
-#endif
-
-#ifndef UNUSED
-#define UNUSED(x) (void)(x)
 #endif
 
 // ---- Main menu actions ----

@@ -10,10 +10,22 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/pdu.h>
+#include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/unicode.h>
+
+#include <stdio.h>
+#include <string.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
-#include <dsd-neo/runtime/unicode.h>
 
 //convert a value that is stored as a string decimal into a decimal uint16_t
 uint16_t

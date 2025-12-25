@@ -10,9 +10,14 @@
 
 #include <string.h>
 
-#include <dsd-neo/core/dsd.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.

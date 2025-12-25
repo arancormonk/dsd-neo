@@ -101,6 +101,8 @@ void audio_apply_gain_s16(short* buf, size_t n, float gain);
 void upsampleS(short invalue, short prev, short outbuf[6]);
 /** @brief Float 8k→48k upsampler (6:1) with linear interpolation. */
 void upsampleF(float invalue, float prev, float outbuf[6]);
+/** @brief Legacy analog monitor 6x upsampler (sample repetition). */
+void upsample(dsd_state* state, float invalue);
 
 /** @brief Convert float samples to int16 with scaling. */
 void audio_float_to_s16(const float* in, short* out, size_t n, float scale);
@@ -132,6 +134,9 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
+
+/** @brief Legacy UI beeper helper (used by ncurses call-alert and events). */
+void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /** @brief Open output audio device at requested speed. */
 void openAudioOutDevice(dsd_opts* opts, int speed);

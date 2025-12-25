@@ -2,8 +2,7 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
-
-#include <dsd-neo/core/dsd.h>
+#include <stdio.h>
 
 #include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
