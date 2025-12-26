@@ -20,39 +20,11 @@
  */
 
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/protocol_dispatch.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/colors.h>
 
 #include <stdio.h>
-#include <string.h>
-#if !defined(NULL)
-#define NULL 0
-#endif
-
-static const dsd_protocol_handler*
-dsd_find_protocol_handler(int synctype) {
-    const dsd_protocol_handler* handler = dsd_protocol_handlers;
-    const dsd_protocol_handler* fallback = NULL;
-
-    if (handler == NULL) {
-        return NULL;
-    }
-
-    while (handler->name != NULL) {
-        if (handler->matches_synctype != NULL && handler->matches_synctype(synctype)) {
-            return handler;
-        }
-        if (fallback == NULL && strcmp(handler->name, "P25P1") == 0) {
-            fallback = handler;
-        }
-        handler++;
-    }
-
-    return fallback;
-}
 
 void
 printFrameInfo(dsd_opts* opts, dsd_state* state) {
@@ -79,21 +51,4 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "Site: %03lld; ", state->p2_siteid);
     }
     fprintf(stderr, "%s", KNRM);
-}
-
-void
-processFrame(dsd_opts* opts, dsd_state* state) {
-
-    if (state->rf_mod == 1) {
-        state->maxref = state->max * 0.80F;
-        state->minref = state->min * 0.80F;
-    } else {
-        state->maxref = state->max;
-        state->minref = state->min;
-    }
-
-    const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
-    if (handler != NULL && handler->handle_frame != NULL) {
-        handler->handle_frame(opts, state);
-    }
 }

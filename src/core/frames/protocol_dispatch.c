@@ -3,9 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/frame.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/protocol_dispatch.h>
+#include <dsd-neo/core/state.h>
 
 #include <stddef.h>
+#include <string.h>
 
 extern int dsd_dispatch_matches_nxdn(int synctype);
 extern void dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state);
@@ -39,6 +43,45 @@ extern void dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
 
 extern int dsd_dispatch_matches_p25p1(int synctype);
 extern void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
+
+static const dsd_protocol_handler*
+dsd_find_protocol_handler(int synctype) {
+    const dsd_protocol_handler* handler = dsd_protocol_handlers;
+    const dsd_protocol_handler* fallback = NULL;
+
+    if (handler == NULL) {
+        return NULL;
+    }
+
+    while (handler->name != NULL) {
+        if (handler->matches_synctype != NULL && handler->matches_synctype(synctype)) {
+            return handler;
+        }
+        if (fallback == NULL && strcmp(handler->name, "P25P1") == 0) {
+            fallback = handler;
+        }
+        handler++;
+    }
+
+    return fallback;
+}
+
+void
+processFrame(dsd_opts* opts, dsd_state* state) {
+
+    if (state->rf_mod == 1) {
+        state->maxref = state->max * 0.80F;
+        state->minref = state->min * 0.80F;
+    } else {
+        state->maxref = state->max;
+        state->minref = state->min;
+    }
+
+    const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
+    if (handler != NULL && handler->handle_frame != NULL) {
+        handler->handle_frame(opts, state);
+    }
+}
 
 const dsd_protocol_handler dsd_protocol_handlers[] = {
     {"NXDN", dsd_dispatch_matches_nxdn, dsd_dispatch_handle_nxdn, NULL},
