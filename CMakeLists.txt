@@ -63,6 +63,35 @@ option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
 
+# -----------------------------------------------------------------------------
+# Common warning flags (target-scoped)
+#
+# This project keeps warnings target-scoped (not global add_compile_options) so
+# third-party code and unrelated targets aren't affected. Targets should link
+# this helper target PRIVATE.
+# -----------------------------------------------------------------------------
+
+add_library(dsd-neo_warnings INTERFACE)
+
+if(DSD_ENABLE_WARNINGS)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(dsd-neo_warnings INTERFACE -Wall -Wextra -Wpedantic)
+        target_compile_options(dsd-neo_warnings INTERFACE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
+                               -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
+                               -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
+                               -Wtautological-compare)
+    elseif(MSVC)
+        target_compile_options(dsd-neo_warnings INTERFACE /W4)
+    endif()
+    if(DSD_WARNINGS_AS_ERRORS)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(dsd-neo_warnings INTERFACE -Werror)
+        elseif(MSVC)
+            target_compile_options(dsd-neo_warnings INTERFACE /WX)
+        endif()
+    endif()
+endif()
+
 #
 # Global optimization knobs for Release-like builds
 # Place early so they affect subsequently created targets

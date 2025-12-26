@@ -33,22 +33,4 @@ target_include_directories(dsd-neo_core
 target_link_libraries(dsd-neo_core PUBLIC dsd-neo_runtime dsd-neo_dsp dsd-neo_fec dsd-neo_crypto dsd-neo_feature_rtlsdr
                                            dsd-neo_feature_codec2 ${LIBSNDFILE_LIBRARIES})
 
-# Warnings (configurable)
-if(DSD_ENABLE_WARNINGS)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(dsd-neo_core PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(dsd-neo_core PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                               -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                               -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                               -Wtautological-compare)
-    elseif(MSVC)
-        target_compile_options(dsd-neo_core PRIVATE /W4)
-    endif()
-    if(DSD_WARNINGS_AS_ERRORS)
-        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-            target_compile_options(dsd-neo_core PRIVATE -Werror)
-        elseif(MSVC)
-            target_compile_options(dsd-neo_core PRIVATE /WX)
-        endif()
-    endif()
-endif()
+target_link_libraries(dsd-neo_core PRIVATE dsd-neo_warnings)

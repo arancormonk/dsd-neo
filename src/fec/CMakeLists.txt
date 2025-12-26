@@ -16,22 +16,4 @@ target_include_directories(dsd-neo_fec
 
 target_link_libraries(dsd-neo_fec PRIVATE dsd-neo_ezpwd)
 
-# Warnings (configurable)
-if(DSD_ENABLE_WARNINGS)
-  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(dsd-neo_fec PRIVATE -Wall -Wextra -Wpedantic)
-    target_compile_options(dsd-neo_fec PRIVATE -Wunused-but-set-variable -Wunused-variable -Wunused-parameter
-                           -Wempty-body -Wunused-label $<$<COMPILE_LANGUAGE:C>:-Wpointer-sign>
-                           -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
-                           -Wtautological-compare)
-  elseif(MSVC)
-    target_compile_options(dsd-neo_fec PRIVATE /W4)
-  endif()
-  if(DSD_WARNINGS_AS_ERRORS)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-      target_compile_options(dsd-neo_fec PRIVATE -Werror)
-    elseif(MSVC)
-      target_compile_options(dsd-neo_fec PRIVATE /WX)
-    endif()
-  endif()
-endif()
+target_link_libraries(dsd-neo_fec PRIVATE dsd-neo_warnings)
