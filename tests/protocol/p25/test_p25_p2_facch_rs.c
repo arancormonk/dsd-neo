@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// Provided by src/ez.cpp via dsd-neo_proto_p25
+// Provided by src/fec/ez.cpp via dsd-neo_fec
 int ez_rs28_facch(int payload[156], int parity[114]);
 
 static int

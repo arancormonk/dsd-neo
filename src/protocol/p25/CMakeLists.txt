@@ -37,7 +37,6 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   phase2/p25p2_vpdu.c
   phase2/p25p2_xcch.c
   phase2/p25p2_soft.c
-  ${PROJECT_SOURCE_DIR}/src/ez.cpp
 )
 
 target_include_directories(dsd-neo_proto_p25
@@ -45,7 +44,7 @@ target_include_directories(dsd-neo_proto_p25
   PRIVATE ${_PUBLIC_INCLUDES}
 )
 
-target_link_libraries(dsd-neo_proto_p25 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_dsp dsd-neo_ezpwd dsd-neo_feature_rtlsdr)
+target_link_libraries(dsd-neo_proto_p25 PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_dsp dsd-neo_feature_rtlsdr)
 
 # Warnings (configurable)
 if(DSD_ENABLE_WARNINGS)
