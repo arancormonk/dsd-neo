@@ -5,8 +5,8 @@
 
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/protocol_dispatch.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 
 #include <stddef.h>
 #include <string.h>
