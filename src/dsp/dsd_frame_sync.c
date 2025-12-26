@@ -19,12 +19,17 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -32,9 +37,11 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -45,17 +52,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-/* Forward declaration for reliability computation (defined in dsd_dibit.c) */
-extern uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
-extern float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
-extern int comp(const void* a, const void* b);
-extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
-extern void eot_cc(dsd_opts* opts, dsd_state* state);
-extern void noCarrier(dsd_opts* opts, dsd_state* state);
-extern void printFrameInfo(dsd_opts* opts, dsd_state* state);
-extern void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
-extern void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 
 static inline void
 dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
@@ -445,10 +441,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                 do {
                     /* Pull smoothed SNR; fall back to lightweight estimators if needed */
-                    extern double rtl_stream_get_snr_c4fm(void);
-                    extern double rtl_stream_get_snr_cqpsk(void);
-                    extern double rtl_stream_estimate_snr_c4fm_eye(void);
-                    extern double rtl_stream_estimate_snr_qpsk_const(void);
                     double snr_c = rtl_stream_get_snr_c4fm();
                     double snr_q = rtl_stream_get_snr_cqpsk();
                     if (snr_c <= -50.0) {
@@ -838,20 +830,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             // Falls back to legacy power squelch gating for certain modes.
 #ifdef USE_RTLSDR
             {
-                extern const dsdneoRuntimeConfig* dsd_neo_get_config(void);
                 const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
                 int snr_gate = 0;
                 if (cfg && cfg->snr_sql_is_set) {
                     double snr_db = -200.0;
                     if (opts->frame_p25p1 == 1) {
-                        extern double rtl_stream_get_snr_c4fm(void);
                         snr_db = rtl_stream_get_snr_c4fm();
                     } else if (opts->frame_p25p2 == 1) {
-                        extern double rtl_stream_get_snr_cqpsk(void);
                         snr_db = rtl_stream_get_snr_cqpsk();
                     } else if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1
                                || opts->frame_m17 == 1) {
-                        extern double rtl_stream_get_snr_gfsk(void);
                         snr_db = rtl_stream_get_snr_gfsk();
                     }
                     if (snr_db > -150.0 && snr_db < (double)cfg->snr_sql_db) {
@@ -1121,10 +1109,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             // Automatic DSP toggling disabled by user request.
             // if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)
             //     && state->rf_mod == 2) { /* 2 = GFSK/FSK family */
-            //     extern void rtl_stream_set_fm_agc(int onoff);
-            //     extern void rtl_stream_set_fm_limiter(int onoff);
-            //     extern void rtl_stream_toggle_fll(int onoff);
-            //     extern void rtl_stream_toggle_ted(int onoff);
             //     rtl_stream_set_fm_agc(0);
             //     rtl_stream_set_fm_limiter(0);
             //     rtl_stream_toggle_fll(0);

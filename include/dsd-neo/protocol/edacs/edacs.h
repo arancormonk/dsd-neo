@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 void edacs(dsd_opts* opts, dsd_state* state);
+void eot_cc(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

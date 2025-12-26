@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
@@ -15,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/engine/engine.h>
@@ -26,6 +28,8 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/m17/m17.h>
+#include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
@@ -47,13 +51,6 @@
 #include <rtl-sdr.h>
 #endif
 
-extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
-extern void CNXDNConvolution_init(void);
-extern void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
-extern void processM17IPF(dsd_opts* opts, dsd_state* state);
-extern void encodeM17STR(dsd_opts* opts, dsd_state* state);
-extern void encodeM17BRT(dsd_opts* opts, dsd_state* state);
-extern void encodeM17PKT(dsd_opts* opts, dsd_state* state);
 #ifdef USE_CODEC2
 void codec2_destroy(struct CODEC2* codec2_state);
 #endif

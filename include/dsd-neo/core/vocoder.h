@@ -22,6 +22,7 @@ extern "C" {
 void processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
                      char imbe7100_fr[7][24]);
 void soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]);
+void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
 
 #ifdef __cplusplus
 }
