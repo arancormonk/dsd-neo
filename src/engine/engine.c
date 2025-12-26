@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
@@ -101,6 +102,26 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
         LOG_DEBUG("Autosaved configuration to %s\n", path);
     } else {
         LOG_WARNING("Failed to save configuration to %s\n", path);
+    }
+}
+
+static void
+import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+
+    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
+    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1);
+
+    if (trunk_or_scan && opts->chan_in_file[0] != '\0' && state->lcn_freq_count == 0) {
+        csvChanImport(opts, state);
+        LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
+    }
+
+    if (trunk_enabled && opts->group_in_file[0] != '\0' && state->group_tally == 0) {
+        csvGroupImport(opts, state);
+        LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
     }
 }
 
@@ -1620,6 +1641,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     }
 
     exitflag = 0;
+
+    // If trunking/scanner inputs were configured via INI/env rather than CLI (-C/-G),
+    // import the CSVs now before the decoder begins processing.
+    import_trunking_csvs_if_needed(opts, state);
 
     /* Rebuild audio filters after CLI/config/bootstrap may have changed the output rate.
        Base coefficients on the analog monitor sample rate so cutoffs stay correct. */

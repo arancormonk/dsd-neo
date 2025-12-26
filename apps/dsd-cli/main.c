@@ -201,11 +201,12 @@ main(int argc, char** argv) {
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
 
     // If a user config enabled trunking but this process was started with
-    // any CLI arguments and none of them explicitly enabled/disabled trunk
-    // (via -T / -Y), fall back to the built-in default of trunking disabled
-    // for this run. This keeps CLI-driven sessions from inheriting trunk
-    // enable solely from the config file.
-    if (argc > 1 && user_cfg_loaded && !opts->trunk_cli_seen) {
+    // any effective CLI arguments and none of them explicitly enabled/disabled
+    // trunk (via -T / -Y), fall back to the built-in default of trunking
+    // disabled for this run. This keeps CLI-driven sessions from inheriting
+    // trunk enable solely from the config file, while allowing config-driven
+    // runs like: dsd-neo --config <path>
+    if (argc_effective > 1 && user_cfg_loaded && !opts->trunk_cli_seen) {
         opts->p25_trunk = 0;
         opts->trunk_enable = 0;
     }
