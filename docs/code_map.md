@@ -9,6 +9,21 @@ High‑level layout with module responsibilities and libraries. All public heade
   - Links against all module libraries; keep main thin (arg parsing, wiring)
   - Build files: `apps/dsd-cli/CMakeLists.txt`
 
+## Engine
+
+- Path: `src/engine`, `include/dsd-neo/engine`
+- Target: `dsd-neo_engine`
+- Responsibilities: top-level decode/encode runner and lifecycle (wires core/runtime/IO/protocol state machines)
+  - Build files: `src/engine/CMakeLists.txt`
+
+## Platform
+
+- Path: `src/platform`, `include/dsd-neo/platform`
+- Target: `dsd-neo_platform`
+- Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses compatibility)
+  - Audio backends: PulseAudio (default on Unix-like systems) or PortAudio (Windows and optional elsewhere)
+  - Build files: `src/platform/CMakeLists.txt`
+
 ## Core
 
 - Path: `src/core`, `include/dsd-neo/core`
@@ -59,8 +74,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - Path: `src/io`, `include/dsd-neo/io`
 - Targets:
   - `dsd-neo_io_radio` — RTL‑SDR front‑end and orchestrator for USB and rtl_tcp; provides constellation/eye/spectrum snapshots, optional bias‑tee, fs/4 capture shift, and auto‑PPM hooks.
-  - `dsd-neo_io_audio` — audio I/O backends: PulseAudio playback and UDP PCM input. PortAudio device listing is available when enabled.
-  - `dsd-neo_io_control` — UDP retune control server and control interfaces (rigctl/serial).
+  - `dsd-neo_io_audio` — network audio inputs: UDP PCM16LE input and TCP PCM16LE input.
+  - `dsd-neo_io_control` — control interfaces: UDP retune control server, rigctl/serial, and UDP audio “socket blaster” output.
 
 Key public headers:
 
@@ -68,15 +83,16 @@ Key public headers:
 - RTL device I/O: `include/dsd-neo/io/rtl_device.h` (USB and rtl_tcp backends, tuner gain/PPM helpers, FS/4 capture shift pipeline hooks).
 - C++ orchestrator RAII: `include/dsd-neo/io/rtl_stream.h` (class `RtlSdrOrchestrator`, used by the C shim and the radio pipeline).
 - UDP control API: `include/dsd-neo/io/udp_control.h` (retune command listener with callback).
+- UDP audio output: `include/dsd-neo/io/udp_audio.h` (PCM16 “socket blaster”; implemented in `src/io/control/dsd_rigctl.c`).
 - UDP PCM input: `include/dsd-neo/io/udp_input.h` (PCM16LE UDP input backend helpers).
-- Optional PortAudio device listing: `include/dsd-neo/io/pa_devs.h` (enabled when built with PortAudio).
+- TCP PCM input: `include/dsd-neo/io/tcp_input.h` (PCM16LE TCP input backend helpers).
 
 Notes:
 
-- M17 UDP/IP framing and sockets are implemented in the protocol module (`src/protocol/m17/m17.c`) and surfaced via UI/services; IO control focuses on retune/rig control.
+- Local audio backends (PulseAudio/PortAudio) and device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
+- M17 UDP/IP framing and sockets are implemented in the protocol module (`src/protocol/m17/m17.c`) and surfaced via UI/services.
 
 Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
-
 
 ## FEC
 
@@ -110,9 +126,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 ## Third‑Party
 
-- Path: `src/third_party/ezpwd`
-- Target: `dsd-neo_ezpwd` (INTERFACE; headers included via `src/third_party` path)
-  - Build files: `src/third_party/CMakeLists.txt`, `src/third_party/ezpwd/CMakeLists.txt`
+- Paths:
+  - `src/third_party/ezpwd` — Target: `dsd-neo_ezpwd` (INTERFACE; headers included via `src/third_party` path)
+  - `src/third_party/pffft` — Target: `dsd-neo_pffft` (STATIC; FFT helper for spectrum/diagnostics)
+- Build files: `src/third_party/CMakeLists.txt` and subdirectory `CMakeLists.txt` files
 
 ## UI
 
@@ -128,6 +145,7 @@ Key public headers:
 - Async/UI plumbing: `include/dsd-neo/ui/ui_async.h`, `include/dsd-neo/ui/ui_cmd.h`, `include/dsd-neo/ui/ui_cmd_dispatch.h`, `include/dsd-neo/ui/ui_dsp_cmd.h`, `include/dsd-neo/ui/ui_snapshot.h`, `include/dsd-neo/ui/ui_opts_snapshot.h`, `include/dsd-neo/ui/ui_prims.h`, `include/dsd-neo/ui/keymap.h`, `include/dsd-neo/ui/panels.h`
 
 ### Adding Menu Items
+
 - Define a handler:
   - Prefer a service in `include/dsd-neo/ui/menu_services.h` with implementation in `src/ui/terminal/menu_services.c` for side effects (I/O, mode switches, file ops).
   - UI handlers in `menu_core.c` should be thin wrappers that call service helpers and use `ui_prompt_*` to gather input.
@@ -142,6 +160,8 @@ Key public headers:
 ## Include Prefix Summary
 
 - Core: `<dsd-neo/core/...>`
+- Engine: `<dsd-neo/engine/...>`
+- Platform: `<dsd-neo/platform/...>`
 - Runtime: `<dsd-neo/runtime/...>`
 - DSP: `<dsd-neo/dsp/...>`
 - IO: `<dsd-neo/io/...>`
@@ -151,7 +171,7 @@ Key public headers:
 
 Additional includes of interest:
 
-- IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`, `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`, `<dsd-neo/io/pa_devs.h>`
+- IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`, `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/udp_audio.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`, `<dsd-neo/io/tcp_input.h>`
 - UI: `<dsd-neo/ui/menu_core.h>`, `<dsd-neo/ui/menu_defs.h>`, `<dsd-neo/ui/menu_services.h>`
 
 ## Build Targets
@@ -164,4 +184,5 @@ Top‑level build files: `CMakeLists.txt`, `CMakePresets.json`, `apps/CMakeLists
 
 External dependencies (resolved via CMake):
 
-- Required: LibSndFile, ncurses (wide), PulseAudio; MBE vocoder (prefer `mbe-neo`, falls back to legacy `MBE`); optional: RTL‑SDR, CODEC2, PortAudio (for device listing only).
+- Required: LibSndFile; curses (ncursesw/PDCurses); an audio backend (PulseAudio by default, PortAudio on Windows); MBE vocoder (`mbe-neo`).
+- Optional: RTL‑SDR, CODEC2.

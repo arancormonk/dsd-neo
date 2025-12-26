@@ -1,6 +1,6 @@
 # DSD-neo
 
-A modular and performance‑enhanced version of the well-known Digital Speech Decoder (DSD) with a modern CMake build, split into focused libraries (runtime, DSP, IO, FEC, crypto, protocol, core, ui) and a thin CLI.
+A modular and performance‑enhanced version of the well-known Digital Speech Decoder (DSD) with a modern CMake build, split into focused libraries (`runtime`, `platform`, `dsp`, `io`, `engine`, `fec`, `crypto`, `protocol`, `core`, `ui`) and a thin CLI.
 
 Project homepage: https://github.com/arancormonk/dsd-neo
 
@@ -35,7 +35,7 @@ This project is an active work in progress as we decouple from the upstream fork
 ## Overview
 
 - A performance‑enhanced fork of [lwvmobile/dsd-fme](https://github.com/lwvmobile/dsd-fme), which is a fork of [szechyjs/dsd](https://github.com/szechyjs/dsd)
-- Modularized fork with clear boundaries: `runtime`, `dsp`, `io`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
+- Modularized fork with clear boundaries: `runtime`, `platform`, `dsp`, `io`, `engine`, `fec`, `crypto`, `protocol`, `core`, plus `ui` and a CLI app.
 - Protocol coverage: DMR, dPMR, D‑STAR, NXDN, P25 Phase 1/2, X2‑TDMA, EDACS, ProVoice, M17, YSF.
 - Requires [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) for IMBE/AMBE vocoder primitives.
 - Public headers live under `include/dsd-neo/...` and are included as `#include <dsd-neo/<module>/<header>>`.
@@ -72,6 +72,10 @@ This project is an active work in progress as we decouple from the upstream fork
     - Optional auto‑PPM correction from the timing error detector for long unattended runs.
   - Device control from the UI: toggle bias‑tee, switch AGC/manual gain, adjust bandwidth and squelch, and retune quickly.
 
+- M17 encode tooling
+
+  - Generate M17 signals for test/airgap workflows: stream voice (`-fZ`), packet (`-fP`), and BERT (`-fB`) encoders.
+
 - Expanded DSP controls for power users
 
   - Changes apply instantly from the UI and persist across retunes.
@@ -92,7 +96,7 @@ Requirements
 - C compiler with C11 and C++ compiler with C++14 support.
 - CMake ≥ 3.20.
 - Dependencies:
-  - Required: libsndfile, ncurses (wide), PulseAudio.
+  - Required: libsndfile; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
   - Optional: librtlsdr (RTL‑SDR support), Codec2 (additional vocoder paths), help2man (man page generation).
   - Vocoder: mbelib-neo (`mbe-neo` CMake package) is required.
 
@@ -104,7 +108,7 @@ OS package hints
   - `brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2`
 - Windows:
   - Preferred binary: the native MSVC ZIP. The MinGW ZIP is an alternative native build.
-  - Source builds can use MSVC or MinGW (via MSYS2).
+  - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` or `win-mingw-*` presets in `CMakePresets.json`.
 
 Using CMake presets (recommended)
 
@@ -167,6 +171,8 @@ cmake --build build/dev-release --target uninstall
   - `-DDSD_ENABLE_NATIVE=ON` — Enable `-march=native -mtune=native` (non‑portable binaries).
   - `-DDSD_ENABLE_ASAN=ON` — AddressSanitizer in Debug builds.
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
+- Audio backend selection:
+  - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
 - UI and behavior toggles:
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
@@ -208,7 +214,7 @@ Common options:
 ## Tests and Examples
 
 - Run all tests: `ctest --preset dev-debug -V` (or `ctest --test-dir build/dev-debug -V`).
-- Scope: unit tests for protocol helpers (P25 p1/p2, IDEN maps, CRC/RS), crypto, and FEC primitives are included and run via CTest.
+- Scope: unit tests cover runtime config parsing/validation, DSP primitives (filters/resampler/demod helpers), and FEC/crypto helpers.
 - Contributions: prefer small, testable helpers and add focused tests under `tests/<area>`.
 
 ## Documentation
@@ -220,13 +226,15 @@ Common options:
 
 - Apps: `apps/dsd-cli` — CLI entrypoint, target `dsd-neo`.
 - Core: `src/core`, headers `<dsd-neo/core/...>` — glue (audio, vocoder, frame dispatch, GPS, file import).
+- Engine: `src/engine`, headers `<dsd-neo/engine/...>` — top-level decode/encode runner and lifecycle.
+- Platform: `src/platform`, headers `<dsd-neo/platform/...>` — cross-platform primitives (audio backend, sockets, threading, timing, curses).
 - Runtime: `src/runtime`, headers `<dsd-neo/runtime/...>` — config, logging, aligned memory, rings, worker pool, RT scheduling, git version.
 - DSP: `src/dsp`, headers `<dsd-neo/dsp/...>` — demod pipeline, resampler, filters, FLL/TED, SIMD helpers.
-- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR), audio (PulseAudio + UDP PCM input/output), control (UDP/rigctl/serial).
+- IO: `src/io`, headers `<dsd-neo/io/...>` — radio (RTL‑SDR), audio (PulseAudio/PortAudio + UDP PCM input/output), control (UDP/rigctl/serial).
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
-- Third‑party: `src/third_party/ezpwd` — INTERFACE target `dsd-neo_ezpwd`.
+- Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (FFT helper).
 
 ## Tooling
 
@@ -238,11 +246,11 @@ Common options:
 
 - Languages: C (C11) and C++ (C++14). Indent width 4 spaces; no tabs; brace all control statements; line length ≤ 120.
 - Use project‑prefixed includes only: `#include <dsd-neo/...>`.
-- Before sending changes: build presets you touched, run `tools/format.sh`, address feasible clang‑tidy warnings.
+- Before sending changes: build presets you touched, run `tools/format.sh`, address feasible clang‑tidy and cppcheck warnings.
 
 ## License
 
 - Project license: GPL‑3.0‑or‑later (see `LICENSE`).
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).
-- Third-party notices live in `THIRD_PARTY.md` (ezpwd LGPL text: `src/third_party/ezpwd/lesser.txt`).
+- Third-party notices live in `THIRD_PARTY.md` (installed license texts: `share/doc/dsd-neo/licenses/`).
 - Source files carry SPDX identifiers reflecting their license.

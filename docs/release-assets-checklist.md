@@ -5,7 +5,8 @@ Required license/notice files in every shipped asset:
 - `LICENSE`
 - `COPYRIGHT`
 - `THIRD_PARTY.md`
-- `lesser.txt` (from `src/third_party/ezpwd/lesser.txt`)
+- `licenses/ezpwd-LGPL-2.1-or-later.txt` (from `src/third_party/ezpwd/lesser.txt`)
+- `licenses/pffft-FFTPACK.txt` (from `src/third_party/pffft/COPYING`)
 
 ## TODOs per uploaded asset
 

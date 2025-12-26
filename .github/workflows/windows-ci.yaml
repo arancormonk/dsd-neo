@@ -76,7 +76,8 @@ jobs:
           $stage = 'dist/dsd-neo-msvc'
           $binDir = Join-Path $stage 'bin'
           $docDir = Join-Path $stage 'share/doc/dsd-neo'
-          New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
+          $licenseDir = Join-Path $docDir 'licenses'
+          New-Item -ItemType Directory -Force -Path $binDir,$docDir,$licenseDir | Out-Null
           Copy-Item -Force $exe $binDir
 
           $triplet = $env:VCPKG_TARGET_TRIPLET
@@ -90,8 +91,10 @@ jobs:
             -DestinationDir $binDir `
             -SearchDirs $searchDirs
 
-          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
+          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction SilentlyContinue
+          Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction SilentlyContinue
+          Copy-Item -Force 'src/third_party/pffft/COPYING' (Join-Path $licenseDir 'pffft-FFTPACK.txt') -ErrorAction SilentlyContinue
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-FFTPACK.txt')
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
@@ -258,7 +261,8 @@ jobs:
           $stage = 'dist/dsd-neo-mingw'
           $binDir = Join-Path $stage 'bin'
           $docDir = Join-Path $stage 'share/doc/dsd-neo'
-          New-Item -ItemType Directory -Force -Path $binDir,$docDir | Out-Null
+          $licenseDir = Join-Path $docDir 'licenses'
+          New-Item -ItemType Directory -Force -Path $binDir,$docDir,$licenseDir | Out-Null
           Copy-Item -Force $exe $binDir
           $triplet = $env:VCPKG_TARGET_TRIPLET
           if (-not $triplet) { $triplet = $env:VCPKG_DEFAULT_TRIPLET }
@@ -283,8 +287,10 @@ jobs:
             -DestinationDir $binDir `
             -SearchDirs $searchDirs
 
-          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md,'src/third_party/ezpwd/lesser.txt' $docDir -ErrorAction SilentlyContinue
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','lesser.txt')
+          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction SilentlyContinue
+          Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction SilentlyContinue
+          Copy-Item -Force 'src/third_party/pffft/COPYING' (Join-Path $licenseDir 'pffft-FFTPACK.txt') -ErrorAction SilentlyContinue
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-FFTPACK.txt')
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }

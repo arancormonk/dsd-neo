@@ -33,6 +33,48 @@
 // Local helpers --------------------------------------------------------------
 static void dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state);
 
+static int
+cli_collect_hex_digits(const char* in, char* out, size_t out_cap, size_t* out_len) {
+    if (!in || !out || out_cap == 0) {
+        return 0;
+    }
+    size_t w = 0;
+    for (const char* p = in; *p; ++p) {
+        if (isspace((unsigned char)*p)) {
+            continue;
+        }
+        if (!isxdigit((unsigned char)*p)) {
+            return 0;
+        }
+        if (w + 1 >= out_cap) {
+            return 0;
+        }
+        out[w++] = *p;
+    }
+    out[w] = '\0';
+    if (out_len) {
+        *out_len = w;
+    }
+    return 1;
+}
+
+static int
+cli_parse_hex_u64_n(const char* hex, size_t n, unsigned long long* out) {
+    if (!hex || !out || n == 0 || n > 16) {
+        return 0;
+    }
+    char buf[17];
+    memcpy(buf, hex, n);
+    buf[n] = '\0';
+    char* end = NULL;
+    unsigned long long v = strtoull(buf, &end, 16);
+    if (!end || *end != '\0') {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
@@ -599,10 +641,52 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             }
             case 'H':
-                strncpy(opts->key_in_file, optarg, 1023);
-                opts->key_in_file[1023] = '\0';
-                csvKeyImportHex(opts, state);
-                state->keyloader = 1;
+                if (state) {
+                    char hex[128];
+                    size_t nhex = 0;
+                    if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {
+                        LOG_ERROR("-H expects a hex key (spaces allowed)\n");
+                        exit(1);
+                    }
+
+                    unsigned long long k1 = 0ULL, k2 = 0ULL, k3 = 0ULL, k4 = 0ULL;
+                    if (nhex == 10) {
+                        if (!cli_parse_hex_u64_n(hex, 10, &k1)) {
+                            LOG_ERROR("-H failed to parse 10-hex Hytera BP key\n");
+                            exit(1);
+                        }
+                        state->H = k1 & 0xFFFFFFFFFFULL;
+                        state->K1 = state->H;
+                        state->K2 = state->K3 = state->K4 = 0ULL;
+                        LOG_NOTICE("Hytera BP key loaded (40-bit)\n");
+                    } else if (nhex == 32) {
+                        if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {
+                            LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");
+                            exit(1);
+                        }
+                        state->H = k1;
+                        state->K1 = k1;
+                        state->K2 = k2;
+                        state->K3 = state->K4 = 0ULL;
+                        LOG_NOTICE("AES-128 / Hytera 128-bit key loaded (2x64)\n");
+                    } else if (nhex == 64) {
+                        if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)
+                            || !cli_parse_hex_u64_n(hex + 32, 16, &k3) || !cli_parse_hex_u64_n(hex + 48, 16, &k4)) {
+                            LOG_ERROR("-H failed to parse 64-hex key (4x16)\n");
+                            exit(1);
+                        }
+                        state->H = k1;
+                        state->K1 = k1;
+                        state->K2 = k2;
+                        state->K3 = k3;
+                        state->K4 = k4;
+                        LOG_NOTICE("AES-256 / Hytera 256-bit key loaded (4x64)\n");
+                    } else {
+                        LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");
+                        exit(1);
+                    }
+                    state->keyloader = 0;
+                }
                 break;
             case 'V': {
                 // Enable TDMA voice synthesis for selected slot(s)
@@ -651,6 +735,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 LOG_NOTICE("Logging MBE/PDU payloads to console.\n");
                 break;
             case 'P':
+                if (opts->static_wav_file == 1) {
+                    LOG_ERROR("-P cannot be used with -w (static WAV output)\n");
+                    exit(1);
+                }
                 snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
                 wav_file_directory[1023] = '\0';
                 if (stat(wav_file_directory, &st) == -1) {
@@ -778,8 +866,16 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             }
             case 'w':
+                if (opts->dmr_stereo_wav == 1) {
+                    LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");
+                    exit(1);
+                }
                 strncpy(opts->wav_out_file, optarg, 1023);
                 opts->wav_out_file[1023] = '\0';
+                opts->dmr_stereo_wav = 0;
+                opts->static_wav_file = 1;
+                openWavOutFileLR(opts, state);
+                LOG_NOTICE("Static WAV output: %s\n", opts->wav_out_file);
                 break;
             case 'C': {
                 // Import channel map CSV (channum,freq)

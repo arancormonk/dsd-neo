@@ -8,7 +8,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000]`
 - Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000]`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
-- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 1|2|3`, `-z 1|2`, `-y`, `-v 0xF`, `-nm`
+- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
@@ -22,7 +22,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Show help: `dsd-neo -h`
 - PulseAudio in, play out, UI on: `dsd-neo -i pulse -o pulse -N`
 - UDP audio in to PulseAudio out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse -N`
-- Follow DMR trunking (TCP IQ input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
+- Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 
@@ -33,7 +33,8 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 
 - Config loading is opt-in: use `--config` to enable, optionally with a path (e.g. `--config /path/to/config.ini`).
 - Default path (when `--config` is passed without a path): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
-- Alternatively, set `DSD_NEO_CONFIG=<path>` environment variable to enable config loading.
+- Alternatively, set `DSD_NEO_CONFIG=<path>` environment variable to enable config loading (this is the only way for a no-arg run to load a config).
+- Precedence detail: `--config /path/to/config.ini` > `--config` default path (ignores `DSD_NEO_CONFIG`) > `DSD_NEO_CONFIG`.
 - `--interactive-setup` runs the wizard even when a config exists.
 - `--print-config` prints the effective config as INI after all env/CLI overrides.
 - When config is enabled, the final settings are autosaved on exit. See `docs/config-system.md` for details.
@@ -46,13 +47,13 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 - OP25/FME capture BIN: `-i file.bin`.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
-  - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:00000001:450M:0:0:12`
+  - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
-- Generic TCP IQ (SDR++/GRC): `-i tcp[:host:port]` (default port 7355)
+- TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (default port 7355; sample rate uses `-s`, default 48000)
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP input: `-i m17udp[:bind_addr:port]` (defaults 127.0.0.1:17000)
 
-- Set WAV sample rate: `-s <rate>` (48k or 96k typical)
+- Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical)
 
 Other input options
 
@@ -93,8 +94,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 ## Recording & Files
 
 - `-6 <file>` Save raw audio WAV (48k/mono). Large files (≈360 MB/hour)
-- `-w <file>` Save decoded audio to a single WAV
-- `-P` Per‑call WAV saving (auto‑named files in a folder)
+- `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
+- `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
 - `-7 <dir>` Set folder for per‑call WAVs (use before `-P`)
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
@@ -108,10 +109,10 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
-- `-nm` Enable legacy DMR mono audio path (equivalent to `-fs` plus mono)
+- `-nm` Enable legacy DMR mono audio path (does not change which frames are decoded)
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
-- `-V <1|2|3>` TDMA voice synthesis on slot 1, slot 2, or both (default 3)
+- `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
 - `-y` Use experimental float audio output
 - `-a` Enable call alert beep (UI)
 
@@ -137,7 +138,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 Notes
 
-- Some frame types cannot be auto‑detected (marked above).
+- All frame types are auto-detectable with `-fa` (multi-rate SPS hunting).
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
 
 ## Mode Tweaks & Advanced
@@ -147,7 +148,7 @@ Notes
 - Analog filter bitmap (advanced): `-v <hex>` (bitmask for HPF/LPF/PBF)
 - Unvoiced speech quality: `-u <1–64>` (default 3)
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
-- Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT)
+- Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, NXDN SACCH/FACCH/CAC/F2U, M17 LSF/PKT)
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
 - DMR Tier III Location Area n‑bits: `-D <0–10>`
 - Env (C4FM timing layers):
@@ -168,16 +169,16 @@ Notes
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)
 - Hang time after voice/sync loss (seconds): `-t <secs>`
-  - Env (advanced): When P25 Phase 1 voice error rate is elevated, extend hangtime to reduce VC↔CC thrash:
-    - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 8.0)
-    - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` (default 2.0)
+  - Env (advanced): Optional hangtime extension when P25p1 IMBE error % is high:
+    - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 0 = off)
+    - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` (default 0 = off)
   - Env (DMR): Hangtime and grant timeout overrides:
     - `DSD_NEO_DMR_HANGTIME=<seconds>` — post‑voice hangtime before returning to CC
     - `DSD_NEO_DMR_GRANT_TIMEOUT=<seconds>` — max seconds waiting for voice after grant
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (index or 8‑digit serial), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24), `sql` (dB or linear), `vol` (1–3), optional `bias[=on|off]`.
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (dB or linear), `vol` (0–3; typical 1–3), optional `bias[=on|off]`.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
@@ -199,15 +200,15 @@ Advanced (env)
 
 M17 `-M` details
 
-- `CAN` 1–15
+- `CAN` 0–15 (default 7; values > 15 clamp to 15)
 - `SRC`/`DST` up to 9 UPPER base40 chars (` ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.`)
 - `INPUT_RATE` default 48000; use multiples of 8000 up to 48000
 - `VOX` enable with `1` (default `0`)
 
 Examples
 
-- `dsd-neo -fZ -M M17:9:DSD-neo:arancormonk -i pulse -6 m17signal.wav -8 -N`
-- `dsd-neo -fP -M M17:9:DSD-neo:arancormonk -6 m17pkt.wav -8`
+- `dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N`
+- `dsd-neo -fP -M M17:9:DSD-NEO:ARANCORMO -6 m17pkt.wav -8`
 
 ## Keys & Privacy (advanced)
 
@@ -261,8 +262,8 @@ Resampler
 
 FLL/TED controls
 
-- `DSD_NEO_FLL=1` — enable frequency‑locked loop
-- `DSD_NEO_FLL_ALPHA`, `DSD_NEO_FLL_BETA`, `DSD_NEO_FLL_DEADBAND`, `DSD_NEO_FLL_SLEW` — Q15/Q14 gains
+- `DSD_NEO_FLL=0/1` — disable/enable frequency‑locked loop
+- `DSD_NEO_FLL_ALPHA=<float>`, `DSD_NEO_FLL_BETA=<float>`, `DSD_NEO_FLL_DEADBAND=<float>`, `DSD_NEO_FLL_SLEW=<float>` — loop parameters (mode defaults when unset: analog-ish ≈ 0.0015/0.00015/0.0086/0.012; digital ≈ 0.008/0.0008/0.002/0.004)
 - `DSD_NEO_TED=1` — enable timing error detector
 - `DSD_NEO_TED_GAIN=<float>` — TED gain
 - `DSD_NEO_TED_FORCE=1` — force TED
@@ -333,8 +334,10 @@ Audio/DSP helpers
 Misc
 
 - `DSD_NEO_MT=1` — enable light worker pool (2 threads)
-- `DSD_NEO_PDU_JSON=1` — emit P25 MAC/VPDU JSON to stdout
+- `DSD_NEO_PDU_JSON=1` — emit P25 PDU JSON to stderr
 - `DSD_NEO_RT_SCHED=1` — enable real‑time thread scheduling (requires privileges)
+- `DSD_NEO_RT_PRIO_USB|DSD_NEO_RT_PRIO_DONGLE|DSD_NEO_RT_PRIO_DEMOD=<1..99>` — per-thread RT priority (only used when `DSD_NEO_RT_SCHED=1`)
+- `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
 - `DSD_NEO_INPUT_VOLUME=<1..16>` — scale non‑RTL input samples (env alternative to `--input-volume`)
 - `DSD_NEO_INPUT_WARN_DB=<dB>` — warn if input power falls below dBFS (default −40)
@@ -356,6 +359,10 @@ P25 trunking timing
 - `DSD_NEO_P25_FORCE_RELEASE_EXTRA=<seconds>` — safety‑net extra beyond hangtime
 - `DSD_NEO_P25_FORCE_RELEASE_MARGIN=<seconds>` — safety‑net hard margin
 - `DSD_NEO_P25_WD_MS=<ms>` — P25 state machine watchdog interval (100–2000)
+- `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` — extend hangtime when P25p1 IMBE error % exceeds threshold (default 0 = off)
+- `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` — additional hold seconds when threshold exceeded (default 0 = off)
+- `DSD_NEO_P25P1_SOFT_ERASURE_THRESH=<0..255>` — P25p1 soft-decision erasure threshold (default 64; falls back to `DSD_NEO_P25P2_SOFT_ERASURE_THRESH`)
+- `DSD_NEO_P25P2_SOFT_ERASURE_THRESH=<0..255>` — P25p2 soft-decision erasure threshold (default 64)
 - `DSD_NEO_CC_CACHE=0|1` — enable/disable control channel frequency caching
 - `DSD_NEO_CACHE_DIR=<path>` — override cache directory for CC frequency cache
 
@@ -372,12 +379,13 @@ Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
 - `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK/TED/FLL state output
+- `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm‑start
 
 ## Handy Examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - RTL‑TCP in with ncurses UI: `dsd-neo -i rtltcp:127.0.0.1:1234 -N`
 - Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P -N`
-- Strictly P25 Phase 1 from TCP IQ: `dsd-neo -f1 -i tcp -N`
+- Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp -N`
 
 Tip: Many options can be mixed; start simple, add only what you need.

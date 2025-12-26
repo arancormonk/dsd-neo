@@ -53,7 +53,7 @@ dsd_cli_usage(void) {
     printf("                rtl:dev:freq:gain:ppm:bw:sql:vol for rtl dongle (see below)\n");
     printf("                rtltcp for rtl_tcp (default 127.0.0.1:1234)\n");
     printf("                rtltcp:host:port for rtl_tcp server address\n");
-    printf("                tcp for tcp client SDR++/GNURadio Companion/Other (Port 7355)\n");
+    printf("                tcp for TCP raw PCM16LE mono audio input (Port 7355)\n");
     printf("                tcp:192.168.7.5:7355 for custom address and port \n");
     printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
     printf("                udp:0.0.0.0:7355 to bind all interfaces for UDP input\n");
@@ -63,7 +63,7 @@ dsd_cli_usage(void) {
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
     printf("                filename.wav -s 96000 for 96K/1 wav files (DSDPlus)\n");
     printf("                (Use single quotes '/directory/audio file.wav' when directories/spaces are present)\n");
-    printf("  -s <rate>     Sample Rate of wav input files (48000 or 96000) Mono only!\n");
+    printf("  -s <rate>     Sample rate (Hz) for WAV/TCP/UDP inputs (e.g., 48000, 96000)\n");
     printf("      --input-volume <N>  Scale non-RTL input samples by N (integer 1..16).\n");
     printf("      --input-level-warn-db <dB>  Warn if input power below dBFS (default -40).\n");
     printf("  -o <device>   Audio output device (default is pulse)\n");
@@ -101,7 +101,7 @@ dsd_cli_usage(void) {
     printf("  -Q <file>     Specify Filename for M17 Float Stream Output. (placed in DSP folder)\n");
     printf("  -c <file>     Output symbol capture to .bin file\n");
     printf("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n");
-    printf("  -V <num>      Enable TDMA Voice Synthesis on Slot 1 (1), Slot 2 (2), or Both (3); Default is 3; \n");
+    printf("  -V <num>      TDMA Voice Synthesis: 0=Off, 1=Slot1, 2=Slot2, 3=Both; Default is 3\n");
     printf("  -y            Enable Experimental Pulse Audio Float Audio Output\n");
     printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option)\n");
     printf("                1 1 1 1 (0xF): PBF/LPF/HPF/HPFD on\n");
@@ -109,7 +109,7 @@ dsd_cli_usage(void) {
     printf("RTL-SDR options:\n");
     printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
-    printf("  dev  <num>    RTL-SDR Device Index Number or 8 Digit Serial Number, no strings! (default 0)\n");
+    printf("  dev  <num>    RTL-SDR Device Index Number (default 0)\n");
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M) \n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
@@ -143,23 +143,23 @@ dsd_cli_usage(void) {
     printf("  --auto-ppm    Enable spectrum-based RTL auto PPM (6 dB gate; 1 ppm step)\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
-    printf(" Example: dsd-neo -fZ -M M17:9:DSD-neo:arancormonk -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
+    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
     printf("\n");
-    printf(" Example: dsd-neo -fZ -M M17:9:DSD-neo:arancormonk -i tcp -o pulse -8 -N 2> m17encoderlog.txt\n");
+    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i tcp -o pulse -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to default tcp input, without internal decode/playback and output to 48k/1 "
            "analog output device\n");
     printf("\n");
     printf("  -fP           M17 Packet Encoder\n");
-    printf(" Example: dsd-neo -fP -M M17:9:DSD-neo:arancormonk -6 m17pkt.wav -8 -S 'Hello World'\n");
+    printf(" Example: dsd-neo -fP -M M17:9:DSD-NEO:ARANCORMO -6 m17pkt.wav -8 -S 'Hello World'\n");
     printf("\n");
     printf("  -fB           M17 BERT Encoder\n");
-    printf(" Example: dsd-neo -fB -M M17:9:DSD-neo:arancormonk -6 m17bert.wav -8\n");
+    printf(" Example: dsd-neo -fB -M M17:9:DSD-NEO:ARANCORMO -6 m17bert.wav -8\n");
     printf("\n");
     printf("  -M            M17 Encoding User Configuration String: M17:CAN:SRC:DST:INPUT_RATE:VOX (see examples "
            "above).\n");
-    printf("                  CAN 1-15; SRC and DST have to be no more than 9 UPPER base40 characters.\n");
+    printf("                  CAN 0-15 (default 7); SRC and DST have to be no more than 9 UPPER base40 characters.\n");
     printf("                  BASE40: '  ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.'\n");
     printf("                  Input Rate Default is 48000; Use Multiples of 8000 up to 48000.\n");
     printf("                  VOX Enabled on 1; (Default = 0)\n");
@@ -196,7 +196,7 @@ dsd_cli_usage(void) {
     printf("\n");
     printf("  ** Phase 2 Single Frequency may require user to manually set WACN/SYSID/CC parameters if MAC_SIGNAL not "
            "present.\n");
-    printf("  *** configure UDP Input with -i m17:127.0.0.1:17000 \n");
+    printf("  *** configure UDP Input with -i m17udp:127.0.0.1:17000 \n");
     printf("\n");
     printf("  NOTE: All frame types are now auto-detectable with -fa using multi-rate SPS hunting.\n");
     printf("        M17 polarity is auto-detected from preamble; use -xz only to force inverted.\n");
@@ -218,6 +218,7 @@ dsd_cli_usage(void) {
     printf("  -F            Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");
     printf("                 Enabling on some systems could lead to bad channel assignments/site data decoding if bad "
            "or marginal signal\n");
+    printf("  -F            Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");

@@ -311,8 +311,14 @@ add_custom_target(uninstall
     COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
 
 # Install license/notice files with binaries
-install(FILES LICENSE COPYRIGHT THIRD_PARTY.md src/third_party/ezpwd/lesser.txt
+install(FILES LICENSE COPYRIGHT THIRD_PARTY.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES src/third_party/ezpwd/lesser.txt
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+    RENAME ezpwd-LGPL-2.1-or-later.txt)
+install(FILES src/third_party/pffft/COPYING
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+    RENAME pffft-FFTPACK.txt)
 
 add_subdirectory(src/platform)
 add_subdirectory(src/core)

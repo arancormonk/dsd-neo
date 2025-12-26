@@ -1053,7 +1053,21 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
             } else if (ctx->t_voice_m > 0.0) {
                 // Voice was active before, now in hangtime
                 double dt_voice = now_m - ctx->t_voice_m;
-                if (dt_voice >= hangtime) {
+                double effective_hangtime = hangtime;
+                /* Optional: extend hangtime when P25p1 voice error is elevated to reduce VC↔CC thrash. */
+                if (state && hangtime > 0.0) {
+                    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                    double thr_pct = (cfg && cfg->p25p1_err_hold_pct_is_set) ? cfg->p25p1_err_hold_pct : 0.0;
+                    double add_s = (cfg && cfg->p25p1_err_hold_s_is_set) ? cfg->p25p1_err_hold_s : 0.0;
+                    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_len > 0) {
+                        double avg =
+                            (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
+                        if (avg >= thr_pct) {
+                            effective_hangtime = hangtime + add_s;
+                        }
+                    }
+                }
+                if (dt_voice >= effective_hangtime) {
                     // Hangtime expired - release
                     do_release(ctx, opts, state, "hangtime-expired");
                 }

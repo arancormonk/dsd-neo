@@ -18,8 +18,8 @@ workflows.
   - CLI arguments and environment variables always take precedence over
     config file values.
 - **Simple INI-style format** that's easy to read and edit.
-- **Future-proof**: Config files are versioned; unknown keys generate
-  warnings but do not prevent loading.
+- **Future-proof**: Config files are versioned; unknown keys/sections are
+  ignored on load (use `--validate-config` to report warnings).
 - **Validation** with helpful diagnostics including line numbers.
 - **User experience enhancements**:
   - Template generation (`--dump-config-template`).
@@ -47,7 +47,8 @@ Design principles:
 
 - **Whitespace is ignored** around keys, the `=` sign, and values.
 - **Case-insensitive booleans** (e.g., `True`, `YES`, `0`).
-- **Unknown sections/keys generate warnings** but do not cause load failure.
+- **Unknown sections/keys are ignored** during normal startup; `--validate-config`
+  reports them as warnings.
 - A top-level `version` key defines the config schema version.
 
 Example:
@@ -194,16 +195,18 @@ explicitly requested.
 - CLI: `--config` (uses default path) or `--config /path/to/config.ini`
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
 
-When both are present, CLI path wins:
+When both are present, CLI wins:
 
-1. `--config PATH` (if path provided)
-2. `DSD_NEO_CONFIG`
-3. Default path (if `--config` without path)
+1. `--config PATH` (explicit path)
+2. Default path (when `--config` is passed without a path; this ignores `DSD_NEO_CONFIG`)
+3. `DSD_NEO_CONFIG`
 
 If the file cannot be read or parsed:
 
 - Log a warning (path + reason).
-- Fall back to running **without** config (defaults + env + CLI).
+- Proceed without applying any user config values (defaults + env + CLI).
+- If config loading was enabled (`--config` or `DSD_NEO_CONFIG`), autosave is still enabled for decode runs and the
+  effective settings are written back on exit (this can create the file).
 
 ### Default Path
 
@@ -218,25 +221,21 @@ config location is used:
 - On Windows:
   - `%APPDATA%\dsd-neo\config.ini`
 
-If the default file does not exist, it will be created when settings are
-saved (e.g., after running the interactive setup wizard).
+If the default file does not exist, it will be created when settings are saved
+(DSD-neo autosaves on exit whenever config loading is enabled).
 
 ---
 
 ## Precedence Rules
 
-Options are derived from multiple sources, with later sources overriding
-earlier ones:
+For the keys covered by this user config system:
 
 1. **Built-in defaults**
-2. **Config file** (explicit or default path)
-3. **Environment variables**
-4. **CLI arguments** (highest priority)
+2. **User config file** (explicit or default path, when enabled)
+3. **CLI arguments** (highest priority)
 
-This ensures:
-- Config never overrides env or CLI.
-- Existing scripts and automation work unchanged.
-- Config provides convenient defaults that can be overridden when needed.
+Environment variables are separate advanced runtime knobs (some CLI flags set
+`DSD_NEO_*` env vars); they are not persisted in the user config file.
 
 ---
 
@@ -248,18 +247,18 @@ This ensures:
 | `source` | ENUM | Input source type | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
-| `rtl_freq` | FREQ | RTL-SDR frequency | `850M` |
+| `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
-| `rtl_bw_khz` | INT (6-48) | DSP bandwidth | `48` |
+| `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
 | `rtl_sql` | INT (-100-0) | Squelch level | `0` |
-| `rtl_volume` | INT (1-10) | Volume multiplier | `2` |
+| `rtl_volume` | INT (1-3) | Volume multiplier | `2` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
-| `file_path` | PATH | Input file path | (empty) |
-| `file_sample_rate` | INT (8000-192000) | File sample rate | `48000` |
-| `tcp_host` | STRING | TCP direct host | `127.0.0.1` |
-| `tcp_port` | INT (1-65535) | TCP direct port | `7355` |
+| `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
+| `file_sample_rate` | INT (8000-192000) | File sample rate (WAV/RAW) | `48000` |
+| `tcp_host` | STRING | TCP PCM input host | `127.0.0.1` |
+| `tcp_port` | INT (1-65535) | TCP PCM input port | `7355` |
 | `udp_addr` | STRING | UDP bind address | `127.0.0.1` |
 | `udp_port` | INT (1-65535) | UDP port | `7355` |
 
@@ -274,6 +273,7 @@ This ensures:
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `decode` | ENUM | Decode mode preset | `auto` |
+| `demod` | ENUM | Demodulator path | `auto` |
 
 **[trunking] section:**
 | Key | Type | Description | Default |
@@ -282,6 +282,15 @@ This ensures:
 | `chan_csv` | PATH | Channel map CSV | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |
+| `tune_group_calls` | BOOL | Follow group calls | `true` |
+| `tune_private_calls` | BOOL | Follow private calls | `true` |
+| `tune_data_calls` | BOOL | Follow data calls | `false` |
+| `tune_enc_calls` | BOOL | Follow encrypted calls | `true` |
+
+Note: The defaults shown match the generated template (`--dump-config-template`).
+Missing keys generally mean “leave the engine default unchanged”; some input
+sources require specific keys to actually switch the input at startup (see
+Notes on Input Sources).
 
 ---
 
@@ -306,8 +315,9 @@ Exit codes:
 - `1`: Errors present
 - `2`: Only warnings (strict mode only)
 
-Diagnostics are only printed when you run `--validate-config`; normal startup is
-silent unless the config file cannot be opened.
+Diagnostics are only printed when you run `--validate-config`. During normal
+startup, DSD-neo logs a notice when a config is loaded and warns if loading
+fails; unknown keys are ignored without warnings.
 
 ---
 
@@ -353,23 +363,38 @@ version = 1
 
 - **RTL-SDR (`source = "rtl"`)**: Uses the `rtl_*` keys for frequency,
   gain, PPM correction, bandwidth, squelch, and volume. Omitted values
-  use sensible defaults.
+  use sensible defaults. To switch the input to RTL at startup, set at
+  least `rtl_freq` (and optionally `rtl_device`).
 
 - **RTL-TCP (`source = "rtltcp"`)**: Uses `rtltcp_host`/`rtltcp_port`
-  for the network endpoint, plus the same `rtl_*` tuning keys.
+  for the network endpoint, plus the same `rtl_*` tuning keys. To switch
+  the input to RTL-TCP at startup, set at least `rtltcp_host`.
 
 - **PulseAudio (`source = "pulse"`)**: Use `pulse_source` to specify
   a particular input device. The older `pulse_input` key is accepted
   as an alias.
 
-- **UDP (`source = "udp"`)**: Provide both `udp_addr` and `udp_port`; leaving
-  them empty will not switch the input to UDP.
+- **TCP (`source = "tcp"`)**: Set `tcp_host` (port optional) to switch
+  the input to TCP PCM audio (raw PCM16LE mono). Sample rate uses the
+  global `-s` CLI setting (default 48000).
+
+- **UDP (`source = "udp"`)**: Set `udp_addr` (port optional) to switch
+  the input to UDP PCM audio (PCM16LE datagrams). Sample rate uses the
+  global `-s` CLI setting (default 48000).
+
+- **File (`source = "file"`)**: Set `file_path` to switch the input to a file
+  input (WAV/BIN/RAW/SYM). Use `file_sample_rate` for PCM16 WAV/RAW inputs that
+  are not 48 kHz (symbol capture formats ignore it).
 
 ### Decode Modes
 
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `nxdn48`, `nxdn96`,
 `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`, `analog`.
+
+The optional `demod` key selects a demodulator path (`auto`, `c4fm`, `gfsk`,
+`qpsk`). When set, it locks demodulator selection similarly to the `-m*`
+CLI modulation options.
 
 If you choose RTL/RTLTCP input and omit specific tuning fields, DSD-neo falls
 back to its built-in RTL defaults: center frequency 850 MHz, DSP bandwidth
@@ -382,21 +407,22 @@ When `[trunking] enabled = true`:
 
 - Trunking is activated for the selected mode.
 - CSV paths (`chan_csv`, `group_csv`) are passed to the decoder.
-- CSV files are not auto-imported just because they are listed in the config.
-  They load only when triggered by CLI flags (`-C`/`-G`) or the interactive
-  wizard.
+- CSV paths in the config are applied the same as passing `-C`/`-G` and are
+  loaded when trunking is enabled.
+- If you start DSD-neo with any CLI args and you do not explicitly set trunking
+  or scan mode (`-T`/`-Y`), trunking inherited from the config is disabled for
+  that run.
 
 ---
 
 ## Startup Behavior
 
 1. Config is loaded early, before CLI argument parsing.
-2. CLI arguments and environment variables override config values.
+2. Config values are applied, then CLI arguments override them.
 3. One-shot commands (`--dump-config-template`, `--validate-config`,
    `--list-profiles`, `--print-config`) execute and exit immediately.
-4. If no CLI args and no config file exists, the interactive bootstrap
-   wizard runs.
-5. When config exists: interactive bootstrap is skipped unless
+4. If no CLI args and no config is loaded, the interactive bootstrap wizard runs.
+5. When a config is loaded: interactive bootstrap is skipped unless
    `--interactive-setup` is specified.
 
 ### File Sample Rate
@@ -420,12 +446,13 @@ through selecting input, mode, trunking, and UI options.
 - Auto-save only occurs when config is enabled (`--config` or `DSD_NEO_CONFIG`).
 - Outside the wizard, the app also auto-saves the effective settings at exit
   whenever a config path is in use. To avoid having your file rewritten,
-  simply run without the `--config` flag.
+  run without `--config` and without `DSD_NEO_CONFIG`.
 
 ### Config and CLI Interaction
 
-- If a config file exists and no CLI args are provided: skip the wizard,
-  use config settings.
+- A no-arg run only loads a config if you enable it via `DSD_NEO_CONFIG`.
+- If config is enabled and loads successfully and no other CLI args are provided:
+  skip the wizard, use config settings.
 - If CLI args are provided: config is loaded first, then CLI overrides it.
 - CLI:
   - `--interactive-setup` forces running the wizard even if a config
@@ -470,7 +497,7 @@ through selecting input, mode, trunking, and UI options.
 
 - Config files use `version = 1` at the top.
 - If `version` is missing, defaults to 1.
-- Unknown keys generate warnings but don't prevent loading.
+- Unknown keys are ignored on load; `--validate-config` reports them as warnings.
 - This allows newer binaries to add options without breaking older configs.
 
 ---
