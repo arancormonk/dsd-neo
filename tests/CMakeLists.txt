@@ -19,6 +19,11 @@ target_include_directories(dsd-neo_test_runtime_control_pump PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_runtime_control_pump PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CONTROL_PUMP COMMAND dsd-neo_test_runtime_control_pump)
 
+add_executable(dsd-neo_test_runtime_shutdown runtime/test_runtime_shutdown.c)
+target_include_directories(dsd-neo_test_runtime_shutdown PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_shutdown PRIVATE dsd-neo_core)
+add_test(NAME RUNTIME_SHUTDOWN COMMAND dsd-neo_test_runtime_shutdown)
+
 add_executable(dsd-neo_test_runtime_config_user runtime/test_runtime_config_user.cpp)
 target_include_directories(dsd-neo_test_runtime_config_user PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_user PRIVATE dsd-neo_runtime)

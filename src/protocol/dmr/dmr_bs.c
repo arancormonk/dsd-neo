@@ -118,6 +118,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
         if (exitflag == 1) {
             cleanupAndExit(opts, state);
+            break;
         }
 
         {

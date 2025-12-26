@@ -324,7 +324,8 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
 
     TCPEND:
         if (exitflag == 1) {
-            cleanupAndExit(opts, state); //needed to break the loop on ctrl+c
+            cleanupAndExit(opts, state);
+            return;
         }
         LOG_NOTICE("%s:", opts->tcp_hostname);
         LOG_NOTICE("%d \n", opts->tcp_portno);
@@ -1661,6 +1662,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     }
 
     dsd_engine_setup_io(opts, state);
+    if (exitflag) {
+        dsd_engine_cleanup(opts, state);
+        return 0;
+    }
 
     signal(SIGINT, dsd_engine_signal_handler);
     signal(SIGTERM, dsd_engine_signal_handler);

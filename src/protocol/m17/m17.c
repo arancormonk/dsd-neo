@@ -2047,19 +2047,14 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
-                    int need_break = 0;
                     if (!state->rtl_ctx) {
                         cleanupAndExit(opts, state);
-                        need_break = 1;
-                    } else {
-                        int got = 0;
-                        if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
-                            cleanupAndExit(opts, state);
-                            need_break = 1;
-                        }
+                        return;
                     }
-                    if (need_break) {
-                        break;
+                    int got = 0;
+                    if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
+                        cleanupAndExit(opts, state);
+                        return;
                     }
                 }
                 sample *= opts->rtl_volume_multiplier;
@@ -2069,19 +2064,14 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             if (st == 2) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
-                        int need_break2 = 0;
                         if (!state->rtl_ctx) {
                             cleanupAndExit(opts, state);
-                            need_break2 = 1;
-                        } else {
-                            int got = 0;
-                            if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
-                                cleanupAndExit(opts, state);
-                                need_break2 = 1;
-                            }
+                            return;
                         }
-                        if (need_break2) {
-                            break;
+                        int got = 0;
+                        if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
+                            cleanupAndExit(opts, state);
+                            return;
                         }
                     }
                     sample *= opts->rtl_volume_multiplier;

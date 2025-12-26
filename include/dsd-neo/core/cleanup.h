@@ -7,8 +7,11 @@
  * @file
  * @brief Cleanup/exit helpers.
  *
- * Declares the top-level cleanup entrypoint so lower-level modules can request
- * an orderly shutdown.
+ * Declares the legacy cleanup entrypoint so lower-level modules can request an
+ * orderly shutdown.
+ *
+ * Note: despite the name, `cleanupAndExit()` is a non-exiting shutdown request
+ * helper. Callers must return/break out after invoking it.
  */
 
 #pragma once

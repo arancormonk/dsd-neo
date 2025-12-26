@@ -496,6 +496,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             if (result == 0) {
                 sf_close(opts->audio_in_file);
                 cleanupAndExit(opts, state);
+                return 0.0f;
             }
         }
         //wav files, same but using seperate value so we can still manipulate ncurses menu
@@ -525,6 +526,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 //else cleanup and exit
                 else {
                     cleanupAndExit(opts, state);
+                    return 0.0f;
                 }
             }
         } else if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -532,10 +534,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             // Read demodulated stream here
             if (!state->rtl_ctx) {
                 cleanupAndExit(opts, state);
+                return 0.0f;
             }
             int got = 0;
             if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
                 cleanupAndExit(opts, state);
+                return 0.0f;
             }
             //update root means square power level
             opts->rtl_pwr = rtl_stream_return_pwr(state->rtl_ctx);
@@ -566,6 +570,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             TCP_RETRY:
                 if (exitflag == 1) {
                     cleanupAndExit(opts, state); //needed to break the loop on ctrl+c
+                    return 0.0f;
                 }
                 // shorter backoff on TCP input stall to avoid wedging decode/SM
                 int backoff_ms = 300; // default 300ms
@@ -627,6 +632,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             short s = 0;
             if (!udp_input_read_sample(opts, &s)) {
                 cleanupAndExit(opts, state);
+                return 0.0f;
             }
             sample = (float)s;
             if (opts->input_volume_multiplier > 1) {
@@ -1023,6 +1029,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             //else cleanup and exit
             else {
                 cleanupAndExit(opts, state);
+                return 0.0f;
             }
         }
 

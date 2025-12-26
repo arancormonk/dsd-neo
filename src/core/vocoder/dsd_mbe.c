@@ -193,9 +193,13 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
             }
             if (exitflag == 1) {
                 cleanupAndExit(opts, state);
+                break;
             }
         }
         fclose(opts->mbe_in_f); //close file after playing it
+        if (exitflag == 1) {
+            return;
+        }
     }
 }
 

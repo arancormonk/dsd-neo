@@ -2059,6 +2059,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         if (exitflag == 1) {
             cleanupAndExit(opts, state);
+            return DSD_SYNC_NONE;
         }
 
         if (synctest_pos < 10200) {

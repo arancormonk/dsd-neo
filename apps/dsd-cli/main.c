@@ -35,7 +35,6 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
 
@@ -57,13 +56,6 @@ pretty_colors() {
     fprintf(stderr, "%snormal\n", KNRM);
 
     return 0;
-}
-
-void
-cleanupAndExit(dsd_opts* opts, dsd_state* state) {
-    exitflag = 1;
-    dsd_engine_cleanup(opts, state);
-    exit(0);
 }
 
 int

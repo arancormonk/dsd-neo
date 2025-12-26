@@ -330,6 +330,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
+                    return;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -351,6 +352,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
+                    return;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -372,6 +374,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
                     cleanupAndExit(opts, state);
+                    return;
                 }
                 if (opts->input_volume_multiplier > 1) {
                     int v = (int)sample * opts->input_volume_multiplier;
@@ -446,15 +449,18 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 #ifdef USE_RTLSDR
                 if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
+                    return;
                 }
                 {
                     int got = 0;
                     if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
+                        return;
                     }
                 }
 #else
                 cleanupAndExit(opts, state);
+                return;
 #endif
                 rtl_sample *= opts->rtl_volume_multiplier;
                 analog1[i] = clip_float_to_short(rtl_sample);
@@ -464,15 +470,18 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 #ifdef USE_RTLSDR
                 if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
+                    return;
                 }
                 {
                     int got = 0;
                     if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
+                        return;
                     }
                 }
 #else
                 cleanupAndExit(opts, state);
+                return;
 #endif
                 rtl_sample *= opts->rtl_volume_multiplier;
                 analog2[i] = clip_float_to_short(rtl_sample);
@@ -482,15 +491,18 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 #ifdef USE_RTLSDR
                 if (!state->rtl_ctx) {
                     cleanupAndExit(opts, state);
+                    return;
                 }
                 {
                     int got = 0;
                     if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
+                        return;
                     }
                 }
 #else
                 cleanupAndExit(opts, state);
+                return;
 #endif
                 rtl_sample *= opts->rtl_volume_multiplier;
                 analog3[i] = clip_float_to_short(rtl_sample);
