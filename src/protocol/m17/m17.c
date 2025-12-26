@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #ifdef USE_RTLSDR
@@ -40,7 +41,6 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/ui/ui_async.h>
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
@@ -1802,7 +1802,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     while (!exitflag) //while the software is running
     {
         // Drain any pending UI→Demod commands so hotkeys/menu actions apply
-        ui_drain_cmds(opts, state);
+        dsd_runtime_pump_controls(opts, state);
 
         //if not decoding internally, assign values for ncurses display
         if (opts->monitor_input_audio == 1) {
@@ -2749,7 +2749,7 @@ encodeM17BRT(dsd_opts* opts, dsd_state* state) {
 
     while (!exitflag) {
         // Drain UI commands so queued actions take effect during BERT loop
-        ui_drain_cmds(opts, state);
+        dsd_runtime_pump_controls(opts, state);
 
         //Generate sequence (if doing 197 at a time)
         // for (j = 0; j < 197; j++)
@@ -3357,7 +3357,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     while (!exitflag) {
         // Drain UI commands so queued actions take effect during PKT loop
-        ui_drain_cmds(opts, state);
+        dsd_runtime_pump_controls(opts, state);
         //send LSF frame once, if new encode session
         if (new_lsf == 1) {
 
@@ -3867,7 +3867,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
     while (!exitflag) {
         // Drain UI commands so queued actions take effect during IPF loop
-        ui_drain_cmds(opts, state);
+        dsd_runtime_pump_controls(opts, state);
 
         //if reading from socket receiver
         if (opts->udp_sockfd) {

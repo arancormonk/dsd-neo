@@ -7,6 +7,7 @@
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_prims.h>
 
@@ -40,6 +41,11 @@ ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
         ui_publish_snapshot(state);
     }
     ui_request_redraw();
+}
+
+static void
+ui_control_pump(dsd_opts* opts, dsd_state* state) {
+    (void)ui_drain_cmds(opts, state);
 }
 
 static DSD_THREAD_RETURN_TYPE
@@ -146,6 +152,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
+    dsd_runtime_set_control_pump(ui_control_pump);
     atomic_store(&g_ui_running, 1);
     return 0;
 }
@@ -155,6 +162,7 @@ ui_stop(void) {
     if (!atomic_load(&g_ui_running)) {
         return;
     }
+    dsd_runtime_set_control_pump(NULL);
     atomic_store(&g_ui_stop, 1);
     dsd_thread_join(g_ui_thread);
     atomic_store(&g_ui_running, 0);

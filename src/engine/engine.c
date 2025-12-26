@@ -30,6 +30,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -1454,13 +1455,13 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 
     while (!exitflag) {
         // Drain any pending UI->Demod commands before heavy work
-        ui_drain_cmds(opts, state);
+        dsd_runtime_pump_controls(opts, state);
 
         // Cooperative tick: runs only if another tick isn't in progress
         p25_sm_try_tick(opts, state);
 
         // Drain again to reduce latency for common key actions
-        ui_drain_cmds(opts, state);
+        dsd_runtime_pump_controls(opts, state);
 
         noCarrier(opts, state);
         state->synctype = getFrameSync(opts, state);
@@ -1475,7 +1476,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 
         while (state->synctype != DSD_SYNC_NONE) {
             // Drain UI commands during active decoding so hotkeys work in-call
-            ui_drain_cmds(opts, state);
+            dsd_runtime_pump_controls(opts, state);
 
             processFrame(opts, state);
 
@@ -1490,7 +1491,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 #endif
 
             // Drain again between frames to reduce latency
-            ui_drain_cmds(opts, state);
+            dsd_runtime_pump_controls(opts, state);
             state->synctype = getFrameSync(opts, state);
             // Recompute thresholds only when extrema change
             if (state->max != last_max || state->min != last_min) {
