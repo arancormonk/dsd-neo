@@ -12,6 +12,17 @@ target_sources(dsd-neo_core PRIVATE
   vocoder/dsd_mbe2.c
   frames/dsd_frame.c
   frames/protocol_dispatch.c
+  frames/dispatch/dispatch_dmr.c
+  frames/dispatch/dispatch_dpmr.c
+  frames/dispatch/dispatch_dstar.c
+  frames/dispatch/dispatch_edacs.c
+  frames/dispatch/dispatch_m17.c
+  frames/dispatch/dispatch_nxdn.c
+  frames/dispatch/dispatch_p25p1.c
+  frames/dispatch/dispatch_p25p2.c
+  frames/dispatch/dispatch_provoice.c
+  frames/dispatch/dispatch_x2tdma.c
+  frames/dispatch/dispatch_ysf.c
   frames/dsd_dibit.c
   time/dsd_time.c
   util/dsd_misc.c
