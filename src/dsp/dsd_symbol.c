@@ -373,26 +373,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     int clk_early = 0, clk_mid = 0, clk_late = 0;
     if (state->rf_mod == 0) {
         const dsdneoRuntimeConfig* cfg_clk = dsd_neo_get_config();
+        if (!cfg_clk) {
+            dsd_neo_config_init(opts);
+            cfg_clk = dsd_neo_get_config();
+        }
         if (cfg_clk && cfg_clk->c4fm_clk_is_set) {
             clk_mode = cfg_clk->c4fm_clk_mode;
-        } else {
-            /* One-time env fallback */
-            static int init_clk_env = 0;
-            static int env_mode = 0;
-            if (!init_clk_env) {
-                init_clk_env = 1;
-                const char* clk = getenv("DSD_NEO_C4FM_CLK");
-                if (clk) {
-                    if (dsd_strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
-                        env_mode = 1;
-                    } else if (dsd_strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
-                        env_mode = 2;
-                    } else {
-                        env_mode = 0;
-                    }
-                }
-            }
-            clk_mode = env_mode;
         }
     }
 #endif
@@ -583,12 +569,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
                 // shorter backoff on TCP input stall to avoid wedging decode/SM
                 int backoff_ms = 300; // default 300ms
-                const char* eb = getenv("DSD_NEO_TCPIN_BACKOFF_MS");
-                if (eb && eb[0] != '\0') {
-                    int v = atoi(eb);
-                    if (v >= 50 && v <= 5000) {
-                        backoff_ms = v;
-                    }
+                const dsdneoRuntimeConfig* cfg_retry = dsd_neo_get_config();
+                if (!cfg_retry) {
+                    dsd_neo_config_init(opts);
+                    cfg_retry = dsd_neo_get_config();
+                }
+                if (cfg_retry && cfg_retry->tcpin_backoff_ms_is_set) {
+                    backoff_ms = cfg_retry->tcpin_backoff_ms;
                 }
                 fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
                 sample = 0;

@@ -7,8 +7,7 @@
  * @file
  * @brief AES helper entrypoints.
  *
- * Declares the AES wrapper helpers implemented in `src/crypto/crypt-aes.c` so
- * callers can avoid including the `dsd.h` umbrella header.
+ * Declares the AES wrapper helpers implemented in `src/crypto/crypt-aes.c`.
  */
 
 #pragma once

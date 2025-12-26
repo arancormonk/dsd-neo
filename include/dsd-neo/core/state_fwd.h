@@ -8,7 +8,7 @@
  * @brief Forward declaration of core decoder state type (`dsd_state`).
  *
  * Provides an incomplete type for headers that only need pointers/
- * references without pulling in the full `dsd.h`.
+ * references.
  */
 
 #pragma once

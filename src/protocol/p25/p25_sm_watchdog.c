@@ -9,9 +9,8 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-
-#include <stdlib.h>
 
 /* exitflag declared in runtime/exitflag.h, defined in src/runtime/exitflag.c */
 
@@ -76,14 +75,9 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
     // One-time env override for watchdog cadence (milliseconds)
     // DSD_NEO_P25_WD_MS=100 .. 2000
     if (g_p25_sm_wd_ms == 0) {
-        const char* s = getenv("DSD_NEO_P25_WD_MS");
-        if (s && s[0] != '\0') {
-            int v = atoi(s);
-            if (v >= 20 && v <= 2000) {
-                g_p25_sm_wd_ms = v;
-            } else if (v > 0) {
-                g_p25_sm_wd_ms = (v < 20) ? 20 : 2000;
-            }
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (cfg && cfg->p25_wd_ms_is_set) {
+            g_p25_sm_wd_ms = cfg->p25_wd_ms;
         }
     }
     int expected = 0;

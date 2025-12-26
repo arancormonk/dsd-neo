@@ -8,7 +8,7 @@
  * @brief Forward declaration of core decoder options type (`dsd_opts`).
  *
  * Provides an incomplete type for headers that only need pointers/
- * references without pulling in the full `dsd.h`.
+ * references.
  */
 
 #pragma once

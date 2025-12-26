@@ -7,8 +7,7 @@
  * @file
  * @brief Bit/byte packing helpers shared across modules.
  *
- * Declares conversion utilities implemented in core so callers can avoid
- * including the `dsd.h` umbrella header.
+ * Declares conversion utilities implemented in core.
  */
 
 #pragma once

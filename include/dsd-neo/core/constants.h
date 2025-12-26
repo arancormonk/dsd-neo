@@ -8,7 +8,7 @@
  * @brief Core compile-time constants and lightweight helper macros.
  *
  * Provides common sample-rate constants and portable boolean/UNUSED helpers
- * without pulling in the heavier `dsd.h` umbrella.
+ * as a shared lightweight header.
  */
 
 #pragma once

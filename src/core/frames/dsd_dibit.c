@@ -23,6 +23,7 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/comp.h>
+#include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -271,20 +272,14 @@ cqpsk_slice(float symbol) {
  */
 static inline int
 cqpsk_slice_aligned(float symbol) {
-    static int init = 0;
-    static int inv = 0;
-    static int negate = 0;
-    if (!init) {
-        const char* e_inv = getenv("DSD_NEO_CQPSK_SYNC_INV");
-        const char* e_neg = getenv("DSD_NEO_CQPSK_SYNC_NEG");
-        if (e_inv && (*e_inv == '1' || *e_inv == 'y' || *e_inv == 'Y' || *e_inv == 't' || *e_inv == 'T')) {
-            inv = 1;
-        }
-        if (e_neg && (*e_neg == '1' || *e_neg == 'y' || *e_neg == 'Y' || *e_neg == 't' || *e_neg == 'T')) {
-            negate = 1;
-        }
-        init = 1;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
     }
+    int inv = (cfg && cfg->cqpsk_sync_inv) ? 1 : 0;
+    int negate = (cfg && cfg->cqpsk_sync_neg) ? 1 : 0;
+
     float s = negate ? -symbol : symbol;
     int raw_dibit = cqpsk_slice(s);
     if (inv) {
@@ -485,19 +480,17 @@ is_cqpsk_active(dsd_opts* opts) {
 /* Optional histogram of CQPSK slicer output during decoding. */
 static void
 debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
-    static int init = 0;
-    static int enabled = 0;
     static int hist[4] = {0, 0, 0, 0};
     static int sample_count = 0;
     static float sym_min = 1e9f, sym_max = -1e9f, sym_sum = 0.0f;
     (void)state;
 
-    if (!init) {
-        const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-        enabled = (env && *env == '1') ? 1 : 0;
-        init = 1;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
     }
-    if (!enabled) {
+    if (!cfg || !cfg->debug_cqpsk_enable) {
         return;
     }
 

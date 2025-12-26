@@ -9,9 +9,9 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
@@ -287,6 +287,8 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     memset(ctx, 0, sizeof(*ctx));
 
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+
     ctx->hangtime_s = 2.0;
     ctx->grant_timeout_s = 4.0;
     ctx->cc_grace_s = 2.0;
@@ -296,19 +298,11 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         ctx->hangtime_s = opts->trunk_hangtime;
     }
 
-    const char* env_hang = getenv("DSD_NEO_DMR_HANGTIME");
-    if (env_hang && env_hang[0]) {
-        double v = atof(env_hang);
-        if (v >= 0.0 && v <= 10.0) {
-            ctx->hangtime_s = v;
-        }
+    if (cfg && cfg->dmr_hangtime_is_set) {
+        ctx->hangtime_s = cfg->dmr_hangtime_s;
     }
-    const char* env_grant = getenv("DSD_NEO_DMR_GRANT_TIMEOUT");
-    if (env_grant && env_grant[0]) {
-        double v = atof(env_grant);
-        if (v >= 0.0 && v <= 30.0) {
-            ctx->grant_timeout_s = v;
-        }
+    if (cfg && cfg->dmr_grant_timeout_is_set) {
+        ctx->grant_timeout_s = cfg->dmr_grant_timeout_s;
     }
 
     if (state && state->trunk_cc_freq != 0) {

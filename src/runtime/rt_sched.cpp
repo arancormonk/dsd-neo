@@ -13,6 +13,7 @@
  */
 
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
 
@@ -37,20 +38,24 @@
  */
 void
 maybe_set_thread_realtime_and_affinity(const char* role) {
-    const char* enable = getenv("DSD_NEO_RT_SCHED");
-    if (!enable || enable[0] != '1') {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    if (!cfg || !cfg->rt_sched_enable) {
         return;
     }
 
-    char envname[64];
     int priority = 0; /* default priority for abstraction layer */
 
     if (role) {
-        /* e.g., DSD_NEO_RT_PRIO_DEMOD, DSD_NEO_RT_PRIO_DONGLE, DSD_NEO_RT_PRIO_USB */
-        snprintf(envname, sizeof(envname), "DSD_NEO_RT_PRIO_%s", role);
-        const char* prio_str = getenv(envname);
-        if (prio_str && prio_str[0] != '\0') {
-            priority = atoi(prio_str);
+        if (strcmp(role, "USB") == 0 && cfg->rt_prio_usb_is_set) {
+            priority = cfg->rt_prio_usb;
+        } else if (strcmp(role, "DONGLE") == 0 && cfg->rt_prio_dongle_is_set) {
+            priority = cfg->rt_prio_dongle;
+        } else if (strcmp(role, "DEMOD") == 0 && cfg->rt_prio_demod_is_set) {
+            priority = cfg->rt_prio_demod;
         }
     }
 
@@ -63,18 +68,21 @@ maybe_set_thread_realtime_and_affinity(const char* role) {
     }
 
     if (role) {
-        snprintf(envname, sizeof(envname), "DSD_NEO_CPU_%s", role);
-        const char* cpu_str = getenv(envname);
-        if (cpu_str && cpu_str[0] != '\0') {
-            int cpu = atoi(cpu_str);
-            if (cpu >= 0) {
-                if (dsd_thread_set_affinity(cpu) != 0) {
-                    int err = errno;
-                    LOG_WARNING("Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", role, cpu, err,
-                                strerror(err));
-                } else {
-                    LOG_INFO("%s thread pinned to CPU %d.\n", role, cpu);
-                }
+        int cpu = -1;
+        if (strcmp(role, "USB") == 0 && cfg->cpu_usb_is_set) {
+            cpu = cfg->cpu_usb;
+        } else if (strcmp(role, "DONGLE") == 0 && cfg->cpu_dongle_is_set) {
+            cpu = cfg->cpu_dongle;
+        } else if (strcmp(role, "DEMOD") == 0 && cfg->cpu_demod_is_set) {
+            cpu = cfg->cpu_demod;
+        }
+        if (cpu >= 0) {
+            if (dsd_thread_set_affinity(cpu) != 0) {
+                int err = errno;
+                LOG_WARNING("Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", role, cpu, err,
+                            strerror(err));
+            } else {
+                LOG_INFO("%s thread pinned to CPU %d.\n", role, cpu);
             }
         }
     }

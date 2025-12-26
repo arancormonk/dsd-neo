@@ -8,8 +8,7 @@
  * @brief Frame sync pattern constants and related protocol flags.
  *
  * These are legacy dibit-string patterns (ASCII '0'-'3') used by sync
- * detection and some protocol handlers. Prefer including this header over
- * pulling in the `dsd.h` umbrella for pattern access.
+ * detection and some protocol handlers.
  */
 
 #pragma once

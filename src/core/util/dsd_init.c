@@ -312,13 +312,6 @@ initOpts(dsd_opts* opts) {
 
     //DMR TIII heuristic LCN fill (opt-in)
     opts->dmr_t3_heuristic_fill = 0;
-    {
-        const char* env = getenv("DSD_NEO_DMR_T3_HEUR");
-        if (env && (env[0] == '1' || env[0] == 't' || env[0] == 'T' || env[0] == 'y' || env[0] == 'Y')) {
-            opts->dmr_t3_heuristic_fill = 1;
-            LOG_NOTICE("DMR TIII: Heuristic LCN fill enabled via DSD_NEO_DMR_T3_HEUR.\n");
-        }
-    }
 
     // P25P2 soft-decision RS erasure marking (enabled by default)
     opts->p25_p2_soft_erasure = 1;

@@ -19,6 +19,7 @@
 
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <cmath>
 #include <cstdio>
@@ -29,6 +30,16 @@ namespace {
 
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kPi = 3.14159265358979323846f;
+
+static inline bool
+debug_cqpsk_enabled(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    return cfg && cfg->debug_cqpsk_enable;
+}
 
 /* OP25 PT_45: rotation by +45 degrees = exp(j*pi/4) */
 constexpr float kPT45_r = 0.70710678118654752440f; /* cos(pi/4) */
@@ -250,18 +261,9 @@ op25_gardner_cc(struct demod_state* d) {
 
     if (need_reinit) {
         /* Debug: log TED SPS change when DSD_NEO_DEBUG_CQPSK=1 */
-        {
-            static int debug_init = 0;
-            static int debug_cqpsk = 0;
-            if (!debug_init) {
-                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                debug_init = 1;
-            }
-            if (debug_cqpsk) {
-                fprintf(stderr, "[GARDNER] TED %s: sps=%d->%d old_omega=%.3f old_mu=%.3f (mu=%d for warmup)\n",
-                        is_first_init ? "init" : "sps_change", ted->sps, sps, ted->omega, ted->mu, sps);
-            }
+        if (debug_cqpsk_enabled()) {
+            fprintf(stderr, "[GARDNER] TED %s: sps=%d->%d old_omega=%.3f old_mu=%.3f (mu=%d for warmup)\n",
+                    is_first_init ? "init" : "sps_change", ted->sps, sps, ted->omega, ted->mu, sps);
         }
 
         /* Reset mu on any reinitialization (first init OR SPS change).
@@ -891,22 +893,13 @@ dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
     int is_sps_change = f->initialized && f->sps != sps && f->sps > 0;
 
     /* Debug: log FLL init when DSD_NEO_DEBUG_CQPSK=1 */
-    {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk) {
-            if (is_first_init) {
-                fprintf(stderr, "[FLL-INIT] first init sps=%d\n", sps);
-            } else if (is_sps_change) {
-                fprintf(stderr, "[FLL-INIT] sps change %d->%d (freq preserved)\n", f->sps, sps);
-            } else {
-                fprintf(stderr, "[FLL-INIT] retune reset sps=%d (freq preserved)\n", sps);
-            }
+    if (debug_cqpsk_enabled()) {
+        if (is_first_init) {
+            fprintf(stderr, "[FLL-INIT] first init sps=%d\n", sps);
+        } else if (is_sps_change) {
+            fprintf(stderr, "[FLL-INIT] sps change %d->%d (freq preserved)\n", f->sps, sps);
+        } else {
+            fprintf(stderr, "[FLL-INIT] retune reset sps=%d (freq preserved)\n", sps);
         }
     }
 
@@ -1060,22 +1053,13 @@ op25_fll_band_edge_cc(struct demod_state* d) {
         }
 
         /* Debug: log FLL init/reinit when DSD_NEO_DEBUG_CQPSK=1 */
-        {
-            static int debug_init = 0;
-            static int debug_cqpsk = 0;
-            if (!debug_init) {
-                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                debug_init = 1;
-            }
-            if (debug_cqpsk) {
-                float freq_hz = f->freq * ((float)(d->rate_out > 0 ? d->rate_out : 24000) / kTwoPi);
-                if (is_first_init) {
-                    fprintf(stderr, "[FLL] init: sps=%d filter_size=%d loop_bw=%.6f\n", sps, filter_size, loop_bw);
-                } else {
-                    fprintf(stderr, "[FLL] sps_change: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps,
-                            filter_size, freq_hz);
-                }
+        if (debug_cqpsk_enabled()) {
+            float freq_hz = f->freq * ((float)(d->rate_out > 0 ? d->rate_out : 24000) / kTwoPi);
+            if (is_first_init) {
+                fprintf(stderr, "[FLL] init: sps=%d filter_size=%d loop_bw=%.6f\n", sps, filter_size, loop_bw);
+            } else {
+                fprintf(stderr, "[FLL] sps_change: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps, filter_size,
+                        freq_hz);
             }
         }
     }
@@ -1204,16 +1188,9 @@ op25_fll_band_edge_cc(struct demod_state* d) {
 
     /* Debug: Log FLL band-edge state when DSD_NEO_DEBUG_CQPSK=1 */
     {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
         static int call_count = 0;
         static float prev_freq = 0.0f;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk && (++call_count % 50) == 0) {
+        if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
             /* Convert freq rad/sample to Hz: f_hz = freq * Fs / (2π) */
             float Fs = (float)d->rate_out;
             float freq_hz = freq * Fs / kTwoPi;

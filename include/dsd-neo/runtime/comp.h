@@ -7,8 +7,7 @@
  * @file
  * @brief qsort() comparator helpers.
  *
- * Declares the float comparator implemented in `src/runtime/comp.c` so code
- * can use it without including the `dsd.h` umbrella.
+ * Declares the float comparator implemented in `src/runtime/comp.c`.
  */
 
 #pragma once

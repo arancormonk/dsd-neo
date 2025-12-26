@@ -7,8 +7,7 @@
  * @file
  * @brief P25 CRC helper interfaces.
  *
- * Declares P25 CRC helpers implemented in `src/protocol/p25/p25_crc.c` so
- * P25 decode paths can avoid including the `dsd.h` umbrella header.
+ * Declares P25 CRC helpers implemented in `src/protocol/p25/p25_crc.c`.
  */
 
 #pragma once

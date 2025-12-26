@@ -12,9 +12,9 @@
 
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/fec/Hamming.hpp>
+#include <dsd-neo/runtime/config.h>
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 
 /* Erasure threshold: symbols with reliability below this are marked as erasures.
@@ -25,24 +25,14 @@ static int g_p25p1_erasure_thresh = -1; /* -1 = uninitialized */
 extern "C" int
 p25p1_get_erasure_threshold(void) {
     if (g_p25p1_erasure_thresh < 0) {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+
         g_p25p1_erasure_thresh = 64; /* default */
-
-        /* Check P25P1-specific first */
-        const char* env = std::getenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESH");
-        if (env && env[0] != '\0') {
-            int v = std::atoi(env);
-            if (v >= 0 && v <= 255) {
-                g_p25p1_erasure_thresh = v;
-                return g_p25p1_erasure_thresh;
-            }
-        }
-
-        /* Fall back to shared P25P2 threshold */
-        env = std::getenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESH");
-        if (env && env[0] != '\0') {
-            int v = std::atoi(env);
-            if (v >= 0 && v <= 255) {
-                g_p25p1_erasure_thresh = v;
+        if (cfg) {
+            if (cfg->p25p1_soft_erasure_thresh_is_set) {
+                g_p25p1_erasure_thresh = cfg->p25p1_soft_erasure_thresh;
+            } else if (cfg->p25p2_soft_erasure_thresh_is_set) {
+                g_p25p1_erasure_thresh = cfg->p25p2_soft_erasure_thresh;
             }
         }
     }

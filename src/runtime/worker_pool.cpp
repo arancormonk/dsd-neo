@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <mutex>
 #include <stdio.h>
@@ -110,8 +111,12 @@ static DSD_THREAD_RETURN_TYPE
  */
 void
 demod_mt_init(struct demod_state* s) {
-    const char* mt = getenv("DSD_NEO_MT");
-    bool enable = (mt && mt[0] == '1');
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    bool enable = (cfg && cfg->mt_is_set && cfg->mt_enable) ? true : false;
     if (!enable) {
         // No context needed if disabled
         set_ctx((const void*)s, nullptr);

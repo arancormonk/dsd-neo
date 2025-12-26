@@ -14,7 +14,7 @@
 
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
 
-// Forward-declare legacy decoder to avoid including broad dsd.h
+// Forward-declare legacy decoder to avoid including broad headers.
 uint32_t dmr_34(uint8_t* input, uint8_t treturn[18]);
 
 // Local copies of mapping tables used by both decoders, for metric computation.

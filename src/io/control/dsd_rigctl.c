@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <limits.h>
@@ -95,14 +96,15 @@ Connect(char* hostname, int portno) {
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
     {
         int to_ms = 1500;
-        const char* et = getenv("DSD_NEO_RIGCTL_RCVTIMEO");
-        if (!et) {
-            et = getenv("DSD_NEO_TCP_RCVTIMEO"); /* fallback to generic if set */
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (!cfg) {
+            dsd_neo_config_init(NULL);
+            cfg = dsd_neo_get_config();
         }
-        if (et && et[0] != '\0') {
-            int v = atoi(et);
-            if (v >= 100 && v <= 60000) {
-                to_ms = v;
+        if (cfg) {
+            to_ms = cfg->rigctl_rcvtimeo_ms;
+            if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
+                to_ms = cfg->tcp_rcvtimeo_ms;
             }
         }
         (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)to_ms);
@@ -849,14 +851,12 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
         rtl_stream_set_ted_sps(ted_sps);
         // Optional debug: log VC tuning parameters when CQPSK debug is enabled.
         {
-            static int debug_init = 0;
-            static int debug_cqpsk = 0;
-            if (!debug_init) {
-                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                debug_init = 1;
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (!cfg) {
+                dsd_neo_config_init(NULL);
+                cfg = dsd_neo_get_config();
             }
-            if (debug_cqpsk) {
+            if (cfg && cfg->debug_cqpsk_enable) {
                 fprintf(stderr, "[TUNE] VC freq=%ld Hz rf_mod=%d sps=%d center=%d ted_sps=%d\n", freq, state->rf_mod,
                         state->samplesPerSymbol, state->symbolCenter, ted_sps);
             }

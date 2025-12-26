@@ -8,7 +8,7 @@
  * @brief Core audio API surface for DSD-neo.
  *
  * Exposes device open/close helpers, drain/flush routines, and playback
- * helpers shared across audio backends. Kept separate from dsd.h so
+ * helpers shared across audio backends. Kept separate so
  * modules that only need audio APIs can avoid pulling in the full core header.
  */
 

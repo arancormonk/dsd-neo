@@ -7,8 +7,7 @@
  * @file
  * @brief Keyring helper API.
  *
- * Declares the keyring loader implemented in core so callers can avoid
- * including the `dsd.h` umbrella.
+ * Declares the keyring loader implemented in core.
  */
 
 #pragma once

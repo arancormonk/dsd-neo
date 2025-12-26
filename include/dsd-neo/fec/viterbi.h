@@ -7,8 +7,7 @@
  * @file
  * @brief Viterbi decoder helpers.
  *
- * Declares the Viterbi routines implemented in `src/core/util/dsd_misc.c` so
- * protocol modules can avoid including the `dsd.h` umbrella header.
+ * Declares the Viterbi routines implemented in `src/core/util/dsd_misc.c`.
  */
 
 #pragma once

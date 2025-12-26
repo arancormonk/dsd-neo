@@ -512,8 +512,8 @@ const char*
 lbl_ftz_daz(void* v, char* b, size_t n) {
     (void)v;
 #if defined(__SSE__) || defined(__SSE2__)
-    const char* e = getenv("DSD_NEO_FTZ_DAZ");
-    int on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->ftz_daz_enable) ? 1 : 0;
     snprintf(b, n, "SSE FTZ/DAZ: %s", on ? "On" : "Off");
     return b;
 #else
@@ -604,8 +604,8 @@ lbl_auto_ppm_zerohz(void* v, char* b, size_t n) {
 const char*
 lbl_auto_ppm_freeze(void* v, char* b, size_t n) {
     (void)v;
-    const char* e = getenv("DSD_NEO_AUTO_PPM_FREEZE");
-    int on = (e && *e && *e != '0');
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->auto_ppm_freeze_enable) ? 1 : 0;
     snprintf(b, n, "Auto-PPM Freeze: %s", on ? "On" : "Off");
     return b;
 }
@@ -645,8 +645,8 @@ lbl_tcp_rcvtimeo(void* v, char* b, size_t n) {
 const char*
 lbl_tcp_waitall(void* v, char* b, size_t n) {
     (void)v;
-    const char* e = getenv("DSD_NEO_TCP_WAITALL");
-    int on = (e && *e && *e != '0');
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->tcp_waitall_enable) ? 1 : 0;
     snprintf(b, n, "RTL-TCP MSG_WAITALL: %s", on ? "On" : "Off");
     return b;
 }
@@ -654,8 +654,8 @@ lbl_tcp_waitall(void* v, char* b, size_t n) {
 const char*
 lbl_rt_sched(void* v, char* b, size_t n) {
     (void)v;
-    const char* e = getenv("DSD_NEO_RT_SCHED");
-    int on = (e && *e && *e != '0');
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     snprintf(b, n, "Realtime Scheduling: %s", on ? "On" : "Off");
     return b;
 }
@@ -1004,8 +1004,8 @@ lbl_rtl_tuner_autogain(void* v, char* b, size_t n) {
     if (c->state && c->state->rtl_ctx) {
         on = rtl_stream_get_tuner_autogain();
     } else {
-        const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");
-        on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
     }
     snprintf(b, n, "Tuner Autogain: %s", on ? "On" : "Off");
     return b;

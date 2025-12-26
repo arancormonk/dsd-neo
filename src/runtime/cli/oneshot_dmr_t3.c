@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <math.h>
@@ -64,6 +65,12 @@ infer_step_125(const long* f, int n) {
 
 int
 dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+
     FILE* fp = fopen(path, "r");
     if (!fp) {
         LOG_ERROR("LCN calc: unable to open '%s'\n", path);
@@ -128,19 +135,14 @@ dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
     }
     nf = m;
     if (nf == 1) {
-        long start_lcn = 1;
-        const char* s = getenv("DSD_NEO_DMR_T3_START_LCN");
-        if (s && *s) {
-            start_lcn = strtol(s, NULL, 10);
-        }
+        long start_lcn = (cfg && cfg->dmr_t3_start_lcn > 0) ? cfg->dmr_t3_start_lcn : 1;
         printf("lcn,freq\n%ld,%ld\n", start_lcn, freqs[0]);
         return 0;
     }
     // Infer step or take from env
     long step = 0;
-    const char* sstep = getenv("DSD_NEO_DMR_T3_STEP_HZ");
-    if (sstep && *sstep) {
-        step = strtol(sstep, NULL, 10);
+    if (cfg && cfg->dmr_t3_step_hz_is_set && cfg->dmr_t3_step_hz > 0) {
+        step = cfg->dmr_t3_step_hz;
     }
     if (step <= 0) {
         step = infer_step_125(freqs, nf);
@@ -150,27 +152,9 @@ dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
         return 3;
     }
     // Anchors
-    long cc_freq = 0;
-    long cc_lcn = 0;
-    const char* sccf = getenv("DSD_NEO_DMR_T3_CC_FREQ");
-    const char* sccl = getenv("DSD_NEO_DMR_T3_CC_LCN");
-    if (sccf && *sccf) {
-        double v = strtod(sccf, NULL);
-        if (v < 1e5) {
-            cc_freq = (long)llround(v * 1000000.0);
-        } else {
-            cc_freq = (long)llround(v);
-        }
-    }
-    if (sccl && *sccl) {
-        cc_lcn = strtol(sccl, NULL, 10);
-    }
-
-    long start_lcn = 1;
-    const char* sstart = getenv("DSD_NEO_DMR_T3_START_LCN");
-    if (sstart && *sstart) {
-        start_lcn = strtol(sstart, NULL, 10);
-    }
+    long cc_freq = (cfg && cfg->dmr_t3_cc_freq_is_set) ? cfg->dmr_t3_cc_freq_hz : 0;
+    long cc_lcn = (cfg && cfg->dmr_t3_cc_lcn_is_set) ? cfg->dmr_t3_cc_lcn : 0;
+    long start_lcn = (cfg && cfg->dmr_t3_start_lcn > 0) ? cfg->dmr_t3_start_lcn : 1;
 
     long base_freq = freqs[0];
     long base_lcn = start_lcn;

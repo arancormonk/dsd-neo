@@ -7,8 +7,7 @@
  * @file
  * @brief RC4 keystream helpers.
  *
- * Declares minimal RC4 utilities implemented in `src/crypto/crypt-rc4.c` so
- * callers can avoid including the `dsd.h` umbrella.
+ * Declares minimal RC4 utilities implemented in `src/crypto/crypt-rc4.c`.
  */
 
 #pragma once

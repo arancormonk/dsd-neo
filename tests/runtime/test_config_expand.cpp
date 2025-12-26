@@ -16,7 +16,7 @@
 static int
 test_tilde_expansion(void) {
     char buf[512];
-    const char* home = getenv("HOME");
+    const char* home = dsd_neo_env_get("HOME");
     if (!home || !*home) {
         fprintf(stderr, "SKIP: HOME not set\n");
         return 0;
@@ -150,7 +150,7 @@ test_no_expansion(void) {
 static int
 test_combined_expansion(void) {
     char buf[512];
-    const char* home = getenv("HOME");
+    const char* home = dsd_neo_env_get("HOME");
     if (!home || !*home) {
         fprintf(stderr, "SKIP: HOME not set\n");
         return 0;

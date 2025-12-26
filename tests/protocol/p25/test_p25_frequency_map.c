@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// Avoid full dsd.h to dodge external dep on mbelib; use shim
+// Use shim to avoid pulling in external deps like mbelib.
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);
 

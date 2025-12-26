@@ -8,8 +8,7 @@
  * @brief Core decoder options structure (`dsd_opts`).
  *
  * Hosts the full `dsd_opts` definition so modules that need configuration
- * fields can include it directly instead of pulling in the full `dsd.h`
- * umbrella.
+ * fields can include it directly.
  */
 
 #pragma once

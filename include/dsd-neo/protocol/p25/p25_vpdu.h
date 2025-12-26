@@ -7,8 +7,7 @@
  * @file
  * @brief P25 MAC VPDU handler interfaces.
  *
- * Declares VPDU processing entrypoints implemented in the P25 protocol code
- * without requiring inclusion of the `dsd.h` umbrella header.
+ * Declares VPDU processing entrypoints implemented in the P25 protocol code.
  */
 
 #pragma once

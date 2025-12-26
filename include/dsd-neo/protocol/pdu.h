@@ -7,9 +7,7 @@
  * @file
  * @brief Shared protocol PDU decode helpers.
  *
- * Declares generic PDU decoders implemented in `src/protocol/dmr/dmr_pdu.c`
- * so other protocol modules can reuse them without including the `dsd.h`
- * umbrella header.
+ * Declares generic PDU decoders implemented in `src/protocol/dmr/dmr_pdu.c`.
  */
 
 #pragma once

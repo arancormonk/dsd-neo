@@ -33,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/telemetry.h>
 
 #include <stdio.h>
@@ -986,12 +987,11 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                 // Consider per-slot gate, ring, and recent MAC_ACTIVE recency on other slot
                 double mac_hold = 0.75; // seconds; env override aligns with SM/xCCH
                 {
-                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                    if (s && s[0] != '\0') {
-                        double v = atof(s);
-                        if (v >= 0.0 && v < 10.0) {
-                            mac_hold = v;
-                        }
+                    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                    if (state->p25_cfg_mac_hold_s > 0.0) {
+                        mac_hold = state->p25_cfg_mac_hold_s;
+                    } else if (cfg && cfg->p25_mac_hold_is_set) {
+                        mac_hold = cfg->p25_mac_hold_s;
                     }
                 }
                 double nowm_hold = dsd_time_now_monotonic_s();
@@ -1004,12 +1004,9 @@ process_ESS(dsd_opts* opts, dsd_state* state) {
                     // Defer return to CC within VC grace to protect opposite-slot clear calls
                     double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                     if (!(state->p25_cfg_vc_grace_s > 0.0)) {
-                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                        if (s && s[0] != '\0') {
-                            double v = atof(s);
-                            if (v >= 0.0 && v < 10.0) {
-                                vc_grace = v;
-                            }
+                        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                        if (cfg && cfg->p25_vc_grace_is_set) {
+                            vc_grace = cfg->p25_vc_grace_s;
                         }
                     }
                     double nowm = dsd_time_now_monotonic_s();
@@ -1316,12 +1313,11 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // bounce back to CC before audio gates open on fresh calls.
             double vc_grace = 0.75; // seconds; override via DSD_NEO_P25_VC_GRACE
             {
-                const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        vc_grace = v;
-                    }
+                const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                if (state->p25_cfg_vc_grace_s > 0.0) {
+                    vc_grace = state->p25_cfg_vc_grace_s;
+                } else if (cfg && cfg->p25_vc_grace_is_set) {
+                    vc_grace = cfg->p25_vc_grace_s;
                 }
             }
             double dt_since_tune =
@@ -1336,12 +1332,11 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             // gates are not yet open but valid voice is present.
             double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
             {
-                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        mac_hold = v;
-                    }
+                const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                if (state->p25_cfg_mac_hold_s > 0.0) {
+                    mac_hold = state->p25_cfg_mac_hold_s;
+                } else if (cfg && cfg->p25_mac_hold_is_set) {
+                    mac_hold = cfg->p25_mac_hold_s;
                 }
             }
             int left_mac_active = (state->p25_p2_last_mac_active_m[0] > 0.0
@@ -1526,12 +1521,11 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
             (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
         double vc_grace = 0.75; // seconds; override with DSD_NEO_P25_VC_GRACE
         {
-            const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    vc_grace = v;
-                }
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (state->p25_cfg_vc_grace_s > 0.0) {
+                vc_grace = state->p25_cfg_vc_grace_s;
+            } else if (cfg && cfg->p25_vc_grace_is_set) {
+                vc_grace = cfg->p25_vc_grace_s;
             }
         }
         if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {

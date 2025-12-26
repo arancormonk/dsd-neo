@@ -7,8 +7,7 @@
  * @file
  * @brief Symbol/sample acquisition helpers.
  *
- * Declares symbol acquisition entrypoints implemented in `src/dsp/dsd_symbol.c`
- * so callers can avoid including the `dsd.h` umbrella.
+ * Declares symbol acquisition entrypoints implemented in `src/dsp/dsd_symbol.c`.
  */
 
 #pragma once

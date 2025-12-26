@@ -18,13 +18,13 @@
 
 int
 env_get_int(const char* name, int defv) {
-    const char* v = getenv(name);
+    const char* v = dsd_neo_env_get(name);
     return (v && *v) ? atoi(v) : defv;
 }
 
 double
 env_get_double(const char* name, double defv) {
-    const char* v = getenv(name);
+    const char* v = dsd_neo_env_get(name);
     return (v && *v) ? atof(v) : defv;
 }
 
@@ -46,6 +46,7 @@ env_set_double(const char* name, double v) {
 void
 env_reparse_runtime_cfg(dsd_opts* opts) {
     dsd_neo_config_init(opts);
+    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, NULL);
 }
 
 int

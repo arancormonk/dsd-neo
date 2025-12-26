@@ -16,9 +16,9 @@
 #include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -419,13 +419,8 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
 
     // Optional debug: log TDMA grant context when sync debug is enabled.
     {
-        static int debug_init = 0;
-        static int debug_sync = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_SYNC");
-            debug_sync = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        const int debug_sync = (cfg && cfg->debug_sync_enable) ? 1 : 0;
         if (debug_sync && ctx->vc_is_tdma) {
             fprintf(stderr,
                     "[P25-SM] TDMA grant: ch=0x%04X freq=%ld slot=%d rf_mod=%d sps=%d center=%d ted_sps=%d "
@@ -859,6 +854,8 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     memset(ctx, 0, sizeof(*ctx));
 
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+
     // Set defaults (aligned with op25 timing parameters)
     ctx->config.hangtime_s = 2.0;      // op25: TGID_HOLD_TIME = 2.0s
     ctx->config.grant_timeout_s = 3.0; // op25: TSYS_HOLD_TIME = 3.0s
@@ -874,27 +871,15 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    // Override from environment
-    const char* env_hang = getenv("DSD_NEO_P25_HANGTIME");
-    if (env_hang && env_hang[0]) {
-        double v = atof(env_hang);
-        if (v >= 0.0 && v <= 10.0) {
-            ctx->config.hangtime_s = v;
-        }
+    // Override from runtime config (env/config)
+    if (cfg && cfg->p25_hangtime_is_set) {
+        ctx->config.hangtime_s = cfg->p25_hangtime_s;
     }
-    const char* env_grant = getenv("DSD_NEO_P25_GRANT_TIMEOUT");
-    if (env_grant && env_grant[0]) {
-        double v = atof(env_grant);
-        if (v >= 0.0 && v <= 30.0) {
-            ctx->config.grant_timeout_s = v;
-        }
+    if (cfg && cfg->p25_grant_timeout_is_set) {
+        ctx->config.grant_timeout_s = cfg->p25_grant_timeout_s;
     }
-    const char* env_cc = getenv("DSD_NEO_P25_CC_GRACE");
-    if (env_cc && env_cc[0]) {
-        double v = atof(env_cc);
-        if (v >= 0.0 && v <= 30.0) {
-            ctx->config.cc_grace_s = v;
-        }
+    if (cfg && cfg->p25_cc_grace_is_set) {
+        ctx->config.cc_grace_s = cfg->p25_cc_grace_s;
     }
 
     // Set initial state based on CC presence

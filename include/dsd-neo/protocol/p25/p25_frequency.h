@@ -8,8 +8,7 @@
  * @brief P25 channel/frequency mapping helpers.
  *
  * Declares small P25 channel mapping and IDEN trust utilities implemented in
- * `src/protocol/p25/p25_frequency.c`, avoiding reliance on the `dsd.h` umbrella
- * header.
+ * `src/protocol/p25/p25_frequency.c`.
  */
 
 #pragma once

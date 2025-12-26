@@ -607,17 +607,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
         /* Debug: print symbol values when DSD_NEO_DEBUG_SYNC=1 */
         {
-            static int debug_init2 = 0;
-            static int debug_sync2 = 0;
             static int sym_count = 0;
             static int pos_count = 0, neg_count = 0;
             static float sym_min = 1e9f, sym_max = -1e9f, sym_sum = 0.0f;
-            if (!debug_init2) {
-                const char* env = getenv("DSD_NEO_DEBUG_SYNC");
-                debug_sync2 = (env && *env == '1') ? 1 : 0;
-                debug_init2 = 1;
+            const dsdneoRuntimeConfig* cfg_dbg = dsd_neo_get_config();
+            if (!cfg_dbg) {
+                dsd_neo_config_init(opts);
+                cfg_dbg = dsd_neo_get_config();
             }
-            if (debug_sync2) {
+            if (cfg_dbg && cfg_dbg->debug_sync_enable) {
                 if (symbol < sym_min) {
                     sym_min = symbol;
                 }
@@ -680,18 +678,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             }
             /* Debug: log slicer input/output when DSD_NEO_DEBUG_CQPSK=1 */
             {
-                static int debug_init = 0;
-                static int debug_cqpsk = 0;
                 static int sample_count = 0;
                 static int hist[4] = {0, 0, 0, 0};
                 static float sym_sum = 0.0f;
                 static float sym_min = 1000.0f, sym_max = -1000.0f;
-                if (!debug_init) {
-                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                    debug_init = 1;
+                const dsdneoRuntimeConfig* cfg_dbg = dsd_neo_get_config();
+                if (!cfg_dbg) {
+                    dsd_neo_config_init(opts);
+                    cfg_dbg = dsd_neo_get_config();
                 }
-                if (debug_cqpsk) {
+                if (cfg_dbg && cfg_dbg->debug_cqpsk_enable) {
                     hist[d]++;
                     sym_sum += sym;
                     if (sym < sym_min) {
@@ -883,17 +879,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
             /* Debug: print sync pattern when DSD_NEO_DEBUG_SYNC=1 */
             {
-                static int debug_init = 0;
-                static int debug_sync = 0;
-                static int debug_cqpsk = 0;
                 static int debug_count = 0;
-                if (!debug_init) {
-                    const char* env = getenv("DSD_NEO_DEBUG_SYNC");
-                    debug_sync = (env && *env == '1') ? 1 : 0;
-                    const char* env_cq = getenv("DSD_NEO_DEBUG_CQPSK");
-                    debug_cqpsk = (env_cq && *env_cq == '1') ? 1 : 0;
-                    debug_init = 1;
+                const dsdneoRuntimeConfig* cfg_dbg = dsd_neo_get_config();
+                if (!cfg_dbg) {
+                    dsd_neo_config_init(opts);
+                    cfg_dbg = dsd_neo_get_config();
                 }
+                int debug_sync = (cfg_dbg && cfg_dbg->debug_sync_enable) ? 1 : 0;
+                int debug_cqpsk = (cfg_dbg && cfg_dbg->debug_cqpsk_enable) ? 1 : 0;
+
                 if (debug_sync && (++debug_count % 4800) == 0) {
                     fprintf(stderr, "[SYNC] pattern=%s expect=%s\n", synctest, P25P1_SYNC);
                 }
@@ -2182,40 +2176,18 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         dt_since_tune = (double)(now - state->p25_last_vc_tune_time);
                     }
                     // Startup grace after a VC tune to avoid bouncing before PTT/audio
-                    double vc_grace = 0.75; // seconds
-                    {
-                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                        if (s && s[0] != '\0') {
-                            double v = atof(s);
-                            if (v >= 0.0 && v < 10.0) {
-                                vc_grace = v;
-                            }
-                        }
+                    const dsdneoRuntimeConfig* cfg_hold = dsd_neo_get_config();
+                    if (!cfg_hold) {
+                        dsd_neo_config_init(opts);
+                        cfg_hold = dsd_neo_get_config();
                     }
+                    double vc_grace = cfg_hold ? cfg_hold->p25_vc_grace_s : 0.75;
                     int is_p2_vc = (state->p25_p2_active_slot != -1);
                     // Mirror trunk SM gating: treat jitter ring as activity
                     // only when gated by recent MAC_ACTIVE/PTT on that slot;
                     // after hangtime, ignore stale audio_allowed alone.
-                    double ring_hold = 0.75; // seconds; DSD_NEO_P25_RING_HOLD
-                    {
-                        const char* s = getenv("DSD_NEO_P25_RING_HOLD");
-                        if (s && s[0] != '\0') {
-                            double v = atof(s);
-                            if (v >= 0.0 && v <= 5.0) {
-                                ring_hold = v;
-                            }
-                        }
-                    }
-                    double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
-                    {
-                        const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                        if (s && s[0] != '\0') {
-                            double v = atof(s);
-                            if (v >= 0.0 && v < 10.0) {
-                                mac_hold = v;
-                            }
-                        }
-                    }
+                    double ring_hold = cfg_hold ? cfg_hold->p25_ring_hold_s : 0.75;
+                    double mac_hold = cfg_hold ? cfg_hold->p25_mac_hold_s : 0.75;
                     double l_dmac = (state->p25_p2_last_mac_active_m[0] > 0.0)
                                         ? (nowm - state->p25_p2_last_mac_active_m[0])
                                         : ((state->p25_p2_last_mac_active[0] != 0)

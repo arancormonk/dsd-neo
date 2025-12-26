@@ -7,8 +7,7 @@
  * @file
  * @brief P25 Phase 1 PDU decoder interfaces.
  *
- * Declares P25 PDU helpers implemented in `src/protocol/p25/phase1/p25p1_pdu_data.c`
- * so callers can avoid including the `dsd.h` umbrella header.
+ * Declares P25 PDU helpers implemented in `src/protocol/p25/phase1/p25p1_pdu_data.c`.
  */
 
 #pragma once

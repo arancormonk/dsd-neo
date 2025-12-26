@@ -8,7 +8,7 @@
  * @brief Cleanup/exit helpers.
  *
  * Declares the top-level cleanup entrypoint so lower-level modules can request
- * an orderly shutdown without including the `dsd.h` umbrella.
+ * an orderly shutdown.
  */
 
 #pragma once

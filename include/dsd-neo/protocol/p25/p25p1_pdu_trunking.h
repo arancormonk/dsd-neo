@@ -8,7 +8,7 @@
  * @brief P25 Phase 1 trunking PDU decoder interfaces.
  *
  * Declares the P25p1 trunking PDU decoder entrypoint implemented in the P25
- * protocol library without requiring inclusion of the `dsd.h` umbrella header.
+ * protocol library.
  */
 
 #pragma once

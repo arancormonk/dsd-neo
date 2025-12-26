@@ -330,13 +330,8 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
        Env DSD_NEO_CQPSK overrides: 1/y/t to force on, 0/n/f to force off. */
     int default_cqpsk = (opts->mod_qpsk == 1) ? 1 : 0;
     demod->cqpsk_enable = default_cqpsk;
-    const char* ev_cq = getenv("DSD_NEO_CQPSK");
-    if (ev_cq) {
-        if (*ev_cq == '1' || *ev_cq == 'y' || *ev_cq == 'Y' || *ev_cq == 't' || *ev_cq == 'T') {
-            demod->cqpsk_enable = 1;
-        } else if (*ev_cq == '0' || *ev_cq == 'n' || *ev_cq == 'N' || *ev_cq == 'f' || *ev_cq == 'F') {
-            demod->cqpsk_enable = 0;
-        }
+    if (cfg->cqpsk_is_set) {
+        demod->cqpsk_enable = (cfg->cqpsk_enable != 0) ? 1 : 0;
     }
     /* CQPSK Costas/differential stage assumes symbol-rate samples from the Gardner TED.
        Require TED whenever the CQPSK path is enabled so the pipeline never feeds

@@ -7,8 +7,7 @@
  * @file
  * @brief DMR privacy/keystream helper entrypoints.
  *
- * Declares optional key/keystream generation helpers used by CLI/UI controls
- * without requiring inclusion of the `dsd.h` umbrella header.
+ * Declares optional key/keystream generation helpers used by CLI/UI controls.
  */
 
 #pragma once

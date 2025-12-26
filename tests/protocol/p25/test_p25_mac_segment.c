@@ -15,7 +15,7 @@
 
 #include <unistd.h>
 
-// Forward declare config init to avoid pulling dsd.h (which declares main)
+// Forward declare config init to keep test dependencies narrow.
 struct dsd_opts;
 void dsd_neo_config_init(const struct dsd_opts* opts);
 

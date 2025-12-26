@@ -2341,12 +2341,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             // Determine if opposite slot is active using P25 gates/jitter and recent MAC_ACTIVE
             double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
             {
-                const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                if (s && s[0] != '\0') {
-                    double v = atof(s);
-                    if (v >= 0.0 && v < 10.0) {
-                        mac_hold = v;
-                    }
+                const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                if (state && state->p25_cfg_mac_hold_s > 0.0) {
+                    mac_hold = state->p25_cfg_mac_hold_s;
+                } else if (cfg && cfg->p25_mac_hold_is_set) {
+                    mac_hold = cfg->p25_mac_hold_s;
                 }
             }
             double nowm2 = dsd_time_now_monotonic_s();
@@ -2354,12 +2353,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
             int os = eslot ^ 1;
             double voice_hold = 0.75; // seconds; override via DSD_NEO_P25_VOICE_HOLD
             {
-                const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
-                if (s2 && s2[0] != '\0') {
-                    double v2 = atof(s2);
-                    if (v2 >= 0.0 && v2 <= 5.0) {
-                        voice_hold = v2;
-                    }
+                const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                if (cfg && cfg->p25_voice_hold_is_set) {
+                    voice_hold = cfg->p25_voice_hold_s;
                 }
             }
             double dt_voice =
@@ -2379,12 +2375,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 // an opposite-slot clear call that hasn't opened its gates yet.
                 double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                 if (!(state->p25_cfg_vc_grace_s > 0.0)) {
-                    const char* sg = getenv("DSD_NEO_P25_VC_GRACE");
-                    if (sg && sg[0] != '\0') {
-                        double vg = atof(sg);
-                        if (vg >= 0.0 && vg < 10.0) {
-                            vc_grace = vg;
-                        }
+                    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                    if (cfg && cfg->p25_vc_grace_is_set) {
+                        vc_grace = cfg->p25_vc_grace_s;
                     }
                 }
                 double nowm3 = dsd_time_now_monotonic_s();
@@ -2515,24 +2508,20 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                 int other = slot ^ 1;
                 double mac_hold = 0.75; // seconds; override via DSD_NEO_P25_MAC_HOLD
                 {
-                    const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-                    if (s && s[0] != '\0') {
-                        double v = atof(s);
-                        if (v >= 0.0 && v < 10.0) {
-                            mac_hold = v;
-                        }
+                    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                    if (state && state->p25_cfg_mac_hold_s > 0.0) {
+                        mac_hold = state->p25_cfg_mac_hold_s;
+                    } else if (cfg && cfg->p25_mac_hold_is_set) {
+                        mac_hold = cfg->p25_mac_hold_s;
                     }
                 }
                 double nowm2 = dsd_time_now_monotonic_s();
                 double noww2 = (double)time(NULL);
                 double voice_hold = 0.6; // seconds; override via DSD_NEO_P25_VOICE_HOLD
                 {
-                    const char* s2 = getenv("DSD_NEO_P25_VOICE_HOLD");
-                    if (s2 && s2[0] != '\0') {
-                        double v2 = atof(s2);
-                        if (v2 >= 0.0 && v2 <= 5.0) {
-                            voice_hold = v2;
-                        }
+                    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                    if (cfg && cfg->p25_voice_hold_is_set) {
+                        voice_hold = cfg->p25_voice_hold_s;
                     }
                 }
                 double dt_voice =
@@ -2554,12 +2543,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     // its audio gates.
                     double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                     if (!(state->p25_cfg_vc_grace_s > 0.0)) {
-                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                        if (s && s[0] != '\0') {
-                            double v = atof(s);
-                            if (v >= 0.0 && v < 10.0) {
-                                vc_grace = v;
-                            }
+                        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                        if (cfg && cfg->p25_vc_grace_is_set) {
+                            vc_grace = cfg->p25_vc_grace_s;
                         }
                     }
                     double nowm = dsd_time_now_monotonic_s();
@@ -2686,12 +2672,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
                     fprintf(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
                     double vc_grace = (state->p25_cfg_vc_grace_s > 0.0) ? state->p25_cfg_vc_grace_s : 0.75;
                     if (!(state->p25_cfg_vc_grace_s > 0.0)) {
-                        const char* s = getenv("DSD_NEO_P25_VC_GRACE");
-                        if (s && s[0] != '\0') {
-                            double v = atof(s);
-                            if (v >= 0.0 && v < 10.0) {
-                                vc_grace = v;
-                            }
+                        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                        if (cfg && cfg->p25_vc_grace_is_set) {
+                            vc_grace = cfg->p25_vc_grace_s;
                         }
                     }
                     double nowm = dsd_time_now_monotonic_s();

@@ -8,8 +8,7 @@
  * @brief P25 Phase 2 xCCH (SACCH/FACCH/LCCH) handler interfaces.
  *
  * Declares the xCCH MAC-PDU handlers implemented in
- * `src/protocol/p25/phase2/p25p2_xcch.c` so callers can avoid including the
- * `dsd.h` umbrella header.
+ * `src/protocol/p25/phase2/p25p2_xcch.c`.
  */
 
 #pragma once

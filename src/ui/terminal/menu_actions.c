@@ -319,11 +319,10 @@ act_p2_params(void* v) {
 
 void
 act_toggle_ftz_daz(void* v) {
-    UNUSED(v);
 #if defined(__SSE__) || defined(__SSE2__)
-    int on = 0;
-    const char* e = getenv("DSD_NEO_FTZ_DAZ");
-    on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+    UiCtx* c = (UiCtx*)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->ftz_daz_enable) ? 1 : 0;
     on = on ? 0 : 1; // flip
     dsd_setenv("DSD_NEO_FTZ_DAZ", on ? "1" : "0", 1);
     unsigned int mxcsr = _mm_getcsr();
@@ -333,6 +332,9 @@ act_toggle_ftz_daz(void* v) {
         mxcsr &= ~((1u << 15) | (1u << 6));
     }
     _mm_setcsr(mxcsr);
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
+#else
+    UNUSED(v);
 #endif
 }
 
@@ -378,18 +380,20 @@ act_window_freeze_toggle(void* v) {
 
 void
 act_auto_ppm_freeze(void* v) {
-    UNUSED(v);
-    const char* e = getenv("DSD_NEO_AUTO_PPM_FREEZE");
-    int on = (e && *e && *e != '0');
+    UiCtx* c = (UiCtx*)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->auto_ppm_freeze_enable) ? 1 : 0;
     dsd_setenv("DSD_NEO_AUTO_PPM_FREEZE", on ? "0" : "1", 1);
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
 }
 
 void
 act_tcp_waitall(void* v) {
     UiCtx* c = (UiCtx*)v;
-    const char* e = getenv("DSD_NEO_TCP_WAITALL");
-    int on = (e && *e && *e != '0');
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->tcp_waitall_enable) ? 1 : 0;
     dsd_setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
         ui_post_cmd(UI_CMD_RTL_RESTART, NULL, 0);
     }
@@ -397,10 +401,11 @@ act_tcp_waitall(void* v) {
 
 void
 act_rt_sched(void* v) {
-    UNUSED(v);
-    const char* e = getenv("DSD_NEO_RT_SCHED");
-    int on = (e && *e && *e != '0');
+    UiCtx* c = (UiCtx*)v;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = (cfg && cfg->rt_sched_enable) ? 1 : 0;
     dsd_setenv("DSD_NEO_RT_SCHED", on ? "0" : "1", 1);
+    env_reparse_runtime_cfg(c ? c->opts : NULL);
 }
 
 void
@@ -1137,9 +1142,10 @@ rtl_toggle_tuner_autogain(void* v) {
         UiDspPayload p = {.op = UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
         ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
     } else {
-        const char* e = getenv("DSD_NEO_TUNER_AUTOGAIN");
-        int on = (e && *e && *e != '0' && *e != 'f' && *e != 'F' && *e != 'n' && *e != 'N');
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        int on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
         dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1", 1);
+        env_reparse_runtime_cfg(c ? c->opts : NULL);
     }
 }
 

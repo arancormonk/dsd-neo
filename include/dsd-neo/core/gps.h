@@ -7,8 +7,7 @@
  * @file
  * @brief GPS/NMEA decode interfaces.
  *
- * Declares GPS helper entrypoints implemented in `src/core/gps/dsd_gps.c` so
- * protocol code can avoid including the `dsd.h` umbrella header.
+ * Declares GPS helper entrypoints implemented in `src/core/gps/dsd_gps.c`.
  */
 
 #pragma once

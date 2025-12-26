@@ -8,7 +8,7 @@
  * @brief DES/3DES keystream helpers.
  *
  * Declares the DES and Triple-DES keystream generators implemented in
- * `src/crypto/crypt-des.c` so callers can avoid including the `dsd.h` umbrella.
+ * `src/crypto/crypt-des.c`.
  */
 
 #pragma once

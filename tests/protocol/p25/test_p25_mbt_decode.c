@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// Avoid pulling in full dsd.h; forward-declare minimal types and hooks
+// Avoid pulling in broad decoder headers; forward-declare minimal types and hooks
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 

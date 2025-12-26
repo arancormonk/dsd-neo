@@ -5,7 +5,7 @@
 
 /*
  * Lightweight test shim to exercise internal P25 functions without exposing
- * full dsd.h to unit tests that lack external deps (e.g., mbelib).
+ * broad decoder headers to unit tests that lack external deps (e.g., mbelib).
  */
 
 #include <string.h>

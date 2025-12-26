@@ -9,8 +9,9 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+
+#include <dsd-neo/runtime/config.h>
 
 /* Import reliability buffers from p25p2_frame.c */
 extern uint8_t p2reliab[700];
@@ -24,13 +25,11 @@ static int g_erasure_thresh = -1; /* -1 = uninitialized */
 static int
 get_erasure_threshold(void) {
     if (g_erasure_thresh < 0) {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+
         g_erasure_thresh = 64; /* default */
-        const char* env = getenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESH");
-        if (env && env[0] != '\0') {
-            int v = atoi(env);
-            if (v >= 0 && v <= 255) {
-                g_erasure_thresh = v;
-            }
+        if (cfg && cfg->p25p2_soft_erasure_thresh_is_set) {
+            g_erasure_thresh = cfg->p25p2_soft_erasure_thresh;
         }
     }
     return g_erasure_thresh;

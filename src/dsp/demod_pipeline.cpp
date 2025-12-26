@@ -68,6 +68,16 @@ __attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
 #define DSD_NEO_IVDEP
 #endif
 
+static inline int
+debug_cqpsk_enabled(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    return (cfg && cfg->debug_cqpsk_enable) ? 1 : 0;
+}
+
 /* Platform-specific aligned pointer assumption */
 template <typename T>
 static inline T*
@@ -1230,15 +1240,8 @@ gardner_timing_adjust(struct demod_state* d) {
 
     /* Debug: TED state when DSD_NEO_DEBUG_CQPSK=1 */
     {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
         static int call_count = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk && d->cqpsk_enable && (++call_count % 50) == 0) {
+        if (debug_cqpsk_enabled() && d->cqpsk_enable && (++call_count % 50) == 0) {
             float lock_norm =
                 (d->ted_state.lock_count > 0) ? d->ted_state.lock_accum / (float)d->ted_state.lock_count : 0.0f;
             fprintf(stderr, "[TED] omega:%.3f mu:%.3f e_ema:%.4f lock:%.2f in:%d out:%d\n", d->ted_state.omega,
@@ -1359,15 +1362,8 @@ full_demod(struct demod_state* d) {
 
         /* Debug: Post-AGC magnitudes when DSD_NEO_DEBUG_CQPSK=1 */
         {
-            static int debug_init = 0;
-            static int debug_cqpsk = 0;
             static int call_count = 0;
-            if (!debug_init) {
-                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                debug_init = 1;
-            }
-            if (debug_cqpsk && (++call_count % 50) == 0 && d->lp_len >= 8) {
+            if (debug_cqpsk_enabled() && (++call_count % 50) == 0 && d->lp_len >= 8) {
                 const float* iq = d->lowpassed;
                 float mag_sum = 0.0f;
                 float max_env = 0.0f;
@@ -1431,15 +1427,8 @@ full_demod(struct demod_state* d) {
 
             /* Debug: Post-processing state when DSD_NEO_DEBUG_CQPSK=1 */
             {
-                static int debug_init = 0;
-                static int debug_cqpsk = 0;
                 static int call_count = 0;
-                if (!debug_init) {
-                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                    debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                    debug_init = 1;
-                }
-                if (debug_cqpsk && (++call_count % 50) == 0) {
+                if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
                     dsd_costas_loop_state_t* c = &d->costas_state;
                     dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
                     ted_state_t* ted = &d->ted_state;
@@ -1561,8 +1550,6 @@ full_demod(struct demod_state* d) {
         qpsk_differential_demod(d);
         /* Debug: Symbol histogram when DSD_NEO_DEBUG_CQPSK=1 */
         {
-            static int debug_init = 0;
-            static int debug_cqpsk = 0;
             static unsigned int call_count = 0; /* unsigned to avoid signed overflow UB */
             /* Accumulate histogram over multiple blocks for meaningful statistics */
             static int hist_p3 = 0, hist_p1 = 0, hist_m1 = 0, hist_m3 = 0, hist_other = 0;
@@ -1571,12 +1558,7 @@ full_demod(struct demod_state* d) {
             static double evm_err_acc = 0.0;
             static double evm_ref_acc = 0.0;
             static int evm_count = 0;
-            if (!debug_init) {
-                const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                debug_cqpsk = (env && *env == '1') ? 1 : 0;
-                debug_init = 1;
-            }
-            if (debug_cqpsk) {
+            if (debug_cqpsk_enabled()) {
                 const float* syms = d->result;
                 for (int k = 0; k < d->result_len; k++) {
                     float s = syms[k];

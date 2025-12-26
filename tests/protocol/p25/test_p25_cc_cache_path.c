@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/runtime/config.h>
 
 static int
 expect_eq_str(const char* tag, const char* a, const char* b) {
@@ -45,6 +46,7 @@ main(void) {
         return 100;
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
+    dsd_neo_config_init(NULL);
 
     dsd_state st;
     memset(&st, 0, sizeof st);

@@ -8,8 +8,7 @@
  * @brief Legacy ncurses UI entrypoints.
  *
  * Declares the ncurses UI lifecycle and input handlers implemented in
- * `src/ui/terminal/` so callers can avoid including the `dsd.h` umbrella
- * header.
+ * `src/ui/terminal/`.
  */
 
 #pragma once

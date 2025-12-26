@@ -8,7 +8,7 @@
  * @brief NXDN LFSR helpers.
  *
  * Declares NXDN scrambler/descrambler helpers implemented in the NXDN protocol
- * module so callers can avoid including the `dsd.h` umbrella.
+ * module.
  */
 
 #pragma once

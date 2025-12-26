@@ -146,7 +146,7 @@ p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
     return 0;
 }
 
-// Access dsd_state fields (we only need these few); avoid including dsd.h to skip main symbol
+// Access a few dsd_state fields; keep this test independent of broad decoder headers.
 struct MinimalState {
     int p25_p2_audio_allowed[2];
     int dmrburstL;

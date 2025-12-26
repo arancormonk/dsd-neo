@@ -9,7 +9,7 @@
  *
  * Declares the convolutional encoder/decoder routines implemented in
  * `src/protocol/nxdn/nxdn_convolution.c`. Several protocols reuse these
- * helpers, so callers should include this narrow header instead of `dsd.h`.
+ * helpers.
  */
 
 #pragma once

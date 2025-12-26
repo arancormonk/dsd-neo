@@ -22,7 +22,7 @@
 #include <string.h>
 #include <time.h>
 
-/* Forward declarations for types - must match dsd.h structures */
+/* Forward declarations for types - must match decoder option/state layouts */
 typedef struct dsd_opts {
     int payload;
     char mbe_out_dir[1024];

@@ -16,7 +16,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
-// Minimal forward declarations to avoid including dsd.h (which declares main)
+// Minimal forward declarations to keep test dependencies narrow.
 #define RS_12_9_DATASIZE     9
 #define RS_12_9_CHECKSUMSIZE 3
 

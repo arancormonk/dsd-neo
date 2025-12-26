@@ -7,8 +7,7 @@
  * @file
  * @brief Core file I/O helpers used by CLI/UI orchestration.
  *
- * Declares file-related helpers implemented in core so higher-level modules
- * can call them without including the `dsd.h` umbrella.
+ * Declares file-related helpers implemented in core.
  */
 
 #pragma once

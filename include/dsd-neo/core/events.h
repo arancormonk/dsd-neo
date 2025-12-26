@@ -7,8 +7,7 @@
  * @file
  * @brief Core event logging helpers.
  *
- * Declares event-history helpers implemented in core so callers can avoid
- * including the `dsd.h` umbrella header.
+ * Declares event-history helpers implemented in core.
  */
 
 #pragma once

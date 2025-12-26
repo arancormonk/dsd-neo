@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -64,23 +65,10 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
         return 0; // require system identity
     }
 
-    const char* root = getenv("DSD_NEO_CACHE_DIR");
     char path[1024] = {0};
-    if (root && root[0] != '\0') {
-        snprintf(path, sizeof(path), "%s", root);
-    } else {
-        const char* home = getenv("HOME");
-#ifdef _WIN32
-        if (!home || home[0] == '\0') {
-            home = getenv("LOCALAPPDATA");
-        }
-#endif
-        if (home && home[0] != '\0') {
-            snprintf(path, sizeof(path), "%s/.cache/dsd-neo", home);
-        } else {
-            snprintf(path, sizeof(path), ".dsdneo_cache");
-        }
-    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    const char* root = (cfg && cfg->cache_dir[0] != '\0') ? cfg->cache_dir : ".dsdneo_cache";
+    snprintf(path, sizeof(path), "%s", root);
 
     struct stat st;
     if (stat(path, &st) != 0) {
@@ -102,11 +90,8 @@ p25_cc_try_load_cache(dsd_opts* opts, dsd_state* state) {
     if (!state || state->p25_cc_cache_loaded) {
         return;
     }
-    int enable = 1;
-    const char* env = getenv("DSD_NEO_CC_CACHE");
-    if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
-        enable = 0;
-    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int enable = cfg ? cfg->cc_cache_enable : 1;
     if (!enable) {
         state->p25_cc_cache_loaded = 1;
         return;
@@ -148,11 +133,8 @@ p25_cc_persist_cache(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
-    int enable = 1;
-    const char* env = getenv("DSD_NEO_CC_CACHE");
-    if (env && (env[0] == '0' || env[0] == 'n' || env[0] == 'N' || env[0] == 'f' || env[0] == 'F')) {
-        enable = 0;
-    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int enable = cfg ? cfg->cc_cache_enable : 1;
     if (!enable) {
         return;
     }

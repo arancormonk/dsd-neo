@@ -16,6 +16,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ui_prims.h>
 
@@ -422,24 +423,13 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
         double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
         // Compute the same per-slot activity booleans as in the SM tick
-        double ring_hold = 0.75; // seconds; DSD_NEO_P25_RING_HOLD
+        double ring_hold = 0.75; // seconds; default
+        double mac_hold = 3.0;   // seconds; default
         {
-            const char* s = getenv("DSD_NEO_P25_RING_HOLD");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v <= 5.0) {
-                    ring_hold = v;
-                }
-            }
-        }
-        double mac_hold = 3.0; // seconds; DSD_NEO_P25_MAC_HOLD
-        {
-            const char* s = getenv("DSD_NEO_P25_MAC_HOLD");
-            if (s && s[0] != '\0') {
-                double v = atof(s);
-                if (v >= 0.0 && v < 10.0) {
-                    mac_hold = v;
-                }
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (cfg) {
+                ring_hold = cfg->p25_ring_hold_s;
+                mac_hold = cfg->p25_mac_hold_s;
             }
         }
         // After hangtime, ignore stale audio_allowed alone; require ring gated by MAC recency

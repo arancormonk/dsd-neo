@@ -7,8 +7,7 @@
  * @file
  * @brief Trellis decoder helpers.
  *
- * Declares the trellis decoder implemented in `src/core/util/dsd_misc.c` so
- * protocol modules can avoid including the `dsd.h` umbrella header.
+ * Declares the trellis decoder implemented in `src/core/util/dsd_misc.c`.
  */
 
 #pragma once

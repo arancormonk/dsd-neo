@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <stdlib.h>
@@ -12,22 +13,15 @@
 #include <xmmintrin.h>
 #endif
 
-static int
-dsd_truthy_env(const char* v) {
-    if (!v || !*v) {
-        return 0;
-    }
-    if (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T') {
-        return 1;
-    }
-    return 0;
-}
-
 void
 dsd_bootstrap_enable_ftz_daz_if_enabled(void) {
 #if defined(__SSE__) || defined(__SSE2__)
-    const char* e = getenv("DSD_NEO_FTZ_DAZ");
-    if (!dsd_truthy_env(e)) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
+    }
+    if (!cfg || !cfg->ftz_daz_enable) {
         return;
     }
     unsigned int mxcsr = _mm_getcsr();

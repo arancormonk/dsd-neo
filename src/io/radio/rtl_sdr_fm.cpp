@@ -325,6 +325,12 @@ struct RtlSdrInternals {
 
 static struct RtlSdrInternals* g_stream = NULL;
 
+static inline int
+debug_cqpsk_enabled(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    return (cfg && cfg->debug_cqpsk_enable) ? 1 : 0;
+}
+
 /*
  * Pick a hardware tuner bandwidth.
  *
@@ -339,15 +345,9 @@ static struct RtlSdrInternals* g_stream = NULL;
  */
 static uint32_t
 choose_tuner_bw_hz(uint32_t capture_rate_hz, uint32_t dsp_bw_hz) {
-    const char* e = getenv("DSD_NEO_TUNER_BW_HZ");
-    if (e && *e) {
-        if (dsd_strcasecmp(e, "auto") == 0) {
-            return 0; /* driver automatic */
-        }
-        long v = strtol(e, NULL, 10);
-        if (v >= 0 && v <= 20000000) {
-            return (uint32_t)v; /* allow explicit 0 => auto */
-        }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->tuner_bw_hz_is_set) {
+        return (uint32_t)cfg->tuner_bw_hz; /* 0 => driver automatic */
     }
 
     /* Mode-aware policy:
@@ -698,14 +698,7 @@ demod_reset_on_retune(struct demod_state* s) {
      * SPS change before other code paths may equalize ted_sps and ted_sps_override. */
     /* Debug: Log costas_reset_pending state */
     {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk) {
+        if (debug_cqpsk_enabled()) {
             fprintf(stderr, "[COSTAS-RESET] pending=%d ted_sps=%d override=%d\n", s->costas_reset_pending, s->ted_sps,
                     s->ted_sps_override);
         }
@@ -761,14 +754,7 @@ demod_reset_on_retune(struct demod_state* s) {
     /* Debug: summarize key CQPSK/TED state after retune when DSD_NEO_DEBUG_CQPSK=1.
        This runs in the controller thread after hardware retune and SPS refresh. */
     {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk) {
+        if (debug_cqpsk_enabled()) {
             /* Use the OP25-compatible FLL band-edge state, not legacy fll_freq.
              * Convert rad/sample to Hz for readability. */
             float fll_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
@@ -941,49 +927,15 @@ static DSD_THREAD_RETURN_TYPE
             continue;
         }
         if (!ag_initialized) {
-            const char* ag = getenv("DSD_NEO_TUNER_AUTOGAIN");
-            // Default OFF. Enable only if explicitly '1', 't', 'y'.
-            if (ag && (*ag == '1' || *ag == 't' || *ag == 'T' || *ag == 'y' || *ag == 'Y')) {
-                g_tuner_autogain_on.store(1, std::memory_order_relaxed);
-            }
-            /* Optional env overrides for probe behavior */
-            if (const char* ep = getenv("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS")) {
-                int v = atoi(ep);
-                if (v >= 0 && v <= 20000) {
-                    s_probe_ms = v;
-                }
-            }
-            if (const char* eg = getenv("DSD_NEO_TUNER_AUTOGAIN_SEED_DB")) {
-                double v = atof(eg);
-                if (v >= 0.0 && v <= 60.0) {
-                    s_seed_gain_db10 = (int)lrint(v * 10.0);
-                }
-            }
-            /* Optional env overrides for spectral SNR gating */
-            if (const char* esn = getenv("DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB")) {
-                double v = atof(esn);
-                if (v >= 0.0 && v <= 60.0) {
-                    s_ag_spec_snr_db = v;
-                }
-            }
-            if (const char* eir = getenv("DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO")) {
-                char* endp = NULL;
-                double v = strtod(eir, &endp);
-                if (endp && eir != endp && v >= 0.10 && v <= 0.95) {
-                    s_ag_inband_ratio = v;
-                }
-            }
-            if (const char* eus = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB")) {
-                double v = atof(eus);
-                if (v >= 1.0 && v <= 10.0) {
-                    s_ag_up_step_db10 = (int)lrint(v * 10.0);
-                }
-            }
-            if (const char* epp = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST")) {
-                int v = atoi(epp);
-                if (v >= 1 && v <= 5) {
-                    s_ag_up_persist = v;
-                }
+            const dsdneoRuntimeConfig* cfg = (g_stream && g_stream->cfg) ? g_stream->cfg : dsd_neo_get_config();
+            if (cfg) {
+                g_tuner_autogain_on.store(cfg->tuner_autogain_enable ? 1 : 0, std::memory_order_relaxed);
+                s_probe_ms = cfg->tuner_autogain_probe_ms;
+                s_seed_gain_db10 = (int)lrint(cfg->tuner_autogain_seed_db * 10.0);
+                s_ag_spec_snr_db = cfg->tuner_autogain_spec_snr_db;
+                s_ag_inband_ratio = cfg->tuner_autogain_inband_ratio;
+                s_ag_up_step_db10 = (int)lrint(cfg->tuner_autogain_up_step_db * 10.0);
+                s_ag_up_persist = cfg->tuner_autogain_up_persist;
             }
             ag_initialized = 1;
         }
@@ -1754,8 +1706,9 @@ static DSD_THREAD_RETURN_TYPE
             /* rtl_tcp: keep fs/4 + combine-rotate path consistent with USB defaults */
             want = 0;
         }
-        if (const char* ot = getenv("DSD_NEO_RTL_OFFSET_TUNING")) {
-            want = (ot[0] != '0' && ot[0] != 'n' && ot[0] != 'N' && ot[0] != 'f' && ot[0] != 'F') ? 1 : 0;
+        const dsdneoRuntimeConfig* cfg = (g_stream && g_stream->cfg) ? g_stream->cfg : dsd_neo_get_config();
+        if (cfg && cfg->rtl_offset_tuning_is_set) {
+            want = cfg->rtl_offset_tuning_enable ? 1 : 0;
         }
         int r = rtl_device_set_offset_tuning_enabled(rtl_device_handle, want);
         if (r == 0) {
@@ -2554,9 +2507,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (opts && opts->rtl_gain_value <= 0) {
         // Supervisory auto gain DISABLED by default (user request).
         // Only enable if explicitly requested via env DSD_NEO_TUNER_AUTOGAIN=1.
-        const char* ag = getenv("DSD_NEO_TUNER_AUTOGAIN");
-        int env_on = (ag && (*ag == '1' || *ag == 't' || *ag == 'T' || *ag == 'y' || *ag == 'Y')) ? 1 : 0;
-        if (env_on) {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (cfg && cfg->tuner_autogain_enable) {
             g_tuner_autogain_on.store(1, std::memory_order_relaxed);
         }
     }
@@ -2594,8 +2546,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (opts && opts->rtltcp_enabled) {
         int autotune = opts->rtltcp_autotune;
         if (!autotune) {
-            const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
-            if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (cfg && cfg->tcp_autotune_enable) {
                 autotune = 1;
             }
         }
@@ -2627,60 +2579,33 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
     /* Advanced RTL-SDR driver options via environment */
     {
-        /* Direct sampling selection: DSD_NEO_RTL_DIRECT=0|1|2|I|Q */
-        if (const char* ds = getenv("DSD_NEO_RTL_DIRECT")) {
-            int mode = 0;
-            if (ds[0] == '1' || ds[0] == 'I' || ds[0] == 'i') {
-                mode = 1;
-            } else if (ds[0] == '2' || ds[0] == 'Q' || ds[0] == 'q') {
-                mode = 2;
-            } else if (ds[0] == '0') {
-                mode = 0;
-            } else {
-                int v = atoi(ds);
-                if (v >= 0 && v <= 2) {
-                    mode = v;
-                }
-            }
-            if (mode >= 0 && mode <= 2) {
-                rtl_device_set_direct_sampling(rtl_device_handle, mode);
-                dongle.direct_sampling = mode;
-            }
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+
+        if (cfg && cfg->rtl_direct_is_set) {
+            int mode = cfg->rtl_direct_mode;
+            rtl_device_set_direct_sampling(rtl_device_handle, mode);
+            dongle.direct_sampling = mode;
         }
 
-        /* Offset tuning: DSD_NEO_RTL_OFFSET_TUNING=0|1 (default try enable) */
-        if (const char* ot = getenv("DSD_NEO_RTL_OFFSET_TUNING")) {
-            int on = (ot[0] != '0' && ot[0] != 'n' && ot[0] != 'N' && ot[0] != 'f' && ot[0] != 'F') ? 1 : 0;
+        if (cfg && cfg->rtl_offset_tuning_is_set) {
+            int on = cfg->rtl_offset_tuning_enable ? 1 : 0;
             rtl_device_set_offset_tuning_enabled(rtl_device_handle, on);
             dongle.offset_tuning = on ? 1 : 0;
         }
 
-        /* Xtal frequencies (Hz): DSD_NEO_RTL_XTAL_HZ / DSD_NEO_TUNER_XTAL_HZ */
-        uint32_t rtl_xtal_hz = 0, tuner_xtal_hz = 0;
-        if (const char* ex = getenv("DSD_NEO_RTL_XTAL_HZ")) {
-            long v = strtol(ex, NULL, 10);
-            if (v > 0 && v <= 1000000000L) {
-                rtl_xtal_hz = (uint32_t)v;
-            }
-        }
-        if (const char* et = getenv("DSD_NEO_TUNER_XTAL_HZ")) {
-            long v = strtol(et, NULL, 10);
-            if (v > 0 && v <= 1000000000L) {
-                tuner_xtal_hz = (uint32_t)v;
-            }
-        }
-        if (rtl_xtal_hz > 0 || tuner_xtal_hz > 0) {
+        if (cfg && (cfg->rtl_xtal_hz_is_set || cfg->tuner_xtal_hz_is_set)) {
+            uint32_t rtl_xtal_hz = cfg->rtl_xtal_hz_is_set ? (uint32_t)cfg->rtl_xtal_hz : 0U;
+            uint32_t tuner_xtal_hz = cfg->tuner_xtal_hz_is_set ? (uint32_t)cfg->tuner_xtal_hz : 0U;
             rtl_device_set_xtal_freq(rtl_device_handle, rtl_xtal_hz, tuner_xtal_hz);
         }
 
-        /* Test mode: DSD_NEO_RTL_TESTMODE=0|1 */
-        if (const char* tm = getenv("DSD_NEO_RTL_TESTMODE")) {
-            int on = (tm[0] != '0' && tm[0] != 'n' && tm[0] != 'N' && tm[0] != 'f' && tm[0] != 'F') ? 1 : 0;
+        if (cfg && cfg->rtl_testmode_is_set) {
+            int on = cfg->rtl_testmode_enable ? 1 : 0;
             rtl_device_set_testmode(rtl_device_handle, on);
         }
 
-        /* IF gains: DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..." gain in dB or 0.1dB */
-        if (const char* ig = getenv("DSD_NEO_RTL_IF_GAINS")) {
+        if (cfg && cfg->rtl_if_gains_is_set && cfg->rtl_if_gains[0] != '\0') {
+            const char* ig = cfg->rtl_if_gains;
             char buf[1024];
             snprintf(buf, sizeof buf, "%s", ig);
             char* save = NULL;
@@ -2871,10 +2796,10 @@ dsd_rtl_stream_open(dsd_opts* opts) {
        to reduce initial under-runs and jitter on the consumer side. */
     if (opts && opts->rtltcp_enabled) {
         int pre_ms = 1000; /* default deeper prebuffer for rtltcp */
-        if (const char* e = getenv("DSD_NEO_TCP_PREBUF_MS")) {
-            int v = atoi(e);
-            if (v >= 5 && v <= 1000) {
-                pre_ms = v;
+        {
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (cfg) {
+                pre_ms = cfg->tcp_prebuf_ms;
             }
         }
 
@@ -3120,16 +3045,10 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         static int cooldown = 0; /* simple rate limiter (loops) */
         if (!init) {
             init = 1;
-            const char* on = getenv("DSD_NEO_AUTO_PPM");
-            if (on && (*on == '1' || *on == 'y' || *on == 'Y' || *on == 't' || *on == 'T')) {
-                enabled = 1;
-            }
-            const char* sthr = getenv("DSD_NEO_AUTO_PPM_SNR_DB");
-            if (sthr) {
-                double v = atof(sthr);
-                if (v >= 0.0 && v <= 40.0) {
-                    snr_thr_db = v;
-                }
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            enabled = (cfg && cfg->auto_ppm_enable) ? 1 : 0;
+            if (cfg) {
+                snr_thr_db = cfg->auto_ppm_snr_db;
             }
             if (opts && opts->rtl_auto_ppm_snr_db > 0.0f && opts->rtl_auto_ppm_snr_db <= 60.0f) {
                 snr_thr_db = (double)opts->rtl_auto_ppm_snr_db;
@@ -3255,12 +3174,9 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         static double pwr_thr_db = -80.0;
         static int pwr_thr_inited = 0;
         if (!pwr_thr_inited) {
-            if (const char* ep = getenv("DSD_NEO_AUTO_PPM_PWR_DB")) {
-                char* endp = NULL;
-                double v = strtod(ep, &endp);
-                if (endp && ep != endp && v <= 0.0) {
-                    pwr_thr_db = v;
-                }
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (cfg) {
+                pwr_thr_db = cfg->auto_ppm_pwr_db;
             }
             pwr_thr_inited = 1;
         }
@@ -3356,22 +3272,13 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         /* Only allow zero-step lock when estimated offset is very small. This
            prevents premature lock at 0 when a meaningful offset remains. */
         static double zero_lock_max_est_ppm = 0.6; /* require |est_ppm| <= 0.6 */
-        /* One-time env overrides for lock thresholds */
+        /* One-time config overrides for lock thresholds */
         static int zero_thr_inited = 0;
         if (!zero_thr_inited) {
-            if (const char* ep = getenv("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM")) {
-                char* endp = NULL;
-                double v = strtod(ep, &endp);
-                if (endp && ep != endp && v >= 0.0 && v <= 2.0) {
-                    zero_lock_max_est_ppm = v;
-                }
-            }
-            if (const char* eh = getenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ")) {
-                char* endp = NULL;
-                double v = strtod(eh, &endp);
-                if (endp && eh != endp && v >= 10.0 && v <= 500.0) {
-                    zero_lock_deadband_hz = v;
-                }
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (cfg) {
+                zero_lock_max_est_ppm = cfg->auto_ppm_zerolock_ppm;
+                zero_lock_deadband_hz = (double)cfg->auto_ppm_zerolock_hz;
             }
             zero_thr_inited = 1;
         }
@@ -3621,14 +3528,7 @@ dsd_rtl_stream_set_ted_sps(int sps) {
      */
     /* Debug: log set_ted_sps call */
     {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk) {
+        if (debug_cqpsk_enabled()) {
             fprintf(stderr, "[SET_TED_SPS] sps=%d current_ted_sps=%d will_set_pending=%d\n", sps, demod.ted_sps,
                     (sps != demod.ted_sps) ? 1 : 0);
         }
@@ -3656,14 +3556,7 @@ dsd_rtl_stream_set_ted_sps(int sps) {
             demod.channel_lpf_profile = new_profile;
             /* Debug: log filter change */
             {
-                static int debug_init2 = 0;
-                static int debug_cqpsk2 = 0;
-                if (!debug_init2) {
-                    const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-                    debug_cqpsk2 = (env && *env == '1') ? 1 : 0;
-                    debug_init2 = 1;
-                }
-                if (debug_cqpsk2) {
+                if (debug_cqpsk_enabled()) {
                     fprintf(stderr, "[CH_LPF] profile=%s (sps=%d)\n",
                             (new_profile == DSD_CH_LPF_PROFILE_OP25_TDMA) ? "OP25_TDMA (9600Hz)" : "OP25_FDMA (7000Hz)",
                             sps);
@@ -3688,14 +3581,7 @@ dsd_rtl_stream_set_ted_sps_no_override(int sps) {
     }
     /* Debug: log set_ted_sps_no_override call */
     {
-        static int debug_init = 0;
-        static int debug_cqpsk = 0;
-        if (!debug_init) {
-            const char* env = getenv("DSD_NEO_DEBUG_CQPSK");
-            debug_cqpsk = (env && *env == '1') ? 1 : 0;
-            debug_init = 1;
-        }
-        if (debug_cqpsk) {
+        if (debug_cqpsk_enabled()) {
             fprintf(stderr, "[SET_TED_SPS_NO_OVERRIDE] sps=%d current_ted_sps=%d will_reset=%d\n", sps, demod.ted_sps,
                     (sps != demod.ted_sps) ? 1 : 0);
         }
@@ -4035,14 +3921,14 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
  */
 extern "C" int
 dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
-    /* Freeze retunes during auto-PPM training (to allow lock) unless disabled via env */
+    /* Freeze retunes during auto-PPM training (to allow lock) unless disabled */
     static int freeze_checked = 0;
     static int freeze_on_train = 1; /* default on */
     if (!freeze_checked) {
         freeze_checked = 1;
-        const char* e = getenv("DSD_NEO_AUTO_PPM_FREEZE");
-        if (e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N' || e[0] == 'f' || e[0] == 'F')) {
-            freeze_on_train = 0;
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (cfg) {
+            freeze_on_train = cfg->auto_ppm_freeze_enable ? 1 : 0;
         }
     }
     extern int dsd_rtl_stream_auto_ppm_training_active(void);

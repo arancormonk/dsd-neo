@@ -7,8 +7,7 @@
  * @file
  * @brief Voice/vocoder decode entrypoints.
  *
- * Declares the MBE decode functions implemented in `src/core/vocoder/` so
- * protocol modules can include a narrow header instead of `dsd.h`.
+ * Declares the MBE decode functions implemented in `src/core/vocoder/`.
  */
 
 #pragma once

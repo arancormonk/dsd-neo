@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Call into shim to avoid exposing full dsd.h deps
+// Call into shim to keep dependencies narrow.
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 typedef struct dsd_opts dsd_opts;
@@ -22,7 +22,7 @@ typedef struct dsd_state dsd_state;
 void dsd_neo_config_init(const dsd_opts* opts);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
-// Use a local shim that sets up real opts/state via dsd.h in a separate TU.
+// Use a local shim that sets up real opts/state in a separate TU.
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
 // Stubs referenced by PDU data path

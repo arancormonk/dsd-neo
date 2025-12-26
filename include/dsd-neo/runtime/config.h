@@ -146,6 +146,11 @@ extern "C" {
  *     Maximum time in milliseconds to wait for output ring to drain on retune/hop when not clearing.
  *     Default: 50ms.
  *
+ * TCP audio input
+ * - DSD_NEO_TCPIN_BACKOFF_MS
+ *     Backoff time (milliseconds) before attempting to reconnect when TCP audio input stalls/disconnects.
+ *     Values: integer 50..5000. Default: 300.
+ *
  * Symbol window debug/testing
  * - DSD_NEO_WINDOW_FREEZE
  *     Freeze symbol decision window selection and disable auto-centering nudges. Useful for A/B testing.
@@ -155,6 +160,26 @@ extern "C" {
  * - DSD_NEO_MT
  *     Enable a minimal 2-thread worker pool for certain CPU-heavy inner loops.
  *     Values: 1 enable, else disabled. Default: 0 (disabled).
+ *
+ * Debug/advanced knobs (centralized for maintainability)
+ * - DSD_NEO_DEBUG_SYNC, DSD_NEO_DEBUG_CQPSK
+ * - DSD_NEO_CQPSK, DSD_NEO_CQPSK_SYNC_INV, DSD_NEO_CQPSK_SYNC_NEG
+ * - DSD_NEO_SYNC_WARMSTART
+ * - DSD_NEO_FTZ_DAZ
+ * - DSD_NEO_NO_BOOTSTRAP
+ *
+ * TCP/RTL/rigctl knobs
+ * - DSD_NEO_TCP_* (autotune, waitall, stats, buffers, timeouts, prebuffer)
+ * - DSD_NEO_RIGCTL_RCVTIMEO
+ * - DSD_NEO_RTL_* and DSD_NEO_TUNER_* (direct/offset, xtal, testmode, autogain)
+ * - DSD_NEO_AUTO_PPM* (spectrum-based PPM correction)
+ *
+ * Protocol timers/holds
+ * - DSD_NEO_P25_* and DSD_NEO_DMR_* (hangtimes, grace windows, holds, watchdog)
+ * - DSD_NEO_P25P1_SOFT_ERASURE_THRESH, DSD_NEO_P25P2_SOFT_ERASURE_THRESH
+ *
+ * Cache/path knobs
+ * - DSD_NEO_CACHE_DIR, DSD_NEO_CC_CACHE
  */
 
 typedef enum {
@@ -166,6 +191,211 @@ typedef enum {
 } dsdneoDeemphMode;
 
 typedef struct dsdneoRuntimeConfig {
+    /* Field order is chosen to minimize padding and keep clang-tidy's
+     * clang-analyzer-optin.performance.Padding check quiet. */
+
+    /* 8-byte aligned scalars */
+
+    /* DMR / trunking timers */
+    double dmr_hangtime_s;
+    double dmr_grant_timeout_s;
+
+    /* P25 timers/holds */
+    double p25_hangtime_s;
+    double p25_grant_timeout_s;
+    double p25_cc_grace_s;
+    double p25_vc_grace_s;
+    double p25_ring_hold_s;
+    double p25_mac_hold_s;
+    double p25_voice_hold_s;
+
+    /* P25 follower (UI-exposed) knobs */
+    double p25_min_follow_dwell_s;
+    double p25_grant_voice_to_s;
+    double p25_retune_backoff_s;
+    double p25_force_release_extra_s;
+    double p25_force_release_margin_s;
+    double p25p1_err_hold_pct;
+    double p25p1_err_hold_s;
+
+    /* Input processing knobs */
+    double input_warn_db;
+
+    /* Supervisory tuner autogain knobs */
+    double tuner_autogain_seed_db;
+    double tuner_autogain_spec_snr_db;
+    double tuner_autogain_inband_ratio;
+    double tuner_autogain_up_step_db;
+
+    /* Auto-PPM (spectrum-based) knobs */
+    double auto_ppm_snr_db;
+    double auto_ppm_pwr_db;
+    double auto_ppm_zerolock_ppm;
+
+    /* CQPSK Costas loop (carrier recovery) */
+    double costas_loop_bw;
+    double costas_damping;
+
+    /* DMR TIII tools (one-shot LCN calculator) */
+    long dmr_t3_step_hz;
+    long dmr_t3_cc_freq_hz;
+    long dmr_t3_cc_lcn;
+    long dmr_t3_start_lcn;
+
+    /* Realtime scheduling and CPU affinity */
+    int rt_sched_is_set;
+    int rt_sched_enable;
+    int rt_prio_usb_is_set;
+    int rt_prio_usb;
+    int rt_prio_dongle_is_set;
+    int rt_prio_dongle;
+    int rt_prio_demod_is_set;
+    int rt_prio_demod;
+    int cpu_usb_is_set;
+    int cpu_usb;
+    int cpu_dongle_is_set;
+    int cpu_dongle;
+    int cpu_demod_is_set;
+    int cpu_demod;
+
+    /* Bootstrap/system toggles */
+    int ftz_daz_is_set;
+    int ftz_daz_enable;
+    int no_bootstrap_is_set;
+    int no_bootstrap_enable;
+
+    /* Debug/tuning toggles */
+    int debug_sync_is_set;
+    int debug_sync_enable;
+    int debug_cqpsk_is_set;
+    int debug_cqpsk_enable;
+
+    /* CQPSK runtime toggles */
+    int cqpsk_is_set;
+    int cqpsk_enable;
+    int cqpsk_sync_inv_is_set;
+    int cqpsk_sync_inv;
+    int cqpsk_sync_neg_is_set;
+    int cqpsk_sync_neg;
+
+    /* Sync warm-start (kill-switch) */
+    int sync_warmstart_is_set;
+    int sync_warmstart_enable;
+
+    /* DMR / trunking timers */
+    int dmr_hangtime_is_set;
+    int dmr_grant_timeout_is_set;
+
+    /* P25 timers/holds */
+    int p25_hangtime_is_set;
+    int p25_grant_timeout_is_set;
+    int p25_cc_grace_is_set;
+    int p25_vc_grace_is_set;
+    int p25_ring_hold_is_set;
+    int p25_mac_hold_is_set;
+    int p25_voice_hold_is_set;
+    int p25_wd_ms_is_set;
+    int p25_wd_ms;
+
+    /* P25 follower (UI-exposed) knobs */
+    int p25_min_follow_dwell_is_set;
+    int p25_grant_voice_to_is_set;
+    int p25_retune_backoff_is_set;
+    int p25_force_release_extra_is_set;
+    int p25_force_release_margin_is_set;
+    int p25p1_err_hold_pct_is_set;
+    int p25p1_err_hold_s_is_set;
+
+    /* P25 soft-decision erasure thresholds (0..255) */
+    int p25p1_soft_erasure_thresh_is_set;
+    int p25p1_soft_erasure_thresh;
+    int p25p2_soft_erasure_thresh_is_set;
+    int p25p2_soft_erasure_thresh;
+
+    /* Input processing knobs */
+    int input_volume_is_set;
+    int input_volume_multiplier;
+    int input_warn_db_is_set;
+
+    /* DMR TIII tools (one-shot LCN calculator) */
+    int dmr_t3_calc_csv_is_set;
+    int dmr_t3_step_hz_is_set;
+    int dmr_t3_cc_freq_is_set;
+    int dmr_t3_cc_lcn_is_set;
+    int dmr_t3_start_lcn_is_set;
+
+    /* DMR TIII heuristic fill (opt-in) */
+    int dmr_t3_heur_is_set;
+    int dmr_t3_heur_enable;
+
+    /* User config discovery */
+    int config_path_is_set;
+
+    /* Cache/path knobs */
+    int cache_dir_is_set;
+    int cc_cache_is_set;
+    int cc_cache_enable;
+
+    /* TCP/rigctl knobs */
+    int tcp_bufsz_is_set;
+    int tcp_bufsz_bytes;
+    int tcp_waitall_is_set;
+    int tcp_waitall_enable;
+    int tcp_autotune_is_set;
+    int tcp_autotune_enable;
+    int tcp_stats_is_set;
+    int tcp_stats_enable;
+    int tcp_max_timeouts_is_set;
+    int tcp_max_timeouts;
+    int tcp_rcvbuf_is_set;
+    int tcp_rcvbuf_bytes;
+    int tcp_rcvtimeo_is_set;
+    int tcp_rcvtimeo_ms;
+    int rigctl_rcvtimeo_is_set;
+    int rigctl_rcvtimeo_ms;
+    int tcp_prebuf_ms_is_set;
+    int tcp_prebuf_ms;
+
+    /* RTL device/tuner knobs */
+    int rtl_agc_is_set;
+    int rtl_agc_enable;
+    int rtl_direct_is_set;
+    int rtl_direct_mode; /* 0=off, 1=I, 2=Q */
+    int rtl_offset_tuning_is_set;
+    int rtl_offset_tuning_enable;
+    int rtl_xtal_hz_is_set;
+    int rtl_xtal_hz;
+    int tuner_xtal_hz_is_set;
+    int tuner_xtal_hz;
+    int rtl_testmode_is_set;
+    int rtl_testmode_enable;
+    int rtl_if_gains_is_set;
+    int tuner_bw_hz_is_set;
+    int tuner_bw_hz; /* 0=auto */
+
+    /* Supervisory tuner autogain knobs */
+    int tuner_autogain_is_set;
+    int tuner_autogain_enable;
+    int tuner_autogain_probe_ms_is_set;
+    int tuner_autogain_probe_ms;
+    int tuner_autogain_seed_db_is_set;
+    int tuner_autogain_spec_snr_db_is_set;
+    int tuner_autogain_inband_ratio_is_set;
+    int tuner_autogain_up_step_db_is_set;
+    int tuner_autogain_up_persist_is_set;
+    int tuner_autogain_up_persist;
+
+    /* Auto-PPM (spectrum-based) knobs */
+    int auto_ppm_is_set;
+    int auto_ppm_enable;
+    int auto_ppm_snr_db_is_set;
+    int auto_ppm_pwr_db_is_set;
+    int auto_ppm_zerolock_ppm_is_set;
+    int auto_ppm_zerolock_hz_is_set;
+    int auto_ppm_zerolock_hz;
+    int auto_ppm_freeze_is_set;
+    int auto_ppm_freeze_enable;
+
     /* Combine rotate + widen */
     int combine_rot_is_set;
     int combine_rot;
@@ -193,9 +423,7 @@ typedef struct dsdneoRuntimeConfig {
 
     /* CQPSK Costas loop (carrier recovery) */
     int costas_bw_is_set;
-    double costas_loop_bw;
     int costas_damping_is_set;
-    double costas_damping;
 
     /* Gardner TED - native float parameters */
     int ted_is_set;
@@ -231,6 +459,10 @@ typedef struct dsdneoRuntimeConfig {
     int output_clear_on_retune;
     int retune_drain_ms_is_set;
     int retune_drain_ms;
+
+    /* TCP audio input */
+    int tcpin_backoff_ms_is_set;
+    int tcpin_backoff_ms;
 
     /* Symbol window debug/testing */
     int window_freeze_is_set;
@@ -273,6 +505,12 @@ typedef struct dsdneoRuntimeConfig {
        sample rates (e.g., 24 kHz) without forcing it on for all modes. */
     int channel_lpf_is_set; /* env seen */
     int channel_lpf_enable; /* 0=off, 1=on */
+
+    /* Inline strings */
+    char dmr_t3_calc_csv[1024];
+    char config_path[1024];
+    char cache_dir[1024];
+    char rtl_if_gains[1024];
 }
 
 dsdneoRuntimeConfig;
@@ -295,6 +533,29 @@ void dsd_neo_config_init(const dsd_opts* opts);
  * @return Pointer to config or NULL.
  */
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
+
+/**
+ * @brief Apply runtime config values to opts/state.
+ *
+ * Intended to centralize env-derived operational knobs that are still stored in
+ * `dsd_opts` / `dsd_state` fields.
+ *
+ * @param cfg Runtime config snapshot (may be NULL).
+ * @param opts Decoder options to mutate (may be NULL).
+ * @param state Decoder state to mutate (may be NULL).
+ */
+void dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Read an environment variable value via runtime wrappers.
+ *
+ * Intended for UI/debug tooling that needs generic env access without calling
+ * `getenv()` directly outside runtime.
+ *
+ * @param name Environment variable name.
+ * @return Pointer to value string (owned by the C library) or NULL if unset.
+ */
+const char* dsd_neo_env_get(const char* name);
 
 /* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM) */
 /**

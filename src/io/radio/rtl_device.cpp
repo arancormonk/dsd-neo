@@ -18,6 +18,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
@@ -360,12 +361,11 @@ rtl_tcp_send_cmd(dsd_socket_t sockfd, uint8_t cmd, uint32_t param) {
 
 static int
 env_agc_want(void) {
-    const char* e = getenv("DSD_NEO_RTL_AGC");
-    int want = 1; /* default enable AGC for auto gain */
-    if (e && (*e == '0' || *e == 'n' || *e == 'N' || *e == 'f' || *e == 'F')) {
-        want = 0;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        return 1;
     }
-    return want;
+    return cfg->rtl_agc_enable ? 1 : 0;
 }
 
 /* Read and discard rtl_tcp header: 'RTL0' + tuner(4) + ngains(4) + ngains*4 */
@@ -403,6 +403,7 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     tcp_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     maybe_set_thread_realtime_and_affinity("DONGLE");
     /* Default read size: for rtl_tcp prefer small (16 KiB) chunks for higher cadence.
        For USB, derive ~20 ms to reduce burstiness. */
@@ -424,11 +425,8 @@ static DSD_THREAD_RETURN_TYPE
             BUFSZ = 65536; /* safe fallback when rate isn't known yet */
         }
     }
-    if (const char* es = getenv("DSD_NEO_TCP_BUFSZ")) {
-        long v = atol(es);
-        if (v > 4096 && v < (32L * 1024L * 1024L)) {
-            BUFSZ = (size_t)v;
-        }
+    if (cfg && cfg->tcp_bufsz_is_set && cfg->tcp_bufsz_bytes > 0) {
+        BUFSZ = (size_t)cfg->tcp_bufsz_bytes;
     }
     unsigned char* u8 = (unsigned char*)malloc(BUFSZ);
     if (!u8) {
@@ -438,16 +436,13 @@ static DSD_THREAD_RETURN_TYPE
     /* Discard server capability header so following bytes are pure IQ */
     rtl_tcp_skip_header(s->sockfd);
     int waitall = (s->backend == 1) ? 0 : 1; /* rtl_tcp default off; USB default on */
-    if (const char* ew = getenv("DSD_NEO_TCP_WAITALL")) {
-        if (ew[0] == '0' || ew[0] == 'f' || ew[0] == 'F' || ew[0] == 'n' || ew[0] == 'N') {
-            waitall = 0;
-        }
+    if (cfg && cfg->tcp_waitall_is_set) {
+        waitall = cfg->tcp_waitall_enable ? 1 : 0;
     }
     /* Autotune can override BUFSZ/WAITALL adaptively. Initial state considers env, but
        each loop consults s->tcp_autotune so UI/runtime toggles take effect live. */
     if (!s->tcp_autotune) {
-        const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
-        if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
+        if (cfg && cfg->tcp_autotune_enable) {
             s->tcp_autotune = 1; /* make it observable to loop */
         }
     }
@@ -460,13 +455,7 @@ static DSD_THREAD_RETURN_TYPE
     /* Less aggressive reconnect: allow a few consecutive timeouts before
        declaring the connection lost. Default 3; override via
        DSD_NEO_TCP_MAX_TIMEOUTS. */
-    int timeout_limit = 3;
-    if (const char* etl = getenv("DSD_NEO_TCP_MAX_TIMEOUTS")) {
-        int v = atoi(etl);
-        if (v >= 1 && v <= 100) {
-            timeout_limit = v;
-        }
-    }
+    int timeout_limit = cfg ? cfg->tcp_max_timeouts : 3;
     int consec_timeouts = 0;
     while (s->run.load() && exitflag == 0) {
         /* Light backpressure: if ring is nearly full, yield briefly */
@@ -531,23 +520,12 @@ static DSD_THREAD_RETURN_TYPE
                     s->tcp_pending_len = 0;
                     /* Reapply socket options: RCVBUF/NODELAY/RCVTIMEO */
                     {
-                        int rcvbuf = 4 * 1024 * 1024; /* 4 MB */
-                        if (const char* eb = getenv("DSD_NEO_TCP_RCVBUF")) {
-                            int v = atoi(eb);
-                            if (v > 0) {
-                                rcvbuf = v;
-                            }
-                        }
+                        const dsdneoRuntimeConfig* cfg2 = dsd_neo_get_config();
+                        int rcvbuf = cfg2 ? cfg2->tcp_rcvbuf_bytes : (4 * 1024 * 1024);
                         (void)dsd_socket_setsockopt(s->sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
                         int nodelay = 1;
                         (void)dsd_socket_setsockopt(s->sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-                        int to_ms = 2000;
-                        if (const char* et = getenv("DSD_NEO_TCP_RCVTIMEO")) {
-                            int v = atoi(et);
-                            if (v >= 100 && v <= 60000) {
-                                to_ms = v;
-                            }
-                        }
+                        int to_ms = cfg2 ? cfg2->tcp_rcvtimeo_ms : 2000;
                         (void)dsd_socket_set_recv_timeout(s->sockfd, (unsigned int)to_ms);
                     }
                     /* Replay essential device state to server */
@@ -1072,11 +1050,7 @@ verbose_auto_gain(rtlsdr_dev_t* dev) {
     }
     /* Original plan: enable RTL digital AGC in auto mode by default.
        Allow override via env DSD_NEO_RTL_AGC=0 to disable. */
-    const char* e = getenv("DSD_NEO_RTL_AGC");
-    int want = 1;
-    if (e && (*e == '0' || *e == 'n' || *e == 'N' || *e == 'f' || *e == 'F')) {
-        want = 0;
-    }
+    int want = env_agc_want();
     int ra = rtlsdr_set_agc_mode(dev, want);
     if (ra != 0) {
         fprintf(stderr, "WARNING: Failed to %s RTL AGC.\n", want ? "enable" : "disable");
@@ -1245,32 +1219,22 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     }
     /* Increase socket receive buffer to tolerate brief processing stalls */
     {
-        int rcvbuf = 4 * 1024 * 1024; /* 4 MB */
-        if (const char* eb = getenv("DSD_NEO_TCP_RCVBUF")) {
-            int v = atoi(eb);
-            if (v > 0) {
-                rcvbuf = v;
-            }
-        }
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        int rcvbuf = cfg ? cfg->tcp_rcvbuf_bytes : (4 * 1024 * 1024);
         (void)dsd_socket_setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
         int nodelay = 1;
         (void)dsd_socket_setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
         /* Hard fix: apply a receive timeout so stalled connections don't appear
            as a P25 wedge. Default 2 seconds; override via DSD_NEO_TCP_RCVTIMEO (ms). */
-        int to_ms = 2000;
-        if (const char* et = getenv("DSD_NEO_TCP_RCVTIMEO")) {
-            int v = atoi(et);
-            if (v >= 100 && v <= 60000) {
-                to_ms = v;
-            }
-        }
+        int to_ms = cfg ? cfg->tcp_rcvtimeo_ms : 2000;
         (void)dsd_socket_set_recv_timeout(sfd, (unsigned int)to_ms);
     }
     dev->sockfd = sfd;
     fprintf(stderr, "rtl_tcp: Connected to %s:%d\n", host, port);
     /* Optional TCP stats: enable with DSD_NEO_TCP_STATS=1 */
-    if (const char* es = getenv("DSD_NEO_TCP_STATS")) {
-        if (es[0] != '\0' && es[0] != '0' && es[0] != 'f' && es[0] != 'F' && es[0] != 'n' && es[0] != 'N') {
+    {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (cfg && cfg->tcp_stats_enable) {
             dev->stats_enabled = 1;
             dev->stats_last_ns = dsd_time_monotonic_ns();
             fprintf(stderr, "rtl_tcp: stats enabled.\n");
@@ -1278,8 +1242,8 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     }
     /* Initialize autotune from env if not already enabled by caller */
     if (!dev->tcp_autotune) {
-        const char* ea = getenv("DSD_NEO_TCP_AUTOTUNE");
-        if (ea && ea[0] != '\0' && ea[0] != '0' && ea[0] != 'f' && ea[0] != 'F' && ea[0] != 'n' && ea[0] != 'N') {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (cfg && cfg->tcp_autotune_enable) {
             dev->tcp_autotune = 1;
         }
     }

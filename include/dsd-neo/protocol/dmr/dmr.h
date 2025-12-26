@@ -7,8 +7,7 @@
  * @file
  * @brief DMR protocol decode entrypoints.
  *
- * Declares the DMR handlers implemented in `src/protocol/dmr/` so callers can
- * avoid including the `dsd.h` umbrella header.
+ * Declares the DMR handlers implemented in `src/protocol/dmr/`.
  */
 
 #pragma once

@@ -8,7 +8,7 @@
  * @brief Embedded alias decoder interfaces.
  *
  * Declares embedded alias helpers implemented in `src/core/util/dsd_alias.c`
- * so protocol code can avoid including the `dsd.h` umbrella header.
+ * as a standalone API.
  */
 
 #pragma once

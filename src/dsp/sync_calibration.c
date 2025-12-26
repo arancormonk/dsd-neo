@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/runtime/config.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -40,22 +41,14 @@ float_compare_asc(const void* a, const void* b) {
  * DSD_NEO_SYNC_WARMSTART=0 disables warm-start for safe rollout/debugging.
  * ───────────────────────────────────────────────────────────────────────────── */
 
-/**
- * @brief Cached enable state (-1 = not checked, 0 = disabled, 1 = enabled).
- */
-static int g_warm_start_enabled = -1;
-
 int
 dsd_sync_warm_start_enabled(void) {
-    if (g_warm_start_enabled < 0) {
-        const char* env = getenv("DSD_NEO_SYNC_WARMSTART");
-        if (env != NULL && env[0] == '0' && env[1] == '\0') {
-            g_warm_start_enabled = 0;
-        } else {
-            g_warm_start_enabled = 1;
-        }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(NULL);
+        cfg = dsd_neo_get_config();
     }
-    return g_warm_start_enabled;
+    return (cfg && cfg->sync_warmstart_enable) ? 1 : 0;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

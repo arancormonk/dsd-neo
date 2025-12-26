@@ -7,8 +7,7 @@
  * @file
  * @brief CSV import helpers for runtime/UI one-shot actions.
  *
- * Declares CSV import entrypoints implemented in core so CLI and UI code
- * can invoke them without pulling in the full `dsd.h` umbrella.
+ * Declares CSV import entrypoints implemented in core.
  */
 
 #pragma once

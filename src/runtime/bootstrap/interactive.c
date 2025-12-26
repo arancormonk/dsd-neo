@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <dsd-neo/core/opts.h>
@@ -14,25 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static int
-is_truthy_env(const char* v) {
-    if (!v || !*v) {
-        return 0;
-    }
-
-    /* no argv processing here */
-    if (v[0] == '1') {
-        return 1;
-    }
-    if (v[0] == 'y' || v[0] == 'Y') {
-        return 1;
-    }
-    if (v[0] == 't' || v[0] == 'T') {
-        return 1;
-    }
-    return 0;
-}
 
 static void
 trim_newline(char* s) {
@@ -127,8 +109,12 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    const char* skip_env = getenv("DSD_NEO_NO_BOOTSTRAP");
-    if (is_truthy_env(skip_env)) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init(opts);
+        cfg = dsd_neo_get_config();
+    }
+    if (cfg && cfg->no_bootstrap_enable) {
         return;
     }
 

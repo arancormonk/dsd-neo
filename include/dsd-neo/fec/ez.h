@@ -8,7 +8,7 @@
  * @brief ezpwd-style Reed-Solomon helpers used by P25 Phase 2.
  *
  * Declares the RS(63,35) and ISCH lookup helpers implemented in `src/ez.cpp`
- * so callers can avoid including the `dsd.h` umbrella header.
+ * so callers can use them directly.
  */
 
 #pragma once

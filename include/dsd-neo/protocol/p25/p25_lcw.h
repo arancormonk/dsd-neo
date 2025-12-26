@@ -8,7 +8,7 @@
  * @brief P25 Link Control Word (LCW) decoder interfaces.
  *
  * Declares the LCW decoder entrypoint implemented in the P25 protocol library
- * without requiring inclusion of the `dsd.h` umbrella header.
+ * as a standalone API.
  */
 
 #pragma once

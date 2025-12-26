@@ -18,6 +18,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/menu_services.h>
 
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -214,12 +215,10 @@ svc_lrrp_set_home(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    const char* home = getenv("HOME");
-    if (!home || !*home) {
+    char path[1024];
+    if (dsd_config_expand_path("~/lrrp.txt", path, sizeof path) != 0 || !path[0]) {
         return -1;
     }
-    char path[1024];
-    snprintf(path, sizeof path, "%s/%s", home, "lrrp.txt");
     snprintf(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
     opts->lrrp_file_output = 1;
     return 0;

@@ -7,8 +7,7 @@
  * @file
  * @brief NXDN deinterleave/depunc/CRC helper APIs.
  *
- * Declares the NXDN helpers implemented in `src/protocol/nxdn/nxdn_deperm.c` so
- * callers can avoid including the `dsd.h` umbrella header.
+ * Declares the NXDN helpers implemented in `src/protocol/nxdn/nxdn_deperm.c`.
  */
 
 #pragma once

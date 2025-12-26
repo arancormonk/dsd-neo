@@ -1009,7 +1009,7 @@ cb_env_edit_name(void* u, const char* name) {
         return;
     }
     snprintf(ec->name, sizeof ec->name, "%s", name);
-    const char* cur = getenv(ec->name);
+    const char* cur = dsd_neo_env_get(ec->name);
     ui_prompt_open_string_async("Enter value (empty to clear)", cur ? cur : "", 256, cb_env_edit_value, ec);
 }
 

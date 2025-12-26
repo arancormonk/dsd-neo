@@ -8,8 +8,7 @@
  * @brief Dibit/symbol consumption helpers.
  *
  * Declares the dibit reader and soft-decision helpers implemented in
- * `src/core/frames/dsd_dibit.c` so protocol modules can avoid including the
- * `dsd.h` umbrella header.
+ * `src/core/frames/dsd_dibit.c`.
  */
 
 #pragma once

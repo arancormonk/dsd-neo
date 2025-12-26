@@ -8,8 +8,7 @@
  * @brief P25 Phase 1 1/2-rate trellis decoder interfaces.
  *
  * Declares the lightweight 1/2-rate trellis decoders implemented in
- * `src/protocol/p25/p25_12.c` so callers can avoid including the `dsd.h`
- * umbrella header.
+ * `src/protocol/p25/p25_12.c`.
  */
 
 #pragma once

@@ -8,8 +8,7 @@
  * @brief P25 encryption LFSR helper interfaces.
  *
  * Declares the P25-specific LFSR helpers implemented in
- * `src/protocol/p25/phase1/p25p1_ldu2.c` so callers can avoid including the
- * `dsd.h` umbrella header.
+ * `src/protocol/p25/phase1/p25p1_ldu2.c`.
  */
 
 #pragma once

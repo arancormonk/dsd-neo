@@ -123,7 +123,9 @@ main(int argc, char** argv) {
         }
     }
 
-    const char* config_env = getenv("DSD_NEO_CONFIG");
+    dsd_neo_config_init(opts);
+    const dsdneoRuntimeConfig* rcfg = dsd_neo_get_config();
+    const char* config_env = (rcfg && rcfg->config_path_is_set) ? rcfg->config_path : NULL;
 
     int user_cfg_loaded = 0;
     dsdneoUserConfig user_cfg;
@@ -194,6 +196,9 @@ main(int argc, char** argv) {
     }
     state->cli_argc_effective = argc_effective;
     state->cli_argv = argv;
+    /* Re-parse env-derived config after CLI mapping (CLI sets DSD_NEO_* env overrides). */
+    dsd_neo_config_init(opts);
+    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
 
     // If a user config enabled trunking but this process was started with
     // any CLI arguments and none of them explicitly enabled/disabled trunk

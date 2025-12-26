@@ -7,8 +7,7 @@
  * @file
  * @brief Initialization helpers for core option/state structures.
  *
- * Declares default-initialization helpers implemented in core so callers can
- * avoid including the `dsd.h` umbrella header.
+ * Declares default-initialization helpers implemented in core.
  */
 
 #pragma once

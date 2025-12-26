@@ -8,7 +8,7 @@
  * @brief Core decoder state structure (`dsd_state`) and helper types.
  *
  * Hosts the full `dsd_state` definition so modules needing state fields
- * can include it directly instead of pulling in the full `dsd.h` umbrella.
+ * can include it directly.
  */
 
 #pragma once

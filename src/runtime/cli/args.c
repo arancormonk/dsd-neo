@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <dsd-neo/runtime/colors.h>
@@ -38,19 +39,8 @@ static void dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_stat
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc) {
 
-    // Copy env to avoid invalidation by subsequent dsd_setenv() calls
-    char* calc_csv_env = NULL;
-    {
-        const char* p = getenv("DSD_NEO_DMR_T3_CALC_CSV");
-        if (p && *p) {
-            size_t l = strlen(p);
-            calc_csv_env = (char*)malloc(l + 1);
-            if (calc_csv_env) {
-                memcpy(calc_csv_env, p, l);
-                calc_csv_env[l] = '\0';
-            }
-        }
-    }
+    dsd_neo_config_init(opts);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
     // CLI long options (pre-scan) ------------------------------------------------
     const char* calc_csv_cli = NULL;
@@ -241,6 +231,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         if (calc_start_cli) {
             dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);
         }
+        /* Refresh typed env config after CLI writes. */
+        dsd_neo_config_init(opts);
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);
         if (out_oneshot_rc) {
             *out_oneshot_rc = rc;
@@ -249,15 +241,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
 
     // Environment fallback
-    if (calc_csv_env && *calc_csv_env) {
-        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_env);
+    if (cfg && cfg->dmr_t3_calc_csv_is_set && cfg->dmr_t3_calc_csv[0] != '\0') {
+        int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);
         if (out_oneshot_rc) {
             *out_oneshot_rc = rc;
         }
-        free(calc_csv_env);
         return DSD_PARSE_ONE_SHOT;
     }
-    free(calc_csv_env);
 
     // Apply input volume and warn threshold
     if (input_vol_cli) {
@@ -273,19 +263,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         snprintf(b, sizeof b, "%d", mv);
         dsd_setenv("DSD_NEO_INPUT_VOLUME", b, 1);
         LOG_NOTICE("Input volume multiplier: %dx\n", mv);
-    } else {
-        const char* ev = getenv("DSD_NEO_INPUT_VOLUME");
-        if (ev && *ev) {
-            int mv = atoi(ev);
-            if (mv < 1) {
-                mv = 1;
-            }
-            if (mv > 16) {
-                mv = 16;
-            }
-            opts->input_volume_multiplier = mv;
-            LOG_NOTICE("Input volume multiplier (env): %dx\n", mv);
-        }
+    } else if (cfg && cfg->input_volume_is_set) {
+        opts->input_volume_multiplier = cfg->input_volume_multiplier;
+        LOG_NOTICE("Input volume multiplier (env): %dx\n", opts->input_volume_multiplier);
     }
     if (input_warn_db_cli) {
         double thr = atof(input_warn_db_cli);
@@ -300,19 +280,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         snprintf(b, sizeof b, "%.1f", thr);
         dsd_setenv("DSD_NEO_INPUT_WARN_DB", b, 1);
         LOG_NOTICE("Low input warning threshold: %.1f dBFS\n", thr);
-    } else {
-        const char* ew = getenv("DSD_NEO_INPUT_WARN_DB");
-        if (ew && *ew) {
-            double thr = atof(ew);
-            if (thr < -200.0) {
-                thr = -200.0;
-            }
-            if (thr > 0.0) {
-                thr = 0.0;
-            }
-            opts->input_warn_db = thr;
-            LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", thr);
-        }
+    } else if (cfg && cfg->input_warn_db_is_set) {
+        opts->input_warn_db = (float)cfg->input_warn_db;
+        LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", opts->input_warn_db);
     }
 
     // Remove recognized long options so the short-option getopt() only
