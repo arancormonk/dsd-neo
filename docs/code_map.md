@@ -11,9 +11,9 @@ High‑level layout with module responsibilities and libraries. All public heade
 
 ## Engine
 
-- Path: `src/engine`, `include/dsd-neo/engine`
-- Target: `dsd-neo_engine`
-- Responsibilities: top-level decode/encode runner and lifecycle (wires core/runtime/IO/protocol state machines)
+- Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
+- Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
+- Responsibilities: top-level decode/encode runner and lifecycle (wires core/runtime/IO/protocol state machines), protocol/frame dispatch glue
   - Build files: `src/engine/CMakeLists.txt`
 
 ## Platform
@@ -28,7 +28,7 @@ High‑level layout with module responsibilities and libraries. All public heade
 
 - Path: `src/core`, `include/dsd-neo/core`
 - Target: `dsd-neo_core`
-- Responsibilities: cross‑protocol glue (audio output helpers, vocoder glue, frame dispatch, GPS, file import), misc/util
+- Responsibilities: cross‑protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import), misc/util
   - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

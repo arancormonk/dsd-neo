@@ -2,18 +2,18 @@
 add_library(dsd-neo_dispatch)
 
 target_sources(dsd-neo_dispatch PRIVATE
-  ../core/frames/protocol_dispatch.c
-  ../core/frames/dispatch/dispatch_dmr.c
-  ../core/frames/dispatch/dispatch_dpmr.c
-  ../core/frames/dispatch/dispatch_dstar.c
-  ../core/frames/dispatch/dispatch_edacs.c
-  ../core/frames/dispatch/dispatch_m17.c
-  ../core/frames/dispatch/dispatch_nxdn.c
-  ../core/frames/dispatch/dispatch_p25p1.c
-  ../core/frames/dispatch/dispatch_p25p2.c
-  ../core/frames/dispatch/dispatch_provoice.c
-  ../core/frames/dispatch/dispatch_x2tdma.c
-  ../core/frames/dispatch/dispatch_ysf.c
+  dispatch/protocol_dispatch.c
+  dispatch/dispatch_dmr.c
+  dispatch/dispatch_dpmr.c
+  dispatch/dispatch_dstar.c
+  dispatch/dispatch_edacs.c
+  dispatch/dispatch_m17.c
+  dispatch/dispatch_nxdn.c
+  dispatch/dispatch_p25p1.c
+  dispatch/dispatch_p25p2.c
+  dispatch/dispatch_provoice.c
+  dispatch/dispatch_x2tdma.c
+  dispatch/dispatch_ysf.c
 )
 
 target_include_directories(dsd-neo_dispatch
