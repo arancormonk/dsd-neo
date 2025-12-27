@@ -66,8 +66,8 @@ setup_iden_simple(dsd_state* s, int iden) {
 
 int
 main(void) {
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     init_basic(&opts, &st);
 
     // 1) Post-hang watchdog release (monotonic)
@@ -82,8 +82,8 @@ main(void) {
     assert(st.p25_vc_freq[0] == 0 || g_return_to_cc_called >= 0);
 
     // 2) CC hunt grace and candidate tuning
-    dsd_opts o3;
-    dsd_state s3;
+    static dsd_opts o3;
+    static dsd_state s3;
     init_basic(&o3, &s3);
     s3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0; // stale CC
     s3.p25_cc_cand_count = 1;
@@ -93,8 +93,8 @@ main(void) {
     assert(g_last_tuned_cc == 852000000);
 
     // 3) ENC lockout once (SM helper)
-    dsd_opts o4;
-    dsd_state s4;
+    static dsd_opts o4;
+    static dsd_state s4;
     init_basic(&o4, &s4);
     s4.group_tally = 0;
     p25_emit_enc_lockout_once(&o4, &s4, 0, 1234, 0x40);

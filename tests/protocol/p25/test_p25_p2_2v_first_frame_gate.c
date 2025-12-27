@@ -275,8 +275,8 @@ reset_state(dsd_opts* opts, dsd_state* st) {
 int
 main(void) {
     int rc = 0;
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
 
     // Slot 0: audio gated off -> expect 0 MBE calls (first-subframe gating active)
     reset_state(&opts, &st);

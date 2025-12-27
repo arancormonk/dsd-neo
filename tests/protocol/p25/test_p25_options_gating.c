@@ -115,8 +115,8 @@ main(void) {
     MAC[9] = 0xEF; // src lo
 
     // Shared opts/state with seeded IDEN mapping
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     opts.p25_trunk = 1;

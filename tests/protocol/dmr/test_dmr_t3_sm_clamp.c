@@ -56,8 +56,8 @@ int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_opts_state(&opts, &state);
 
     // Map LCN 100 -> 851.0125 MHz but mark as untrusted (1)

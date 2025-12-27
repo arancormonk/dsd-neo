@@ -136,8 +136,8 @@ expect_true(const char* tag, int cond) {
 int
 main(void) {
     int rc = 0;
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
 

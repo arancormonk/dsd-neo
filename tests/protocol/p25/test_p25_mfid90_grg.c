@@ -93,7 +93,7 @@ sg_has_wgid(const dsd_state* st, int idx, uint16_t wgid) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
 
     // Test 1: MFID90 GRG Add Command pattern (sg=100, ga1=200, ga2=300, ga3=400)
@@ -198,7 +198,7 @@ main(void) {
 
     // Test 5: Deduplication - adding same WGID twice should not increase count
     {
-        dsd_state st2;
+        static dsd_state st2;
         memset(&st2, 0, sizeof st2);
 
         p25_patch_add_wgid(&st2, 300, 500);
@@ -215,7 +215,7 @@ main(void) {
 
     // Test 6: Clear SG removes all membership
     {
-        dsd_state st3;
+        static dsd_state st3;
         memset(&st3, 0, sizeof st3);
 
         p25_patch_add_wgid(&st3, 400, 600);

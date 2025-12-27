@@ -27,7 +27,7 @@ expect_eq_str(const char* tag, const char* got, const char* want) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
 
     char buf[32];
@@ -46,7 +46,7 @@ main(void) {
     rc |= expect_eq_str("tdma slot hint", buf, " (FDMA 0002 S1)");
 
     // Case 2: FDMA (denom=1) → empty suffix
-    dsd_state st2;
+    static dsd_state st2;
     memset(&st2, 0, sizeof st2);
     st2.p25_chan_tdma[id] = 0;
     st2.p25_cc_is_tdma = 0;
@@ -56,7 +56,7 @@ main(void) {
     rc |= expect_eq_str("fdma suffix empty", buf, "");
 
     // Case 3: System has Phase 2 TDMA voice but IDEN TDMA unknown → fallback denom=2
-    dsd_state st3;
+    static dsd_state st3;
     memset(&st3, 0, sizeof st3);
     st3.p25_chan_tdma[id] = 0; // unknown
     st3.p25_sys_is_tdma = 1;

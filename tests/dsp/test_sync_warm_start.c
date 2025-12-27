@@ -65,11 +65,11 @@ test_ideal_sync_pattern(void) {
                                             +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f,
                                             +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 128;
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     dmr_init_thresholds_from_sync(&opts, &state, sync_symbols);
@@ -111,11 +111,11 @@ test_dc_offset_pattern(void) {
                                             +3.0f + dc_offset, -3.0f + dc_offset, +3.0f + dc_offset, +3.0f + dc_offset,
                                             -3.0f + dc_offset, +3.0f + dc_offset, -3.0f + dc_offset, +3.0f + dc_offset};
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 128;
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     dmr_init_thresholds_from_sync(&opts, &state, sync_symbols);
@@ -145,11 +145,11 @@ test_scaled_amplitude_pattern(void) {
                                             -3.0f * scale, +3.0f * scale, -3.0f * scale, +3.0f * scale, +3.0f * scale,
                                             -3.0f * scale, +3.0f * scale, -3.0f * scale, +3.0f * scale};
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 128;
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     dmr_init_thresholds_from_sync(&opts, &state, sync_symbols);
@@ -171,10 +171,10 @@ test_null_handling(void) {
 
     float sync_symbols[DMR_SYNC_SYMBOLS] = {0};
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Initialize to known values */
@@ -205,11 +205,11 @@ test_buffer_prefill(void) {
                                             +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f,
                                             +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64; /* Smaller than 1024 for test */
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     dmr_init_thresholds_from_sync(&opts, &state, sync_symbols);
@@ -259,11 +259,11 @@ test_noisy_pattern(void) {
         sync_symbols[i] = ideal[i] + noise[i];
     }
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 128;
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     dmr_init_thresholds_from_sync(&opts, &state, sync_symbols);

@@ -25,7 +25,7 @@ expect_eq_str(const char* tag, const char* got, const char* want) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
     int id = 5;
     st.p25_chan_tdma[id] = 1;

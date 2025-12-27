@@ -42,7 +42,8 @@ main(void) {
     initialize_p25_heuristics(&h);
 
     /* Drive a single SymbolHeuristics bucket (prev=0, dibit=0) past capacity. */
-    const int N = HEURISTICS_SIZE + 6;
+    enum { N = HEURISTICS_SIZE + 6 };
+
     AnalogSignal sig[N];
     for (int i = 0; i < N; i++) {
         sig[i].value = i; /* distinct, monotonically increasing samples */

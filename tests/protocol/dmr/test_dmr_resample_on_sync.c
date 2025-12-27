@@ -57,7 +57,7 @@ static void
 test_history_buffer_ops(void) {
     printf("=== test_history_buffer_ops ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Initialize history buffer */
@@ -100,7 +100,7 @@ static void
 test_history_buffer_wrap(void) {
     printf("=== test_history_buffer_wrap ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Use small buffer for wrap test */
@@ -139,7 +139,7 @@ static void
 test_sync_correlation(void) {
     printf("=== test_sync_correlation ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Initialize history */
@@ -179,7 +179,7 @@ static void
 test_symbol_extraction(void) {
     printf("=== test_symbol_extraction ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     dmr_sample_history_init(&state);
@@ -224,7 +224,7 @@ static void
 test_equalizer(void) {
     printf("=== test_equalizer ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Reset equalizer */
@@ -272,10 +272,10 @@ static void
 test_cach_redigitize(void) {
     printf("=== test_cach_redigitize ===\n");
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Initialize history buffer */
@@ -369,11 +369,11 @@ static void
 test_full_resample_on_sync(void) {
     printf("=== test_full_resample_on_sync ===\n");
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 128;
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Initialize history buffer */

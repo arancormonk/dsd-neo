@@ -93,8 +93,8 @@ init_env(dsd_opts* opts, dsd_state* state) {
 
 static void
 test_neighbor_candidates(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_env(&opts, &state);
 
     long cand[3] = {851012500, 852500000, 0};
@@ -109,8 +109,8 @@ test_neighbor_candidates(void) {
 
 static void
 test_explicit_grant_and_release(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_env(&opts, &state);
     opts.trunk_hangtime = 0.5f;
 
@@ -153,8 +153,8 @@ test_explicit_grant_and_release(void) {
 
 static void
 test_lpcn_trust_gating(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_env(&opts, &state);
 
     // Initialize SM

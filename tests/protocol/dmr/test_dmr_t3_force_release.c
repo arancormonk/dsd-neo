@@ -149,8 +149,8 @@ int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_env(&opts, &state);
     // 1) Tune to VC via SM grant call
     dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 852000000, /*lpcn*/ 0, /*tg*/ 1234, /*src*/ 42);

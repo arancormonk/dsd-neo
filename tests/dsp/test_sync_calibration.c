@@ -59,7 +59,7 @@ static void
 test_history_basic_ops(void) {
     printf("=== test_history_basic_ops ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Initialize history */
@@ -96,7 +96,7 @@ static void
 test_history_wraparound(void) {
     printf("=== test_history_wraparound ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
     /* Small buffer for easy wrap testing */
@@ -131,10 +131,10 @@ static void
 test_warm_start_ideal(void) {
     printf("=== test_warm_start_ideal ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -172,10 +172,10 @@ static void
 test_warm_start_dc_offset(void) {
     printf("=== test_warm_start_dc_offset ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -211,10 +211,10 @@ static void
 test_center_only_warm_start(void) {
     printf("=== test_center_only_warm_start ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -261,10 +261,10 @@ static void
 test_center_only_large_bias(void) {
     printf("=== test_center_only_large_bias ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -292,10 +292,10 @@ static void
 test_warm_start_insufficient_history(void) {
     printf("=== test_warm_start_insufficient_history ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -320,10 +320,10 @@ static void
 test_warm_start_degenerate(void) {
     printf("=== test_warm_start_degenerate ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -360,10 +360,10 @@ static void
 test_warm_start_various_sync_lengths(void) {
     printf("=== test_warm_start_various_sync_lengths ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -405,7 +405,7 @@ static void
 test_null_handling(void) {
     printf("=== test_null_handling ===\n");
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
@@ -428,10 +428,10 @@ static void
 test_buffer_prefill(void) {
     printf("=== test_buffer_prefill ===\n");
 
-    struct dsd_state state;
+    static struct dsd_state state;
     memset(&state, 0, sizeof(state));
 
-    struct dsd_opts opts;
+    static struct dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.msize = 32;
 

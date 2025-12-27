@@ -179,8 +179,8 @@ int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_env(&opts, &state);
 
     // Step 1: tune to initial VC via SM grant

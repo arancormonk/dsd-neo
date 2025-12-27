@@ -98,7 +98,7 @@ nmea_harris(dsd_opts* o, dsd_state* s, uint8_t* in, uint32_t src, int slot) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
 
     // Current site identity

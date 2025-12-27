@@ -323,11 +323,13 @@ test_complex_fir_63tap() {
 }
 
 /* Test complex half-band decimator with various tap lengths */
+template <int TapsLen>
 static int
-test_complex_hb_decim(const float* taps, int taps_len, const char* name) {
+test_complex_hb_decim(const float* taps, const char* name) {
     std::printf("Testing simd_hb_decim2_complex (%s)...\n", name);
 
-    const int hist_len = taps_len - 1;
+    static_assert(TapsLen > 1, "TapsLen must be > 1");
+    const int hist_len = TapsLen - 1;
     const int N = 512; /* input complex samples */
 
     alignas(64) float in[N * 2];
@@ -347,8 +349,8 @@ test_complex_hb_decim(const float* taps, int taps_len, const char* name) {
         in[i] = randf();
     }
 
-    int len_simd = simd_hb_decim2_complex(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-    int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+    int len_simd = simd_hb_decim2_complex(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, TapsLen);
+    int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, TapsLen);
 
     if (len_simd != len_ref) {
         std::fprintf(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -375,11 +377,13 @@ test_complex_hb_decim(const float* taps, int taps_len, const char* name) {
 }
 
 /* Test real half-band decimator */
+template <int TapsLen>
 static int
-test_real_hb_decim(const float* taps, int taps_len, const char* name) {
+test_real_hb_decim(const float* taps, const char* name) {
     std::printf("Testing simd_hb_decim2_real (%s)...\n", name);
 
-    const int hist_len = taps_len - 1;
+    static_assert(TapsLen > 1, "TapsLen must be > 1");
+    const int hist_len = TapsLen - 1;
     const int N = 512; /* input samples */
 
     alignas(64) float in[N];
@@ -395,8 +399,8 @@ test_real_hb_decim(const float* taps, int taps_len, const char* name) {
         in[i] = randf();
     }
 
-    int len_simd = simd_hb_decim2_real(in, N, out_simd, hist_simd, taps, taps_len);
-    int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, taps, taps_len);
+    int len_simd = simd_hb_decim2_real(in, N, out_simd, hist_simd, taps, TapsLen);
+    int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, taps, TapsLen);
 
     if (len_simd != len_ref) {
         std::fprintf(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -477,13 +481,18 @@ test_small_blocks() {
     /* Test very small blocks (< SIMD width) */
     int test_sizes[] = {2, 4, 6, 8, 10, 12, 14, 16, 32};
     int num_tests = sizeof(test_sizes) / sizeof(test_sizes[0]);
+    constexpr int kMaxN = 32;
 
     for (int t = 0; t < num_tests; t++) {
         int N = test_sizes[t]; /* complex samples */
+        if (N > kMaxN) {
+            std::fprintf(stderr, "  FAIL: Test size exceeds max (%d > %d)\n", N, kMaxN);
+            return 1;
+        }
 
-        alignas(64) float in[N * 2];
-        alignas(64) float out_simd[N];
-        alignas(64) float out_ref[N];
+        alignas(64) float in[kMaxN * 2];
+        alignas(64) float out_simd[kMaxN];
+        alignas(64) float out_ref[kMaxN];
         alignas(64) float hist_i_simd[hist_len];
         alignas(64) float hist_q_simd[hist_len];
         alignas(64) float hist_i_ref[hist_len];
@@ -528,14 +537,14 @@ main(void) {
     failures += test_complex_fir_63tap();
 
     /* Test complex half-band decimators with different tap lengths */
-    failures += test_complex_hb_decim(hb_q15_taps, 15, "15-tap");
-    failures += test_complex_hb_decim(hb23_q15_taps, 23, "23-tap");
-    failures += test_complex_hb_decim(hb31_q15_taps, 31, "31-tap");
+    failures += test_complex_hb_decim<15>(hb_q15_taps, "15-tap");
+    failures += test_complex_hb_decim<23>(hb23_q15_taps, "23-tap");
+    failures += test_complex_hb_decim<31>(hb31_q15_taps, "31-tap");
 
     /* Test real half-band decimators */
-    failures += test_real_hb_decim(hb_q15_taps, 15, "15-tap");
-    failures += test_real_hb_decim(hb23_q15_taps, 23, "23-tap");
-    failures += test_real_hb_decim(hb31_q15_taps, 31, "31-tap");
+    failures += test_real_hb_decim<15>(hb_q15_taps, "15-tap");
+    failures += test_real_hb_decim<23>(hb23_q15_taps, "23-tap");
+    failures += test_real_hb_decim<31>(hb31_q15_taps, "31-tap");
 
     /* Test history continuity */
     failures += test_history_continuity();

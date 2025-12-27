@@ -225,8 +225,8 @@ int
 main(void) {
     int rc = 0;
 
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 

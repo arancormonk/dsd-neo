@@ -79,7 +79,7 @@ find_idx(const dsd_state* st, uint16_t sgid) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
 
     // Create a patch SG=069 with WG membership and crypt context

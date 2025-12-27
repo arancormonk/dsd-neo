@@ -40,7 +40,7 @@ expect_frame(const char* tag, const float* got, const float* want) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
 
     /* Reset both slots and verify counters. */

@@ -361,7 +361,7 @@ add_subdirectory(src/fec)
 add_subdirectory(src/third_party)
 add_subdirectory(src/engine)
 add_subdirectory(apps)
-# Unit tests are built on Linux when BUILD_TESTING is enabled.
-if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# Unit tests are built when BUILD_TESTING is enabled.
+if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

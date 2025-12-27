@@ -26,7 +26,7 @@ expect_eq(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof(st));
 
     int encL = -1, encR = -1;

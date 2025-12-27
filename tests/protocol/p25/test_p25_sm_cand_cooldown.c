@@ -38,8 +38,8 @@ init_basic(dsd_opts* o, dsd_state* s) {
 
 int
 main(void) {
-    dsd_opts o;
-    dsd_state st;
+    static dsd_opts o;
+    static dsd_state st;
     init_basic(&o, &st);
     // Two candidates A, B
     long A = 852000000;

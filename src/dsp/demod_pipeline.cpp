@@ -26,7 +26,38 @@
 
 /* Provide weak references so unit tests that do not link RTL stream still link. */
 extern "C" {
-#ifdef __GNUC__
+#if defined(_MSC_VER)
+int dsd_neo_rtl_stream_dsp_get_fallback(int* center_hz, int* tuner_bw_hz, int* err);
+double dsd_neo_rtl_stream_get_snr_bias_evm_fallback(void);
+
+/* COFF weak-extern equivalent for test builds that don't link io/radio. */
+#if defined(_M_IX86)
+#pragma comment(linker, "/alternatename:_rtl_stream_dsp_get=_dsd_neo_rtl_stream_dsp_get_fallback")
+#pragma comment(linker, "/alternatename:_rtl_stream_get_snr_bias_evm=_dsd_neo_rtl_stream_get_snr_bias_evm_fallback")
+#else
+#pragma comment(linker, "/alternatename:rtl_stream_dsp_get=dsd_neo_rtl_stream_dsp_get_fallback")
+#pragma comment(linker, "/alternatename:rtl_stream_get_snr_bias_evm=dsd_neo_rtl_stream_get_snr_bias_evm_fallback")
+#endif
+
+int
+dsd_neo_rtl_stream_dsp_get_fallback(int* center_hz, int* tuner_bw_hz, int* err) {
+    if (center_hz) {
+        *center_hz = 0;
+    }
+    if (tuner_bw_hz) {
+        *tuner_bw_hz = 0;
+    }
+    if (err) {
+        *err = 0;
+    }
+    return 0;
+}
+
+double
+dsd_neo_rtl_stream_get_snr_bias_evm_fallback(void) {
+    return 2.43;
+}
+#elif defined(__GNUC__)
 __attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*);
 __attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
 #endif
