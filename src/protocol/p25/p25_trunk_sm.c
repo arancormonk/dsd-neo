@@ -106,6 +106,11 @@ dsd_neo_init_event_history_fallback(Event_History_I* event_struct, uint8_t start
     UNUSED3(event_struct, start, stop);
 }
 
+void
+dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
+    UNUSED2(opts, state);
+}
+
 /* COFF weak-extern equivalents for optional hooks. */
 #if defined(_M_IX86)
 #pragma comment(linker, "/alternatename:_trunk_tune_to_freq=_dsd_neo_trunk_tune_to_freq_fallback")
@@ -116,6 +121,7 @@ dsd_neo_init_event_history_fallback(Event_History_I* event_struct, uint8_t start
 #pragma comment(linker, "/alternatename:_write_event_to_log_file=_dsd_neo_write_event_to_log_file_fallback")
 #pragma comment(linker, "/alternatename:_push_event_history=_dsd_neo_push_event_history_fallback")
 #pragma comment(linker, "/alternatename:_init_event_history=_dsd_neo_init_event_history_fallback")
+#pragma comment(linker, "/alternatename:_dsd_p25p2_flush_partial_audio=_dsd_neo_p25p2_flush_partial_audio_fallback")
 #else
 #pragma comment(linker, "/alternatename:trunk_tune_to_freq=dsd_neo_trunk_tune_to_freq_fallback")
 #pragma comment(linker, "/alternatename:return_to_cc=dsd_neo_return_to_cc_fallback")
@@ -125,6 +131,7 @@ dsd_neo_init_event_history_fallback(Event_History_I* event_struct, uint8_t start
 #pragma comment(linker, "/alternatename:write_event_to_log_file=dsd_neo_write_event_to_log_file_fallback")
 #pragma comment(linker, "/alternatename:push_event_history=dsd_neo_push_event_history_fallback")
 #pragma comment(linker, "/alternatename:init_event_history=dsd_neo_init_event_history_fallback")
+#pragma comment(linker, "/alternatename:dsd_p25p2_flush_partial_audio=dsd_neo_p25p2_flush_partial_audio_fallback")
 #endif
 #else
 P25_WEAK_FALLBACK void
@@ -728,7 +735,9 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
  * Release to CC
  * ============================================================================ */
 
-#if !defined(_MSC_VER)
+#if defined(_MSC_VER)
+void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
+#else
 // Optional P25p2 short-call audio flush helper implemented in core audio.
 // When not linked (e.g., some unit tests), this resolves to NULL.
 extern void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) __attribute__((weak));
@@ -785,10 +794,14 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     ctx->release_count++;
     ctx->cc_return_count++;
 
-#if !defined(_MSC_VER)
     // P25p2 short-call robustness: flush any partially buffered audio before
     // clearing slot gates and retuning, so short transmissions that end before
     // a full superframe still produce audible output.
+#if defined(_MSC_VER)
+    if (ctx->vc_is_tdma && opts && state) {
+        dsd_p25p2_flush_partial_audio(opts, state);
+    }
+#else
     if (ctx->vc_is_tdma && opts && state && dsd_p25p2_flush_partial_audio) {
         dsd_p25p2_flush_partial_audio(opts, state);
     }
