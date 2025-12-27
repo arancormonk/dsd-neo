@@ -2457,11 +2457,51 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
     if (opts->ncurses_history != 0) {
-        for (uint16_t i = (state->eh_index + 1); i < (state->eh_index + 11); i++) {
-            uint16_t string_size = 71; //short uniform size that doesn't exceed the fence
-            if (opts->ncurses_history == 2) {
-                string_size = 1999; //full string size
+        int rows = 0, cols = 0;
+        getmaxyx(stdscr, rows, cols);
+
+        int start_y = 0, start_x = 0;
+        getyx(stdscr, start_y, start_x);
+        (void)start_x;
+
+        // Leave room for the bottom HR line and avoid scrolling on ui_print_hr().
+        int avail_lines = rows - start_y - 2;
+        if (avail_lines < 0) {
+            avail_lines = 0;
+        }
+
+        // Scale the visible event history to the available vertical space (within reason).
+        const int max_events = 50;
+        int events_to_show = avail_lines;
+        if (events_to_show > max_events) {
+            events_to_show = max_events;
+        }
+
+        // In short mode, bound the displayed event string to the current width to avoid wrapping.
+        uint16_t string_size = 71;
+        if (opts->ncurses_history == 2) {
+            string_size = 1999;
+        } else if (cols > 0) {
+            int max_text = cols - 9; // "| #DDD " (7) + 2 cols of slack
+            if (max_text < 0) {
+                max_text = 0;
             }
+            if (max_text < (int)string_size) {
+                string_size = (uint16_t)max_text;
+            }
+        }
+
+        const uint16_t start_i = (uint16_t)state->eh_index + 1;
+        const uint16_t end_i = start_i + (uint16_t)events_to_show;
+
+        for (uint16_t i = start_i; i < end_i; i++) {
+            int y = 0, x = 0;
+            getyx(stdscr, y, x);
+            (void)x;
+            if (y >= rows - 2) {
+                break;
+            }
+
             uint8_t slot = state->eh_slot;
             uint8_t color_pair = state->event_history_s[slot]
                                      .Event_History_Items[i % 255]
@@ -2471,7 +2511,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             if (state->event_history_s[slot].Event_History_Items[i % 255].event_string[0] != '\0') {
                 char text_string[2000];
                 memcpy(text_string, state->event_history_s[slot].Event_History_Items[i % 255].event_string,
-                       string_size * sizeof(char));
+                       (size_t)string_size * sizeof(char));
                 text_string[string_size] = 0; //terminate string
                 printw("| #%03d ", i % 255);
                 attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the event_string
@@ -2482,6 +2522,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             if (state->event_history_s[slot].Event_History_Items[i % 255].text_message[0] != '\0') {
+                getyx(stdscr, y, x);
+                if (y >= rows - 2) {
+                    break;
+                }
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      %s\n", state->event_history_s[slot].Event_History_Items[i % 255].text_message);
@@ -2489,6 +2533,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             if (state->event_history_s[slot].Event_History_Items[i % 255].alias[0] != '\0') {
+                getyx(stdscr, y, x);
+                if (y >= rows - 2) {
+                    break;
+                }
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      Alias: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].alias);
@@ -2496,6 +2544,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             if (state->event_history_s[slot].Event_History_Items[i % 255].gps_s[0] != '\0') {
+                getyx(stdscr, y, x);
+                if (y >= rows - 2) {
+                    break;
+                }
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      GPS: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].gps_s);
@@ -2503,6 +2555,10 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
 
             if (state->event_history_s[slot].Event_History_Items[i % 255].internal_str[0] != '\0') {
+                getyx(stdscr, y, x);
+                if (y >= rows - 2) {
+                    break;
+                }
                 printw("|");
                 attron(COLOR_PAIR(4)); //feel free to change this to any value you want
                 printw("      DSD-neo: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].internal_str);
