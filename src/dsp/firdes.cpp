@@ -7,8 +7,8 @@
  * Ported from GNU Radio gr-filter/lib/firdes.cc and gr-fft/lib/window.cc
  * Original Copyright 2002,2007,2008,2012,2013,2018,2021 Free Software Foundation, Inc.
  *
- * This is a direct port of GNU Radio's firdes implementation to provide
- * exact compatibility with OP25's filter design.
+ * This is a direct port of GNU Radio's firdes implementation so we can
+ * generate taps that match GNU Radio's firdes::low_pass() across platforms.
  */
 
 #include <dsd-neo/dsp/firdes.h>
@@ -293,38 +293,4 @@ dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, doubl
     }
 
     return ntaps;
-}
-
-/**
- * @brief Design OP25-compatible TDMA channel filter.
- *
- * From p25_demodulator_dev.py line 375-385:
- *   tdma_cutoff = 9600
- *   trans_width = 1200
- *   self.if_coeffs_tdma = filter.firdes.low_pass(1.0, resampled_rate, tdma_cutoff, trans_width, window.WIN_HAMMING)
- */
-int
-dsd_firdes_op25_tdma(double sampling_freq, float* taps_out, int max_taps) {
-    return dsd_firdes_low_pass(1.0,           /* gain */
-                               sampling_freq, /* sampling frequency */
-                               9600.0,        /* cutoff frequency (tdma_cutoff) */
-                               1200.0,        /* transition width (trans_width) */
-                               DSD_WIN_HAMMING, taps_out, max_taps);
-}
-
-/**
- * @brief Design OP25-compatible FDMA channel filter.
- *
- * From p25_demodulator_dev.py line 375-384:
- *   fdma_cutoff = 7000
- *   trans_width = 1200
- *   self.if_coeffs_fdma = filter.firdes.low_pass(1.0, resampled_rate, fdma_cutoff, trans_width, window.WIN_HAMMING)
- */
-int
-dsd_firdes_op25_fdma(double sampling_freq, float* taps_out, int max_taps) {
-    return dsd_firdes_low_pass(1.0,           /* gain */
-                               sampling_freq, /* sampling frequency */
-                               7000.0,        /* cutoff frequency (fdma_cutoff) */
-                               1200.0,        /* transition width (trans_width) */
-                               DSD_WIN_HAMMING, taps_out, max_taps);
 }

@@ -374,34 +374,31 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
        Default policy (Fs~=24 kHz RTL DSP baseband):
          - For analog-like modes, enable a wide channel LPF to narrow
            out-of-channel noise while preserving audio bandwidth.
-         - For P25, prefer a Hann LPF tuned around 6-7 kHz (OP25-style) to
-           avoid over-narrow matched filtering while bounding channel noise.
-         - For other digital voice modes (DMR/NXDN/etc.), enable a narrower
-           digital-specific LPF tuned for ~4.8 ksps symbols to improve SNR.
+         - For digital voice modes, use a mode-appropriate cutoff to balance
+           noise rejection vs. modulation bandwidth.
        Env override:
          - DSD_NEO_CHANNEL_LPF=0 forces off (all modes).
-         - DSD_NEO_CHANNEL_LPF!=0 forces on (all modes, wide profile). */
+         - DSD_NEO_CHANNEL_LPF!=0 forces on (all modes). */
     int channel_lpf = 0;
     int channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    int high_fs = (demod->rate_in >= 20000); /* currently 24 kHz DSP baseband */
     if (cfg->channel_lpf_is_set) {
-        /* Env forces on/off; when forced on, use wide profile to avoid
-           surprising very narrow channels. */
         channel_lpf = (cfg->channel_lpf_enable != 0);
-        channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-    } else {
-        int high_fs = (demod->rate_in >= 20000); /* currently 24 kHz DSP baseband */
-        int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
-                            || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
-                            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
-        int p25_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
-        if (high_fs) {
-            channel_lpf = 1;
-            if (p25_mode) {
-                /* Use OP25-compatible TDMA filter for P25 (works for both P1 and P2) */
-                channel_lpf_profile = DSD_CH_LPF_PROFILE_OP25_TDMA;
-            } else {
-                channel_lpf_profile = digital_mode ? DSD_CH_LPF_PROFILE_DIGITAL : DSD_CH_LPF_PROFILE_WIDE;
-            }
+    } else if (high_fs) {
+        channel_lpf = 1;
+    }
+    if (channel_lpf) {
+        if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+            channel_lpf_profile = demod->cqpsk_enable ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM;
+        } else if (opts->frame_provoice == 1) {
+            channel_lpf_profile = DSD_CH_LPF_PROFILE_PROVOICE;
+        } else if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+            channel_lpf_profile = DSD_CH_LPF_PROFILE_6K25;
+        } else if (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+                   || opts->frame_m17 == 1) {
+            channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+        } else {
+            channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
         }
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
@@ -438,9 +435,10 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, dsd_opts* opts, co
     int env_fll_slew_set = cfg->fll_slew_is_set;
     int env_ted_gain_set = cfg->ted_gain_is_set;
     /* Treat all digital voice modes as digital for FLL/TED defaults */
-    int digital_mode = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1
-                        || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1
-                        || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+    int digital_mode =
+        (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
+         || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+         || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
     if (digital_mode) {
         /* For digital modes, never auto-enable FLL/TED.
            Leave on/off decisions to env/CLI/UI, but still derive sane defaults

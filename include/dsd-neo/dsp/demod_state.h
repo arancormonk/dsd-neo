@@ -46,9 +46,11 @@
 /* Channel LPF profile ids */
 enum {
     DSD_CH_LPF_PROFILE_WIDE = 0,
-    DSD_CH_LPF_PROFILE_DIGITAL = 1,
-    DSD_CH_LPF_PROFILE_OP25_TDMA = 2, /* OP25: 9600 Hz cutoff, 1200 Hz trans, Hamming */
-    DSD_CH_LPF_PROFILE_OP25_FDMA = 3, /* OP25: 7000 Hz cutoff, 1200 Hz trans, Hamming */
+    DSD_CH_LPF_PROFILE_6K25 = 1,      /* 6.25 kHz modes: 3500 Hz cutoff */
+    DSD_CH_LPF_PROFILE_12K5 = 2,      /* 12.5 kHz 4FSK modes: 5100 Hz cutoff */
+    DSD_CH_LPF_PROFILE_PROVOICE = 3,  /* ProVoice: 6250 Hz cutoff */
+    DSD_CH_LPF_PROFILE_P25_C4FM = 4,  /* P25 C4FM: 5200 Hz cutoff */
+    DSD_CH_LPF_PROFILE_P25_CQPSK = 5, /* P25 CQPSK/LSM: 7250 Hz cutoff */
 };
 
 /* Forward declaration to avoid heavy dependencies here */

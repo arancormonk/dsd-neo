@@ -7,8 +7,8 @@
  * Ported from GNU Radio gr-filter/lib/firdes.cc and gr-fft/lib/window.cc
  * Original Copyright 2002,2007,2008,2012,2013,2018,2021 Free Software Foundation, Inc.
  *
- * This is a direct port of GNU Radio's firdes implementation to provide
- * exact compatibility with OP25's filter design.
+ * This is a direct port of GNU Radio's firdes implementation so we can
+ * generate taps that match GNU Radio's firdes::low_pass() across platforms.
  */
 
 #ifndef DSD_NEO_DSP_FIRDES_H
@@ -101,39 +101,13 @@ void dsd_window_hann(int ntaps, float* taps_out);
  * @param sampling_freq    Sampling frequency in Hz
  * @param cutoff_freq      Cutoff frequency in Hz (center of transition band)
  * @param transition_width Transition band width in Hz
- * @param window_type      Window type (WIN_HAMMING for OP25 compatibility)
+ * @param window_type      Window type
  * @param taps_out         Output buffer for filter taps
  * @param max_taps         Maximum size of taps_out buffer
  * @return Number of taps written, or -1 on error
  */
 int dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, double transition_width,
                         dsd_window_type_t window_type, float* taps_out, int max_taps);
-
-/**
- * @brief Design OP25-compatible TDMA channel filter.
- *
- * Matches OP25 p25_demodulator_dev.py:
- *   filter.firdes.low_pass(1.0, resampled_rate, 9600, 1200, window.WIN_HAMMING)
- *
- * @param sampling_freq Sampling frequency (typically 24000 Hz)
- * @param taps_out      Output buffer for filter taps
- * @param max_taps      Maximum size of taps_out buffer
- * @return Number of taps written, or -1 on error
- */
-int dsd_firdes_op25_tdma(double sampling_freq, float* taps_out, int max_taps);
-
-/**
- * @brief Design OP25-compatible FDMA channel filter.
- *
- * Matches OP25 p25_demodulator_dev.py:
- *   filter.firdes.low_pass(1.0, resampled_rate, 7000, 1200, window.WIN_HAMMING)
- *
- * @param sampling_freq Sampling frequency (typically 24000 Hz)
- * @param taps_out      Output buffer for filter taps
- * @param max_taps      Maximum size of taps_out buffer
- * @return Number of taps written, or -1 on error
- */
-int dsd_firdes_op25_fdma(double sampling_freq, float* taps_out, int max_taps);
 
 #ifdef __cplusplus
 }

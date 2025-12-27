@@ -124,9 +124,13 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
 
 /* Fixed channel low-pass for high-rate mode.
  *
- * Profile 0 (wide/analog): target ~8 kHz cutoff.
- * Profile 1 (digital-narrow): target ~5 kHz cutoff.
- * Profiles 2/3 (OP25) are generated dynamically per sample rate.
+ * Profiles (see DSD_CH_LPF_PROFILE_*):
+ *   - Wide/analog: 8000 Hz cutoff.
+ *   - 6.25 kHz modes: 3500 Hz cutoff (NXDN48/dPMR/D-STAR).
+ *   - 12.5 kHz 4FSK modes: 5100 Hz cutoff (DMR/NXDN96/X2TDMA/YSF/M17).
+ *   - ProVoice: 6250 Hz cutoff.
+ *   - P25 C4FM: 5200 Hz cutoff.
+ *   - P25 CQPSK/LSM: 7250 Hz cutoff.
  *
  * Legacy 63-tap Blackman prototypes are kept as fallback; preferred taps are
  * generated per sample rate to preserve the intended spectral shape at any Fs.
@@ -206,7 +210,7 @@ static const float channel_lpf_wide[kChannelLpfFallbackTaps] = {
     0.0f,
 };
 
-/* Digital-narrow profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
+/* Legacy digital profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
    Blackman-windowed sinc and normalized to unity DC gain. */
 static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
     0.0f,
@@ -405,72 +409,35 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
 
-/* Dynamically generated wide/digital taps (per-rate); fall back to legacy static prototypes on error. */
+/* Dynamically generated channel LPF taps (per-rate); fall back to legacy static prototypes on error. */
 static float s_channel_wide_taps[kChannelLpfTaps];
-static float s_channel_digital_taps[kChannelLpfTaps];
+static float s_channel_6k25_taps[kChannelLpfTaps];
+static float s_channel_12k5_taps[kChannelLpfTaps];
+static float s_channel_provoice_taps[kChannelLpfTaps];
+static float s_channel_p25_c4fm_taps[kChannelLpfTaps];
+static float s_channel_p25_cqpsk_taps[kChannelLpfTaps];
 static int s_channel_wide_ntaps = 0;
-static int s_channel_digital_ntaps = 0;
+static int s_channel_6k25_ntaps = 0;
+static int s_channel_12k5_ntaps = 0;
+static int s_channel_provoice_ntaps = 0;
+static int s_channel_p25_c4fm_ntaps = 0;
+static int s_channel_p25_cqpsk_ntaps = 0;
 static double s_channel_taps_sample_rate = 0.0;
 
-/* OP25-compatible dynamically generated filter taps (cached).
- * Generated once per sample rate using GNU Radio's firdes.low_pass() algorithm.
- * At 48 kHz with 1200 Hz transition, Hamming: ntaps = (53 * 48000) / (22 * 1200) = 97. */
-static float s_op25_tdma_taps[kChannelLpfTaps];
-static float s_op25_fdma_taps[kChannelLpfTaps];
-static int s_op25_tdma_ntaps = 0;
-static int s_op25_fdma_ntaps = 0;
-static double s_op25_taps_sample_rate = 0.0;
-
 /**
- * @brief Ensure OP25 filter taps are generated for the given sample rate.
+ * @brief Ensure channel LPF taps are generated for the given sample rate.
  *
  * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
- * OP25 parameters from p25_demodulator_dev.py:
- *   tdma_cutoff = 9600 Hz
- *   fdma_cutoff = 7000 Hz
- *   trans_width = 1200 Hz
- *   window = WIN_HAMMING
+ * Keeps absolute cutoffs in Hz constant across sample rates.
  */
 static void
-channel_lpf_ensure_op25_taps(double sample_rate) {
-    if (sample_rate == s_op25_taps_sample_rate && s_op25_tdma_ntaps > 0 && s_op25_fdma_ntaps > 0) {
-        return; /* Already generated for this sample rate */
-    }
-
-    /* Generate TDMA filter: firdes.low_pass(1.0, sample_rate, 9600, 1200, WIN_HAMMING) */
-    s_op25_tdma_ntaps =
-        dsd_firdes_low_pass(1.0, sample_rate, 9600.0, 1200.0, DSD_WIN_HAMMING, s_op25_tdma_taps, kChannelLpfTaps);
-    if (s_op25_tdma_ntaps < 0) {
-        s_op25_tdma_ntaps = 0;
-        fprintf(stderr, "[channel_lpf] Failed to generate OP25 TDMA filter for Fs=%.0f\n", sample_rate);
-    }
-
-    /* Generate FDMA filter: firdes.low_pass(1.0, sample_rate, 7000, 1200, WIN_HAMMING) */
-    s_op25_fdma_ntaps =
-        dsd_firdes_low_pass(1.0, sample_rate, 7000.0, 1200.0, DSD_WIN_HAMMING, s_op25_fdma_taps, kChannelLpfTaps);
-    if (s_op25_fdma_ntaps < 0) {
-        s_op25_fdma_ntaps = 0;
-        fprintf(stderr, "[channel_lpf] Failed to generate OP25 FDMA filter for Fs=%.0f\n", sample_rate);
-    }
-
-    s_op25_taps_sample_rate = sample_rate;
-}
-
-/**
- * @brief Ensure base wide/digital channel LPF taps are generated for the given sample rate.
- *
- * Matches the legacy 24 kHz designs by keeping the same absolute cutoffs:
- *   - Wide: cutoff ~8 kHz, transition ~1.2 kHz (Blackman)
- *   - Digital: cutoff ~5 kHz, transition ~1.2 kHz (Blackman)
- *
- * Falls back to the legacy static prototypes if generation fails.
- */
-static void
-channel_lpf_ensure_base_taps(double sample_rate) {
+channel_lpf_ensure_taps(double sample_rate) {
     if (sample_rate <= 0.0) {
         return;
     }
-    if (sample_rate == s_channel_taps_sample_rate && s_channel_wide_ntaps > 0 && s_channel_digital_ntaps > 0) {
+    if (sample_rate == s_channel_taps_sample_rate && s_channel_wide_ntaps > 0 && s_channel_6k25_ntaps > 0
+        && s_channel_12k5_ntaps > 0 && s_channel_provoice_ntaps > 0 && s_channel_p25_c4fm_ntaps > 0
+        && s_channel_p25_cqpsk_ntaps > 0) {
         return; /* Already generated for this sample rate */
     }
 
@@ -480,10 +447,34 @@ channel_lpf_ensure_base_taps(double sample_rate) {
         s_channel_wide_ntaps = 0;
     }
 
-    s_channel_digital_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 5000.0, 1200.0, DSD_WIN_BLACKMAN,
-                                                  s_channel_digital_taps, kChannelLpfTaps);
-    if (s_channel_digital_ntaps < 0) {
-        s_channel_digital_ntaps = 0;
+    s_channel_6k25_ntaps =
+        dsd_firdes_low_pass(1.0, sample_rate, 3500.0, 1200.0, DSD_WIN_BLACKMAN, s_channel_6k25_taps, kChannelLpfTaps);
+    if (s_channel_6k25_ntaps < 0) {
+        s_channel_6k25_ntaps = 0;
+    }
+
+    s_channel_12k5_ntaps =
+        dsd_firdes_low_pass(1.0, sample_rate, 5100.0, 1200.0, DSD_WIN_BLACKMAN, s_channel_12k5_taps, kChannelLpfTaps);
+    if (s_channel_12k5_ntaps < 0) {
+        s_channel_12k5_ntaps = 0;
+    }
+
+    s_channel_provoice_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 6250.0, 1200.0, DSD_WIN_BLACKMAN,
+                                                   s_channel_provoice_taps, kChannelLpfTaps);
+    if (s_channel_provoice_ntaps < 0) {
+        s_channel_provoice_ntaps = 0;
+    }
+
+    s_channel_p25_c4fm_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 5200.0, 1200.0, DSD_WIN_BLACKMAN,
+                                                   s_channel_p25_c4fm_taps, kChannelLpfTaps);
+    if (s_channel_p25_c4fm_ntaps < 0) {
+        s_channel_p25_c4fm_ntaps = 0;
+    }
+
+    s_channel_p25_cqpsk_ntaps = dsd_firdes_low_pass(1.0, sample_rate, 7250.0, 1200.0, DSD_WIN_BLACKMAN,
+                                                    s_channel_p25_cqpsk_taps, kChannelLpfTaps);
+    if (s_channel_p25_cqpsk_ntaps < 0) {
+        s_channel_p25_cqpsk_ntaps = 0;
     }
 
     s_channel_taps_sample_rate = sample_rate;
@@ -500,43 +491,59 @@ channel_lpf_apply(struct demod_state* d) {
 
     /* Select filter taps based on profile */
     switch (d->channel_lpf_profile) {
-        case DSD_CH_LPF_PROFILE_DIGITAL:
-            channel_lpf_ensure_base_taps((double)d->rate_out);
-            if (s_channel_digital_ntaps > 0) {
-                taps = s_channel_digital_taps;
-                taps_len = s_channel_digital_ntaps;
+        case DSD_CH_LPF_PROFILE_6K25:
+            channel_lpf_ensure_taps((double)d->rate_out);
+            if (s_channel_6k25_ntaps > 0) {
+                taps = s_channel_6k25_taps;
+                taps_len = s_channel_6k25_ntaps;
             } else {
-                taps = channel_lpf_digital; /* fallback (63 taps, 24 kHz design) */
+                taps = channel_lpf_digital;
                 taps_len = kChannelLpfFallbackTaps;
             }
             break;
-        case DSD_CH_LPF_PROFILE_OP25_TDMA:
-            /* OP25-compatible TDMA filter: 9600 Hz cutoff, 1200 Hz transition, Hamming */
-            channel_lpf_ensure_op25_taps((double)d->rate_out);
-            if (s_op25_tdma_ntaps > 0) {
-                taps = s_op25_tdma_taps;
-                taps_len = s_op25_tdma_ntaps;
+        case DSD_CH_LPF_PROFILE_12K5:
+            channel_lpf_ensure_taps((double)d->rate_out);
+            if (s_channel_12k5_ntaps > 0) {
+                taps = s_channel_12k5_taps;
+                taps_len = s_channel_12k5_ntaps;
             } else {
-                /* Fallback to wide if generation failed (63 taps, 24 kHz design) */
+                taps = channel_lpf_digital;
+                taps_len = kChannelLpfFallbackTaps;
+            }
+            break;
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+            channel_lpf_ensure_taps((double)d->rate_out);
+            if (s_channel_provoice_ntaps > 0) {
+                taps = s_channel_provoice_taps;
+                taps_len = s_channel_provoice_ntaps;
+            } else {
                 taps = channel_lpf_wide;
                 taps_len = kChannelLpfFallbackTaps;
             }
             break;
-        case DSD_CH_LPF_PROFILE_OP25_FDMA:
-            /* OP25-compatible FDMA filter: 7000 Hz cutoff, 1200 Hz transition, Hamming */
-            channel_lpf_ensure_op25_taps((double)d->rate_out);
-            if (s_op25_fdma_ntaps > 0) {
-                taps = s_op25_fdma_taps;
-                taps_len = s_op25_fdma_ntaps;
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+            channel_lpf_ensure_taps((double)d->rate_out);
+            if (s_channel_p25_c4fm_ntaps > 0) {
+                taps = s_channel_p25_c4fm_taps;
+                taps_len = s_channel_p25_c4fm_ntaps;
             } else {
-                /* Fallback to wide if generation failed (63 taps, 24 kHz design) */
+                taps = channel_lpf_wide;
+                taps_len = kChannelLpfFallbackTaps;
+            }
+            break;
+        case DSD_CH_LPF_PROFILE_P25_CQPSK:
+            channel_lpf_ensure_taps((double)d->rate_out);
+            if (s_channel_p25_cqpsk_ntaps > 0) {
+                taps = s_channel_p25_cqpsk_taps;
+                taps_len = s_channel_p25_cqpsk_ntaps;
+            } else {
                 taps = channel_lpf_wide;
                 taps_len = kChannelLpfFallbackTaps;
             }
             break;
         case DSD_CH_LPF_PROFILE_WIDE:
         default:
-            channel_lpf_ensure_base_taps((double)d->rate_out);
+            channel_lpf_ensure_taps((double)d->rate_out);
             if (s_channel_wide_ntaps > 0) {
                 taps = s_channel_wide_taps;
                 taps_len = s_channel_wide_ntaps;
