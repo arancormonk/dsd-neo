@@ -2651,8 +2651,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         break;
                     }
 
-                    uint8_t slot = 0;
-                    uint16_t i = idx0;
+                    uint8_t slot;
+                    uint16_t i;
                     time_t t0 = (idx0 < 255) ? state->event_history_s[0].Event_History_Items[idx0].event_time : 0;
                     time_t t1 = (idx1 < 255) ? state->event_history_s[1].Event_History_Items[idx1].event_time : 0;
                     if (idx1 < 255 && (idx0 >= 255 || t1 > t0)) {
