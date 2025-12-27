@@ -782,7 +782,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("[%s][%d] \n", modlab, (48000 * opts->wav_interpolator) / state->samplesPerSymbol);
     }
     if (opts->m17encoder == 1) {
-        printw("| Encoding:    [%s] \n", opts->output_name);
+        ui_print_kv_line("Encoding", "[%s]", opts->output_name);
     }
     ui_print_label_pad("Decoding");
     printw("[%s] ", opts->output_name);
@@ -918,7 +918,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
     if (opts->dmr_stereo == 0) {
         if (!is_p25_active) {
-            printw("| Voice Error: [%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
+            ui_print_label_pad("Voice Error");
+            printw("[%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
             double avgv = 0.0;
             if (compute_p25p1_voice_avg_err(state, &avgv)) {
                 printw(" Avg:%4.1f%%", avgv);
@@ -933,13 +934,14 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("\n");
         } else {
             /* P25 active: show only slot toggle state, no error counters */
-            printw("| Slot 1 (1):  [%s]\n", (opts->slot1_on == 1) ? "On" : "Off");
+            ui_print_kv_line("Slot 1 (1)", "[%s]", (opts->slot1_on == 1) ? "On" : "Off");
         }
     }
 
     if (opts->dmr_stereo == 1) {
         if (!is_p25_active) {
-            printw("| Voice Error: [%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
+            ui_print_label_pad("Voice Error");
+            printw("[%X][%X] Slot 1 (1)", state->errs & 0xF, state->errs2 & 0xF);
         } else {
             ui_print_label_pad("Slot 1 (1)");
             addch('[');
@@ -959,7 +961,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         printw("\n");
 
         if (!is_p25_active) {
-            printw("| Voice Error: [%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
+            ui_print_label_pad("Voice Error");
+            printw("[%X][%X] Slot 2 (2)", state->errsR & 0xF, state->errs2R & 0xF);
         } else {
             ui_print_label_pad("Slot 2 (2)");
             addch('[');
