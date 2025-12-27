@@ -285,7 +285,9 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->resamp_target_hz = enable_resamp ? target : 0;
     demod->resamp_enabled = 0;
 
-    int default_fll = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    /* Default: keep residual-CFO FLL off unless explicitly enabled via env/CLI/UI.
+       CQPSK/QPSK uses a separate OP25 band-edge FLL block in the CQPSK chain. */
+    int default_fll = 0;
     demod->fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : default_fll;
     /* Native float FLL parameters (equivalent to legacy Q15 values) */
     demod->fll_alpha = cfg->fll_alpha_is_set ? cfg->fll_alpha : 0.0015f;          /* ~50/32768 */
@@ -317,7 +319,9 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     cl->initialized = 0;
     demod->costas_err_avg_q14 = 0;
 
-    int ted_default = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    /* Default: keep TED off unless explicitly enabled via env/CLI/UI.
+       CQPSK/QPSK requires TED and is forced on when the CQPSK path is enabled. */
+    int ted_default = 0;
     demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : ted_default;
     /* Native float TED gain (controls tracking aggressiveness, bounded internally)
        OP25 default: gain_mu = 0.025 */

@@ -60,7 +60,7 @@ extern "C" {
  * Residual CFO frequency-locked loop (FLL)
  * - DSD_NEO_FLL
  *     Enable residual carrier frequency correction.
- *     Values: "1" or unset to enable; other values disable. Default: enabled.
+ *     Values: "1" to enable; "0"/unset/other to disable. Default: disabled.
  * - DSD_NEO_FLL_ALPHA, DSD_NEO_FLL_BETA
  *     Proportional and integral gains (Q15 fixed-point, ~value/32768). Typical small values.
  *     Defaults: ALPHA=100 (~0.003), BETA=10 (~0.0003). May be adjusted for digital modes if not set.

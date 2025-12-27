@@ -262,9 +262,9 @@ Resampler
 
 FLL/TED controls
 
-- `DSD_NEO_FLL=0/1` — disable/enable frequency‑locked loop
+- `DSD_NEO_FLL=0/1` — disable/enable residual CFO frequency‑locked loop (default 0)
 - `DSD_NEO_FLL_ALPHA=<float>`, `DSD_NEO_FLL_BETA=<float>`, `DSD_NEO_FLL_DEADBAND=<float>`, `DSD_NEO_FLL_SLEW=<float>` — loop parameters (mode defaults when unset: analog-ish ≈ 0.0015/0.00015/0.0086/0.012; digital ≈ 0.008/0.0008/0.002/0.004)
-- `DSD_NEO_TED=1` — enable timing error detector
+- `DSD_NEO_TED=0/1` — disable/enable timing error detector (default 0)
 - `DSD_NEO_TED_GAIN=<float>` — TED gain
 - `DSD_NEO_TED_FORCE=1` — force TED
 
