@@ -2495,7 +2495,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         if (opts->ncurses_history == 2) {
             string_size = 1999;
         } else if (cols > 0) {
-            int max_text = cols - 9; // "| #DDD " (7) + 2 cols of slack
+            int max_text = cols - 4; // "| " (2) + 2 cols of slack
             if (max_text < 0) {
                 max_text = 0;
             }
@@ -2539,13 +2539,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         char text_string[2000];
                         memcpy(text_string, item->event_string, (size_t)string_size * sizeof(char));
                         text_string[string_size] = 0; //terminate string
-                        printw("| #%03d ", idx % 255);
+                        printw("| ");
                         attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the
                                                         //event_string
                         printw("%s\n", text_string);
                         attron(COLOR_PAIR(4));
                     } else {
-                        printw("| #%03d \n", idx % 255);
+                        printw("| \n");
                     }
 
                     if (item->text_message[0] != '\0') {
@@ -2593,7 +2593,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     }
                 }
             } else {
-                const int prefix_len = 10; // "| S# #DDD " (10)
+                const int prefix_len = 5; // "| S# " (5)
                 uint16_t idx0 = 1;
                 uint16_t idx1 = 1;
                 uint16_t skip = state->eh_index;
@@ -2672,7 +2672,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     char text_string[2000];
                     memcpy(text_string, item->event_string, (size_t)string_size * sizeof(char));
                     text_string[string_size] = 0; //terminate string
-                    printw("| S%d #%03d ", slot + 1, i % 255);
+                    printw("| S%d ", slot + 1);
                     attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the event_string
                     printw("%s\n", text_string);
                     attron(COLOR_PAIR(4));
