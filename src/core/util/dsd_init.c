@@ -473,7 +473,7 @@ initState(dsd_state* state) {
     state->gi[0] = -1;
     state->gi[1] = -1;
     state->eh_index = 0;
-    state->eh_slot = 0;
+    state->eh_slot = 2;
     state->nac = 0;
     state->errs = 0;
     state->errs2 = 0;

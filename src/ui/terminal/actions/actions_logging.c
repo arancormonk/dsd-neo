@@ -32,7 +32,13 @@ static int
 ui_handle_eh_toggle_slot(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)opts;
     (void)c;
-    state->eh_slot ^= 1;
+    if (state->eh_slot == 0) {
+        state->eh_slot = 1;
+    } else if (state->eh_slot == 1) {
+        state->eh_slot = 2;
+    } else {
+        state->eh_slot = 0;
+    }
     state->eh_index = 0;
     return 1;
 }

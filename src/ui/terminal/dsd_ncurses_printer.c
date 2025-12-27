@@ -92,6 +92,15 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
     addch('\n');
 }
 
+static inline int
+ui_eh_item_has_content(const Event_History* item) {
+    if (item == NULL) {
+        return 0;
+    }
+    return item->event_string[0] != '\0' || item->text_message[0] != '\0' || item->alias[0] != '\0'
+           || item->gps_s[0] != '\0' || item->internal_str[0] != '\0';
+}
+
 char* DMRBusrtTypes[32] = {
     "PI       ", "VLC      ", "TLC      ", "CSBK     ", "MBCH     ", "MBCC     ", "DATA     ",
     "R12D     ", "R34D     ", "IDLE     ", "R1_D     ", "ERR      ", "DUID ERR ", "R-S ERR  ",
@@ -2409,7 +2418,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         /* Left prefix and static portion */
         addstr("--");
-        printw("Latest Event History ([|])  Slot %d (\\)  Cycle (h): ", state->eh_slot + 1);
+        if (state->eh_slot < 2) {
+            printw("Latest Event History ([|])  Slot %d (\\)  Cycle (h): ", state->eh_slot + 1);
+        } else {
+            printw("Latest Event History ([|])  Slots 1+2 (\\)  Cycle (h): ");
+        }
 
         /* Underline the active cycle indicator based on opts->ncurses_history
            0 = Off, 1 = Short, 2 = Long */
@@ -2491,78 +2504,219 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        const uint16_t start_i = (uint16_t)state->eh_index + 1;
-        const uint16_t end_i = start_i + (uint16_t)events_to_show;
+        if (state->event_history_s != NULL) {
+            if (state->eh_slot < 2) {
+                uint8_t slot = state->eh_slot;
+                uint16_t idx = 1;
+                uint16_t skip = state->eh_index;
 
-        for (uint16_t i = start_i; i < end_i; i++) {
-            int y = 0, x = 0;
-            getyx(stdscr, y, x);
-            (void)x;
-            if (y >= rows - 2) {
-                break;
-            }
+                while (idx < 255 && skip > 0) {
+                    const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
+                    if (ui_eh_item_has_content(item)) {
+                        skip--;
+                    }
+                    idx++;
+                }
 
-            uint8_t slot = state->eh_slot;
-            uint8_t color_pair = state->event_history_s[slot]
-                                     .Event_History_Items[i % 255]
-                                     .color_pair; //this is the color pair assignment for this line
-            attron(COLOR_PAIR(4));
+                for (int shown = 0; shown < events_to_show && idx < 255; idx++) {
+                    int y = 0, x = 0;
+                    getyx(stdscr, y, x);
+                    (void)x;
+                    if (y >= rows - 2) {
+                        break;
+                    }
 
-            if (state->event_history_s[slot].Event_History_Items[i % 255].event_string[0] != '\0') {
-                char text_string[2000];
-                memcpy(text_string, state->event_history_s[slot].Event_History_Items[i % 255].event_string,
-                       (size_t)string_size * sizeof(char));
-                text_string[string_size] = 0; //terminate string
-                printw("| #%03d ", i % 255);
-                attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the event_string
-                printw("%s\n", text_string);
-                attron(COLOR_PAIR(4));
+                    const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
+                    if (!ui_eh_item_has_content(item)) {
+                        continue;
+                    }
+                    shown++;
+
+                    uint8_t color_pair = item->color_pair; //this is the color pair assignment for this line
+                    attron(COLOR_PAIR(4));
+
+                    if (item->event_string[0] != '\0') {
+                        char text_string[2000];
+                        memcpy(text_string, item->event_string, (size_t)string_size * sizeof(char));
+                        text_string[string_size] = 0; //terminate string
+                        printw("| #%03d ", idx % 255);
+                        attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the
+                                                        //event_string
+                        printw("%s\n", text_string);
+                        attron(COLOR_PAIR(4));
+                    } else {
+                        printw("| #%03d \n", idx % 255);
+                    }
+
+                    if (item->text_message[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        printw("|");
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("      %s\n", item->text_message);
+                        attron(COLOR_PAIR(4));
+                    }
+
+                    if (item->alias[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        printw("|");
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("      Alias: %s \n", item->alias);
+                        attron(COLOR_PAIR(4));
+                    }
+
+                    if (item->gps_s[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        printw("|");
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("      GPS: %s \n", item->gps_s);
+                        attron(COLOR_PAIR(4));
+                    }
+
+                    if (item->internal_str[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        printw("|");
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("      DSD-neo: %s \n", item->internal_str);
+                        attron(COLOR_PAIR(4));
+                    }
+                }
             } else {
-                printw("| #%03d \n", i % 255); //empty event, but since we can freely scroll now, keeps things uniform
-            }
+                const int prefix_len = 10; // "| S# #DDD " (10)
+                uint16_t idx0 = 1;
+                uint16_t idx1 = 1;
+                uint16_t skip = state->eh_index;
 
-            if (state->event_history_s[slot].Event_History_Items[i % 255].text_message[0] != '\0') {
-                getyx(stdscr, y, x);
-                if (y >= rows - 2) {
-                    break;
+                if (opts->ncurses_history != 2 && cols > 0) {
+                    int max_text = cols - (prefix_len + 2);
+                    if (max_text < 0) {
+                        max_text = 0;
+                    }
+                    if (max_text < (int)string_size) {
+                        string_size = (uint16_t)max_text;
+                    }
                 }
-                printw("|");
-                attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                printw("      %s\n", state->event_history_s[slot].Event_History_Items[i % 255].text_message);
-                attron(COLOR_PAIR(4));
-            }
 
-            if (state->event_history_s[slot].Event_History_Items[i % 255].alias[0] != '\0') {
-                getyx(stdscr, y, x);
-                if (y >= rows - 2) {
-                    break;
-                }
-                printw("|");
-                attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                printw("      Alias: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].alias);
-                attron(COLOR_PAIR(4));
-            }
+                for (uint16_t skipped = 0; skipped < skip;) {
+                    while (idx0 < 255
+                           && !ui_eh_item_has_content(&state->event_history_s[0].Event_History_Items[idx0])) {
+                        idx0++;
+                    }
+                    while (idx1 < 255
+                           && !ui_eh_item_has_content(&state->event_history_s[1].Event_History_Items[idx1])) {
+                        idx1++;
+                    }
+                    if (idx0 >= 255 && idx1 >= 255) {
+                        break;
+                    }
 
-            if (state->event_history_s[slot].Event_History_Items[i % 255].gps_s[0] != '\0') {
-                getyx(stdscr, y, x);
-                if (y >= rows - 2) {
-                    break;
+                    time_t t0 = (idx0 < 255) ? state->event_history_s[0].Event_History_Items[idx0].event_time : 0;
+                    time_t t1 = (idx1 < 255) ? state->event_history_s[1].Event_History_Items[idx1].event_time : 0;
+                    if (idx1 < 255 && (idx0 >= 255 || t1 > t0)) {
+                        idx1++;
+                    } else {
+                        idx0++;
+                    }
+                    skipped++;
                 }
-                printw("|");
-                attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                printw("      GPS: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].gps_s);
-                attron(COLOR_PAIR(4));
-            }
 
-            if (state->event_history_s[slot].Event_History_Items[i % 255].internal_str[0] != '\0') {
-                getyx(stdscr, y, x);
-                if (y >= rows - 2) {
-                    break;
+                for (int shown = 0; shown < events_to_show; shown++) {
+                    int y = 0, x = 0;
+                    getyx(stdscr, y, x);
+                    (void)x;
+                    if (y >= rows - 2) {
+                        break;
+                    }
+
+                    while (idx0 < 255
+                           && !ui_eh_item_has_content(&state->event_history_s[0].Event_History_Items[idx0])) {
+                        idx0++;
+                    }
+                    while (idx1 < 255
+                           && !ui_eh_item_has_content(&state->event_history_s[1].Event_History_Items[idx1])) {
+                        idx1++;
+                    }
+                    if (idx0 >= 255 && idx1 >= 255) {
+                        break;
+                    }
+
+                    uint8_t slot = 0;
+                    uint16_t i = idx0;
+                    time_t t0 = (idx0 < 255) ? state->event_history_s[0].Event_History_Items[idx0].event_time : 0;
+                    time_t t1 = (idx1 < 255) ? state->event_history_s[1].Event_History_Items[idx1].event_time : 0;
+                    if (idx1 < 255 && (idx0 >= 255 || t1 > t0)) {
+                        slot = 1;
+                        i = idx1;
+                        idx1++;
+                    } else {
+                        slot = 0;
+                        i = idx0;
+                        idx0++;
+                    }
+
+                    const Event_History* item = &state->event_history_s[slot].Event_History_Items[i];
+                    uint8_t color_pair = item->color_pair;
+                    attron(COLOR_PAIR(4));
+
+                    char text_string[2000];
+                    memcpy(text_string, item->event_string, (size_t)string_size * sizeof(char));
+                    text_string[string_size] = 0; //terminate string
+                    printw("| S%d #%03d ", slot + 1, i % 255);
+                    attron(COLOR_PAIR(color_pair)); //this is where the custom color switch occurs for the event_string
+                    printw("%s\n", text_string);
+                    attron(COLOR_PAIR(4));
+
+                    if (item->text_message[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("| S%d      %s\n", slot + 1, item->text_message);
+                        attron(COLOR_PAIR(4));
+                    }
+
+                    if (item->alias[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("| S%d      Alias: %s \n", slot + 1, item->alias);
+                        attron(COLOR_PAIR(4));
+                    }
+
+                    if (item->gps_s[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("| S%d      GPS: %s \n", slot + 1, item->gps_s);
+                        attron(COLOR_PAIR(4));
+                    }
+
+                    if (item->internal_str[0] != '\0') {
+                        getyx(stdscr, y, x);
+                        if (y >= rows - 2) {
+                            break;
+                        }
+                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
+                        printw("| S%d      DSD-neo: %s \n", slot + 1, item->internal_str);
+                        attron(COLOR_PAIR(4));
+                    }
                 }
-                printw("|");
-                attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                printw("      DSD-neo: %s \n", state->event_history_s[slot].Event_History_Items[i % 255].internal_str);
-                attron(COLOR_PAIR(4));
             }
         }
     }
