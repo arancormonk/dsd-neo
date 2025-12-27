@@ -521,6 +521,12 @@ initState(dsd_state* state) {
     state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
     state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
 
+    // Initialize P25 Phase 1 metrics counters (also reset on retune)
+    state->p25_p1_fec_ok = 0;
+    state->p25_p1_fec_err = 0;
+    state->p25_p1_voice_fec_ok = 0;
+    state->p25_p1_voice_fec_err = 0;
+
     state->debug_audio_errors = 0;
     state->debug_audio_errorsR = 0;
     state->debug_header_errors = 0;

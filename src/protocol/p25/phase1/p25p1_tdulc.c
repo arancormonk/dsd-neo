@@ -21,6 +21,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 
@@ -243,12 +244,14 @@ read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, 
     }
 
     // We know that all these bits should be zero. Use this information for the heuristics module
-    contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array, length / 2);
+    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
+    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, length / 2);
 }
 
 void
 processTDULC(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tdulc++;
+    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     //push current slot to 0, just in case swapping p2 to p1
     //or stale slot value from p2 and then decoding a pdu
@@ -305,15 +308,17 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     swap_hex_words((char*)dodeca_data, (char*)dodeca_parity);
 
     if (irrecoverable_errors == 1) {
+        state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
 
         // We can correct (13-1)/2 = 6 errors. If we failed, it means that there were more than 6 errors in
         // these 12+12 words. But take into account that each hex word was already error corrected with
         // Golay 24, which can correct 3 bits on each sequence of (12+12) bits. We could say that there were
         // 7 errors of 4 bits.
-        update_error_stats(&state->p25_heuristics, 12 * 6 + 12 * 6, 7 * 4);
+        update_error_stats(heur, 12 * 6 + 12 * 6, 7 * 4);
 
     } else {
+        state->p25_p1_voice_fec_ok++;
         // Same comments as in processHDU. See there.
 
         char fixed_parity[6 * 12];
@@ -333,8 +338,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
         // Once corrected, contribute this information to the heuristics module
         analog_signal_array[0].sequence_broken = 1;
-        contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array,
-                                 ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6));
+        size_t trusted = ((size_t)6) * (6 + 6) + ((size_t)6) * (6 + 6);
+        contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, (int)trusted);
     }
 
     // Next 10 dibits should be zeros

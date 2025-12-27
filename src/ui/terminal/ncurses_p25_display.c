@@ -164,14 +164,36 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         }
         lines++;
 
-        /* P1 FEC/CRC16 health (TSBK/MDPU headers) */
+        /* P1 CC FEC/CRC16 health (TSBK/MDPU headers; not voice) */
         unsigned int ok = state->p25_p1_fec_ok;
         unsigned int err = state->p25_p1_fec_err;
         unsigned int tot = ok + err;
         if (tot > 0) {
             double okpct = (100.0 * (double)ok) / (double)tot;
-            printw("| P1 FEC: %u/%u (ok:%4.1f%%)\n", ok, err, okpct);
+            printw("| P1 CC FEC: %u/%u (ok:%4.1f%%)\n", ok, err, okpct);
             lines++;
+        }
+
+        /* P1 voice/header RS health (HDU/LDU/TDULC; not IMBE ECC) */
+        if (is_p25p1) {
+            unsigned int vok = state->p25_p1_voice_fec_ok;
+            unsigned int verr = state->p25_p1_voice_fec_err;
+            unsigned int vtot = vok + verr;
+            if (vtot > 0) {
+                double okpct = (100.0 * (double)vok) / (double)vtot;
+                printw("| P1 Voice FEC: %u/%u (ok:%4.1f%%)\n", vok, verr, okpct);
+                lines++;
+            }
+        }
+
+        /* P1 voice header health (HDU/LDU/TDULC protection; accumulates since last reset/retune) */
+        if (is_p25p1) {
+            unsigned int hdr_fix = state->debug_header_errors;
+            unsigned int hdr_crit = state->debug_header_critical_errors;
+            if (hdr_fix || hdr_crit) {
+                printw("| P1 Hdr: fixed:%u crit:%u\n", hdr_fix, hdr_crit);
+                lines++;
+            }
         }
 
         /* P1 voice error distribution (percentiles) */

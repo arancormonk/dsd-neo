@@ -685,11 +685,17 @@ struct dsd_state {
     double p25_cfg_p1_err_hold_pct;    // P1 elevated-error threshold percentage
     double p25_cfg_p1_err_hold_s;      // P1 elevated-error additional hold seconds
 
-    // P25 Phase 1 FEC/CRC telemetry (for BER display)
-    unsigned int p25_p1_fec_ok;     // count of CRC16/1/2-rate header/FEC successes
-    unsigned int p25_p1_fec_err;    // count of CRC16/1/2-rate header/FEC failures
-    unsigned int p25_cc_cand_added; // candidates added
-    unsigned int p25_cc_cand_used;  // candidates used for hunting
+    // P25 Phase 1 control/data channel FEC/CRC telemetry (for BER display)
+    // NOTE: This does not reflect IMBE voice quality. Voice frames have their own
+    // Golay/Hamming/RS protection and IMBE ECC; see P1 Voice metrics and
+    // debug_{audio,header}_* counters.
+    unsigned int p25_p1_fec_ok;  // count of TSBK/MDPU header CRC/FEC successes
+    unsigned int p25_p1_fec_err; // count of TSBK/MDPU header CRC/FEC failures
+    // P25 Phase 1 voice/header FEC telemetry (Reed-Solomon outcome for HDU/LDU/TDULC)
+    unsigned int p25_p1_voice_fec_ok;  // count of successful RS decodes (HDU/LDU/TDULC)
+    unsigned int p25_p1_voice_fec_err; // count of failed RS decodes (HDU/LDU/TDULC)
+    unsigned int p25_cc_cand_added;    // candidates added
+    unsigned int p25_cc_cand_used;     // candidates used for hunting
 
     // P25 Phase 1 DUID/frame-type histogram (since last tune/reset)
     unsigned int p25_p1_duid_hdu;

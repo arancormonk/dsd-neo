@@ -139,6 +139,12 @@ resetState(dsd_state* state) {
     state->errsR = 0;
     state->errs2R = 0;
 
+    // Reset debug accumulators so UI counters reflect current tune
+    state->debug_audio_errors = 0;
+    state->debug_audio_errorsR = 0;
+    state->debug_header_errors = 0;
+    state->debug_header_critical_errors = 0;
+
     // Initialize P25p1 voice avg error histogram
     memset(state->p25_p1_voice_err_hist, 0, sizeof(state->p25_p1_voice_err_hist));
     state->p25_p1_voice_err_hist_len = 50; // default short window
@@ -174,6 +180,8 @@ resetState(dsd_state* state) {
     /* Reset P25 BER/FEC counters so UI reflects fresh conditions after retune */
     state->p25_p1_fec_ok = 0;
     state->p25_p1_fec_err = 0;
+    state->p25_p1_voice_fec_ok = 0;
+    state->p25_p1_voice_fec_err = 0;
     state->p25_p1_duid_hdu = 0;
     state->p25_p1_duid_ldu1 = 0;
     state->p25_p1_duid_ldu2 = 0;

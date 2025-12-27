@@ -22,6 +22,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -307,6 +308,7 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
 void
 processHDU(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_hdu++;
+    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     // Defer last_vc_sync_time refresh until after FEC success to avoid
     // extending hangtime due to false HDU decodes during signal loss.
@@ -362,6 +364,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     // Use the Reed-Solomon algorithm to correct the data. hex_data is modified in place
     irrecoverable_errors = check_and_fix_redsolomon_36_20_17((char*)hex_data, (char*)hex_parity);
     if (irrecoverable_errors != 0) {
+        state->p25_p1_voice_fec_err++;
         // The hex words failed the Reed-Solomon check. There were too many errors. Still we can use this
         // information to update an estimate of the BER.
         state->debug_header_critical_errors++;
@@ -370,8 +373,9 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         // these 20+16 words. But take into account that each hex word was already error corrected with
         // Golay 24, which can correct 3 bits on each sequence of (6+12) bits. We could say that there were
         // 9 errors of 4 bits.
-        update_error_stats(&state->p25_heuristics, 20 * 6 + 16 * 6, 9 * 4);
+        update_error_stats(heur, 20 * 6 + 16 * 6, 9 * 4);
     } else {
+        state->p25_p1_voice_fec_ok++;
         // Passed FEC checks: mark recent activity for trunk hangtime tracking.
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
@@ -394,8 +398,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         // Now we have a bunch of dibits (composed of data and parity of different kinds) that we trust are all
         // correct. We also keep a record of the analog values from where each dibit is coming from.
         // This information is gold for the heuristics module.
-        contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array,
-                                 20 * (3 + 6) + 16 * (3 + 6));
+        contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 20 * (3 + 6) + 16 * (3 + 6));
     }
 
     // Now put the corrected data on the DSD structures

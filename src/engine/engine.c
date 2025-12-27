@@ -1256,6 +1256,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     /* Initialize P25 metrics counters used by ncurses BER display */
     state->p25_p1_fec_ok = 0;
     state->p25_p1_fec_err = 0;
+    state->p25_p1_voice_fec_ok = 0;
+    state->p25_p1_voice_fec_err = 0;
     state->p25_p2_rs_facch_ok = 0;
     state->p25_p2_rs_facch_err = 0;
     state->p25_p2_rs_facch_corr = 0;

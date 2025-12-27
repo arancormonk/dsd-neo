@@ -25,6 +25,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
@@ -42,6 +43,7 @@
 void
 processLDU1(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_ldu1++;
+    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     // Hysteresis: if we have very recent activity within a fraction of the
     // hangtime window, refresh the timer early to avoid thrashing between the
@@ -398,14 +400,16 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     // Error correct the hex_data using Reed-Solomon hex_parity
     irrecoverable_errors = check_and_fix_reedsolomon_24_12_13((char*)hex_data, (char*)hex_parity);
     if (irrecoverable_errors == 1) {
+        state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
 
         // We can correct (13-1)/2 = 6 errors. If we failed, it means that there were more than 6 errors in
         // these 12+12 words. But take into account that each hex word was already error corrected with
         // Hamming(10,6,3), which can correct 1 bits on each sequence of (6+4) bits. We could say that there
         // were 7 errors of 2 bits.
-        update_error_stats(&state->p25_heuristics, 12 * 6 + 12 * 6, 7 * 2);
+        update_error_stats(heur, 12 * 6 + 12 * 6, 7 * 2);
     } else {
+        state->p25_p1_voice_fec_ok++;
         // Passed FEC checks: mark recent voice activity for trunk hangtime
         // tracking so we don't prematurely return to CC mid-call.
         state->last_vc_sync_time = time(NULL);
@@ -425,8 +429,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
         correct_hamming_dibits(fixed_parity, 12, analog_signal_array + hoff);
 
         // Once corrected, contribute this information to the heuristics module
-        contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array,
-                                 12 * (3 + 2) + 12 * (3 + 2));
+        contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 12 * (3 + 2) + 12 * (3 + 2));
     }
 
 #ifdef HEURISTICS_DEBUG
