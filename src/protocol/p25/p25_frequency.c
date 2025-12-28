@@ -288,3 +288,49 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
         return (0);
     }
 }
+
+long int
+nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
+    if (!state) {
+        return 0;
+    }
+
+    // First: imported/learned mapping.
+    long int freq = state->trunk_chan_map[channel];
+    if (freq != 0) {
+        return freq;
+    }
+
+    // DFA/RCN=1 mapping (base + step) when broadcast and usable.
+    if (state->nxdn_rcn != 1) {
+        return 0;
+    }
+
+    long int base = 0;
+    if (state->nxdn_base_freq == 1) {
+        base = 100000000; //100 MHz
+    } else if (state->nxdn_base_freq == 2) {
+        base = 330000000; //330 Mhz
+    } else if (state->nxdn_base_freq == 3) {
+        base = 400000000; //400 Mhz
+    } else if (state->nxdn_base_freq == 4) {
+        base = 750000000; //750 Mhz
+    }
+
+    long int step = 0;
+    if (state->nxdn_step == 2) {
+        step = 1250; //1.25 kHz
+    } else if (state->nxdn_step == 3) {
+        step = 3125; //3.125 kHz
+    }
+
+    if (!base || !step) {
+        return 0;
+    }
+
+    freq = base + ((long int)channel * step);
+    if (freq != 0) {
+        state->trunk_chan_map[channel] = freq;
+    }
+    return freq;
+}

@@ -91,6 +91,10 @@ Path expansion is applied to:
 - `[input] file_path`
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
+- `[logging] event_log`
+- `[recording] per_call_wav_dir`
+- `[recording] static_wav`
+- `[recording] raw_wav`
 - Include directive paths
 
 ---
@@ -235,7 +239,9 @@ For the keys covered by this user config system:
 3. **CLI arguments** (highest priority)
 
 Environment variables are separate advanced runtime knobs (some CLI flags set
-`DSD_NEO_*` env vars); they are not persisted in the user config file.
+`DSD_NEO_*` env vars). Most are not persisted in the user config file, but a
+small subset is exposed as config keys for convenience (for example
+`[input] auto_ppm`, `[dsp] iq_balance`, `[dsp] iq_dc_block`).
 
 ---
 
@@ -253,6 +259,8 @@ Environment variables are separate advanced runtime knobs (some CLI flags set
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
 | `rtl_sql` | INT (-100-0) | Squelch level | `0` |
 | `rtl_volume` | INT (1-3) | Volume multiplier | `2` |
+| `auto_ppm` | BOOL | Enable spectrum-based RTL auto-PPM correction | `false` |
+| `rtl_auto_ppm` | BOOL | Enable spectrum-based RTL auto-PPM correction (alias for `auto_ppm`) | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
@@ -286,6 +294,27 @@ Environment variables are separate advanced runtime knobs (some CLI flags set
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow encrypted calls | `true` |
+
+**[logging] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `event_log` | PATH | Event history log file path | (empty) |
+
+**[recording] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `per_call_wav` | BOOL | Enable per-call decoded voice WAV output | `false` |
+| `per_call_wav_dir` | PATH | Per-call WAV output directory | `./WAV` |
+| `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
+| `raw_wav` | PATH | Raw (48 kHz) audio WAV output file | (empty) |
+
+Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
+
+**[dsp] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `iq_balance` | BOOL | Enable RTL IQ balance (image suppression) | `false` |
+| `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker | `false` |
 
 Note: The defaults shown match the generated template (`--dump-config-template`).
 Missing keys generally mean “leave the engine default unchanged”; some input
@@ -362,9 +391,9 @@ version = 1
 ## Notes on Input Sources
 
 - **RTL-SDR (`source = "rtl"`)**: Uses the `rtl_*` keys for frequency,
-  gain, PPM correction, bandwidth, squelch, and volume. Omitted values
-  use sensible defaults. To switch the input to RTL at startup, set at
-  least `rtl_freq` (and optionally `rtl_device`).
+  gain, PPM correction, bandwidth, squelch, volume, and auto-PPM.
+  Omitted values use sensible defaults. To switch the input to RTL at
+  startup, set at least `rtl_freq` (and optionally `rtl_device`).
 
 - **RTL-TCP (`source = "rtltcp"`)**: Uses `rtltcp_host`/`rtltcp_port`
   for the network endpoint, plus the same `rtl_*` tuning keys. To switch
@@ -507,6 +536,7 @@ through selecting input, mode, trunking, and UI options.
 When running with the ncurses UI (`ncurses_ui = true` or `-N`), the
 **Config** menu provides:
 
+- **Save Config (Current)**: Save current settings to the active config path (loaded via `--config` or **Load Config...**).
 - **Save Config (Default)**: Save current settings to the default config path.
 - **Save Config As...**: Save to a custom path.
 - **Load Config...**: Load a config file and apply it to the running session.

@@ -640,12 +640,19 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         dup = 1;
     }
 
-    //assign active call to string (might place inside of tune decision to get multiple ones?)
-    if (state->nxdn_rcn == 0) {
-        sprintf(state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ", Channel, DestinationID, SourceUnitID);
-    }
-    if (state->nxdn_rcn == 1) {
-        sprintf(state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ", OFN, DestinationID, SourceUnitID);
+    // Track + display last observed grant channel -> frequency mapping.
+    uint16_t grant_chan = (state->nxdn_rcn == 1) ? (uint16_t)OFN : (uint16_t)(Channel & 0x3FF);
+    long int grant_freq = nxdn_channel_to_frequency_quiet(state, grant_chan);
+    state->nxdn_grant_chan = grant_chan;
+    state->nxdn_grant_freq = grant_freq;
+
+    if (grant_freq != 0) {
+        snprintf(state->active_channel[dup], sizeof state->active_channel[dup],
+                 "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan, (double)grant_freq / 1000000.0,
+                 DestinationID, SourceUnitID);
+    } else {
+        snprintf(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
+                 grant_chan, DestinationID, SourceUnitID);
     }
 
     state->last_active_time = now;
@@ -1073,6 +1080,8 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
     if ((now - state->last_active_time) > 3) {
         memset(state->active_channel, 0, sizeof(state->active_channel));
+        state->nxdn_grant_chan = 0;
+        state->nxdn_grant_freq = 0;
     }
 }
 

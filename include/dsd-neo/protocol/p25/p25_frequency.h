@@ -25,6 +25,7 @@ extern "C" {
 
 long int process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel);
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
+long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 
 void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
 

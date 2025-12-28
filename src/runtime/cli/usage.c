@@ -22,6 +22,16 @@ dsd_cli_usage(void) {
     printf("  or:  dsd-neo [options] -r <files> Read/Play saved mbe data from file(s)\n");
     printf("  or:  dsd-neo -h                   Show help\n");
     printf("\n");
+    printf("Config Options:\n");
+    printf("      --config [PATH]        Enable INI config loading (default path if omitted)\n");
+    printf("      --profile <name>       Load a named profile section (profile.<name>)\n");
+    printf("      --list-profiles        List available profiles in the config and exit\n");
+    printf("      --interactive-setup    Run interactive bootstrap wizard\n");
+    printf("      --print-config         Print the effective config (as INI) and exit\n");
+    printf("      --dump-config-template Print a commented config template and exit\n");
+    printf("      --validate-config [PATH] Validate a config file and exit\n");
+    printf("      --strict-config        Treat --validate-config warnings as errors\n");
+    printf("\n");
     printf("Display Options:\n");
     printf("  -N            Use NCurses Terminal\n");
     printf("                 dsd-neo -N 2> console_log.txt \n");

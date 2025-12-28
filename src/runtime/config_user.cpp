@@ -61,6 +61,17 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_private_calls = 1;
     cfg->trunk_tune_data_calls = 0;
     cfg->trunk_tune_enc_calls = 1;
+
+    cfg->rtl_auto_ppm = 0;
+
+    // Recording defaults (match initOpts)
+    cfg->per_call_wav = 0;
+    snprintf(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, "%s", "./WAV");
+    cfg->per_call_wav_dir[sizeof cfg->per_call_wav_dir - 1] = '\0';
+
+    // DSP defaults (match runtime defaults)
+    cfg->iq_balance = 0;
+    cfg->iq_dc_block = 0;
 }
 
 static void
@@ -340,6 +351,11 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
                 cfg->rtl_sql = (int)parse_int(val, 0);
             } else if (strcmp(key_lc, "rtl_volume") == 0) {
                 cfg->rtl_volume = (int)parse_int(val, 1);
+            } else if (strcmp(key_lc, "auto_ppm") == 0 || strcmp(key_lc, "rtl_auto_ppm") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->rtl_auto_ppm = b;
+                }
             } else if (strcmp(key_lc, "rtltcp_host") == 0) {
                 snprintf(cfg->rtltcp_host, sizeof cfg->rtltcp_host, "%s", val);
                 cfg->rtltcp_host[sizeof cfg->rtltcp_host - 1] = '\0';
@@ -470,6 +486,47 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
             }
             continue;
         }
+
+        if (strcmp(current_section, "logging") == 0) {
+            cfg->has_logging = 1;
+            if (strcmp(key_lc, "event_log") == 0 || strcmp(key_lc, "event_log_file") == 0) {
+                copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
+            }
+            continue;
+        }
+
+        if (strcmp(current_section, "recording") == 0) {
+            cfg->has_recording = 1;
+            if (strcmp(key_lc, "per_call_wav") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->per_call_wav = b;
+                }
+            } else if (strcmp(key_lc, "per_call_wav_dir") == 0) {
+                copy_path_expanded(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, val);
+            } else if (strcmp(key_lc, "static_wav") == 0) {
+                copy_path_expanded(cfg->static_wav_path, sizeof cfg->static_wav_path, val);
+            } else if (strcmp(key_lc, "raw_wav") == 0) {
+                copy_path_expanded(cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
+            }
+            continue;
+        }
+
+        if (strcmp(current_section, "dsp") == 0) {
+            cfg->has_dsp = 1;
+            if (strcmp(key_lc, "iq_balance") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->iq_balance = b;
+                }
+            } else if (strcmp(key_lc, "iq_dc_block") == 0) {
+                int b = 0;
+                if (parse_bool(val, &b) == 0) {
+                    cfg->iq_dc_block = b;
+                }
+            }
+            continue;
+        }
     }
 
     fclose(fp);
@@ -595,6 +652,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             if (cfg->rtl_volume) {
                 fprintf(out, "rtl_volume = %d\n", cfg->rtl_volume);
             }
+            fprintf(out, "auto_ppm = %s\n", cfg->rtl_auto_ppm ? "true" : "false");
         } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
             if (cfg->rtltcp_host[0]) {
                 fprintf(out, "rtltcp_host = \"%s\"\n", cfg->rtltcp_host);
@@ -618,6 +676,7 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
             if (cfg->rtl_volume) {
                 fprintf(out, "rtl_volume = %d\n", cfg->rtl_volume);
             }
+            fprintf(out, "auto_ppm = %s\n", cfg->rtl_auto_ppm ? "true" : "false");
         } else if (cfg->input_source == DSDCFG_INPUT_FILE) {
             if (cfg->file_path[0]) {
                 fprintf(out, "file_path = \"%s\"\n", cfg->file_path);
@@ -704,6 +763,36 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
         fprintf(out, "tune_enc_calls = %s\n", cfg->trunk_tune_enc_calls ? "true" : "false");
         fprintf(out, "\n");
     }
+
+    if (cfg->has_logging) {
+        fprintf(out, "[logging]\n");
+        if (cfg->event_log[0]) {
+            fprintf(out, "event_log = \"%s\"\n", cfg->event_log);
+        }
+        fprintf(out, "\n");
+    }
+
+    if (cfg->has_recording) {
+        fprintf(out, "[recording]\n");
+        fprintf(out, "per_call_wav = %s\n", cfg->per_call_wav ? "true" : "false");
+        if (cfg->per_call_wav_dir[0]) {
+            fprintf(out, "per_call_wav_dir = \"%s\"\n", cfg->per_call_wav_dir);
+        }
+        if (cfg->static_wav_path[0]) {
+            fprintf(out, "static_wav = \"%s\"\n", cfg->static_wav_path);
+        }
+        if (cfg->raw_wav_path[0]) {
+            fprintf(out, "raw_wav = \"%s\"\n", cfg->raw_wav_path);
+        }
+        fprintf(out, "\n");
+    }
+
+    if (cfg->has_dsp) {
+        fprintf(out, "[dsp]\n");
+        fprintf(out, "iq_balance = %s\n", cfg->iq_balance ? "true" : "false");
+        fprintf(out, "iq_dc_block = %s\n", cfg->iq_dc_block ? "true" : "false");
+        fprintf(out, "\n");
+    }
 }
 
 // Mapping helpers -------------------------------------------------------------
@@ -779,6 +868,14 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
                 }
                 break;
             default: break;
+        }
+
+        // RTL-only helpers
+        if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {
+            opts->rtl_auto_ppm = cfg->rtl_auto_ppm ? 1 : 0;
+            if (getenv("DSD_NEO_AUTO_PPM") == NULL) {
+                dsd_setenv("DSD_NEO_AUTO_PPM", opts->rtl_auto_ppm ? "1" : "0", 0);
+            }
         }
     }
 
@@ -1165,6 +1262,48 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
         opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
         opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
     }
+
+    if (cfg->has_logging) {
+        snprintf(opts->event_out_file, sizeof opts->event_out_file, "%s", cfg->event_log);
+        opts->event_out_file[sizeof opts->event_out_file - 1] = '\0';
+    }
+
+    if (cfg->has_recording) {
+        if (cfg->per_call_wav_dir[0]) {
+            snprintf(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", cfg->per_call_wav_dir);
+            opts->wav_out_dir[sizeof opts->wav_out_dir - 1] = '\0';
+        }
+
+        // Per-call and static WAV are mutually exclusive (mirror CLI behavior).
+        if (cfg->per_call_wav) {
+            opts->dmr_stereo_wav = 1;
+            opts->static_wav_file = 0;
+        } else if (cfg->static_wav_path[0]) {
+            opts->dmr_stereo_wav = 0;
+            opts->static_wav_file = 1;
+            snprintf(opts->wav_out_file, sizeof opts->wav_out_file, "%s", cfg->static_wav_path);
+            opts->wav_out_file[sizeof opts->wav_out_file - 1] = '\0';
+        } else {
+            opts->dmr_stereo_wav = 0;
+            opts->static_wav_file = 0;
+        }
+
+        if (cfg->raw_wav_path[0]) {
+            snprintf(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", cfg->raw_wav_path);
+            opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
+        } else {
+            opts->wav_out_file_raw[0] = '\0';
+        }
+    }
+
+    if (cfg->has_dsp) {
+        if (getenv("DSD_NEO_IQ_BALANCE") == NULL) {
+            dsd_setenv("DSD_NEO_IQ_BALANCE", cfg->iq_balance ? "1" : "0", 0);
+        }
+        if (getenv("DSD_NEO_IQ_DC_BLOCK") == NULL) {
+            dsd_setenv("DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0", 0);
+        }
+    }
 }
 
 void
@@ -1312,6 +1451,10 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
         cfg->file_sample_rate = opts->wav_sample_rate;
     }
 
+    if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {
+        cfg->rtl_auto_ppm = opts->rtl_auto_ppm ? 1 : 0;
+    }
+
     // Output snapshot: backend + UI
     cfg->has_output = 1;
     if (strncmp(opts->audio_out_dev, "pulse", 5) == 0) {
@@ -1404,6 +1547,32 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
     cfg->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 1 : 0;
     cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
+
+    // Logging snapshot
+    cfg->has_logging = 1;
+    snprintf(cfg->event_log, sizeof cfg->event_log, "%s", opts->event_out_file);
+    cfg->event_log[sizeof cfg->event_log - 1] = '\0';
+
+    // Recording snapshot
+    cfg->has_recording = 1;
+    cfg->per_call_wav = opts->dmr_stereo_wav ? 1 : 0;
+    snprintf(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, "%s", opts->wav_out_dir);
+    cfg->per_call_wav_dir[sizeof cfg->per_call_wav_dir - 1] = '\0';
+    if (opts->static_wav_file && opts->wav_out_file[0] != '\0') {
+        snprintf(cfg->static_wav_path, sizeof cfg->static_wav_path, "%s", opts->wav_out_file);
+        cfg->static_wav_path[sizeof cfg->static_wav_path - 1] = '\0';
+    } else {
+        cfg->static_wav_path[0] = '\0';
+    }
+    snprintf(cfg->raw_wav_path, sizeof cfg->raw_wav_path, "%s", opts->wav_out_file_raw);
+    cfg->raw_wav_path[sizeof cfg->raw_wav_path - 1] = '\0';
+
+    // DSP snapshot (persist runtime toggles via env for the next run)
+    cfg->has_dsp = 1;
+    const char* iqb = getenv("DSD_NEO_IQ_BALANCE");
+    cfg->iq_balance = (iqb && *iqb && atoi(iqb) != 0) ? 1 : 0;
+    const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
+    cfg->iq_dc_block = (dcb && *dcb && atoi(dcb) != 0) ? 1 : 0;
 }
 
 // Template generation ---------------------------------------------------------
@@ -1611,7 +1780,8 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
 
             /* Validate known sections (skip profile sections) */
             if (!is_profile_section) {
-                const char* known_sections[] = {"input", "output", "mode", "trunking", NULL};
+                const char* known_sections[] = {"input",   "output",    "mode", "trunking",
+                                                "logging", "recording", "dsp",  NULL};
                 int found = 0;
                 for (int i = 0; known_sections[i]; i++) {
                     if (strcmp(current_section, known_sections[i]) == 0) {
@@ -1865,6 +2035,9 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
             cfg->rtl_sql = atoi(val);
         } else if (strcmp(key, "rtl_volume") == 0) {
             cfg->rtl_volume = atoi(val);
+        } else if (strcmp(key, "auto_ppm") == 0 || strcmp(key, "rtl_auto_ppm") == 0) {
+            cfg->rtl_auto_ppm =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
         } else if (strcmp(key, "rtltcp_host") == 0) {
             snprintf(cfg->rtltcp_host, sizeof cfg->rtltcp_host, "%s", val);
         } else if (strcmp(key, "rtltcp_port") == 0) {
@@ -1952,6 +2125,44 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
             copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
         } else if (strcmp(key, "allow_list") == 0) {
             cfg->trunk_use_allow_list =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        } else if (strcmp(key, "tune_group_calls") == 0) {
+            cfg->trunk_tune_group_calls =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        } else if (strcmp(key, "tune_private_calls") == 0) {
+            cfg->trunk_tune_private_calls =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        } else if (strcmp(key, "tune_data_calls") == 0) {
+            cfg->trunk_tune_data_calls =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        } else if (strcmp(key, "tune_enc_calls") == 0) {
+            cfg->trunk_tune_enc_calls =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        }
+    } else if (strcmp(section, "logging") == 0) {
+        cfg->has_logging = 1;
+        if (strcmp(key, "event_log") == 0 || strcmp(key, "event_log_file") == 0) {
+            copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
+        }
+    } else if (strcmp(section, "recording") == 0) {
+        cfg->has_recording = 1;
+        if (strcmp(key, "per_call_wav") == 0) {
+            cfg->per_call_wav =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        } else if (strcmp(key, "per_call_wav_dir") == 0) {
+            copy_path_expanded(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, val);
+        } else if (strcmp(key, "static_wav") == 0) {
+            copy_path_expanded(cfg->static_wav_path, sizeof cfg->static_wav_path, val);
+        } else if (strcmp(key, "raw_wav") == 0) {
+            copy_path_expanded(cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
+        }
+    } else if (strcmp(section, "dsp") == 0) {
+        cfg->has_dsp = 1;
+        if (strcmp(key, "iq_balance") == 0) {
+            cfg->iq_balance =
+                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+        } else if (strcmp(key, "iq_dc_block") == 0) {
+            cfg->iq_dc_block =
                 (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
         }
     }

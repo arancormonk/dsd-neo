@@ -145,6 +145,13 @@ cb_config_load(void* v, const char* path) {
         return;
     }
 
+    // Treat UI-loaded configs as the active config path for later saves/autosave.
+    if (c->state) {
+        c->state->config_autosave_enabled = 1;
+        snprintf(c->state->config_autosave_path, sizeof c->state->config_autosave_path, "%s", path);
+        c->state->config_autosave_path[sizeof c->state->config_autosave_path - 1] = '\0';
+    }
+
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_statusf("Config loaded from %s", path);
 }

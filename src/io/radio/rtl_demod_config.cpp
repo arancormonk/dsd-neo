@@ -373,6 +373,12 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     demod->iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod->iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
     demod->iq_dc_avg_r = demod->iq_dc_avg_i = 0;
+    {
+        const char* iqb = getenv("DSD_NEO_IQ_BALANCE");
+        if (iqb && *iqb) {
+            demod->iqbal_enable = (atoi(iqb) != 0) ? 1 : 0;
+        }
+    }
 
     /* Channel complex low-pass (post-HB, complex baseband).
        Default policy (Fs~=24 kHz RTL DSP baseband):

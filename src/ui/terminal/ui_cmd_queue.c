@@ -1507,14 +1507,17 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 }
                 case UI_DSP_OP_TOGGLE_IQBAL: {
                     int on = rtl_stream_get_iq_balance();
-
-                    rtl_stream_toggle_iq_balance(on ? 0 : 1);
+                    int new_on = on ? 0 : 1;
+                    rtl_stream_toggle_iq_balance(new_on);
+                    dsd_setenv("DSD_NEO_IQ_BALANCE", new_on ? "1" : "0", 1);
                     break;
                 }
                 case UI_DSP_OP_IQ_DC_TOGGLE: {
                     int k = 0;
                     int on = rtl_stream_get_iq_dc(&k);
-                    rtl_stream_set_iq_dc(on ? 0 : 1, -1);
+                    int new_on = on ? 0 : 1;
+                    rtl_stream_set_iq_dc(new_on, -1);
+                    dsd_setenv("DSD_NEO_IQ_DC_BLOCK", new_on ? "1" : "0", 1);
                     break;
                 }
                 case UI_DSP_OP_IQ_DC_K_DELTA: {

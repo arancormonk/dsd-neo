@@ -1038,6 +1038,19 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
             snprintf(event_string, sizeof event_string, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; ", datestr, timestr,
                      sys_string, target_id, source_id, sys_id3);
         }
+        if (state->nxdn_grant_chan != 0) {
+            char ch_str[96];
+            if (state->nxdn_grant_freq != 0) {
+                snprintf(ch_str, sizeof ch_str, "CH: %u; FREQ: %.6lf MHz; ", state->nxdn_grant_chan,
+                         (double)state->nxdn_grant_freq / 1000000.0);
+            } else {
+                snprintf(ch_str, sizeof ch_str, "CH: %u; ", state->nxdn_grant_chan);
+            }
+            size_t rem = sizeof(event_string) - strlen(event_string) - 1;
+            if (rem > 0) {
+                strncat(event_string, ch_str, rem);
+            }
+        }
         if (enc) {
             size_t rem = sizeof(event_string) - strlen(event_string) - 1;
             if (rem > 0) {

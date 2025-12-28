@@ -736,8 +736,13 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             case 'P':
                 if (opts->static_wav_file == 1) {
-                    LOG_ERROR("-P cannot be used with -w (static WAV output)\n");
-                    exit(1);
+                    // Allow CLI to override config-derived static WAV settings (file not opened yet).
+                    if (opts->wav_out_f != NULL) {
+                        LOG_ERROR("-P cannot be used with -w (static WAV output)\n");
+                        exit(1);
+                    }
+                    opts->static_wav_file = 0;
+                    opts->wav_out_file[0] = '\0';
                 }
                 snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
                 wav_file_directory[1023] = '\0';
@@ -867,8 +872,12 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
             }
             case 'w':
                 if (opts->dmr_stereo_wav == 1) {
-                    LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");
-                    exit(1);
+                    // Allow CLI to override config-derived per-call WAV settings (files not opened yet).
+                    if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {
+                        LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");
+                        exit(1);
+                    }
+                    opts->dmr_stereo_wav = 0;
                 }
                 strncpy(opts->wav_out_file, optarg, 1023);
                 opts->wav_out_file[1023] = '\0';

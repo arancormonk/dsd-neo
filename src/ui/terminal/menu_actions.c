@@ -103,8 +103,42 @@ act_dsp_out(void* v) {
 
 void
 act_config_load(void* v) {
-    const char* def = dsd_user_config_default_path();
+    UiCtx* c = (UiCtx*)v;
+    const char* def = NULL;
+    if (c && c->state && c->state->config_autosave_path[0] != '\0') {
+        def = c->state->config_autosave_path;
+    } else {
+        def = dsd_user_config_default_path();
+    }
     ui_prompt_open_string_async("Load config from path", (def && *def) ? def : "", 512, cb_config_load, v);
+}
+
+void
+act_config_save_current(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->state) {
+        return;
+    }
+
+    const char* path = NULL;
+    if (c->state->config_autosave_path[0] != '\0') {
+        path = c->state->config_autosave_path;
+    } else {
+        path = dsd_user_config_default_path();
+    }
+
+    if (!path || !*path) {
+        ui_statusf("No config path; nothing saved");
+        return;
+    }
+
+    dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+        ui_statusf("Config saved to %s", path);
+    } else {
+        ui_statusf("Failed to save config to %s", path);
+    }
 }
 
 void

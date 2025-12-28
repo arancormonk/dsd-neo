@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <rtl-sdr.h>
@@ -120,6 +121,38 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (trunk_enabled && opts->group_in_file[0] != '\0' && state->group_tally == 0) {
         csvGroupImport(opts, state);
         LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
+    }
+}
+
+static void
+open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+
+    // Per-call WAV (-P) and static WAV (-w) are mutually exclusive.
+    if (opts->dmr_stereo_wav == 1) {
+        opts->static_wav_file = 0;
+    }
+
+    if (opts->dmr_stereo_wav == 1 && opts->wav_out_f == NULL && opts->wav_out_fR == NULL) {
+        struct stat st;
+        char wav_file_directory[1024];
+        snprintf(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
+        wav_file_directory[sizeof wav_file_directory - 1] = '\0';
+        if (stat(wav_file_directory, &st) == -1) {
+            LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
+            dsd_mkdir(wav_file_directory, 0700);
+        }
+        srand((unsigned)time(NULL));
+        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
+        opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+    } else if (opts->static_wav_file == 1 && opts->wav_out_f == NULL && opts->wav_out_file[0] != '\0') {
+        openWavOutFileLR(opts, state);
+    }
+
+    if (opts->wav_out_file_raw[0] != '\0' && opts->wav_out_raw == NULL) {
+        openWavOutFileRaw(opts, state);
     }
 }
 
@@ -1646,6 +1679,9 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     // If trunking/scanner inputs were configured via INI/env rather than CLI (-C/-G),
     // import the CSVs now before the decoder begins processing.
     import_trunking_csvs_if_needed(opts, state);
+
+    // If recording outputs were configured via INI, open them now for this run.
+    open_recording_outputs_if_needed(opts, state);
 
     /* Rebuild audio filters after CLI/config/bootstrap may have changed the output rate.
        Base coefficients on the analog monitor sample rate so cutoffs stay correct. */

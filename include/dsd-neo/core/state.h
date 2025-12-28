@@ -824,6 +824,10 @@ struct dsd_state {
     uint8_t nxdn_step;
     uint8_t nxdn_bw;
 
+    // NXDN trunking: last observed call grant mapping (for UI/logging)
+    uint16_t nxdn_grant_chan;
+    long int nxdn_grant_freq;
+
     //multi-key array
     int keyloader; //let us know the keyloader is active
 

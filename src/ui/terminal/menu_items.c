@@ -1008,6 +1008,10 @@ static const NcMenuItem ENV_EDITOR_ITEMS[] = {
 };
 
 const NcMenuItem CONFIG_MENU_ITEMS[] = {
+    {.id = "cfg.save_current",
+     .label = "Save Config (Current)",
+     .help = "Save current settings to the active config path (loaded via --config or Load Config...).",
+     .on_select = act_config_save_current},
     {.id = "cfg.save_default",
      .label = "Save Config (Default)",
      .help = "Save current settings to the default config path.",

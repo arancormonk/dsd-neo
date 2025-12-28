@@ -26,6 +26,7 @@ void act_dsp_out(void* v);
 
 // ---- Config actions ----
 void act_config_load(void* v);
+void act_config_save_current(void* v);
 void act_config_save_default(void* v);
 void act_config_save_as(void* v);
 

@@ -30,6 +30,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"input", "rtl_bw_khz", "RTL-SDR DSP bandwidth in kHz", "48", NULL, DSDCFG_TYPE_INT, 4, 48, 0},
     {"input", "rtl_sql", "RTL-SDR squelch level in dB (0 to disable)", "0", NULL, DSDCFG_TYPE_INT, -100, 0, 0},
     {"input", "rtl_volume", "RTL-SDR volume multiplier", "2", NULL, DSDCFG_TYPE_INT, 1, 3, 0},
+    {"input", "auto_ppm", "Enable spectrum-based RTL auto-PPM correction", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"input", "rtl_auto_ppm", "Enable spectrum-based RTL auto-PPM correction (alias for auto_ppm)", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0, 1}, /* deprecated alias */
     {"input", "rtltcp_host", "RTL-TCP server hostname or IP", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "rtltcp_port", "RTL-TCP server port", "1234", NULL, DSDCFG_TYPE_INT, 1, 65535, 0},
     {"input", "file_path", "Input audio file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
@@ -61,6 +64,19 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "tune_private_calls", "Tune to private/individual calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
     {"trunking", "tune_data_calls", "Tune to data channel grants", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
     {"trunking", "tune_enc_calls", "Tune to encrypted calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+
+    /* [logging] section */
+    {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+
+    /* [recording] section */
+    {"recording", "per_call_wav", "Enable per-call WAV output", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"recording", "per_call_wav_dir", "Per-call WAV output directory", "./WAV", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+    {"recording", "static_wav", "Static decoded voice WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+    {"recording", "raw_wav", "Raw (48 kHz) audio WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+
+    /* [dsp] section */
+    {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"dsp", "iq_dc_block", "Enable RTL I/Q DC blocker", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
 };
 
 static const int s_schema_count = sizeof(s_schema) / sizeof(s_schema[0]);

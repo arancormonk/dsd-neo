@@ -636,6 +636,7 @@ typedef struct dsdneoUserConfig {
     int rtl_bw_khz;
     int rtl_sql;
     int rtl_volume;
+    int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
     int rtltcp_port;
     char file_path[1024];
@@ -667,6 +668,22 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_private_calls;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+
+    /* [logging] */
+    int has_logging;
+    char event_log[1024];
+
+    /* [recording] */
+    int has_recording;
+    int per_call_wav; /* bool */
+    char per_call_wav_dir[512];
+    char static_wav_path[1024];
+    char raw_wav_path[1024];
+
+    /* [dsp] */
+    int has_dsp;
+    int iq_balance;  /* bool */
+    int iq_dc_block; /* bool */
 } dsdneoUserConfig;
 
 /**
