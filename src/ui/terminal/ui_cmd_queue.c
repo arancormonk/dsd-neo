@@ -52,6 +52,9 @@
 
 #define UI_CMD_Q_CAP 128
 
+_Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct UiCmd*)0)->data),
+               "UiCmd payload too small for dsdneoUserConfig");
+
 static struct UiCmd g_q[UI_CMD_Q_CAP];
 static size_t g_head = 0; // pop index
 static size_t g_tail = 0; // push index
