@@ -363,10 +363,10 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, uint8_t* mpdu_byte) {
         }
 
         //TG hold on P25p1 Ext UU -- will want to disable UU_V grants while TG Hold enabled
-        if (state->tg_hold != 0 && state->tg_hold != target) {
+        if (state->tg_hold != 0 && state->tg_hold != (uint32_t)target) {
             sprintf(mode, "%s", "B");
         }
-        // if (state->tg_hold != 0 && state->tg_hold == target) sprintf (mode, "%s", "A");
+        // if (state->tg_hold != 0 && state->tg_hold == (uint32_t)target) sprintf (mode, "%s", "A");
 
         //Skip tuning private calls if group calls are disabled
         if (opts->trunk_tune_private_calls == 0) {

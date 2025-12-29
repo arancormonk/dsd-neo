@@ -60,8 +60,6 @@ pretty_colors(void) {
 
 int
 main(int argc, char** argv) {
-    extern char* optarg;
-    extern int optind;
     dsd_opts* opts = calloc(1, sizeof(dsd_opts));
     dsd_state* state = calloc(1, sizeof(dsd_state));
     if (!opts || !state) {

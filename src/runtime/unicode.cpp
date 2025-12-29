@@ -44,6 +44,7 @@ env_truthy(const char* name) {
     return (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
 }
 
+#if HAVE_LANGINFO
 static int
 str_ieq(const char* a, const char* b) {
     for (; *a && *b; ++a, ++b) {
@@ -55,6 +56,7 @@ str_ieq(const char* a, const char* b) {
     }
     return *a == *b;
 }
+#endif
 
 static int
 str_icontains(const char* haystack, const char* needle) {
