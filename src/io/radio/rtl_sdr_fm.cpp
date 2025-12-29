@@ -1581,7 +1581,7 @@ optimal_settings(int freq, int rate) {
                     if (p > 10) {
                         p = 10;
                     }
-                    long long cap = (long long)rate_in_hz * (long long)(1 << p);
+                    long long cap = (long long)rate_in_hz * (1LL << p);
                     /* stay in a reasonable RTL range */
                     if (cap < 225000LL || cap > 3200000LL) {
                         continue;

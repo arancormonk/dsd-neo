@@ -221,7 +221,7 @@ class ReedSolomon_63 {
 
         int irrecoverable_error = 0;
 
-        for (int i = 0; i < NN; i++) {
+        for (i = 0; i < NN; i++) {
             recd[i] = index_of[input[i]]; /* put recd[i] into index form (ie as powers of alpha) */
         }
 

@@ -9,7 +9,7 @@
 
 #include <dsd-neo/runtime/unicode.h>
 
-#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 
 #include <ctype.h>
 #include <locale.h>
@@ -44,20 +44,6 @@ env_truthy(const char* name) {
     return (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
 }
 
-#if HAVE_LANGINFO
-static int
-str_ieq(const char* a, const char* b) {
-    for (; *a && *b; ++a, ++b) {
-        char ca = (char)tolower((unsigned char)*a);
-        char cb = (char)tolower((unsigned char)*b);
-        if (ca != cb) {
-            return 0;
-        }
-    }
-    return *a == *b;
-}
-#endif
-
 static int
 str_icontains(const char* haystack, const char* needle) {
     if (!haystack || !needle || !*needle) {
@@ -87,7 +73,7 @@ static int
 locale_is_utf8(void) {
 #if HAVE_LANGINFO
     const char* codeset = nl_langinfo(CODESET);
-    if (codeset && (str_ieq(codeset, "UTF-8") || str_ieq(codeset, "UTF8"))) {
+    if (codeset && (dsd_strcasecmp(codeset, "UTF-8") == 0 || dsd_strcasecmp(codeset, "UTF8") == 0)) {
         return 1;
     }
 #endif

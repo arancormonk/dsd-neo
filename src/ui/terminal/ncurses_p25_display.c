@@ -35,9 +35,9 @@ ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
         return 0;
     }
     // Suppress IDEN classification when not on a P25 system
-    int lls = state->synctype;
-    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    int synctype = state->synctype;
+    int is_p25p1 = DSD_SYNC_IS_P25P1(synctype);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(synctype);
     if (!(is_p25p1 || is_p25p2)) {
         return 0;
     }

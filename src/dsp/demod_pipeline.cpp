@@ -1630,7 +1630,11 @@ full_demod(struct demod_state* d) {
                         double ref_rms = sqrt(ref_pwr);
                         double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
                         /* Apply dynamic bias correction for consistency with main SNR display */
+#if defined(_MSC_VER)
+                        double bias = rtl_stream_get_snr_bias_evm();
+#else
                         double bias = rtl_stream_get_snr_bias_evm ? rtl_stream_get_snr_bias_evm() : 2.43;
+#endif
                         double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) - bias : 99.0;
                         fprintf(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms,
                                 evm_count);

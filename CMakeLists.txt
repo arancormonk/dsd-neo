@@ -81,7 +81,19 @@ if(DSD_ENABLE_WARNINGS)
                                -Wmisleading-indentation -Wparentheses -Wunused-value -Wreturn-type
                                -Wtautological-compare)
     elseif(MSVC)
-        target_compile_options(dsd-neo_warnings INTERFACE /W4)
+        target_compile_options(
+            dsd-neo_warnings
+            INTERFACE
+                /W4
+                # Match the GCC/Clang warning set (these are off unless explicitly enabled).
+                /wd4244 # conversion, possible loss of data
+                /wd4245 # signed/unsigned mismatch in assignment
+                /wd4267 # conversion from 'size_t', possible loss of data
+                /wd4389 # signed/unsigned mismatch
+                /wd4456 # declaration hides previous local declaration
+                /wd4459 # declaration hides global declaration
+                /wd4127 # conditional expression is constant
+        )
     endif()
     if(DSD_WARNINGS_AS_ERRORS)
         if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

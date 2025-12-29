@@ -560,9 +560,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     }
 
 END_SMAC:
-    if (1 == 2) {
-        //CRC Failure!
-    }
+    return;
 }
 
 void
@@ -1008,7 +1006,5 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
     }
 
 END_FMAC:
-    if (1 == 2) {
-        //CRC Failure!
-    }
+    return;
 }

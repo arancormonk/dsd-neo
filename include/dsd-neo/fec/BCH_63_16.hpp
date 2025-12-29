@@ -114,7 +114,7 @@ class BCH_63_16_11 {
             // No errors - extract data bits matching IT++ convention
             // Same extraction as the error-corrected case
             for (int i = 0; i < KK; i++) {
-                output[i] = recd[NN - 1 - i];
+                output[i] = (char)recd[NN - 1 - i];
             }
             return true;
         }
@@ -265,7 +265,7 @@ class BCH_63_16_11 {
         // Then reverses output: mbin(k - j - 1) = bit
         // Combined effect: output[i] = recd[NN - KK + (KK - 1 - i)] = recd[NN - 1 - i]
         for (int i = 0; i < KK; i++) {
-            output[i] = recd[NN - 1 - i];
+            output[i] = (char)recd[NN - 1 - i];
         }
 
         return true;

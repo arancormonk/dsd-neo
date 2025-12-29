@@ -518,8 +518,8 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
 
     if (state->audio_out_idx > opts->delay) {
         if (opts->audio_out == 1 && opts->audio_out_type == 1) {
-            ssize_t written = write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
-                                    (size_t)state->audio_out_idx * sizeof(short));
+            ssize_t written = dsd_write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
+                                        (size_t)state->audio_out_idx * sizeof(short));
             if (written < 0) {
                 LOG_WARN("playSynthesizedVoice: failed to write %zu bytes to audio_out_fd",
                          (size_t)state->audio_out_idx * sizeof(short));

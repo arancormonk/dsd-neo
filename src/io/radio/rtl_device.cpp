@@ -938,44 +938,6 @@ verbose_direct_sampling(rtlsdr_dev_t* dev, int on) {
 }
 
 /**
- * @brief Enable offset tuning on the tuner if supported.
- *
- * @param dev RTL-SDR device handle.
- * @return 0 on success or a negative error code.
- */
-// Not currently used; keep for potential future diagnostics.
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((unused))
-#endif
-static int
-verbose_offset_tuning(rtlsdr_dev_t* dev) {
-    int r;
-    r = rtlsdr_set_offset_tuning(dev, 1);
-    if (r != 0) {
-        int t = rtlsdr_get_tuner_type(dev);
-        const char* tt = "unknown";
-        switch (t) {
-            case RTLSDR_TUNER_E4000: tt = "E4000"; break;
-            case RTLSDR_TUNER_FC0012: tt = "FC0012"; break;
-            case RTLSDR_TUNER_FC0013: tt = "FC0013"; break;
-            case RTLSDR_TUNER_FC2580: tt = "FC2580"; break;
-            case RTLSDR_TUNER_R820T: tt = "R820T"; break;
-            case RTLSDR_TUNER_R828D: tt = "R828D"; break;
-            default: break;
-        }
-        if (r == -2 && (t == RTLSDR_TUNER_R820T || t == RTLSDR_TUNER_R828D)) {
-            fprintf(stderr, "WARNING: Failed to set offset tuning (err=%d). Not supported by librtlsdr for tuner %s.\n",
-                    r, tt);
-        } else {
-            fprintf(stderr, "WARNING: Failed to set offset tuning (err=%d, tuner=%s).\n", r, tt);
-        }
-    } else {
-        fprintf(stderr, "Offset tuning mode enabled.\n");
-    }
-    return r;
-}
-
-/**
  * @brief Print tuner type and expected hardware offset tuning support for this librtlsdr.
  *
  * Note: This is a heuristic based on tuner type. Upstream librtlsdr returns -2 for

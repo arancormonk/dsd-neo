@@ -1339,10 +1339,15 @@ print_spectrum_view(dsd_opts* opts) {
     /* Legend */
     float span_hz = (float)rate;
     int nfft2 = rtl_stream_spectrum_get_size();
+    const char* df = use_unicode ? "\xCE\x94"
+                                   "f"
+                                 : "df";
     ui_print_lborder();
-    printw(" Span: %.1f kHz  \u0394f(FFT): %.1f Hz  \u0394f(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f,
-           (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, (rate > 0 && W > 0) ? (span_hz / (float)W) : 0.0f,
-           nfft2, use_unicode ? "Unicode" : "ASCII", (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+    printw(" Span: %.1f kHz  %s(FFT): %.1f Hz  %s(col): %.1f Hz  FFT: %d  "
+           "Glyphs: %s%s\n",
+           span_hz / 1000.0f, df, (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, df,
+           (rate > 0 && W > 0) ? (span_hz / (float)W) : 0.0f, nfft2, use_unicode ? "Unicode" : "ASCII",
+           (opts && opts->eye_color && has_colors()) ? "; colored" : "");
     /* Frequency ticks around DC */
     ui_print_lborder();
     printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);

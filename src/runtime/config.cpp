@@ -138,21 +138,6 @@ default_cache_dir(char* dst, size_t dst_size) {
 }
 
 /**
- * @brief Convert environment string to integer with fallback.
- *
- * @param v Environment value string (may be NULL or empty).
- * @param fallback Fallback integer when `v` is unset or empty.
- * @return Parsed integer value or `fallback` when not set.
- */
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((unused))
-#endif
-static int
-env_as_int(const char* v, int fallback) {
-    return env_is_set(v) ? atoi(v) : fallback;
-}
-
-/**
  * @brief Parse environment variables and initialize the runtime configuration.
  *
  * Precedence note: future CLI/opts may override env values; currently opts

@@ -13,6 +13,15 @@
 #include <math.h>
 #include <stdint.h>
 
+static inline long long
+dsd_neo_llrint_long_double(long double x) {
+#if defined(_MSC_VER)
+    return llrint((double)x);
+#else
+    return llrintl(x);
+#endif
+}
+
 /**
  * @brief Saturate a 32-bit integer to the 16-bit signed range.
  *
@@ -104,7 +113,7 @@ dsd_neo_fast_atan2(int64_t y, int64_t x) {
         }
         /* angle = pi/4 * (2*|y|)/(x+|y|) */
         long double t = ((2.0L * yabs) / denom) * (long double)pi4;
-        int angle = (int)llrint(t);
+        int angle = (int)dsd_neo_llrint_long_double(t);
         return (y < 0) ? -angle : angle;
     } else {
         long double denom = yabs - (long double)x; /* strictly > 0 for x<0 */
@@ -113,7 +122,7 @@ dsd_neo_fast_atan2(int64_t y, int64_t x) {
         }
         /* angle = 3pi/4 - pi/4 * (x+|y|)/( |y|-x ) */
         long double t = (long double)pi34 - ((long double)pi4 * (((long double)x + yabs) / denom));
-        int angle = (int)llrint(t);
+        int angle = (int)dsd_neo_llrint_long_double(t);
         return (y < 0) ? -angle : angle;
     }
 }
