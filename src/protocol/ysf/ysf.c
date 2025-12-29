@@ -1104,7 +1104,8 @@ processYSF(dsd_opts* opts, dsd_state* state) {
                     imbe_fr[n][m] = imbe_vch[k++];
                 }
             }
-            for (m = 7; m >= 0; m--) {
+            /* 4*23 + 3*15 leaves 7 bits (144 total). */
+            for (m = 6; m >= 0; m--) {
                 imbe_fr[7][m] = imbe_vch[k++];
             }
 
