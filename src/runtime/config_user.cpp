@@ -1982,7 +1982,9 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
         return;
     }
 
-    char buf[128];
+    /* Profile loader reads lines into a 1024-byte buffer; keep this scratch buffer at least that large to avoid
+     * truncating dotted keys during parsing (and to silence -Wformat-truncation under _FORTIFY_SOURCE builds). */
+    char buf[1024];
     snprintf(buf, sizeof buf, "%s", dotted_key);
     buf[sizeof buf - 1] = '\0';
 

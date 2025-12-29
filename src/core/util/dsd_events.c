@@ -648,11 +648,21 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
                 strncat(sup_str, "Call", rem);
             }
 
-            sprintf(sysid_string, "EDACS_SITE_%03d", sys_id1);
+            snprintf(sysid_string, sizeof sysid_string, "EDACS_SITE_%03u", (unsigned)sys_id1);
+            sysid_string[sizeof sysid_string - 1] = '\0';
             {
-                size_t rem2 = sizeof(sysid_string) - strlen(sysid_string) - 1;
+                size_t used = strlen(sysid_string);
+                if (used >= sizeof(sysid_string)) {
+                    used = sizeof(sysid_string) - 1;
+                }
+                size_t rem2 = sizeof(sysid_string) - used - 1;
                 if (rem2 > 0) {
-                    strncat(sysid_string, sup_str, rem2);
+                    size_t sup_len = strlen(sup_str);
+                    if (sup_len > rem2) {
+                        sup_len = rem2;
+                    }
+                    memcpy(sysid_string + used, sup_str, sup_len);
+                    sysid_string[used + sup_len] = '\0';
                 }
             }
 
