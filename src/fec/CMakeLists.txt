@@ -7,6 +7,7 @@ target_sources(dsd-neo_fec PRIVATE
   rs-12-9.c
   Hamming.cpp
   ez.cpp
+  ezpwd_rs_definitions.cpp
 )
 
 target_include_directories(dsd-neo_fec

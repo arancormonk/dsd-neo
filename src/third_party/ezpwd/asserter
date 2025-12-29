@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef _EZPWD_ASSERTER
 #define _EZPWD_ASSERTER
 
@@ -29,10 +28,10 @@ namespace ezpwd {
 	    ;
 	}
 
-	//
+	// 
 	// output( <std::ostream> )		-- Output description of last failed test (or nothing if successful)
 	// <std::ostream> << <asserter>
-	//
+	// 
 	std::ostream  	       &output(
 				    std::ostream       &lhs )
 	    const
@@ -40,14 +39,14 @@ namespace ezpwd {
 	    return lhs << out;
 	}
 
-	//
+	// 
 	// (bool) <asserter> -- Return status of last test
 	//
     				operator bool()
 	{
 	    return failed;
 	}
-
+	
 	template < typename T >
 	asserter	       &istrue(  const char *file, int line, const T &a, const std::string &comment = std::string() )
 	{
@@ -85,7 +84,7 @@ namespace ezpwd {
 	    }
 	    return success();
 	}
-
+	
 	asserter	       &failure( const char *file, int line, const std::string &comparison,
 					 const std::string &comment = std::string() )
 	{

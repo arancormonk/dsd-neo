@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef _EZPWD_TIMEOFDAY
 #define _EZPWD_TIMEOFDAY
 
 #include <sys/time.h>
 
-//
+// 
 // ezpwd::timeofday 	-- Return current time.
 // ezpwd::epoch    	-- The UNIX epoch.
 // ezpwd::seconds	-- convert timeval to a real-valued seconds
