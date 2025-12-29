@@ -106,57 +106,12 @@ ring_write(udp_input_ring* r, const int16_t* data, size_t count) {
     return w;
 }
 
-/**
- * @brief Blocking read of one sample with exitflag handling.
- * @param r Ring to read from.
- * @param out [out] Destination for the sample.
- * @return 1 on success, 0 on shutdown/exit request.
- */
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((unused))
-#endif
-static int
-ring_read_block(udp_input_ring* r, int16_t* out) {
-    dsd_mutex_lock(&r->m);
-    while (ring_used(r) == 0) {
-        if (exitflag) {
-            dsd_mutex_unlock(&r->m);
-            return 0;
-        }
-        int ret = dsd_cond_timedwait(&r->cv, &r->m, 100); // 100ms timeout
-        (void)ret;                                        // ignore spuriously
-    }
-    *out = r->buf[r->tail];
-    r->tail = (r->tail + 1) % r->cap;
-    dsd_mutex_unlock(&r->m);
-    return 1;
-}
-
 /** @brief Wake any thread blocked on the ring condition variable. */
 static void
 ring_signal(udp_input_ring* r) {
     dsd_mutex_lock(&r->m);
     dsd_cond_signal(&r->cv);
     dsd_mutex_unlock(&r->m);
-}
-
-/**
- * @brief Non-blocking attempt to read one sample.
- * @param r Ring to read from.
- * @param out [out] Destination for the sample.
- * @return 1 when a sample was read; 0 when the ring was empty.
- */
-static int
-ring_try_read(udp_input_ring* r, int16_t* out) {
-    int ok = 0;
-    dsd_mutex_lock(&r->m);
-    if (ring_used(r) > 0) {
-        *out = r->buf[r->tail];
-        r->tail = (r->tail + 1) % r->cap;
-        ok = 1;
-    }
-    dsd_mutex_unlock(&r->m);
-    return ok;
 }
 
 /**
@@ -353,13 +308,15 @@ udp_input_stop(dsd_opts* opts) {
 }
 
 /**
- * @brief Try to read a single sample from the UDP ring.
+ * @brief Read a single sample from the UDP ring.
  *
- * Non-blocking; returns 0 when the ring is empty.
+ * Blocks (with a short timed wait) until a real sample is available or the
+ * decoder is shutting down. This avoids inserting synthetic samples, which
+ * skews symbol timing and breaks demod/framesync.
  *
  * @param opts Decoder options containing UDP context.
- * @param out [out] Receives one sample when available.
- * @return 1 on success, 0 when no sample is ready.
+ * @param out [out] Receives one PCM16 sample.
+ * @return 1 on success, 0 on shutdown.
  */
 int
 udp_input_read_sample(dsd_opts* opts, int16_t* out) {
@@ -370,18 +327,18 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
     if (!ctx->running) {
         return 0;
     }
-
-    // Non-blocking try first
-    if (ring_try_read(&ctx->ring, out)) {
-        return 1;
+    // Block until we have a real sample (do not synthesize silence; it breaks symbol timing).
+    dsd_mutex_lock(&ctx->ring.m);
+    while (ring_used(&ctx->ring) == 0) {
+        if (exitflag || !ctx->running) {
+            dsd_mutex_unlock(&ctx->ring.m);
+            return 0;
+        }
+        int ret = dsd_cond_timedwait(&ctx->ring.cv, &ctx->ring.m, 100); // 100ms timeout
+        (void)ret;                                                      // tolerate spurious wakeups
     }
-
-    // No data available: honor exit, otherwise synthesize silence and throttle slightly
-    if (exitflag) {
-        return 0;
-    }
-    *out = 0;
-    // throttle ~1ms to avoid busy spin when idle
-    dsd_sleep_ms(1);
+    *out = ctx->ring.buf[ctx->ring.tail];
+    ctx->ring.tail = (ctx->ring.tail + 1) % ctx->ring.cap;
+    dsd_mutex_unlock(&ctx->ring.m);
     return 1;
 }

@@ -982,3 +982,9 @@ if(NOT WIN32)
     target_link_libraries(dsd-neo_test_config_profile PRIVATE dsd-neo_runtime)
     add_test(NAME CONFIG_PROFILE COMMAND dsd-neo_test_config_profile)
 endif()
+
+# IO tests
+add_executable(dsd-neo_test_io_udp_input io/test_io_udp_input.c)
+target_include_directories(dsd-neo_test_io_udp_input PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_io_udp_input PRIVATE dsd-neo_io_audio)
+add_test(NAME IO_UDP_INPUT COMMAND dsd-neo_test_io_udp_input)
