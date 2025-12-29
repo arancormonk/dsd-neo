@@ -4,26 +4,8 @@ target_sources(dsd-neo PRIVATE main.c)
 
 # Link against modular libraries
 target_link_libraries(dsd-neo PRIVATE
-  dsd-neo_ezpwd
-  dsd-neo_fec
-  dsd-neo_crypto
-  dsd-neo_dsp
-  dsd-neo_io_radio
-  dsd-neo_io_control
   dsd-neo_engine
-  dsd-neo_core
   dsd-neo_ui_terminal
-  dsd-neo_proto_dstar
-  dsd-neo_proto_provoice
-  dsd-neo_proto_m17
-  dsd-neo_proto_ysf
-  dsd-neo_proto_edacs
-  dsd-neo_proto_x2tdma
-  dsd-neo_proto_dpmr
-  dsd-neo_proto_dmr
-  dsd-neo_proto_nxdn
-  dsd-neo_proto_p25
-  dsd-neo_runtime
   dsd-neo_io_audio
   dsd-neo_feature_rtlsdr
   dsd-neo_feature_codec2

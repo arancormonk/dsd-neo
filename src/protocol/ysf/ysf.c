@@ -614,7 +614,7 @@ ysf_conv_fich(uint8_t input[], uint8_t dest[32]) {
 
 //YSF pn95 scrambler/whitening bit generator with seed 111001001
 void
-pn95_lfsr() //test to see if this generates the correct bits now
+pn95_lfsr(void) //test to see if this generates the correct bits now
 {
     int i;
     int lfsr;

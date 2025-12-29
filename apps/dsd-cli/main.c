@@ -45,7 +45,7 @@
 #include <string.h>
 
 int
-pretty_colors() {
+pretty_colors(void) {
     fprintf(stderr, "%sred\n", KRED);
     fprintf(stderr, "%sgreen\n", KGRN);
     fprintf(stderr, "%syellow\n", KYEL);

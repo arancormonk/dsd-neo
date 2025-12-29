@@ -21,7 +21,7 @@
 
 //get HHmmss timestamp no colon (file operations)
 char*
-getTime() {
+getTime(void) {
     char* curr = calloc(7, sizeof(char));
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
@@ -47,7 +47,7 @@ getTime_buf(char out[7]) {
 
 //get HH:mm:ss timestamp with colon (Sync/Console Display)
 char*
-getTimeC() {
+getTimeC(void) {
     char* curr = calloc(9, sizeof(char));
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
@@ -95,7 +95,7 @@ getTimeN_buf(time_t t, char out[9]) {
 
 //get YYYYMMDD without hyphen (file operations)
 char*
-getDate() {
+getDate(void) {
     char* curr = calloc(9, sizeof(char));
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
@@ -122,7 +122,7 @@ getDate_buf(char out[9]) {
 
 //get YYYY-MM-DD with hyphen (Sync/Console Display)
 char*
-getDateH() {
+getDateH(void) {
     char* curr = calloc(11, sizeof(char));
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);
@@ -149,7 +149,7 @@ getDateH_buf(char out[11]) {
 
 //get YYYY/MM/DD with forward slash (LRRP files)
 char*
-getDateS() {
+getDateS(void) {
     char* curr = calloc(11, sizeof(char));
     time_t t = time(NULL);
     struct tm* ptm = localtime(&t);

@@ -32,7 +32,7 @@ uint8_t fsm[64] = {0, 8,  4, 12, 2, 10, 6, 14, 4, 12, 2, 10, 6, 14, 0, 8, 1, 9, 
 //attempt to find the surviving path, or the 'best' path available (most positions gained)
 uint8_t
 fix_34(uint8_t* p, uint8_t state, int position) {
-    int i, j, k, counter, best_p, best_v, survivors;
+    int i, j, k, counter, best_p, best_v;
     uint8_t temp_s, tri, t;
 
     //status of surviving paths -- debug
@@ -95,14 +95,6 @@ fix_34(uint8_t* p, uint8_t state, int position) {
     //I've seen up to 4 surviving paths and somehow, get a good CRC and a good LRRP or LOCN decode
     //multiple survivors seems common when the starting err position is very close to 49
 
-    //tally number of surviving paths
-    survivors = 0;
-    for (k = 0; k < 8; k++) {
-        if (s[k] == 1) {
-            survivors++;
-        }
-    }
-
     //debug
     // fprintf (stderr, "START: %d; BEST_P: %d; BEST_V: %d; Survivors: %d; Point: %d; ", position, best_p, best_v, survivors, temp_p[best_v]);
 
@@ -112,7 +104,6 @@ fix_34(uint8_t* p, uint8_t state, int position) {
 uint32_t
 dmr_34(uint8_t* input, uint8_t treturn[18]) {
     int i, j;
-    uint32_t irr_err = 0; //irrecoverable errors
 
     uint8_t deinterleaved_dibits[98];
     memset(deinterleaved_dibits, 0, sizeof(deinterleaved_dibits));
@@ -160,8 +151,6 @@ dmr_34(uint8_t* input, uint8_t treturn[18]) {
 
         //if tribit value is greater than 7, then we have a decoding error
         if (tribits[i] > 7) {
-            irr_err++; //tally number of errors
-
             //debug point, position of error, and state value
             // fprintf (stderr, "\n P: %d, %d:%d; ", point[i], i, state);
 

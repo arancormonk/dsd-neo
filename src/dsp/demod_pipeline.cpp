@@ -140,7 +140,6 @@ assume_aligned_ptr(const T* p, size_t /*align_unused*/) {
  *   - Blackman: ntaps = (74 * 48000) / (22 * 1200) = 135
  * Size 144 provides headroom for higher sample rates. */
 static const int kChannelLpfTaps = 144;
-static const int kChannelLpfHistLen = kChannelLpfTaps - 1;
 /* Legacy fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;

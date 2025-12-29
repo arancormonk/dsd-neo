@@ -84,7 +84,7 @@ int seed;
 int numerr, errpos[1024], decerror = 0;
 
 void
-read_p()
+read_p(void)
 /*
  *	Read m, the degree of a primitive polynomial p(x) used to compute the
  *	Galois field GF(2**m). Get precomputed coefficients p[] of p(x). Read
@@ -138,7 +138,7 @@ read_p()
 }
 
 void
-generate_gf()
+generate_gf(void)
 /*
  * Generate field GF(2**m) from the irreducible polynomial p(X) with
  * coefficients in p[0]..p[m].
@@ -176,7 +176,7 @@ generate_gf()
 }
 
 void
-gen_poly()
+gen_poly(void)
 /*
  * Compute the generator polynomial of a binary BCH code. Fist generate the
  * cycle sets modulo 2**m - 1, cycle[][] =  (i, 2*i, 4*i, ..., 2^l*i). Then
@@ -283,7 +283,7 @@ gen_poly()
 }
 
 void
-encode_bch()
+encode_bch(void)
 /*
  * Compute redundacy bb[], the coefficients of b(x). The redundancy
  * polynomial b(x) is the remainder after dividing x^(length-k)*ddata(x)
@@ -320,7 +320,7 @@ encode_bch()
 }
 
 void
-decode_bch()
+decode_bch(void)
 /*
  * Simon Rockliff's implementation of Berlekamp's algorithm.
  *

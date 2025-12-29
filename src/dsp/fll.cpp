@@ -39,24 +39,6 @@ wrap_phase(float p) {
 /* Very small integrator leakage to avoid long-term windup/drift.
  * Chosen as 1/4096 per update (>>12), small enough to be inaudible
  * for FM and gentle for digital modes while providing slow decay. */
-static const int kFllIntLeakShift = 12; /* leak = x - (x >> 12) */
-
-/* High-quality trig path */
-/**
- * @brief 64-bit complex multiply (a * conj(b)) helper.
- *
- * @param ar Real part of a.
- * @param aj Imaginary part of a.
- * @param br Real part of b.
- * @param bj Imaginary part of b.
- * @param cr [out] Real part result accumulator (64-bit).
- * @param cj [out] Imag part result accumulator (64-bit).
- */
-static inline void
-multiply64(int ar, int aj, int br, int bj, int64_t* cr, int64_t* cj) {
-    *cr = (int64_t)ar * (int64_t)br - (int64_t)aj * (int64_t)bj;
-    *cj = (int64_t)aj * (int64_t)br + (int64_t)ar * (int64_t)bj;
-}
 
 /**
  * @brief Initialize FLL state with default values.

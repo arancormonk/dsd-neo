@@ -41,10 +41,6 @@ debug_cqpsk_enabled(void) {
     return cfg && cfg->debug_cqpsk_enable;
 }
 
-/* OP25 PT_45: rotation by +45 degrees = exp(j*pi/4) */
-constexpr float kPT45_r = 0.70710678118654752440f; /* cos(pi/4) */
-constexpr float kPT45_j = 0.70710678118654752440f; /* sin(pi/4) */
-
 /* MMSE interpolator parameters - match OP25/GNU Radio */
 #define MMSE_NTAPS  8
 #define MMSE_NSTEPS 16

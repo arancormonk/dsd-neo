@@ -3756,18 +3756,6 @@ dsd_rtl_stream_set_resampler_target(int target_hz) {
 
 /* Runtime DSP tuning entrypoints (C shim) */
 
-/* Helper: clamp integer within [lo, hi] */
-static inline int
-clampi(int v, int lo, int hi) {
-    if (v < lo) {
-        return lo;
-    }
-    if (v > hi) {
-        return hi;
-    }
-    return v;
-}
-
 /**
  * @brief P25 Phase 2 error callbacks for runtime helpers.
  * Aggregates recent RS/voice error deltas.

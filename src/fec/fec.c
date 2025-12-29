@@ -210,7 +210,7 @@ const unsigned char QR_16_7_6_m_H[16 * 9] = {
 // ========================================================================================
 
 void
-Hamming_7_4_init() {
+Hamming_7_4_init(void) {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_7_4_m_corr, 0xFF, 8); // initialize with all invalid positions
     Hamming_7_4_m_corr[5] = 0;
@@ -276,7 +276,7 @@ Hamming_7_4_decode(unsigned char* rxBits) // corrects in place
 // ========================================================================================
 
 void
-Hamming_12_8_init() {
+Hamming_12_8_init(void) {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_12_8_m_corr, 0xFF, 16); // initialize with all invalid positions
     Hamming_12_8_m_corr[14] = 0;
@@ -362,7 +362,7 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
 // ========================================================================================
 
 void
-Hamming_13_9_init() {
+Hamming_13_9_init(void) {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_13_9_m_corr, 0xFF, 16); // initialize with all invalid positions
     Hamming_13_9_m_corr[15] = 0;
@@ -451,7 +451,7 @@ Hamming_13_9_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
 // ========================================================================================
 
 void
-Hamming_15_11_init() {
+Hamming_15_11_init(void) {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_15_11_m_corr, 0xFF, 16); // initialize with all invalid positions
     Hamming_15_11_m_corr[9] = 0;
@@ -544,7 +544,7 @@ Hamming_15_11_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCo
 // ========================================================================================
 
 void
-Hamming_16_11_4_init() {
+Hamming_16_11_4_init(void) {
     // correctable bit positions given syndrome bits as index (see above)
     memset(Hamming_16_11_4_m_corr, 0xFF, 32); // initialize with all invalid positions
     Hamming_16_11_4_m_corr[19] = 0;
@@ -637,7 +637,7 @@ Hamming_16_11_4_decode(unsigned char* rxBits, unsigned char* decodedBits, int nb
 // ========================================================================================
 
 void
-rand_test_20_8() //from dforsi as a pull request to DSDcc
+rand_test_20_8(void) //from dforsi as a pull request to DSDcc
 {
     unsigned char msg[8];
     unsigned char codeword[20], xcodeword[20];
@@ -709,7 +709,7 @@ rand_test_20_8() //from dforsi as a pull request to DSDcc
 }
 
 void
-Golay_20_8_init() {
+Golay_20_8_init(void) {
     int i1 = 0, i2 = 0, i3 = 0, ir = 0, ip = 0;
     int syndromeI = 0, syndromeIP = 0;
     int ip1 = 0, ip2 = 0, ip3 = 0;
@@ -876,7 +876,7 @@ Golay_20_8_decode(unsigned char* rxBits) {
 // ========================================================================================
 
 void
-Golay_23_12_init() {
+Golay_23_12_init(void) {
     int i1 = 0, i2 = 0, i3 = 0, ir = 0, ip = 0;
     int syndromeI = 0, syndromeIP = 0;
     int ip1 = 0, ip2 = 0, ip3 = 0;
@@ -1034,7 +1034,7 @@ Golay_23_12_decode(unsigned char* rxBits) {
 // ========================================================================================
 
 void
-Golay_24_12_init() {
+Golay_24_12_init(void) {
     int i1 = 0, i2 = 0, i3 = 0, ir = 0, ip = 0;
     int syndromeI = 0, syndromeIP = 0;
     int ip1 = 0, ip2 = 0, ip3 = 0;
@@ -1191,7 +1191,7 @@ Golay_24_12_decode(unsigned char* rxBits) {
 // ========================================================================================
 
 void
-QR_16_7_6_init() {
+QR_16_7_6_init(void) {
     int i1 = 0, i2 = 0, ir = 0, ip = 0;
     int syndromeI = 0, syndromeIP = 0;
     int ip1 = 0, ip2 = 0;
@@ -1304,6 +1304,7 @@ QR_16_7_6_decode(unsigned char* rxBits) {
     // {
     //     return false;
     // }
+    (void)corrections;
 
     return true;
 }

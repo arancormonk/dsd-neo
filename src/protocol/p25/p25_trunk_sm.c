@@ -327,27 +327,6 @@ set_state(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, p25_sm_state_e ne
     sm_log(opts, state, reason);
 }
 
-// Check if a slot has recent activity (voice active or within hangtime)
-static inline int
-slot_is_active(const p25_sm_ctx_t* ctx, int slot, double hangtime, double now_m) {
-    if (!ctx || slot < 0 || slot > 1) {
-        return 0;
-    }
-    if (ctx->slots[slot].voice_active) {
-        return 1;
-    }
-    if (ctx->slots[slot].last_active_m > 0.0 && (now_m - ctx->slots[slot].last_active_m) < hangtime) {
-        return 1;
-    }
-    return 0;
-}
-
-// Check if any slot is active
-static inline int
-any_slot_active(const p25_sm_ctx_t* ctx, double hangtime, double now_m) {
-    return slot_is_active(ctx, 0, hangtime, now_m) || slot_is_active(ctx, 1, hangtime, now_m);
-}
-
 /* ============================================================================
  * Grant Filtering (preserve existing policy logic)
  * ============================================================================ */

@@ -283,7 +283,7 @@ p25_filter(float sample, int sps) {
 }
 
 void
-init_rrc_filter_memory() {
+init_rrc_filter_memory(void) {
     reset_sps_fir(&g_fir_p25);
     reset_sps_fir(&g_fir_dmr);
     reset_sps_fir(&g_fir_nxdn);

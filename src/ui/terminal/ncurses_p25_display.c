@@ -29,28 +29,6 @@
 /* Alias for shared last synctype tracking (defined in ncurses_utils.c) */
 #define lls ncurses_last_synctype
 
-/* Small helpers to align key/value fields to a consistent value column. */
-static inline void
-ui_print_label_pad(const char* label) {
-    const int value_col = 14; /* column (from label start) where values begin */
-    int lab_len = (int)strlen(label);
-    if (lab_len < 0) {
-        lab_len = 0;
-    }
-    /* Draw the left border in the primary UI color (teal/cyan) for consistency */
-    ui_print_lborder();
-    addch(' ');
-    addstr(label);
-    addch(':');
-    int need = value_col - (lab_len + 1); /* +1 for ':' */
-    if (need < 1) {
-        need = 1; /* at least one space after ':' */
-    }
-    for (int i = 0; i < need; i++) {
-        addch(' ');
-    }
-}
-
 int
 ui_is_iden_channel(const dsd_state* state, int ch16, long int freq) {
     if (!state || ch16 <= 0 || ch16 >= 65535) {

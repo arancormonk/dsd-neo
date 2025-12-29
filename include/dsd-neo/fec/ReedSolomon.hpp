@@ -81,9 +81,9 @@ class ReedSolomon_63 {
      lookup tables:  index->polynomial form   alpha_to[] contains j=alpha**i;
      polynomial form -> index form  index_of[j=alpha**i] = i
      alpha=2 is the primitive element of GF(2**mm)
-     */
+    */
     {
-        register int i, mask;
+        int i, mask;
 
         mask = 1;
         alpha_to[MM] = 0;
@@ -114,7 +114,7 @@ class ReedSolomon_63 {
      nn=(2**mm -1) Reed Solomon code  from the product of (X+alpha**i), i=1..2*tt
      */
     {
-        register int i, j;
+        int i, j;
 
         gg[0] = 2; /* primitive element alpha = 2  for GF(2**mm)  */
         gg[1] = 1; /* g(x) = (X+alpha) initially */
@@ -168,7 +168,7 @@ class ReedSolomon_63 {
      connections specified by the elements of gg[], which was generated above.
      Codeword is   c(X) = data(X)*X**(nn-kk)+ b(X)          */
     {
-        register int i, j;
+        int i, j;
         int feedback;
 
         for (i = 0; i < NN - KK; i++) {
@@ -215,7 +215,7 @@ class ReedSolomon_63 {
      parity part of the transmitted codeword).  Of course, these insoluble cases
      can be returned as error flags to the calling routine if desired.   */
     {
-        register int i, j, u, q;
+        int i, j, u, q;
         int elp[NN - KK + 2][NN - KK], d[NN - KK + 2], l[NN - KK + 2], u_lu[NN - KK + 2], s[NN - KK + 1];
         int count = 0, syn_error = 0, root[TT], loc[TT], z[TT + 1], err[NN], reg[TT + 1];
 

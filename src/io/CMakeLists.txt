@@ -53,3 +53,9 @@ target_include_directories(dsd-neo_io_control
 target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime dsd-neo_feature_rtlsdr)
 
 target_link_libraries(dsd-neo_io_control PRIVATE dsd-neo_warnings)
+
+# rtl_sdr_fm.cpp uses udp_control_* from the IO control library; ensure correct
+# link propagation and ordering for static builds.
+if(RTLSDR_FOUND)
+  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_io_control)
+endif()
