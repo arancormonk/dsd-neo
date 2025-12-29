@@ -1177,19 +1177,22 @@ namespace ezpwd {
 				    unsigned		no_eras	= 0,	// Maximum:  at most  NROOTS
 				    TYP		       *corr	= 0 )	// Capacity: at least NROOTS
 	    const
-	{
-	    if ( len < ( parity ? 1 : NROOTS + 1 )) {
-	        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: must provide all parity and at least one non-parity symbol", -1 );
-	    }
-	    if ( ! parity ) {
-		len		       -= NROOTS;
-		parity			= data + len;
-	    }
+		{
+		    if ( len < ( parity ? 1 : NROOTS + 1 )) {
+		        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: must provide all parity and at least one non-parity symbol", -1 );
+		    }
+		    if ( ! parity ) {
+			len		       -= NROOTS;
+			parity			= data + len;
+		    }
+		    if ( len > LOAD ) {
+		        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: data length incompatible with block size and error correction symbols", -1 );
+		    }
 
-		    if ( DUAL && SYMBOL != 8 ) {
-	        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: input data symbols must be exactly 8 bits for dual-basis encoding", -1 );
-	    }
-	    constexpr unsigned	INPUT	= 8 * sizeof ( INP );
+			    if ( DUAL && SYMBOL != 8 ) {
+		        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: input data symbols must be exactly 8 bits for dual-basis encoding", -1 );
+		    }
+		    constexpr unsigned	INPUT	= 8 * sizeof ( INP );
 
 	    int			corrects;
 	    if ( DATUM != SYMBOL || DATUM != INPUT ) {
@@ -1204,33 +1207,34 @@ namespace ezpwd {
 		// from dual-basis to conventional, R-S decoded, and then (if corrections occurred)
 		// restored from conventional to dual-basis.  Any corrections are then masked back
 		// into the original data.
-		if ( SYMBOL > INPUT ) {
-		    EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: input data type too small to contain symbols", -1 );
-		}
-		std::array<TYP,SIZE> tmp;
-		TYP		msk	= static_cast<TYP>( ~0UL << SYMBOL );
-		for ( unsigned i = 0; i < len; ++i ) {
-		    tmp[LOAD - len + i]		= data[i] & ~msk;
-		}
-		TYP	       *dataptr	= &tmp[LOAD - len];
-		for ( unsigned i = 0; i < NROOTS; ++i ) {
-		    if ( TYP( parity[i] ) & msk ) {
-		        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: parity data contains information beyond R-S symbol size", -1 );
-		    }
+			if ( SYMBOL > INPUT ) {
+			    EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: input data type too small to contain symbols", -1 );
+			}
+			const unsigned		offset	= LOAD - len;
+			std::array<TYP,SIZE> tmp;
+			TYP		msk	= static_cast<TYP>( ~0UL << SYMBOL );
+			for ( unsigned i = 0; i < len; ++i ) {
+			    tmp[offset + i]		= data[i] & ~msk;
+			}
+			TYP	       *dataptr	= &tmp[offset];
+			for ( unsigned i = 0; i < NROOTS; ++i ) {
+			    if ( TYP( parity[i] ) & msk ) {
+			        EZPWD_RAISE_OR_RETURN( std::runtime_error, "reed-solomon: parity data contains information beyond R-S symbol size", -1 );
+			    }
 		    tmp[LOAD + i]	= parity[i];
 		}
 		TYP	       *pariptr	= &tmp[LOAD];
 		corrects		= decode_symbols( dataptr, len, pariptr, eras_pos, no_eras, corr );
-		if ( corrects > 0 ) {
-		    // Some corrections occurred; copy everything back (we may not know what was corrected)
-		    for ( unsigned i = 0; i < len; ++i ) {
-			// More general than necessary; only exactly 8-bit symbols can be DUAL.
-			data[i]	       &= msk;
-			data[i]	       |= tmp[LOAD - len + i];
-		    }
-		    for ( unsigned i = 0; i < NROOTS; ++i ) {
-			parity[i]	= tmp[LOAD + i];
-		    }
+			if ( corrects > 0 ) {
+			    // Some corrections occurred; copy everything back (we may not know what was corrected)
+			    for ( unsigned i = 0; i < len; ++i ) {
+				// More general than necessary; only exactly 8-bit symbols can be DUAL.
+				data[i]	       &= msk;
+				data[i]	       |= tmp[offset + i];
+			    }
+			    for ( unsigned i = 0; i < NROOTS; ++i ) {
+				parity[i]	= tmp[LOAD + i];
+			    }
 		}
 		return corrects;
 	    }
