@@ -37,6 +37,20 @@ extern "C" {
  */
 int dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc);
 
+/**
+ * @brief Compact argv in-place by removing recognized long options.
+ *
+ * Removes runtime long options (including `--config` and related flags) so that
+ * short-option parsing can be handled by `getopt()` without tripping on unknown
+ * `--*` tokens. Always keeps `argv[0]` as the program name and terminates the
+ * resulting argv list with a NULL pointer.
+ *
+ * @param argc Argument count.
+ * @param argv Argument vector (modified in-place).
+ * @return New effective argc (including argv[0]).
+ */
+int dsd_cli_compact_args(int argc, char** argv);
+
 /** @brief Print the CLI usage/help text and exit(0). */
 void dsd_cli_usage(void);
 

@@ -16,11 +16,12 @@ target_sources(dsd-neo_runtime PRIVATE
   input_ring.cpp
   worker_pool.cpp
   rt_sched.cpp
-  unicode.cpp
-  cli/args.c
-  cli/usage.c
-  cli/oneshot_dmr_t3.c
-  bootstrap/system.c
+	  unicode.cpp
+	  cli/args.c
+	  cli/compact.c
+	  cli/usage.c
+	  cli/oneshot_dmr_t3.c
+	  bootstrap/system.c
   bootstrap/audio.c
   bootstrap/interactive.c
   ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c

@@ -641,10 +641,22 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
             }
         }
 
-        // Guard against out-of-range index
+        // Guard against out-of-range index (indices are 0-based, not serial numbers)
         if (opts->rtl_dev_index < 0 || opts->rtl_dev_index >= device_count) {
-            LOG_WARNING("Requested RTL device index %d out of range; using 0\n", opts->rtl_dev_index);
+            const int requested = opts->rtl_dev_index;
+            LOG_WARNING("Requested RTL device index %d out of range (found %d device(s)); using 0\n", requested,
+                        device_count);
             opts->rtl_dev_index = 0;
+            // Keep the input string consistent with the effective device selection
+            if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0) {
+                const char* rest = strchr(opts->audio_in_dev + 4, ':');
+                if (rest) {
+                    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d%s", opts->rtl_dev_index, rest);
+                } else {
+                    snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d", opts->rtl_dev_index);
+                }
+                opts->audio_in_dev[sizeof opts->audio_in_dev - 1] = '\0';
+            }
         }
 
         if (opts->rtl_volume_multiplier > 3 || opts->rtl_volume_multiplier < 0) {
