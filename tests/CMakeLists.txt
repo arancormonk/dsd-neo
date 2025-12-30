@@ -30,6 +30,11 @@ target_include_directories(dsd-neo_test_runtime_shutdown PRIVATE ${PROJECT_SOURC
 target_link_libraries(dsd-neo_test_runtime_shutdown PRIVATE dsd-neo_core dsd-neo_test_support)
 add_test(NAME RUNTIME_SHUTDOWN COMMAND dsd-neo_test_runtime_shutdown)
 
+add_executable(dsd-neo_test_core_state_ext core/test_core_state_ext.c)
+target_include_directories(dsd-neo_test_core_state_ext PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_state_ext PRIVATE dsd-neo_core)
+add_test(NAME CORE_STATE_EXT COMMAND dsd-neo_test_core_state_ext)
+
 add_executable(dsd-neo_test_runtime_cli_compact runtime/test_runtime_cli_compact.c)
 target_include_directories(dsd-neo_test_runtime_cli_compact PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_cli_compact PRIVATE dsd-neo_runtime dsd-neo_test_support)

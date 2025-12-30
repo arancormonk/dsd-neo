@@ -351,6 +351,12 @@ initState(dsd_state* state) {
     int i, j;
     // state->testcounter = 0;
     state->last_dibit = 0;
+
+    for (int ext_i = 0; ext_i < DSD_STATE_EXT_MAX; ext_i++) {
+        state->state_ext[ext_i] = NULL;
+        state->state_ext_cleanup[ext_i] = NULL;
+    }
+
     state->dibit_buf = aligned_alloc_64(sizeof(int) * 1000000);
     state->dibit_buf_p = state->dibit_buf + 200;
     memset(state->dibit_buf, 0, sizeof(int) * 200);

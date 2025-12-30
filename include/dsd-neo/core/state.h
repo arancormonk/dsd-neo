@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdbool.h>
@@ -947,6 +948,10 @@ struct dsd_state {
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
+
+    // Extension slots for module-owned per-state allocations (see core/state_ext.h).
+    void* state_ext[DSD_STATE_EXT_MAX];
+    dsd_state_ext_cleanup_fn state_ext_cleanup[DSD_STATE_EXT_MAX];
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)

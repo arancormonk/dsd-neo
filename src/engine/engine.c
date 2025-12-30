@@ -1662,10 +1662,19 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     autosave_user_config(opts, state);
 
     LOG_NOTICE("\n");
+    if (state->debug_mode == 1) {
+        uint64_t* start_ms = (uint64_t*)dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_START_MS);
+        if (start_ms) {
+            uint64_t elapsed_ms = dsd_time_monotonic_ms() - *start_ms;
+            LOG_NOTICE("Runtime: %llu ms\n", (unsigned long long)elapsed_ms);
+        }
+    }
     LOG_NOTICE("Total audio errors: %i\n", state->debug_audio_errors);
     LOG_NOTICE("Total header errors: %i\n", state->debug_header_errors);
     LOG_NOTICE("Total irrecoverable header errors: %i\n", state->debug_header_critical_errors);
     LOG_NOTICE("Exiting.\n");
+
+    dsd_state_ext_free_all(state);
 
     // Cleanup socket subsystem (required for Windows, no-op on POSIX)
     dsd_socket_cleanup();
@@ -1689,6 +1698,14 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     }
 
     exitflag = 0;
+
+    if (state->debug_mode == 1) {
+        uint64_t* start_ms = (uint64_t*)malloc(sizeof(*start_ms));
+        if (start_ms) {
+            *start_ms = dsd_time_monotonic_ms();
+            (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_START_MS, start_ms, free);
+        }
+    }
 
     dsd_engine_frame_sync_hooks_install();
 
