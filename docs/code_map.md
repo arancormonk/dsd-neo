@@ -12,6 +12,14 @@ should be included via `#include <dsd-neo/...>`.
 - `cmake/` — CMake helper modules and install/uninstall scripts
 - `tools/` — development scripts (formatting, analysis, coverage)
 - `docs/` — documentation
+- `examples/` — sample CSV inputs (channel maps, groups, keys) used by the config system and tooling
+- `packaging/` — packaging assets/scripts (AppImage, macOS)
+- `images/` — screenshots and other project assets used by docs/README
+- `vcpkg.json`, `vcpkg-configuration.json`, `vcpkg-ports/`, `vcpkg-triplets/` — vcpkg dependency management
+
+Generated (do not edit/commit):
+
+- `build/`, `vcpkg_installed/`, `compile_commands.json`
 
 ## Apps
 
@@ -58,6 +66,7 @@ should be included via `#include <dsd-neo/...>`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`)
   - Hook interfaces that let DSP/protocol code publish state without depending on UI internals
 - Build files: `src/runtime/CMakeLists.txt`
+- Config docs: `docs/config-system.md`
 
 ### Telemetry Hooks (DSP/Protocol → UI)
 
@@ -131,10 +140,10 @@ Key public headers:
 
 Notes:
 
-- Local audio backends (PulseAudio/PortAudio) and device listing live in `dsd-neo_platform`
-  (see `src/platform/audio_*.c`).
-- M17 UDP/IP framing and sockets are implemented in the protocol module (`src/protocol/m17/m17.c`) and surfaced via
-  UI/services.
+- Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
+- Network PCM input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`).
+- M17 IP frame packing lives in `src/protocol/m17/m17.c`; UDP socket helpers live in `dsd-neo_io_control`
+  (`src/io/control/dsd_rigctl.c`, declared in `include/dsd-neo/io/rigctl.h`).
 
 Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 
@@ -251,6 +260,11 @@ Additional includes of interest:
 - Tests live under `tests/<area>` and are wired with CTest; run with `ctest --preset dev-debug -V`.
 
 Top‑level build files: `CMakeLists.txt`, `CMakePresets.json`, `apps/CMakeLists.txt`, `tests/CMakeLists.txt`
+
+Common interface targets:
+
+- `dsd-neo_warnings` — common warning flags (optional; controlled by `DSD_ENABLE_WARNINGS`, `DSD_WARNINGS_AS_ERRORS`)
+- `dsd-neo_test_support` — test-only compile/link defaults used by `tests/` executables
 
 Optional feature interface targets (compile definitions + include paths; stubbed out when deps are missing):
 
