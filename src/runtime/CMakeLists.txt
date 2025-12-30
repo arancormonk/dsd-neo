@@ -7,6 +7,7 @@ target_sources(dsd-neo_runtime PRIVATE
   config_schema.c
   config_expand.c
   control_pump.c
+  frame_sync_hooks.c
   exitflag.c
   shutdown.c
   log.cpp

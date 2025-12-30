@@ -37,13 +37,11 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
-#include <dsd-neo/protocol/edacs/edacs.h>
-#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 
 #include <locale.h>
@@ -248,7 +246,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         // and P25 appears to be the active/most-recent protocol context. This
         // avoids unintended CC hunts while trunking NXDN/DMR/EDACS.
         if (opts && opts->p25_trunk == 1 && p25_active) {
-            p25_sm_try_tick(opts, state);
+            dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
         }
         last_tick = now;
     }
@@ -1847,7 +1845,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     //only print and execute Dotting Sequence if Trunking and Tuned so we don't get multiple prints on this
                     if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
                         printFrameSync(opts, state, " EDACS  DOTTING SEQUENCE: ", synctest_pos + 1, modulation);
-                        eot_cc(opts, state);
+                        dsd_frame_sync_hook_eot_cc(opts, state);
                     }
                 }
 
@@ -2196,7 +2194,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
                     if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
                         state->p25_sm_force_release = 1;
-                        p25_sm_on_release(opts, state);
+                        dsd_frame_sync_hook_p25_sm_on_release(opts, state);
                     }
                 }
                 noCarrier(opts, state);
