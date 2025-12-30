@@ -13,11 +13,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
+
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
 
 // Stubs
 bool
@@ -61,19 +65,19 @@ int
 main(void) {
     int rc = 0;
     // Temp dir
-    char tmpl[] = "/tmp/dsdneo_cc_cache_disable_XXXXXX";
-    char* dir = mkdtemp(tmpl);
-    if (!dir) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_cc_cache_disable")) {
         return 100;
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
     setenv("DSD_NEO_CC_CACHE", "0", 1); // disable
+    dsd_neo_config_init(NULL);
 
     unsigned long wacn = 0xABCDE;
     int sysid = 0x123;
 
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     st.p2_wacn = wacn;
@@ -83,7 +87,7 @@ main(void) {
     p25_sm_on_neighbor_update(&opts, &st, f, 3);
 
     // No file should be created
-    char path[256];
+    char path[DSD_TEST_PATH_MAX];
     snprintf(path, sizeof path, "%s/p25_cc_%05lX_%03X.txt", dir, wacn, sysid);
     FILE* fp = fopen(path, "r");
     rc |= expect_true("no cache file", fp == NULL);

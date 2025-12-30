@@ -15,6 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
@@ -110,15 +114,9 @@ main(void) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
 
-    // Capture stderr
-    char tmpl[] = "/tmp/p25_p2_vpdu_sequence_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p2_vpdu_sequence") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
@@ -141,8 +139,9 @@ main(void) {
     mac[2] = 0x00;
     p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 1);
 
-    fflush(stderr);
-    FILE* rf = fopen(tmpl, "rb");
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
         fprintf(stderr, "fopen read failed\n");
         return 102;
@@ -177,5 +176,6 @@ main(void) {
         rc |= expect_true("ACTIVE before END", s2 < s3);
     }
     free(buf);
+    (void)remove(cap.path);
     return rc;
 }

@@ -19,6 +19,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
+
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
 
 // Stubs for radio control
 bool
@@ -61,17 +66,16 @@ expect_true(const char* tag, int cond) {
 int
 main(void) {
     int rc = 0;
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     opts.p25_trunk = 1;
     // Set system identity so SM can label candidates; disable on-disk cache via env
     st.p2_wacn = 0xABCDE;
     st.p2_sysid = 0x123;
-#if defined(__linux__) || defined(__APPLE__) || defined(__unix__)
     setenv("DSD_NEO_CC_CACHE", "0", 1);
-#endif
+    dsd_neo_config_init(NULL);
 
     // Timing start for rough performance guard
     double elapsed_ms = 0.0;
@@ -99,7 +103,11 @@ main(void) {
     uint64_t t1_ns = dsd_time_monotonic_ns();
     elapsed_ms = (double)(t1_ns - t0_ns) / 1e6;
     // Allow a generous envelope to avoid CI flakiness, but detect regressions
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_true("neighbor-spam-fast", elapsed_ms < 1000.0);
+#else
     rc |= expect_true("neighbor-spam-fast", elapsed_ms < 200.0);
+#endif
 
     // Next-candidate iteration should cycle through at most count entries and
     // never return 0 or the current CC.

@@ -16,7 +16,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/events.h>
@@ -24,6 +23,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
+
+#include "test_support.h"
 
 // Stubs to keep test self-contained and avoid pulling heavy deps
 const char*
@@ -60,9 +61,20 @@ dsd_unicode_supported(void) {
 
 void
 unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    if (len > 0) {
-        memset(output, 0, (size_t)len);
+    if (!input || !output || len <= 0) {
+        return;
+    }
+
+    int k = 0;
+    for (int i = 0; i < len; i++) {
+        output[k++] = (input[i] >> 7) & 1;
+        output[k++] = (input[i] >> 6) & 1;
+        output[k++] = (input[i] >> 5) & 1;
+        output[k++] = (input[i] >> 4) & 1;
+        output[k++] = (input[i] >> 3) & 1;
+        output[k++] = (input[i] >> 2) & 1;
+        output[k++] = (input[i] >> 1) & 1;
+        output[k++] = (input[i] >> 0) & 1;
     }
 }
 
@@ -107,32 +119,26 @@ main(void) {
     int rc = 0;
 
     // Prepare opts/state
-    dsd_opts opts;
-    dsd_state st;
+    static dsd_opts opts;
+    static dsd_state st;
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     st.currentslot = 0;
 
     // Temp file to capture LRRP output
-    char outtmpl[] = "/tmp/dmr_lrrp_time_fallback_XXXXXX";
-    int ofd = mkstemp(outtmpl);
+    char outtmpl[DSD_TEST_PATH_MAX];
+    int ofd = dsd_test_mkstemp(outtmpl, sizeof(outtmpl), "dmr_lrrp_time_fallback");
     if (ofd < 0) {
-        perror("mkstemp out");
+        perror("dsd_test_mkstemp out");
         return 100;
     }
-    close(ofd);
+    (void)dsd_close(ofd);
     snprintf(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", outtmpl);
     opts.lrrp_file_output = 1;
 
-    // Capture stderr to a temp
-    char errtmpl[] = "/tmp/dmr_lrrp_time_stderr_XXXXXX";
-    int efd = mkstemp(errtmpl);
-    if (efd < 0) {
-        perror("mkstemp err");
-        return 101;
-    }
-    close(efd);
-    if (!freopen(errtmpl, "w+", stderr)) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_lrrp_time_stderr") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 102;
     }
 
@@ -173,9 +179,10 @@ main(void) {
     // Call under test
     dmr_lrrp(&opts, &st, (uint16_t)idx, /*source=*/123, /*dest=*/456, pdu);
 
-    // Flush and read stderr
-    fflush(stderr);
-    FILE* ef = fopen(errtmpl, "rb");
+    dsd_test_capture_stderr_end(&cap);
+
+    // Read stderr
+    FILE* ef = fopen(cap.path, "rb");
     if (!ef) {
         return 103;
     }
@@ -225,7 +232,7 @@ main(void) {
 
     // Cleanup
     remove(outtmpl);
-    remove(errtmpl);
+    remove(cap.path);
 
     return rc;
 }

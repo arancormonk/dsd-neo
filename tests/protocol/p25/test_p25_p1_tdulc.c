@@ -335,8 +335,8 @@ main(void) {
 
     // Case 1: Retune enabled (baseline)
     build_lcw_words(0x44, 0x00, 0x00, 0x4567, 0x100A, 0x0000);
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
     opts.p25_trunk = 1;

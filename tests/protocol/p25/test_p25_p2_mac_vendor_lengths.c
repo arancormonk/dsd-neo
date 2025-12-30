@@ -19,6 +19,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
@@ -131,15 +135,9 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
 
-    // New temp file
-    char tmpl[] = "/tmp/p25_mac_json_vendor_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_mac_json_vendor") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
@@ -149,8 +147,9 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
     mac[2] = mfid;
     p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
 
-    fflush(stderr);
-    FILE* rf = fopen(tmpl, "rb");
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
         fprintf(stderr, "fopen read failed\n");
         return 102;
@@ -180,6 +179,7 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
         fprintf(stderr, "failed to parse lenB (er=%d)\n", lenB);
         return 104;
     }
+    (void)remove(cap.path);
     return expect_eq_int("lenB", lenB, want_lenB);
 }
 

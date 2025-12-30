@@ -8,32 +8,32 @@
  */
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 
+#include "test_support.h"
+
 static int
 write_temp_config(const char* contents, char* out_path, size_t out_sz) {
-    char tmpl[] = "/tmp/dsdneo_config_val_XXXXXX";
-    int fd = mkstemp(tmpl);
+    char tmpl[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(tmpl, sizeof(tmpl), "dsdneo_config_val");
     if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
+        fprintf(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
     size_t len = strlen(contents);
-    ssize_t wr = write(fd, contents, len);
+    ssize_t wr = dsd_write(fd, contents, len);
     if (wr < 0 || (size_t)wr != len) {
         fprintf(stderr, "write failed: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpl);
+        (void)dsd_close(fd);
+        (void)remove(tmpl);
         return 1;
     }
-    close(fd);
+    (void)dsd_close(fd);
     snprintf(out_path, out_sz, "%s", tmpl);
     out_path[out_sz - 1] = '\0';
     return 0;
@@ -55,7 +55,7 @@ test_valid_config(void) {
                              "[trunking]\n"
                              "enabled = false\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -76,7 +76,7 @@ test_valid_config(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -88,7 +88,7 @@ test_unknown_key_warning(void) {
                              "source = \"pulse\"\n"
                              "unknown_key = \"value\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -124,7 +124,7 @@ test_unknown_key_warning(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -135,7 +135,7 @@ test_unknown_section_warning(void) {
                              "[unknown_section]\n"
                              "key = \"value\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -158,7 +158,7 @@ test_unknown_section_warning(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -169,7 +169,7 @@ test_invalid_enum_error(void) {
                              "[input]\n"
                              "source = \"invalid_source_type\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -191,7 +191,7 @@ test_invalid_enum_error(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -203,7 +203,7 @@ test_int_out_of_range(void) {
                              "source = \"rtl\"\n"
                              "rtl_device = 999\n"; // device index out of range [0, 255]
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -222,7 +222,7 @@ test_int_out_of_range(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -235,7 +235,7 @@ test_int_out_of_range_negative_max(void) {
                              "source = \"rtl\"\n"
                              "rtl_sql = 10\n"; // out of range [-100, 0]
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -268,7 +268,7 @@ test_int_out_of_range_negative_max(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -280,7 +280,7 @@ test_diags_have_line_numbers(void) {
                              "source = \"pulse\"\n"
                              "bad_key = \"value\"\n"; // line 5
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -309,7 +309,7 @@ test_diags_have_line_numbers(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -317,7 +317,7 @@ static int
 test_empty_config(void) {
     static const char* ini = "";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -335,7 +335,7 @@ test_empty_config(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -368,7 +368,7 @@ test_profile_invalid_enum(void) {
                              "[profile.test]\n"
                              "mode.decode = \"invalid_mode\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -403,7 +403,7 @@ test_profile_invalid_enum(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -418,7 +418,7 @@ test_profile_int_out_of_range(void) {
                              "[profile.test]\n"
                              "input.rtl_device = 999\n"; // out of range [0, 255]
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -449,7 +449,7 @@ test_profile_int_out_of_range(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -464,7 +464,7 @@ test_profile_invalid_bool(void) {
                              "[profile.test]\n"
                              "trunking.enabled = \"maybe\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -486,7 +486,7 @@ test_profile_invalid_bool(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -503,7 +503,7 @@ test_profile_valid_values(void) {
                              "trunking.enabled = true\n"
                              "input.rtl_gain = 30\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -524,7 +524,7 @@ test_profile_valid_values(void) {
     }
 
     dsd_user_config_diags_free(&diags);
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 

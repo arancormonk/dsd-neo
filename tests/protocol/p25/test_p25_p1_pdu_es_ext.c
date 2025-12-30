@@ -17,6 +17,10 @@
 #include <string.h>
 
 // Forward minimal types and hooks
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
@@ -156,15 +160,9 @@ main(void) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
 
-    // Capture stderr
-    char tmpl[] = "/tmp/p25_p1_pdu_es_ext_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_es_ext") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
@@ -219,8 +217,9 @@ main(void) {
     int total_len = payload_off + 3 + 4; // +CRC
     p25_test_p1_pdu_data_decode(pdu, total_len);
 
-    fflush(stderr);
-    FILE* rf = fopen(tmpl, "rb");
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
         fprintf(stderr, "fopen read failed\n");
         return 102;
@@ -251,5 +250,6 @@ main(void) {
         fprintf(stderr, "expected SAP 32 after ES header, got %d\n", sap);
         return 1;
     }
+    (void)remove(cap.path);
     return 0;
 }

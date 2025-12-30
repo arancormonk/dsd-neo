@@ -18,6 +18,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
+#define setenv   dsd_test_setenv
+#define unsetenv dsd_test_unsetenv
+
 static int
 expect_int_eq(int actual, int expected, int rc, const char* name) {
     if (actual != expected) {

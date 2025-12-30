@@ -15,6 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 // Minimal forward types for config access
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
@@ -150,17 +154,14 @@ main(void) {
     dsd_neo_config_init(NULL);
 
     // Capture stderr to a temp file to avoid polluting test logs; we don't need to parse it here.
-    char tmpl[] = "/tmp/p25_p2_vpdu_core_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p2_vpdu_core") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
     int rc = run_cases();
+    dsd_test_capture_stderr_end(&cap);
+    (void)remove(cap.path);
     (void)rc;
     return 0;
 }

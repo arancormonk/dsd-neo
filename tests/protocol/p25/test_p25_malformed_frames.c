@@ -68,6 +68,12 @@ p25_sm_on_release(dsd_opts* o, dsd_state* s) {
     (void)s;
 }
 
+void
+p25_sm_tick(dsd_opts* o, dsd_state* s) {
+    (void)o;
+    (void)s;
+}
+
 int
 p25_sm_next_cc_candidate(dsd_state* s, long* f) {
     (void)s;

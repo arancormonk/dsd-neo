@@ -13,12 +13,17 @@
 
 #include <dsd-neo/runtime/config.h>
 
+#include "test_support.h"
+
+#define setenv   dsd_test_setenv
+#define unsetenv dsd_test_unsetenv
+
 static int
 test_tilde_expansion(void) {
     char buf[512];
-    const char* home = dsd_neo_env_get("HOME");
+    const char* home = dsd_test_home_dir();
     if (!home || !*home) {
-        fprintf(stderr, "SKIP: HOME not set\n");
+        fprintf(stderr, "SKIP: home dir not set\n");
         return 0;
     }
 
@@ -150,9 +155,9 @@ test_no_expansion(void) {
 static int
 test_combined_expansion(void) {
     char buf[512];
-    const char* home = dsd_neo_env_get("HOME");
+    const char* home = dsd_test_home_dir();
     if (!home || !*home) {
-        fprintf(stderr, "SKIP: HOME not set\n");
+        fprintf(stderr, "SKIP: home dir not set\n");
         return 0;
     }
 

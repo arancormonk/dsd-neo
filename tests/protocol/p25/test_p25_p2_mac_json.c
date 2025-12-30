@@ -15,6 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 // Minimal forward types
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
@@ -214,15 +218,9 @@ main(void) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
 
-    // Capture stderr
-    char tmpl[] = "/tmp/p25_p2_mac_json_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p2_mac_json") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
@@ -266,10 +264,10 @@ main(void) {
         p25_test_process_mac_vpdu_ex(0 /*FACCH*/, mac, 24, /*is_lcch*/ 0, /*slot*/ 1);
     }
 
-    fflush(stderr);
+    dsd_test_capture_stderr_end(&cap);
 
     // Read entire file
-    FILE* rf = fopen(tmpl, "rb");
+    FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
         fprintf(stderr, "fopen read failed\n");
         return 102;
@@ -324,5 +322,6 @@ main(void) {
         }
     }
 
+    (void)remove(cap.path);
     return rc;
 }

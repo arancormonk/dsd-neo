@@ -15,9 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 
 // Stubs for rigctl/rtl to avoid external I/O
 bool
@@ -64,16 +69,16 @@ main(int argc, char** argv) {
     int rc = 0;
 
     // Use a temp cache dir to avoid touching HOME
-    char tmpl[] = "/tmp/dsdneo_cc_cache_XXXXXX";
-    char* dir = mkdtemp(tmpl);
-    if (!dir) {
-        fprintf(stderr, "mkdtemp failed\n");
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_cc_cache")) {
+        fprintf(stderr, "dsd_test_mkdtemp failed\n");
         return 100;
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
+    dsd_neo_config_init(NULL);
 
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 

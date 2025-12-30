@@ -12,11 +12,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
+
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
 
 static int
 expect_eq_str(const char* tag, const char* a, const char* b) {
@@ -39,16 +42,15 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
-    char tmpl[] = "/tmp/dsdneo_cc_path_XXXXXX";
-    char* dir = mkdtemp(tmpl);
-    if (!dir) {
-        fprintf(stderr, "mkdtemp failed: %s\n", strerror(errno));
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_cc_path")) {
+        fprintf(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
         return 100;
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
     dsd_neo_config_init(NULL);
 
-    dsd_state st;
+    static dsd_state st;
     memset(&st, 0, sizeof st);
 
     // No identity -> no path

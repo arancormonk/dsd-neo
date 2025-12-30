@@ -8,31 +8,31 @@
  */
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <dsd-neo/runtime/config.h>
 
+#include "test_support.h"
+
 static int
 write_temp_config(const char* contents, char* out_path, size_t out_sz) {
-    char tmpl[] = "/tmp/dsdneo_config_prof_XXXXXX";
-    int fd = mkstemp(tmpl);
+    char tmpl[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(tmpl, sizeof(tmpl), "dsdneo_config_prof");
     if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
+        fprintf(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
     size_t len = strlen(contents);
-    ssize_t wr = write(fd, contents, len);
+    ssize_t wr = dsd_write(fd, contents, len);
     if (wr < 0 || (size_t)wr != len) {
         fprintf(stderr, "write failed: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpl);
+        (void)dsd_close(fd);
+        (void)remove(tmpl);
         return 1;
     }
-    close(fd);
+    (void)dsd_close(fd);
     snprintf(out_path, out_sz, "%s", tmpl);
     out_path[out_sz - 1] = '\0';
     return 0;
@@ -51,7 +51,7 @@ test_load_without_profile(void) {
                              "[profile.test]\n"
                              "mode.decode = \"dmr\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -74,7 +74,7 @@ test_load_without_profile(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -91,7 +91,7 @@ test_load_with_profile_override(void) {
                              "[profile.dmr_mode]\n"
                              "mode.decode = \"dmr\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -120,7 +120,7 @@ test_load_with_profile_override(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -146,7 +146,7 @@ test_profile_multiple_overrides(void) {
                              "trunking.enabled = true\n"
                              "output.ncurses_ui = true\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -186,7 +186,7 @@ test_profile_multiple_overrides(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -200,7 +200,7 @@ test_unknown_profile(void) {
                              "[profile.existing]\n"
                              "mode.decode = \"dmr\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -218,7 +218,7 @@ test_unknown_profile(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -238,7 +238,7 @@ test_list_profiles(void) {
                              "[profile.gamma]\n"
                              "mode.decode = \"ysf\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -272,7 +272,7 @@ test_list_profiles(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -283,7 +283,7 @@ test_list_profiles_empty(void) {
                              "[input]\n"
                              "source = \"pulse\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -298,7 +298,7 @@ test_list_profiles_empty(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -315,7 +315,7 @@ test_profile_rtl_settings(void) {
                              "input.rtl_freq = \"851.375M\"\n"
                              "input.rtl_gain = 30\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -348,7 +348,7 @@ test_profile_rtl_settings(void) {
         result = 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return result;
 }
 
@@ -365,7 +365,7 @@ test_include_directive(void) {
                                       "[mode]\n"
                                       "decode = \"dmr\"\n";
 
-    char included_path[128];
+    char included_path[DSD_TEST_PATH_MAX];
     if (write_temp_config(included_ini, included_path, sizeof included_path) != 0) {
         return 1;
     }
@@ -380,9 +380,9 @@ test_include_directive(void) {
              "ncurses_ui = true\n",
              included_path);
 
-    char main_path[128];
+    char main_path[DSD_TEST_PATH_MAX];
     if (write_temp_config(main_ini, main_path, sizeof main_path) != 0) {
-        unlink(included_path);
+        (void)remove(included_path);
         return 1;
     }
 
@@ -421,8 +421,8 @@ test_include_directive(void) {
         result = 1;
     }
 
-    unlink(main_path);
-    unlink(included_path);
+    (void)remove(main_path);
+    (void)remove(included_path);
     return result;
 }
 
@@ -438,7 +438,7 @@ test_include_override(void) {
                                       "[mode]\n"
                                       "decode = \"auto\"\n";
 
-    char included_path[128];
+    char included_path[DSD_TEST_PATH_MAX];
     if (write_temp_config(included_ini, included_path, sizeof included_path) != 0) {
         return 1;
     }
@@ -456,9 +456,9 @@ test_include_override(void) {
              "decode = \"p25p1\"\n",
              included_path);
 
-    char main_path[128];
+    char main_path[DSD_TEST_PATH_MAX];
     if (write_temp_config(main_ini, main_path, sizeof main_path) != 0) {
-        unlink(included_path);
+        (void)remove(included_path);
         return 1;
     }
 
@@ -491,8 +491,8 @@ test_include_override(void) {
         result = 1;
     }
 
-    unlink(main_path);
-    unlink(included_path);
+    (void)remove(main_path);
+    (void)remove(included_path);
     return result;
 }
 

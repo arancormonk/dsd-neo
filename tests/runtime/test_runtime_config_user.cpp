@@ -15,29 +15,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
 
+#include "test_support.h"
+
 static int
 write_temp_config(const char* contents, char* out_path, size_t out_sz) {
-    char tmpl[] = "/tmp/dsdneo_config_user_XXXXXX";
-    int fd = mkstemp(tmpl);
+    char tmpl[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(tmpl, sizeof(tmpl), "dsdneo_config_user");
     if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
+        fprintf(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
     size_t len = strlen(contents);
-    ssize_t wr = write(fd, contents, len);
+    ssize_t wr = dsd_write(fd, contents, len);
     if (wr < 0 || (size_t)wr != len) {
         fprintf(stderr, "write failed: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpl);
+        (void)dsd_close(fd);
+        (void)remove(tmpl);
         return 1;
     }
-    close(fd);
+    (void)dsd_close(fd);
     snprintf(out_path, out_sz, "%s", tmpl);
     out_path[out_sz - 1] = '\0';
     return 0;
@@ -70,7 +71,7 @@ test_load_and_apply_basic(void) {
                              "group_csv = \"/tmp/group.csv\"\n"
                              "allow_list = true\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -78,7 +79,7 @@ test_load_and_apply_basic(void) {
     dsdneoUserConfig cfg;
     if (dsd_user_config_load(path, &cfg) != 0) {
         fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
-        unlink(path);
+        (void)remove(path);
         return 1;
     }
 
@@ -100,8 +101,8 @@ test_load_and_apply_basic(void) {
         rc |= 1;
     }
 
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 
@@ -136,7 +137,7 @@ test_load_and_apply_basic(void) {
         rc |= 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return rc;
 }
 
@@ -159,7 +160,7 @@ test_snapshot_roundtrip(void) {
                              "[trunking]\n"
                              "enabled = false\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -167,12 +168,12 @@ test_snapshot_roundtrip(void) {
     dsdneoUserConfig cfg;
     if (dsd_user_config_load(path, &cfg) != 0) {
         fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
-        unlink(path);
+        (void)remove(path);
         return 1;
     }
 
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 
@@ -211,13 +212,13 @@ test_snapshot_roundtrip(void) {
     FILE* tmp = tmpfile();
     if (!tmp) {
         fprintf(stderr, "tmpfile failed: %s\n", strerror(errno));
-        unlink(path);
+        (void)remove(path);
         return 1;
     }
     dsd_user_config_render_ini(&snap, tmp);
     fclose(tmp);
 
-    unlink(path);
+    (void)remove(path);
     return rc;
 }
 
@@ -229,7 +230,7 @@ test_apply_demod_lock(void) {
                              "decode = \"auto\"\n"
                              "demod = \"qpsk\"\n";
 
-    char path[128];
+    char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
         return 1;
     }
@@ -237,12 +238,12 @@ test_apply_demod_lock(void) {
     dsdneoUserConfig cfg;
     if (dsd_user_config_load(path, &cfg) != 0) {
         fprintf(stderr, "dsd_user_config_load failed for %s\n", path);
-        unlink(path);
+        (void)remove(path);
         return 1;
     }
 
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 
@@ -259,14 +260,14 @@ test_apply_demod_lock(void) {
         rc |= 1;
     }
 
-    unlink(path);
+    (void)remove(path);
     return rc;
 }
 
 static int
 test_snapshot_persists_demod_lock(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 

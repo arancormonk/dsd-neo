@@ -13,7 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <unistd.h>
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
 
 // Forward declare config init to keep test dependencies narrow.
 struct dsd_opts;
@@ -113,11 +115,9 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
 
-    // Redirect stderr to a temp file
-    const char* path = (type == 0) ? "mac_facch.json" : "mac_sacch.json";
-    FILE* ferr = freopen(path, "w", stderr);
-    if (!ferr) {
-        fprintf(stderr, "Failed to redirect stderr\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_mac_segment") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 100;
     }
 
@@ -127,14 +127,12 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
     mac[1] = opcode; // opcode with low 6 bits interpreted as MCO
     p25_test_process_mac_vpdu(type, mac, 24);
 
-    // Flush and close capture
-    fflush(stderr);
-    fclose(stderr);
+    dsd_test_capture_stderr_end(&cap);
 
     // Read file back
-    FILE* f = fopen(path, "r");
+    FILE* f = fopen(cap.path, "r");
     if (!f) {
-        fprintf(stderr, "Failed to open %s\n", path);
+        fprintf(stderr, "Failed to open %s\n", cap.path);
         return 101;
     }
     char buf[512];
@@ -151,6 +149,11 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
         fprintf(stderr, "lenB mismatch type=%d op=%02X got B=%d want B=%d (C=%d)\n", type, opcode, lenB, expectB, lenC);
         return 103;
     }
+    if (lenC != expectC) {
+        fprintf(stderr, "lenC mismatch type=%d op=%02X got C=%d want C=%d\n", type, opcode, lenC, expectC);
+        return 104;
+    }
+    (void)remove(cap.path);
     return 0;
 }
 

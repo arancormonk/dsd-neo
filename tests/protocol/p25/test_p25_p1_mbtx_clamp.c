@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_support.h"
+
 // Minimal types
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
@@ -177,15 +179,9 @@ main(void) {
     mbt[15] = 0x10; // CHAN-T hi (iden=1)
     mbt[16] = 0x0A; // CHAN-T lo (ch=10)
 
-    // Capture stderr to parse diagnostic
-    char tmpl[] = "/tmp/p25_p1_mbt_clamp_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p1_mbt_clamp") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
@@ -199,9 +195,9 @@ main(void) {
         return 102;
     }
 
-    // Read back stderr
-    fflush(stderr);
-    FILE* rf = fopen(tmpl, "rb");
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
         fprintf(stderr, "fopen read failed\n");
         return 103;
@@ -226,5 +222,6 @@ main(void) {
     rc |= expect_true("cc not updated", cc == 0);
     rc |= expect_true("diag present", strstr(buf, "ignoring invalid channel->freq") != NULL);
     free(buf);
+    (void)remove(cap.path);
     return rc;
 }

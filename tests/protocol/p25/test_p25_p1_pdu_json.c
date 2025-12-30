@@ -16,6 +16,10 @@
 
 // Call into shim to keep dependencies narrow.
 
+#include "test_support.h"
+
+#define setenv dsd_test_setenv
+
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
@@ -60,9 +64,20 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
 
 void
 unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
+    if (!input || !output || len <= 0) {
+        return;
+    }
+    int k = 0;
+    for (int i = 0; i < len; i++) {
+        output[k++] = (input[i] >> 7) & 1;
+        output[k++] = (input[i] >> 6) & 1;
+        output[k++] = (input[i] >> 5) & 1;
+        output[k++] = (input[i] >> 4) & 1;
+        output[k++] = (input[i] >> 3) & 1;
+        output[k++] = (input[i] >> 2) & 1;
+        output[k++] = (input[i] >> 1) & 1;
+        output[k++] = (input[i] >> 0) & 1;
+    }
 }
 
 uint64_t
@@ -193,15 +208,9 @@ main(void) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
 
-    // Capture stderr to temporary file
-    char tmpl[] = "/tmp/p25_p1_pdu_json_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) {
-        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
-        return 100;
-    }
-    if (!freopen(tmpl, "w+", stderr)) {
-        fprintf(stderr, "freopen stderr failed\n");
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_json") != 0) {
+        fprintf(stderr, "Failed to capture stderr: %s\n", strerror(errno));
         return 101;
     }
 
@@ -249,8 +258,9 @@ main(void) {
         p25_test_p1_pdu_data_decode(pdu, total_len);
     }
 
-    fflush(stderr);
-    FILE* rf = fopen(tmpl, "rb");
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* rf = fopen(cap.path, "rb");
     if (!rf) {
         fprintf(stderr, "fopen read failed\n");
         return 102;
@@ -285,5 +295,6 @@ main(void) {
     rc |= expect_eq_int("SysCfg len", jlen, 3);
     rc |= expect_str_contains("SysCfg summary", summary, "SysCfg");
 
+    (void)remove(cap.path);
     return rc;
 }
