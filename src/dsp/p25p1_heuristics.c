@@ -6,7 +6,7 @@
 #include <math.h>
 #include <stdio.h>
 
-#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 
 /**
  * This module is dedicated to improve the accuracy of the digitizer. The digitizer is the piece of code that

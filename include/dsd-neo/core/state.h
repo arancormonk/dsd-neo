@@ -21,7 +21,7 @@
 
 #include <dsd-neo/fec/rs_12_9.h>
 
-#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 
 /* Forward declaration for mbelib decoder state (opaque in public API). */
 struct mbe_parameters;

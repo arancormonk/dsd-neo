@@ -5,7 +5,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 
 #include <stdint.h>
 #include <stdlib.h>

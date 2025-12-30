@@ -9,9 +9,9 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
-#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
 
 /**
  * Separate imbe frames and deinterleave.

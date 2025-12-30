@@ -10,7 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
-#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 
 /**
  * Reads a dibit (two bits) from the stream of data. Takes into account the periodic occurrence of status

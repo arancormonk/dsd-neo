@@ -28,7 +28,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
-#include <dsd-neo/protocol/p25/p25p1_heuristics.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 
 #include <assert.h>
 #include <math.h>

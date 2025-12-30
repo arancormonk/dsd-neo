@@ -31,6 +31,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.1
 
+      - name: Architecture guardrails
+        run: tools/arch_guardrails.sh
+
       - name: Prepare dependency environment
         id: prep-env
         run: |
@@ -340,6 +343,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.1
+
+      - name: Architecture guardrails
+        run: tools/arch_guardrails.sh
 
       - name: Prepare dependency environment
         run: |

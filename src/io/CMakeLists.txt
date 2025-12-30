@@ -39,10 +39,21 @@ target_link_libraries(dsd-neo_io_audio PUBLIC dsd-neo_runtime dsd-neo_platform $
 
 target_link_libraries(dsd-neo_io_audio PRIVATE dsd-neo_warnings)
 
-# Control interfaces (UDP control, rigctl, serial)
+# UDP control (used by RTL-SDR radio orchestrator)
+add_library(dsd-neo_io_udp_control)
+target_sources(dsd-neo_io_udp_control PRIVATE
+  control/udp_control.cpp
+)
+target_include_directories(dsd-neo_io_udp_control
+  PUBLIC ${PROJECT_SOURCE_DIR}/include
+  PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(dsd-neo_io_udp_control PUBLIC dsd-neo_runtime)
+target_link_libraries(dsd-neo_io_udp_control PRIVATE dsd-neo_warnings)
+
+# Control interfaces (rigctl, serial)
 add_library(dsd-neo_io_control)
 target_sources(dsd-neo_io_control PRIVATE
-  control/udp_control.cpp
   control/dsd_rigctl.c
   control/dsd_serial.c
 )
@@ -54,8 +65,11 @@ target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime dsd-neo_feature_
 
 target_link_libraries(dsd-neo_io_control PRIVATE dsd-neo_warnings)
 
-# rtl_sdr_fm.cpp uses udp_control_* from the IO control library; ensure correct
-# link propagation and ordering for static builds.
+# Make target-level dependencies explicit for static builds.
+target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_core dsd-neo_dsp dsd-neo_proto_p25 dsd-neo_proto_dmr)
+
+# rtl_sdr_fm.cpp uses udp_control_*; ensure correct link propagation and ordering.
 if(RTLSDR_FOUND)
-  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_io_control)
+  target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_io_udp_control)
+  target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_io_radio)
 endif()

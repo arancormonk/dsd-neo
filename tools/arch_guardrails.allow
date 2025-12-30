@@ -1,0 +1,4 @@
+# Architecture guardrails allowlist.
+# One repo-relative file path per line. '#' begins a comment.
+
+src/dsp/dsd_frame_sync.c
