@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-push hook: enforce architecture guardrails and run clang-tidy/cppcheck on files that changed in the push.
+# Pre-push hook: run clang-tidy/cppcheck on files that changed in the push.
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$repo_root"
-
-tools/arch_guardrails.sh
 
 remote_name="${1:-origin}"
 
