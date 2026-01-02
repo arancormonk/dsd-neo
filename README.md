@@ -84,7 +84,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - Portable, ready‑to‑run builds
   - Linux AppImage, macOS DMG, and Windows portable ZIP releases.
 
-How this compares at a glance
+### How this compares at a glance
 
 - Versus DSD‑FME: similar protocol coverage and UI heritage, but DSD‑neo adds network‑friendly I/O (UDP audio in), refined RTL‑TCP handling (prebuffer, tuned defaults), optional auto‑PPM, and packaged cross‑platform binaries.
 - Versus the original DSD: more protocols (notably P25 Phase 2, M17, YSF, EDACS), built‑in trunking, network inputs, device control, and an interactive UI.
@@ -172,19 +172,15 @@ tools/coverage.sh  # generates build/coverage-debug/coverage_html
 
 Notes
 
+- Presets live in `CMakePresets.json`.
 - Presets create out‑of‑source builds under `build/<preset>/`. Run from the repo root.
 - The CLI binary outputs to `build/<preset>/apps/dsd-cli/dsd-neo`.
 - `cmake --install <build_dir>` only works if you configured that build directory. If you're inside the build directory, use `cmake --install .`.
 - If `cmake --install build/dev-release` fails and `build/dev-release/` doesn't exist, you likely did a manual build (install from your actual build dir).
 
-Quick examples
-
-- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
-- DMR trunking from TCP IQ (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
-
 ## Install / Uninstall
 
-```
+```bash
 # Preset builds (recommended)
 # Single-config generators (Unix Makefiles/Ninja):
 cmake --install build/dev-release --prefix "$HOME/.local"
@@ -202,7 +198,9 @@ cmake --build build/manual --target uninstall       # manual build directory
 # cmake --build build --target uninstall            # if you configured into `build/`
 ```
 
-## Configuration Options
+## Build Options
+
+These are CMake cache options (set at configure time via `-D...`).
 
 - Build hygiene and optimization:
   - `-DDSD_ENABLE_WARNINGS=ON` — Enable common warnings (default ON).
@@ -221,9 +219,9 @@ cmake --build build/manual --target uninstall       # manual build directory
   - `-DPVC=ON` — Enable ProVoice Conventional Frame Sync.
   - `-DLZ=ON` — Enable LimaZulu‑requested NXDN tweaks.
   - `-DSID=ON` — Enable experimental P25p1 Soft ID decoding.
-- Optional backends (auto‑detected):
-  - `RTLSDR_FOUND` — Builds RTL‑SDR radio front‑end (`-DUSE_RTLSDR`).
-  - `CODEC2_FOUND` — Enables Codec2 support (`-DUSE_CODEC2`).
+- Optional features (auto‑detected):
+  - RTL‑SDR support is enabled when `librtlsdr` is found.
+  - Codec2 support is enabled when `codec2` is found.
 
 ## Runtime Tuning
 
@@ -244,6 +242,11 @@ Common options:
     - Modern form: `-fs -nm` (DMR BS/MS simplex + mono audio).
     - Legacy alias: `-fr` (kept as a shorthand for the same DMR‑mono profile).
 
+Quick examples
+
+- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
+- DMR trunking from TCP IQ (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
+
 ## Configuration
 
 - INI‑style user config is implemented for stable defaults (input/output/mode/trunking); see `docs/config-system.md`.
@@ -252,16 +255,14 @@ Common options:
 - `--interactive-setup` forces the bootstrap wizard even when a config exists; `--print-config` dumps the effective config as INI.
 - When config is enabled, the final settings are autosaved on exit.
 
-## Tests and Examples
+## Tests
 
 - Run all tests: `ctest --preset dev-debug -V` (or `ctest --test-dir build/dev-debug -V`).
 - Scope: unit tests cover runtime config parsing/validation, DSP primitives (filters/resampler/demod helpers), and FEC/crypto helpers.
-- Contributions: prefer small, testable helpers and add focused tests under `tests/<area>`.
 
 ## Documentation
 
 - Module overview and targets are documented in `docs/code_map.md`.
-- Build presets are defined in `CMakePresets.json`.
 
 ## Project Layout
 
@@ -287,6 +288,7 @@ Common options:
 
 - Languages: C (C11) and C++ (C++14). Indent width 4 spaces; no tabs; brace all control statements; line length ≤ 120.
 - Use project‑prefixed includes only: `#include <dsd-neo/...>`.
+- Prefer small, testable helpers and add focused tests under `tests/<area>`.
 - Before sending changes: build presets you touched, run `tools/format.sh`, address feasible clang‑tidy and cppcheck warnings.
 
 ## License
