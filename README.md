@@ -134,6 +134,8 @@ Notes
 
 - Presets create out‑of‑source builds under `build/<preset>/`. Run from the repo root.
 - The CLI binary outputs to `build/<preset>/apps/dsd-cli/dsd-neo`.
+- If you used the manual `mkdir -p build && cd build; cmake ..` flow, your build directory is `build/` (not `build/dev-release`).
+- `cmake --install <build_dir>` is relative to your current directory; from inside `build/`, use `cmake --install .` (not `cmake --install build/...`).
 
 Quick examples
 
@@ -146,19 +148,27 @@ Manual configure/build
 mkdir -p build && cd build
 cmake ..
 cmake --build . -j
+
+# Install from this build directory:
+cmake --install .
 ```
 
 ## Install / Uninstall
 
 ```
+# Preset builds (recommended)
 # Single-config generators (Unix Makefiles/Ninja):
 cmake --install build/dev-release
 
 # Multi-config generators (Visual Studio/Xcode):
 cmake --install build/dev-release --config Release
 
+# Manual build directory (if you configured into `build/`):
+cmake --install build
+
 # Uninstall from the same build directory
-cmake --build build/dev-release --target uninstall
+cmake --build build/dev-release --target uninstall  # preset build
+cmake --build build --target uninstall              # manual build directory
 ```
 
 ## Configuration Options
