@@ -4,6 +4,8 @@ add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(dsd-neo_test_support INTERFACE ${PROJECT_SOURCE_DIR}/tests/test_support)
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
+add_test(NAME ARCH_RULES COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake)
+
 add_executable(dsd-neo_test_aes_ofb crypto/test_aes_ofb.c)
 target_include_directories(dsd-neo_test_aes_ofb PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
