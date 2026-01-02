@@ -110,23 +110,63 @@ OS package hints
   - Preferred binary: the native MSVC ZIP. The MinGW ZIP is an alternative native build.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` or `win-mingw-*` presets in `CMakePresets.json`.
 
-Using CMake presets (recommended)
+Build recipes (copy/paste)
 
-```
-# From the repository root
+### Linux/macOS — release build (preset `dev-release`, recommended)
 
-# Debug build
-cmake --preset dev-debug
-cmake --build --preset dev-debug -j
+```bash
+# From the repository root.
+#
+# OS deps (examples):
+# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev
+# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2
+#
+# Install is optional; you can run directly from the build tree.
 
-# Release build (can enable fast-math/LTO/IPO)
 cmake --preset dev-release
 cmake --build --preset dev-release -j
 
-# Run tests
+# Run (no install required)
+build/dev-release/apps/dsd-cli/dsd-neo -h
+
+# Install (optional; pick one)
+cmake --install build/dev-release --prefix "$HOME/.local"
+# sudo cmake --install build/dev-release
+```
+
+### Linux/macOS — debug build + tests (preset `dev-debug`)
+
+```bash
+# OS deps (examples):
+# - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev
+# - macOS:         brew install cmake ninja libsndfile ncurses pulseaudio librtlsdr codec2
+
+cmake --preset dev-debug
+cmake --build --preset dev-debug -j
 ctest --preset dev-debug -V
 
-# Coverage (optional)
+# Run (no install required)
+build/dev-debug/apps/dsd-cli/dsd-neo -h
+```
+
+### Manual configure/build (no presets)
+
+```bash
+# Use a build directory that isn't a preset (so you don't expect build/dev-release to exist).
+cmake -S . -B build/manual -DCMAKE_BUILD_TYPE=Release
+cmake --build build/manual -j
+
+# Run (no install required)
+build/manual/apps/dsd-cli/dsd-neo -h
+
+# Install (optional; pick one)
+cmake --install build/manual --prefix "$HOME/.local"
+# sudo cmake --install build/manual
+```
+
+### Coverage (optional)
+
+```bash
 tools/coverage.sh  # generates build/coverage-debug/coverage_html
 ```
 
@@ -134,41 +174,32 @@ Notes
 
 - Presets create out‑of‑source builds under `build/<preset>/`. Run from the repo root.
 - The CLI binary outputs to `build/<preset>/apps/dsd-cli/dsd-neo`.
-- If you used the manual `mkdir -p build && cd build; cmake ..` flow, your build directory is `build/` (not `build/dev-release`).
-- `cmake --install <build_dir>` is relative to your current directory; from inside `build/`, use `cmake --install .` (not `cmake --install build/...`).
+- `cmake --install <build_dir>` only works if you configured that build directory. If you're inside the build directory, use `cmake --install .`.
+- If `cmake --install build/dev-release` fails and `build/dev-release/` doesn't exist, you likely did a manual build (install from your actual build dir).
 
 Quick examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - DMR trunking from TCP IQ (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 
-Manual configure/build
-
-```
-mkdir -p build && cd build
-cmake ..
-cmake --build . -j
-
-# Install from this build directory:
-cmake --install .
-```
-
 ## Install / Uninstall
 
 ```
 # Preset builds (recommended)
 # Single-config generators (Unix Makefiles/Ninja):
-cmake --install build/dev-release
+cmake --install build/dev-release --prefix "$HOME/.local"
 
 # Multi-config generators (Visual Studio/Xcode):
-cmake --install build/dev-release --config Release
+cmake --install build/dev-release --config Release --prefix "$HOME/.local"
 
-# Manual build directory (if you configured into `build/`):
-cmake --install build
+# Manual build directory (example above uses `build/manual/`):
+cmake --install build/manual --prefix "$HOME/.local"
+# cmake --install build --prefix "$HOME/.local"  # if you configured into `build/`
 
 # Uninstall from the same build directory
 cmake --build build/dev-release --target uninstall  # preset build
-cmake --build build --target uninstall              # manual build directory
+cmake --build build/manual --target uninstall       # manual build directory
+# cmake --build build --target uninstall            # if you configured into `build/`
 ```
 
 ## Configuration Options
