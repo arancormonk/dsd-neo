@@ -1663,7 +1663,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     LOG_NOTICE("\n");
     if (state->debug_mode == 1) {
-        uint64_t* start_ms = (uint64_t*)dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_START_MS);
+        uint64_t* start_ms = DSD_STATE_EXT_GET_AS(uint64_t, state, DSD_STATE_EXT_ENGINE_START_MS);
         if (start_ms) {
             uint64_t elapsed_ms = dsd_time_monotonic_ms() - *start_ms;
             LOG_NOTICE("Runtime: %llu ms\n", (unsigned long long)elapsed_ms);

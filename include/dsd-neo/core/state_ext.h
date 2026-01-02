@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -30,12 +30,25 @@ enum { DSD_STATE_EXT_MAX = 32 };
  * @brief Stable IDs for extension slots.
  *
  * Values must be in the range [0, DSD_STATE_EXT_MAX).
+ *
+ * ID allocation policy (keep stable):
+ * - 0-7: engine
+ * - 8-15: io
+ * - 16-23: ui
+ * - 24-31: protocols
+ *
+ * When adding a new ID:
+ * - Assign an explicit numeric value.
+ * - Never renumber existing IDs.
+ * - Keep within your module's reserved range and < DSD_STATE_EXT_MAX.
  */
 typedef enum dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_START_MS = 0,
 } dsd_state_ext_id;
 
 typedef void (*dsd_state_ext_cleanup_fn)(void*);
+
+#define DSD_STATE_EXT_GET_AS(type, state, id) ((type*)dsd_state_ext_get((state), (id)))
 
 void* dsd_state_ext_get(dsd_state* state, dsd_state_ext_id id);
 
