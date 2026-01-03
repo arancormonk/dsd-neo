@@ -60,4 +60,4 @@ target_link_libraries(dsd-neo_engine PUBLIC
   dsd-neo_proto_p25
 )
 
-target_link_libraries(dsd-neo_engine PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_engine PRIVATE dsd-neo_warnings dsd-neo_feature_lz)

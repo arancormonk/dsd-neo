@@ -42,7 +42,7 @@ target_include_directories(dsd-neo_ui_terminal
 
 target_link_libraries(dsd-neo_ui_terminal PUBLIC dsd-neo_core dsd-neo_runtime dsd-neo_feature_rtlsdr)
 
-target_link_libraries(dsd-neo_ui_terminal PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_ui_terminal PRIVATE dsd-neo_warnings dsd-neo_feature_colors)
 
 # Many menu actions are conditionally referenced; suppress unused-function just for these sources.
 # MSVC/clang-cl do not understand GCC/Clang-style `-Wno-*` options.

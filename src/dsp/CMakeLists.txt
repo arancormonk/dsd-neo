@@ -60,4 +60,4 @@ target_include_directories(dsd-neo_dsp
 
 target_link_libraries(dsd-neo_dsp PUBLIC dsd-neo_runtime dsd-neo_feature_rtlsdr)
 
-target_link_libraries(dsd-neo_dsp PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_dsp PRIVATE dsd-neo_warnings dsd-neo_feature_pvc)

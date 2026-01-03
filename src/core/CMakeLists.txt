@@ -32,6 +32,6 @@ target_include_directories(dsd-neo_core
 )
 
 target_link_libraries(dsd-neo_core PUBLIC dsd-neo_runtime dsd-neo_dsp dsd-neo_fec dsd-neo_crypto dsd-neo_feature_rtlsdr
-                                           dsd-neo_feature_codec2 ${LIBSNDFILE_LIBRARIES})
+                                           dsd-neo_feature_codec2 dsd-neo_feature_pvc ${LIBSNDFILE_LIBRARIES})
 
-target_link_libraries(dsd-neo_core PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_core PRIVATE dsd-neo_warnings dsd-neo_feature_lz)

@@ -15,4 +15,4 @@ target_include_directories(dsd-neo_proto_nxdn
 
 target_link_libraries(dsd-neo_proto_nxdn PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core dsd-neo_feature_rtlsdr)
 
-target_link_libraries(dsd-neo_proto_nxdn PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_proto_nxdn PRIVATE dsd-neo_warnings dsd-neo_feature_lz)

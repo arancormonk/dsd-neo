@@ -152,40 +152,19 @@ if(DSD_ENABLE_LTO)
 endif()
 
 #use cmake option -DCOLORS=OFF to disable color output (ncurses)
-option(COLORS
-    "Build with Colors Enabled" ON)
-if (COLORS)
-    add_definitions(-DPRETTY_COLORS)
-endif ()
+option(COLORS "Build with Colors Enabled" ON)
 
 #use cmake option -DCOLORSLOGS=OFF to disable color output (terminal/logs)
-option(COLORSLOGS
-    "Enable colored terminal/log output" ON)
-if (COLORSLOGS)
-    add_definitions(-DPRETTY_COLORS_LOGS)
-endif ()
+option(COLORSLOGS "Enable colored terminal/log output" ON)
 
 #use cmake option -DPVC=ON to enable Provoice Conventional Frame Sync
-option(PVC
-    "Build with Provoice Conventional Frame Sync Enabled" OFF)
-if (PVC)
-    add_definitions(-DPVCONVENTIONAL)
-endif ()
-
+option(PVC "Build with Provoice Conventional Frame Sync Enabled" OFF)
 
 #use cmake option -DLZ=ON to enable LimaZulu Requested NXDN Tweaks
-option(LZ
-    "Build with new LimaZulu Requested NXDN Tweaks Enabled" OFF)
-if (LZ)
-    add_definitions(-DLIMAZULUTWEAKS)
-endif ()
+option(LZ "Build with new LimaZulu Requested NXDN Tweaks Enabled" OFF)
 
 #use cmake option -DSID=ON to enable P25p1 Soft ID decoding -- Experimental
-option(SID
-    "Build with P25p1 LSD/Soft ID Enabled" OFF)
-if (SID)
-    add_definitions(-DSOFTID)
-endif ()
+option(SID "Build with P25p1 LSD/Soft ID Enabled" OFF)
 
 
 include(git_revision)
@@ -293,6 +272,21 @@ set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS} ${CURSES_LIBRA
 # optional features. Link them only to targets that require the feature,
 # avoiding global add_definitions() that leak into unrelated libraries/tests.
 # -----------------------------------------------------------------------------
+
+add_library(dsd-neo_feature_colors INTERFACE)
+target_compile_definitions(dsd-neo_feature_colors INTERFACE $<$<BOOL:${COLORS}>:PRETTY_COLORS>)
+
+add_library(dsd-neo_feature_colors_logs INTERFACE)
+target_compile_definitions(dsd-neo_feature_colors_logs INTERFACE $<$<BOOL:${COLORSLOGS}>:PRETTY_COLORS_LOGS>)
+
+add_library(dsd-neo_feature_pvc INTERFACE)
+target_compile_definitions(dsd-neo_feature_pvc INTERFACE $<$<BOOL:${PVC}>:PVCONVENTIONAL>)
+
+add_library(dsd-neo_feature_lz INTERFACE)
+target_compile_definitions(dsd-neo_feature_lz INTERFACE $<$<BOOL:${LZ}>:LIMAZULUTWEAKS>)
+
+add_library(dsd-neo_feature_sid INTERFACE)
+target_compile_definitions(dsd-neo_feature_sid INTERFACE $<$<BOOL:${SID}>:SOFTID>)
 
 if(RTLSDR_FOUND)
     find_package(Threads)
