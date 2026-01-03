@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -23,6 +23,8 @@ extern "C" {
 void initOpts(dsd_opts* opts);
 /** @brief Initialize decoder runtime state to defaults. */
 void initState(dsd_state* state);
+/** @brief Free dynamic allocations owned by @p state (does not free @p state itself). */
+void freeState(dsd_state* state);
 
 #ifdef __cplusplus
 }

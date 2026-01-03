@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/core/constants.h>
@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -936,3 +937,74 @@ initState(dsd_state* state) {
     state->ui_msg_expire = 0;
 
 } //init_state
+
+void
+freeState(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+
+    dsd_state_ext_free_all(state);
+
+#ifdef USE_CODEC2
+    if (state->codec2_3200) {
+        codec2_destroy(state->codec2_3200);
+        state->codec2_3200 = NULL;
+    }
+    if (state->codec2_1600) {
+        codec2_destroy(state->codec2_1600);
+        state->codec2_1600 = NULL;
+    }
+#endif
+
+    free(state->cur_mp);
+    state->cur_mp = NULL;
+    free(state->prev_mp);
+    state->prev_mp = NULL;
+    free(state->prev_mp_enhanced);
+    state->prev_mp_enhanced = NULL;
+
+    free(state->cur_mp2);
+    state->cur_mp2 = NULL;
+    free(state->prev_mp2);
+    state->prev_mp2 = NULL;
+    free(state->prev_mp_enhanced2);
+    state->prev_mp_enhanced2 = NULL;
+
+    free(state->event_history_s);
+    state->event_history_s = NULL;
+
+    free(state->audio_out_buf);
+    state->audio_out_buf = NULL;
+    state->audio_out_buf_p = NULL;
+
+    free(state->audio_out_bufR);
+    state->audio_out_bufR = NULL;
+    state->audio_out_buf_pR = NULL;
+
+    free(state->audio_out_float_buf);
+    state->audio_out_float_buf = NULL;
+    state->audio_out_float_buf_p = NULL;
+
+    free(state->audio_out_float_bufR);
+    state->audio_out_float_bufR = NULL;
+    state->audio_out_float_buf_pR = NULL;
+
+    free(state->dmr_sample_history);
+    state->dmr_sample_history = NULL;
+    state->dmr_sample_history_size = 0;
+    state->dmr_sample_history_head = 0;
+    state->dmr_sample_history_count = 0;
+
+    free(state->dibit_buf);
+    state->dibit_buf = NULL;
+    state->dibit_buf_p = NULL;
+
+    free(state->dmr_payload_buf);
+    state->dmr_payload_buf = NULL;
+    state->dmr_payload_p = NULL;
+
+    free(state->dmr_reliab_buf);
+    state->dmr_reliab_buf = NULL;
+    state->dmr_reliab_p = NULL;
+}

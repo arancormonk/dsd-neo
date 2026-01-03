@@ -53,7 +53,14 @@ main(int argc, char** argv) {
     int exit_rc = 1;
     int bootstrap_rc = dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &exit_rc);
     if (bootstrap_rc != DSD_BOOTSTRAP_CONTINUE) {
+        freeState(state);
+        free(opts);
+        free(state);
         return exit_rc;
     }
-    return dsd_engine_run(opts, state);
+    int rc = dsd_engine_run(opts, state);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
 }
