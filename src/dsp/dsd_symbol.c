@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
  * Copyright (C) 2010 DSD Author
@@ -940,11 +940,21 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     state->debug_sample_right_edge = state->debug_sample_index - 1;
                 }
 #endif
-            } else { // QPSK or GFSK share the same 2-sample window
-                // Use symmetric two-sample window (precomputed)
-                if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
-                    sum += sample;
-                    count++;
+            } else { // QPSK or GFSK
+                /* For very low SPS (e.g., when RTL DSP baseband is configured < 24 kHz or resampling is disabled),
+                   the edge-pair window becomes too sparse/noisy for GFSK. Prefer the center sample to avoid
+                   systematic symbol slicing bias that can corrupt data PDUs (e.g., LRRP). */
+                if (state->rf_mod == 2 && state->samplesPerSymbol <= 4) {
+                    if (i == state->symbolCenter) {
+                        sum += sample;
+                        count++;
+                    }
+                } else {
+                    // Use symmetric two-sample window (precomputed)
+                    if ((i == state->symbolCenter - l_edge_pre) || (i == state->symbolCenter + r_edge_pre)) {
+                        sum += sample;
+                        count++;
+                    }
                 }
             }
         }

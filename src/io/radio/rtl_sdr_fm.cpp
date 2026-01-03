@@ -2360,6 +2360,16 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     } persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
+    /* DMR (GFSK) data decoding is sensitive to overly low DSP basebands; users often (reasonably) set bw≈12 kHz,
+       but the resulting low-rate discriminator stream can degrade LRRP payload reliability even if resampled later. */
+    if (opts && opts->frame_dmr == 1 && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 24) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            LOG_WARNING("RTL DSP-BW %dkHz is low for DMR; try 48kHz (or at least 24kHz) for more reliable data/LRRP.\n",
+                        opts->rtl_dsp_bw_khz);
+        }
+    }
     /* Honor the user-requested DSP bandwidth directly for the demodulator base rate so
        half-band decimators/resampler scale with the CLI argument (4/6/8/12/16/24 kHz). */
     int demod_base_rate_hz = rtl_dsp_bw_hz;
