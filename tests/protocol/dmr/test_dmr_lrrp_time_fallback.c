@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -94,7 +94,8 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
 }
 
 // Under test
-void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU);
+void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
+              uint8_t pdu_crc_ok);
 
 static int
 expect_no_substr(const char* buf, const char* needle, const char* tag) {
@@ -177,7 +178,7 @@ main(void) {
     pdu[idx++] = 0x00; // second
 
     // Call under test
-    dmr_lrrp(&opts, &st, (uint16_t)idx, /*source=*/123, /*dest=*/456, pdu);
+    dmr_lrrp(&opts, &st, (uint16_t)idx, /*source=*/123, /*dest=*/456, pdu, 1);
 
     dsd_test_capture_stderr_end(&cap);
 

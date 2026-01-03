@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -78,7 +78,8 @@ getDateS_buf(char out[11]) {
 }
 
 // Under test
-void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU);
+void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
+              uint8_t pdu_crc_ok);
 
 static int
 expect_has_point(const char* s, double exp_lat, double exp_lon, const char* tag) {
@@ -181,7 +182,7 @@ main(void) {
     pdu[i++] = 0x00; // radius[15:8]
     pdu[i++] = 0x64; // radius[7:0] -> 1.00m (hundredths)
 
-    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
     rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "position precedence");
 
     return rc;

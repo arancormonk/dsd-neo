@@ -836,6 +836,16 @@ target_include_directories(dsd-neo_test_dmr_lrrp_position_token_precedence PRIVA
 target_include_directories(dsd-neo_test_dmr_lrrp_position_token_precedence SYSTEM PRIVATE ${_PUBLIC_INCLUDES})
 add_test(NAME DMR_LRRP_POSITION_TOKEN_PRECEDENCE COMMAND dsd-neo_test_dmr_lrrp_position_token_precedence)
 
+# DMR LRRP: suppress file output when CRC fails
+add_executable(dsd-neo_test_dmr_lrrp_crc_gating
+  protocol/dmr/test_dmr_lrrp_crc_gating.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+)
+target_include_directories(dsd-neo_test_dmr_lrrp_crc_gating PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr)
+target_include_directories(dsd-neo_test_dmr_lrrp_crc_gating SYSTEM PRIVATE ${_PUBLIC_INCLUDES})
+target_link_libraries(dsd-neo_test_dmr_lrrp_crc_gating PRIVATE dsd-neo_test_support)
+add_test(NAME DMR_LRRP_CRC_GATING COMMAND dsd-neo_test_dmr_lrrp_crc_gating)
+
 # DMR LRRP: IP/UDP header lengths (IHL/UDP len) must bound LRRP payload
 add_executable(dsd-neo_test_dmr_lrrp_ip_udp_lengths
   protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c

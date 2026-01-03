@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -92,7 +92,8 @@ getDateS_buf(char out[11]) {
 }
 
 // Under test
-void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU);
+void dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
+              uint8_t pdu_crc_ok);
 
 static int
 expect_has_substr(const char* buf, const char* needle, const char* tag) {
@@ -168,7 +169,7 @@ main(void) {
     pdu[i++] = 0x7E; // hour: high nibble 0x7 -> 7 + (1<<4)=23; minute low nibble 0xE => 56 base
     pdu[i++] = 0xFA; // minute top bits=3 -> +3 -> 59; seconds=0x3A -> 58
 
-    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 111, /*dst*/ 222, pdu);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 111, /*dst*/ 222, pdu, 1);
 
     dsd_test_capture_stderr_end(&cap);
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * dmr_bs.c
@@ -444,7 +444,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             }
         } else if (port1 == 4001 && port2 == 4001) {
             fprintf(stderr, "LRRP;");
-            dmr_lrrp(opts, state, payload_len, src24, dst24, payload);
+            dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
             state->event_history_s[slot].Event_History_Items[0].color_pair =
                 4; //Remus, add this line to a decode to change its line color
         } else if (port1 == 4004 && port2 == 4004) {
@@ -568,7 +568,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             sprintf(state->dmr_lrrp_gps[slot], "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ",
                     input[12], input[13], input[14], input[15], input[16], input[17], input[18], input[19]);
             fprintf(stderr, "P25 Tier 2 Location Service;"); //LRRP
-            dmr_lrrp(opts, state, payload_len, src24, dst24, payload);
+            dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
         } else {
             sprintf(state->dmr_lrrp_gps[slot], "IP SRC: %d.%d.%d.%d:%d; DST: %d.%d.%d.%d:%d; Unknown UDP Port;",
                     input[12], input[13], input[14], input[15], port1, input[16], input[17], input[18], input[19],
@@ -912,7 +912,8 @@ dmr_lrrp_parse_score(const dmr_lrrp_parse_result* r, size_t prefix_skip) {
 
 //The contents of this function are mostly trial and error
 void
-dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU) {
+dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
+         uint8_t pdu_crc_ok) {
 
     uint8_t slot = state->currentslot;
     if (!DMR_PDU || len < 2) {
@@ -1020,8 +1021,10 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
                     best.second);
         }
 
-        if (best.have_pos) {
+        if (best.have_pos && pdu_crc_ok) {
             fprintf(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat_fin, lon_fin, lat_fin, lon_fin);
+        } else if (best.have_pos && !pdu_crc_ok) {
+            fprintf(stderr, "\n Position: (suppressed; CRC ERR)");
         }
         if (best.have_rad) {
             fprintf(stderr, "\n Radius: %.2lfm", rad_fin);
@@ -1042,7 +1045,7 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
         }
 
         // Write to LRRP file if a lat/lon is present; timestamps always use system time for consistency.
-        if (opts->lrrp_file_output == 1 && lat_fin != 0.0 && lon_fin != 0.0) {
+        if (opts->lrrp_file_output == 1 && pdu_crc_ok && lat_fin != 0.0 && lon_fin != 0.0) {
             char timestr[9];
             char datestr[11];
             getTimeC_buf(timestr);
@@ -1069,8 +1072,10 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
         sprintf(velstr, "%s", "");
         sprintf(degstr, "%s", "");
 
-        if (best.have_pos) {
+        if (best.have_pos && pdu_crc_ok) {
             sprintf(lrrpstr, "LRRP SRC: %0d; (%lf, %lf)", source, lat_fin, lon_fin);
+        } else if (best.have_pos && !pdu_crc_ok) {
+            sprintf(lrrpstr, "LRRP SRC: %0d; Position suppressed (CRC ERR);", source);
         } else if (is_request) {
             sprintf(lrrpstr, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
         } else if (is_response) {
@@ -1089,7 +1094,7 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
 
         sprintf(state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
 
-        if (!best.have_pos) {
+        if (!best.have_pos || !pdu_crc_ok) {
             fprintf(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
         }
 

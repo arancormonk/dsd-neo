@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 // Smoke test: relaxed header acceptance for SAP=4 (IP-based) with CRC fail
@@ -153,13 +153,15 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PD
 }
 
 void
-dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU) {
+dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, uint8_t* DMR_PDU,
+         uint8_t pdu_crc_ok) {
     (void)opts;
     (void)state;
     (void)len;
     (void)source;
     (void)dest;
     (void)DMR_PDU;
+    (void)pdu_crc_ok;
 }
 
 void

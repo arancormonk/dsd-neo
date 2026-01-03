@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*-------------------------------------------------------------------------------
@@ -1454,7 +1454,29 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                     sprintf(state->dmr_lrrp_gps[slot], "MNIS SRC: %d; DST: %d; ", msrc, mdst);
 
                     if (mnis_type == 0x11) { //+7 offset
-                        dmr_lrrp(opts, state, len, msrc, mdst, state->dmr_pdu_sf[slot] + 7);
+                        uint8_t pdu_crc_ok = 1;
+                        if (state->data_conf_data[slot]) {
+                            int start = state->data_p_head[slot] ? 2 : 1;
+                            int end = state->data_header_blocks[slot];
+                            if (start < 1) {
+                                start = 1;
+                            }
+                            if (end > 126) {
+                                end = 126;
+                            }
+                            if (end < start) {
+                                pdu_crc_ok = 0;
+                            } else {
+                                for (int bi = start; bi <= end; bi++) {
+                                    if (state->data_block_crc_valid[slot][bi] != 1) {
+                                        pdu_crc_ok = 0;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        dmr_lrrp(opts, state, len, msrc, mdst, state->dmr_pdu_sf[slot] + 7, pdu_crc_ok);
                     } else if (mnis_type == 0x33) { //check any potential texts in this message
                         utf8_to_text(state, 0, 15,
                                      state->dmr_pdu_sf[slot]
