@@ -52,6 +52,85 @@ target_include_directories(dsd-neo_test_runtime_config_env PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_runtime_config_env PRIVATE dsd-neo_runtime dsd-neo_test_support)
 add_test(NAME RUNTIME_CONFIG_ENV COMMAND dsd-neo_test_runtime_config_env)
 
+set(_DSD_BOOTSTRAP_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures")
+file(MAKE_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}")
+
+set(_DSD_BOOTSTRAP_ENV_CONFIG "${_DSD_BOOTSTRAP_FIXTURE_DIR}/env_config.ini")
+file(WRITE "${_DSD_BOOTSTRAP_ENV_CONFIG}"
+  "version = 1\n"
+  "\n"
+  "[input]\n"
+  "source = \"pulse\"\n"
+  "\n"
+  "[mode]\n"
+  "decode = \"p25p1\"\n")
+
+set(_DSD_BOOTSTRAP_PROFILE_CONFIG "${_DSD_BOOTSTRAP_FIXTURE_DIR}/profiles.ini")
+file(WRITE "${_DSD_BOOTSTRAP_PROFILE_CONFIG}"
+  "version = 1\n"
+  "\n"
+  "[input]\n"
+  "source = \"pulse\"\n"
+  "\n"
+  "[profile.alpha]\n"
+  "mode.decode = \"dmr\"\n"
+  "\n"
+  "[profile.beta]\n"
+  "mode.decode = \"p25p1\"\n")
+
+if(WIN32 AND NOT MINGW)
+  set(_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT "${_DSD_BOOTSTRAP_FIXTURE_DIR}/appdata")
+  set(_DSD_BOOTSTRAP_DEFAULT_CFG_ENV "APPDATA")
+else()
+  set(_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT "${_DSD_BOOTSTRAP_FIXTURE_DIR}/xdg")
+  set(_DSD_BOOTSTRAP_DEFAULT_CFG_ENV "XDG_CONFIG_HOME")
+endif()
+
+file(MAKE_DIRECTORY "${_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT}/dsd-neo")
+set(_DSD_BOOTSTRAP_DEFAULT_CONFIG "${_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT}/dsd-neo/config.ini")
+file(WRITE "${_DSD_BOOTSTRAP_DEFAULT_CONFIG}"
+  "version = 1\n"
+  "\n"
+  "[input]\n"
+  "source = \"pulse\"\n"
+  "\n"
+  "[mode]\n"
+  "decode = \"dmr\"\n")
+
+add_test(NAME RUNTIME_BOOTSTRAP_ENV_CONFIG
+  COMMAND $<TARGET_FILE:dsd-neo> --print-config)
+set(_DSD_BOOTSTRAP_ENV_ONLY_ENV
+  "DSD_NEO_CONFIG=${_DSD_BOOTSTRAP_ENV_CONFIG}"
+  "DSD_NEO_NO_BOOTSTRAP=1")
+set_tests_properties(RUNTIME_BOOTSTRAP_ENV_CONFIG PROPERTIES
+  ENVIRONMENT "${_DSD_BOOTSTRAP_ENV_ONLY_ENV}"
+  PASS_REGULAR_EXPRESSION [=[decode = "p25p1"]=])
+
+add_test(NAME RUNTIME_BOOTSTRAP_CLI_CONFIG_OVERRIDES_ENV
+  COMMAND $<TARGET_FILE:dsd-neo> --config --print-config)
+set(_DSD_BOOTSTRAP_CLI_OVERRIDE_ENV
+  "DSD_NEO_CONFIG=${_DSD_BOOTSTRAP_ENV_CONFIG}"
+  "DSD_NEO_NO_BOOTSTRAP=1"
+  "${_DSD_BOOTSTRAP_DEFAULT_CFG_ENV}=${_DSD_BOOTSTRAP_DEFAULT_CFG_ROOT}")
+set_tests_properties(RUNTIME_BOOTSTRAP_CLI_CONFIG_OVERRIDES_ENV PROPERTIES
+  ENVIRONMENT "${_DSD_BOOTSTRAP_CLI_OVERRIDE_ENV}"
+  PASS_REGULAR_EXPRESSION [=[decode = "dmr"]=])
+
+add_test(NAME RUNTIME_BOOTSTRAP_LIST_PROFILES
+  COMMAND $<TARGET_FILE:dsd-neo>
+    --config "${_DSD_BOOTSTRAP_PROFILE_CONFIG}"
+    --list-profiles)
+set_tests_properties(RUNTIME_BOOTSTRAP_LIST_PROFILES PROPERTIES
+  PASS_REGULAR_EXPRESSION "Profiles in")
+
+add_test(NAME RUNTIME_BOOTSTRAP_MISSING_PROFILE
+  COMMAND $<TARGET_FILE:dsd-neo>
+    --config "${_DSD_BOOTSTRAP_PROFILE_CONFIG}"
+    --profile missing
+    --print-config)
+set_tests_properties(RUNTIME_BOOTSTRAP_MISSING_PROFILE PROPERTIES
+  WILL_FAIL TRUE)
+
 # P25 scaffolding tests
 add_executable(dsd-neo_test_p25_mbf34 protocol/p25/test_p25_mbf34.c)
 target_include_directories(dsd-neo_test_p25_mbf34 PRIVATE ${PROJECT_SOURCE_DIR}/include)

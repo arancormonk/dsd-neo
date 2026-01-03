@@ -22,6 +22,7 @@ target_sources(dsd-neo_runtime PRIVATE
 	  cli/compact.c
 	  cli/usage.c
 	  cli/oneshot_dmr_t3.c
+	  bootstrap/bootstrap.c
 	  bootstrap/system.c
   bootstrap/audio.c
   bootstrap/interactive.c

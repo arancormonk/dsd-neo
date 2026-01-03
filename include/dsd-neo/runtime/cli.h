@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
  * @file
- * @brief Minimal CLI surface for parsing args/env into dsd_opts/dsd_state.
+ * @brief CLI surface for parsing args/env into dsd_opts/dsd_state.
+ *
+ * For high-level startup orchestration (config discovery/one-shots/interactive
+ * bootstrap decisions), see `include/dsd-neo/runtime/bootstrap.h`.
  */
 #pragma once
 
