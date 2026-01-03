@@ -697,6 +697,11 @@ target_include_directories(dsd-neo_test_dsp_demod_misc PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(dsd-neo_test_dsp_demod_misc PRIVATE dsd-neo_dsp)
 add_test(NAME DSP_DEMOD_MISC COMMAND dsd-neo_test_dsp_demod_misc)
 
+add_executable(dsd-neo_test_dsp_snr_bias dsp/test_dsp_snr_bias.cpp)
+target_include_directories(dsd-neo_test_dsp_snr_bias PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_snr_bias PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_SNR_BIAS COMMAND dsd-neo_test_dsp_snr_bias)
+
 # Post-demod audio polyphase decimator (M>2) smoke test
 add_executable(dsd-neo_test_dsp_audio_polydecim dsp/test_dsp_audio_polydecim.cpp)
 target_include_directories(dsd-neo_test_dsp_audio_polydecim PRIVATE ${PROJECT_SOURCE_DIR}/include)
