@@ -2350,6 +2350,11 @@ extern "C" int dsd_rtl_stream_get_auto_ppm(void);
 extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
 
+    if (!opts) {
+        LOG_ERROR("RTL stream open: missing opts\n");
+        return -1;
+    }
+
     struct {
         int use;
         int cqpsk_enable;
@@ -2362,7 +2367,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000; // base DSP bandwidth in Hz
     /* DMR (GFSK) data decoding is sensitive to overly low DSP basebands; users often (reasonably) set bw≈12 kHz,
        but the resulting low-rate discriminator stream can degrade LRRP payload reliability even if resampled later. */
-    if (opts && opts->frame_dmr == 1 && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 24) {
+    if (opts->frame_dmr == 1 && opts->rtl_dsp_bw_khz > 0 && opts->rtl_dsp_bw_khz < 24) {
         static int warned = 0;
         if (!warned) {
             warned = 1;
