@@ -22,23 +22,26 @@ extern "C" {
 /** Return codes for dsd_parse_args. */
 #define DSD_PARSE_CONTINUE 0
 #define DSD_PARSE_ONE_SHOT 1
+#define DSD_PARSE_ERROR    2
 
 /**
  * @brief Parse CLI arguments and environment into opts/state.
  *
  * Populates opts/state, compacts argv for downstream processing, and handles
  * one-shot helpers (calculators/listings). Returns DSD_PARSE_ONE_SHOT when a
- * one-shot was executed; out_oneshot_rc (when non-NULL) receives desired exit status.
+ * one-shot was executed and DSD_PARSE_ERROR when an error occurred. When
+ * returning ONE_SHOT or ERROR, out_exit_rc (when non-NULL) receives the desired
+ * process exit code.
  *
  * @param argc Argument count.
  * @param argv Argument vector.
  * @param opts Decoder options to populate.
  * @param state Decoder state to populate.
  * @param out_argc [out] Effective argc after compaction (may be NULL).
- * @param out_oneshot_rc [out] Exit status when returning ONE_SHOT (may be NULL).
- * @return DSD_PARSE_CONTINUE to run decoder; DSD_PARSE_ONE_SHOT when handled.
+ * @param out_exit_rc [out] Process exit code when returning ONE_SHOT or ERROR (may be NULL).
+ * @return DSD_PARSE_CONTINUE to run decoder; DSD_PARSE_ONE_SHOT when handled; DSD_PARSE_ERROR on failure.
  */
-int dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc);
+int dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc);
 
 /**
  * @brief Compact argv in-place by removing recognized long options.
@@ -54,7 +57,7 @@ int dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int*
  */
 int dsd_cli_compact_args(int argc, char** argv);
 
-/** @brief Print the CLI usage/help text and exit(0). */
+/** @brief Print the CLI usage/help text. */
 void dsd_cli_usage(void);
 
 /**

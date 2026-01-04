@@ -47,6 +47,47 @@ target_include_directories(dsd-neo_test_runtime_cli_compact PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_runtime_cli_compact PRIVATE dsd-neo_runtime dsd-neo_test_support)
 add_test(NAME RUNTIME_CLI_COMPACT COMMAND dsd-neo_test_runtime_cli_compact)
 
+add_executable(dsd-neo_test_runtime_cli_parse runtime/test_runtime_cli_parse.c)
+target_include_directories(dsd-neo_test_runtime_cli_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
+set(_DSD_RUNTIME_CLI_PARSE_LIBS
+  dsd-neo_runtime
+  dsd-neo_crypto
+  dsd-neo_fec
+  dsd-neo_dsp
+  dsd-neo_core
+  dsd-neo_io_audio
+  dsd-neo_io_control
+  dsd-neo_io_radio
+  dsd-neo_io_udp_control
+  dsd-neo_proto_dmr
+  dsd-neo_proto_p25
+  dsd-neo_proto_nxdn
+  dsd-neo_proto_edacs
+  dsd-neo_proto_dstar
+  dsd-neo_proto_m17
+  dsd-neo_proto_dpmr
+  dsd-neo_proto_provoice
+  dsd-neo_proto_x2tdma
+  dsd-neo_proto_ysf
+)
+
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+  target_link_libraries(dsd-neo_test_runtime_cli_parse PRIVATE
+    "-Wl,--start-group"
+    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+    "-Wl,--end-group"
+    ${LIBS}
+    dsd-neo_test_support
+  )
+else()
+  target_link_libraries(dsd-neo_test_runtime_cli_parse PRIVATE
+    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+    ${LIBS}
+    dsd-neo_test_support
+  )
+endif()
+add_test(NAME RUNTIME_CLI_PARSE COMMAND dsd-neo_test_runtime_cli_parse)
+
 add_executable(dsd-neo_test_runtime_config_user runtime/test_runtime_config_user.cpp)
 target_include_directories(dsd-neo_test_runtime_config_user PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_user PRIVATE dsd-neo_runtime dsd-neo_test_support)

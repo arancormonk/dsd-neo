@@ -149,14 +149,18 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     }
 
     {
-        int oneshot_rc = 0;
-        int early_rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &oneshot_rc);
-        if (early_rc == DSD_PARSE_ONE_SHOT) {
-            bootstrap_set_exit_rc(out_exit_rc, oneshot_rc);
+        int parse_exit_rc = 1;
+        int parse_rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &parse_exit_rc);
+        if (parse_rc == DSD_PARSE_ONE_SHOT) {
+            bootstrap_set_exit_rc(out_exit_rc, parse_exit_rc);
             return DSD_BOOTSTRAP_EXIT;
         }
-        if (early_rc != DSD_PARSE_CONTINUE) {
-            bootstrap_set_exit_rc(out_exit_rc, early_rc);
+        if (parse_rc == DSD_PARSE_ERROR) {
+            bootstrap_set_exit_rc(out_exit_rc, parse_exit_rc);
+            return DSD_BOOTSTRAP_ERROR;
+        }
+        if (parse_rc != DSD_PARSE_CONTINUE) {
+            bootstrap_set_exit_rc(out_exit_rc, 1);
             return DSD_BOOTSTRAP_ERROR;
         }
         // Keep original argc for UI bootstrap heuristics; use argc_effective

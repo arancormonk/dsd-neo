@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/runtime/cli.h>
@@ -31,7 +31,14 @@
 #endif
 
 // Local helpers --------------------------------------------------------------
-static void dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state);
+static int dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc);
+
+static void
+cli_set_exit_rc(int* out_exit_rc, int rc) {
+    if (out_exit_rc) {
+        *out_exit_rc = rc;
+    }
+}
 
 static int
 cli_collect_hex_digits(const char* in, char* out, size_t out_cap, size_t* out_len) {
@@ -79,7 +86,7 @@ cli_parse_hex_u64_n(const char* hex, size_t n, unsigned long long* out) {
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
 int
-dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_oneshot_rc) {
+dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
 
     dsd_neo_config_init(opts);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -276,18 +283,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         /* Refresh typed env config after CLI writes. */
         dsd_neo_config_init(opts);
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_cli);
-        if (out_oneshot_rc) {
-            *out_oneshot_rc = rc;
-        }
+        cli_set_exit_rc(out_exit_rc, rc);
         return DSD_PARSE_ONE_SHOT;
     }
 
     // Environment fallback
     if (cfg && cfg->dmr_t3_calc_csv_is_set && cfg->dmr_t3_calc_csv[0] != '\0') {
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);
-        if (out_oneshot_rc) {
-            *out_oneshot_rc = rc;
-        }
+        cli_set_exit_rc(out_exit_rc, rc);
         return DSD_PARSE_ONE_SHOT;
     }
 
@@ -332,16 +335,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     extern int optind;
     optind = 1;
 
-    dsd_parse_short_opts(new_argc, argv, opts, state);
+    int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }
-    return DSD_PARSE_CONTINUE;
+    return parse_rc;
 }
 
 // Short-option getopt loop migrated to runtime
-static void
-dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
+static int
+dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc) {
     int c;
     extern char* optarg;
     extern int optind;
@@ -355,8 +358,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
         switch (c) {
             case 'h':
                 dsd_cli_usage();
-                exit(0);
-                break;
+                cli_set_exit_rc(out_exit_rc, 0);
+                return DSD_PARSE_ONE_SHOT;
             case 'a': opts->call_alert = 1; break;
             case '~':
                 state->debug_mode = 1;
@@ -364,8 +367,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 break;
             case 'O':
                 pulse_list();
-                exit(0);
-                break;
+                cli_set_exit_rc(out_exit_rc, 0);
+                return DSD_PARSE_ONE_SHOT;
             case 'M':
                 strncpy(state->m17dat, optarg, 49);
                 state->m17dat[49] = '\0';
@@ -469,14 +472,16 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     size_t nhex = 0;
                     if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {
                         LOG_ERROR("-H expects a hex key (spaces allowed)\n");
-                        exit(1);
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
                     }
 
                     unsigned long long k1 = 0ULL, k2 = 0ULL, k3 = 0ULL, k4 = 0ULL;
                     if (nhex == 10) {
                         if (!cli_parse_hex_u64_n(hex, 10, &k1)) {
                             LOG_ERROR("-H failed to parse 10-hex Hytera BP key\n");
-                            exit(1);
+                            cli_set_exit_rc(out_exit_rc, 1);
+                            return DSD_PARSE_ERROR;
                         }
                         state->H = k1 & 0xFFFFFFFFFFULL;
                         state->K1 = state->H;
@@ -485,7 +490,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     } else if (nhex == 32) {
                         if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {
                             LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");
-                            exit(1);
+                            cli_set_exit_rc(out_exit_rc, 1);
+                            return DSD_PARSE_ERROR;
                         }
                         state->H = k1;
                         state->K1 = k1;
@@ -496,7 +502,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                         if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)
                             || !cli_parse_hex_u64_n(hex + 32, 16, &k3) || !cli_parse_hex_u64_n(hex + 48, 16, &k4)) {
                             LOG_ERROR("-H failed to parse 64-hex key (4x16)\n");
-                            exit(1);
+                            cli_set_exit_rc(out_exit_rc, 1);
+                            return DSD_PARSE_ERROR;
                         }
                         state->H = k1;
                         state->K1 = k1;
@@ -506,7 +513,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                         LOG_NOTICE("AES-256 / Hytera 256-bit key loaded (4x64)\n");
                     } else {
                         LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");
-                        exit(1);
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
                     }
                     state->keyloader = 0;
                 }
@@ -562,7 +570,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     // Allow CLI to override config-derived static WAV settings (file not opened yet).
                     if (opts->wav_out_f != NULL) {
                         LOG_ERROR("-P cannot be used with -w (static WAV output)\n");
-                        exit(1);
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
                     }
                     opts->static_wav_file = 0;
                     opts->wav_out_file[0] = '\0';
@@ -698,7 +707,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                     // Allow CLI to override config-derived per-call WAV settings (files not opened yet).
                     if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {
                         LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");
-                        exit(1);
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
                     }
                     opts->dmr_stereo_wav = 0;
                 }
@@ -1476,7 +1486,11 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state) {
                 state->M = 1;
                 LOG_NOTICE("Force Privacy Key priority enabled\n");
                 break;
-            default: dsd_cli_usage(); exit(0);
+            default:
+                dsd_cli_usage();
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
         }
     }
+    return DSD_PARSE_CONTINUE;
 }

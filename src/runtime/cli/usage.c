@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -12,11 +12,9 @@
 #include <dsd-neo/runtime/cli.h>
 
 #include <stdio.h>
-#include <stdlib.h>
 
 void
 dsd_cli_usage(void) {
-
     printf("\n");
     printf("Usage: dsd-neo [options]            Decoder/Trunking Mode\n");
     printf("  or:  dsd-neo [options] -r <files> Read/Play saved mbe data from file(s)\n");
@@ -334,5 +332,4 @@ dsd_cli_usage(void) {
     printf("  --calc-start-lcn <int>      Starting LCN when no anchor (default 1).\n");
     printf(" Example: dsd-neo --calc-lcn freqs.csv --calc-cc-freq 451.2375 --calc-cc-lcn 50\n");
     printf("\n");
-    exit(0);
 }
