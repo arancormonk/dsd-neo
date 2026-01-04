@@ -30,6 +30,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
@@ -1567,6 +1568,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     if (opts->use_ncurses_terminal == 1) {
         ui_stop();
     }
+
+    // Emit a summary of any trunking channel map issues after UI teardown so output is visible.
+    nxdn_trunk_diag_log_summary(opts, state);
 
 #ifdef USE_CODEC2
     if (state->codec2_1600) {

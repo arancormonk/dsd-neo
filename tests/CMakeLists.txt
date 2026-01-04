@@ -17,6 +17,11 @@ target_include_directories(dsd-neo_test_dstar_header_utils PRIVATE ${PROJECT_SOU
 target_link_libraries(dsd-neo_test_dstar_header_utils PRIVATE dsd-neo_proto_dstar)
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
+add_executable(dsd-neo_test_nxdn_trunk_diag protocol/nxdn/test_nxdn_trunk_diag.c)
+target_include_directories(dsd-neo_test_nxdn_trunk_diag PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_nxdn_trunk_diag PRIVATE dsd-neo_proto_nxdn)
+add_test(NAME NXDN_TRUNK_DIAG COMMAND dsd-neo_test_nxdn_trunk_diag)
+
 add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)

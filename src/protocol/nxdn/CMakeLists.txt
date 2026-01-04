@@ -5,6 +5,7 @@ target_sources(dsd-neo_proto_nxdn PRIVATE
   nxdn_deperm.c
   nxdn_element.c
   nxdn_frame.c
+  nxdn_trunk_diag.c
   nxdn_voice.c
 )
 

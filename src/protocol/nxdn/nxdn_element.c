@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -25,6 +25,7 @@
 #include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/colors.h>
 
@@ -651,8 +652,14 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
                  "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan, (double)grant_freq / 1000000.0,
                  DestinationID, SourceUnitID);
     } else {
-        snprintf(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
-                 grant_chan, DestinationID, SourceUnitID);
+        nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
+        if (opts && opts->chan_in_file[0] != '\0') {
+            snprintf(state->active_channel[dup], sizeof state->active_channel[dup],
+                     "Active Ch: %d (no chan_csv freq) TG: %d SRC: %d; ", grant_chan, DestinationID, SourceUnitID);
+        } else {
+            snprintf(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
+                     grant_chan, DestinationID, SourceUnitID);
+        }
     }
 
     state->last_active_time = now;
@@ -1878,6 +1885,9 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
 
                 long int freq = 0;
                 freq = nxdn_channel_to_frequency(opts, state, rep1);
+                if (freq == 0) {
+                    nxdn_trunk_diag_log_missing_channel_once(opts, state, rep1, "tune");
+                }
 
                 //check to see if the source/target candidate is blocked first
                 if (opts->p25_trunk == 1 && (strcmp(mode, "DE") != 0)
