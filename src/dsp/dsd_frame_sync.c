@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
  * Copyright (C) 2010 DSD Author
@@ -2068,7 +2068,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             // buffer reset
             synctest_pos = 0;
             synctest_p = synctest_buf;
-            noCarrier(opts, state);
+            dsd_frame_sync_hook_no_carrier(opts, state);
         }
 
         if (state->lastsynctype != DSD_SYNC_P25P1_NEG) {
@@ -2197,7 +2197,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         dsd_frame_sync_hook_p25_sm_on_release(opts, state);
                     }
                 }
-                noCarrier(opts, state);
+                dsd_frame_sync_hook_no_carrier(opts, state);
 
                 return (-1);
             }

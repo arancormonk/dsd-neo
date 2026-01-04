@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -36,4 +36,12 @@ dsd_frame_sync_hook_eot_cc(dsd_opts* opts, dsd_state* state) {
         return;
     }
     g_frame_sync_hooks.eot_cc(opts, state);
+}
+
+void
+dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state) {
+    if (!g_frame_sync_hooks.no_carrier) {
+        return;
+    }
+    g_frame_sync_hooks.no_carrier(opts, state);
 }

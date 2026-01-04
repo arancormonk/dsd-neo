@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -24,6 +24,7 @@ typedef struct {
     void (*p25_sm_try_tick)(dsd_opts* opts, dsd_state* state);
     void (*p25_sm_on_release)(dsd_opts* opts, dsd_state* state);
     void (*eot_cc)(dsd_opts* opts, dsd_state* state);
+    void (*no_carrier)(dsd_opts* opts, dsd_state* state);
 } dsd_frame_sync_hooks;
 
 void dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks);
@@ -31,6 +32,7 @@ void dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks);
 void dsd_frame_sync_hook_p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_p25_sm_on_release(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_eot_cc(dsd_opts* opts, dsd_state* state);
+void dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

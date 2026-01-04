@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
 #include <dsd-neo/protocol/edacs/edacs.h>
@@ -15,5 +16,6 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.p25_sm_try_tick = p25_sm_try_tick;
     hooks.p25_sm_on_release = p25_sm_on_release;
     hooks.eot_cc = eot_cc;
+    hooks.no_carrier = noCarrier;
     dsd_frame_sync_hooks_set(hooks);
 }
