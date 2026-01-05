@@ -339,11 +339,7 @@ initOpts(dsd_opts* opts) {
 
 static void*
 aligned_alloc_64(size_t size) {
-    void* p = dsd_aligned_alloc(64, size);
-    if (!p) {
-        return malloc(size);
-    }
-    return p;
+    return dsd_aligned_alloc(64, size);
 }
 
 void
@@ -974,33 +970,33 @@ freeState(dsd_state* state) {
     free(state->event_history_s);
     state->event_history_s = NULL;
 
-    free(state->audio_out_buf);
+    dsd_aligned_free(state->audio_out_buf);
     state->audio_out_buf = NULL;
     state->audio_out_buf_p = NULL;
 
-    free(state->audio_out_bufR);
+    dsd_aligned_free(state->audio_out_bufR);
     state->audio_out_bufR = NULL;
     state->audio_out_buf_pR = NULL;
 
-    free(state->audio_out_float_buf);
+    dsd_aligned_free(state->audio_out_float_buf);
     state->audio_out_float_buf = NULL;
     state->audio_out_float_buf_p = NULL;
 
-    free(state->audio_out_float_bufR);
+    dsd_aligned_free(state->audio_out_float_bufR);
     state->audio_out_float_bufR = NULL;
     state->audio_out_float_buf_pR = NULL;
 
-    free(state->dmr_sample_history);
+    dsd_aligned_free(state->dmr_sample_history);
     state->dmr_sample_history = NULL;
     state->dmr_sample_history_size = 0;
     state->dmr_sample_history_head = 0;
     state->dmr_sample_history_count = 0;
 
-    free(state->dibit_buf);
+    dsd_aligned_free(state->dibit_buf);
     state->dibit_buf = NULL;
     state->dibit_buf_p = NULL;
 
-    free(state->dmr_payload_buf);
+    dsd_aligned_free(state->dmr_payload_buf);
     state->dmr_payload_buf = NULL;
     state->dmr_payload_p = NULL;
 

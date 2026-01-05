@@ -18,6 +18,7 @@
 #undef DSD_NEO_MAIN
 
 #include <stdio.h>
+#include <stdlib.h>
 
 void
 noCarrier(dsd_opts* opts, dsd_state* state) {
@@ -36,10 +37,16 @@ test_redirect_stdout_to_null(void) {
 
 static int
 test_help_returns_one_shot_and_does_not_exit(void) {
-    dsd_opts opts;
-    dsd_state state;
-    initOpts(&opts);
-    initState(&state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
 
     char arg0[] = "dsd-neo";
     char arg1[] = "-h";
@@ -49,24 +56,39 @@ test_help_returns_one_shot_and_does_not_exit(void) {
     int exit_rc = -1;
 
     test_redirect_stdout_to_null();
-    int rc = dsd_parse_args(2, argv, &opts, &state, &argc_effective, &exit_rc);
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ONE_SHOT) {
         fprintf(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ONE_SHOT, rc);
+        freeState(state);
+        free(opts);
+        free(state);
         return 1;
     }
     if (exit_rc != 0) {
         fprintf(stderr, "expected exit_rc=0, got %d\n", exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
         return 1;
     }
+    freeState(state);
+    free(opts);
+    free(state);
     return 0;
 }
 
 static int
 test_invalid_option_returns_error_and_does_not_exit(void) {
-    dsd_opts opts;
-    dsd_state state;
-    initOpts(&opts);
-    initState(&state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
 
     char arg0[] = "dsd-neo";
     char arg1[] = "-H";
@@ -76,24 +98,39 @@ test_invalid_option_returns_error_and_does_not_exit(void) {
     int argc_effective = 0;
     int exit_rc = 0;
 
-    int rc = dsd_parse_args(3, argv, &opts, &state, &argc_effective, &exit_rc);
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR) {
         fprintf(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ERROR, rc);
+        freeState(state);
+        free(opts);
+        free(state);
         return 1;
     }
     if (exit_rc != 1) {
         fprintf(stderr, "expected exit_rc=1, got %d\n", exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
         return 1;
     }
+    freeState(state);
+    free(opts);
+    free(state);
     return 0;
 }
 
 static int
 test_unknown_option_returns_error_and_does_not_exit(void) {
-    dsd_opts opts;
-    dsd_state state;
-    initOpts(&opts);
-    initState(&state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
 
     char arg0[] = "dsd-neo";
     char arg1[] = "-?";
@@ -103,15 +140,24 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
     int exit_rc = 0;
 
     test_redirect_stdout_to_null();
-    int rc = dsd_parse_args(2, argv, &opts, &state, &argc_effective, &exit_rc);
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_ERROR) {
         fprintf(stderr, "expected rc=%d, got %d\n", DSD_PARSE_ERROR, rc);
+        freeState(state);
+        free(opts);
+        free(state);
         return 1;
     }
     if (exit_rc != 1) {
         fprintf(stderr, "expected exit_rc=1, got %d\n", exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
         return 1;
     }
+    freeState(state);
+    free(opts);
+    free(state);
     return 0;
 }
 
