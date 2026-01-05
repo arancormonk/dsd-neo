@@ -65,6 +65,7 @@ static uint32_t s_last_rtl_freq = 0;
 #endif
 
 void dsd_engine_frame_sync_hooks_install(void);
+void dsd_engine_trunk_tuning_hooks_install(void);
 
 // Small helpers to efficiently set fixed-width strings
 static inline void
@@ -1712,6 +1713,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     }
 
     dsd_engine_frame_sync_hooks_install();
+    dsd_engine_trunk_tuning_hooks_install();
 
     // If trunking/scanner inputs were configured via INI/env rather than CLI (-C/-G),
     // import the CSVs now before the decoder begins processing.

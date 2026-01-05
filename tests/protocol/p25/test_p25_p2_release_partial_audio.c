@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 // Minimal IO stubs (avoid actual tuning/audio devices in unit tests)
 bool
@@ -44,6 +45,13 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.return_to_cc = return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
 }
 
 static int g_p25p2_flush_called = 0;
@@ -84,6 +92,7 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
+    install_trunk_tuning_hooks();
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
 

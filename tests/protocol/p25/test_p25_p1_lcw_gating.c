@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
@@ -56,6 +57,14 @@ void
 return_to_cc(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq = trunk_tune_to_freq;
+    hooks.return_to_cc = return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
 }
 
 // Minimal ConvertBitIntoBytes (MSB-first) and no-op alias/GPS helpers for LCW
@@ -141,6 +150,7 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
+    install_trunk_tuning_hooks();
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
     opts.p25_trunk = 1;

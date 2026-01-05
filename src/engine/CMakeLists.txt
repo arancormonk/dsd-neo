@@ -42,6 +42,7 @@ add_library(dsd-neo_engine)
 target_sources(dsd-neo_engine PRIVATE
   engine.c
   frame_sync_hooks_install.c
+  trunk_tuning_hooks_install.c
 )
 
 target_include_directories(dsd-neo_engine

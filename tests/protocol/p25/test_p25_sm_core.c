@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /* Focused tests for P25 trunk SM timing/backoff/CC-hunt behaviors. */
@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 // Strong test stubs override weak fallbacks in SM
 static long g_last_tuned_vc = 0;
@@ -43,6 +44,15 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
 }
 
 static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq = trunk_tune_to_freq;
+    hooks.tune_to_cc = trunk_tune_to_cc;
+    hooks.return_to_cc = return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+}
+
+static void
 init_basic(dsd_opts* o, dsd_state* s) {
     memset(o, 0, sizeof(*o));
     memset(s, 0, sizeof(*s));
@@ -68,6 +78,7 @@ int
 main(void) {
     static dsd_opts opts;
     static dsd_state st;
+    install_trunk_tuning_hooks();
     init_basic(&opts, &st);
 
     // 1) Post-hang watchdog release (monotonic)

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 // Stubs to satisfy external references
 
@@ -88,6 +89,13 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     g_return_to_cc_called++;
 }
 
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.return_to_cc = return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+}
+
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
@@ -102,6 +110,7 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
+    install_trunk_tuning_hooks();
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
 

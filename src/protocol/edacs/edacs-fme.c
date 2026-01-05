@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * EDACS-FME
@@ -36,7 +36,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_audio.h>
@@ -47,6 +46,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -1330,7 +1330,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         }
 
                         // Use centralized io/control tuning API (lcn index starts at zero)
-                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                         state->edacs_tuned_lcn = lcn;
                         if (is_digital == 0) {
                             edacs_analog(opts, state, group, lcn);
@@ -1454,7 +1454,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         }
 
                         // Use centralized io/control tuning API (lcn index starts at zero)
-                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                         state->edacs_tuned_lcn = lcn;
                         if (is_digital == 0) {
                             edacs_analog(opts, state, target, lcn);
@@ -1564,7 +1564,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         }
 
                         // Use centralized io/control tuning API (lcn index starts at zero)
-                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                         state->edacs_tuned_lcn = lcn;
                         if (is_digital == 0) {
                             edacs_analog(opts, state, -1, lcn);
@@ -1739,7 +1739,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         }
 
                         // Use centralized io/control tuning API (lcn index starts at zero)
-                        trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                         state->edacs_tuned_lcn = lcn;
                         if (is_digital == 0) {
                             edacs_analog(opts, state, group, lcn);
@@ -2020,7 +2020,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
 
                             // Use centralized io/control tuning API (lcn index starts at zero)
-                            trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                            dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                             state->edacs_tuned_lcn = lcn;
                             if (is_digital == 0) {
                                 edacs_analog(opts, state, target, lcn);
@@ -2130,7 +2130,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
 
                             // Use centralized io/control tuning API (lcn index starts at zero)
-                            trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                            dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                             state->edacs_tuned_lcn = lcn;
                             if (is_digital == 0) {
                                 edacs_analog(opts, state, target, lcn);
@@ -2427,7 +2427,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                                 }
 
                                 // Use centralized io/control tuning API (lcn index starts at zero)
-                                trunk_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+                                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
                                 state->edacs_tuned_lcn = lcn;
                                 if (is_digital == 0) {
                                     edacs_analog(opts, state, 0, lcn);
@@ -2549,7 +2549,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     //jump back to CC here
     if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
         // Use centralized io/control tuning API
-        trunk_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
         opts->p25_is_tuned = 0;
 
         // EDACS-specific state cleanup

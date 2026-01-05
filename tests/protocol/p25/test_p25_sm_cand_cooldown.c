@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /* Verify CC candidate cooldown: after tuning a failing candidate, it is
@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 static long g_last_tuned_cc = 0;
 
@@ -23,6 +24,13 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)state;
     (void)ted_sps;
     g_last_tuned_cc = freq;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc = trunk_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
 }
 
 static void
@@ -40,6 +48,7 @@ int
 main(void) {
     static dsd_opts o;
     static dsd_state st;
+    install_trunk_tuning_hooks();
     init_basic(&o, &st);
     // Two candidates A, B
     long A = 852000000;

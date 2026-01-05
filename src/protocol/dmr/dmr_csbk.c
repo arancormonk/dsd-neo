@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*-------------------------------------------------------------------------------
@@ -24,7 +24,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
@@ -32,6 +31,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -1095,7 +1095,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         }
                         if (next > 0 && next != cur) {
                             state->trunk_cc_freq = next;
-                            return_to_cc(opts, state);
+                            dsd_trunk_tuning_hook_return_to_cc(opts, state);
                             fprintf(stderr, "\n Switched to announced TSCC: %.6lf MHz\n", (double)next / 1000000.0);
                         }
                     }
@@ -2128,7 +2128,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                                     }
 
                                     // Use centralized io/control tuning API
-                                    trunk_tune_to_freq(opts, state, state->trunk_chan_map[j + 1], 0);
+                                    dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[j + 1], 0);
                                     j = 11; //break loop
                                 }
                             }
@@ -2432,7 +2432,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                         if (state->trunk_chan_map[lcn] != 0) //if we have a valid frequency
                         {
                             // Use centralized io/control tuning API
-                            trunk_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
+                            dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
                             state->is_con_plus = 1;        //flag on
                             dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                         }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  *
  * DMR Tier III trunking state machine - event-driven, tick-based.
  */
@@ -10,13 +10,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
 #include <string.h>
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
-void trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-void return_to_cc(dsd_opts* opts, dsd_state* state);
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -113,7 +112,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         state->p25_sm_release_count++;
     }
 
-    return_to_cc(opts, state);
+    dsd_trunk_tuning_hook_return_to_cc(opts, state);
 
     set_state(ctx, opts, DMR_SM_ON_CC, reason);
 }
@@ -168,7 +167,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     }
 
     dmr_reset_blocks(opts, state);
-    trunk_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
+    dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
 
     state->last_t3_tune_time_m = now_m;
     state->p25_sm_tune_count++;

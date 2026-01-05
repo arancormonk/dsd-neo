@@ -19,11 +19,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -1446,7 +1446,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                     //tune to the current rest channel so we can observe its channel status csbks for the TG on hold
                     if (state->trunk_cc_freq != 0) {
                         // Use centralized io/control tuning API
-                        trunk_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+                        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
                         opts->p25_is_tuned = 0;
                         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                         dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
@@ -1496,7 +1496,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                     //tune to the current rest channel so we can observe its channel status csbks for the TG on hold
                     if (state->trunk_cc_freq != 0) {
                         // Use centralized io/control tuning API
-                        trunk_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+                        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
                         opts->p25_is_tuned = 0;
                         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
                         dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away

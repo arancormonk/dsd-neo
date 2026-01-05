@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -23,6 +23,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
@@ -63,6 +64,13 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.return_to_cc = return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
 }
 
 // Minimal utility used by TDULC path (MSB-first)
@@ -227,6 +235,7 @@ main(void) {
 
     static dsd_opts opts;
     static dsd_state state;
+    install_trunk_tuning_hooks();
     memset(&opts, 0, sizeof opts);
     memset(&state, 0, sizeof state);
 

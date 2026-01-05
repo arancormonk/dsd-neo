@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  *
  * Unified P25 trunking state machine.
  */
@@ -11,7 +11,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/control.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -19,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -34,45 +34,10 @@ unsigned int dsd_rtl_stream_output_rate(void);
 #endif
 
 /* ============================================================================
- * Weak fallbacks for tuning functions (overridden by io/control when linked)
+ * Weak fallbacks for optional hooks (tests can override these)
  * ============================================================================ */
 
 #if defined(_MSC_VER)
-void
-dsd_neo_trunk_tune_to_freq_fallback(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
-    if (!opts || !state || freq <= 0) {
-        return;
-    }
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    opts->p25_is_tuned = 1;
-    opts->trunk_is_tuned = 1;
-    double nowm = dsd_time_now_monotonic_s();
-    state->last_vc_sync_time = time(NULL);
-    state->p25_last_vc_tune_time = state->last_vc_sync_time;
-    state->last_vc_sync_time_m = nowm;
-    state->p25_last_vc_tune_time_m = nowm;
-}
-
-void
-dsd_neo_return_to_cc_fallback(dsd_opts* opts, dsd_state* state) {
-    UNUSED2(opts, state);
-}
-
-void
-dsd_neo_trunk_tune_to_cc_fallback(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    UNUSED(opts);
-    (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
-    if (!state || freq <= 0) {
-        return;
-    }
-    state->trunk_cc_freq = freq;
-    state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-    state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
-}
-
 unsigned int
 dsd_neo_dsd_rtl_stream_output_rate_fallback(void) {
     return 0; /* No RTL stream available in test/non-RTL builds */
@@ -106,9 +71,6 @@ dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
 
 /* COFF weak-extern equivalents for optional hooks. */
 #if defined(_M_IX86)
-#pragma comment(linker, "/alternatename:_trunk_tune_to_freq=_dsd_neo_trunk_tune_to_freq_fallback")
-#pragma comment(linker, "/alternatename:_return_to_cc=_dsd_neo_return_to_cc_fallback")
-#pragma comment(linker, "/alternatename:_trunk_tune_to_cc=_dsd_neo_trunk_tune_to_cc_fallback")
 #pragma comment(linker, "/alternatename:_dsd_rtl_stream_output_rate=_dsd_neo_dsd_rtl_stream_output_rate_fallback")
 #pragma comment(linker, "/alternatename:_watchdog_event_current=_dsd_neo_watchdog_event_current_fallback")
 #pragma comment(linker, "/alternatename:_write_event_to_log_file=_dsd_neo_write_event_to_log_file_fallback")
@@ -116,9 +78,6 @@ dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
 #pragma comment(linker, "/alternatename:_init_event_history=_dsd_neo_init_event_history_fallback")
 #pragma comment(linker, "/alternatename:_dsd_p25p2_flush_partial_audio=_dsd_neo_p25p2_flush_partial_audio_fallback")
 #else
-#pragma comment(linker, "/alternatename:trunk_tune_to_freq=dsd_neo_trunk_tune_to_freq_fallback")
-#pragma comment(linker, "/alternatename:return_to_cc=dsd_neo_return_to_cc_fallback")
-#pragma comment(linker, "/alternatename:trunk_tune_to_cc=dsd_neo_trunk_tune_to_cc_fallback")
 #pragma comment(linker, "/alternatename:dsd_rtl_stream_output_rate=dsd_neo_dsd_rtl_stream_output_rate_fallback")
 #pragma comment(linker, "/alternatename:watchdog_event_current=dsd_neo_watchdog_event_current_fallback")
 #pragma comment(linker, "/alternatename:write_event_to_log_file=dsd_neo_write_event_to_log_file_fallback")
@@ -127,45 +86,6 @@ dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
 #pragma comment(linker, "/alternatename:dsd_p25p2_flush_partial_audio=dsd_neo_p25p2_flush_partial_audio_fallback")
 #endif
 #else
-P25_WEAK_FALLBACK void
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
-    if (!opts || !state || freq <= 0) {
-        return;
-    }
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
-    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    opts->p25_is_tuned = 1;
-    opts->trunk_is_tuned = 1;
-    double nowm = dsd_time_now_monotonic_s();
-    state->last_vc_sync_time = time(NULL);
-    state->p25_last_vc_tune_time = state->last_vc_sync_time;
-    state->last_vc_sync_time_m = nowm;
-    state->p25_last_vc_tune_time_m = nowm;
-}
-
-P25_WEAK_FALLBACK void
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    UNUSED2(opts, state);
-}
-
-P25_WEAK_FALLBACK void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    UNUSED(opts);
-    (void)ted_sps; // Weak stub ignores TED SPS (no RTL-SDR in test builds)
-    if (!state || freq <= 0) {
-        return;
-    }
-    state->trunk_cc_freq = freq;
-    state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-    state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
-}
-
-/* ============================================================================
- * Weak fallback for querying actual demodulator output rate
- * ============================================================================ */
-
 /**
  * @brief Query the actual RTL demodulator output sample rate.
  *
@@ -179,10 +99,6 @@ P25_WEAK_FALLBACK unsigned int
 dsd_rtl_stream_output_rate(void) {
     return 0; /* No RTL stream available in test/non-RTL builds */
 }
-
-/* ============================================================================
- * Weak Fallbacks for Event History
- * ============================================================================ */
 
 P25_WEAK_FALLBACK void
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
@@ -478,7 +394,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
 
     // Tune to VC with TED SPS determined by channel type
-    trunk_tune_to_freq(opts, state, freq, ted_sps);
+    dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps);
     ctx->tune_count++;
     ctx->grant_count++;
 
@@ -800,7 +716,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     }
 
     // Return to CC
-    return_to_cc(opts, state);
+    dsd_trunk_tuning_hook_return_to_cc(opts, state);
 
     // Transition to ON_CC state
     set_state(ctx, opts, state, P25_SM_ON_CC, "release->cc");
@@ -881,7 +797,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
     // First try discovered CC candidates (if preference enabled)
     if (opts && opts->p25_prefer_candidates == 1 && next_cc_candidate(state, &cand, now_m)) {
-        trunk_tune_to_cc(opts, state, cand, sps);
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
         state->p25_cc_eval_freq = cand;
         state->p25_cc_eval_start_m = now_m;
         ctx->t_cc_sync_m = now_m; // Reset grace timer
@@ -892,7 +808,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
     // Fall back to user-provided LCN list
     if (next_lcn_freq(state, &cand)) {
-        trunk_tune_to_cc(opts, state, cand, sps);
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
         ctx->t_cc_sync_m = now_m; // Reset grace timer
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-lcn");
         sm_log(opts, state, "hunt-lcn-tune");

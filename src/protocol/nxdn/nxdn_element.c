@@ -21,13 +21,13 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -256,7 +256,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             //tune back to CC here - save about 1-2 seconds
             if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
                 // Use centralized io/control tuning API
-                trunk_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+                dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
                 opts->p25_is_tuned = 0;
 
                 // NXDN-specific state cleanup
@@ -767,7 +767,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             && freq != 0) //if we aren't already on a VC and have a valid frequency
         {
             // Use centralized io/control tuning API
-            trunk_tune_to_freq(opts, state, freq, 0);
+            dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
 
             // NXDN-specific state setup
             memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
@@ -1896,7 +1896,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                     //will need to monitor, 1 second may be too long on idas, may need to try 0 or manipulate another way
                     if (state->p25_cc_freq != 0 && ((time(NULL) - state->last_vc_sync_time) > 1) && freq != 0) {
                         // Use centralized io/control tuning API
-                        trunk_tune_to_freq(opts, state, freq, 0);
+                        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0);
 
                         // NXDN-specific state setup
                         memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
