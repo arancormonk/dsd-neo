@@ -6,6 +6,156 @@ target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
 add_test(NAME ARCH_RULES COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake)
 
+set(_DSD_PUBLIC_HEADER_TEST_DIR "${CMAKE_CURRENT_BINARY_DIR}/public_header_smoke")
+file(MAKE_DIRECTORY "${_DSD_PUBLIC_HEADER_TEST_DIR}")
+
+function(dsd_neo_add_public_header_smoke_test target_name test_name header language)
+  if(language STREQUAL "C")
+    set(_hdr_src "${_DSD_PUBLIC_HEADER_TEST_DIR}/${test_name}.c")
+    file(WRITE "${_hdr_src}"
+      "// SPDX-License-Identifier: GPL-3.0-or-later\n"
+      "/*\n"
+      " * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>\n"
+      " */\n"
+      "\n"
+      "#include <${header}>\n"
+      "int main(void){return 0;}\n")
+  elseif(language STREQUAL "CXX")
+    set(_hdr_src "${_DSD_PUBLIC_HEADER_TEST_DIR}/${test_name}.cpp")
+    file(WRITE "${_hdr_src}"
+      "// SPDX-License-Identifier: GPL-3.0-or-later\n"
+      "/*\n"
+      " * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>\n"
+      " */\n"
+      "\n"
+      "#include <${header}>\n"
+      "int main(){return 0;}\n")
+  else()
+    message(FATAL_ERROR "Unknown language for ${test_name}: ${language}")
+  endif()
+
+  add_executable(${target_name} "${_hdr_src}")
+  target_include_directories(${target_name} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+  add_test(NAME ${test_name} COMMAND ${target_name})
+endfunction()
+
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_bootstrap
+  HEADERS_PUBLIC_RUNTIME_BOOTSTRAP
+  dsd-neo/runtime/bootstrap.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_cli
+  HEADERS_PUBLIC_RUNTIME_CLI
+  dsd-neo/runtime/cli.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_colors
+  HEADERS_PUBLIC_RUNTIME_COLORS
+  dsd-neo/runtime/colors.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_comp
+  HEADERS_PUBLIC_RUNTIME_COMP
+  dsd-neo/runtime/comp.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_config
+  HEADERS_PUBLIC_RUNTIME_CONFIG
+  dsd-neo/runtime/config.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_config_schema
+  HEADERS_PUBLIC_RUNTIME_CONFIG_SCHEMA
+  dsd-neo/runtime/config_schema.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_control_pump
+  HEADERS_PUBLIC_RUNTIME_CONTROL_PUMP
+  dsd-neo/runtime/control_pump.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_exitflag
+  HEADERS_PUBLIC_RUNTIME_EXITFLAG
+  dsd-neo/runtime/exitflag.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_frame_sync_hooks
+  HEADERS_PUBLIC_RUNTIME_FRAME_SYNC_HOOKS
+  dsd-neo/runtime/frame_sync_hooks.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_git_ver
+  HEADERS_PUBLIC_RUNTIME_GIT_VER
+  dsd-neo/runtime/git_ver.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_input_ring
+  HEADERS_PUBLIC_RUNTIME_INPUT_RING
+  dsd-neo/runtime/input_ring.h
+  CXX)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_log
+  HEADERS_PUBLIC_RUNTIME_LOG
+  dsd-neo/runtime/log.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_mem
+  HEADERS_PUBLIC_RUNTIME_MEM
+  dsd-neo/runtime/mem.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_ring
+  HEADERS_PUBLIC_RUNTIME_RING
+  dsd-neo/runtime/ring.h
+  CXX)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_rt_sched
+  HEADERS_PUBLIC_RUNTIME_RT_SCHED
+  dsd-neo/runtime/rt_sched.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_shutdown
+  HEADERS_PUBLIC_RUNTIME_SHUTDOWN
+  dsd-neo/runtime/shutdown.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_telemetry
+  HEADERS_PUBLIC_RUNTIME_TELEMETRY
+  dsd-neo/runtime/telemetry.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_threading
+  HEADERS_PUBLIC_RUNTIME_THREADING
+  dsd-neo/runtime/threading.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_unicode
+  HEADERS_PUBLIC_RUNTIME_UNICODE
+  dsd-neo/runtime/unicode.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_worker_pool
+  HEADERS_PUBLIC_RUNTIME_WORKER_POOL
+  dsd-neo/runtime/worker_pool.h
+  C)
+
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_cleanup
+  HEADERS_PUBLIC_CORE_CLEANUP
+  dsd-neo/core/cleanup.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_frame
+  HEADERS_PUBLIC_CORE_FRAME
+  dsd-neo/core/frame.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_state_ext
+  HEADERS_PUBLIC_CORE_STATE_EXT
+  dsd-neo/core/state_ext.h
+  C)
+
 add_executable(dsd-neo_test_aes_ofb crypto/test_aes_ofb.c)
 target_include_directories(dsd-neo_test_aes_ofb PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
