@@ -197,6 +197,7 @@ explicitly requested.
 ### Enabling Config
 
 - CLI: `--config` (uses default path) or `--config /path/to/config.ini`
+- Convenience: `dsd-neo /path/to/config.ini` (single positional `*.ini`) is treated as `--config /path/to/config.ini`.
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
 
 When both are present, CLI wins:

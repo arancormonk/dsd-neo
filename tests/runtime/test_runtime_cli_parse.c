@@ -3,11 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #define DSD_NEO_MAIN
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
@@ -19,6 +22,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 void
 noCarrier(dsd_opts* opts, dsd_state* state) {
@@ -161,11 +165,185 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
     return 0;
 }
 
+static const char*
+test_tmp_dir(void) {
+    const char* dir = getenv("TMPDIR");
+#if DSD_PLATFORM_WIN_NATIVE
+    if (!dir || !*dir) {
+        dir = getenv("TEMP");
+    }
+    if (!dir || !*dir) {
+        dir = getenv("TMP");
+    }
+#else
+    if (!dir || !*dir) {
+        dir = "/tmp";
+    }
+#endif
+    if (!dir || !*dir) {
+        dir = ".";
+    }
+    return dir;
+}
+
+static char
+test_path_sep(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return '\\';
+#else
+    return '/';
+#endif
+}
+
+static int
+test_create_temp_ini(char* out_path, size_t out_path_size) {
+    if (!out_path || out_path_size == 0) {
+        return -1;
+    }
+
+    const char sep = test_path_sep();
+    const char* tdir = test_tmp_dir();
+
+    char tmpl[1024];
+    size_t tdir_len = strlen(tdir);
+    if (tdir_len > 0 && (tdir[tdir_len - 1] == '/' || tdir[tdir_len - 1] == '\\')) {
+        snprintf(tmpl, sizeof tmpl, "%sdsdneo_bootstrap_XXXXXX", tdir);
+    } else {
+        snprintf(tmpl, sizeof tmpl, "%s%c%s", tdir, sep, "dsdneo_bootstrap_XXXXXX");
+    }
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    if (snprintf(out_path, out_path_size, "%s.ini", tmpl) >= (int)out_path_size) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    if (rename(tmpl, out_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* fp = fopen(out_path, "w");
+    if (!fp) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    fputs("version = 1\n"
+          "\n"
+          "[input]\n"
+          "source = \"rtl\"\n"
+          "rtl_device = 0\n"
+          "rtl_freq = \"100000000\"\n"
+          "\n"
+          "[trunking]\n"
+          "enabled = true\n",
+          fp);
+
+    fclose(fp);
+    return 0;
+}
+
+static int
+test_bootstrap_treats_lone_ini_as_config(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    // Make test deterministic: avoid env-config interference and skip bootstrap UI.
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini(cfg_path, sizeof cfg_path) != 0) {
+        fprintf(stderr, "failed to create temp ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char* argv[] = {arg0, cfg_path, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(2, argv, opts, state, &argc_effective, &exit_rc);
+
+    if (rc != DSD_BOOTSTRAP_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_BOOTSTRAP_CONTINUE, rc, exit_rc);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    // Ensure it behaves like "--config <path>" by compacting the effective argc down to argv[0] only.
+    if (argc_effective != 1) {
+        fprintf(stderr, "expected argc_effective=1, got %d\n", argc_effective);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (!state->config_autosave_enabled || strcmp(state->config_autosave_path, cfg_path) != 0) {
+        fprintf(stderr, "expected config_autosave_path=%s, got %s (enabled=%d)\n", cfg_path,
+                state->config_autosave_path, state->config_autosave_enabled);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (opts->trunk_enable != 1 || opts->p25_trunk != 1) {
+        fprintf(stderr, "expected trunking enabled from config, got trunk_enable=%d p25_trunk=%d\n", opts->trunk_enable,
+                opts->p25_trunk);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (strncmp(opts->audio_in_dev, "rtl:", 4) != 0) {
+        fprintf(stderr, "expected RTL input from config, got audio_in_dev=%s\n", opts->audio_in_dev);
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
+    rc |= test_bootstrap_treats_lone_ini_as_config();
     return rc;
 }

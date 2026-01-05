@@ -16,6 +16,7 @@
 
 #include <mbelib.h>
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,20 @@ bootstrap_default_or_env_config_path(const char* cli_path, const char* env_path)
         return env_path;
     }
     return dsd_user_config_default_path();
+}
+
+static int
+bootstrap_is_ini_path(const char* path) {
+    if (!path) {
+        return 0;
+    }
+    size_t n = strlen(path);
+    if (n < 4) {
+        return 0;
+    }
+    const char* ext = path + (n - 4);
+    return ext[0] == '.' && tolower((unsigned char)ext[1]) == 'i' && tolower((unsigned char)ext[2]) == 'n'
+           && tolower((unsigned char)ext[3]) == 'i';
 }
 
 int
@@ -60,6 +75,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     const char* profile_cli = NULL;
     const char* validate_path_cli = NULL;
 
+    int cfg_path_positional_ini = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0) {
             enable_config_cli = 1;
@@ -85,6 +101,14 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         } else if (strcmp(argv[i], "--list-profiles") == 0) {
             list_profiles_cli = 1;
         }
+    }
+
+    // Back-compat/UX: treat a single positional *.ini argument as "--config <path>".
+    // This keeps "dsd-neo ~/.config/dsd-neo/foo.ini" from silently falling back to defaults.
+    if (!enable_config_cli && argc == 2 && argv[1] != NULL && argv[1][0] != '-' && bootstrap_is_ini_path(argv[1])) {
+        enable_config_cli = 1;
+        config_path_cli = argv[1];
+        cfg_path_positional_ini = 1;
     }
 
     dsd_neo_config_init(opts);
@@ -150,7 +174,8 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
 
     {
         int parse_exit_rc = 1;
-        int parse_rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &parse_exit_rc);
+        const int parse_argc = cfg_path_positional_ini ? 1 : argc;
+        int parse_rc = dsd_parse_args(parse_argc, argv, opts, state, &argc_effective, &parse_exit_rc);
         if (parse_rc == DSD_PARSE_ONE_SHOT) {
             bootstrap_set_exit_rc(out_exit_rc, parse_exit_rc);
             return DSD_BOOTSTRAP_EXIT;

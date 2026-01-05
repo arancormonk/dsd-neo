@@ -32,6 +32,7 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 ## Configuration Files
 
 - Config loading is opt-in: use `--config` to enable, optionally with a path (e.g. `--config /path/to/config.ini`).
+- Convenience: `dsd-neo /path/to/config.ini` (single positional `*.ini`) is treated as `--config /path/to/config.ini`.
 - Default path (when `--config` is passed without a path): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
 - Alternatively, set `DSD_NEO_CONFIG=<path>` environment variable to enable config loading (this is the only way for a no-arg run to load a config).
 - Precedence detail: `--config /path/to/config.ini` > `--config` default path (ignores `DSD_NEO_CONFIG`) > `DSD_NEO_CONFIG`.
