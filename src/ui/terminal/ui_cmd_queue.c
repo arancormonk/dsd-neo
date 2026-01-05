@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /* UI → Demod command queue (SPSC, bounded) */
@@ -15,11 +15,11 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
-#include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/tcp_input.h>

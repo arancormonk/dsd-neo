@@ -38,6 +38,34 @@ set(_ARCH_RULES_VIOLATIONS 0)
 foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
     set(_ARCH_RULES_ABS "${_ARCH_RULES_ROOT_DIR}/${_ARCH_RULES_REL}")
 
+    set(_ARCH_RULES_UI_FORBIDDEN_AREA OFF)
+    if(_ARCH_RULES_REL MATCHES "^(src/dsp/|src/protocol/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
+        set(_ARCH_RULES_UI_FORBIDDEN_AREA ON)
+    endif()
+
+    if(_ARCH_RULES_REL MATCHES "^(src/runtime/|include/dsd-neo/runtime/)")
+        file(
+            STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_EXIT_LINES
+            REGEX "(^|[^A-Za-z0-9_])exit[ \t]*\\("
+        )
+
+        foreach(_ARCH_RULES_EXIT_LINE IN LISTS _ARCH_RULES_EXIT_LINES)
+            if(_ARCH_RULES_EXIT_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            if(_ARCH_RULES_EXIT_LINE MATCHES "\"[^\"]*exit[ \t]*\\(")
+                continue()
+            endif()
+
+            string(STRIP "${_ARCH_RULES_EXIT_LINE}" _ARCH_RULES_EXIT_LINE_STRIPPED)
+            message(SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden runtime exit() usage '${_ARCH_RULES_EXIT_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
+
     file(
         STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_INCLUDE_LINES
         REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"][^>\"]+[>\"]"
@@ -45,11 +73,6 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
 
     if(NOT _ARCH_RULES_INCLUDE_LINES)
         continue()
-    endif()
-
-    set(_ARCH_RULES_UI_FORBIDDEN_AREA OFF)
-    if(_ARCH_RULES_REL MATCHES "^(src/dsp/|src/protocol/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
-        set(_ARCH_RULES_UI_FORBIDDEN_AREA ON)
     endif()
 
     foreach(_ARCH_RULES_LINE IN LISTS _ARCH_RULES_INCLUDE_LINES)
@@ -60,6 +83,12 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
 
         if(_ARCH_RULES_UI_FORBIDDEN_AREA AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/")
             message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'")
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(_ARCH_RULES_UI_FORBIDDEN_AREA AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/engine/")
+            message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden engine include '${_ARCH_RULES_HEADER}'")
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()
         endif()
@@ -91,4 +120,3 @@ if(_ARCH_RULES_VIOLATIONS GREATER 0)
 endif()
 
 message(STATUS "ARCH_RULES: OK")
-
