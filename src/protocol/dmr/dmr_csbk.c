@@ -24,13 +24,13 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -272,7 +272,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
         if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 0 && state->trunk_cc_freq == 0) {
             long int ccfreq = 0;
             if (opts->use_rigctl == 1) {
-                ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                 ccfreq = (long int)opts->rtlsdr_center_freq;
@@ -676,7 +676,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
                 //by polling rigctl for the current frequency
                 if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) //&& state->trunk_cc_freq == 0
                 {
-                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                     if (ccfreq != 0) {
                         state->trunk_cc_freq = ccfreq;
                     }
@@ -2600,7 +2600,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
                 //if using rigctl we can set an unknown or updated cc frequency
                 if (opts->use_rigctl == 1) {
-                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                     if (ccfreq != 0) {
                         state->trunk_cc_freq = ccfreq;
                         opts->trunk_is_tuned = 1;

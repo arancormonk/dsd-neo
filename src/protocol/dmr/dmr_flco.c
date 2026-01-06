@@ -19,10 +19,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
@@ -1347,7 +1347,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         //if using rigctl we can set an unknown cc frequency by polling rigctl for the current frequency
         if (opts->use_rigctl == 1 && state->trunk_cc_freq == 0) //if not set from channel map 0
         {
-            ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+            ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->trunk_cc_freq = ccfreq;
             }
@@ -1390,7 +1390,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
         //if using rigctl we can set an unknown cc frequency by polling rigctl for the current frequency
         if (opts->use_rigctl == 1 && opts->p25_is_tuned == 0) {
-            ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+            ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->trunk_cc_freq = ccfreq;
             }

@@ -21,12 +21,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stddef.h>
@@ -162,7 +162,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
-                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
@@ -181,7 +181,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
-                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
@@ -200,7 +200,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
-                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
@@ -220,7 +220,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
-                    ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                    ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                 } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
                     ccfreq = (long int)opts->rtlsdr_center_freq;
@@ -703,7 +703,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
         //if not available, then poll rigctl if its available
         if (opts->use_rigctl == 1) {
-            ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+            ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
             }
@@ -1068,7 +1068,7 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         long int ccfreq = 0;
         //if using rigctl, we can poll for the current frequency
         if (opts->use_rigctl == 1) {
-            ccfreq = GetCurrentFreq(opts->rigctl_sockfd);
+            ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
             }

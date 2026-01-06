@@ -36,6 +36,9 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
 #include <dsd-neo/runtime/colors.h>
+#ifdef LIMAZULUTWEAKS
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -482,7 +485,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
         //if not available, then poll rigctl if its available
         if (opts->use_rigctl == 1) {
-            freq = GetCurrentFreq(opts->rigctl_sockfd);
+            freq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
         }
 
         //if using rtl input, we can ask for the current frequency tuned

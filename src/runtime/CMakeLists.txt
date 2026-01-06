@@ -11,6 +11,7 @@ target_sources(dsd-neo_runtime PRIVATE
   trunk_tuning_hooks.c
   rtl_stream_metrics_hooks.c
   p25_optional_hooks.c
+  rigctl_query_hooks.c
   exitflag.c
   shutdown.c
   log.cpp

@@ -36,7 +36,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/io/rigctl.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_input.h>
@@ -46,6 +45,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -971,7 +971,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             long int lcnfreq = 0;
                             //if using rigctl, we can ask for the currrent frequency
                             if (opts->use_rigctl == 1) {
-                                lcnfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                                lcnfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                                 if (lcnfreq != 0) {
                                     state->trunk_lcn_freq[state->edacs_cc_lcn - 1] = lcnfreq;
                                 }
@@ -2324,7 +2324,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             if (state->trunk_lcn_freq[state->edacs_cc_lcn - 1] == 0) {
                                 //If using rigctl, we can ask for the currrent frequency
                                 if (opts->use_rigctl == 1) {
-                                    long int lcnfreq = GetCurrentFreq(opts->rigctl_sockfd);
+                                    long int lcnfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
                                     if (lcnfreq != 0) {
                                         state->trunk_lcn_freq[state->edacs_cc_lcn - 1] = lcnfreq;
                                     }
