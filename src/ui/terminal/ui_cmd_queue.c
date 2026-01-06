@@ -21,7 +21,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/control.h>
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>

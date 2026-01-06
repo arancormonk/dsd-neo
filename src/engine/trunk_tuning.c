@@ -11,7 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>

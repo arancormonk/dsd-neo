@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/core/audio.h>
@@ -11,9 +11,10 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/control.h>
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/ui/menu_services.h>

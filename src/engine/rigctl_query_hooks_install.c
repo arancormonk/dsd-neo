@@ -6,7 +6,7 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/rigctl_client.h>
 
 static long int
 dsd_engine_rigctl_get_current_freq_hz(const dsd_opts* opts) {

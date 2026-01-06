@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * m17.c
@@ -37,8 +37,9 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/m17_udp.h>
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_bind.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/runtime/telemetry.h>
 

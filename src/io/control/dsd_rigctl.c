@@ -16,7 +16,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/m17_udp.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/udp_bind.h>
+#include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>

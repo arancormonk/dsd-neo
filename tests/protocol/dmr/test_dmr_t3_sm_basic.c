@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 // Minimal DMR SM smoke test: grant tunes to VC; tick handles release.
@@ -12,7 +12,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 
 // Rigctl/RTL and CC-return stubs to avoid external I/O and core linkage

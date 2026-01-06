@@ -22,8 +22,9 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
-#include <dsd-neo/io/rigctl.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>

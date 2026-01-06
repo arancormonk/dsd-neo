@@ -176,6 +176,32 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/state_ext.h
   C)
 
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_m17_udp
+  HEADERS_PUBLIC_IO_M17_UDP
+  dsd-neo/io/m17_udp.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_rigctl
+  HEADERS_PUBLIC_IO_RIGCTL
+  dsd-neo/io/rigctl.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_rigctl_client
+  HEADERS_PUBLIC_IO_RIGCTL_CLIENT
+  dsd-neo/io/rigctl_client.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_udp_bind
+  HEADERS_PUBLIC_IO_UDP_BIND
+  dsd-neo/io/udp_bind.h
+  C)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_udp_socket_connect
+  HEADERS_PUBLIC_IO_UDP_SOCKET_CONNECT
+  dsd-neo/io/udp_socket_connect.h
+  C)
+
 add_executable(dsd-neo_test_aes_ofb crypto/test_aes_ofb.c)
 target_include_directories(dsd-neo_test_aes_ofb PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
