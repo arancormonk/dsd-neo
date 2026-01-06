@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -1532,11 +1532,6 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
         dev->offset_tuning = on ? 1 : 0;
     }
     return r;
-}
-
-int
-rtl_device_set_offset_tuning(struct rtl_device* dev) {
-    return rtl_device_set_offset_tuning_enabled(dev, 1);
 }
 
 int

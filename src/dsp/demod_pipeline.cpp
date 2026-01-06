@@ -730,9 +730,10 @@ cqpsk_diff_phasor(struct demod_state* d) {
 /**
  * @brief Phase extractor for CQPSK differential phasors (OP25-compatible).
  *
- * Expects fm->lowpassed to hold the output of cqpsk_costas_diff_and_update
- * (already differenced and carrier-corrected). Converts each complex phasor
- * to a scaled float symbol value:
+ * Expects fm->lowpassed to hold symbol-rate CQPSK samples after:
+ *   op25_gardner_cc -> op25_diff_phasor_cc -> op25_costas_loop_cc
+ * (differenced and carrier-corrected). Converts each complex phasor to a
+ * scaled float symbol value:
  *   theta_n = arg(z_n) * (4/pi)
  *
  * The 4/pi scaling (OP25: multiply_const_ff(4.0/pi)) maps CQPSK constellation
@@ -1316,20 +1317,11 @@ full_demod(struct demod_state* d) {
     /* Branch early by mode to simplify ordering. */
     if (d->cqpsk_enable) {
         /*
-         * OP25-aligned CQPSK signal flow (matches p25_demodulator.py lines 406-407):
+         * OP25-aligned CQPSK signal chain:
+         *   AGC -> FLL band-edge -> Gardner (timing, decimating) -> diff_phasor -> Costas (carrier)
          *
-         *   if_out -> cutoff -> agc -> clock -> diffdec -> to_float -> rescale -> slicer
-         *                             ^^^^^^^
-         *                             gardner_costas_cc (COMBINED Gardner TED + Costas)
-         *
-         * Key architecture from OP25's gardner_costas_cc_impl.cc:
-         *   1. NCO rotation is applied to each sample BEFORE the delay line
-         *   2. Gardner TED and Costas loop operate in a single combined block
-         *   3. Output is RAW NCO-corrected symbols (not differential)
-         *   4. External diff_phasor_cc is applied AFTER the combined block
-         *
-         * This matches OP25 exactly - no separate FLL, no separate TED call.
-         * All timing recovery and carrier tracking happens inside op25_gardner_costas_cc().
+         * Implemented by cqpsk_rms_agc(), op25_fll_band_edge_cc(), op25_gardner_cc(),
+         * op25_diff_phasor_cc(), op25_costas_loop_cc().
          */
 
         /* Fast path when squelched: skip expensive DSP but produce zero symbols to keep

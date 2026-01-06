@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*-------------------------------------------------------------------------------
@@ -40,8 +40,8 @@
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
 // Expose MAC helpers for tests and diagnostics.
-#include <dsd-neo/protocol/p25/p25_mac.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
+#include <dsd-neo/protocol/p25/p25p2_mac_tables.h>
 
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void

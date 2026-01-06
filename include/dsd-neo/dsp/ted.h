@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -129,16 +129,6 @@ void gardner_timing_adjust_farrow(const ted_config_t* config, ted_state_t* state
 static inline float
 ted_residual(const ted_state_t* s) {
     return s ? s->e_ema : 0.0f;
-}
-
-/**
- * @brief Return the current smoothed TED residual as integer (legacy compat).
- *
- * Scaled to roughly match old Q15 range for diagnostic displays.
- */
-static inline int
-ted_residual_int(const ted_state_t* s) {
-    return s ? (int)(s->e_ema * 32768.0f) : 0;
 }
 
 /**

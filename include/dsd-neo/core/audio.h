@@ -44,12 +44,6 @@ void closeAudioOutput(dsd_opts* opts);
 /** @brief Best-effort drain of audio output buffers. Safe no-op when disabled. */
 void dsd_drain_audio_output(dsd_opts* opts);
 
-/* Legacy function names for backward compatibility - redirect to new names */
-#define openPulseInput(opts)   openAudioInput(opts)
-#define openPulseOutput(opts)  openAudioOutput(opts)
-#define closePulseInput(opts)  closeAudioInput(opts)
-#define closePulseOutput(opts) closeAudioOutput(opts)
-
 /** @brief Write synthesized mono voice samples for slot 1. */
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono voice samples for slot 2. */
@@ -148,15 +142,8 @@ void parse_audio_input_string(dsd_opts* opts, char* input);
 /** @brief Parse audio output device string and update opts. */
 void parse_audio_output_string(dsd_opts* opts, char* input);
 
-/* Legacy function names for backward compatibility */
-#define parse_pulse_input_string(opts, input)  parse_audio_input_string(opts, input)
-#define parse_pulse_output_string(opts, input) parse_audio_output_string(opts, input)
-
 /** @brief Print available audio devices to stdout. */
 int audio_list_devices(void);
-
-/* Legacy alias */
-#define pulse_list() audio_list_devices()
 
 #ifdef __cplusplus
 }

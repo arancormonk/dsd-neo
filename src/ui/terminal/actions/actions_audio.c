@@ -22,8 +22,8 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     const char* msg = (opts->audio_out == 0) ? "Output: Muted" : "Output: On";
     if (opts->audio_out == 1) {
         if (opts->audio_out_type == 0) {
-            closePulseOutput(opts);
-            if (openPulseOutput(opts) != 0) {
+            closeAudioOutput(opts);
+            if (openAudioOutput(opts) != 0) {
                 opts->audio_out = 0;
                 msg = "Output: open failed";
             }

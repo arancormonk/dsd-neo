@@ -367,7 +367,7 @@ svc_set_pulse_output(dsd_opts* opts, const char* index) {
     // supply only the part after 'pulse:' to parser
     char tmp[128];
     snprintf(tmp, sizeof tmp, "%s", index);
-    parse_pulse_output_string(opts, tmp);
+    parse_audio_output_string(opts, tmp);
     return 0;
 }
 
@@ -380,7 +380,7 @@ svc_set_pulse_input(dsd_opts* opts, const char* index) {
     opts->audio_in_type = AUDIO_IN_PULSE;
     char tmp[128];
     snprintf(tmp, sizeof tmp, "%s", index);
-    parse_pulse_input_string(opts, tmp);
+    parse_audio_input_string(opts, tmp);
     return 0;
 }
 

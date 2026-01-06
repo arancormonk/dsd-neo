@@ -1,24 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
  * Unit tests for the OP25-aligned CQPSK demodulation chain.
  *
- * The new architecture directly ports OP25's gardner_costas_cc signal flow:
- *   1. NCO rotation is applied per sample BEFORE the delay line
- *   2. Gardner TED and Costas loop operate in a single combined block
- *   3. Output is RAW NCO-corrected symbols (decimated to symbol rate)
- *   4. External diff_phasor_cc is applied AFTER the combined block
+ * Signal flow (from OP25 p25_demodulator.py):
+ *   AGC -> Gardner (timing) -> diff_phasor -> Costas (carrier)
  *
- * Signal flow (from OP25 p25_demodulator.py lines 406-407):
- *   if_out -> cutoff -> agc -> clock -> diffdec -> to_float -> rescale -> slicer
- *                             ^^^^^^^   ^^^^^^^
- *                    op25_gardner_costas_cc    op25_diff_phasor_cc
- *
- * These tests verify the combined op25_gardner_costas_cc + op25_diff_phasor_cc
- * pipeline produces correct differential symbols.
+ * dsd-neo implements this as separate blocks:
+ *   op25_gardner_cc -> op25_diff_phasor_cc -> op25_costas_loop_cc
  */
 
 #include <dsd-neo/dsp/costas.h>
@@ -41,11 +33,21 @@ alloc_state(void) {
     return s;
 }
 
+static void
+run_cqpsk_chain(demod_state* s) {
+    if (!s || !s->cqpsk_enable) {
+        return;
+    }
+    op25_gardner_cc(s);
+    op25_diff_phasor_cc(s);
+    op25_costas_loop_cc(s);
+}
+
 /*
  * Test: Basic pipeline passes without crashing.
  *
- * Feed a buffer of constant-phase symbols through the combined block
- * and verify no crashes and some output is produced.
+ * Feed a buffer of constant-phase symbols through the chain and verify no
+ * crashes and some output is produced.
  */
 static int
 test_basic_passthrough(void) {
@@ -87,8 +89,7 @@ test_basic_passthrough(void) {
     s->costas_state.max_freq = 0.628f;
     s->costas_state.initialized = 0;
 
-    /* Run the combined pipeline (legacy wrapper) */
-    cqpsk_costas_diff_and_update(s);
+    run_cqpsk_chain(s);
 
     /* Check that output was produced (decimated by ~sps) */
     int out_pairs = s->lp_len / 2;
@@ -173,7 +174,7 @@ test_cfo_tracking(void) {
     s->costas_state.max_freq = 0.628f;
     s->costas_state.initialized = 0;
 
-    cqpsk_costas_diff_and_update(s);
+    run_cqpsk_chain(s);
 
     /* With CFO, loop should track and develop non-zero freq */
     float freq_mag = fabsf(s->costas_state.freq);
@@ -210,7 +211,7 @@ test_disabled_when_not_cqpsk(void) {
     s->lowpassed = buf;
     s->lp_len = 100;
 
-    cqpsk_costas_diff_and_update(s);
+    run_cqpsk_chain(s);
 
     /* Buffer should be unchanged when disabled */
     for (int i = 0; i < 100; i++) {
@@ -330,7 +331,7 @@ test_ted_initialization(void) {
         return 1;
     }
 
-    cqpsk_costas_diff_and_update(s);
+    op25_gardner_cc(s);
 
     /* After call, TED state should be initialized */
     if (s->ted_state.omega < 1.0f) {

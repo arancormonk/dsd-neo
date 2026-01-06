@@ -366,7 +366,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 LOG_NOTICE("Debug Mode Enabled; \n");
                 break;
             case 'O':
-                pulse_list();
+                audio_list_devices();
                 cli_set_exit_rc(out_exit_rc, 0);
                 return DSD_PARSE_ONE_SHOT;
             case 'M':

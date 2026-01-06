@@ -521,7 +521,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 //open pulse input if we are pulse output AND using ncurses terminal
                 if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
                     opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                    if (openPulseInput(opts) != 0) {
+                    if (openAudioInput(opts) != 0) {
                         cleanupAndExit(opts, state);
                         return 0.0f;
                     }
@@ -623,7 +623,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     opts->audio_in_type = AUDIO_IN_PULSE; //set input type
                     opts->tcp_sockfd =
                         0; //added this line so we will know if it connected when using ncurses terminal keyboard shortcut
-                    if (openPulseInput(opts) != 0) {
+                    if (openAudioInput(opts) != 0) {
                         cleanupAndExit(opts, state);
                         return 0.0f;
                     }
@@ -1040,7 +1040,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             //open pulse input if we are pulse output AND using ncurses terminal
             else if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
                 opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                if (openPulseInput(opts) != 0) {
+                if (openAudioInput(opts) != 0) {
                     cleanupAndExit(opts, state);
                     return 0.0f;
                 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -224,28 +224,6 @@ void op25_diff_phasor_cc(struct demod_state* d);
  * @param d Demodulator state. Modifies lowpassed in-place with carrier correction.
  */
 void op25_costas_loop_cc(struct demod_state* d);
-
-/**
- * @brief Legacy combined Gardner + Costas block (redirects to separated flow).
- *
- * This function is kept for backward compatibility. It now calls op25_gardner_cc
- * only. The diff_phasor and Costas are called separately in demod_pipeline.cpp.
- *
- * New code should use the separated functions directly.
- *
- * @param d Demodulator state.
- */
-void op25_gardner_costas_cc(struct demod_state* d);
-
-/**
- * @brief Legacy wrapper: calls op25_gardner_cc, op25_diff_phasor_cc, op25_costas_loop_cc.
- *
- * Kept for API compatibility. New code should call the individual functions
- * for better control over the signal flow.
- *
- * @param d Demodulator state.
- */
-void cqpsk_costas_diff_and_update(struct demod_state* d);
 
 /**
  * @brief Reset FLL band-edge state for fresh frequency acquisition.

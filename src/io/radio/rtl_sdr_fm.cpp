@@ -3722,7 +3722,7 @@ rtl_stream_toggle_cqpsk(int onoff) {
     if (demod.cqpsk_enable) {
         /* CQPSK Costas/differential stage assumes symbol-rate samples from
            the Gardner TED. Require TED whenever CQPSK is active so the
-           pipeline never feeds oversampled I/Q into cqpsk_costas_diff_and_update. */
+           pipeline never feeds oversampled I/Q into op25_diff_phasor_cc/op25_costas_loop_cc. */
         demod.ted_enabled = 1;
     }
     /* Switch demod output selector and reset CQPSK differential history. */

@@ -701,7 +701,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->audio_in_type = AUDIO_IN_PULSE;
 
         //string yeet
-        parse_pulse_input_string(opts, opts->audio_in_dev + 5);
+        parse_audio_input_string(opts, opts->audio_in_dev + 5);
     }
 
     //UDP Socket Blaster Audio Output Setup
@@ -766,7 +766,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->audio_out_type = 0;
 
         //string yeet
-        parse_pulse_output_string(opts, opts->audio_out_dev + 5);
+        parse_audio_output_string(opts, opts->audio_out_dev + 5);
     }
 
     if ((strncmp(opts->audio_out_dev, "null", 4) == 0)) {
@@ -788,7 +788,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         opts->pulse_digi_out_channels = 1;
         if (opts->audio_out_type == 0) {
-            if (openPulseOutput(opts) != 0) {
+            if (openAudioOutput(opts) != 0) {
                 return -1;
             }
         }
@@ -1481,13 +1481,13 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 #endif
 
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        if (openPulseInput(opts) != 0) {
+        if (openAudioInput(opts) != 0) {
             return -1;
         }
     }
 
     if (opts->audio_out_type == 0) {
-        if (openPulseOutput(opts) != 0) {
+        if (openAudioOutput(opts) != 0) {
             return -1;
         }
     }
@@ -1801,7 +1801,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
         //open any inputs, if not already opened
         if (opts->audio_in_type == AUDIO_IN_PULSE) {
-            if (openPulseInput(opts) != 0) {
+            if (openAudioInput(opts) != 0) {
                 rc = 1;
                 goto ENGINE_OUT;
             }
@@ -1823,7 +1823,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            if (openPulseOutput(opts) != 0) {
+            if (openAudioOutput(opts) != 0) {
                 rc = 1;
                 goto ENGINE_OUT;
             }
@@ -1838,7 +1838,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            if (openPulseOutput(opts) != 0) {
+            if (openAudioOutput(opts) != 0) {
                 rc = 1;
                 goto ENGINE_OUT;
             }
@@ -1855,7 +1855,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            if (openPulseOutput(opts) != 0) {
+            if (openAudioOutput(opts) != 0) {
                 rc = 1;
                 goto ENGINE_OUT;
             }
@@ -1869,7 +1869,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            if (openPulseOutput(opts) != 0) {
+            if (openAudioOutput(opts) != 0) {
                 rc = 1;
                 goto ENGINE_OUT;
             }

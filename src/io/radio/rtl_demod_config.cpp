@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -339,7 +339,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, dsd_opts* opts) {
     }
     /* CQPSK Costas/differential stage assumes symbol-rate samples from the Gardner TED.
        Require TED whenever the CQPSK path is enabled so the pipeline never feeds
-       oversampled I/Q into cqpsk_costas_diff_and_update. Also set mode_demod so that
+       oversampled I/Q into op25_diff_phasor_cc/op25_costas_loop_cc. Also set mode_demod so that
        full_demod's TED gate check (mode_demod != &dsd_fm_demod) passes. */
     if (demod->cqpsk_enable) {
         if (!demod->ted_enabled) {

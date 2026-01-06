@@ -3,7 +3,7 @@
  * Gardner symbol recovery block for GR - Copyright 2010, 2011, 2012, 2013, 2014, 2015 KA1RBI
  * Costas loop for carrier recovery - Copyright 2006,2010-2012 Free Software Foundation, Inc.
  * Lock detector based on Yair Linn's research - Copyright 2022 gnorbury@bondcar.com
- * Port to dsd-neo - Copyright (C) 2025 by arancormonk
+ * Port to dsd-neo - Copyright (C) 2026 by arancormonk
  *
  * This is a direct port of OP25's CQPSK signal chain:
  *   AGC -> Gardner (timing only) -> diff_phasor -> Costas (at symbol rate)
@@ -690,53 +690,6 @@ op25_costas_loop_cc(struct demod_state* d) {
     c->phase = phase;
     c->freq = freq;
     c->error = 0.0f; /* Last error not particularly useful at symbol rate */
-}
-
-/*
- * Legacy wrapper for API compatibility.
- *
- * Old code called cqpsk_costas_diff_and_update() which was a combined block.
- * Now we have the proper OP25 flow:
- *   Gardner (timing) -> diff_phasor -> Costas (carrier)
- */
-extern "C" void
-cqpsk_costas_diff_and_update(struct demod_state* d) {
-    if (!d || !d->cqpsk_enable) {
-        return;
-    }
-    /* This function is kept for backward compatibility but the actual
-     * processing is now done separately in demod_pipeline.cpp:
-     *   1. op25_gardner_cc (timing recovery)
-     *   2. op25_diff_phasor_cc (differential decoding)
-     *   3. op25_costas_loop_cc (carrier recovery)
-     */
-    op25_gardner_cc(d);
-    op25_diff_phasor_cc(d);
-    op25_costas_loop_cc(d);
-}
-
-/*
- * Legacy combined Gardner + Costas block.
- *
- * This is the OLD implementation kept here temporarily for reference.
- * It will be removed once the new separated flow is verified working.
- *
- * The main issue with this combined block was:
- *   1. NCO rotation applied at sample rate BEFORE delay line
- *   2. Phase error computed from internal diffdec, not from diff_phasor output
- *   3. Costas parameters were wrong (alpha=0.04 instead of 0.0223)
- *
- * The correct OP25 flow is:
- *   Gardner (no NCO) -> diff_phasor -> Costas (at symbol rate)
- */
-extern "C" void
-op25_gardner_costas_cc(struct demod_state* d) {
-    /* Redirect to the new separated implementation */
-    if (!d || !d->cqpsk_enable) {
-        return;
-    }
-    op25_gardner_cc(d);
-    /* Note: diff_phasor and Costas are called separately in demod_pipeline.cpp */
 }
 
 /*

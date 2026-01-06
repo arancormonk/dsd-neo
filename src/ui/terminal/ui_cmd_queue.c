@@ -378,7 +378,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts->tcp_sockfd != 0) {
                 // reset audio input stream
                 if (opts->audio_in_type == AUDIO_IN_PULSE) {
-                    closePulseInput(opts);
+                    closeAudioInput(opts);
                 }
                 // Close existing TCP context if any
                 if (opts->tcp_in_ctx) {
@@ -716,7 +716,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             if (opts->audio_out_type == 0) {
                 opts->audio_in_type = AUDIO_IN_PULSE;
-                if (openPulseInput(opts) != 0) {
+                if (openAudioInput(opts) != 0) {
                     LOG_ERROR("UI: failed to open PulseAudio input\n");
                 }
             } else {
@@ -916,16 +916,16 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     && opts->audio_in_type == AUDIO_IN_PULSE) {
                     if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0
                         || strncmp(old_audio_in_dev, "pulse", 5) != 0) {
-                        closePulseInput(opts);
+                        closeAudioInput(opts);
                         if (strncmp(opts->audio_in_dev, "pulse", 5) == 0 && opts->audio_in_dev[5] == ':'
                             && opts->audio_in_dev[6] != '\0') {
                             char tmp[128] = {0};
                             snprintf(tmp, sizeof tmp, "%s", opts->audio_in_dev + 6);
-                            parse_pulse_input_string(opts, tmp);
+                            parse_audio_input_string(opts, tmp);
                         } else {
                             opts->pa_input_idx[0] = '\0';
                         }
-                        if (openPulseInput(opts) != 0) {
+                        if (openAudioInput(opts) != 0) {
                             LOG_ERROR("Config: failed to open PulseAudio input\n");
                         }
                     }
@@ -935,16 +935,16 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                     && opts->audio_out_type == 0) {
                     if (strncmp(old_audio_out_dev, opts->audio_out_dev, sizeof old_audio_out_dev) != 0
                         || strncmp(old_audio_out_dev, "pulse", 5) != 0) {
-                        closePulseOutput(opts);
+                        closeAudioOutput(opts);
                         if (strncmp(opts->audio_out_dev, "pulse", 5) == 0 && opts->audio_out_dev[5] == ':'
                             && opts->audio_out_dev[6] != '\0') {
                             char tmp[128] = {0};
                             snprintf(tmp, sizeof tmp, "%s", opts->audio_out_dev + 6);
-                            parse_pulse_output_string(opts, tmp);
+                            parse_audio_output_string(opts, tmp);
                         } else {
                             opts->pa_output_idx[0] = '\0';
                         }
-                        if (openPulseOutput(opts) != 0) {
+                        if (openAudioOutput(opts) != 0) {
                             LOG_ERROR("Config: failed to open PulseAudio output\n");
                         }
                     }

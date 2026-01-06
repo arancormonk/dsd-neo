@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -152,15 +152,6 @@ int rtl_device_set_direct_sampling(struct rtl_device* dev, int on);
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on);
-
-/**
- * @brief Backward-compatible helper to enable offset tuning (equivalent to calling
- * rtl_device_set_offset_tuning_enabled(dev, 1)).
- *
- * @param dev RTL-SDR device handle.
- * @return 0 on success; negative on failure.
- */
-int rtl_device_set_offset_tuning(struct rtl_device* dev);
 
 /**
  * @brief Set tuner IF bandwidth if supported by the driver.
