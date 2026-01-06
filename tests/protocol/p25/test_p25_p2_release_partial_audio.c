@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 // Minimal IO stubs (avoid actual tuning/audio devices in unit tests)
@@ -69,6 +70,13 @@ dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     memset(state->s_r4, 0, sizeof(state->s_r4));
 }
 
+static void
+install_p25_optional_hooks(void) {
+    dsd_p25_optional_hooks hooks = {0};
+    hooks.p25p2_flush_partial_audio = dsd_p25p2_flush_partial_audio;
+    dsd_p25_optional_hooks_set(hooks);
+}
+
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int
@@ -93,6 +101,7 @@ main(void) {
     static dsd_opts opts;
     static dsd_state st;
     install_trunk_tuning_hooks();
+    install_p25_optional_hooks();
     memset(&opts, 0, sizeof opts);
     memset(&st, 0, sizeof st);
 

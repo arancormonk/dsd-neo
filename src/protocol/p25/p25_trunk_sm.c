@@ -7,7 +7,6 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -18,86 +17,13 @@
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-// Weak symbols are used to allow tests to override certain hooks.
-#if defined(_MSC_VER)
-#define P25_WEAK_FALLBACK
-#else
-#define P25_WEAK_FALLBACK __attribute__((weak))
-#endif
-
-/* ============================================================================
- * Weak fallbacks for optional hooks (tests can override these)
- * ============================================================================ */
-
-#if defined(_MSC_VER)
-void
-dsd_neo_watchdog_event_current_fallback(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    UNUSED3(opts, state, slot);
-}
-
-void
-dsd_neo_write_event_to_log_file_fallback(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
-                                         char* event_string) {
-    UNUSED5(opts, state, slot, swrite, event_string);
-}
-
-void
-dsd_neo_push_event_history_fallback(Event_History_I* event_struct) {
-    UNUSED(event_struct);
-}
-
-void
-dsd_neo_init_event_history_fallback(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
-    UNUSED3(event_struct, start, stop);
-}
-
-void
-dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
-    UNUSED2(opts, state);
-}
-
-/* COFF weak-extern equivalents for optional hooks. */
-#if defined(_M_IX86)
-#pragma comment(linker, "/alternatename:_watchdog_event_current=_dsd_neo_watchdog_event_current_fallback")
-#pragma comment(linker, "/alternatename:_write_event_to_log_file=_dsd_neo_write_event_to_log_file_fallback")
-#pragma comment(linker, "/alternatename:_push_event_history=_dsd_neo_push_event_history_fallback")
-#pragma comment(linker, "/alternatename:_init_event_history=_dsd_neo_init_event_history_fallback")
-#pragma comment(linker, "/alternatename:_dsd_p25p2_flush_partial_audio=_dsd_neo_p25p2_flush_partial_audio_fallback")
-#else
-#pragma comment(linker, "/alternatename:watchdog_event_current=dsd_neo_watchdog_event_current_fallback")
-#pragma comment(linker, "/alternatename:write_event_to_log_file=dsd_neo_write_event_to_log_file_fallback")
-#pragma comment(linker, "/alternatename:push_event_history=dsd_neo_push_event_history_fallback")
-#pragma comment(linker, "/alternatename:init_event_history=dsd_neo_init_event_history_fallback")
-#pragma comment(linker, "/alternatename:dsd_p25p2_flush_partial_audio=dsd_neo_p25p2_flush_partial_audio_fallback")
-#endif
-#else
-P25_WEAK_FALLBACK void
-watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    UNUSED3(opts, state, slot);
-}
-
-P25_WEAK_FALLBACK void
-write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
-    UNUSED5(opts, state, slot, swrite, event_string);
-}
-
-P25_WEAK_FALLBACK void
-push_event_history(Event_History_I* event_struct) {
-    UNUSED(event_struct);
-}
-
-P25_WEAK_FALLBACK void
-init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
-    UNUSED3(event_struct, start, stop);
-}
-#endif
 
 /* ============================================================================
  * Internal Helpers
@@ -601,14 +527,6 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
  * Release to CC
  * ============================================================================ */
 
-#if defined(_MSC_VER)
-void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
-#else
-// Optional P25p2 short-call audio flush helper implemented in core audio.
-// When not linked (e.g., some unit tests), this resolves to NULL.
-extern void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) __attribute__((weak));
-#endif
-
 static void
 do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
     if (!ctx) {
@@ -663,15 +581,9 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     // P25p2 short-call robustness: flush any partially buffered audio before
     // clearing slot gates and retuning, so short transmissions that end before
     // a full superframe still produce audible output.
-#if defined(_MSC_VER)
     if (ctx->vc_is_tdma && opts && state) {
-        dsd_p25p2_flush_partial_audio(opts, state);
+        dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
     }
-#else
-    if (ctx->vc_is_tdma && opts && state && dsd_p25p2_flush_partial_audio) {
-        dsd_p25p2_flush_partial_audio(opts, state);
-    }
-#endif
 
     // Clear legacy state fields
     if (state) {
@@ -1235,17 +1147,17 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     if (eh) {
         snprintf(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
                  "Target: %d; has been locked out; Encryption Lock Out Enabled.", tg);
-        watchdog_event_current(opts, state, (uint8_t)(slot & 1));
+        dsd_p25_optional_hook_watchdog_event_current(opts, state, (uint8_t)(slot & 1));
         if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
                     sizeof eh->Event_History_Items[0].internal_str)
             != 0) {
             if (opts->event_out_file[0] != '\0') {
                 uint8_t swrite = DSD_SYNC_IS_P25P2(state->lastsynctype) ? 1 : 0;
-                write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite,
-                                        eh->Event_History_Items[0].event_string);
+                dsd_p25_optional_hook_write_event_to_log_file(opts, state, (uint8_t)(slot & 1), swrite,
+                                                              eh->Event_History_Items[0].event_string);
             }
-            push_event_history(eh);
-            init_event_history(eh, 0, 1);
+            dsd_p25_optional_hook_push_event_history(eh);
+            dsd_p25_optional_hook_init_event_history(eh, 0, 1);
         }
     } else if (opts && opts->verbose > 1) {
         p25_sm_log_status(opts, state, "enc-lo-skip-nohist");

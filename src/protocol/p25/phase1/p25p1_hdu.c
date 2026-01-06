@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -19,7 +22,6 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -31,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -653,14 +656,15 @@ processHDU(dsd_opts* opts, dsd_state* state) {
                     }
                     sprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
                             "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                    watchdog_event_current(opts, state, 0);
+                    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
                     // Immediately log and push this lockout event so it is not delayed
                     if (opts->event_out_file[0] != 0) {
-                        write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
-                                                state->event_history_s[0].Event_History_Items[0].event_string);
+                        dsd_p25_optional_hook_write_event_to_log_file(
+                            opts, state, 0, /*swrite*/ 0,
+                            state->event_history_s[0].Event_History_Items[0].event_string);
                     }
-                    push_event_history(&state->event_history_s[0]);
-                    init_event_history(&state->event_history_s[0], 0, 1);
+                    dsd_p25_optional_hook_push_event_history(&state->event_history_s[0]);
+                    dsd_p25_optional_hook_init_event_history(&state->event_history_s[0], 0, 1);
                 }
                 // Also clear banner to avoid stale "Group Encrypted" on UI
                 snprintf(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");

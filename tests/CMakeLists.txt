@@ -85,6 +85,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/frame_sync_hooks.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_p25_optional_hooks
+  HEADERS_PUBLIC_RUNTIME_P25_OPTIONAL_HOOKS
+  dsd-neo/runtime/p25_optional_hooks.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rtl_stream_metrics_hooks
   HEADERS_PUBLIC_RUNTIME_RTL_STREAM_METRICS_HOOKS
   dsd-neo/runtime/rtl_stream_metrics_hooks.h
@@ -201,6 +206,11 @@ add_executable(dsd-neo_test_runtime_rtl_stream_metrics_hooks runtime/test_runtim
 target_include_directories(dsd-neo_test_runtime_rtl_stream_metrics_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rtl_stream_metrics_hooks PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_RTL_STREAM_METRICS_HOOKS COMMAND dsd-neo_test_runtime_rtl_stream_metrics_hooks)
+
+add_executable(dsd-neo_test_runtime_p25_optional_hooks runtime/test_runtime_p25_optional_hooks.c)
+target_include_directories(dsd-neo_test_runtime_p25_optional_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_p25_optional_hooks PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_P25_OPTIONAL_HOOKS COMMAND dsd-neo_test_runtime_p25_optional_hooks)
 
 add_executable(dsd-neo_test_runtime_shutdown runtime/test_runtime_shutdown.c)
 target_include_directories(dsd-neo_test_runtime_shutdown PRIVATE ${PROJECT_SOURCE_DIR}/include)

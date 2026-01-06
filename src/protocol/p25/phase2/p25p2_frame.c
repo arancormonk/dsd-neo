@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * p25p2_frame.c
@@ -34,6 +34,7 @@
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 
 #include <stdio.h>
@@ -1459,11 +1460,11 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
 
         //slot 1
         watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
 
         //slot 2 for TDMA systems
         watchdog_event_history(opts, state, 1);
-        watchdog_event_current(opts, state, 1);
+        dsd_p25_optional_hook_watchdog_event_current(opts, state, 1);
 
         //add 360 bits to each counter
         vc_counter = vc_counter + 360;

@@ -44,31 +44,11 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
     )
 
     foreach(_ARCH_RULES_ALTERNATENAME_LINE IN LISTS _ARCH_RULES_ALTERNATENAME_LINES)
-        set(_ARCH_RULES_ALTERNATENAME_ALLOWED OFF)
-
-        # Temporary allowlist: legacy P25 optional symbols still using /alternatename.
-        # TODO: migrate these to explicit hook modules and remove this allowlist.
-        if(_ARCH_RULES_REL STREQUAL "src/protocol/p25/p25_trunk_sm.c")
-            if(_ARCH_RULES_ALTERNATENAME_LINE MATCHES "/alternatename:(_)?watchdog_event_current=")
-                set(_ARCH_RULES_ALTERNATENAME_ALLOWED ON)
-            elseif(_ARCH_RULES_ALTERNATENAME_LINE MATCHES "/alternatename:(_)?write_event_to_log_file=")
-                set(_ARCH_RULES_ALTERNATENAME_ALLOWED ON)
-            elseif(_ARCH_RULES_ALTERNATENAME_LINE MATCHES "/alternatename:(_)?push_event_history=")
-                set(_ARCH_RULES_ALTERNATENAME_ALLOWED ON)
-            elseif(_ARCH_RULES_ALTERNATENAME_LINE MATCHES "/alternatename:(_)?init_event_history=")
-                set(_ARCH_RULES_ALTERNATENAME_ALLOWED ON)
-            elseif(_ARCH_RULES_ALTERNATENAME_LINE MATCHES "/alternatename:(_)?dsd_p25p2_flush_partial_audio=")
-                set(_ARCH_RULES_ALTERNATENAME_ALLOWED ON)
-            endif()
-        endif()
-
-        if(NOT _ARCH_RULES_ALTERNATENAME_ALLOWED)
-            string(STRIP "${_ARCH_RULES_ALTERNATENAME_LINE}" _ARCH_RULES_ALTERNATENAME_LINE_STRIPPED)
-            message(SEND_ERROR
-                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden /alternatename pragma '${_ARCH_RULES_ALTERNATENAME_LINE_STRIPPED}'"
-            )
-            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
-        endif()
+        string(STRIP "${_ARCH_RULES_ALTERNATENAME_LINE}" _ARCH_RULES_ALTERNATENAME_LINE_STRIPPED)
+        message(SEND_ERROR
+            "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden /alternatename pragma '${_ARCH_RULES_ALTERNATENAME_LINE_STRIPPED}'"
+        )
+        math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
     endforeach()
 
     set(_ARCH_RULES_UI_FORBIDDEN_AREA OFF)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * p25p1_pdu_data.c
@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -559,7 +560,7 @@ p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, uint8_t* input) {
         state->lastsrc = 0;
         state->lasttg = 0;
         watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
     }
 
     //following is for a continued PDU and not a response nor a trunking message
@@ -684,5 +685,5 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     state->lastsrc = 0;
     state->lasttg = 0;
     watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
 }

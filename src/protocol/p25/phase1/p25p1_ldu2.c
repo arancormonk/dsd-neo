@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
  * Copyright (C) 2010 DSD Author
@@ -23,7 +23,6 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -36,6 +35,7 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -974,16 +974,17 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
                 snprintf(state->event_history_s[0].Event_History_Items[0].internal_str,
                          sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
                          "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-                watchdog_event_current(opts, state, 0);
+                dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
                 Event_History_I* eh = &state->event_history_s[0];
                 if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
                             sizeof eh->Event_History_Items[0].internal_str)
                     != 0) {
                     if (opts->event_out_file[0] != '\0') {
-                        write_event_to_log_file(opts, state, 0, /*swrite*/ 0, eh->Event_History_Items[0].event_string);
+                        dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
+                                                                      eh->Event_History_Items[0].event_string);
                     }
-                    push_event_history(eh);
-                    init_event_history(eh, 0, 1);
+                    dsd_p25_optional_hook_push_event_history(eh);
+                    dsd_p25_optional_hook_init_event_history(eh, 0, 1);
                 }
             }
 
