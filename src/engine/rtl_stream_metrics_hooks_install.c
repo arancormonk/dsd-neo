@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+
+#ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+unsigned int dsd_rtl_stream_output_rate(void);
+#endif
+
+void
+dsd_engine_rtl_stream_metrics_hooks_install(void) {
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+#ifdef USE_RTLSDR
+    hooks.output_rate_hz = dsd_rtl_stream_output_rate;
+    hooks.dsp_get = rtl_stream_dsp_get;
+    hooks.snr_bias_evm = rtl_stream_get_snr_bias_evm;
+#endif
+    dsd_rtl_stream_metrics_hooks_set(hooks);
+}

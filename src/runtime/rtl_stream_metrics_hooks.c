@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+
+static dsd_rtl_stream_metrics_hooks g_rtl_stream_metrics_hooks = {0};
+
+void
+dsd_rtl_stream_metrics_hooks_set(dsd_rtl_stream_metrics_hooks hooks) {
+    g_rtl_stream_metrics_hooks = hooks;
+}
+
+unsigned int
+dsd_rtl_stream_metrics_hook_output_rate_hz(void) {
+    if (g_rtl_stream_metrics_hooks.output_rate_hz) {
+        return g_rtl_stream_metrics_hooks.output_rate_hz();
+    }
+    return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable) {
+    if (g_rtl_stream_metrics_hooks.dsp_get) {
+        return g_rtl_stream_metrics_hooks.dsp_get(out_cqpsk_enable, out_fll_enable, out_ted_enable);
+    }
+    if (out_cqpsk_enable) {
+        *out_cqpsk_enable = 0;
+    }
+    if (out_fll_enable) {
+        *out_fll_enable = 0;
+    }
+    if (out_ted_enable) {
+        *out_ted_enable = 0;
+    }
+    return 0;
+}
+
+double
+dsd_rtl_stream_metrics_hook_snr_bias_evm(void) {
+    if (g_rtl_stream_metrics_hooks.snr_bias_evm) {
+        return g_rtl_stream_metrics_hooks.snr_bias_evm();
+    }
+    return 2.43;
+}

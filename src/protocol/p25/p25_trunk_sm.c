@@ -18,13 +18,12 @@
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-unsigned int dsd_rtl_stream_output_rate(void);
 
 // Weak symbols are used to allow tests to override certain hooks.
 #if defined(_MSC_VER)
@@ -38,11 +37,6 @@ unsigned int dsd_rtl_stream_output_rate(void);
  * ============================================================================ */
 
 #if defined(_MSC_VER)
-unsigned int
-dsd_neo_dsd_rtl_stream_output_rate_fallback(void) {
-    return 0; /* No RTL stream available in test/non-RTL builds */
-}
-
 void
 dsd_neo_watchdog_event_current_fallback(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     UNUSED3(opts, state, slot);
@@ -71,14 +65,12 @@ dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
 
 /* COFF weak-extern equivalents for optional hooks. */
 #if defined(_M_IX86)
-#pragma comment(linker, "/alternatename:_dsd_rtl_stream_output_rate=_dsd_neo_dsd_rtl_stream_output_rate_fallback")
 #pragma comment(linker, "/alternatename:_watchdog_event_current=_dsd_neo_watchdog_event_current_fallback")
 #pragma comment(linker, "/alternatename:_write_event_to_log_file=_dsd_neo_write_event_to_log_file_fallback")
 #pragma comment(linker, "/alternatename:_push_event_history=_dsd_neo_push_event_history_fallback")
 #pragma comment(linker, "/alternatename:_init_event_history=_dsd_neo_init_event_history_fallback")
 #pragma comment(linker, "/alternatename:_dsd_p25p2_flush_partial_audio=_dsd_neo_p25p2_flush_partial_audio_fallback")
 #else
-#pragma comment(linker, "/alternatename:dsd_rtl_stream_output_rate=dsd_neo_dsd_rtl_stream_output_rate_fallback")
 #pragma comment(linker, "/alternatename:watchdog_event_current=dsd_neo_watchdog_event_current_fallback")
 #pragma comment(linker, "/alternatename:write_event_to_log_file=dsd_neo_write_event_to_log_file_fallback")
 #pragma comment(linker, "/alternatename:push_event_history=dsd_neo_push_event_history_fallback")
@@ -86,20 +78,6 @@ dsd_neo_p25p2_flush_partial_audio_fallback(dsd_opts* opts, dsd_state* state) {
 #pragma comment(linker, "/alternatename:dsd_p25p2_flush_partial_audio=dsd_neo_p25p2_flush_partial_audio_fallback")
 #endif
 #else
-/**
- * @brief Query the actual RTL demodulator output sample rate.
- *
- * When USE_RTLSDR is linked, this returns the post-resampler output rate
- * (e.g., 24000 Hz if a 48->24 kHz resampler is active). Otherwise returns 0
- * to signal that the caller should fall back to rtl_dsp_bw_khz.
- *
- * @return Output sample rate in Hz, or 0 if unavailable.
- */
-P25_WEAK_FALLBACK unsigned int
-dsd_rtl_stream_output_rate(void) {
-    return 0; /* No RTL stream available in test/non-RTL builds */
-}
-
 P25_WEAK_FALLBACK void
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     UNUSED3(opts, state, slot);
@@ -177,7 +155,7 @@ static inline int
 p25_ted_sps_for_bw(const dsd_opts* opts, int sym_rate_hz) {
     /* Query actual demodulator output rate first (accounts for any active resampler).
      * Falls back to rtl_dsp_bw_khz if RTL stream is unavailable or returns 0. */
-    int demod_rate = (int)dsd_rtl_stream_output_rate();
+    int demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
     return dsd_opts_compute_sps_rate(opts, sym_rate_hz, demod_rate);
 }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -20,48 +20,10 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/ted.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
-/* Provide weak references so unit tests that do not link RTL stream still link. */
-extern "C" {
-#if defined(_MSC_VER)
-int dsd_neo_rtl_stream_dsp_get_fallback(int* center_hz, int* tuner_bw_hz, int* err);
-double dsd_neo_rtl_stream_get_snr_bias_evm_fallback(void);
-
-/* COFF weak-extern equivalent for test builds that don't link io/radio. */
-#if defined(_M_IX86)
-#pragma comment(linker, "/alternatename:_rtl_stream_dsp_get=_dsd_neo_rtl_stream_dsp_get_fallback")
-#pragma comment(linker, "/alternatename:_rtl_stream_get_snr_bias_evm=_dsd_neo_rtl_stream_get_snr_bias_evm_fallback")
-#else
-#pragma comment(linker, "/alternatename:rtl_stream_dsp_get=dsd_neo_rtl_stream_dsp_get_fallback")
-#pragma comment(linker, "/alternatename:rtl_stream_get_snr_bias_evm=dsd_neo_rtl_stream_get_snr_bias_evm_fallback")
-#endif
-
-int
-dsd_neo_rtl_stream_dsp_get_fallback(int* center_hz, int* tuner_bw_hz, int* err) {
-    if (center_hz) {
-        *center_hz = 0;
-    }
-    if (tuner_bw_hz) {
-        *tuner_bw_hz = 0;
-    }
-    if (err) {
-        *err = 0;
-    }
-    return 0;
-}
-
-double
-dsd_neo_rtl_stream_get_snr_bias_evm_fallback(void) {
-    return 2.43;
-}
-#elif defined(__GNUC__)
-__attribute__((weak)) int rtl_stream_dsp_get(int*, int*, int*);
-__attribute__((weak)) double rtl_stream_get_snr_bias_evm(void);
-#endif
-}
 #include <algorithm>
 #include <math.h>
 #include <stdint.h>
@@ -1630,11 +1592,7 @@ full_demod(struct demod_state* d) {
                         double ref_rms = sqrt(ref_pwr);
                         double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
                         /* Apply dynamic bias correction for consistency with main SNR display */
-#if defined(_MSC_VER)
-                        double bias = rtl_stream_get_snr_bias_evm();
-#else
-                        double bias = rtl_stream_get_snr_bias_evm ? rtl_stream_get_snr_bias_evm() : 2.43;
-#endif
+                        double bias = dsd_rtl_stream_metrics_hook_snr_bias_evm();
                         double snr_db = (mse > 1e-12) ? 10.0 * log10(ref_pwr / mse) - bias : 99.0;
                         fprintf(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms,
                                 evm_count);

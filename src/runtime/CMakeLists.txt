@@ -9,6 +9,7 @@ target_sources(dsd-neo_runtime PRIVATE
   control_pump.c
   frame_sync_hooks.c
   trunk_tuning_hooks.c
+  rtl_stream_metrics_hooks.c
   exitflag.c
   shutdown.c
   log.cpp
