@@ -263,7 +263,7 @@ gen_poly(void)
     k = length - rdncy;
 
     if (k < 0) {
-        exit(0);
+        return;
     }
 
     /* Compute the generator polynomial */

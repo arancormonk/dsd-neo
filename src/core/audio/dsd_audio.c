@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
  * Copyright (C) 2010 DSD Author
@@ -66,7 +66,7 @@ closeAudioInput(dsd_opts* opts) {
     }
 }
 
-void
+int
 openAudioOutput(dsd_opts* opts) {
     const char* dev = NULL;
     if (opts->pa_output_idx[0] != '\0') {
@@ -85,7 +85,7 @@ openAudioOutput(dsd_opts* opts) {
         opts->audio_raw_out = dsd_audio_open_output(&params);
         if (!opts->audio_raw_out) {
             LOG_ERROR("Failed to open raw audio output: %s", dsd_audio_get_error());
-            exit(1);
+            return -1;
         }
     }
 
@@ -97,12 +97,17 @@ openAudioOutput(dsd_opts* opts) {
         opts->audio_out_stream = dsd_audio_open_output(&params);
         if (!opts->audio_out_stream) {
             LOG_ERROR("Failed to open audio output: %s", dsd_audio_get_error());
-            exit(1);
+            if (opts->audio_raw_out) {
+                dsd_audio_close(opts->audio_raw_out);
+                opts->audio_raw_out = NULL;
+            }
+            return -1;
         }
     }
+    return 0;
 }
 
-void
+int
 openAudioInput(dsd_opts* opts) {
     const char* dev = NULL;
     if (opts->pa_input_idx[0] != '\0') {
@@ -119,8 +124,9 @@ openAudioInput(dsd_opts* opts) {
     opts->audio_in_stream = dsd_audio_open_input(&params);
     if (!opts->audio_in_stream) {
         LOG_ERROR("Failed to open audio input: %s", dsd_audio_get_error());
-        exit(1);
+        return -1;
     }
+    return 0;
 }
 
 void
@@ -602,8 +608,28 @@ openAudioOutDevice(dsd_opts* opts, int speed) {
     fprintf(stderr, "Audio Out Device: %s\n", opts->audio_out_dev);
 }
 
-void
+int
 openAudioInDevice(dsd_opts* opts) {
+    if (opts->audio_in_file) {
+        sf_close(opts->audio_in_file);
+        opts->audio_in_file = NULL;
+    }
+    if (opts->audio_in_file_info) {
+        free(opts->audio_in_file_info);
+        opts->audio_in_file_info = NULL;
+    }
+    if (opts->symbolfile) {
+        fclose(opts->symbolfile);
+        opts->symbolfile = NULL;
+    }
+    if (opts->tcp_in_ctx) {
+        tcp_input_close(opts->tcp_in_ctx);
+        opts->tcp_in_ctx = NULL;
+    }
+    if (opts->udp_in_ctx) {
+        udp_input_stop(opts);
+    }
+
     char* extension;
     const char ch = '.';
     extension = strrchr(opts->audio_in_dev, ch); //return extension if this is a .wav or .bin file
@@ -617,7 +643,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            exit(1);
+            return -1;
         }
         opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
         opts->audio_in_file_info->channels = 1;
@@ -627,7 +653,9 @@ openAudioInDevice(dsd_opts* opts) {
 
         if (opts->audio_in_file == NULL) {
             LOG_ERROR("Error, couldn't open stdin with libsndfile: %s\n", sf_strerror(NULL));
-            exit(1);
+            free(opts->audio_in_file_info);
+            opts->audio_in_file_info = NULL;
+            return -1;
         }
     }
 
@@ -649,7 +677,7 @@ openAudioInDevice(dsd_opts* opts) {
         // Start UDP input
         if (udp_input_start(opts, opts->udp_in_bindaddr, opts->udp_in_portno, opts->wav_sample_rate) < 0) {
             fprintf(stderr, "Error, couldn't start UDP input on %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
-            exit(1);
+            return -1;
         }
         fprintf(stderr, "Waiting for UDP audio on %s:%d ...\n", opts->udp_in_bindaddr, opts->udp_in_portno);
     }
@@ -659,7 +687,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
         if (opts->tcp_in_ctx == NULL) {
             LOG_ERROR("Error, couldn't open TCP audio input\n");
-            exit(1);
+            return -1;
         }
     }
 
@@ -676,7 +704,7 @@ openAudioInDevice(dsd_opts* opts) {
     //   if(opts->udp_file_in == NULL)
     //   {
     //     fprintf(stderr, "Error, couldn't open UDP with libsndfile: %s\n", sf_strerror(NULL));
-    //     exit(1);
+    //     return;
     //   }
     // }
 
@@ -697,7 +725,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            exit(1);
+            return -1;
         }
         opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
         opts->audio_in_file_info->channels = 1;
@@ -707,7 +735,9 @@ openAudioInDevice(dsd_opts* opts) {
 
         if (opts->audio_in_file == NULL) {
             LOG_ERROR("Error, couldn't open file/pipe with libsndfile: %s\n", sf_strerror(NULL));
-            exit(1);
+            free(opts->audio_in_file_info);
+            opts->audio_in_file_info = NULL;
+            return -1;
         }
     }
 
@@ -720,7 +750,7 @@ openAudioInDevice(dsd_opts* opts) {
         opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
         if (opts->audio_in_file_info == NULL) {
             LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-            exit(1);
+            return -1;
         }
         opts->audio_in_file_info->samplerate = 48000;
         opts->audio_in_file_info->channels = 1;
@@ -730,7 +760,9 @@ openAudioInDevice(dsd_opts* opts) {
 
         if (opts->audio_in_file == NULL) {
             LOG_ERROR("Error, couldn't open %s with libsndfile: %s\n", opts->audio_in_dev, sf_strerror(NULL));
-            exit(1);
+            free(opts->audio_in_file_info);
+            opts->audio_in_file_info = NULL;
+            return -1;
         }
     }
 
@@ -739,10 +771,14 @@ openAudioInDevice(dsd_opts* opts) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
-            exit(1);
+            return -1;
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
+            if (opts->symbolfile == NULL) {
+                LOG_ERROR("Error, couldn't open raw (float) file %s\n", opts->audio_in_dev);
+                return -1;
+            }
             opts->audio_in_type = AUDIO_IN_SYMBOL_FLT; //float symbol input
         } else {
             opts->audio_in_type = AUDIO_IN_PULSE;
@@ -754,10 +790,14 @@ openAudioInDevice(dsd_opts* opts) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
-            exit(1);
+            return -1;
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
+            if (opts->symbolfile == NULL) {
+                LOG_ERROR("Error, couldn't open sym (float) file %s\n", opts->audio_in_dev);
+                return -1;
+            }
             opts->audio_in_type = AUDIO_IN_SYMBOL_FLT; //float symbol input
         } else {
             opts->audio_in_type = AUDIO_IN_PULSE;
@@ -768,10 +808,14 @@ openAudioInDevice(dsd_opts* opts) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
-            exit(1);
+            return -1;
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->symbolfile = fopen(opts->audio_in_dev, "r");
+            if (opts->symbolfile == NULL) {
+                LOG_ERROR("Error, couldn't open bin file %s\n", opts->audio_in_dev);
+                return -1;
+            }
             opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; //symbol capture bin files
         } else {
             opts->audio_in_type = AUDIO_IN_PULSE;
@@ -782,14 +826,14 @@ openAudioInDevice(dsd_opts* opts) {
         struct stat stat_buf;
         if (stat(opts->audio_in_dev, &stat_buf) != 0) {
             LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
-            exit(1);
+            return -1;
         }
         if (S_ISREG(stat_buf.st_mode)) {
             opts->audio_in_type = AUDIO_IN_WAV; //two now, seperating STDIN and wav files
             opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
             if (opts->audio_in_file_info == NULL) {
                 LOG_ERROR("Error, couldn't allocate memory for audio input\n");
-                exit(1);
+                return -1;
             }
             opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
             opts->audio_in_file_info->channels = 1;
@@ -800,7 +844,9 @@ openAudioInDevice(dsd_opts* opts) {
 
             if (opts->audio_in_file == NULL) {
                 LOG_ERROR("Error, couldn't open wav file %s\n", opts->audio_in_dev);
-                exit(1);
+                free(opts->audio_in_file_info);
+                opts->audio_in_file_info = NULL;
+                return -1;
             }
 
         }
@@ -808,7 +854,7 @@ openAudioInDevice(dsd_opts* opts) {
         else //seems this condition is never met
         {
             LOG_ERROR("Error, couldn't open input file.\n");
-            exit(1);
+            return -1;
         }
     }
     if (opts->split == 1) {
@@ -816,4 +862,5 @@ openAudioInDevice(dsd_opts* opts) {
     } else {
         fprintf(stderr, "Audio In/Out Device: %s\n", opts->audio_in_dev);
     }
+    return 0;
 }

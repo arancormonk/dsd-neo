@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -98,9 +99,6 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
     }
     snprintf(out, out_sz, "%s", buf);
 }
-
-extern int csvGroupImport(dsd_opts* opts, dsd_state* state);
-extern int csvChanImport(dsd_opts* opts, dsd_state* state);
 
 void
 dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
@@ -589,8 +587,11 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
                 if (stat(cpath, &st) == 0 && S_ISREG(st.st_mode)) {
                     strncpy(opts->chan_in_file, cpath, sizeof opts->chan_in_file - 1);
                     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
-                    csvChanImport(opts, state);
-                    LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
+                    if (csvChanImport(opts, state) == 0) {
+                        LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
+                    } else {
+                        LOG_WARNING("Failed to import channel map from %s\n", opts->chan_in_file);
+                    }
                 } else {
                     LOG_WARNING("Channel map file not found: %s — skipping import.\n", cpath);
                 }
@@ -604,8 +605,11 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
                 if (stat(gpath, &stg) == 0 && S_ISREG(stg.st_mode)) {
                     strncpy(opts->group_in_file, gpath, sizeof opts->group_in_file - 1);
                     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-                    csvGroupImport(opts, state);
-                    LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
+                    if (csvGroupImport(opts, state) == 0) {
+                        LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
+                    } else {
+                        LOG_WARNING("Failed to import group list from %s\n", opts->group_in_file);
+                    }
                     // Optional allow-list toggle
                     int use_allow = prompt_yes_no("Use group list as allow/white list?", 0);
                     if (use_allow) {

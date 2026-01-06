@@ -51,7 +51,8 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
  * @brief Open and configure the outbound serial port used for radio control.
  *
  * Applies baud rate and 8N1 framing and stores the resulting file descriptor
- * in `opts->serial_fd`. Exits the process on failure to open the port.
+ * in `opts->serial_fd`. On failure to open the port, logs and returns with
+ * `opts->serial_fd` set to -1.
  *
  * @param opts Decoder options containing serial configuration.
  * @param state Decoder state (unused).
@@ -64,11 +65,13 @@ openSerial(dsd_opts* opts, dsd_state* state) {
     speed_t baud;
 
     fprintf(stderr, "Opening serial port %s and setting baud to %i\n", opts->serial_dev, opts->serial_baud);
-    opts->serial_fd = open(opts->serial_dev, O_WRONLY);
-    if (opts->serial_fd == -1) {
+    opts->serial_fd = -1;
+    int fd = open(opts->serial_dev, O_WRONLY);
+    if (fd == -1) {
         LOG_ERROR("Error, couldn't open %s\n", opts->serial_dev);
-        exit(1);
+        return;
     }
+    opts->serial_fd = fd;
 
     tty.c_cflag = 0;
 

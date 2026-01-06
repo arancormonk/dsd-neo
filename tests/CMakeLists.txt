@@ -212,6 +212,11 @@ target_include_directories(dsd-neo_test_core_state_ext PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(dsd-neo_test_core_state_ext PRIVATE dsd-neo_core)
 add_test(NAME CORE_STATE_EXT COMMAND dsd-neo_test_core_state_ext)
 
+add_executable(dsd-neo_test_core_csv_import core/test_core_csv_import.c)
+target_include_directories(dsd-neo_test_core_csv_import PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_csv_import PRIVATE dsd-neo_core dsd-neo_proto_dmr)
+add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
+
 add_executable(dsd-neo_test_runtime_cli_compact runtime/test_runtime_cli_compact.c)
 target_include_directories(dsd-neo_test_runtime_cli_compact PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_cli_compact PRIVATE dsd-neo_runtime dsd-neo_test_support)

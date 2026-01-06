@@ -429,13 +429,19 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
             case 'k':
                 strncpy(opts->key_in_file, optarg, 1023);
                 opts->key_in_file[1023] = '\0';
-                csvKeyImportDec(opts, state);
+                if (csvKeyImportDec(opts, state) != 0) {
+                    cli_set_exit_rc(out_exit_rc, 1);
+                    return DSD_PARSE_ERROR;
+                }
                 state->keyloader = 1;
                 break;
             case 'K':
                 strncpy(opts->key_in_file, optarg, 1023);
                 opts->key_in_file[1023] = '\0';
-                csvKeyImportHex(opts, state);
+                if (csvKeyImportHex(opts, state) != 0) {
+                    cli_set_exit_rc(out_exit_rc, 1);
+                    return DSD_PARSE_ERROR;
+                }
                 state->keyloader = 1;
                 break;
             case 'Q':
@@ -723,8 +729,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 // Import channel map CSV (channum,freq)
                 strncpy(opts->chan_in_file, optarg, 1023);
                 opts->chan_in_file[1023] = '\0';
-                extern int csvChanImport(dsd_opts*, dsd_state*);
-                csvChanImport(opts, state);
+                if (csvChanImport(opts, state) != 0) {
+                    cli_set_exit_rc(out_exit_rc, 1);
+                    return DSD_PARSE_ERROR;
+                }
                 LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
                 break;
             }
@@ -732,8 +740,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 // Import group list CSV (TG,Mode,Name)
                 strncpy(opts->group_in_file, optarg, 1023);
                 opts->group_in_file[1023] = '\0';
-                extern int csvGroupImport(dsd_opts*, dsd_state*);
-                csvGroupImport(opts, state);
+                if (csvGroupImport(opts, state) != 0) {
+                    cli_set_exit_rc(out_exit_rc, 1);
+                    return DSD_PARSE_ERROR;
+                }
                 LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
                 break;
             }

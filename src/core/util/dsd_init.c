@@ -114,6 +114,7 @@ initOpts(dsd_opts* opts) {
     opts->static_wav_file = 0; //single static wav file for decoding duration
     //opts->wav_out_fd = -1;
     opts->serial_baud = 115200;
+    opts->serial_fd = -1;
     snprintf(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
     opts->resume = 0;
     opts->frame_dstar = 1;

@@ -21,7 +21,7 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
     fp = fopen(filename, "r");
     if (fp == NULL) {
         LOG_ERROR("Unable to open group file '%s'\n", filename);
-        exit(1);
+        return -1;
     }
     int row_count = 0;
     int field_count = 0;
@@ -75,8 +75,7 @@ csvLCNImport(dsd_opts* opts, dsd_state* state) {
     fp = fopen(filename, "r");
     if (fp == NULL) {
         LOG_ERROR("Unable to open lcn file '%s'\n", filename);
-        //have this return -1 and handle it inside of main
-        exit(1);
+        return -1;
     }
     int row_count = 0;
     int field_count = 0;
@@ -115,8 +114,7 @@ csvChanImport(dsd_opts* opts, dsd_state* state) //channel map import
     fp = fopen(filename, "r");
     if (fp == NULL) {
         LOG_ERROR("Unable to open channel map file '%s'\n", filename);
-        //have this return -1 and handle it inside of main
-        exit(1);
+        return -1;
     }
     int row_count = 0;
     int field_count = 0;
@@ -173,7 +171,7 @@ csvKeyImportDec(dsd_opts* opts, dsd_state* state) //multi-key support
     fp = fopen(filename, "r");
     if (fp == NULL) {
         LOG_ERROR("Unable to open file '%s'\n", filename);
-        exit(1);
+        return -1;
     }
     int row_count = 0;
     int field_count = 0;
@@ -236,7 +234,7 @@ csvKeyImportHex(dsd_opts* opts, dsd_state* state) //key import for hex keys
     fp = fopen(filename, "r");
     if (fp == NULL) {
         LOG_ERROR("Unable to open file '%s'\n", filename);
-        exit(1);
+        return -1;
     }
     int row_count = 0;
     int field_count = 0;

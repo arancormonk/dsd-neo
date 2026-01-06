@@ -521,7 +521,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 //open pulse input if we are pulse output AND using ncurses terminal
                 if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
                     opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                    openPulseInput(opts);                 //open pulse input
+                    if (openPulseInput(opts) != 0) {
+                        cleanupAndExit(opts, state);
+                        return 0.0f;
+                    }
                 }
                 //else cleanup and exit
                 else {
@@ -620,8 +623,11 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     opts->audio_in_type = AUDIO_IN_PULSE; //set input type
                     opts->tcp_sockfd =
                         0; //added this line so we will know if it connected when using ncurses terminal keyboard shortcut
-                    openPulseInput(opts); //open pulse input
-                    sample = 0;           //zero sample on bad result, keep the ball rolling
+                    if (openPulseInput(opts) != 0) {
+                        cleanupAndExit(opts, state);
+                        return 0.0f;
+                    }
+                    sample = 0; //zero sample on bad result, keep the ball rolling
                     fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                 }
             }
@@ -1034,7 +1040,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             //open pulse input if we are pulse output AND using ncurses terminal
             else if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
                 opts->audio_in_type = AUDIO_IN_PULSE; //set input type
-                openPulseInput(opts);                 //open pulse input
+                if (openPulseInput(opts) != 0) {
+                    cleanupAndExit(opts, state);
+                    return 0.0f;
+                }
             }
             //else cleanup and exit
             else {

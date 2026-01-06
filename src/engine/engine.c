@@ -109,24 +109,29 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-static void
+static int
 import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
-        return;
+        return 0;
     }
 
     const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
     const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1);
 
     if (trunk_or_scan && opts->chan_in_file[0] != '\0' && state->lcn_freq_count == 0) {
-        csvChanImport(opts, state);
+        if (csvChanImport(opts, state) != 0) {
+            return -1;
+        }
         LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
     }
 
     if (trunk_enabled && opts->group_in_file[0] != '\0' && state->group_tally == 0) {
-        csvGroupImport(opts, state);
+        if (csvGroupImport(opts, state) != 0) {
+            return -1;
+        }
         LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
     }
+    return 0;
 }
 
 static void
@@ -236,7 +241,7 @@ dsd_engine_start_ui(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static void
+static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if ((strncmp(opts->audio_in_dev, "m17udp", 6) == 0)) //M17 UDP Socket Input
     {
@@ -363,7 +368,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     TCPEND:
         if (exitflag == 1) {
             cleanupAndExit(opts, state);
-            return;
+            return 0;
         }
         LOG_NOTICE("%s:", opts->tcp_hostname);
         LOG_NOTICE("%d \n", opts->tcp_portno);
@@ -780,7 +785,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         opts->pulse_digi_out_channels = 1;
         if (opts->audio_out_type == 0) {
-            openPulseOutput(opts);
+            if (openPulseOutput(opts) != 0) {
+                return -1;
+            }
         }
     }
 
@@ -791,7 +798,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->playoffsetR = 0;
         opts->delay = 0;
 
-        openAudioInDevice(opts);
+        if (openAudioInDevice(opts) != 0) {
+            return -1;
+        }
     }
 
     else {
@@ -799,8 +808,11 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         opts->playoffset = 0;
         opts->playoffsetR = 0;
         opts->delay = 0;
-        openAudioInDevice(opts);
+        if (openAudioInDevice(opts) != 0) {
+            return -1;
+        }
     }
+    return 0;
 }
 
 static void
@@ -1428,8 +1440,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
 } //nocarrier
 
-void
+static int
 liveScanner(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
     // Cache previous thresholds to avoid redundant recalculation
     static int last_max = INT_MIN;
     static int last_min = INT_MAX;
@@ -1463,11 +1478,15 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
 #endif
 
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        openPulseInput(opts);
+        if (openPulseInput(opts) != 0) {
+            return -1;
+        }
     }
 
     if (opts->audio_out_type == 0) {
-        openPulseOutput(opts);
+        if (openPulseOutput(opts) != 0) {
+            return -1;
+        }
     }
 
     //push a DSD-neo started event so users can see what this section does, and also gives users an idea of when context started
@@ -1555,6 +1574,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
     }
 
     p25_sm_watchdog_stop();
+    return 0;
 }
 
 void
@@ -1702,6 +1722,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         fprintf(stderr, "Failed to initialize socket subsystem\n");
         return 1;
     }
+    int rc = 0;
 
     exitflag = 0;
 
@@ -1719,7 +1740,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
     // If trunking/scanner inputs were configured via INI/env rather than CLI (-C/-G),
     // import the CSVs now before the decoder begins processing.
-    import_trunking_csvs_if_needed(opts, state);
+    if (import_trunking_csvs_if_needed(opts, state) != 0) {
+        rc = 1;
+        goto ENGINE_OUT;
+    }
 
     // If recording outputs were configured via INI, open them now for this run.
     open_recording_outputs_if_needed(opts, state);
@@ -1738,12 +1762,18 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
     if (opts->resume > 0) {
         openSerial(opts, state);
+        if (opts->serial_fd < 0) {
+            rc = 1;
+            goto ENGINE_OUT;
+        }
     }
 
-    dsd_engine_setup_io(opts, state);
+    if (dsd_engine_setup_io(opts, state) != 0) {
+        rc = 1;
+        goto ENGINE_OUT;
+    }
     if (exitflag) {
-        dsd_engine_cleanup(opts, state);
-        return 0;
+        goto ENGINE_OUT;
     }
 
     signal(SIGINT, dsd_engine_signal_handler);
@@ -1766,7 +1796,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
         //open any inputs, if not already opened
         if (opts->audio_in_type == AUDIO_IN_PULSE) {
-            openPulseInput(opts);
+            if (openPulseInput(opts) != 0) {
+                rc = 1;
+                goto ENGINE_OUT;
+            }
         }
 
 #ifdef USE_RTLSDR
@@ -1785,7 +1818,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            openPulseOutput(opts);
+            if (openPulseOutput(opts) != 0) {
+                rc = 1;
+                goto ENGINE_OUT;
+            }
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
         dsd_engine_start_ui(opts, state);
@@ -1797,7 +1833,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            openPulseOutput(opts);
+            if (openPulseOutput(opts) != 0) {
+                rc = 1;
+                goto ENGINE_OUT;
+            }
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
         dsd_engine_start_ui(opts, state);
@@ -1811,7 +1850,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            openPulseOutput(opts);
+            if (openPulseOutput(opts) != 0) {
+                rc = 1;
+                goto ENGINE_OUT;
+            }
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
         dsd_engine_start_ui(opts, state);
@@ -1822,7 +1864,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         opts->pulse_digi_rate_out = 8000;
         //open any outputs, if not already opened
         if (opts->audio_out_type == 0) {
-            openPulseOutput(opts);
+            if (openPulseOutput(opts) != 0) {
+                rc = 1;
+                goto ENGINE_OUT;
+            }
         }
         // Start UI thread when ncurses UI is enabled so ncursesPrinter updates are rendered
         dsd_engine_start_ui(opts, state);
@@ -1832,9 +1877,12 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     else {
         // Start UI thread before entering main decode loop when enabled
         dsd_engine_start_ui(opts, state);
-        liveScanner(opts, state);
+        if (liveScanner(opts, state) != 0) {
+            rc = 1;
+        }
     }
 
+ENGINE_OUT:
     dsd_engine_cleanup(opts, state);
-    return 0;
+    return rc;
 }

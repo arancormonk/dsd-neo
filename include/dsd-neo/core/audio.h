@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -32,10 +32,10 @@ void processAudio(dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 2 / right). */
 void processAudioR(dsd_opts* opts, dsd_state* state);
 
-/** @brief Open audio input stream based on opts. */
-void openAudioInput(dsd_opts* opts);
-/** @brief Open audio output stream based on opts. */
-void openAudioOutput(dsd_opts* opts);
+/** @brief Open audio input stream based on opts. Returns 0 on success. */
+int openAudioInput(dsd_opts* opts);
+/** @brief Open audio output stream based on opts. Returns 0 on success. */
+int openAudioOutput(dsd_opts* opts);
 /** @brief Close audio input stream if open. */
 void closeAudioInput(dsd_opts* opts);
 /** @brief Close audio output stream if open. */
@@ -140,8 +140,8 @@ void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /** @brief Open output audio device at requested speed. */
 void openAudioOutDevice(dsd_opts* opts, int speed);
-/** @brief Open input audio device based on opts. */
-void openAudioInDevice(dsd_opts* opts);
+/** @brief Open input audio device based on opts. Returns 0 on success. */
+int openAudioInDevice(dsd_opts* opts);
 
 /** @brief Parse audio input device string and update opts. */
 void parse_audio_input_string(dsd_opts* opts, char* input);

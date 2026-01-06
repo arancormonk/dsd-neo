@@ -716,7 +716,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             if (opts->audio_out_type == 0) {
                 opts->audio_in_type = AUDIO_IN_PULSE;
-                openPulseInput(opts);
+                if (openPulseInput(opts) != 0) {
+                    LOG_ERROR("UI: failed to open PulseAudio input\n");
+                }
             } else {
                 opts->audio_in_type = AUDIO_IN_STDIN;
             }
@@ -923,7 +925,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                         } else {
                             opts->pa_input_idx[0] = '\0';
                         }
-                        openPulseInput(opts);
+                        if (openPulseInput(opts) != 0) {
+                            LOG_ERROR("Config: failed to open PulseAudio input\n");
+                        }
                     }
                 }
 
@@ -940,7 +944,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                         } else {
                             opts->pa_output_idx[0] = '\0';
                         }
-                        openPulseOutput(opts);
+                        if (openPulseOutput(opts) != 0) {
+                            LOG_ERROR("Config: failed to open PulseAudio output\n");
+                        }
                     }
                 }
             }

@@ -33,20 +33,6 @@
 #define SAVED_FREQ_MAX 1000
 #define TAG_MAX        100
 
-/**
- * @brief perror wrapper that exits the process after logging the message.
- *
- * Intended for fatal socket/setup failures where graceful continuation is not
- * possible.
- *
- * @param msg Message passed to perror.
- */
-void
-error(char* msg) {
-    perror(msg);
-    exit(0);
-}
-
 struct sockaddr_in address;
 struct sockaddr_in addressA;
 struct sockaddr_in addressM17;
@@ -70,7 +56,8 @@ Connect(char* hostname, int portno) {
     sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (sockfd == DSD_INVALID_SOCKET) {
         LOG_ERROR("ERROR opening socket\n");
-        error("ERROR opening socket");
+        perror("ERROR opening socket");
+        return DSD_INVALID_SOCKET;
     }
 
     /* Resolve hostname and build the server's Internet address */
@@ -371,7 +358,7 @@ GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
  *
  * @param hostname Ignored (reserved for future use).
  * @param portno UDP port to bind.
- * @return Socket FD on success; exits the process on fatal errors.
+ * @return Socket FD on success; invalid socket on errors.
  */
 dsd_socket_t
 UDPBind(char* hostname, int portno) {
@@ -386,7 +373,8 @@ UDPBind(char* hostname, int portno) {
 
     if (sockfd == DSD_INVALID_SOCKET) {
         fprintf(stderr, "ERROR opening UDP socket\n");
-        error("ERROR opening UDP socket");
+        perror("ERROR opening UDP socket");
+        return DSD_INVALID_SOCKET;
     }
 
     /* build the server's Internet address */

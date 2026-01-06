@@ -76,28 +76,26 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         set(_ARCH_RULES_UI_FORBIDDEN_AREA ON)
     endif()
 
-    if(_ARCH_RULES_REL MATCHES "^(src/runtime/|include/dsd-neo/runtime/)")
-        file(
-            STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_EXIT_LINES
-            REGEX "(^|[^A-Za-z0-9_])exit[ \t]*\\("
+    file(
+        STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_EXIT_LINES
+        REGEX "(^|[^A-Za-z0-9_])exit[ \t]*\\("
+    )
+
+    foreach(_ARCH_RULES_EXIT_LINE IN LISTS _ARCH_RULES_EXIT_LINES)
+        if(_ARCH_RULES_EXIT_LINE MATCHES "^[ \t]*(//|/\\*)")
+            continue()
+        endif()
+
+        if(_ARCH_RULES_EXIT_LINE MATCHES "\"[^\"]*exit[ \t]*\\(")
+            continue()
+        endif()
+
+        string(STRIP "${_ARCH_RULES_EXIT_LINE}" _ARCH_RULES_EXIT_LINE_STRIPPED)
+        message(SEND_ERROR
+            "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden exit() usage '${_ARCH_RULES_EXIT_LINE_STRIPPED}'"
         )
-
-        foreach(_ARCH_RULES_EXIT_LINE IN LISTS _ARCH_RULES_EXIT_LINES)
-            if(_ARCH_RULES_EXIT_LINE MATCHES "^[ \t]*(//|/\\*)")
-                continue()
-            endif()
-
-            if(_ARCH_RULES_EXIT_LINE MATCHES "\"[^\"]*exit[ \t]*\\(")
-                continue()
-            endif()
-
-            string(STRIP "${_ARCH_RULES_EXIT_LINE}" _ARCH_RULES_EXIT_LINE_STRIPPED)
-            message(SEND_ERROR
-                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden runtime exit() usage '${_ARCH_RULES_EXIT_LINE_STRIPPED}'"
-            )
-            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
-        endforeach()
-    endif()
+        math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+    endforeach()
 
     file(
         STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_INCLUDE_LINES

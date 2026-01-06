@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /* UI command actions — audio domain */
@@ -19,14 +19,18 @@ static int
 ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)c;
     opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
+    const char* msg = (opts->audio_out == 0) ? "Output: Muted" : "Output: On";
     if (opts->audio_out == 1) {
         if (opts->audio_out_type == 0) {
             closePulseOutput(opts);
-            openPulseOutput(opts);
+            if (openPulseOutput(opts) != 0) {
+                opts->audio_out = 0;
+                msg = "Output: open failed";
+            }
         }
     }
     if (state) {
-        snprintf(state->ui_msg, sizeof state->ui_msg, "%s", (opts->audio_out == 0) ? "Output: Muted" : "Output: On");
+        snprintf(state->ui_msg, sizeof state->ui_msg, "%s", msg);
         state->ui_msg_expire = time(NULL) + 3;
     }
     return 1;
