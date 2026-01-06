@@ -26,7 +26,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
 #include <stdio.h>
@@ -301,9 +301,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                 rel = 255;
             }
 #ifdef USE_RTLSDR
-            double snr_db = rtl_stream_get_snr_c4fm();
+            double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
             if (snr_db < -50.0) {
-                snr_db = rtl_stream_estimate_snr_c4fm_eye();
+                snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
             }
             int w256 = 0;
             /* After C4FM SNR bias removal (~8 dB), shift window from [-5,20] to [-13,12]. */
@@ -418,9 +418,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                 rel = 255;
             }
 #ifdef USE_RTLSDR
-            double snr_db = rtl_stream_get_snr_c4fm();
+            double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
             if (snr_db < -50.0) {
-                snr_db = rtl_stream_estimate_snr_c4fm_eye();
+                snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
             }
             int w256 = 0;
             /* After C4FM SNR bias removal (~8 dB), shift window from [-5,20] to [-13,12]. */

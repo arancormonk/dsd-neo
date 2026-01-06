@@ -44,3 +44,34 @@ dsd_rtl_stream_metrics_hook_snr_bias_evm(void) {
     }
     return 2.43;
 }
+
+double
+dsd_rtl_stream_metrics_hook_snr_c4fm_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_c4fm_db) {
+        return g_rtl_stream_metrics_hooks.snr_c4fm_db();
+    }
+    return -100.0;
+}
+
+double
+dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_c4fm_eye_db) {
+        return g_rtl_stream_metrics_hooks.snr_c4fm_eye_db();
+    }
+    return -100.0;
+}
+
+void
+dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta) {
+    if (g_rtl_stream_metrics_hooks.p25p1_ber_update) {
+        g_rtl_stream_metrics_hooks.p25p1_ber_update(ok_delta, err_delta);
+    }
+}
+
+void
+dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err,
+                                             int voice_err) {
+    if (g_rtl_stream_metrics_hooks.p25p2_err_update) {
+        g_rtl_stream_metrics_hooks.p25p2_err_update(slot, facch_ok, facch_err, sacch_ok, sacch_err, voice_err);
+    }
+}

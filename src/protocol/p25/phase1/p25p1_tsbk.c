@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * p25p1_tsbk.c
@@ -17,7 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -184,12 +184,12 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
-        rtl_stream_p25p1_ber_update(1, 0);
+        dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
     } else {
         state->p25_p1_fec_err++;
 #ifdef USE_RTLSDR
-        rtl_stream_p25p1_ber_update(0, 1);
+        dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
     }
 

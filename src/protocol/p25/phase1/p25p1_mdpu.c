@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * p25p1_mpdu.c
@@ -22,7 +22,7 @@
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
 #include <stdio.h>
@@ -291,12 +291,12 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         if (err[0] == 0) {
             state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
-            rtl_stream_p25p1_ber_update(1, 0);
+            dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
         } else {
             state->p25_p1_fec_err++;
 #ifdef USE_RTLSDR
-            rtl_stream_p25p1_ber_update(0, 1);
+            dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
         }
     }
