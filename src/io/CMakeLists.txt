@@ -66,7 +66,7 @@ target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_runtime dsd-neo_feature_
 target_link_libraries(dsd-neo_io_control PRIVATE dsd-neo_warnings)
 
 # Make target-level dependencies explicit for static builds.
-target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_core dsd-neo_dsp dsd-neo_proto_p25 dsd-neo_proto_dmr)
+target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_core dsd-neo_dsp)
 
 # rtl_sdr_fm.cpp uses udp_control_*; ensure correct link propagation and ordering.
 if(RTLSDR_FOUND)
