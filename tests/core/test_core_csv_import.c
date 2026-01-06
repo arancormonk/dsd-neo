@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -28,49 +29,75 @@ pick_missing_dir(char* out, size_t out_sz) {
 
 static int
 test_group_import_missing_file(void) {
-    dsd_opts opts;
-    dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    // dsd_state is a multi-megabyte struct; avoid Windows' default ~1MB stack.
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
 
     char dir[128];
     if (pick_missing_dir(dir, sizeof dir) != 0) {
+        free(opts);
+        free(state);
         return 1;
     }
 
-    state.group_tally = 123;
-    (void)snprintf(opts.group_in_file, sizeof opts.group_in_file, "%s/%s", dir, "missing.csv");
-    int rc = csvGroupImport(&opts, &state);
+    state->group_tally = 123;
+    (void)snprintf(opts->group_in_file, sizeof opts->group_in_file, "%s/%s", dir, "missing.csv");
+    int rc = csvGroupImport(opts, state);
     if (rc == 0) {
+        free(opts);
+        free(state);
         return 1;
     }
-    if (state.group_tally != 123) {
+    if (state->group_tally != 123) {
+        free(opts);
+        free(state);
         return 1;
     }
+
+    free(opts);
+    free(state);
     return 0;
 }
 
 static int
 test_channel_import_missing_file(void) {
-    dsd_opts opts;
-    dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    // dsd_state is a multi-megabyte struct; avoid Windows' default ~1MB stack.
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
 
     char dir[128];
     if (pick_missing_dir(dir, sizeof dir) != 0) {
+        free(opts);
+        free(state);
         return 1;
     }
 
-    state.lcn_freq_count = 456;
-    (void)snprintf(opts.chan_in_file, sizeof opts.chan_in_file, "%s/%s", dir, "missing.csv");
-    int rc = csvChanImport(&opts, &state);
+    state->lcn_freq_count = 456;
+    (void)snprintf(opts->chan_in_file, sizeof opts->chan_in_file, "%s/%s", dir, "missing.csv");
+    int rc = csvChanImport(opts, state);
     if (rc == 0) {
+        free(opts);
+        free(state);
         return 1;
     }
-    if (state.lcn_freq_count != 456) {
+    if (state->lcn_freq_count != 456) {
+        free(opts);
+        free(state);
         return 1;
     }
+
+    free(opts);
+    free(state);
     return 0;
 }
 
