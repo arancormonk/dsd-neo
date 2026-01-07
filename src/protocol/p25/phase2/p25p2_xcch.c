@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * p25p2_xcch.c
@@ -21,9 +21,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 #include <stdio.h>
 #include <string.h>

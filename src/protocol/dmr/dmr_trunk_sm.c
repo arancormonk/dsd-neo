@@ -17,10 +17,6 @@
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
-
 /* ============================================================================
  * Internal Helpers
  * ============================================================================ */

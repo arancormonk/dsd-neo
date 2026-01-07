@@ -32,9 +32,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 #include <math.h>
 #include <stdio.h>

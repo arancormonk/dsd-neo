@@ -30,9 +30,6 @@
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 void dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]);
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 //combined flco handler (vlc, tlc, emb), minus the superfluous structs and strings
 void

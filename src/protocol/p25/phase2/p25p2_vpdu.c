@@ -26,9 +26,6 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 #include <stddef.h>
 #include <stdio.h>

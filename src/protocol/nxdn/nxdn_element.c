@@ -35,9 +35,6 @@
 #include <string.h>
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent);
 void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, uint8_t* Message);
