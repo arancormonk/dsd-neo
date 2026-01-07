@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 static long g_last_tuned_cc = 0;
@@ -53,9 +54,8 @@ main(void) {
     // Two candidates A, B
     long A = 852000000;
     long B = 853000000;
-    st.p25_cc_cand_count = 2;
-    st.p25_cc_candidates[0] = A;
-    st.p25_cc_candidates[1] = B;
+    (void)dsd_trunk_cc_candidates_add(&st, A, 0);
+    (void)dsd_trunk_cc_candidates_add(&st, B, 0);
     // Force CC hunt
     st.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
 

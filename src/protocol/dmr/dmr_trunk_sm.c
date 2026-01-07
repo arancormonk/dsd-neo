@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
@@ -480,62 +481,16 @@ dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     }
     UNUSED(opts);
 
-    // CC candidate array is shared with P25 (p25_cc_candidates)
-    if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
-        state->p25_cc_cand_count = 0;
-        state->p25_cc_cand_idx = 0;
-    }
-
     for (int i = 0; i < count; i++) {
         long f = freqs[i];
         if (f == 0 || f == state->trunk_cc_freq) {
             continue;
         }
-
-        int exists = 0;
-        for (int k = 0; k < state->p25_cc_cand_count; k++) {
-            if (state->p25_cc_candidates[k] == f) {
-                exists = 1;
-                break;
-            }
-        }
-        if (exists) {
-            continue;
-        }
-
-        if (state->p25_cc_cand_count < 16) {
-            state->p25_cc_candidates[state->p25_cc_cand_count++] = f;
-            state->p25_cc_cand_added++;
-        } else {
-            for (int k = 1; k < 16; k++) {
-                state->p25_cc_candidates[k - 1] = state->p25_cc_candidates[k];
-            }
-            state->p25_cc_candidates[15] = f;
-            if (state->p25_cc_cand_idx > 0) {
-                state->p25_cc_cand_idx--;
-            }
-            state->p25_cc_cand_added++;
-        }
+        (void)dsd_trunk_cc_candidates_add(state, f, 1);
     }
 }
 
 int
 dmr_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
-    if (!state || !out_freq) {
-        return 0;
-    }
-
-    // CC candidate array is shared with P25 (p25_cc_candidates)
-    for (int tries = 0; tries < state->p25_cc_cand_count; tries++) {
-        if (state->p25_cc_cand_idx >= state->p25_cc_cand_count) {
-            state->p25_cc_cand_idx = 0;
-        }
-        long f = state->p25_cc_candidates[state->p25_cc_cand_idx++];
-        if (f != 0 && f != state->trunk_cc_freq) {
-            *out_freq = f;
-            state->p25_cc_cand_used++;
-            return 1;
-        }
-    }
-    return 0;
+    return dsd_trunk_cc_candidates_next(state, now_monotonic(), out_freq);
 }

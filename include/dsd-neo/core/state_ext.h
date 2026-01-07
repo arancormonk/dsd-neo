@@ -44,6 +44,7 @@ enum { DSD_STATE_EXT_MAX = 32 };
  */
 typedef enum dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_START_MS = 0,
+    DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES = 1,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
 } dsd_state_ext_id;
 

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 // Strong test stubs override weak fallbacks in SM
@@ -97,8 +98,7 @@ main(void) {
     static dsd_state s3;
     init_basic(&o3, &s3);
     s3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0; // stale CC
-    s3.p25_cc_cand_count = 1;
-    s3.p25_cc_candidates[0] = 852000000;
+    (void)dsd_trunk_cc_candidates_add(&s3, 852000000, 0);
     g_last_tuned_cc = 0;
     p25_sm_tick(&o3, &s3);
     assert(g_last_tuned_cc == 852000000);

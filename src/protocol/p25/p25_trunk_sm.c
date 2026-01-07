@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stdio.h>
@@ -624,27 +625,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 // Get next CC candidate (with cooldown check)
 static int
 next_cc_candidate(dsd_state* state, long* out_freq, double now_m) {
-    if (!state || !out_freq) {
-        return 0;
-    }
-    for (int tries = 0; tries < state->p25_cc_cand_count; tries++) {
-        if (state->p25_cc_cand_idx >= state->p25_cc_cand_count) {
-            state->p25_cc_cand_idx = 0;
-        }
-        int idx = state->p25_cc_cand_idx++;
-        long f = state->p25_cc_candidates[idx];
-        if (f != 0 && f != state->p25_cc_freq) {
-            // Skip candidates in cooldown
-            double cool_until = (idx >= 0 && idx < 16) ? state->p25_cc_cand_cool_until[idx] : 0.0;
-            if (cool_until > 0.0 && now_m < cool_until) {
-                continue;
-            }
-            *out_freq = f;
-            state->p25_cc_cand_used++;
-            return 1;
-        }
-    }
-    return 0;
+    return dsd_trunk_cc_candidates_next(state, now_m, out_freq);
 }
 
 // Get next LCN frequency from user-provided list
@@ -877,12 +858,7 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
                     int stale = (cc_ts <= 0.0) || ((now_m - cc_ts) >= eval_window_s);
                     if (stale) {
                         // Apply cooldown to the candidate
-                        for (int i = 0; i < state->p25_cc_cand_count && i < 16; i++) {
-                            if (state->p25_cc_candidates[i] == state->p25_cc_eval_freq) {
-                                state->p25_cc_cand_cool_until[i] = now_m + 10.0;
-                                break;
-                            }
-                        }
+                        dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
                     }
                     state->p25_cc_eval_freq = 0;
                     state->p25_cc_eval_start_m = 0.0;

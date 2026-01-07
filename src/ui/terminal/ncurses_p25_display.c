@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
  * ncurses_p25_display.c
@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ui_prims.h>
 
@@ -248,6 +249,14 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
 
     /* Trunking state-machine counters and IDEN trust summary (trunking only) */
     if (opts && opts->p25_trunk == 1) {
+        const dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_peek(state);
+        const unsigned int cc_added = cc_candidates ? cc_candidates->added : 0;
+        const unsigned int cc_used = cc_candidates ? cc_candidates->used : 0;
+        const int cc_count =
+            (cc_candidates && cc_candidates->count > 0 && cc_candidates->count <= DSD_TRUNK_CC_CANDIDATES_MAX)
+                ? cc_candidates->count
+                : 0;
+
         /* SM counters + concise mode */
         const char* sm_mode;
         switch (state->p25_sm_mode) {
@@ -261,8 +270,8 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
             default: sm_mode = "?"; break;
         }
         printw("| SM: mode:%s tunes %u rel %u/%u; CC cands add:%u used:%u count:%d\n", sm_mode,
-               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_sm_cc_return_count,
-               state->p25_cc_cand_added, state->p25_cc_cand_used, state->p25_cc_cand_count);
+               state->p25_sm_tune_count, state->p25_sm_release_count, state->p25_sm_cc_return_count, cc_added, cc_used,
+               cc_count);
         lines++;
 
         /* CC/VC frequency snapshot (best-effort) */
@@ -513,7 +522,9 @@ ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) {
     if (opts->p25_trunk != 1) {
         return;
     }
-    if (state->p25_cc_cand_count <= 0) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    const int count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
+    if (count <= 0) {
         ui_print_lborder_green();
         addstr(" (none)\n");
         return;
@@ -525,13 +536,13 @@ ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) {
     }
     int shown = 0;
     int line_used = 0;
-    for (int i = 0; i < state->p25_cc_cand_count; i++) {
-        long f = state->p25_cc_candidates[i];
+    for (int i = 0; i < count; i++) {
+        long f = cc->candidates[i];
         if (f == 0) {
             continue;
         }
         char buf[64];
-        int is_next = (state->p25_cc_cand_count > 0) ? (i == (state->p25_cc_cand_idx % state->p25_cc_cand_count)) : 0;
+        int is_next = (count > 0) ? (i == (cc->idx % count)) : 0;
         int m = snprintf(buf, sizeof buf, "%c%.6lf MHz", is_next ? '>' : ' ', (double)f / 1000000.0);
         if (m < 0) {
             m = 0;
@@ -607,8 +618,10 @@ ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
         }
         int is_cc = (f == state->p25_cc_freq);
         int in_cands = 0;
-        for (int c = 0; c < state->p25_cc_cand_count; c++) {
-            if (state->p25_cc_candidates[c] == f) {
+        const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+        const int cand_count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
+        for (int c = 0; c < cand_count; c++) {
+            if (cc->candidates[c] == f) {
                 in_cands = 1;
                 break;
             }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -17,6 +17,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 #include <string.h>
 
@@ -63,24 +64,7 @@ p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
         return 0;
     }
     double nowm = now_monotonic();
-    for (int tries = 0; tries < state->p25_cc_cand_count; tries++) {
-        if (state->p25_cc_cand_idx >= state->p25_cc_cand_count) {
-            state->p25_cc_cand_idx = 0;
-        }
-        int idx = state->p25_cc_cand_idx++;
-        long f = state->p25_cc_candidates[idx];
-        if (f != 0 && f != state->p25_cc_freq) {
-            // Skip candidates currently in cooldown
-            double cool_until = (idx >= 0 && idx < 16) ? state->p25_cc_cand_cool_until[idx] : 0.0;
-            if (cool_until > 0.0 && nowm < cool_until) {
-                continue;
-            }
-            *out_freq = f;
-            state->p25_cc_cand_used++;
-            return 1;
-        }
-    }
-    return 0;
+    return dsd_trunk_cc_candidates_next(state, nowm, out_freq);
 }
 
 /* ============================================================================

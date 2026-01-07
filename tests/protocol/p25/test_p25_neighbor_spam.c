@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -20,6 +20,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 #include "test_support.h"
 
@@ -96,7 +97,9 @@ main(void) {
         }
         p25_sm_on_neighbor_update(&opts, &st, f, n);
         // Count should never exceed 16
-        rc |= expect_true("cand<=16", st.p25_cc_cand_count >= 0 && st.p25_cc_cand_count <= 16);
+        const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
+        const int count = cc ? cc->count : 0;
+        rc |= expect_true("cand<=16", count >= 0 && count <= DSD_TRUNK_CC_CANDIDATES_MAX);
     }
 
     // Timing end and guard: ensure this remains snappy
@@ -111,7 +114,8 @@ main(void) {
 
     // Next-candidate iteration should cycle through at most count entries and
     // never return 0 or the current CC.
-    int count = st.p25_cc_cand_count;
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
+    const int count = cc ? cc->count : 0;
     if (count > 0) {
         int seen_nonzero = 0;
         long last = -1;

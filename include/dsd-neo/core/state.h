@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -269,10 +269,9 @@ struct dsd_state {
     // DMR LRRP 64-bit values
     unsigned long long int dmr_lrrp_source[2];
     unsigned long long int dmr_lrrp_target[2];
-    // P25 trunking freq storage and candidates
+    // P25 trunking freq storage
     long int p25_vc_freq[2];
     long int trunk_vc_freq[2]; //protocol-agnostic alias (kept in sync with p25_vc_freq)
-    long p25_cc_candidates[16];
     // Trunking LCNs and maps
     long int trunk_lcn_freq[26];
     long int trunk_chan_map[0xFFFF];
@@ -628,11 +627,6 @@ struct dsd_state {
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)
     int p25_sys_is_tdma; // system hint: 1 when P25p2 voice observed (TDMA present)
 
-    // CC hunting candidates discovered from RFSS/Adjacent/Network messages
-    int p25_cc_cand_count;
-    int p25_cc_cand_idx;
-    // Optional cooldown window per candidate to avoid immediate re-tries (monotonic seconds)
-    double p25_cc_cand_cool_until[16];
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;
     double p25_cc_eval_start_m;
@@ -695,9 +689,6 @@ struct dsd_state {
     // P25 Phase 1 voice/header FEC telemetry (Reed-Solomon outcome for HDU/LDU/TDULC)
     unsigned int p25_p1_voice_fec_ok;  // count of successful RS decodes (HDU/LDU/TDULC)
     unsigned int p25_p1_voice_fec_err; // count of failed RS decodes (HDU/LDU/TDULC)
-    unsigned int p25_cc_cand_added;    // candidates added
-    unsigned int p25_cc_cand_used;     // candidates used for hunting
-
     // P25 Phase 1 DUID/frame-type histogram (since last tune/reset)
     unsigned int p25_p1_duid_hdu;
     unsigned int p25_p1_duid_ldu1;

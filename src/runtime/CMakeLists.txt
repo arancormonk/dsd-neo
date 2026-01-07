@@ -2,6 +2,7 @@
 add_library(dsd-neo_runtime)
 
 target_sources(dsd-neo_runtime PRIVATE
+  state_ext.c
   config.cpp
   config_user.cpp
   config_schema.c
@@ -9,6 +10,7 @@ target_sources(dsd-neo_runtime PRIVATE
   control_pump.c
   frame_sync_hooks.c
   trunk_tuning_hooks.c
+  trunk_cc_candidates.c
   rtl_stream_io_hooks.c
   rtl_stream_metrics_hooks.c
   p25_optional_hooks.c

@@ -1,7 +1,6 @@
 add_library(dsd-neo_core)
 
 target_sources(dsd-neo_core PRIVATE
-  state_ext.c
   audio/dsd_audio.c
   audio/dsd_audio2.c
   audio/dsd_audio_gate.c

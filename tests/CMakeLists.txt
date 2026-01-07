@@ -110,6 +110,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/trunk_tuning_hooks.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_trunk_cc_candidates
+  HEADERS_PUBLIC_RUNTIME_TRUNK_CC_CANDIDATES
+  dsd-neo/runtime/trunk_cc_candidates.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_git_ver
   HEADERS_PUBLIC_RUNTIME_GIT_VER
   dsd-neo/runtime/git_ver.h
@@ -237,6 +242,11 @@ add_executable(dsd-neo_test_runtime_trunk_tuning_hooks runtime/test_runtime_trun
 target_include_directories(dsd-neo_test_runtime_trunk_tuning_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_trunk_tuning_hooks PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_TRUNK_TUNING_HOOKS COMMAND dsd-neo_test_runtime_trunk_tuning_hooks)
+
+add_executable(dsd-neo_test_runtime_trunk_cc_candidates runtime/test_runtime_trunk_cc_candidates.c)
+target_include_directories(dsd-neo_test_runtime_trunk_cc_candidates PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_trunk_cc_candidates PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_TRUNK_CC_CANDIDATES COMMAND dsd-neo_test_runtime_trunk_cc_candidates)
 
 add_executable(dsd-neo_test_runtime_rtl_stream_metrics_hooks runtime/test_runtime_rtl_stream_metrics_hooks.c)
 target_include_directories(dsd-neo_test_runtime_rtl_stream_metrics_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)

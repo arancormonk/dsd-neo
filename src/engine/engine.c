@@ -39,6 +39,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_async.h>
 
 #include <mbelib.h>
@@ -1335,8 +1336,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_rs_ess_corr = 0;
 
     // Initialize P25 SM candidate cache bookkeeping
-    state->p25_cc_cand_count = 0;
-    state->p25_cc_cand_idx = 0;
+    dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_get(state);
+    if (cc_candidates) {
+        cc_candidates->count = 0;
+        cc_candidates->idx = 0;
+    }
     state->p25_cc_cache_loaded = 0;
 
     // memset(state->active_channel, 0, sizeof(state->active_channel));

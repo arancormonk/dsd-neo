@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 // Rigctl/RTL and CC-return stubs to avoid external I/O and core linkage
 bool
@@ -99,7 +100,9 @@ test_neighbor_candidates(void) {
 
     long cand[3] = {851012500, 852500000, 0};
     dmr_sm_on_neighbor_update(&opts, &state, cand, 3);
-    assert(state.p25_cc_cand_count >= 2);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&state);
+    assert(cc != NULL);
+    assert(cc->count >= 2);
 
     long next = 0;
     int ok = dmr_sm_next_cc_candidate(&state, &next);

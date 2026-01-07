@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -14,6 +14,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -27,33 +28,10 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
     if (!state || freq_hz == 0) {
         return 0;
     }
-    if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
-        state->p25_cc_cand_count = 0;
-        state->p25_cc_cand_idx = 0;
-    }
     if (freq_hz == state->p25_cc_freq) {
         return 0;
     }
-    for (int k = 0; k < state->p25_cc_cand_count; k++) {
-        if (state->p25_cc_candidates[k] == freq_hz) {
-            return 0;
-        }
-    }
-    if (state->p25_cc_cand_count < 16) {
-        state->p25_cc_candidates[state->p25_cc_cand_count++] = freq_hz;
-    } else {
-        for (int k = 1; k < 16; k++) {
-            state->p25_cc_candidates[k - 1] = state->p25_cc_candidates[k];
-        }
-        state->p25_cc_candidates[15] = freq_hz;
-        if (state->p25_cc_cand_idx > 0) {
-            state->p25_cc_cand_idx--;
-        }
-    }
-    if (bump_added) {
-        state->p25_cc_cand_added++;
-    }
-    return 1;
+    return dsd_trunk_cc_candidates_add(state, freq_hz, bump_added);
 }
 
 int
@@ -107,11 +85,6 @@ p25_cc_try_load_cache(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    if (state->p25_cc_cand_count < 0 || state->p25_cc_cand_count > 16) {
-        state->p25_cc_cand_count = 0;
-        state->p25_cc_cand_idx = 0;
-    }
-
     char line[256];
     while (fgets(line, sizeof(line), fp)) {
         char* end = NULL;
@@ -123,8 +96,11 @@ p25_cc_try_load_cache(dsd_opts* opts, dsd_state* state) {
     }
     fclose(fp);
     state->p25_cc_cache_loaded = 1;
-    if (opts && opts->verbose > 0 && state->p25_cc_cand_count > 0) {
-        fprintf(stderr, "\n  P25 SM: Loaded %d CC candidates from cache\n", state->p25_cc_cand_count);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    const int count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
+    if (opts && opts->verbose > 0 && count > 0) {
+        fprintf(stderr, "\n  P25 SM: Loaded %d CC candidates from cache\n", count);
     }
 }
 
@@ -150,9 +126,12 @@ p25_cc_persist_cache(dsd_opts* opts, dsd_state* state) {
         }
         return;
     }
-    for (int i = 0; i < state->p25_cc_cand_count; i++) {
-        if (state->p25_cc_candidates[i] != 0) {
-            fprintf(fp, "%ld\n", state->p25_cc_candidates[i]);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    const int count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
+    for (int i = 0; i < count; i++) {
+        if (cc->candidates[i] != 0) {
+            fprintf(fp, "%ld\n", cc->candidates[i]);
         }
     }
     fclose(fp);
