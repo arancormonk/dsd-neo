@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Core frame helpers and compatibility declarations.
+ * @brief Core frame helpers.
  */
 
 #pragma once
@@ -18,13 +18,6 @@ extern "C" {
 #endif
 
 void printFrameInfo(dsd_opts* opts, dsd_state* state);
-
-/* Engine-owned entrypoints (compatibility declarations).
- * Prefer `#include <dsd-neo/engine/frame_processing.h>` where a direct engine dependency is appropriate.
- * This header intentionally does not include engine headers to avoid transitive dependency creep.
- */
-void processFrame(dsd_opts* opts, dsd_state* state);
-void noCarrier(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
