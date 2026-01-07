@@ -16,6 +16,7 @@ target_sources(dsd-neo_runtime PRIVATE
   p25_optional_hooks.c
   rigctl_query_hooks.c
   udp_audio_hooks.c
+  net_audio_input_hooks.c
   exitflag.c
   shutdown.c
   log.cpp

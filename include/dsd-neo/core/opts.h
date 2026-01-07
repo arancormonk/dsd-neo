@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -14,7 +14,6 @@
 #pragma once
 
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -23,6 +22,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+
+typedef struct tcp_input_ctx tcp_input_ctx;
 
 /**
  * @brief Audio input source types.

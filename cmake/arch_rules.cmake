@@ -128,6 +128,22 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             continue()
         endif()
 
+        if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/io/tcp_input.h")
+            if(_ARCH_RULES_REL MATCHES "^(src/core/|src/dsp/|src/protocol/|include/dsd-neo/core/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
+                message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden tcp_input include '${_ARCH_RULES_HEADER}'")
+                math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            endif()
+            continue()
+        endif()
+
+        if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/io/udp_input.h")
+            if(_ARCH_RULES_REL MATCHES "^(src/core/|src/dsp/|src/protocol/|include/dsd-neo/core/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
+                message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden udp_input include '${_ARCH_RULES_HEADER}'")
+                math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            endif()
+            continue()
+        endif()
+
         if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h")
             if(NOT _ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
                 message(SEND_ERROR

@@ -23,12 +23,11 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #include <sndfile.h>
@@ -623,11 +622,11 @@ openAudioInDevice(dsd_opts* opts) {
         opts->symbolfile = NULL;
     }
     if (opts->tcp_in_ctx) {
-        tcp_input_close(opts->tcp_in_ctx);
+        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
         opts->tcp_in_ctx = NULL;
     }
     if (opts->udp_in_ctx) {
-        udp_input_stop(opts);
+        dsd_net_audio_input_hook_udp_stop(opts);
     }
 
     char* extension;
@@ -675,7 +674,8 @@ openAudioInDevice(dsd_opts* opts) {
             snprintf(opts->udp_in_bindaddr, sizeof(opts->udp_in_bindaddr), "%s", "127.0.0.1");
         }
         // Start UDP input
-        if (udp_input_start(opts, opts->udp_in_bindaddr, opts->udp_in_portno, opts->wav_sample_rate) < 0) {
+        if (dsd_net_audio_input_hook_udp_start(opts, opts->udp_in_bindaddr, opts->udp_in_portno, opts->wav_sample_rate)
+            < 0) {
             fprintf(stderr, "Error, couldn't start UDP input on %s:%d\n", opts->udp_in_bindaddr, opts->udp_in_portno);
             return -1;
         }
@@ -684,7 +684,7 @@ openAudioInDevice(dsd_opts* opts) {
 
     else if (strncmp(opts->audio_in_dev, "tcp", 3) == 0) {
         opts->audio_in_type = AUDIO_IN_TCP;
-        opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
+        opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
         if (opts->tcp_in_ctx == NULL) {
             LOG_ERROR("Error, couldn't open TCP audio input\n");
             return -1;

@@ -36,14 +36,13 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -321,9 +320,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         //TCP Input w/ Simple TCP Error Detection Implemented to prevent hard crash if TCP drops off
         if (opts->audio_in_type == AUDIO_IN_TCP) {
             for (i = 0; i < 960; i++) {
-                result = tcp_input_read_sample(opts->tcp_in_ctx, &sample);
+                result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&sample);
                 if (result == 0) {
-                    tcp_input_close(opts->tcp_in_ctx);
+                    dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                     opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
@@ -343,9 +342,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             for (i = 0; i < 960; i++) {
-                result = tcp_input_read_sample(opts->tcp_in_ctx, &sample);
+                result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&sample);
                 if (result == 0) {
-                    tcp_input_close(opts->tcp_in_ctx);
+                    dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                     opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
@@ -365,9 +364,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             }
 
             for (i = 0; i < 960; i++) {
-                result = tcp_input_read_sample(opts->tcp_in_ctx, &sample);
+                result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&sample);
                 if (result == 0) {
-                    tcp_input_close(opts->tcp_in_ctx);
+                    dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                     opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
@@ -393,7 +392,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         // UDP direct input
         else if (opts->audio_in_type == AUDIO_IN_UDP) {
             for (i = 0; i < 960; i++) {
-                if (!udp_input_read_sample(opts, &sample)) {
+                if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&sample)) {
                     sample = 0;
                 }
                 if (opts->input_volume_multiplier > 1) {
@@ -408,7 +407,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 analog1[i] = sample;
             }
             for (i = 0; i < 960; i++) {
-                if (!udp_input_read_sample(opts, &sample)) {
+                if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&sample)) {
                     sample = 0;
                 }
                 if (opts->input_volume_multiplier > 1) {
@@ -423,7 +422,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 analog2[i] = sample;
             }
             for (i = 0; i < 960; i++) {
-                if (!udp_input_read_sample(opts, &sample)) {
+                if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&sample)) {
                     sample = 0;
                 }
                 if (opts->input_volume_multiplier > 1) {

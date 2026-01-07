@@ -33,14 +33,13 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
-#include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #include <math.h>
@@ -559,7 +558,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         //tcp socket input from SDR++ -- now with 1 retry if connection is broken
         else if (opts->audio_in_type == AUDIO_IN_TCP) {
             short s = 0;
-            int tcp_result = tcp_input_read_sample(opts->tcp_in_ctx, &s);
+            int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
             if (opts->input_volume_multiplier > 1) {
                 int v = (int)s * opts->input_volume_multiplier;
                 if (v > 32767) {
@@ -588,7 +587,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 }
                 fprintf(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
                 sample = 0;
-                tcp_input_close(opts->tcp_in_ctx); //close current connection on this end
+                dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx); //close current connection on this end
                 opts->tcp_in_ctx = NULL;
                 dsd_socket_close(opts->tcp_sockfd);
                 // short throttle to avoid busy loop, but keep UI/SM responsive
@@ -599,7 +598,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
                 if (opts->tcp_sockfd != 0) {
                     //reset audio input stream
-                    opts->tcp_in_ctx = tcp_input_open(opts->tcp_sockfd, opts->wav_sample_rate);
+                    opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
                     if (opts->tcp_in_ctx == NULL) {
                         fprintf(stderr, "Error, couldn't Reconnect to TCP audio input\n");
                     } else {
@@ -615,10 +614,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
                 //now retry reading sample
                 short s_retry = 0;
-                tcp_result = tcp_input_read_sample(opts->tcp_in_ctx, &s_retry);
+                tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
                 sample = (float)s_retry;
                 if (tcp_result == 0) {
-                    tcp_input_close(opts->tcp_in_ctx);
+                    dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                     opts->tcp_in_ctx = NULL;
                     dsd_socket_close(opts->tcp_sockfd);
                     opts->audio_in_type = AUDIO_IN_PULSE; //set input type
@@ -637,7 +636,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         // UDP direct audio input (PCM16LE over UDP)
         else if (opts->audio_in_type == AUDIO_IN_UDP) {
             short s = 0;
-            if (!udp_input_read_sample(opts, &s)) {
+            if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                 cleanupAndExit(opts, state);
                 return 0.0f;
             }

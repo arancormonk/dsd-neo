@@ -25,9 +25,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/io/m17_udp.h>
-#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_bind.h>
-#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -37,6 +35,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -1933,7 +1932,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     short s = 0;
-                    result = tcp_input_read_sample(opts->tcp_in_ctx, &s);
+                    result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
                     sample = (float)s;
                 }
                 if (opts->input_volume_multiplier > 1) {
@@ -1947,7 +1946,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 }
                 voice1[i] = clip_float_to_short(sample);
                 if (result == 0) {
-                    tcp_input_close(opts->tcp_in_ctx);
+                    dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                     opts->tcp_in_ctx = NULL;
                     fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                     fprintf(stderr, "Closing DSD-neo.\n");
@@ -1960,7 +1959,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         short s = 0;
-                        result = tcp_input_read_sample(opts->tcp_in_ctx, &s);
+                        result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
                         sample = (float)s;
                     }
                     if (opts->input_volume_multiplier > 1) {
@@ -1974,7 +1973,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     }
                     voice2[i] = clip_float_to_short(sample);
                     if (result == 0) {
-                        tcp_input_close(opts->tcp_in_ctx);
+                        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
                         opts->tcp_in_ctx = NULL;
                         fprintf(stderr, "Connection to TCP Server Disconnected.\n");
                         fprintf(stderr, "Closing DSD-neo.\n");
@@ -1989,7 +1988,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
             for (i = 0; i < (int)nsam; i++) {
                 for (j = 0; j < dec; j++) {
                     short s = 0;
-                    if (!udp_input_read_sample(opts, &s)) {
+                    if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                         result = 0;
                     } else {
                         sample = (float)s;
@@ -2016,7 +2015,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                 for (i = 0; i < (int)nsam; i++) {
                     for (j = 0; j < dec; j++) {
                         short s = 0;
-                        if (!udp_input_read_sample(opts, &s)) {
+                        if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                             result = 0;
                         } else {
                             sample = (float)s;
