@@ -5,5 +5,4 @@
 
 #pragma once
 
-typedef struct sf_private_tag SNDFILE;
-typedef struct SF_INFO SF_INFO;
+#include <sndfile.h>
