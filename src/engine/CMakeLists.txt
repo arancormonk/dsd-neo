@@ -50,6 +50,7 @@ target_sources(dsd-neo_engine PRIVATE
   rigctl_query_hooks_install.c
   udp_audio_hooks_install.c
   net_audio_input_hooks_install.c
+  m17_udp_hooks_install.c
 )
 
 target_include_directories(dsd-neo_engine

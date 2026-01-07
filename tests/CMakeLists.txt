@@ -115,6 +115,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/net_audio_input_hooks.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_m17_udp_hooks
+  HEADERS_PUBLIC_RUNTIME_M17_UDP_HOOKS
+  dsd-neo/runtime/m17_udp_hooks.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_trunk_tuning_hooks
   HEADERS_PUBLIC_RUNTIME_TRUNK_TUNING_HOOKS
   dsd-neo/runtime/trunk_tuning_hooks.h
@@ -282,6 +287,11 @@ add_executable(dsd-neo_test_runtime_net_audio_input_hooks runtime/test_runtime_n
 target_include_directories(dsd-neo_test_runtime_net_audio_input_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_net_audio_input_hooks PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_NET_AUDIO_INPUT_HOOKS COMMAND dsd-neo_test_runtime_net_audio_input_hooks)
+
+add_executable(dsd-neo_test_runtime_m17_udp_hooks runtime/test_runtime_m17_udp_hooks.c)
+target_include_directories(dsd-neo_test_runtime_m17_udp_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_m17_udp_hooks PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_M17_UDP_HOOKS COMMAND dsd-neo_test_runtime_m17_udp_hooks)
 
 add_executable(dsd-neo_test_runtime_p25_optional_hooks runtime/test_runtime_p25_optional_hooks.c)
 target_include_directories(dsd-neo_test_runtime_p25_optional_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)

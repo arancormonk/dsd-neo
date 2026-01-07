@@ -24,8 +24,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/viterbi.h>
-#include <dsd-neo/io/m17_udp.h>
-#include <dsd-neo/io/udp_bind.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -35,6 +33,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -1520,7 +1519,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     //Open UDP port to default or user defined values, if enabled
     int sock_err;
     if (opts->m17_use_ip == 1) {
-        sock_err = udp_socket_connectM17(opts, state);
+        sock_err = dsd_m17_udp_hook_connect(opts, state);
         if (sock_err < 0) {
             fprintf(stderr, "Error Configuring UDP Socket for M17 IP Frame :( \n");
             use_ip = 0;
@@ -1702,7 +1701,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     //SEND CONN to reflector
     if (use_ip == 1) {
-        udp_return = m17_socket_blaster(opts, state, 11, conn);
+        udp_return = dsd_m17_udp_hook_blaster(opts, state, 11, conn);
         (void)udp_return; // optionally inspect for ACK/NACK later
     }
 
@@ -2442,7 +2441,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
             //Send packed IP frame to UDP port if enabled
             if (use_ip == 1) {
-                (void)m17_socket_blaster(opts, state, 54, m17_ip_packed);
+                (void)dsd_m17_udp_hook_blaster(opts, state, 54, m17_ip_packed);
             }
 
             //increment lich_cnt, reset on 6
@@ -2654,12 +2653,12 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
                 //send IP Frame with EOT bit
                 if (use_ip == 1) {
-                    (void)m17_socket_blaster(opts, state, 54, m17_ip_packed);
+                    (void)dsd_m17_udp_hook_blaster(opts, state, 54, m17_ip_packed);
                 }
 
                 //SEND EOTX to reflector
                 if (use_ip == 1) {
-                    (void)m17_socket_blaster(opts, state, 10, eotx);
+                    (void)dsd_m17_udp_hook_blaster(opts, state, 10, eotx);
                 }
 
                 //reset indicators
@@ -2694,7 +2693,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     //SEND DISC to reflector
     if (use_ip == 1) {
-        (void)m17_socket_blaster(opts, state, 10, disc);
+        (void)dsd_m17_udp_hook_blaster(opts, state, 10, disc);
     }
 
     //free allocated memory
@@ -3183,7 +3182,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     //Open UDP port to default or user defined values, if enabled
     int sock_err;
     if (opts->m17_use_ip == 1) {
-        sock_err = udp_socket_connectM17(opts, state);
+        sock_err = dsd_m17_udp_hook_connect(opts, state);
         if (sock_err < 0) {
             fprintf(stderr, "Error Configuring UDP Socket for M17 IP Frame :( \n");
             use_ip = 0;
@@ -3263,7 +3262,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //SEND CONN to reflector
     if (use_ip == 1) {
-        udp_return = m17_socket_blaster(opts, state, 11, conn);
+        udp_return = dsd_m17_udp_hook_blaster(opts, state, 11, conn);
     }
 
     //add MPKT header
@@ -3321,7 +3320,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //Send MPKT to reflector
     if (use_ip == 1) {
-        udp_return = m17_socket_blaster(opts, state, x + 34 + 3, m17_ip_packed);
+        udp_return = dsd_m17_udp_hook_blaster(opts, state, x + 34 + 3, m17_ip_packed);
     }
 
     //debug
@@ -3331,12 +3330,12 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
 
     //SEND EOTX to reflector
     if (use_ip == 1) {
-        (void)m17_socket_blaster(opts, state, 10, eotx);
+        (void)dsd_m17_udp_hook_blaster(opts, state, 10, eotx);
     }
 
     //SEND DISC to reflector
     if (use_ip == 1) {
-        (void)m17_socket_blaster(opts, state, 10, disc);
+        (void)dsd_m17_udp_hook_blaster(opts, state, 10, disc);
     }
 
     //flag to determine if we send a new LSF frame for new encode
@@ -3831,7 +3830,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
 
     //Bind UDP Socket
     int err = 1; //NOTE: err will tell us how many bytes were received, if successful
-    opts->udp_sockfd = UDPBind(opts->m17_hostname, opts->m17_portno);
+    opts->udp_sockfd = dsd_m17_udp_hook_udp_bind(opts->m17_hostname, opts->m17_portno);
 
     int i, j, k;
 
@@ -3864,7 +3863,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
             //NOTE: Using recvfrom seems to load MSB of array first,
             //compared to having to push samples through it like with STDIN.
 
-            err = m17_socket_receiver(opts, &ip_frame);
+            err = dsd_m17_udp_hook_receiver(opts, &ip_frame);
 
             //debug
             // fprintf (stderr, "ERR: %X; ", err);
