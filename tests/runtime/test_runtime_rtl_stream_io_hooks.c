@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <stdlib.h>
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
@@ -36,22 +37,23 @@ int
 main(void) {
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
 
-    dsd_state state = {0};
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
     int got = 123;
     float sample = -1.0f;
 
-    assert(dsd_rtl_stream_io_hook_read(&state, &sample, 1, &got) == 0);
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == 0);
     assert(got == 0);
-    assert(dsd_rtl_stream_io_hook_return_pwr(&state) == 0.0);
+    assert(dsd_rtl_stream_io_hook_return_pwr(state) == 0.0);
 
     int dummy = 0;
-    state.rtl_ctx = (struct RtlSdrContext*)&dummy;
+    state->rtl_ctx = (struct RtlSdrContext*)&dummy;
 
     got = 123;
     sample = -1.0f;
-    assert(dsd_rtl_stream_io_hook_read(&state, &sample, 1, &got) == 0);
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == 0);
     assert(got == 0);
-    assert(dsd_rtl_stream_io_hook_return_pwr(&state) == 0.0);
+    assert(dsd_rtl_stream_io_hook_return_pwr(state) == 0.0);
 
     g_read_calls = 0;
     g_return_pwr_calls = 0;
@@ -63,15 +65,17 @@ main(void) {
 
     got = 0;
     sample = 0.0f;
-    assert(dsd_rtl_stream_io_hook_read(&state, &sample, 1, &got) == 0);
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == 0);
     assert(g_read_calls == 1);
     assert(got == 1);
     assert(sample == 42.0f);
-    assert(g_last_rtl_ctx == (const void*)state.rtl_ctx);
+    assert(g_last_rtl_ctx == (const void*)state->rtl_ctx);
 
-    assert(dsd_rtl_stream_io_hook_return_pwr(&state) == 123.45);
+    assert(dsd_rtl_stream_io_hook_return_pwr(state) == 123.45);
     assert(g_return_pwr_calls == 1);
-    assert(g_last_rtl_ctx == (const void*)state.rtl_ctx);
+    assert(g_last_rtl_ctx == (const void*)state->rtl_ctx);
 
+    dsd_state_ext_free_all(state);
+    free(state);
     return 0;
 }
