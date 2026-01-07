@@ -63,6 +63,7 @@ target_link_libraries(dsd-neo_engine PUBLIC
   dsd-neo_io_control
   dsd-neo_proto_dmr
   dsd-neo_proto_m17
+  dsd-neo_io_audio
   dsd-neo_proto_p25
 )
 

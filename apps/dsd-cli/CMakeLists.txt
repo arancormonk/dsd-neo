@@ -6,7 +6,6 @@ target_sources(dsd-neo PRIVATE main.c)
 target_link_libraries(dsd-neo PRIVATE
   dsd-neo_engine
   dsd-neo_ui_terminal
-  dsd-neo_io_audio
   dsd-neo_feature_rtlsdr
   dsd-neo_feature_codec2
   ${LIBS})

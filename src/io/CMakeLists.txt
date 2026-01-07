@@ -28,6 +28,9 @@ add_library(dsd-neo_io_audio)
 target_sources(dsd-neo_io_audio PRIVATE
   audio_backends/udp_input.c
   audio_backends/tcp_input.c
+  audio_backends/udp_bind.c
+  audio_backends/udp_audio.c
+  audio_backends/m17_udp.c
 )
 
 target_include_directories(dsd-neo_io_audio
