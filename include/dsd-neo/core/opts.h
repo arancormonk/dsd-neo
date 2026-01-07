@@ -16,9 +16,9 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 
-#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
