@@ -85,6 +85,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/frame_sync_hooks.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_freq_parse
+  HEADERS_PUBLIC_RUNTIME_FREQ_PARSE
+  dsd-neo/runtime/freq_parse.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_p25_optional_hooks
   HEADERS_PUBLIC_RUNTIME_P25_OPTIONAL_HOOKS
   dsd-neo/runtime/p25_optional_hooks.h
@@ -252,6 +257,11 @@ add_executable(dsd-neo_test_runtime_control_pump runtime/test_runtime_control_pu
 target_include_directories(dsd-neo_test_runtime_control_pump PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_control_pump PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CONTROL_PUMP COMMAND dsd-neo_test_runtime_control_pump)
+
+add_executable(dsd-neo_test_runtime_freq_parse runtime/test_runtime_freq_parse.c)
+target_include_directories(dsd-neo_test_runtime_freq_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
 
 add_executable(dsd-neo_test_runtime_trunk_tuning_hooks runtime/test_runtime_trunk_tuning_hooks.c)
 target_include_directories(dsd-neo_test_runtime_trunk_tuning_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)

@@ -8,6 +8,7 @@ target_sources(dsd-neo_runtime PRIVATE
   config_schema.c
   config_expand.c
   control_pump.c
+  freq_parse.c
   frame_sync_hooks.c
   trunk_tuning_hooks.c
   trunk_cc_candidates.c

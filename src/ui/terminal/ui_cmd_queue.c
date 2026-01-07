@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
 
@@ -69,54 +70,6 @@ ensure_mu_init(void) {
     if (atomic_compare_exchange_strong(&g_mu_init, &expected, 1)) {
         dsd_mutex_init(&g_mu);
     }
-}
-
-// Local helper to parse frequency strings with optional K/M/G suffixes into Hz.
-// Mirrors the CLI atofs() semantics for config paths without mutating the input.
-static uint32_t
-cfg_parse_freq_hz(const char* s) {
-    if (!s || !*s) {
-        return 0;
-    }
-    char buf[64];
-    snprintf(buf, sizeof buf, "%s", s);
-    buf[sizeof buf - 1] = '\0';
-    size_t len = strlen(buf);
-    if (len == 0) {
-        return 0;
-    }
-    char last = buf[len - 1];
-    double factor = 1.0;
-    switch (last) {
-        case 'g':
-        case 'G':
-            factor = 1e9;
-            buf[len - 1] = '\0';
-            break;
-        case 'm':
-        case 'M':
-            factor = 1e6;
-            buf[len - 1] = '\0';
-            break;
-        case 'k':
-        case 'K':
-            factor = 1e3;
-            buf[len - 1] = '\0';
-            break;
-        default: break;
-    }
-    double val = atof(buf);
-    if (val <= 0.0) {
-        return 0;
-    }
-    double hz = val * factor;
-    if (hz <= 0.0) {
-        return 0;
-    }
-    if (hz > (double)UINT32_MAX) {
-        hz = (double)UINT32_MAX;
-    }
-    return (uint32_t)(hz + 0.5);
 }
 
 // Dispatch commands via per-domain registries
@@ -777,7 +730,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                             opts->rtl_dev_index = cfg.rtl_device;
                         }
                         if (cfg.rtl_freq[0]) {
-                            uint32_t hz = cfg_parse_freq_hz(cfg.rtl_freq);
+                            uint32_t hz = dsd_parse_freq_hz(cfg.rtl_freq);
                             if (hz > 0) {
                                 opts->rtlsdr_center_freq = hz;
                             }
@@ -811,7 +764,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                             opts->rtltcp_portno = cfg.rtltcp_port;
                         }
                         if (cfg.rtl_freq[0]) {
-                            uint32_t hz = cfg_parse_freq_hz(cfg.rtl_freq);
+                            uint32_t hz = dsd_parse_freq_hz(cfg.rtl_freq);
                             if (hz > 0) {
                                 opts->rtlsdr_center_freq = hz;
                             }
