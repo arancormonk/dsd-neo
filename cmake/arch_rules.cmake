@@ -113,10 +113,8 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endif()
 
         if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/io/rtl_stream_c.h" AND _ARCH_RULES_REL MATCHES "^(src/protocol/|include/dsd-neo/protocol/)")
-            if(NOT (_ARCH_RULES_REL STREQUAL "src/protocol/m17/m17.c" OR _ARCH_RULES_REL STREQUAL "src/protocol/edacs/edacs-fme.c"))
-                message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden rtl_stream include '${_ARCH_RULES_HEADER}'")
-                math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
-            endif()
+            message(SEND_ERROR "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden rtl_stream include '${_ARCH_RULES_HEADER}'")
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()
         endif()
 

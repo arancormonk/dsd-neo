@@ -24,7 +24,11 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/viterbi.h>
+#include <dsd-neo/io/m17_udp.h>
+#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_audio.h>
+#include <dsd-neo/io/udp_bind.h>
+#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -34,13 +38,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
-#include <dsd-neo/io/m17_udp.h>
-#include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_bind.h>
-#include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 
 #ifdef USE_CODEC2
@@ -2053,7 +2051,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                         return;
                     }
                     int got = 0;
-                    if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
+                    if (dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                         return;
                     }
@@ -2070,7 +2068,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                             return;
                         }
                         int got = 0;
-                        if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
+                        if (dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) < 0 || got != 1) {
                             cleanupAndExit(opts, state);
                             return;
                         }
@@ -2079,7 +2077,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
                     voice2[i] = sample;
                 }
             }
-            opts->rtl_pwr = state->rtl_ctx ? rtl_stream_return_pwr(state->rtl_ctx) : 0;
+            opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
 #endif
         }
 

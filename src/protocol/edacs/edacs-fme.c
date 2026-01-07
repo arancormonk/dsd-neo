@@ -46,11 +46,9 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 
 #include <stdint.h>
@@ -453,7 +451,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 }
                 {
                     int got = 0;
-                    if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
+                    if (dsd_rtl_stream_io_hook_read(state, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                         return;
                     }
@@ -474,7 +472,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 }
                 {
                     int got = 0;
-                    if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
+                    if (dsd_rtl_stream_io_hook_read(state, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                         return;
                     }
@@ -495,7 +493,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 }
                 {
                     int got = 0;
-                    if (rtl_stream_read(state->rtl_ctx, &rtl_sample, 1, &got) < 0 || got != 1) {
+                    if (dsd_rtl_stream_io_hook_read(state, &rtl_sample, 1, &got) < 0 || got != 1) {
                         cleanupAndExit(opts, state);
                         return;
                     }
@@ -508,7 +506,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
                 analog3[i] = clip_float_to_short(rtl_sample);
             }
             //the rtl pwr value works properly without needing a 'hard' squelch value
-            pwr = state->rtl_ctx ? rtl_stream_return_pwr(state->rtl_ctx) : 0;
+            pwr = dsd_rtl_stream_io_hook_return_pwr(state);
         }
 #endif
 

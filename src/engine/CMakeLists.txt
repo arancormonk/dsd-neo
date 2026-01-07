@@ -45,6 +45,7 @@ target_sources(dsd-neo_engine PRIVATE
   p25_optional_hooks_install.c
   trunk_tuning.c
   trunk_tuning_hooks_install.c
+  rtl_stream_io_hooks_install.c
   rtl_stream_metrics_hooks_install.c
   rigctl_query_hooks_install.c
 )

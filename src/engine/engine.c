@@ -67,6 +67,7 @@ static uint32_t s_last_rtl_freq = 0;
 
 void dsd_engine_frame_sync_hooks_install(void);
 void dsd_engine_trunk_tuning_hooks_install(void);
+void dsd_engine_rtl_stream_io_hooks_install(void);
 void dsd_engine_rtl_stream_metrics_hooks_install(void);
 void dsd_engine_rigctl_query_hooks_install(void);
 void dsd_engine_p25_optional_hooks_install(void);
@@ -1739,6 +1740,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
     dsd_engine_frame_sync_hooks_install();
     dsd_engine_trunk_tuning_hooks_install();
+    dsd_engine_rtl_stream_io_hooks_install();
     dsd_engine_rtl_stream_metrics_hooks_install();
     dsd_engine_rigctl_query_hooks_install();
     dsd_engine_p25_optional_hooks_install();

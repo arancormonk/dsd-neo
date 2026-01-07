@@ -9,6 +9,7 @@ target_sources(dsd-neo_runtime PRIVATE
   control_pump.c
   frame_sync_hooks.c
   trunk_tuning_hooks.c
+  rtl_stream_io_hooks.c
   rtl_stream_metrics_hooks.c
   p25_optional_hooks.c
   rigctl_query_hooks.c
