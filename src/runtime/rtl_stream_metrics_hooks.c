@@ -37,6 +37,14 @@ dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, 
     return 0;
 }
 
+int
+dsd_rtl_stream_metrics_hook_ted_bias(void) {
+    if (g_rtl_stream_metrics_hooks.ted_bias) {
+        return g_rtl_stream_metrics_hooks.ted_bias();
+    }
+    return 0;
+}
+
 double
 dsd_rtl_stream_metrics_hook_snr_bias_evm(void) {
     if (g_rtl_stream_metrics_hooks.snr_bias_evm) {
@@ -57,6 +65,30 @@ double
 dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db(void) {
     if (g_rtl_stream_metrics_hooks.snr_c4fm_eye_db) {
         return g_rtl_stream_metrics_hooks.snr_c4fm_eye_db();
+    }
+    return -100.0;
+}
+
+double
+dsd_rtl_stream_metrics_hook_snr_cqpsk_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_cqpsk_db) {
+        return g_rtl_stream_metrics_hooks.snr_cqpsk_db();
+    }
+    return -100.0;
+}
+
+double
+dsd_rtl_stream_metrics_hook_snr_gfsk_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_gfsk_db) {
+        return g_rtl_stream_metrics_hooks.snr_gfsk_db();
+    }
+    return -100.0;
+}
+
+double
+dsd_rtl_stream_metrics_hook_snr_qpsk_const_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_qpsk_const_db) {
+        return g_rtl_stream_metrics_hooks.snr_qpsk_const_db();
     }
     return -100.0;
 }

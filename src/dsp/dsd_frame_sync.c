@@ -32,7 +32,7 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -60,7 +60,7 @@ dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
     int demod_rate = 0;
 #ifdef USE_RTLSDR
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+        demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
     }
 #endif
 
@@ -439,13 +439,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
                 do {
                     /* Pull smoothed SNR; fall back to lightweight estimators if needed */
-                    double snr_c = rtl_stream_get_snr_c4fm();
-                    double snr_q = rtl_stream_get_snr_cqpsk();
+                    double snr_c = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+                    double snr_q = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
                     if (snr_c <= -50.0) {
-                        snr_c = rtl_stream_estimate_snr_c4fm_eye();
+                        snr_c = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
                     }
                     if (snr_q <= -50.0) {
-                        snr_q = rtl_stream_estimate_snr_qpsk_const();
+                        snr_q = dsd_rtl_stream_metrics_hook_snr_qpsk_const_db();
                     }
                     if (snr_c > -50.0 || snr_q > -50.0) {
                         /* Only apply bias when at least one metric is sane */
@@ -639,7 +639,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (state->rf_mod == 1 && opts->audio_in_type == AUDIO_IN_RTL
             && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
             int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
-            rtl_stream_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
+            dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
             if (dsp_cqpsk && dsp_ted) {
                 cqpsk_4level = 1;
             }
@@ -833,12 +833,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 if (cfg && cfg->snr_sql_is_set) {
                     double snr_db = -200.0;
                     if (opts->frame_p25p1 == 1) {
-                        snr_db = rtl_stream_get_snr_c4fm();
+                        snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
                     } else if (opts->frame_p25p2 == 1) {
-                        snr_db = rtl_stream_get_snr_cqpsk();
+                        snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
                     } else if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1
                                || opts->frame_m17 == 1) {
-                        snr_db = rtl_stream_get_snr_gfsk();
+                        snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
                     }
                     if (snr_db > -150.0 && snr_db < (double)cfg->snr_sql_db) {
                         snr_gate = 1;
@@ -2122,7 +2122,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                             int demod_rate = 0;
 #ifdef USE_RTLSDR
                             if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-                                demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+                                demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
                             }
 #endif
                             int interp = opts->wav_interpolator > 0 ? opts->wav_interpolator : 1;

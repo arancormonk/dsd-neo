@@ -30,7 +30,8 @@
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_audio.h>
@@ -247,7 +248,7 @@ maybe_auto_center(dsd_opts* opts, dsd_state* state, int have_sync) {
     }
 
     /* Read smoothed TED residual (can be 0 when TED disabled). */
-    int e_ema = rtl_stream_ted_bias(NULL); /* ctx currently unused */
+    int e_ema = dsd_rtl_stream_metrics_hook_ted_bias();
     if (e_ema == 0) {
         return;
     }
@@ -307,7 +308,7 @@ maybe_adjust_sps_for_output_rate(dsd_opts* opts, dsd_state* state) {
     static unsigned int last_rate = 0;
     unsigned int Fs = 0;
     if (state->rtl_ctx) {
-        Fs = rtl_stream_output_rate(state->rtl_ctx);
+        Fs = dsd_rtl_stream_metrics_hook_output_rate_hz();
     }
     if (Fs == 0 || Fs == last_rate) {
         return;
@@ -414,7 +415,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     int cqpsk_symbol_rate = 0;
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
         int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
-        rtl_stream_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
+        dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
         if (dsp_cqpsk && dsp_ted) {
             cqpsk_symbol_rate = 1;
             symbol_span = 1;
@@ -540,12 +541,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                 return 0.0f;
             }
             int got = 0;
-            if (rtl_stream_read(state->rtl_ctx, &sample, 1, &got) < 0 || got != 1) {
+            if (dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) < 0 || got != 1) {
                 cleanupAndExit(opts, state);
                 return 0.0f;
             }
             //update root means square power level
-            opts->rtl_pwr = rtl_stream_return_pwr(state->rtl_ctx);
+            opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
             /* Skip volume multiplier for CQPSK symbols - they're already properly
              * scaled by qpsk_differential_demod (phase * 4/π giving ±1, ±3 symbols).
              * The volume multiplier is meant for FM audio amplitude, not symbol levels. */
@@ -669,7 +670,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 #ifdef USE_RTLSDR
                 unsigned int Fs = 0;
                 if (state->rtl_ctx) {
-                    Fs = rtl_stream_output_rate(state->rtl_ctx);
+                    Fs = dsd_rtl_stream_metrics_hook_output_rate_hz();
                 }
                 if (Fs > 0) {
                     analog_block = (unsigned int)(((uint64_t)Fs * 20 + 999) / 1000); /* ~20 ms */

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+/*
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
  *
@@ -25,7 +28,7 @@
 #include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
 #include <dsd-neo/dsp/p25p1_heuristics.h>
@@ -334,7 +337,7 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
         /* SNR-weighted scaling (CQPSK path) */
 #ifdef USE_RTLSDR
         {
-            double snr_db = rtl_stream_get_snr_cqpsk();
+            double snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
             if (snr_db > -50.0) {
                 int w256 = 0;
                 if (snr_db >= 25.0) {
@@ -401,9 +404,9 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
         }
 
 #ifdef USE_RTLSDR
-        double snr_db = rtl_stream_get_snr_c4fm();
+        double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
         if (snr_db < -50.0) {
-            snr_db = rtl_stream_estimate_snr_c4fm_eye();
+            snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
         }
         int w256 = 0;
         if (snr_db > -13.0) {
@@ -465,7 +468,7 @@ is_cqpsk_active(dsd_opts* opts) {
 #ifdef USE_RTLSDR
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
         int cqpsk = 0, fll = 0, ted = 0;
-        rtl_stream_dsp_get(&cqpsk, &fll, &ted);
+        dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
         if (cqpsk && ted) {
             return 1;
         }
