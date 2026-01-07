@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  *
@@ -17,10 +17,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #include <mbelib.h>
 
@@ -277,9 +277,9 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
                 write_float_audio(opts, mono2, 160);
                 write_float_audio(opts, mono3, 160);
             } else if (opts->audio_out_type == 8) { // UDP mono
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono1);
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono2);
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono3);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono1);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono2);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono3);
             } else if (opts->audio_out_type == 1) { // STDOUT mono
                 write_audio_out(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
                 write_audio_out(opts->audio_out_fd, mono2, (size_t)160u * sizeof(float));
@@ -291,9 +291,9 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
                 write_float_audio(opts, stereo_samp2, 160);
                 write_float_audio(opts, stereo_samp3, 160);
             } else if (opts->audio_out_type == 8) { // UDP stereo
-                udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
-                udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
-                udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
             } else if (opts->audio_out_type == 1) { // STDOUT stereo
                 write_audio_out(opts->audio_out_fd, stereo_samp1, (size_t)320u * sizeof(float));
                 write_audio_out(opts->audio_out_fd, stereo_samp2, (size_t)320u * sizeof(float));
@@ -476,13 +476,13 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
                 write_float_audio(opts, mono4, 160);
             }
         } else if (opts->audio_out == 1 && opts->audio_out_type == 8) { // UDP mono
-            udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono1);
-            udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono2);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono1);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono2);
             if (!dsd_is_all_zero_f(mono3, 160)) {
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono3);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono3);
             }
             if (!dsd_is_all_zero_f(mono4, 160)) {
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), mono4);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), mono4);
             }
         } else if (opts->audio_out == 1 && opts->audio_out_type == 1) { // STDOUT mono
             write_audio_out(opts->audio_out_fd, mono1, (size_t)160u * sizeof(float));
@@ -512,13 +512,13 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp2);
         if (!dsd_is_all_zero_f(stereo_samp3, 320)) {
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp3);
         }
         if (!dsd_is_all_zero_f(stereo_samp4, 320)) {
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp4);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp4);
         }
     }
 
@@ -623,7 +623,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 8) { //UDP Audio
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), stereo_samp1);
         }
 
         if (opts->audio_out_type == 1) {
@@ -719,7 +719,7 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 8) { //UDP Audio
-            udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), state->f_l);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), state->f_l);
         }
 
         if (opts->audio_out_type == 1) {
@@ -783,7 +783,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 8) { //UDP Audio
-            udp_socket_blaster(opts, state, (size_t)len * sizeof(short), mono_samp);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)len * sizeof(short), mono_samp);
         }
 
         if (opts->audio_out_type == 1) {
@@ -868,7 +868,7 @@ playSynthesizedVoiceMSR(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 8) { //UDP Audio
-            udp_socket_blaster(opts, state, (size_t)len * sizeof(short), mono_samp);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)len * sizeof(short), mono_samp);
         }
 
         if (opts->audio_out_type == 1) {
@@ -971,7 +971,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         }
 
         if (opts->audio_out_type == 8) { //UDP Audio
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
         }
 
         if (opts->audio_out_type == 1) {
@@ -1239,9 +1239,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp2);
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp3);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp2);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp3);
     }
 
     if (opts->audio_out == 1 && opts->audio_out_type == 1) {
@@ -1486,13 +1486,13 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
                 write_s16_audio(opts, mono4, 160);
             }
         } else if (opts->audio_out == 1 && opts->audio_out_type == 8) { // UDP mono
-            udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono1);
-            udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono2);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(short), mono1);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(short), mono2);
             if (memcmp(empss, mono3, sizeof(empss)) != 0) {
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono3);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(short), mono3);
             }
             if (memcmp(empss, mono4, sizeof(empss)) != 0) {
-                udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), mono4);
+                dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(short), mono4);
             }
         } else if (opts->audio_out == 1 && opts->audio_out_type == 1) {
             write_audio_out(opts->audio_out_fd, mono1, (size_t)160u * sizeof(short));
@@ -1532,13 +1532,13 @@ playSynthesizedVoiceSS4(dsd_opts* opts, dsd_state* state) {
 
     if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
     {
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
-        udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp2);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp1);
+        dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp2);
         if (memcmp(empty, stereo_samp3, sizeof(empty)) != 0) {
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp3);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp3);
         }
         if (memcmp(empty, stereo_samp4, sizeof(empty)) != 0) {
-            udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_samp4);
+            dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_samp4);
         }
     }
 
@@ -1754,7 +1754,7 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
             for (j = 0; j < 18; j++) {
                 if (memcmp(empty, stereo_sf[j], sizeof(empty))
                     != 0) { //may not work as intended because its stereo and one will have something in it most likely
-                    udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), stereo_sf[j]);
+                    dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), stereo_sf[j]);
                 }
             }
         }
@@ -1898,19 +1898,19 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
             else if (opts->audio_out_type == 8) //UDP Audio
             {
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 1) {
-                    udp_socket_blaster(opts, state, (size_t)320u * sizeof(float), samp_fs);
+                    dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(float), samp_fs);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 1) {
-                    udp_socket_blaster(opts, state, (size_t)160u * sizeof(float), samp_f);
+                    dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(float), samp_f);
                 }
 
                 if (opts->pulse_digi_out_channels == 2 && opts->floating_point == 0) {
-                    udp_socket_blaster(opts, state, (size_t)320u * sizeof(short), samp_ss);
+                    dsd_udp_audio_hook_blast(opts, state, (size_t)320u * sizeof(short), samp_ss);
                 }
 
                 if (opts->pulse_digi_out_channels == 1 && opts->floating_point == 0) {
-                    udp_socket_blaster(opts, state, (size_t)160u * sizeof(short), samp_s);
+                    dsd_udp_audio_hook_blast(opts, state, (size_t)160u * sizeof(short), samp_s);
                 }
 
             }

@@ -34,7 +34,6 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -42,6 +41,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #include <math.h>
 #include <sndfile.h>
@@ -769,7 +769,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
                     }
 
                     if (opts->audio_out_type == 8) {
-                        udp_socket_blasterA(opts, state, bytes, state->analog_out);
+                        dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
                     }
 
                     // UI/scan heartbeat: avoid refreshing timers that the

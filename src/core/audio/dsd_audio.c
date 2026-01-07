@@ -24,12 +24,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #include <sndfile.h>
 
@@ -541,8 +541,8 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         } else if (opts->audio_out == 1
                    && opts->audio_out_type == 8) //UDP Audio Out -- Forgot some things still use this for now
         {
-            udp_socket_blaster(opts, state, (size_t)state->audio_out_idx * sizeof(short),
-                               (state->audio_out_buf_p - state->audio_out_idx));
+            dsd_udp_audio_hook_blast(opts, state, (size_t)state->audio_out_idx * sizeof(short),
+                                     (state->audio_out_buf_p - state->audio_out_idx));
             state->audio_out_idx = 0;
         } else {
             state->audio_out_idx = 0; //failsafe for audio_out == 0
@@ -577,8 +577,8 @@ playSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
             && opts->audio_out_type
                    == 8) //UDP Audio Out -- Not sure how this would handle, but R never gets called anymore, so just here for symmetry
         {
-            udp_socket_blaster(opts, state, (size_t)state->audio_out_idxR * sizeof(short),
-                               (state->audio_out_buf_pR - state->audio_out_idxR));
+            dsd_udp_audio_hook_blast(opts, state, (size_t)state->audio_out_idxR * sizeof(short),
+                                     (state->audio_out_buf_pR - state->audio_out_idxR));
             state->audio_out_idxR = 0;
         } else {
             state->audio_out_idxR = 0; //failsafe for audio_out == 0

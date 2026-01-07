@@ -26,7 +26,6 @@
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/io/m17_udp.h>
 #include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_bind.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
@@ -40,6 +39,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
@@ -424,7 +424,7 @@ M17processCodec2_1600(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
         {
-            udp_socket_blaster(opts, state, nsam * sizeof(short), samp1);
+            dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), samp1);
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) {
@@ -536,8 +536,8 @@ M17processCodec2_3200(dsd_opts* opts, dsd_state* state, uint8_t* payload) {
 
         if (opts->audio_out_type == 8 && state->m17_enc == 0) //UDP Audio
         {
-            udp_socket_blaster(opts, state, nsam * sizeof(short), samp1);
-            udp_socket_blaster(opts, state, nsam * sizeof(short), samp2);
+            dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), samp1);
+            dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), samp2);
         }
 
         if (opts->audio_out_type == 1 && state->m17_enc == 0) {
@@ -1422,7 +1422,7 @@ encodeM17RF(dsd_opts* opts, dsd_state* state, uint8_t* input, int type) {
 
         //UDP
         if (opts->audio_out_type == 8) {
-            udp_socket_blasterA(opts, state, sizeof(baseband), baseband);
+            dsd_udp_audio_hook_blast_analog(opts, state, sizeof(baseband), baseband);
         }
 
         if (opts->audio_out_type == 1) {

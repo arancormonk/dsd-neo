@@ -71,6 +71,7 @@ void dsd_engine_trunk_tuning_hooks_install(void);
 void dsd_engine_rtl_stream_io_hooks_install(void);
 void dsd_engine_rtl_stream_metrics_hooks_install(void);
 void dsd_engine_rigctl_query_hooks_install(void);
+void dsd_engine_udp_audio_hooks_install(void);
 void dsd_engine_p25_optional_hooks_install(void);
 
 // Small helpers to efficiently set fixed-width strings
@@ -1747,6 +1748,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     dsd_engine_rtl_stream_io_hooks_install();
     dsd_engine_rtl_stream_metrics_hooks_install();
     dsd_engine_rigctl_query_hooks_install();
+    dsd_engine_udp_audio_hooks_install();
     dsd_engine_p25_optional_hooks_install();
 
     // If trunking/scanner inputs were configured via INI/env rather than CLI (-C/-G),

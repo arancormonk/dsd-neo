@@ -37,7 +37,6 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/io/udp_audio.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -49,6 +48,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 
 #include <stdint.h>
@@ -590,9 +590,9 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         if (opts->audio_out == 1 && opts->audio_out_type == 8) //UDP Audio
         {
-            udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog1);
-            udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog2);
-            udp_socket_blasterA(opts, state, (size_t)960u * sizeof(short), analog3);
+            dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog1);
+            dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog2);
+            dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog3);
         }
 
         if (opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1) {
