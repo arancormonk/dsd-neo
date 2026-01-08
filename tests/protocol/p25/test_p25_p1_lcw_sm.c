@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -16,9 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// Avoid heavy deps: forward declare minimal types and the test shim entry
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
 
@@ -117,14 +115,14 @@ static int g_last_svc = -1;
 static int g_last_tg = -1;
 static int g_last_src = -1;
 
-void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_init(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+static void
+sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
     g_called++;
@@ -134,8 +132,8 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     g_last_src = src;
 }
 
-void
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+static void
+sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -144,31 +142,44 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+static void
+sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
     (void)count;
 }
 
-void
-p25_sm_tick(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-int
-p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
+static int
+sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
     (void)state;
     (void)out_freq;
     return 0;
+}
+
+static p25_sm_api
+sm_test_api(void) {
+    p25_sm_api api = {0};
+    api.init = sm_noop_init;
+    api.on_group_grant = sm_on_group_grant_capture;
+    api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_release = sm_noop_on_release;
+    api.on_neighbor_update = sm_noop_on_neighbor_update;
+    api.next_cc_candidate = sm_noop_next_cc_candidate;
+    api.tick = sm_noop_tick;
+    return api;
 }
 
 static void
@@ -191,6 +202,8 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
+
+    p25_sm_set_api(sm_test_api());
 
     // Build LCW bits for format 0x44 (Group Voice Channel Update – Explicit)
     // Layout (bit indices):

@@ -6,10 +6,8 @@
 /*
  * Legacy/compatibility wrapper APIs for the unified P25 trunking state machine.
  *
- * These entry points are intentionally weak on ELF/Mach-O so unit tests can
- * override them. On COFF targets (MSVC/MinGW), keep them strong and isolate
- * them in their own translation unit so tests that provide their own
- * definitions do not pull these from static archives.
+ * These entry points dispatch through an optional override table
+ * (`p25_sm_get_api()`), which tests can install via `p25_sm_set_api(...)`.
  */
 
 #include <dsd-neo/core/dsd_time.h>
@@ -21,14 +19,6 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 #include <string.h>
-
-#if defined(_MSC_VER)
-#define P25_WEAK_WRAPPER
-#elif defined(__MINGW32__) || defined(__MINGW64__)
-#define P25_WEAK_WRAPPER
-#else
-#define P25_WEAK_WRAPPER __attribute__((weak))
-#endif
 
 static inline double
 now_monotonic(void) {
@@ -59,7 +49,7 @@ p25_sm_on_neighbor_update_default(dsd_opts* opts, dsd_state* state, const long* 
     }
 }
 
-P25_WEAK_WRAPPER void
+void
 p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     p25_sm_api api = p25_sm_get_api();
     if (api.on_neighbor_update) {
@@ -78,7 +68,7 @@ p25_sm_next_cc_candidate_default(dsd_state* state, long* out_freq) {
     return dsd_trunk_cc_candidates_next(state, nowm, out_freq);
 }
 
-P25_WEAK_WRAPPER int
+int
 p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
     p25_sm_api api = p25_sm_get_api();
     if (api.next_cc_candidate) {
@@ -97,7 +87,7 @@ p25_sm_init_default(dsd_opts* opts, dsd_state* state) {
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
 }
 
-P25_WEAK_WRAPPER void
+void
 p25_sm_init(dsd_opts* opts, dsd_state* state) {
     p25_sm_api api = p25_sm_get_api();
     if (api.init) {
@@ -113,7 +103,7 @@ p25_sm_on_group_grant_default(dsd_opts* opts, dsd_state* state, int channel, int
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
-P25_WEAK_WRAPPER void
+void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     p25_sm_api api = p25_sm_get_api();
     if (api.on_group_grant) {
@@ -129,7 +119,7 @@ p25_sm_on_indiv_grant_default(dsd_opts* opts, dsd_state* state, int channel, int
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
-P25_WEAK_WRAPPER void
+void
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     p25_sm_api api = p25_sm_get_api();
     if (api.on_indiv_grant) {
@@ -144,7 +134,7 @@ p25_sm_on_release_default(dsd_opts* opts, dsd_state* state) {
     p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
 }
 
-P25_WEAK_WRAPPER void
+void
 p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     p25_sm_api api = p25_sm_get_api();
     if (api.on_release) {
@@ -159,7 +149,7 @@ p25_sm_tick_default(dsd_opts* opts, dsd_state* state) {
     p25_sm_tick_ctx(p25_sm_get_ctx(), opts, state);
 }
 
-P25_WEAK_WRAPPER void
+void
 p25_sm_tick(dsd_opts* opts, dsd_state* state) {
     p25_sm_api api = p25_sm_get_api();
     if (api.tick) {

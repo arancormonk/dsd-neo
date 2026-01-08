@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -14,20 +14,63 @@
 #include <stdio.h>
 #include <string.h>
 
-// Minimal type fwd-decls
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 // Shim: decode an MBT with pre-seeded iden tables
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
 
+static void
+sm_noop_init(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+static void
+sm_noop_on_group_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int tg, int src) {
+    (void)o;
+    (void)s;
+    (void)ch;
+    (void)svc;
+    (void)tg;
+    (void)src;
+}
+
+static void
+sm_noop_on_indiv_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int dst, int src) {
+    (void)o;
+    (void)s;
+    (void)ch;
+    (void)svc;
+    (void)dst;
+    (void)src;
+}
+
+static void
+sm_noop_on_release(dsd_opts* o, dsd_state* s) {
+    (void)o;
+    (void)s;
+}
+
+static void
+sm_noop_tick(dsd_opts* o, dsd_state* s) {
+    (void)o;
+    (void)s;
+}
+
+static int
+sm_noop_next_cc_candidate(dsd_state* s, long* f) {
+    (void)s;
+    (void)f;
+    return 0;
+}
+
 // Capture last neighbor-update frequencies
 static long g_neigh[16];
 static int g_neigh_count = 0;
 
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+static void
+sm_on_neighbor_update_capture(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     if (count > (int)(sizeof g_neigh / sizeof g_neigh[0])) {
@@ -39,50 +82,17 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
     g_neigh_count = count;
 }
 
-// Required stubs (not exercised here)
-void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-void
-p25_sm_on_group_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int tg, int src) {
-    (void)o;
-    (void)s;
-    (void)ch;
-    (void)svc;
-    (void)tg;
-    (void)src;
-}
-
-void
-p25_sm_on_indiv_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int dst, int src) {
-    (void)o;
-    (void)s;
-    (void)ch;
-    (void)svc;
-    (void)dst;
-    (void)src;
-}
-
-void
-p25_sm_on_release(dsd_opts* o, dsd_state* s) {
-    (void)o;
-    (void)s;
-}
-
-void
-p25_sm_tick(dsd_opts* o, dsd_state* s) {
-    (void)o;
-    (void)s;
-}
-
-int
-p25_sm_next_cc_candidate(dsd_state* s, long* f) {
-    (void)s;
-    (void)f;
-    return 0;
+static p25_sm_api
+sm_test_api(void) {
+    p25_sm_api api = {0};
+    api.init = sm_noop_init;
+    api.on_group_grant = sm_noop_on_group_grant;
+    api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_release = sm_noop_on_release;
+    api.on_neighbor_update = sm_on_neighbor_update_capture;
+    api.next_cc_candidate = sm_noop_next_cc_candidate;
+    api.tick = sm_noop_tick;
+    return api;
 }
 
 bool
@@ -166,6 +176,8 @@ expect_eq_long(const char* tag, long got, long want) {
 int
 main(void) {
     int rc = 0;
+
+    p25_sm_set_api(sm_test_api());
 
     // Common iden config: iden=1 FDMA, base=851.000 MHz, spacing=12.5 kHz
     const int iden = 1, type = 1, tdma = 0;

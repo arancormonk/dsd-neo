@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -14,8 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 // Shim: MBT decode with explicit iden seed (permit zero spac/base to simulate missing)
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
@@ -23,27 +22,14 @@ int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int ide
 // Extended MAC test entry
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
 
-// Neighbor-update invocation counter
-static int g_neigh_calls = 0;
-
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-    g_neigh_calls++;
-}
-
-// Required stubs for link
-void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_init(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int tg, int src) {
+static void
+sm_noop_on_group_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int tg, int src) {
     (void)o;
     (void)s;
     (void)ch;
@@ -52,8 +38,8 @@ p25_sm_on_group_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int tg, int sr
     (void)src;
 }
 
-void
-p25_sm_on_indiv_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int dst, int src) {
+static void
+sm_noop_on_indiv_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int dst, int src) {
     (void)o;
     (void)s;
     (void)ch;
@@ -62,23 +48,48 @@ p25_sm_on_indiv_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int dst, int s
     (void)src;
 }
 
-void
-p25_sm_on_release(dsd_opts* o, dsd_state* s) {
+static void
+sm_noop_on_release(dsd_opts* o, dsd_state* s) {
     (void)o;
     (void)s;
 }
 
-void
-p25_sm_tick(dsd_opts* o, dsd_state* s) {
+static void
+sm_noop_tick(dsd_opts* o, dsd_state* s) {
     (void)o;
     (void)s;
 }
 
-int
-p25_sm_next_cc_candidate(dsd_state* s, long* f) {
+static int
+sm_noop_next_cc_candidate(dsd_state* s, long* f) {
     (void)s;
     (void)f;
     return 0;
+}
+
+// Neighbor-update invocation counter
+static int g_neigh_calls = 0;
+
+static void
+sm_on_neighbor_update_count(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+    (void)opts;
+    (void)state;
+    (void)freqs;
+    (void)count;
+    g_neigh_calls++;
+}
+
+static p25_sm_api
+sm_test_api(void) {
+    p25_sm_api api = {0};
+    api.init = sm_noop_init;
+    api.on_group_grant = sm_noop_on_group_grant;
+    api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_release = sm_noop_on_release;
+    api.on_neighbor_update = sm_on_neighbor_update_count;
+    api.next_cc_candidate = sm_noop_next_cc_candidate;
+    api.tick = sm_noop_tick;
+    return api;
 }
 
 void
@@ -162,6 +173,8 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
+
+    p25_sm_set_api(sm_test_api());
 
     // Case 1: P1 NET_STS_BCST with missing iden params (spac=0)
     {

@@ -143,19 +143,6 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, void* a, char fr[4][24], void*
 }
 
 void
-p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-}
-
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-void
 p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc) {
     (void)opts;
     (void)state;

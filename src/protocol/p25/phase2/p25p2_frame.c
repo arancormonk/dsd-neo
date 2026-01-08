@@ -42,6 +42,11 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+#define p25_sm_emit_active(opts, state, slot) ((void)0)
+#define p25_sm_on_release(opts, state)        ((void)0)
+#endif
+
 static int
 p25_p2_s16_frames_have_audio(short frames[18][160]) {
     for (int j = 0; j < 18; j++) {

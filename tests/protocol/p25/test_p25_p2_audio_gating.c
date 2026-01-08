@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -12,8 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 // Shim entry to process a MAC VPDU with LCCH flag and slot
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
@@ -92,21 +91,21 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 // Capture release callback to ensure it’s invoked
 static int g_release_called = 0;
 
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
+static void
+sm_on_release_capture(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_release_called++;
 }
 
-void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_init(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+static void
+sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -115,8 +114,8 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+static void
+sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -125,25 +124,38 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+static void
+sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
     (void)count;
 }
 
-void
-p25_sm_tick(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-int
-p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
+static int
+sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
     (void)state;
     (void)out_freq;
     return 0;
+}
+
+static p25_sm_api
+sm_test_api(void) {
+    p25_sm_api api = {0};
+    api.init = sm_noop_init;
+    api.on_group_grant = sm_noop_on_group_grant;
+    api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_release = sm_on_release_capture;
+    api.on_neighbor_update = sm_noop_on_neighbor_update;
+    api.next_cc_candidate = sm_noop_next_cc_candidate;
+    api.tick = sm_noop_tick;
+    return api;
 }
 
 // Access a few dsd_state fields; keep this test independent of broad decoder headers.
@@ -165,6 +177,8 @@ expect_eq(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
+
+    p25_sm_set_api(sm_test_api());
 
     // Case 1: LCCH SIGNAL clears audio gates
     {

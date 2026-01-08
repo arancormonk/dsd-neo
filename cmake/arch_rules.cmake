@@ -51,6 +51,25 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
     endforeach()
 
+    if(_ARCH_RULES_REL MATCHES "^src/")
+        file(
+            STRINGS "${_ARCH_RULES_ABS}" _ARCH_RULES_WEAK_LINES
+            REGEX "__attribute__\\s*\\(\\(weak\\)\\)"
+        )
+
+        foreach(_ARCH_RULES_WEAK_LINE IN LISTS _ARCH_RULES_WEAK_LINES)
+            if(_ARCH_RULES_WEAK_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            string(STRIP "${_ARCH_RULES_WEAK_LINE}" _ARCH_RULES_WEAK_LINE_STRIPPED)
+            message(SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden weak symbol usage '${_ARCH_RULES_WEAK_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
+
     set(_ARCH_RULES_UI_FORBIDDEN_AREA OFF)
     if(_ARCH_RULES_REL MATCHES "^(src/dsp/|src/protocol/|include/dsd-neo/dsp/|include/dsd-neo/protocol/)")
         set(_ARCH_RULES_UI_FORBIDDEN_AREA ON)

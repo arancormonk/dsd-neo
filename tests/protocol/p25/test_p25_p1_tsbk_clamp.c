@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -13,8 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 // Stubs referenced by linked paths
 void
@@ -86,15 +85,14 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return 0;
 }
 
-// Trunk SM hooks (not used for clamp assertion here)
-void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_init(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+static void
+sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -103,8 +101,8 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+static void
+sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -113,31 +111,44 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+static void
+sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
     (void)count;
 }
 
-void
-p25_sm_tick(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-int
-p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
+static int
+sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
     (void)state;
     (void)out_freq;
     return 0;
+}
+
+static p25_sm_api
+sm_noop_api(void) {
+    p25_sm_api api = {0};
+    api.init = sm_noop_init;
+    api.on_group_grant = sm_noop_on_group_grant;
+    api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_release = sm_noop_on_release;
+    api.on_neighbor_update = sm_noop_on_neighbor_update;
+    api.next_cc_candidate = sm_noop_next_cc_candidate;
+    api.tick = sm_noop_tick;
+    return api;
 }
 
 // Shim to invoke VPDU and capture tuned flag and vc0
@@ -156,6 +167,7 @@ expect_true(const char* tag, int cond) {
 int
 main(void) {
     int rc = 0;
+    p25_sm_set_api(sm_noop_api());
     // Build a TSBK-mapped vPDU Group Voice Channel Grant with channel 0x100A (iden=1)
     unsigned char mac[24] = {0};
     mac[0] = 0x07; // TSBK marker

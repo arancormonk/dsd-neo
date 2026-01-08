@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -17,23 +17,20 @@
 
 #include "test_support.h"
 
-// Minimal types
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 // Shim: decode one MBT using seeded IDEN parameters and return fields
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
 
-// Stubs for trunk SM hooks referenced by trunking decoder
-void
-p25_sm_init(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_init(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+static void
+sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -42,8 +39,8 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+static void
+sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)opts;
     (void)state;
     (void)channel;
@@ -52,31 +49,44 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)src;
 }
 
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+static void
+sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
     (void)count;
 }
 
-void
-p25_sm_tick(dsd_opts* opts, dsd_state* state) {
+static void
+sm_noop_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
 
-int
-p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
+static int
+sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
     (void)state;
     (void)out_freq;
     return 0;
+}
+
+static p25_sm_api
+sm_noop_api(void) {
+    p25_sm_api api = {0};
+    api.init = sm_noop_init;
+    api.on_group_grant = sm_noop_on_group_grant;
+    api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_release = sm_noop_on_release;
+    api.on_neighbor_update = sm_noop_on_neighbor_update;
+    api.next_cc_candidate = sm_noop_next_cc_candidate;
+    api.tick = sm_noop_tick;
+    return api;
 }
 
 // Additional stubs referenced by linked objects (rigctl/rtl streaming)
@@ -162,6 +172,8 @@ expect_true(const char* tag, int cond) {
 int
 main(void) {
     int rc = 0;
+
+    p25_sm_set_api(sm_noop_api());
 
     // Build ALT MBT NET_STS_BCST with CHAN-T referencing iden=1 while we seed iden=0 only.
     uint8_t mbt[48];
