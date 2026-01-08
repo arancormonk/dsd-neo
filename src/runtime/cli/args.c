@@ -333,7 +333,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int new_argc = dsd_cli_compact_args(argc, argv);
     // Reset getopt index and parse short options here (migrated)
     extern int optind;
+    // NOTE: We invoke getopt() multiple times (unit tests, bootstrap flows).
+    // glibc requires optind=0 to fully reset internal state; BSD variants use optreset.
     optind = 1;
+#if defined(__GLIBC__)
+    optind = 0;
+#endif
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    extern int optreset;
+    optreset = 1;
+#endif
 
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc);
     if (out_argc) {
@@ -503,6 +512,18 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                         state->K1 = k1;
                         state->K2 = k2;
                         state->K3 = state->K4 = 0ULL;
+
+                        state->A1[0] = state->A1[1] = k1;
+                        state->A2[0] = state->A2[1] = k2;
+                        state->A3[0] = state->A3[1] = 0ULL;
+                        state->A4[0] = state->A4[1] = 0ULL;
+                        state->aes_key_loaded[0] = state->aes_key_loaded[1] = (k1 != 0ULL || k2 != 0ULL) ? 1 : 0;
+
+                        memset(state->aes_key, 0, sizeof(state->aes_key));
+                        for (int i = 0; i < 8; i++) {
+                            state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);
+                            state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);
+                        }
                         LOG_NOTICE("AES-128 / Hytera 128-bit key loaded (2x64)\n");
                     } else if (nhex == 64) {
                         if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)
@@ -516,6 +537,21 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                         state->K2 = k2;
                         state->K3 = k3;
                         state->K4 = k4;
+
+                        state->A1[0] = state->A1[1] = k1;
+                        state->A2[0] = state->A2[1] = k2;
+                        state->A3[0] = state->A3[1] = k3;
+                        state->A4[0] = state->A4[1] = k4;
+                        state->aes_key_loaded[0] = state->aes_key_loaded[1] =
+                            (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 1 : 0;
+
+                        memset(state->aes_key, 0, sizeof(state->aes_key));
+                        for (int i = 0; i < 8; i++) {
+                            state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);
+                            state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);
+                            state->aes_key[i + 16] = (uint8_t)((state->A3[0] >> (56 - (i * 8))) & 0xFF);
+                            state->aes_key[i + 24] = (uint8_t)((state->A4[0] >> (56 - (i * 8))) & 0xFF);
+                        }
                         LOG_NOTICE("AES-256 / Hytera 256-bit key loaded (4x64)\n");
                     } else {
                         LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");

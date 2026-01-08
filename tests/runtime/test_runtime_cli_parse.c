@@ -165,6 +165,81 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
     return 0;
 }
 
+static int
+test_H_loads_aes256_key_for_both_slots(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-H";
+    char arg2[] = "20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    const unsigned long long k1 = 0x20029736A5D91042ULL;
+    const unsigned long long k2 = 0xC923EB0697484433ULL;
+    const unsigned long long k3 = 0x005EFC58A1905195ULL;
+    const unsigned long long k4 = 0xE28E9C7836AA2DB8ULL;
+
+    if (state->A1[0] != k1 || state->A2[0] != k2 || state->A3[0] != k3 || state->A4[0] != k4 || state->A1[1] != k1
+        || state->A2[1] != k2 || state->A3[1] != k3 || state->A4[1] != k4) {
+        fprintf(stderr,
+                "expected A1..A4 to match key segments, got slot0=%016llX %016llX %016llX %016llX slot1=%016llX "
+                "%016llX %016llX %016llX\n",
+                (unsigned long long)state->A1[0], (unsigned long long)state->A2[0], (unsigned long long)state->A3[0],
+                (unsigned long long)state->A4[0], (unsigned long long)state->A1[1], (unsigned long long)state->A2[1],
+                (unsigned long long)state->A3[1], (unsigned long long)state->A4[1]);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    if (state->aes_key_loaded[0] != 1 || state->aes_key_loaded[1] != 1) {
+        fprintf(stderr, "expected aes_key_loaded[0..1]=1, got %d/%d\n", state->aes_key_loaded[0],
+                state->aes_key_loaded[1]);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    const uint8_t expect_bytes[32] = {
+        0x20, 0x02, 0x97, 0x36, 0xA5, 0xD9, 0x10, 0x42, 0xC9, 0x23, 0xEB, 0x06, 0x97, 0x48, 0x44, 0x33,
+        0x00, 0x5E, 0xFC, 0x58, 0xA1, 0x90, 0x51, 0x95, 0xE2, 0x8E, 0x9C, 0x78, 0x36, 0xAA, 0x2D, 0xB8,
+    };
+    if (memcmp(state->aes_key, expect_bytes, sizeof(expect_bytes)) != 0) {
+        fprintf(stderr, "expected aes_key bytes to match key, got mismatch\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
 static const char*
 test_tmp_dir(void) {
     const char* dir = getenv("TMPDIR");
@@ -344,6 +419,7 @@ main(void) {
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
+    rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_bootstrap_treats_lone_ini_as_config();
     return rc;
 }
