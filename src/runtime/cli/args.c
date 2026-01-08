@@ -46,7 +46,14 @@ cli_collect_hex_digits(const char* in, char* out, size_t out_cap, size_t* out_le
         return 0;
     }
     size_t w = 0;
-    for (const char* p = in; *p; ++p) {
+    const char* p = in;
+    while (*p && isspace((unsigned char)*p)) {
+        ++p;
+    }
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+    for (; *p; ++p) {
         if (isspace((unsigned char)*p)) {
             continue;
         }
@@ -403,11 +410,31 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 LOG_NOTICE("Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");
                 break;
             case '1':
-                sscanf(optarg, "%llX", &state->R);
-                state->RR = state->R;
-                LOG_NOTICE("RC4/DES Encryption Key Value set to 0x%llX \n", state->R);
-                opts->unmute_encrypted_p25 = 0;
-                state->keyloader = 0;
+                if (state) {
+                    char hex[128];
+                    size_t nhex = 0;
+                    if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {
+                        LOG_ERROR("-1 expects a hex key (spaces allowed)\n");
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
+                    }
+                    if (nhex == 0 || nhex > 16) {
+                        LOG_ERROR("-1 expects 1..16 hex characters (spaces allowed)\n");
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
+                    }
+                    unsigned long long key = 0ULL;
+                    if (!cli_parse_hex_u64_n(hex, nhex, &key)) {
+                        LOG_ERROR("-1 failed to parse key\n");
+                        cli_set_exit_rc(out_exit_rc, 1);
+                        return DSD_PARSE_ERROR;
+                    }
+                    state->R = key;
+                    state->RR = key;
+                    LOG_NOTICE("RC4/DES Encryption Key Value set to 0x%llX \n", state->R);
+                    opts->unmute_encrypted_p25 = 0;
+                    state->keyloader = 0;
+                }
                 break;
             case '2':
                 state->tyt_bp = 1;
