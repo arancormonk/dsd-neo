@@ -237,6 +237,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/io/udp_socket_connect.h
   C)
 
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_protocol_p25_trunk_sm_api
+  HEADERS_PUBLIC_PROTOCOL_P25_TRUNK_SM_API
+  dsd-neo/protocol/p25/p25_trunk_sm_api.h
+  C)
+
 add_executable(dsd-neo_test_aes_ofb crypto/test_aes_ofb.c)
 target_include_directories(dsd-neo_test_aes_ofb PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_aes_ofb PRIVATE dsd-neo_crypto)
@@ -639,6 +645,12 @@ if(RTLSDR_FOUND)
 endif()
 target_link_libraries(dsd-neo_test_p25_p1_trunk_sm PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
 add_test(NAME P25_P1_TRUNK_SM COMMAND dsd-neo_test_p25_p1_trunk_sm)
+
+# P25 trunk SM API override (explicit dispatch table)
+add_executable(dsd-neo_test_p25_sm_api_override protocol/p25/test_p25_sm_api_override.c)
+target_include_directories(dsd-neo_test_p25_sm_api_override PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_p25_sm_api_override PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_SM_API_OVERRIDE COMMAND dsd-neo_test_p25_sm_api_override)
 
 # P25 P2 audio gating (SIGNAL, explicit Release)
 add_executable(dsd-neo_test_p25_p2_audio_gating protocol/p25/test_p25_p2_audio_gating.c)

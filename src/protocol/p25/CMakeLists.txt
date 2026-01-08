@@ -7,6 +7,7 @@ target_sources(dsd-neo_proto_p25 PRIVATE
   p25_frequency.c
   p25_lcw.c
   p25_trunk_sm.c
+  p25_trunk_sm_api.c
   p25_trunk_sm_wrappers.c
   p25_cc_candidates.c
   p25_sm_ui.c
