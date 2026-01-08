@@ -212,6 +212,12 @@ dsd_neo_add_public_header_smoke_test(
   C)
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_sync_hamming
+  HEADERS_PUBLIC_DSP_SYNC_HAMMING
+  dsd-neo/dsp/sync_hamming.h
+  C)
+
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_io_m17_udp
   HEADERS_PUBLIC_IO_M17_UDP
   dsd-neo/io/m17_udp.h
@@ -1311,6 +1317,12 @@ add_executable(dsd-neo_test_symbol_bin_mapping dsp/test_symbol_bin_mapping.c)
 target_include_directories(dsd-neo_test_symbol_bin_mapping PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_symbol_bin_mapping PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYMBOL_BIN_MAPPING COMMAND dsd-neo_test_symbol_bin_mapping)
+
+# Sync hamming/remap helper unit test
+add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)
+target_include_directories(dsd-neo_test_dsp_sync_hamming PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dsp_sync_hamming PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_SYNC_HAMMING COMMAND dsd-neo_test_dsp_sync_hamming)
 
 # DMR sync warm start threshold initialization test
 add_executable(dsd-neo_test_sync_warm_start dsp/test_sync_warm_start.c)

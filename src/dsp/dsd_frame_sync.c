@@ -31,6 +31,7 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/dsp/sync_hamming.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -89,94 +90,6 @@ dsd_frame_sync_reset_mod_state(void) {
     atomic_store(&g_ham_qpsk_recent, 24);
     atomic_store(&g_ham_gfsk_recent, 24);
     atomic_store(&g_qpsk_dwell_enter_ms, 0);
-}
-
-/**
- * @brief Compute Hamming distance between a sync buffer and a pattern.
- * @param buf  Pointer to the received dibit buffer (ASCII '0'-'3').
- * @param pat  Pointer to the expected pattern (ASCII '0'-'3').
- * @param len  Number of dibits to compare.
- * @return Number of mismatched dibits (0 = perfect match).
- */
-static inline int
-sync_hamming_distance(const char* buf, const char* pat, int len) {
-    int ham = 0;
-    for (int i = 0; i < len; i++) {
-        if (buf[i] != pat[i]) {
-            ham++;
-        }
-    }
-    return ham;
-}
-
-/* Compute best-case CQPSK Hamming distance to a sync pattern, accounting for
- * common dibit remaps (inversion, bit swap, XOR, 90° rotation) that arise from
- * differing slicer conventions. */
-static int
-qpsk_sync_hamming_with_remaps(const char* buf, const char* pat_norm, const char* pat_inv, int len) {
-    int ham_ident_n = 0, ham_ident_i = 0;
-    int ham_invert_n = 0, ham_invert_i = 0;
-    int ham_swap_n = 0, ham_swap_i = 0;
-    int ham_xor3_n = 0, ham_xor3_i = 0;
-    int ham_rot_n = 0, ham_rot_i = 0;
-    for (int k = 0; k < len; k++) {
-        int d = (unsigned char)buf[k];
-        if (d >= '0' && d <= '3') {
-            d -= '0';
-        }
-        int expect_n = pat_norm[k] - '0';
-        int expect_i = pat_inv[k] - '0';
-        int d_inv = (d == 0) ? 2 : (d == 1) ? 3 : (d == 2) ? 0 : 1;
-        int d_swap = ((d & 1) << 1) | ((d & 2) >> 1); /* swap bit order */
-        int d_xor3 = d ^ 0x3;                         /* bitwise not in 2-bit space */
-        /* 90° rotation (cyclic remap 0->1->3->2->0) */
-        int d_rot;
-        switch (d & 0x3) {
-            case 0: d_rot = 1; break;
-            case 1: d_rot = 3; break;
-            case 2: d_rot = 0; break;
-            default: d_rot = 2; break; /* d==3 */
-        }
-        if (d != expect_n) {
-            ham_ident_n++;
-        }
-        if (d != expect_i) {
-            ham_ident_i++;
-        }
-        if (d_inv != expect_n) {
-            ham_invert_n++;
-        }
-        if (d_inv != expect_i) {
-            ham_invert_i++;
-        }
-        if (d_swap != expect_n) {
-            ham_swap_n++;
-        }
-        if (d_swap != expect_i) {
-            ham_swap_i++;
-        }
-        if (d_xor3 != expect_n) {
-            ham_xor3_n++;
-        }
-        if (d_xor3 != expect_i) {
-            ham_xor3_i++;
-        }
-        if (d_rot != expect_n) {
-            ham_rot_n++;
-        }
-        if (d_rot != expect_i) {
-            ham_rot_i++;
-        }
-    }
-    int best = ham_ident_n;
-    int ham_candidates[] = {ham_ident_i, ham_invert_n, ham_invert_i, ham_swap_n, ham_swap_i,
-                            ham_xor3_n,  ham_xor3_i,   ham_rot_n,    ham_rot_i};
-    for (size_t idx = 0; idx < sizeof(ham_candidates) / sizeof(ham_candidates[0]); idx++) {
-        if (ham_candidates[idx] < best) {
-            best = ham_candidates[idx];
-        }
-    }
-    return best;
 }
 
 /*
@@ -964,10 +877,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             if ((opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) && !opts->mod_cli_lock) {
                 int best_qpsk_ham = 24;
                 if (opts->frame_p25p1 == 1) {
-                    best_qpsk_ham = qpsk_sync_hamming_with_remaps(synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
+                    best_qpsk_ham = dsd_qpsk_sync_hamming_with_remaps(synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
                 }
                 if (opts->frame_p25p2 == 1) {
-                    int ham_p2 = qpsk_sync_hamming_with_remaps(synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
+                    int ham_p2 = dsd_qpsk_sync_hamming_with_remaps(synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
                     /* Scale 20-dibit ham to 24-dibit baseline for fair comparison. */
                     int ham_p2_scaled = (ham_p2 * 24 + 19) / 20;
                     if (ham_p2_scaled < best_qpsk_ham || opts->frame_p25p1 == 0) {
@@ -1211,12 +1124,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 /* Compute Hamming distance to all M17 8-dibit patterns.
                  * M17_PRE/M17_PIV are preambles used to auto-detect polarity.
                  * M17_LSF/M17_STR are data frames; their interpretation depends on polarity. */
-                int ham_pre = sync_hamming_distance(synctest8, M17_PRE, 8);
-                int ham_piv = sync_hamming_distance(synctest8, M17_PIV, 8);
-                int ham_lsf = sync_hamming_distance(synctest8, M17_LSF, 8);
-                int ham_str = sync_hamming_distance(synctest8, M17_STR, 8);
-                int ham_pkt = sync_hamming_distance(synctest8, M17_PKT, 8);
-                int ham_brt = sync_hamming_distance(synctest8, M17_BRT, 8);
+                int ham_pre = dsd_sync_hamming_distance(synctest8, M17_PRE, 8);
+                int ham_piv = dsd_sync_hamming_distance(synctest8, M17_PIV, 8);
+                int ham_lsf = dsd_sync_hamming_distance(synctest8, M17_LSF, 8);
+                int ham_str = dsd_sync_hamming_distance(synctest8, M17_STR, 8);
+                int ham_pkt = dsd_sync_hamming_distance(synctest8, M17_PKT, 8);
+                int ham_brt = dsd_sync_hamming_distance(synctest8, M17_BRT, 8);
 
                 /* Threshold for sync acceptance (allow 1 bit error in 8 dibits) */
                 const int M17_HAM_THRESH = 1;
