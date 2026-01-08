@@ -1,33 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/**
- * @file
- * @brief P25 Phase 2 audio jitter ring helpers.
- *
- * Provides small inline helpers for managing the per-slot fixed-size audio
- * jitter buffer stored in `dsd_state`.
- */
-
-#pragma once
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 
 #include <dsd-neo/core/state.h>
 
 #include <string.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/**
- * @brief Reset Phase 2 audio jitter ring for one or both slots.
- *
- * @param state Decoder state containing jitter rings.
- * @param slot  Slot index (0/1) or negative to reset both.
- */
-static inline void
+void
 p25_p2_audio_ring_reset(dsd_state* state, int slot) {
     if (!state) {
         return;
@@ -49,14 +31,7 @@ p25_p2_audio_ring_reset(dsd_state* state, int slot) {
     memset(state->p25_p2_audio_ring[slot], 0, sizeof state->p25_p2_audio_ring[slot]);
 }
 
-/**
- * @brief Push one 160-sample float frame into the Phase 2 jitter ring.
- *
- * Drops the oldest frame when the ring is full to keep latency bounded.
- *
- * @return 1 on success, 0 on invalid input.
- */
-static inline int
+int
 p25_p2_audio_ring_push(dsd_state* state, int slot, const float* frame160) {
     if (!state || !frame160 || slot < 0 || slot > 1) {
         return 0;
@@ -74,14 +49,7 @@ p25_p2_audio_ring_push(dsd_state* state, int slot, const float* frame160) {
     return 1;
 }
 
-/**
- * @brief Pop one 160-sample float frame from the Phase 2 jitter ring.
- *
- * When empty, fills out160 with zeros and returns 0.
- *
- * @return 1 when a frame was returned; 0 when empty/invalid.
- */
-static inline int
+int
 p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160) {
     if (!state || !out160 || slot < 0 || slot > 1) {
         return 0;
@@ -98,7 +66,3 @@ p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160) {
     state->p25_p2_audio_ring_count[slot]--;
     return 1;
 }
-
-#ifdef __cplusplus
-}
-#endif

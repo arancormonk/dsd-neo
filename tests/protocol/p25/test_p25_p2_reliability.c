@@ -20,102 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-/* Forward declarations for types - must match decoder option/state layouts */
-typedef struct dsd_opts {
-    int payload;
-    char mbe_out_dir[1024];
-    void* mbe_out_f;
-    void* mbe_out_fR;
-    int use_ncurses_terminal;
-    int floating_point;
-    int pulse_digi_rate_out;
-    int trunk_hangtime;
-    int p25_trunk;
-    int p25_is_tuned;
-    int trunk_tune_enc_calls;
-    int slot1_on;
-    int slot2_on;
-} dsd_opts;
-
-typedef struct dsd_state {
-    int currentslot;
-    int dmrburstL;
-    int dmrburstR;
-    int dmr_so;
-    int dmr_soR;
-    int dmr_stereo;
-    int p2_is_lcch;
-    int p2_wacn;
-    int p2_sysid;
-    int p2_cc;
-    int p2_scramble_offset;
-    int p2_vch_chan_num;
-    int fourv_counter[2];
-    int voice_counter[2];
-    int ess_b[2][96];
-    int p25_vc_freq[2];
-    char active_channel[64];
-    int s_l4[18][64];
-    int s_r4[18][64];
-    time_t last_vc_sync_time;
-    double last_vc_sync_time_m;
-    time_t last_active_time;
-    time_t p25_last_vc_tune_time;
-    double p25_last_vc_tune_time_m;
-    double p25_cfg_vc_grace_s;
-    int p25_p2_audio_allowed[2];
-    int p25_p2_audio_ring_count[2];
-    double p25_p2_last_mac_active_m[2];
-    int p25_p2_last_mac_active[2];
-    int p25_p2_last_end_ptt[2];
-    int p25_call_is_packet[2];
-    int p25_call_emergency[2];
-    int p25_call_priority[2];
-    int payload_algid;
-    int payload_keyid;
-    uint64_t payload_miP;
-    int payload_algidR;
-    int payload_keyidR;
-    uint64_t payload_miN;
-    char call_string[2][32];
-    int lasttg;
-    int lasttgR;
-    int lastsrc;
-    int lastsrcR;
-    uint64_t R;
-    uint64_t RR;
-    int aes_key_loaded[2];
-    uint64_t A1[2];
-    uint64_t A2[2];
-    uint64_t A3[2];
-    uint64_t A4[2];
-    int dropL;
-    int dropR;
-    int DMRvcL;
-    int DMRvcR;
-    short audio_out_temp_buf[160];
-    short audio_out_temp_bufR[160];
-    int s_l[64];
-    int s_r[64];
-    int s_lu[64];
-    int s_ru[64];
-    short f_l4[4][160];
-    short f_r4[4][160];
-    int s_l4u[4][64];
-    int s_r4u[4][64];
-    unsigned int p25_p2_rs_facch_ok;
-    unsigned int p25_p2_rs_facch_err;
-    unsigned int p25_p2_rs_facch_corr;
-    unsigned int p25_p2_rs_sacch_ok;
-    unsigned int p25_p2_rs_sacch_err;
-    unsigned int p25_p2_rs_sacch_corr;
-    unsigned int p25_p2_rs_ess_ok;
-    unsigned int p25_p2_rs_ess_err;
-    unsigned int p25_p2_rs_ess_corr;
-    int p25_sm_force_release;
-} dsd_state;
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 /* External declarations matching p25p2_frame.c */
 extern int p2bit[4320];
@@ -233,19 +140,6 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, void* a, char fr[4][24], void*
     (void)a;
     (void)fr;
     (void)c;
-}
-
-void
-p25_p2_audio_ring_push(dsd_state* state, int slot, short* data) {
-    (void)state;
-    (void)slot;
-    (void)data;
-}
-
-void
-p25_p2_audio_ring_reset(dsd_state* state, int slot) {
-    (void)state;
-    (void)slot;
 }
 
 void

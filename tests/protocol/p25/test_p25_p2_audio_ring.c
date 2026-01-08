@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -15,7 +15,7 @@
 #include <string.h>
 
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 
 static int
 expect_int(const char* tag, int got, int want) {

@@ -16,6 +16,7 @@ target_sources(dsd-neo_runtime PRIVATE
   rtl_stream_metrics_hooks.c
   m17_udp_hooks.c
   p25_optional_hooks.c
+  p25_p2_audio_ring.c
   rigctl_query_hooks.c
   telemetry_hooks.c
   udp_audio_hooks.c

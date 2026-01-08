@@ -17,10 +17,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
-#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 
 #include <stdio.h>
 #include <string.h>

@@ -95,6 +95,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/p25_optional_hooks.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_p25_p2_audio_ring
+  HEADERS_PUBLIC_RUNTIME_P25_P2_AUDIO_RING
+  dsd-neo/runtime/p25_p2_audio_ring.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rtl_stream_io_hooks
   HEADERS_PUBLIC_RUNTIME_RTL_STREAM_IO_HOOKS
   dsd-neo/runtime/rtl_stream_io_hooks.h
@@ -1254,7 +1259,7 @@ add_test(NAME P25_SM_TAGS_RING COMMAND dsd-neo_test_p25_sm_tags_ring)
 # P25p2 audio jitter ring helpers
 add_executable(dsd-neo_test_p25_p2_audio_ring protocol/p25/test_p25_p2_audio_ring.c)
 target_include_directories(dsd-neo_test_p25_p2_audio_ring PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_p25_p2_audio_ring PRIVATE dsd-neo_core)
+target_link_libraries(dsd-neo_test_p25_p2_audio_ring PRIVATE dsd-neo_runtime)
 add_test(NAME P25_P2_AUDIO_RING COMMAND dsd-neo_test_p25_p2_audio_ring)
 
 # P25 retune backoff respects TDMA slot (same RF)

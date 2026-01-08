@@ -19,7 +19,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 
 #include <mbelib.h>

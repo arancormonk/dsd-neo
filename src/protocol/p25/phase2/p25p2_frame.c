@@ -27,7 +27,6 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
-#include <dsd-neo/protocol/p25/p25_p2_audio_ring.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_xcch.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
@@ -35,6 +34,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/telemetry.h>
 
 #include <stdio.h>
