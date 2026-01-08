@@ -17,6 +17,7 @@ target_sources(dsd-neo_runtime PRIVATE
   m17_udp_hooks.c
   p25_optional_hooks.c
   rigctl_query_hooks.c
+  telemetry_hooks.c
   udp_audio_hooks.c
   net_audio_input_hooks.c
   exitflag.c
@@ -38,7 +39,6 @@ target_sources(dsd-neo_runtime PRIVATE
   bootstrap/audio.c
   bootstrap/interactive.c
   ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
-  ui_async_stubs.c
 )
 
 # Generate git version source within this target's build dir

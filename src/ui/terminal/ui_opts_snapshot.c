@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/core/opts.h>
@@ -8,6 +8,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <string.h>
+#include "telemetry_hooks_impl.h"
 
 static dsd_opts g_pub_opts;     // latest published
 static dsd_opts g_consume_opts; // last copied out for UI
@@ -24,7 +25,7 @@ ensure_opts_mu_init(void) {
 }
 
 void
-ui_publish_opts_snapshot(const dsd_opts* opts) {
+ui_terminal_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     if (!opts) {
         return;
     }

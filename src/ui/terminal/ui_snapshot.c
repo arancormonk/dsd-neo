@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/core/state.h>
@@ -8,6 +8,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 #include <string.h>
+#include "telemetry_hooks_impl.h"
 
 static dsd_state g_pub;     // latest published by demod thread
 static dsd_state g_consume; // last copied out for UI
@@ -28,7 +29,7 @@ ensure_mu_init(void) {
 }
 
 void
-ui_publish_snapshot(const dsd_state* state) {
+ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
     if (!state) {
         return;
     }

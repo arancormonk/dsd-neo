@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/platform/atomic_compat.h>
@@ -17,6 +17,8 @@
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
+#include "telemetry_hooks_impl.h"
+
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
@@ -30,17 +32,6 @@ static atomic_int g_ui_in_context = 0;
 int
 ui_is_thread_context(void) {
     return atomic_load(&g_ui_in_context);
-}
-
-void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
-    if (opts) {
-        ui_publish_opts_snapshot(opts);
-    }
-    if (state) {
-        ui_publish_snapshot(state);
-    }
-    ui_request_redraw();
 }
 
 static void
@@ -100,7 +91,7 @@ static DSD_THREAD_RETURN_TYPE
                     resize_term(0, 0);
 #endif
                     clearok(stdscr, TRUE);
-                    ui_request_redraw();
+                    ui_terminal_telemetry_request_redraw();
                 } else if (ch != ERR) {
                     (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
                 }
@@ -142,6 +133,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
         return 0; // already running
     }
 
+    ui_terminal_install_telemetry_hooks();
     g_ui_opts = opts;
     g_ui_state = state;
     atomic_store(&g_ui_stop, 0);
@@ -171,6 +163,6 @@ ui_stop(void) {
 }
 
 void
-ui_request_redraw(void) {
+ui_terminal_telemetry_request_redraw(void) {
     atomic_store(&g_ui_dirty, 1);
 }

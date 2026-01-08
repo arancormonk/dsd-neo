@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -8,9 +8,9 @@
  * @brief Telemetry hooks for DSP/protocol to publish state.
  *
  * This header declares the telemetry hook functions that DSP and protocol
- * modules use to publish state snapshots. The runtime module provides weak
- * no-op stubs (src/runtime/ui_async_stubs.c) so headless builds link without
- * UI. When the terminal UI is linked, strong implementations override these.
+ * modules use to publish state snapshots. The runtime module provides a small
+ * hook table and safe wrappers that default to no-ops when the UI is not
+ * linked/running.
  *
  * DSP and protocol code should include this header rather than UI headers
  * to maintain proper dependency direction: DSP/protocol -> runtime (hooks).
@@ -24,6 +24,14 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct {
+    void (*publish_snapshot)(const dsd_state* state);
+    void (*publish_opts_snapshot)(const dsd_opts* opts);
+    void (*request_redraw)(void);
+} dsd_telemetry_hooks;
+
+void dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks);
 
 /**
  * @brief Publish a snapshot of the current demod state for the UI.

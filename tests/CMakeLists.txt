@@ -288,6 +288,11 @@ target_include_directories(dsd-neo_test_runtime_rigctl_query_hooks PRIVATE ${PRO
 target_link_libraries(dsd-neo_test_runtime_rigctl_query_hooks PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_RIGCTL_QUERY_HOOKS COMMAND dsd-neo_test_runtime_rigctl_query_hooks)
 
+add_executable(dsd-neo_test_runtime_telemetry_hooks runtime/test_runtime_telemetry_hooks.c)
+target_include_directories(dsd-neo_test_runtime_telemetry_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_telemetry_hooks PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_TELEMETRY_HOOKS COMMAND dsd-neo_test_runtime_telemetry_hooks)
+
 add_executable(dsd-neo_test_runtime_udp_audio_hooks runtime/test_runtime_udp_audio_hooks.c)
 target_include_directories(dsd-neo_test_runtime_udp_audio_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_udp_audio_hooks PRIVATE dsd-neo_runtime)

@@ -20,6 +20,7 @@ target_sources(dsd-neo_ui_terminal PRIVATE
   ui_opts_snapshot.c
   ui_cmd_queue.c
   ui_async.c
+  telemetry_hooks_install.c
   menu_core.c
   menu_env.c
   menu_labels.c

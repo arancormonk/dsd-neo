@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -14,9 +14,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** @brief Publish a snapshot of dsd_opts for UI thread consumption. */
-void ui_publish_opts_snapshot(const dsd_opts* opts);
 
 /**
  * @brief Get the latest published options snapshot.

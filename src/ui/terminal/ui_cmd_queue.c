@@ -5,11 +5,10 @@
 
 /* UI → Demod command queue (SPSC, bounded) */
 
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <dsd-neo/ui/ui_cmd_dispatch.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>

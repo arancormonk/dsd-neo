@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -208,12 +208,6 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
 void
 playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-void
-ui_publish_both_and_redraw(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }

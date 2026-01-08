@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * dsd_ncurses_printer.c
@@ -29,6 +29,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
@@ -41,9 +42,7 @@
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>

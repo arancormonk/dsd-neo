@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -23,9 +23,6 @@ int ui_start(dsd_opts* opts, dsd_state* state);
 /** @brief Stop the async UI subsystem and join the UI thread. */
 void ui_stop(void);
 
-/** @brief Request a redraw from demod/decoder side (marks UI dirty). */
-void ui_request_redraw(void);
-
 /**
  * @brief Post a UI command from the UI thread producer.
  *
@@ -46,8 +43,3 @@ int ui_drain_cmds(dsd_opts* opts, dsd_state* state);
  * publish snapshots.
  */
 int ui_is_thread_context(void);
-
-/**
- * @brief Publish opts/state snapshots and request a redraw (thread-safe).
- */
-void ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state);

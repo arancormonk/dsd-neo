@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -18,9 +18,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** @brief Publish a snapshot of the current demod state for the UI to render. */
-void ui_publish_snapshot(const dsd_state* state);
 
 /**
  * @brief Obtain the latest snapshot for drawing.
