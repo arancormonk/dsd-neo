@@ -323,6 +323,11 @@ target_include_directories(dsd-neo_test_core_state_ext PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(dsd-neo_test_core_state_ext PRIVATE dsd-neo_core)
 add_test(NAME CORE_STATE_EXT COMMAND dsd-neo_test_core_state_ext)
 
+add_executable(dsd-neo_test_core_dsd_time core/test_core_dsd_time.c)
+target_include_directories(dsd-neo_test_core_dsd_time PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_core_dsd_time PRIVATE dsd-neo_core)
+add_test(NAME CORE_DSD_TIME COMMAND dsd-neo_test_core_dsd_time)
+
 add_executable(dsd-neo_test_core_csv_import core/test_core_csv_import.c)
 target_include_directories(dsd-neo_test_core_csv_import PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_core_csv_import PRIVATE dsd-neo_core dsd-neo_proto_dmr)
@@ -904,6 +909,7 @@ add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 # DMR Tier III C_MOVE retune (grant -> move -> retune, gated on VC)
 add_executable(dsd-neo_test_dmr_t3_cmove
   protocol/dmr/test_dmr_t3_cmove.c
+  ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -915,6 +921,7 @@ add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 # DMR Tier III forced release via TG hold override on P_CLEAR
 add_executable(dsd-neo_test_dmr_t3_force_release
   protocol/dmr/test_dmr_t3_force_release.c
+  ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -926,6 +933,7 @@ add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 # DMR Tier III move then release (grant -> move TS2->TS1 -> P_CLEAR -> return CC)
 add_executable(dsd-neo_test_dmr_t3_move_release
   protocol/dmr/test_dmr_t3_move_release.c
+  ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
   ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
