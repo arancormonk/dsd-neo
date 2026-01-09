@@ -73,8 +73,8 @@ fill_le_fragments_for_mi(dsd_state* state, uint8_t slot, uint32_t mi32) {
 
 static void
 run_case(unsigned long long key, uint32_t mi, int expect_algid) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 
