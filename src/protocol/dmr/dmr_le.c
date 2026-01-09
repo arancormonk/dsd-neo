@@ -119,6 +119,29 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
     //debug -- working now
     // fprintf (stderr, " LE MI: %09llX; CRC EXT: %X; CRC CMP: %X; \n", mi_corrected, mi_crc_ext, mi_crc_cmp);
 
+    // If PI/SB didn't provide ALG/Key ID but we have a valid LE MI and a manually provided key,
+    // infer the ALG ID from key size so users don't need to force `-0` in common RC4/DES cases.
+    if (g[0] && g[1] && g[2] && mi_crc_ok == 1 && state->M == 0) {
+        if (slot == 0 && state->payload_algid == 0 && state->R != 0) {
+            const unsigned int so = state->dmr_so;
+            const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
+            if (so_enc_or_unknown) {
+                state->payload_algid = (state->R <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+                state->payload_keyid = 0xFF;
+                state->payload_mi = mi_final;
+            }
+        }
+        if (slot == 1 && state->payload_algidR == 0 && state->RR != 0) {
+            const unsigned int so = state->dmr_soR;
+            const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
+            if (so_enc_or_unknown) {
+                state->payload_algidR = (state->RR <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
+                state->payload_keyidR = 0xFF;
+                state->payload_miR = mi_final;
+            }
+        }
+    }
+
     if (g[0] && g[1] && g[2]) {
         if (slot == 0 && state->payload_algid != 0) {
             if (state->payload_mi != mi_final) {

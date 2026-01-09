@@ -932,8 +932,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
             }
         } else {
             if (state->rf_mod == 0) {
-                // 0: C4FM modulation — take single sample at matched-filter peak
-                if (i == state->symbolCenter) {
+                // 0: C4FM modulation — average a small window around the symbol center
+                // (matches dsd-fme behavior and is more tolerant to timing jitter on marginal signals).
+                if ((i >= state->symbolCenter - l_edge_pre) && (i <= state->symbolCenter + r_edge_pre)) {
                     sum += sample;
                     count++;
                 }

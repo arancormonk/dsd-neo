@@ -1108,6 +1108,11 @@ target_include_directories(dsd-neo_test_dmr_rc_crc7 PRIVATE ${PROJECT_SOURCE_DIR
 target_link_libraries(dsd-neo_test_dmr_rc_crc7 PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_RC_CRC7 COMMAND dsd-neo_test_dmr_rc_crc7)
 
+add_executable(dsd-neo_test_dmr_le_infer_algid protocol/dmr/test_dmr_le_infer_algid.c)
+target_include_directories(dsd-neo_test_dmr_le_infer_algid PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_le_infer_algid PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_LE_INFER_ALGID COMMAND dsd-neo_test_dmr_le_infer_algid)
+
 add_executable(dsd-neo_test_dmr_r34_stub protocol/dmr/test_dmr_r34_stub.c)
 target_include_directories(dsd-neo_test_dmr_r34_stub PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_r34_stub PRIVATE dsd-neo_proto_dmr)
