@@ -1411,6 +1411,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     //state->directmode = 0;
                     //fprintf (stderr, "DMR MS Data");
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
+                    if (!opts->mod_cli_lock || opts->mod_gfsk) {
+                        state->rf_mod = 2;
+                    }
                     if (opts->inverted_dmr == 0) //opts->inverted_dmr
                     {
                         // data frame
@@ -1443,6 +1450,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + lmin) / 2;
                     //state->directmode = 0;
                     //fprintf (stderr, "DMR MS VOICE\n");
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
+                    if (!opts->mod_cli_lock || opts->mod_gfsk) {
+                        state->rf_mod = 2;
+                    }
                     if (opts->inverted_dmr == 0) //opts->inverted_dmr
                     {
                         // voice frame
@@ -1474,10 +1488,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + (lmax)) / 2;
                     state->min = ((state->min) + (lmin)) / 2;
                     state->directmode = 0;
-                    /* Force GFSK mode and stable symbol timing for DMR unless user locked demod otherwise */
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
                     if (!opts->mod_cli_lock || opts->mod_gfsk) {
                         state->rf_mod = 2; /* GFSK */
-                        dmr_set_symbol_timing(opts, state);
                     }
                     if (opts->inverted_dmr == 0) {
                         // data frame
@@ -1513,9 +1529,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + (lmin)) / 2;
                     //state->currentslot = 0;
                     state->directmode = 1; //Direct mode
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
                     if (!opts->mod_cli_lock || opts->mod_gfsk) {
                         state->rf_mod = 2;
-                        dmr_set_symbol_timing(opts, state);
                     }
                     if (opts->inverted_dmr == 0) {
                         // data frame
@@ -1551,6 +1570,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->min = ((state->min) + (lmin)) / 2;
                     //state->currentslot = 1;
                     state->directmode = 1; //Direct mode
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
+                    if (!opts->mod_cli_lock || opts->mod_gfsk) {
+                        state->rf_mod = 2;
+                    }
                     if (opts->inverted_dmr == 0) {
                         // data frame
                         sprintf(state->ftype, "DMR ");
@@ -1585,9 +1611,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     state->directmode = 0;
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
                     if (!opts->mod_cli_lock || opts->mod_gfsk) {
                         state->rf_mod = 2;
-                        dmr_set_symbol_timing(opts, state);
                     }
                     if (opts->inverted_dmr == 0) {
                         // voice frame
@@ -1625,13 +1654,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     //state->currentslot = 0;
-                    state->directmode = 1;       //Direct mode
+                    state->directmode = 1; //Direct mode
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
+                    if (!opts->mod_cli_lock || opts->mod_gfsk) {
+                        state->rf_mod = 2;
+                    }
                     if (opts->inverted_dmr == 0) //&& opts->dmr_stereo == 1
                     {
-                        if (!opts->mod_cli_lock || opts->mod_gfsk) {
-                            state->rf_mod = 2;
-                            dmr_set_symbol_timing(opts, state);
-                        }
                         // voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
@@ -1663,13 +1695,16 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     state->max = ((state->max) + lmax) / 2;
                     state->min = ((state->min) + lmin) / 2;
                     // state->currentslot = 1;
-                    state->directmode = 1;       //Direct mode
+                    state->directmode = 1; //Direct mode
+                    // DMR uses 4800 symbols/sec; enforce the symbol timing for the current demod sample rate.
+                    dmr_set_symbol_timing(opts, state);
+
+                    // Prefer GFSK demod for DMR unless the user locked demod to another mode.
+                    if (!opts->mod_cli_lock || opts->mod_gfsk) {
+                        state->rf_mod = 2;
+                    }
                     if (opts->inverted_dmr == 0) //&& opts->dmr_stereo == 1
                     {
-                        if (!opts->mod_cli_lock || opts->mod_gfsk) {
-                            state->rf_mod = 2;
-                            dmr_set_symbol_timing(opts, state);
-                        }
                         // voice frame
                         sprintf(state->ftype, "DMR ");
                         if (opts->errorbars == 1 && opts->dmr_stereo == 0) {
