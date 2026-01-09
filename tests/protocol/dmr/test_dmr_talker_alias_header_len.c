@@ -12,13 +12,37 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 
-// The core library pulls in GPS helpers that reference this symbol, but this test doesn't need UTF-8 decode behavior.
-void __attribute__((weak))
-utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
-    (void)state;
-    (void)wr;
+// Minimal stubs needed to link `src/core/util/dsd_alias.c` in isolation.
+uint16_t
+ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
+    (void)buf;
     (void)len;
-    (void)input;
+    return 0;
+}
+
+uint64_t
+ConvertBitIntoBytes(uint8_t* BufferIn, uint32_t BitLength) {
+    uint64_t out = 0;
+    uint8_t* p = BufferIn;
+    uint32_t n = BitLength;
+
+    while (n--) {
+        out = (out << 1) | (uint64_t)(*p++ & 1u);
+    }
+    return out;
+}
+
+int
+dsd_unicode_supported(void) {
+    return 0;
+}
+
+void
+p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    (void)opts;
+    (void)state;
+    (void)lcw_bits;
+    (void)irrecoverable_errors;
 }
 
 static void

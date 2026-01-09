@@ -1253,9 +1253,9 @@ add_test(NAME DMR_EMBEDDED_GPS_POSITION_ERROR COMMAND dsd-neo_test_dmr_embedded_
 # DMR embedded talker alias: do not truncate when header length is inconsistent with payload
 add_executable(dsd-neo_test_dmr_talker_alias_header_len
   protocol/dmr/test_dmr_talker_alias_header_len.c
+  ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
 )
 target_include_directories(dsd-neo_test_dmr_talker_alias_header_len PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dsd-neo_test_dmr_talker_alias_header_len PRIVATE dsd-neo_core dsd-neo_proto_p25 dsd-neo_proto_dmr)
 add_test(NAME DMR_TALKER_ALIAS_HEADER_LEN COMMAND dsd-neo_test_dmr_talker_alias_header_len)
 
 # FEC core (Hamming/Golay/QR) block code tests
