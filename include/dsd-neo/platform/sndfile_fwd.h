@@ -13,13 +13,14 @@
  * pointers are needed.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
+#if defined(__has_include)
+#if __has_include(<sndfile.h>)
+#include <sndfile.h>
+#else
 typedef struct sf_private_tag SNDFILE;
 typedef struct SF_INFO SF_INFO;
-
-#ifdef __cplusplus
-}
-#endif
+#endif /* __has_include(<sndfile.h>) */
+#else  /* !defined(__has_include) */
+typedef struct sf_private_tag SNDFILE;
+typedef struct SF_INFO SF_INFO;
+#endif /* defined(__has_include) */
