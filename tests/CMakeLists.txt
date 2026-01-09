@@ -1250,6 +1250,14 @@ target_include_directories(dsd-neo_test_dmr_embedded_gps_position_error SYSTEM P
 target_link_libraries(dsd-neo_test_dmr_embedded_gps_position_error PRIVATE ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DMR_EMBEDDED_GPS_POSITION_ERROR COMMAND dsd-neo_test_dmr_embedded_gps_position_error)
 
+# DMR embedded talker alias: do not truncate when header length is inconsistent with payload
+add_executable(dsd-neo_test_dmr_talker_alias_header_len
+  protocol/dmr/test_dmr_talker_alias_header_len.c
+)
+target_include_directories(dsd-neo_test_dmr_talker_alias_header_len PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_talker_alias_header_len PRIVATE dsd-neo_core dsd-neo_proto_p25 dsd-neo_proto_dmr)
+add_test(NAME DMR_TALKER_ALIAS_HEADER_LEN COMMAND dsd-neo_test_dmr_talker_alias_header_len)
+
 # FEC core (Hamming/Golay/QR) block code tests
 add_executable(dsd-neo_test_fec_block_codes fec/test_fec_block_codes.c)
 target_include_directories(dsd-neo_test_fec_block_codes PRIVATE ${PROJECT_SOURCE_DIR}/include)

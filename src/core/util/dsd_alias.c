@@ -719,16 +719,23 @@ dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
 
     //Decode the header's alias portion
     fprintf(stderr, "\n");
-    dmr_talker_alias_lc_decode(opts, state, slot, 0, char_size, block_len);
+    uint16_t max_chars = 0;
+    if (char_size == 7) {
+        max_chars = 49 / 7;
+    } else if (char_size == 8) {
+        max_chars = 48 / 8;
+    } else if (char_size == 16) {
+        max_chars = 48 / 16;
+    }
+    dmr_talker_alias_lc_decode(opts, state, slot, 0, char_size, max_chars);
 }
 
 void
 dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t* lc_bits) {
     UNUSED(opts); //delete if we don't use this, but may want it if we dump alias to a file later on
-    uint8_t block_len = state->dmr_alias_block_len[slot];
     uint8_t char_size = state->dmr_alias_char_size[slot];
     uint16_t ptr = 0;
-    uint16_t end = block_len;
+    uint16_t max_chars = 0;
 
     //Note: The Joann sample only carries block 5, and no header on block 4
     //another radio on that ham setup also has a broken alias similar, but
@@ -764,37 +771,49 @@ dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
         if (char_size == 7) {
             memcpy(state->dmr_pdu_sf[slot] + ptr, lc_bits + 16, 56 * sizeof(uint8_t));
             ptr += 56;
-            if (block_len == 0) {
-                end = ptr / 7;
-            } else {
-                end = block_len;
-            }
+            max_chars = ptr / 7;
         } else if (char_size == 8) {
             memcpy(state->dmr_pdu_sf[slot] + ptr, lc_bits + 16, 56 * sizeof(uint8_t));
             ptr += 56;
-            if (block_len == 0) {
-                end = ptr / 8;
-            } else {
-                end = block_len;
-            }
+            max_chars = ptr / 8;
         } else if (char_size == 16) {
             memcpy(state->dmr_pdu_sf[slot] + ptr, lc_bits + 16, 56 * sizeof(uint8_t));
             ptr += 56;
-            if (block_len == 0) {
-                end = ptr / 16;
-            } else {
-                end = block_len;
-            }
+            max_chars = ptr / 16;
         }
 
-        dmr_talker_alias_lc_decode(opts, state, slot, block_num + 1, char_size, end);
+        dmr_talker_alias_lc_decode(opts, state, slot, block_num + 1, char_size, max_chars);
     }
+}
+
+static uint16_t
+dmr_talker_alias_effective_len(const uint8_t* bits, uint8_t char_size, uint16_t max_chars) {
+    uint16_t last = 0;
+    for (uint16_t i = 0; i < max_chars; i++) {
+        if (char_size == 7) {
+            uint8_t character = (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 7)], 7);
+            if (character >= 0x21 && character <= 0x7E) {
+                last = i + 1;
+            }
+        } else if (char_size == 8) {
+            uint8_t character = (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 8)], 8);
+            if (character >= 0x21 && character != 0x7F && character != 0xFF) {
+                last = i + 1;
+            }
+        } else if (char_size == 16) {
+            uint16_t character = (uint16_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 16)], 16);
+            if (character >= 0x21 && character != 0x7F && character != 0xFFFF) {
+                last = i + 1;
+            }
+        }
+    }
+    return last;
 }
 
 //Decode partial or completed alias
 void
 dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
-                           uint16_t end) {
+                           uint16_t max_chars) {
     UNUSED(opts);
     uint16_t i = 0;
     fprintf(stderr, " Slot %d - Talker Alias Block Num: %d; Valid Block;", slot, block_num + 1);
@@ -803,6 +822,8 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     char alias_string[500];
     memset(alias_string, 0, sizeof(alias_string));
     sprintf(alias_string, "%s", "");
+
+    const uint16_t end = dmr_talker_alias_effective_len(state->dmr_pdu_sf[slot], char_size, max_chars);
 
     if (char_size == 7) {
         for (i = 0; i < end; i++) {
@@ -841,7 +862,8 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             ch[0] = character;
             ch[1] = 0;
             // if (character >= 0x20 && character <= 0x7E) //Standard ASCII Set
-            if (character >= 0x20 && character != 0x7F) //allow some extended UTF diacritical characters as well
+            if (character >= 0x20 && character != 0x7F
+                && character != 0xFF) //allow some extended UTF diacritical characters as well
             {
                 fprintf(stderr, "%c", character);
                 size_t rem2 = sizeof(alias_string) - strlen(alias_string) - 1;
@@ -875,7 +897,7 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
             ch[0] = character & 0xFF;
             ch[1] = 0;
 
-            if (character >= 0x20 && character != 0x7F) {
+            if (character >= 0x20 && character != 0x7F && character != 0xFFFF) {
                 if (dsd_unicode_supported()) {
                     fprintf(stderr, "%lc", character);
                 } else {
