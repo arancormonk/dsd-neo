@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/core/state.h>
@@ -77,17 +77,12 @@ resetState(dsd_state* state) {
     }
 
     // DMR sample history buffer reset (resample-on-sync support)
-    // Note: Buffer allocation preserved, only reset indices and equalizer
+    // Note: Buffer allocation preserved; only reset indices.
     if (state->dmr_sample_history && state->dmr_sample_history_size > 0) {
         memset(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
     }
     state->dmr_sample_history_head = 0;
     state->dmr_sample_history_count = 0;
-
-    // Reset DMR equalizer state
-    state->dmr_eq.balance = 0.0f;
-    state->dmr_eq.gain = 1.0f;
-    state->dmr_eq.initialized = 0;
 
     //Sync
     state->center = 0.0f;

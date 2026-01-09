@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -10,8 +10,7 @@
  * Tests the complete resample-on-sync flow:
  * 1. Symbol history buffer push/get operations
  * 2. Sync pattern correlation scoring
- * 3. Equalizer calculation and application
- * 4. CACH re-digitization with corrected thresholds
+ * 3. CACH re-digitization with corrected thresholds
  *
  * Verifies that re-digitization produces expected dibits in the correct
  * ring-buffer-relative positions.
@@ -218,51 +217,6 @@ test_symbol_extraction(void) {
 }
 
 /**
- * @brief Test equalizer update and constraints.
- */
-static void
-test_equalizer(void) {
-    printf("=== test_equalizer ===\n");
-
-    static struct dsd_state state;
-    memset(&state, 0, sizeof(state));
-
-    /* Reset equalizer */
-    dmr_equalizer_reset(&state);
-    check_float("initial balance", 0.0f, state.dmr_eq.balance, FLOAT_TOL);
-    check_float("initial gain", 1.0f, state.dmr_eq.gain, FLOAT_TOL);
-    check_int("initial not initialized", 0, state.dmr_eq.initialized);
-
-    /* Perfect sync should not change equalizer much */
-    float perfect_sync[] = {+3.0f, -3.0f, +3.0f, +3.0f, +3.0f, +3.0f, -3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f,
-                            -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f, -3.0f, +3.0f, -3.0f, +3.0f};
-    dmr_equalizer_update(&state, perfect_sync, DMR_SYNC_BS_VOICE);
-
-    check_int("initialized after update", 1, state.dmr_eq.initialized);
-    check_float("balance after perfect", 0.0f, state.dmr_eq.balance, 0.1f);
-    check_float("gain after perfect", 1.0f, state.dmr_eq.gain, 0.1f);
-
-    /* Reset and test with DC offset */
-    dmr_equalizer_reset(&state);
-    float dc_offset = 0.3f;
-    float offset_sync[DMR_SYNC_SYMBOLS];
-    for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
-        offset_sync[i] = perfect_sync[i] + dc_offset;
-    }
-    dmr_equalizer_update(&state, offset_sync, DMR_SYNC_BS_VOICE);
-
-    /* Balance should compensate for DC offset (negative of offset) */
-    g_test_count++;
-    if (fabsf(state.dmr_eq.balance + dc_offset) > 0.15f) {
-        printf("FAIL: balance (%.3f) should compensate for DC offset (%.3f)\n", (double)state.dmr_eq.balance,
-               (double)dc_offset);
-        g_fail_count++;
-    }
-
-    printf("test_equalizer: passed\n\n");
-}
-
-/**
  * @brief Test CACH re-digitization with ideal thresholds.
  *
  * This test verifies that re-digitization produces expected dibits
@@ -289,11 +243,6 @@ test_cach_redigitize(void) {
     state.lmid = -1.875f; /* 0.625 * -3 */
     state.maxref = 2.4f;
     state.minref = -2.4f;
-
-    /* Initialize equalizer to neutral */
-    state.dmr_eq.balance = 0.0f;
-    state.dmr_eq.gain = 1.0f;
-    state.dmr_eq.initialized = 1;
 
     /* Create test pattern: known symbol values that map to known dibits
      * Symbol levels: +3 -> dibit 1, +1 -> dibit 0, -1 -> dibit 2, -3 -> dibit 3
@@ -325,8 +274,11 @@ test_cach_redigitize(void) {
     }
 
     /* Allocate payload buffer */
-    state.dmr_payload_buf = (int*)malloc(sizeof(int) * DMR_RESAMPLE_SYMBOLS);
-    memset(state.dmr_payload_buf, 0xFF, sizeof(int) * DMR_RESAMPLE_SYMBOLS);
+    const int payload_len = DMR_RESAMPLE_SYMBOLS + DMR_SYNC_SYMBOLS;
+    state.dmr_payload_buf = (int*)malloc(sizeof(int) * payload_len);
+    memset(state.dmr_payload_buf, 0xFF, sizeof(int) * payload_len);
+    /* Mimic real decoder state: dmr_payload_p points one past the most recent dibit. */
+    state.dmr_payload_p = state.dmr_payload_buf + payload_len;
 
     /* Call CACH resample */
     dmr_resample_cach(&opts, &state, 0);
@@ -406,7 +358,7 @@ test_full_resample_on_sync(void) {
     }
 
     /* Call full resample_on_sync */
-    int ret = dmr_resample_on_sync(&opts, &state, DMR_SYNC_BS_VOICE);
+    int ret = dmr_resample_on_sync(&opts, &state);
 
     check_int("resample_on_sync return", 0, ret);
 
@@ -416,9 +368,6 @@ test_full_resample_on_sync(void) {
         printf("FAIL: max threshold (%.3f) out of range\n", (double)state.max);
         g_fail_count++;
     }
-
-    /* Equalizer should be initialized */
-    check_int("equalizer initialized", 1, state.dmr_eq.initialized);
 
     free(state.dmr_payload_buf);
     dmr_sample_history_free(&state);
@@ -434,7 +383,6 @@ main(void) {
     test_history_buffer_wrap();
     test_sync_correlation();
     test_symbol_extraction();
-    test_equalizer();
     test_cach_redigitize();
     test_full_resample_on_sync();
 

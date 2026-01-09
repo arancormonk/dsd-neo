@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -30,37 +30,14 @@ struct dsd_state;
  * Constants
  * ───────────────────────────────────────────────────────────────────────────── */
 
-#define DMR_SAMPLE_HISTORY_SIZE   2048 /* ~427ms at 4800 sym/s, covers CACH + sync + margin */
-#define DMR_SYNC_SYMBOLS          24   /* Sync pattern length in symbols */
-#define DMR_CACH_DIBITS           12   /* CACH length (6 dibits × 2 for interleave) */
-#define DMR_RESAMPLE_SYMBOLS      66   /* CACH + message prefix to resample */
-
-/* Equalizer constants */
-#define DMR_EQUALIZER_LOOP_GAIN   0.15f  /* Adaptation rate after first sync */
-#define DMR_EQUALIZER_MAX_BALANCE 1.047f /* ±60 degrees (π/3 radians) */
-#define DMR_EQUALIZER_MAX_GAIN    1.25f  /* Max 25% amplitude boost */
-#define DMR_EQUALIZER_MIN_GAIN    1.00f  /* Min gain (no attenuation) */
-
-/* Ideal symbol phases for DMR QPSK (in radians, but we use normalized levels) */
-#define DMR_SYMBOL_PLUS_3         (3.0f)
-#define DMR_SYMBOL_PLUS_1         (1.0f)
-#define DMR_SYMBOL_MINUS_1        (-1.0f)
-#define DMR_SYMBOL_MINUS_3        (-3.0f)
+#define DMR_SAMPLE_HISTORY_SIZE 2048 /* ~427ms at 4800 sym/s, covers CACH + sync + margin */
+#define DMR_SYNC_SYMBOLS        24   /* Sync pattern length in symbols */
+#define DMR_CACH_DIBITS         12   /* CACH length (6 dibits × 2 for interleave) */
+#define DMR_RESAMPLE_SYMBOLS    66   /* CACH + message prefix to resample */
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
  * ───────────────────────────────────────────────────────────────────────────── */
-
-/**
- * @brief DMR equalizer state for DC offset and gain correction.
- *
- * Calculated from sync pattern correlation and applied to incoming samples.
- */
-typedef struct {
-    float balance;   /**< DC offset correction (added to samples) */
-    float gain;      /**< Amplitude scaling factor (multiplied) */
-    int initialized; /**< Whether equalizer has been initialized */
-} dmr_equalizer_t;
 
 /**
  * @brief DMR sync pattern identifiers.
@@ -160,29 +137,6 @@ void dmr_init_thresholds_from_sync(struct dsd_opts* opts, struct dsd_state* stat
                                    const float sync_symbols[DMR_SYNC_SYMBOLS]);
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Equalizer
- * ───────────────────────────────────────────────────────────────────────────── */
-
-/**
- * @brief Reset equalizer state.
- * @param state Decoder state
- */
-void dmr_equalizer_reset(struct dsd_state* state);
-
-/**
- * @brief Update equalizer from sync pattern correlation.
- *
- * Calculates DC offset (balance) and amplitude (gain) corrections by comparing
- * received sync symbols against ideal values.
- *
- * @param state Decoder state with equalizer
- * @param sync_symbols 24 received sync symbol values
- * @param pattern Detected sync pattern (for ideal symbol lookup)
- */
-void dmr_equalizer_update(struct dsd_state* state, const float sync_symbols[DMR_SYNC_SYMBOLS],
-                          dmr_sync_pattern_t pattern);
-
-/* ─────────────────────────────────────────────────────────────────────────────
  * CACH Resampling
  * ───────────────────────────────────────────────────────────────────────────── */
 
@@ -205,15 +159,13 @@ void dmr_resample_cach(struct dsd_opts* opts, struct dsd_state* state, int sync_
  * Called after DMR sync detection. Performs:
  * 1. Extract sync symbols from history
  * 2. Initialize thresholds from sync pattern
- * 3. Update equalizer
- * 4. Resample CACH with corrected parameters
+ * 3. Resample CACH with corrected parameters
  *
  * @param opts Decoder options
  * @param state Decoder state
- * @param pattern Detected sync pattern
  * @return 0 on success, -1 if sample history unavailable
  */
-int dmr_resample_on_sync(struct dsd_opts* opts, struct dsd_state* state, dmr_sync_pattern_t pattern);
+int dmr_resample_on_sync(struct dsd_opts* opts, struct dsd_state* state);
 
 #ifdef __cplusplus
 }

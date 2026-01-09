@@ -375,10 +375,6 @@ initState(dsd_state* state) {
     state->dmr_sample_history_head = 0;
     state->dmr_sample_history_count = 0;
 
-    // DMR equalizer initialization
-    state->dmr_eq.balance = 0.0f;
-    state->dmr_eq.gain = 1.0f;
-    state->dmr_eq.initialized = 0;
     state->repeat = 0;
 
     // RTL-SDR stream context (initialized to NULL; lifecycle managed by caller)

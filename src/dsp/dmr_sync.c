@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -12,7 +12,6 @@
  * - Symbol history buffer management
  * - Sync pattern correlation scoring
  * - Threshold initialization from sync patterns
- * - Equalizer (DC offset and gain correction)
  * - CACH re-digitization with corrected thresholds
  */
 
@@ -21,7 +20,6 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -209,72 +207,6 @@ dmr_init_thresholds_from_sync(dsd_opts* opts, dsd_state* state, const float sync
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Equalizer
- * ───────────────────────────────────────────────────────────────────────────── */
-
-void
-dmr_equalizer_reset(dsd_state* state) {
-    if (state == NULL) {
-        return;
-    }
-
-    state->dmr_eq.balance = 0.0f;
-    state->dmr_eq.gain = 1.0f;
-    state->dmr_eq.initialized = 0;
-}
-
-void
-dmr_equalizer_update(dsd_state* state, const float sync_symbols[DMR_SYNC_SYMBOLS], dmr_sync_pattern_t pattern) {
-    if (state == NULL || sync_symbols == NULL) {
-        return;
-    }
-    if (pattern < 0 || pattern >= DMR_SYNC_PATTERN_COUNT) {
-        return;
-    }
-
-    const float* ideal = DMR_SYNC_PATTERNS[pattern];
-    float balance_acc = 0.0f;
-    float gain_acc = 0.0f;
-
-    /* Calculate error between received and ideal symbols */
-    for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
-        /* Balance error: DC offset (received - ideal) */
-        balance_acc += sync_symbols[i] - ideal[i];
-
-        /* Gain error: amplitude difference */
-        gain_acc += fabsf(ideal[i]) - fabsf(sync_symbols[i]);
-    }
-
-    /* Average errors */
-    balance_acc /= -24.0f;      /* Negate for correction direction */
-    gain_acc /= (24.0f * 3.0f); /* Normalize by ideal level (3.0) */
-
-    /* Apply with loop gain for smooth adaptation */
-    if (state->dmr_eq.initialized) {
-        state->dmr_eq.balance += balance_acc * DMR_EQUALIZER_LOOP_GAIN;
-        state->dmr_eq.gain += gain_acc * DMR_EQUALIZER_LOOP_GAIN;
-    } else {
-        /* First sync: apply full correction */
-        state->dmr_eq.balance = balance_acc;
-        state->dmr_eq.gain = 1.0f + gain_acc;
-        state->dmr_eq.initialized = 1;
-    }
-
-    /* Constrain to safe ranges */
-    if (state->dmr_eq.balance > DMR_EQUALIZER_MAX_BALANCE) {
-        state->dmr_eq.balance = DMR_EQUALIZER_MAX_BALANCE;
-    } else if (state->dmr_eq.balance < -DMR_EQUALIZER_MAX_BALANCE) {
-        state->dmr_eq.balance = -DMR_EQUALIZER_MAX_BALANCE;
-    }
-
-    if (state->dmr_eq.gain > DMR_EQUALIZER_MAX_GAIN) {
-        state->dmr_eq.gain = DMR_EQUALIZER_MAX_GAIN;
-    } else if (state->dmr_eq.gain < DMR_EQUALIZER_MIN_GAIN) {
-        state->dmr_eq.gain = DMR_EQUALIZER_MIN_GAIN;
-    }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
  * CACH Resampling (Re-digitization)
  *
  * After sync detection, re-digitize the CACH and message prefix symbols
@@ -289,9 +221,6 @@ dmr_equalizer_update(dsd_state* state, const float sync_symbols[DMR_SYNC_SYMBOLS
  */
 static int
 dmr_digitize_symbol(dsd_state* state, float symbol) {
-    /* Apply equalizer correction */
-    symbol = (symbol + state->dmr_eq.balance) * state->dmr_eq.gain;
-
     /* 4-level slicer using calibrated thresholds */
     if (symbol > state->center) {
         if (symbol > state->umid) {
@@ -316,6 +245,10 @@ dmr_resample_cach(dsd_opts* opts, dsd_state* state, int sync_sample_offset) {
         return;
     }
 
+    if (state->dmr_payload_buf == NULL || state->dmr_payload_p == NULL) {
+        return;
+    }
+
     /* Check we have enough history */
     if (state->dmr_sample_history_count < DMR_RESAMPLE_SYMBOLS + DMR_SYNC_SYMBOLS) {
         return;
@@ -329,6 +262,14 @@ dmr_resample_cach(dsd_opts* opts, dsd_state* state, int sync_sample_offset) {
      */
     int start_offset = sync_sample_offset - DMR_SYNC_SYMBOLS - DMR_RESAMPLE_SYMBOLS + 1;
 
+    /* The DMR payload buffer is a rolling append-only buffer; dmr_payload_p points
+     * one past the most recently written dibit. At sync detection time, the
+     * current (last) sync symbol is at (dmr_payload_p - 1). Therefore, the 66
+     * symbols preceding the sync pattern map to:
+     *   [dmr_payload_p - (DMR_SYNC_SYMBOLS + DMR_RESAMPLE_SYMBOLS) .. dmr_payload_p - DMR_SYNC_SYMBOLS - 1]
+     */
+    int* out_dibits = state->dmr_payload_p - (DMR_SYNC_SYMBOLS + DMR_RESAMPLE_SYMBOLS);
+
     for (int i = 0; i < DMR_RESAMPLE_SYMBOLS; i++) {
         /* Get symbol from history */
         float symbol = dmr_sample_history_get(state, start_offset + i);
@@ -336,12 +277,7 @@ dmr_resample_cach(dsd_opts* opts, dsd_state* state, int sync_sample_offset) {
         /* Re-digitize with corrected thresholds */
         int dibit = dmr_digitize_symbol(state, symbol);
 
-        /* Overwrite in DMR payload buffer if available */
-        if (state->dmr_payload_buf != NULL) {
-            /* The payload buffer pointer typically points 200 past start.
-             * We need to write to the CACH region at the start of the burst. */
-            state->dmr_payload_buf[i] = dibit;
-        }
+        out_dibits[i] = dibit;
     }
 }
 
@@ -350,7 +286,7 @@ dmr_resample_cach(dsd_opts* opts, dsd_state* state, int sync_sample_offset) {
  * ───────────────────────────────────────────────────────────────────────────── */
 
 int
-dmr_resample_on_sync(dsd_opts* opts, dsd_state* state, dmr_sync_pattern_t pattern) {
+dmr_resample_on_sync(dsd_opts* opts, dsd_state* state) {
     if (state == NULL) {
         return -1;
     }
@@ -367,10 +303,7 @@ dmr_resample_on_sync(dsd_opts* opts, dsd_state* state, dmr_sync_pattern_t patter
     /* 2. Initialize thresholds from sync pattern */
     dmr_init_thresholds_from_sync(opts, state, sync_symbols);
 
-    /* 3. Update equalizer from sync correlation */
-    dmr_equalizer_update(state, sync_symbols, pattern);
-
-    /* 4. Re-digitize CACH with corrected thresholds */
+    /* 3. Re-digitize CACH with corrected thresholds */
     dmr_resample_cach(opts, state, 0);
 
     return 0;
