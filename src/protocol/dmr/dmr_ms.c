@@ -202,6 +202,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         /* emb_ok unused */
         if (QR_16_7_6_decode(emb_pdu)) {
             cc = ((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
+            power = emb_pdu[4];
             state->dmr_color_code = state->color_code = cc;
         }
 
