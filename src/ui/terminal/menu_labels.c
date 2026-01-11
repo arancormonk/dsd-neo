@@ -819,7 +819,7 @@ lbl_key_hytera(void* v, char* b, size_t n) {
         snprintf(b, n, "Hytera Privacy (HEX)");
         return b;
     }
-    const char* kind = "set";
+    const char* kind;
     if (s->K2 == 0ULL && s->K3 == 0ULL && s->K4 == 0ULL) {
         kind = "40-bit";
     } else if (s->K3 == 0ULL && s->K4 == 0ULL) {
