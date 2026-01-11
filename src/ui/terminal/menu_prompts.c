@@ -239,13 +239,14 @@ ui_prompt_handle_key(int ch) {
         return 1;
     }
     if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q') {
-        if (g_prompt.on_done_str) {
-            void (*cb)(void*, const char*) = g_prompt.on_done_str;
-            void* up = g_prompt.user;
-            g_prompt.on_done_str = NULL; // prevent close_all() from calling again
+        void (*cb)(void*, const char*) = g_prompt.on_done_str;
+        void* up = g_prompt.user;
+        // Close first so callbacks can safely open a new prompt.
+        g_prompt.on_done_str = NULL; // prevent close_all() from calling again
+        ui_prompt_close_all();
+        if (cb) {
             cb(up, NULL);
         }
-        ui_prompt_close_all();
         return 1;
     }
     if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
@@ -255,17 +256,23 @@ ui_prompt_handle_key(int ch) {
         return 1;
     }
     if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
-        if (g_prompt.on_done_str) {
-            void (*cb)(void*, const char*) = g_prompt.on_done_str;
-            void* up = g_prompt.user;
-            g_prompt.on_done_str = NULL; // prevent close_all() from calling again
-            if (g_prompt.len == 0) {
-                cb(up, NULL);
-            } else {
-                cb(up, g_prompt.buf);
+        void (*cb)(void*, const char*) = g_prompt.on_done_str;
+        void* up = g_prompt.user;
+        const int have_text = (g_prompt.len > 0 && g_prompt.buf != NULL);
+        char* text_copy = NULL;
+        if (have_text) {
+            text_copy = (char*)malloc(g_prompt.len + 1);
+            if (text_copy) {
+                memcpy(text_copy, g_prompt.buf, g_prompt.len + 1);
             }
         }
+        // Close first so callbacks can safely open a new prompt.
+        g_prompt.on_done_str = NULL; // prevent close_all() from calling again
         ui_prompt_close_all();
+        if (cb) {
+            cb(up, text_copy);
+        }
+        free(text_copy);
         return 1;
     }
     if (isprint(ch)) {
