@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -521,6 +521,7 @@ static const NcMenuItem KEYS_ENTRY_ITEMS[] = {
     {.id = "basic", .label = "Basic Privacy (DEC)", .help = "Set 0..255 basic privacy key.", .on_select = key_basic},
     {.id = "hytera",
      .label = "Hytera Privacy (HEX)",
+     .label_fn = lbl_key_hytera,
      .help = "Set up to 4 x 16-hex segments.",
      .on_select = key_hytera},
     {.id = "scrambler",
@@ -529,6 +530,7 @@ static const NcMenuItem KEYS_ENTRY_ITEMS[] = {
      .on_select = key_scrambler},
     {.id = "force_bp",
      .label = "Force BP/Scr Priority",
+     .label_fn = lbl_key_force_bp,
      .help = "Toggle basic/scrambler priority.",
      .on_select = key_force_bp},
     {.id = "rc4des", .label = "RC4/DES Key (HEX)", .help = "Set RC4/DES key.", .on_select = key_rc4des},

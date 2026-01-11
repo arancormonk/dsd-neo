@@ -1310,6 +1310,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 state->K4 = p.K4;
                 state->keyloader = 0;
                 opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+                snprintf(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
+                         (state->M == 1) ? "forced" : "not forced");
+                state->ui_msg_expire = time(NULL) + 5;
             }
             break;
         }

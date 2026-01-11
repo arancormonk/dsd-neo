@@ -657,6 +657,19 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
 #endif
     // if (opts->aggressive_framesync == 0) printw ("| Selective CRC ERR Bypass Enabled (RAS) \n");
+    if (state->M != 1 && state->H != 0 && state->tyt_bp == 0) {
+        if (state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL) {
+            printw("| Hytera BP Key Loaded (not forced): %010llX \n",
+                   (unsigned long long)(state->K1 & 0xFFFFFFFFFFULL));
+        } else if (state->K3 == 0ULL && state->K4 == 0ULL) {
+            printw("| Hytera Key Loaded (not forced): %016llX %016llX \n", (unsigned long long)state->K1,
+                   (unsigned long long)state->K2);
+        } else {
+            printw("| Hytera Key Loaded (not forced): %016llX %016llX %016llX %016llX \n",
+                   (unsigned long long)state->K1, (unsigned long long)state->K2, (unsigned long long)state->K3,
+                   (unsigned long long)state->K4);
+        }
+    }
     if (state->M == 1) {
         if (state->R != 0) {
             printw("| Forcing Key Priority -- NXDN Sc Key: %05lld \n", state->R);

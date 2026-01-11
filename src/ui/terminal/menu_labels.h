@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -117,6 +117,8 @@ const char* lbl_ui_p25_callsign(void* v, char* b, size_t n);
 const char* lbl_lrrp_current(void* vctx, char* b, size_t n);
 
 // Keys labels
+const char* lbl_key_force_bp(void* v, char* b, size_t n);
+const char* lbl_key_hytera(void* v, char* b, size_t n);
 const char* lbl_m17_user_data(void* v, char* b, size_t n);
 
 // DSP labels (USE_RTLSDR only)

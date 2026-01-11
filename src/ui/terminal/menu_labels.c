@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -797,6 +797,39 @@ lbl_lrrp_current(void* vctx, char* b, size_t n) {
 }
 
 // ---- Keys labels ----
+
+const char*
+lbl_key_force_bp(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    const int on = (c && c->state && c->state->M == 1);
+    snprintf(b, n, "Force BP/Scr Priority [%s]", on ? "Active" : "Inactive");
+    return b;
+}
+
+const char*
+lbl_key_hytera(void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->state) {
+        snprintf(b, n, "Hytera Privacy (HEX)");
+        return b;
+    }
+    const dsd_state* s = c->state;
+    const int loaded = (s->H != 0ULL && s->tyt_bp == 0);
+    if (!loaded) {
+        snprintf(b, n, "Hytera Privacy (HEX)");
+        return b;
+    }
+    const char* kind = "set";
+    if (s->K2 == 0ULL && s->K3 == 0ULL && s->K4 == 0ULL) {
+        kind = "40-bit";
+    } else if (s->K3 == 0ULL && s->K4 == 0ULL) {
+        kind = "128-bit";
+    } else {
+        kind = "256-bit";
+    }
+    snprintf(b, n, "Hytera Privacy (HEX) [%s]", kind);
+    return b;
+}
 
 const char*
 lbl_m17_user_data(void* v, char* b, size_t n) {

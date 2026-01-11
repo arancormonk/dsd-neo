@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
@@ -406,6 +406,7 @@ cb_hytera_step(void* u, const char* text) {
     } p = {hc->H, hc->K1, hc->K2, hc->K3, hc->K4};
 
     ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
+    ui_statusf("Hytera key set");
     free(hc);
 }
 
