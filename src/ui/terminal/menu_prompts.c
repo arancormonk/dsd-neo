@@ -238,7 +238,9 @@ ui_prompt_handle_key(int ch) {
     if (ch == ERR) {
         return 1;
     }
-    if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q') {
+    // Prompts must allow any printable characters (including 'q') so users can
+    // type filenames like "iq.bin" without accidentally cancelling.
+    if (ch == DSD_KEY_ESC) {
         void (*cb)(void*, const char*) = g_prompt.on_done_str;
         void* up = g_prompt.user;
         // Close first so callbacks can safely open a new prompt.
@@ -315,7 +317,7 @@ ui_prompt_render(void) {
     box(win, 0, 0);
     mvwprintw(win, 1, 2, "%s", title);
     mvwprintw(win, 3, 2, "> %s", g_prompt.buf ? g_prompt.buf : "");
-    mvwprintw(win, h - 2, 2, "Enter=OK  Esc/q=Cancel");
+    mvwprintw(win, h - 2, 2, "Enter=OK  Esc=Cancel");
     wnoutrefresh(win);
 }
 
