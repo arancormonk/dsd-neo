@@ -108,10 +108,13 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
         // P25P1 CC: 4800 sym/s
         state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
         state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        /* Default CC is C4FM unless user requested CQPSK (-mq) */
+        state->rf_mod = (opts && opts->mod_qpsk == 1) ? 1 : 0;
     } else {
         // P25P2 TDMA CC: 6000 sym/s
         state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
         state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        state->rf_mod = 1;
     }
 }
 
@@ -131,6 +134,27 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
     if (!opts || !state || freq <= 0) {
         return;
     }
+
+    /* Trunking (P25): the SM sets state->rf_mod based on the grant (0=C4FM FDMA,
+     * 1=QPSK family for TDMA/CQPSK). For mixed P25P1 C4FM CC + P25P2 TDMA voice,
+     * we must also switch the RTL demod chain. Otherwise we end up slicing a
+     * C4FM discriminator stream as if it were CQPSK symbols (or vice versa),
+     * which manifests as choppy/garbled P25P2 audio on non-simulcast systems.
+     *
+     * Respect explicit CQPSK forcing via runtime config/env (DSD_NEO_CQPSK). */
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->p25_trunk == 1) {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (!cfg) {
+            dsd_neo_config_init(opts);
+            cfg = dsd_neo_get_config();
+        }
+        int want_cqpsk = (state->rf_mod == 1) ? 1 : 0;
+        if (!(cfg && cfg->cqpsk_is_set)) {
+            rtl_stream_toggle_cqpsk(want_cqpsk);
+        }
+    }
+#endif
 
     // Reset modulation auto-detect state (ham tracking, vote counters) to ensure
     // fresh acquisition on the new channel and avoid carrying stale decisions.
@@ -259,6 +283,19 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
         SetFreq(opts->rigctl_sockfd, freq);
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RTLSDR
+        /* Select DSP chain for control channel (C4FM vs QPSK family) unless user forced CQPSK. */
+        if (opts->p25_trunk == 1) {
+            const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+            if (!cfg) {
+                dsd_neo_config_init(opts);
+                cfg = dsd_neo_get_config();
+            }
+            int want_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+            state->rf_mod = want_cqpsk ? 1 : 0;
+            if (!(cfg && cfg->cqpsk_is_set)) {
+                rtl_stream_toggle_cqpsk(want_cqpsk);
+            }
+        }
         // Set TED SPS for control channel BEFORE tuning so that demod_reset_on_retune()
         // (triggered by the controller thread after retune) uses the correct CC SPS,
         // not the stale VC override value.

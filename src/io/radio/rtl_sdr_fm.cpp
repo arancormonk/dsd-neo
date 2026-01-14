@@ -3718,6 +3718,7 @@ dsd_rtl_stream_get_iq_balance(void) {
 /* Coarse DSP feature toggles and snapshot */
 extern "C" void
 rtl_stream_toggle_cqpsk(int onoff) {
+    int was = demod.cqpsk_enable ? 1 : 0;
     demod.cqpsk_enable = onoff ? 1 : 0;
     if (demod.cqpsk_enable) {
         /* CQPSK Costas/differential stage assumes symbol-rate samples from
@@ -3731,9 +3732,21 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.mode_demod = &qpsk_differential_demod;
         demod.cqpsk_diff_prev_r = 1.0f;
         demod.cqpsk_diff_prev_j = 0.0f;
+        /* Ensure channel LPF profile matches QPSK family (P25 CQPSK/TDMA). */
+        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     } else {
         extern void dsd_fm_demod(struct demod_state*);
         demod.mode_demod = &dsd_fm_demod;
+        /* If we were using the P25 CQPSK channel LPF profile, revert to P25 C4FM.
+         * This avoids carrying a wide CQPSK cutoff into clean C4FM control channels. */
+        if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
+            demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+        }
+    }
+    /* If the demod family changed, request a Costas reset on the next retune.
+     * This keeps loop state consistent when switching between FM and CQPSK paths. */
+    if (demod.cqpsk_enable != was) {
+        demod.costas_reset_pending = 1;
     }
 }
 
