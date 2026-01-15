@@ -202,6 +202,8 @@ resetState(dsd_state* state) {
     // Reset P25 CC/system TDMA hints
     state->p25_cc_is_tdma = 0;
     state->p25_sys_is_tdma = 0;
+    state->p25_vc_cqpsk_pref = -1;
+    state->p25_vc_cqpsk_override = -1;
 
     // Reset P25 Group Affiliation table
     state->p25_ga_count = 0;

@@ -270,6 +270,11 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
+    ctx->vc_cqpsk_retry_done = 0;
+    if (state) {
+        /* Clear any stale one-shot VC CQPSK override from a previous attempt. */
+        state->p25_vc_cqpsk_override = -1;
+    }
 
     // Clear slot activity
     for (int s = 0; s < 2; s++) {
@@ -799,6 +804,18 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
             // Voice sync - update activity timestamp
             if (ctx->state == P25_SM_TUNED) {
                 ctx->t_voice_m = now_monotonic();
+#ifdef USE_RTLSDR
+                /* Learn which RTL CQPSK demod chain mode successfully acquired this TDMA VC.
+                 * Some P25p2 systems decode better with the legacy FM/QPSK slicer; others
+                 * require the OP25-style CQPSK+TED chain. */
+                if (opts && state && ctx->vc_is_tdma && opts->audio_in_type == AUDIO_IN_RTL) {
+                    int cqpsk = 0, fll = 0, ted = 0;
+                    dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
+                    if (ted) {
+                        state->p25_vc_cqpsk_pref = cqpsk ? 1 : 0;
+                    }
+                }
+#endif
             }
             break;
 
@@ -928,6 +945,38 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
                 // Never saw voice - check grant timeout
                 if (ctx->t_tune_m > 0.0) {
                     double dt_tune = now_m - ctx->t_tune_m;
+#ifdef USE_RTLSDR
+                    /* CQPSK fallback for P25p2 TDMA VCs (RTL input only):
+                     * If we don't see any voice activity soon after a TDMA grant,
+                     * retry once with the opposite CQPSK DSP chain setting. */
+                    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && ctx->vc_is_tdma
+                        && !ctx->vc_cqpsk_retry_done && dt_tune >= 0.8 && state->p25_vc_cqpsk_pref == -1) {
+                        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+                        if (!cfg) {
+                            dsd_neo_config_init(opts);
+                            cfg = dsd_neo_get_config();
+                        }
+                        if (!(cfg && cfg->cqpsk_is_set) && ctx->vc_freq_hz > 0) {
+                            int cqpsk = 0, fll = 0, ted = 0;
+                            dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
+                            int next = cqpsk ? 0 : 1;
+                            state->p25_vc_cqpsk_override = next;
+                            ctx->vc_cqpsk_retry_done = 1;
+                            /* Restart the tune timer for the retry to avoid immediate grant-timeout. */
+                            ctx->t_tune_m = now_m;
+                            ctx->t_voice_m = 0.0;
+                            for (int s = 0; s < 2; s++) {
+                                ctx->slots[s].voice_active = 0;
+                                ctx->slots[s].last_active_m = 0.0;
+                            }
+                            int ted_sps = p25_ted_sps_for_bw(opts, 6000);
+                            state->samplesPerSymbol = ted_sps;
+                            state->symbolCenter = dsd_opts_symbol_center(ted_sps);
+                            dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
+                            sm_log(opts, state, next ? "cqpsk-retry-on" : "cqpsk-retry-off");
+                        }
+                    }
+#endif
                     if (dt_tune >= grant_timeout) {
                         // No voice seen within timeout - return to CC
                         do_release(ctx, opts, state, "grant-timeout");

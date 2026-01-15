@@ -688,6 +688,9 @@ initState(dsd_state* state) {
     state->p25_p2_enc_pending_ttg[1] = 0;
     state->p25_cc_is_tdma =
         2; //init on 2, TSBK NET_STS will set 0, TDMA NET_STS will set 1. //used to determine if we need to change symbol rate when cc hunting
+    state->p25_sys_is_tdma = 0;
+    state->p25_vc_cqpsk_pref = -1;
+    state->p25_vc_cqpsk_override = -1;
 
     //experimental symbol file capture read throttle
     state->symbol_throttle = 100; //throttle speed

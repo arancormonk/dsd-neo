@@ -627,6 +627,17 @@ struct dsd_state {
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)
     int p25_sys_is_tdma; // system hint: 1 when P25p2 voice observed (TDMA present)
 
+    /* P25 trunk (RTL): CQPSK DSP chain selection for TDMA voice channels.
+     *
+     * - p25_vc_cqpsk_pref: learned preference (-1=unknown/auto, 0=force off (legacy FM/QPSK slicer),
+     *   1=force on (OP25-style CQPSK+TED chain))
+     * - p25_vc_cqpsk_override: one-shot retry override applied on next VC tune (-1=none).
+     *
+     * These are ignored when the user explicitly forces CQPSK via env/config (DSD_NEO_CQPSK).
+     */
+    int p25_vc_cqpsk_pref;
+    int p25_vc_cqpsk_override;
+
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;
     double p25_cc_eval_start_m;
