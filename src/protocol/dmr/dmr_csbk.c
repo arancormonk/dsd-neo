@@ -2924,9 +2924,11 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     uint16_t site = 0;
 
     //DMR Location Area - DMRLA
-    uint16_t sub_mask = 0x1;
-    //tiny n 1-3; small 1-5; large 1-8; huge 1-10
-    uint16_t n = 1; //The minimum value of DMRLA is normally ≥ 1, 0 is reserved
+    // DMRLA split bit length (n). Default is 0 (no split) unless user overrides via -D.
+    // tiny: site_bits=3 (n 1-3); small: site_bits=5 (n 1-5); large: site_bits=8 (n 1-8); huge: site_bits=10 (n 1-10)
+    uint16_t site_bits = 0;
+    uint16_t n = 0;
+    uint16_t sub_mask = 0;
 
     char model_str[8];
     char par_str[8]; //category A, B, AB, or reserved
@@ -2939,25 +2941,25 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
         net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 9);
         site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[51], 3);
         sprintf(model_str, "%s", "Tiny");
-        n = 3;
+        site_bits = 3;
     } else if (model == 1) //Small
     {
         net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 7);
         site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[49], 5);
         sprintf(model_str, "%s", "Small");
-        n = 5;
+        site_bits = 5;
     } else if (model == 2) //Large
     {
         net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 4);
         site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[46], 8);
         sprintf(model_str, "%s", "Large");
-        n = 8;
+        site_bits = 8;
     } else if (model == 3) //Huge
     {
         net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 2);
         site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[44], 10);
         sprintf(model_str, "%s", "Huge");
-        n = 10;
+        site_bits = 10;
     }
 
     //honestly can't say that this is accurate, just a guess
@@ -2965,8 +2967,11 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     if (csbk_fid == 0x10) {
         n = 0;
         is_capmax = 1;
-        opts->dmr_dmrla_is_set = 1;
-        opts->dmr_dmrla_n = 0;
+        // Preserve explicit -D override; otherwise default to "no split".
+        if (opts->dmr_dmrla_is_set == 0) {
+            opts->dmr_dmrla_is_set = 1;
+            opts->dmr_dmrla_n = 0;
+        }
         sprintf(state->dmr_branding, "%s", "Motorola");
         // sprintf (state->dmr_branding_sub, "%s", "CapMax ");
     }
@@ -2975,39 +2980,10 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
         n = opts->dmr_dmrla_n;
     }
 
-    if (n == 0) {
-        sub_mask = 0x0;
+    if (n > site_bits) {
+        n = site_bits;
     }
-    if (n == 1) {
-        sub_mask = 0x1;
-    }
-    if (n == 2) {
-        sub_mask = 0x3;
-    }
-    if (n == 3) {
-        sub_mask = 0x7;
-    }
-    if (n == 4) {
-        sub_mask = 0xF;
-    }
-    if (n == 5) {
-        sub_mask = 0x1F;
-    }
-    if (n == 6) {
-        sub_mask = 0x3F;
-    }
-    if (n == 7) {
-        sub_mask = 0x7F;
-    }
-    if (n == 8) {
-        sub_mask = 0xFF;
-    }
-    if (n == 9) {
-        sub_mask = 0x1FF;
-    }
-    if (n == 10) {
-        sub_mask = 0x3FF;
-    }
+    sub_mask = (n == 0) ? 0U : (uint16_t)((1U << n) - 1U);
 
     uint8_t par = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[54], 2);
     if (par == 1) {
@@ -3023,11 +2999,10 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
 
     if (type == 0) {
-        //considering not adding a +1 to these values (will need to consult the docs first)
-        //TODO: Change SLC to mirror this output format
+        // Display Net/Site as decoded; only split Site into site.location_area when n != 0.
         if (n != 0) {
-            fprintf(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, net + 1,
-                    (site >> n) + 1, (site & sub_mask) + 1, par_str);
+            fprintf(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Cat: %s;", model_str, net, (site >> n),
+                    (site & sub_mask), par_str);
         } else {
             fprintf(stderr, " C_ALOHA_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", model_str, net, site);
         }
@@ -3073,8 +3048,8 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
         // if (n != 0) sprintf (state->dmr_site_parms, "TIII - %s %d-%d.%d; SYS: %04X; ", model_str, net+1, (site>>n)+1, (site & sub_mask)+1, syscode );
         // else sprintf (state->dmr_site_parms, "TIII - %s %d-%d; SYS: %04X; ", model_str, net, site, syscode);
         if (n != 0) {
-            sprintf(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net + 1, (site >> n) + 1,
-                    (site & sub_mask) + 1, syscode);
+            sprintf(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net, (site >> n), (site & sub_mask),
+                    syscode);
         } else {
             sprintf(state->dmr_site_parms, "TIII %s:%d-%d;%04X; ", model_str, net, site, syscode);
         }
@@ -3083,8 +3058,8 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
     if (type == 1) {
         //NOTE: I just wrote bparms1 into the area where syscode is when it is an adj_site (or votenow site)
         if (n != 0) {
-            fprintf(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, net + 1, (site >> n) + 1,
-                    (site & sub_mask) + 1); //par_string available here?
+            fprintf(stderr, " %s; Net ID: %d; Site ID: %d.%d;", model_str, net, (site >> n),
+                    (site & sub_mask)); //par_string available here?
         } else {
             fprintf(stderr, " %s; Net ID: %d; Site ID: %d;", model_str, net, site);
         }

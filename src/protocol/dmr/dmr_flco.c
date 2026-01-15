@@ -1227,12 +1227,11 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     }
 
     //DMR Location Area - DMRLA - should probably be state variables so we can use this in both slc and csbk
-    uint16_t sub_mask = 0x1;
-    //tiny n 1-3; small 1-5; large 1-8; huge 1-10
-    uint16_t n = 1; //The minimum value of DMRLA is normally ≥ 1, 0 is reserved
-
-    //TODO: Add logic to set n and sub_mask values for DMRLA
-    //assigning n as largest possible value for model type
+    // DMRLA split bit length (n). Default is 0 (no split) unless user overrides via -D.
+    // tiny: site_bits=3 (n 1-3); small: site_bits=5 (n 1-5); large: site_bits=8 (n 1-8); huge: site_bits=10 (n 1-10)
+    uint16_t site_bits = 0;
+    uint16_t n = 0;
+    uint16_t sub_mask = 0;
 
     //Sys_Parms
     if (slco == 0x2 || slco == 0x3) {
@@ -1241,64 +1240,35 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
             net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 9);
             site = (uint16_t)ConvertBitIntoBytes(&slco_bits[15], 3);
             sprintf(model_str, "%s", "Tiny");
-            n = 3;
+            site_bits = 3;
         } else if (model == 1) //Small
         {
             net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 7);
             site = (uint16_t)ConvertBitIntoBytes(&slco_bits[13], 5);
             sprintf(model_str, "%s", "Small");
-            n = 5;
+            site_bits = 5;
         } else if (model == 2) //Large
         {
             net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 4);
             site = (uint16_t)ConvertBitIntoBytes(&slco_bits[10], 8);
             sprintf(model_str, "%s", "Large");
-            n = 8;
+            site_bits = 8;
         } else if (model == 3) //Huge
         {
             net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 2);
             site = (uint16_t)ConvertBitIntoBytes(&slco_bits[8], 10);
             sprintf(model_str, "%s", "Huge");
-            n = 10;
+            site_bits = 10;
         }
 
         if (opts->dmr_dmrla_is_set == 1) {
             n = opts->dmr_dmrla_n;
         }
 
-        if (n == 0) {
-            sub_mask = 0x0;
+        if (n > site_bits) {
+            n = site_bits;
         }
-        if (n == 1) {
-            sub_mask = 0x1;
-        }
-        if (n == 2) {
-            sub_mask = 0x3;
-        }
-        if (n == 3) {
-            sub_mask = 0x7;
-        }
-        if (n == 4) {
-            sub_mask = 0xF;
-        }
-        if (n == 5) {
-            sub_mask = 0x1F;
-        }
-        if (n == 6) {
-            sub_mask = 0x3F;
-        }
-        if (n == 7) {
-            sub_mask = 0x7F;
-        }
-        if (n == 8) {
-            sub_mask = 0xFF;
-        }
-        if (n == 9) {
-            sub_mask = 0x1FF;
-        }
-        if (n == 10) {
-            sub_mask = 0x3FF;
-        }
+        sub_mask = (n == 0) ? 0U : (uint16_t)((1U << n) - 1U);
     }
 
     //Con+
@@ -1324,8 +1294,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     {
         uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
         if (n != 0) {
-            fprintf(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Reg Req: %d; CSC: %d;", model_str,
-                    net + 1, (site >> n) + 1, (site & sub_mask) + 1, reg, csc);
+            fprintf(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Reg Req: %d; CSC: %d;", model_str, net,
+                    (site >> n), (site & sub_mask), reg, csc);
         } else {
             fprintf(stderr, " SLC_C_SYS_PARMS: %s; Net ID: %d; Site ID: %d; Reg Req: %d;", model_str, net, site, reg);
         }
@@ -1335,8 +1305,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         // if (n != 0) sprintf (state->dmr_site_parms, "TIII - %s %d-%d.%d; SYS: %04X; ", model_str, net+1, (site>>n)+1, (site & sub_mask)+1, syscode );
         // else sprintf (state->dmr_site_parms, "TIII - %s %d-%d; SYS: %04X; ", model_str, net, site, syscode);
         if (n != 0) {
-            sprintf(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net + 1, (site >> n) + 1,
-                    (site & sub_mask) + 1, syscode);
+            sprintf(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net, (site >> n), (site & sub_mask),
+                    syscode);
         } else {
             sprintf(state->dmr_site_parms, "TIII %s:%d-%d;%04X; ", model_str, net, site, syscode);
         }
@@ -1354,8 +1324,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     {
         uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
         if (n != 0) {
-            fprintf(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Comp CC: %d;", model_str, net + 1,
-                    (site >> n) + 1, (site & sub_mask) + 1, reg);
+            fprintf(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d.%d; Comp CC: %d;", model_str, net,
+                    (site >> n), (site & sub_mask), reg);
         } else {
             fprintf(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %d; Site ID: %d;", model_str, net, site);
         }
@@ -1365,8 +1335,8 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         // if (n != 0) sprintf (state->dmr_site_parms, "TIII - %s %d-%d.%d; SYS: %04X; ", model_str, net+1, (site>>n)+1, (site & sub_mask)+1, syscode );
         // else sprintf (state->dmr_site_parms, "TIII - %s %d-%d; SYS: %04X; ", model_str, net, site, syscode);
         if (n != 0) {
-            sprintf(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net + 1, (site >> n) + 1,
-                    (site & sub_mask) + 1, syscode);
+            sprintf(state->dmr_site_parms, "TIII %s:%d-%d.%d;%04X; ", model_str, net, (site >> n), (site & sub_mask),
+                    syscode);
         } else {
             sprintf(state->dmr_site_parms, "TIII %s:%d-%d;%04X; ", model_str, net, site, syscode);
         }
