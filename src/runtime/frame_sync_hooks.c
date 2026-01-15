@@ -45,3 +45,11 @@ dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state) {
     }
     g_frame_sync_hooks.no_carrier(opts, state);
 }
+
+void
+dsd_frame_sync_hook_rf_mod_changed(dsd_opts* opts, dsd_state* state) {
+    if (!g_frame_sync_hooks.rf_mod_changed) {
+        return;
+    }
+    g_frame_sync_hooks.rf_mod_changed(opts, state);
+}

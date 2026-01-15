@@ -46,7 +46,6 @@
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
-#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -56,7 +55,6 @@
 #if DSD_PLATFORM_POSIX
 #include <unistd.h>
 #endif
-#include <vector>
 
 #ifdef __cplusplus
 extern "C" {
@@ -225,6 +223,10 @@ struct controller_state controller;
 static struct input_ring_state input_ring;
 /* Controller can request a ring purge; consumer/demod performs the discard safely. */
 static std::atomic<int> g_ring_purge_pending{0};
+/* Consumer (decoder thread) can request discarding pending output samples.
+ * Used when switching demod families (FM audio-rate ↔ CQPSK symbol-rate) so we
+ * don't interpret stale audio as symbols (or vice versa). */
+static std::atomic<int> g_output_purge_pending{0};
 
 struct RtlSdrInternals {
     struct rtl_device* device;
@@ -3377,6 +3379,17 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, dsd_state* state) 
         rtl_device_set_ppm(rtl_device_handle, dongle.ppm_error);
     }
 
+    /* If the demod family just switched (FM audio-rate ↔ CQPSK symbol-rate),
+     * discard any buffered output so consumers don't interpret stale samples. */
+    if (g_output_purge_pending.exchange(0, std::memory_order_acq_rel)) {
+        size_t h = output.head.load(std::memory_order_acquire);
+        output.tail.store(h, std::memory_order_release);
+        /* Wake the producer if it was blocked on space. */
+        dsd_mutex_lock(&output.ready_m);
+        dsd_cond_signal(&output.space);
+        dsd_mutex_unlock(&output.ready_m);
+    }
+
     int got = ring_read_batch(&output, out, count);
     if (got <= 0) {
         return -1;
@@ -3747,6 +3760,9 @@ rtl_stream_toggle_cqpsk(int onoff) {
      * This keeps loop state consistent when switching between FM and CQPSK paths. */
     if (demod.cqpsk_enable != was) {
         demod.costas_reset_pending = 1;
+        /* Flush any buffered output so consumers don't misinterpret stale samples
+         * across the audio-rate ↔ symbol-rate boundary. */
+        g_output_purge_pending.store(1, std::memory_order_release);
     }
 }
 
