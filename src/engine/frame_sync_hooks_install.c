@@ -26,11 +26,6 @@ dsd_engine_frame_sync_rf_mod_changed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
-    /* Trunked voice channels own CQPSK DSP selection (incl. retry logic).
-     * Avoid overriding the trunk tuning decision mid-call. */
-    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) {
-        return;
-    }
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
