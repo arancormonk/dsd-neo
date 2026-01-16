@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 
+#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -427,23 +428,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                         best_ham = ham_gfsk;
                         best_mod = 2;
                     }
-#ifdef USE_RTLSDR
-                    /*
-                     * P25 tie-breaker (RTL only):
-                     *
-                     * P25 C4FM and P25 CQPSK share the same dibit sync pattern, so the
-                     * Hamming-distance heuristic cannot distinguish them and will often
-                     * tie. Historically this caused us to stick with the default C4FM
-                     * demod forever.
-                     *
-                     * When P25 is enabled and we have a strong P25-like sync match, bias
-                     * toward QPSK/CQPSK so simulcast/LSM systems can acquire reliably.
-                     */
-                    if (qpsk_enabled && opts->audio_in_type == AUDIO_IN_RTL && best_mod == 0 && ham_qpsk == best_ham
-                        && best_ham <= 3) {
-                        best_mod = 1;
-                    }
-#endif
 
                     /* Strong sync match (ham ≤ 3): use that modulation */
                     if (best_ham <= 3) {
@@ -511,8 +495,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     atomic_store(&g_ham_c4fm_recent, 24);
                     atomic_store(&g_ham_qpsk_recent, 24);
                     atomic_store(&g_ham_gfsk_recent, 24);
-                    /* Notify runtime/engine about rf_mod change (side effects live outside DSP). */
-                    dsd_frame_sync_hook_rf_mod_changed(opts, state);
+                    /* Manual-only DSP: avoid automatic toggling here. */
                 }
             } /* end !mod_cli_lock */
         } else {

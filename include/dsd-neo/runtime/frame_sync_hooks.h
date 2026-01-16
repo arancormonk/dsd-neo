@@ -25,8 +25,6 @@ typedef struct {
     void (*p25_sm_on_release)(dsd_opts* opts, dsd_state* state);
     void (*eot_cc)(dsd_opts* opts, dsd_state* state);
     void (*no_carrier)(dsd_opts* opts, dsd_state* state);
-    /* Notification that DSP frame-sync changed rf_mod (e.g., C4FM<->QPSK). */
-    void (*rf_mod_changed)(dsd_opts* opts, dsd_state* state);
 } dsd_frame_sync_hooks;
 
 void dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks);
@@ -35,7 +33,6 @@ void dsd_frame_sync_hook_p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_p25_sm_on_release(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_eot_cc(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state);
-void dsd_frame_sync_hook_rf_mod_changed(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
