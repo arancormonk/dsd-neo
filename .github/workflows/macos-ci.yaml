@@ -47,7 +47,7 @@ jobs:
           echo "DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Restore dependency cache
-        uses: actions/cache@v5.0.1
+        uses: actions/cache@v5.0.2
         with:
           path: ${{ env.DEPS_PREFIX }}
           key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -80,7 +80,7 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Restore ccache
-        uses: actions/cache@v5.0.1
+        uses: actions/cache@v5.0.2
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.sha }}
