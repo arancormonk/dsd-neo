@@ -87,7 +87,7 @@ jobs:
           mkdir -p "${APPIMAGE_DEPS_DIR}" "${APPIMAGE_CCACHE_DIR}"
 
       - name: Restore AppImage dependency cache
-        uses: actions/cache@v5.0.1
+        uses: actions/cache@v5.0.2
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
           key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -95,7 +95,7 @@ jobs:
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Restore AppImage ccache
-        uses: actions/cache@v5.0.1
+        uses: actions/cache@v5.0.2
         with:
           path: ${{ env.APPIMAGE_CCACHE_DIR }}
           key: ccache-${{ runner.os }}-appimage-${{ matrix.arch }}-${{ github.sha }}
