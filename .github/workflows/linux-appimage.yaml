@@ -26,7 +26,7 @@ jobs:
       APPIMAGE_CCACHE_DIR: ${{ github.workspace }}/.ccache/appimage-${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.1
+        uses: actions/checkout@v6.0.2
       - name: Login to Docker Hub (optional)
         # Only run on trusted contexts (not forked PRs), otherwise the
         # `secrets` context is unavailable and would error.
