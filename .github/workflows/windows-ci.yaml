@@ -45,8 +45,9 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11.5
         with:
-          # run-vcpkg v11.5 requires a full 40-char SHA1; update as needed.
-          vcpkgGitCommitId: "b5b449f0bb37fbad60171245eb323e08e892e8d7"
+          # run-vcpkg v11.5 requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "66c0373dc7fca549e5803087b9487edfe3aca0a1"
 
       - name: Install vcpkg dependencies (MSVC)
         shell: pwsh
@@ -220,8 +221,9 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11.5
         with:
-          # run-vcpkg v11.5 requires a full 40-char SHA1; update as needed.
-          vcpkgGitCommitId: "b5b449f0bb37fbad60171245eb323e08e892e8d7"
+          # run-vcpkg v11.5 requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "66c0373dc7fca549e5803087b9487edfe3aca0a1"
 
       - name: Install vcpkg dependencies (MinGW)
         shell: msys2 {0}
