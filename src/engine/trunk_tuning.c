@@ -34,6 +34,9 @@
  */
 void
 dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
     // Audio drain is handled by dsd_engine_trunk_tune_to_cc() before the hardware retune.
 
     // Extra safeguards due to sync issues with NXDN
@@ -82,39 +85,46 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
     // Avoid sending a zero/unknown frequency to the tuner which can wedge the
     // pipeline at DC and delay CC hunting.
     long int cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
-    if (opts->p25_trunk == 1 && cc != 0) {
-        // Compute CC TED SPS dynamically based on actual demodulator output rate.
-        // P25P1 CC = 4800 sym/s, P25P2 TDMA CC = 6000 sym/s.
-        int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+    int trunk_enabled = (opts->trunk_enable == 1 || opts->p25_trunk == 1);
+    if (trunk_enabled && cc != 0) {
+        int cc_sps = 0;
+        /* Only apply P25-specific CC SPS override when we actually have a P25 CC.
+           For non-P25 (e.g., DMR Tier III), leave CC SPS selection to the normal
+           demod path to avoid forcing P25 assumptions on return-to-CC. */
+        if (state->p25_cc_freq != 0) {
+            int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+            int demod_rate = 0;
+#ifdef USE_RTLSDR
+            if (state->rtl_ctx) {
+                demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+            }
+#endif
+            cc_sps = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
+        }
+        dsd_engine_trunk_tune_to_cc(opts, state, cc, cc_sps);
+    }
+
+    // Set symbol timing for CC based on CC type and actual demodulator rate.
+    // samplesPerSymbol is used by the legacy symbol slicer code.
+    if (state->p25_cc_freq != 0) {
         int demod_rate = 0;
 #ifdef USE_RTLSDR
         if (state->rtl_ctx) {
             demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
         }
 #endif
-        int cc_sps = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
-        dsd_engine_trunk_tune_to_cc(opts, state, cc, cc_sps);
-    }
-
-    // Set symbol timing for CC based on CC type and actual demodulator rate.
-    // samplesPerSymbol is used by the legacy symbol slicer code.
-    int demod_rate = 0;
-#ifdef USE_RTLSDR
-    if (state->rtl_ctx) {
-        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
-    }
-#endif
-    if (state->p25_cc_is_tdma == 0) {
-        // P25P1 CC: 4800 sym/s
-        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
-        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-        /* Default CC is C4FM unless user requested CQPSK (-mq) */
-        state->rf_mod = (opts && opts->mod_qpsk == 1) ? 1 : 0;
-    } else {
-        // P25P2 TDMA CC: 6000 sym/s
-        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
-        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-        state->rf_mod = 1;
+        if (state->p25_cc_is_tdma == 0) {
+            // P25P1 CC: 4800 sym/s
+            state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
+            state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+            /* Default CC is C4FM unless user requested CQPSK (-mq) */
+            state->rf_mod = (opts && opts->mod_qpsk == 1) ? 1 : 0;
+        } else {
+            // P25P2 TDMA CC: 6000 sym/s
+            state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
+            state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+            state->rf_mod = 1;
+        }
     }
 }
 

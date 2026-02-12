@@ -974,7 +974,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
     // Tune back to last known CC when using trunking after hangtime expires.
     // Use VC activity when currently tuned to a VC; otherwise use CC timer.
-    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
         double dt;
         if (opts->p25_is_tuned == 1) {
             // On a voice channel: gate return by recent voice activity
@@ -1032,6 +1032,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
                 }
 
                 opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
                 state->edacs_tuned_lcn = -1;
 
                 state->last_cc_sync_time = now;

@@ -965,6 +965,13 @@ target_include_directories(dsd-neo_test_dmr_t3_move_release PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_dmr_t3_move_release PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)
 
+# DMR Tier III regression: return-to-CC must work with trunk_enable only
+add_executable(dsd-neo_test_dmr_t3_return_to_cc_regression
+  protocol/dmr/test_dmr_t3_return_to_cc_regression.c
+  ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c)
+target_include_directories(dsd-neo_test_dmr_t3_return_to_cc_regression PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME DMR_T3_RETURN_TO_CC_REGRESSION COMMAND dsd-neo_test_dmr_t3_return_to_cc_regression)
+
 # DSP block tests
 add_executable(dsd-neo_test_dsp_halfband dsp/test_dsp_halfband.cpp)
 target_include_directories(dsd-neo_test_dsp_halfband PRIVATE ${PROJECT_SOURCE_DIR}/include)
