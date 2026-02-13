@@ -282,6 +282,13 @@ target_include_directories(dsd-neo_test_ui_hotkeys_regression PRIVATE ${PROJECT_
 target_link_libraries(dsd-neo_test_ui_hotkeys_regression PRIVATE dsd-neo_platform)
 add_test(NAME UI_HOTKEYS_REGRESSION COMMAND dsd-neo_test_ui_hotkeys_regression)
 
+add_executable(dsd-neo_test_ui_history_state
+  ui/test_ui_history_state.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_history.c)
+target_include_directories(dsd-neo_test_ui_history_state PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_ui_history_state PRIVATE dsd-neo_platform)
+add_test(NAME UI_HISTORY_STATE COMMAND dsd-neo_test_ui_history_state)
+
 add_executable(dsd-neo_test_runtime_freq_parse runtime/test_runtime_freq_parse.c)
 target_include_directories(dsd-neo_test_runtime_freq_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)

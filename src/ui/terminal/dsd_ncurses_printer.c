@@ -42,6 +42,7 @@
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <math.h>
 #include <stdarg.h>
@@ -146,22 +147,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
     uint8_t idas = 0;
     int level = 0;
-    int c = 0;
     int i = 0;
-
-    if (opts->audio_in_type != AUDIO_IN_STDIN) //can't run getch/menu when using STDIN -
-    {
-        c = getch(); // non-blocking (set once in ncursesOpen)
-        if (c == KEY_RESIZE) {
-#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
-            // PDCurses doesn't auto-update dimensions on resize.
-            resize_term(0, 0);
-#endif
-            // Force a full redraw on next refresh to avoid artifacts
-            clearok(stdscr, TRUE);
-            c = -1; // ignore as input
-        }
-    }
 
     // Defer overlay drawing to the end so it stays on top.
 
@@ -2419,6 +2405,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         attroff(COLOR_PAIR(3));
     }
     //only print event history if enabled
+    const int history_mode = ui_history_get_mode();
     attron(COLOR_PAIR(4)); //cyan for history
     {
         /* Custom header to underline active Cycle (h) mode */
@@ -2439,9 +2426,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             printw("Latest Event History ([|])  Slots 1+2 (\\)  Cycle (h): ");
         }
 
-        /* Underline the active cycle indicator based on opts->ncurses_history
+        /* Underline the active cycle indicator based on UI history mode
            0 = Off, 1 = Short, 2 = Long */
-        const int hist = opts->ncurses_history % 3;
+        const int hist = history_mode;
 
         if (hist == 1) {
             attron(A_UNDERLINE);
@@ -2484,7 +2471,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             addch('\n');
         }
     }
-    if (opts->ncurses_history != 0) {
+    if (history_mode != 0) {
         int rows = 0, cols = 0;
         getmaxyx(stdscr, rows, cols);
 
@@ -2507,7 +2494,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
         // In short mode, bound the displayed event string to the current width to avoid wrapping.
         uint16_t string_size = 71;
-        if (opts->ncurses_history == 2) {
+        if (history_mode == 2) {
             string_size = 1999;
         } else if (cols > 0) {
             int max_text = cols - 4; // "| " (2) + 2 cols of slack
@@ -2613,7 +2600,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 uint16_t idx1 = 1;
                 uint16_t skip = state->eh_index;
 
-                if (opts->ncurses_history != 2 && cols > 0) {
+                if (history_mode != 2 && cols > 0) {
                     int max_text = cols - (prefix_len + 2);
                     if (max_text < 0) {
                         max_text = 0;
@@ -2745,7 +2732,4 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     if (ui_menu_is_open()) {
         ui_menu_tick(opts, state);
     }
-
-    //handle input
-    ncurses_input_handler(opts, state, c);
 }

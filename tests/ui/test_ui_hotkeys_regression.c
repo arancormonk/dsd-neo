@@ -32,8 +32,9 @@ typedef struct {
 } UiPostCapture;
 
 static UiPostCapture g_cap;
-static int g_publish_opts_calls = 0;
 static int g_redraw_calls = 0;
+static int g_history_mode = 1;
+static int g_history_cycle_calls = 0;
 
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
@@ -52,14 +53,28 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
 }
 
 void
-ui_publish_opts_snapshot(const dsd_opts* opts) {
-    (void)opts;
-    g_publish_opts_calls++;
+ui_request_redraw(void) {
+    g_redraw_calls++;
+}
+
+int
+ui_history_get_mode(void) {
+    return g_history_mode;
 }
 
 void
-ui_request_redraw(void) {
-    g_redraw_calls++;
+ui_history_set_mode(int mode) {
+    g_history_mode = mode % 3;
+    if (g_history_mode < 0) {
+        g_history_mode += 3;
+    }
+}
+
+int
+ui_history_cycle_mode(void) {
+    g_history_cycle_calls++;
+    ui_history_set_mode(g_history_mode + 1);
+    return g_history_mode;
 }
 
 int
@@ -97,8 +112,9 @@ rtl_stream_spectrum_get_size(void) {
 static void
 cap_reset(void) {
     memset(&g_cap, 0, sizeof(g_cap));
-    g_publish_opts_calls = 0;
     g_redraw_calls = 0;
+    g_history_cycle_calls = 0;
+    g_history_mode = 1;
 }
 
 static uint32_t
@@ -119,14 +135,14 @@ main(void) {
     cap_reset();
     opts.ncurses_history = 1;
     assert(ncurses_input_handler(&opts, &state, DSD_KEY_HISTORY) == 1);
-    assert(opts.ncurses_history == 2);
+    assert(ui_history_get_mode() == 2);
     assert(g_cap.calls == 0);
-    assert(g_publish_opts_calls == 1);
+    assert(g_history_cycle_calls == 1);
     assert(g_redraw_calls == 1);
     assert(ncurses_input_handler(&opts, &state, DSD_KEY_HISTORY) == 1);
-    assert(opts.ncurses_history == 0);
+    assert(ui_history_get_mode() == 0);
     assert(g_cap.calls == 0);
-    assert(g_publish_opts_calls == 2);
+    assert(g_history_cycle_calls == 2);
     assert(g_redraw_calls == 2);
 
     /* 'k' should set hold from slot-1 TG when no hold is active. */

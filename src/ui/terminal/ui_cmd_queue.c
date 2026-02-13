@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
+#include <dsd-neo/ui/ui_history.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,8 +155,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             break;
         }
         case UI_CMD_HISTORY_CYCLE: {
-            opts->ncurses_history++;
-            opts->ncurses_history %= 3;
+            (void)ui_history_cycle_mode();
+            ui_request_redraw();
             break;
         }
         case UI_CMD_SLOT1_TOGGLE: {

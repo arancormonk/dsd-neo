@@ -19,6 +19,7 @@
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_history.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -51,12 +52,9 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         case DSD_KEY_MUTE_UPPER: ui_post_cmd(UI_CMD_TOGGLE_MUTE, NULL, 0); return 1;
         case DSD_KEY_COMPACT: ui_post_cmd(UI_CMD_TOGGLE_COMPACT, NULL, 0); return 1;
         case DSD_KEY_HISTORY:
-            // ncurses_history is UI-only; update immediately so the hotkey works
-            // even when the demod thread is temporarily blocked on input.
-            opts->ncurses_history = (opts->ncurses_history + 1) % 3;
-            // Renderer consumes opts snapshots, so publish immediately to avoid
-            // stale Short/Long/Off display when command draining lags.
-            ui_publish_opts_snapshot(opts);
+            // History mode is UI-owned state. Keep it off the shared opts path
+            // so key handling is deterministic under snapshot rendering.
+            (void)ui_history_cycle_mode();
             ui_request_redraw();
             return 1;
         case DSD_KEY_SLOT1_TOGGLE: ui_post_cmd(UI_CMD_SLOT1_TOGGLE, NULL, 0); return 1;

@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
+#include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_snapshot.h>
 
@@ -57,7 +58,7 @@ static DSD_THREAD_RETURN_TYPE
     const uint64_t frame_ns = 66ULL * 1000ULL * 1000ULL; // ~15 FPS cap
 
     while (!atomic_load(&g_ui_stop)) {
-        // Input + overlays handled in the UI thread when curses is ready.
+        // Input + overlays are single-owner in the UI thread.
         const dsd_opts* osnap = ui_get_latest_opts_snapshot();
         if (!osnap) {
             osnap = g_ui_opts;
@@ -136,6 +137,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
     ui_terminal_install_telemetry_hooks();
     g_ui_opts = opts;
     g_ui_state = state;
+    ui_history_set_mode(opts ? opts->ncurses_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {
