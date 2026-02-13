@@ -275,6 +275,13 @@ target_include_directories(dsd-neo_test_runtime_control_pump PRIVATE ${PROJECT_S
 target_link_libraries(dsd-neo_test_runtime_control_pump PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CONTROL_PUMP COMMAND dsd-neo_test_runtime_control_pump)
 
+add_executable(dsd-neo_test_ui_hotkeys_regression
+  ui/test_ui_hotkeys_regression.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/dsd_ncurses_handler.c)
+target_include_directories(dsd-neo_test_ui_hotkeys_regression PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_ui_hotkeys_regression PRIVATE dsd-neo_platform)
+add_test(NAME UI_HOTKEYS_REGRESSION COMMAND dsd-neo_test_ui_hotkeys_regression)
+
 add_executable(dsd-neo_test_runtime_freq_parse runtime/test_runtime_freq_parse.c)
 target_include_directories(dsd-neo_test_runtime_freq_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)

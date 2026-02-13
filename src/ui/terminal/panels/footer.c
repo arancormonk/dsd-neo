@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -13,8 +13,6 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/panels.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
 #include <dsd-neo/ui/ui_prims.h>
 
 void
@@ -40,8 +38,9 @@ ui_panel_footer_status_render(dsd_opts* opts, dsd_state* state) {
         attr_set(saved_attrs, saved_pair, NULL);
 #endif
     } else if (state->ui_msg_expire <= now && state->ui_msg[0] != '\0') {
-        // Clear stale message and sync canonical state via command queue
-        ui_post_cmd(UI_CMD_UI_MSG_CLEAR, NULL, 0);
+        // Clear only the UI snapshot copy here. Posting clear commands from the
+        // render loop can flood the queue if the demod thread is blocked.
         state->ui_msg[0] = '\0';
+        state->ui_msg_expire = 0;
     }
 }

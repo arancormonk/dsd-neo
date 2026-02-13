@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
 * dsd_ncurses_handler.c
@@ -11,6 +11,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -48,7 +49,11 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
         case DSD_KEY_MUTE_LOWER:
         case DSD_KEY_MUTE_UPPER: ui_post_cmd(UI_CMD_TOGGLE_MUTE, NULL, 0); return 1;
         case DSD_KEY_COMPACT: ui_post_cmd(UI_CMD_TOGGLE_COMPACT, NULL, 0); return 1;
-        case DSD_KEY_HISTORY: ui_post_cmd(UI_CMD_HISTORY_CYCLE, NULL, 0); return 1;
+        case DSD_KEY_HISTORY:
+            // ncurses_history is UI-only; update immediately so the hotkey works
+            // even when the demod thread is temporarily blocked on input.
+            opts->ncurses_history = (opts->ncurses_history + 1) % 3;
+            return 1;
         case DSD_KEY_SLOT1_TOGGLE: ui_post_cmd(UI_CMD_SLOT1_TOGGLE, NULL, 0); return 1;
         case DSD_KEY_SLOT2_TOGGLE: ui_post_cmd(UI_CMD_SLOT2_TOGGLE, NULL, 0); return 1;
         case DSD_KEY_SLOT_PREF: ui_post_cmd(UI_CMD_SLOT_PREF_CYCLE, NULL, 0); return 1;
@@ -68,13 +73,31 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
 
         case DSD_KEY_TOGGLE_P25GA: ui_post_cmd(UI_CMD_P25_GA_TOGGLE, NULL, 0); return 1;
         case DSD_KEY_TG_HOLD1: {
-            uint8_t s = 0;
-            ui_post_cmd(UI_CMD_TG_HOLD_TOGGLE, &s, sizeof s);
+            // Resolve target at keypress time to avoid races where the demod
+            // thread advances lasttg before queued command application.
+            uint32_t tg = 0;
+            if (state->tg_hold == 0) {
+                tg = (uint32_t)state->lasttg;
+                if (tg == 0 && (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)) {
+                    tg = (uint32_t)state->nxdn_last_tg;
+                } else if (tg == 0 && opts->frame_provoice == 1 && state->ea_mode == 0) {
+                    tg = (uint32_t)state->lastsrc;
+                }
+            }
+            ui_post_cmd(UI_CMD_TG_HOLD_SET, &tg, sizeof tg);
             return 1;
         }
         case DSD_KEY_TG_HOLD2: {
-            uint8_t s = 1;
-            ui_post_cmd(UI_CMD_TG_HOLD_TOGGLE, &s, sizeof s);
+            uint32_t tg = 0;
+            if (state->tg_hold == 0) {
+                tg = (uint32_t)state->lasttgR;
+                if (tg == 0 && (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)) {
+                    tg = (uint32_t)state->nxdn_last_tg;
+                } else if (tg == 0 && opts->frame_provoice == 1 && state->ea_mode == 0) {
+                    tg = (uint32_t)state->lastsrcR;
+                }
+            }
+            ui_post_cmd(UI_CMD_TG_HOLD_SET, &tg, sizeof tg);
             return 1;
         }
 
