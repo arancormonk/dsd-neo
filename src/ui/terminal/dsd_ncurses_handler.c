@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
@@ -53,6 +54,10 @@ ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
             // ncurses_history is UI-only; update immediately so the hotkey works
             // even when the demod thread is temporarily blocked on input.
             opts->ncurses_history = (opts->ncurses_history + 1) % 3;
+            // Renderer consumes opts snapshots, so publish immediately to avoid
+            // stale Short/Long/Off display when command draining lags.
+            ui_publish_opts_snapshot(opts);
+            ui_request_redraw();
             return 1;
         case DSD_KEY_SLOT1_TOGGLE: ui_post_cmd(UI_CMD_SLOT1_TOGGLE, NULL, 0); return 1;
         case DSD_KEY_SLOT2_TOGGLE: ui_post_cmd(UI_CMD_SLOT2_TOGGLE, NULL, 0); return 1;

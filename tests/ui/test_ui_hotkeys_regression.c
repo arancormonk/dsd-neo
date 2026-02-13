@@ -32,6 +32,8 @@ typedef struct {
 } UiPostCapture;
 
 static UiPostCapture g_cap;
+static int g_publish_opts_calls = 0;
+static int g_redraw_calls = 0;
 
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
@@ -47,6 +49,17 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     }
     g_cap.calls++;
     return 0;
+}
+
+void
+ui_publish_opts_snapshot(const dsd_opts* opts) {
+    (void)opts;
+    g_publish_opts_calls++;
+}
+
+void
+ui_request_redraw(void) {
+    g_redraw_calls++;
 }
 
 int
@@ -84,6 +97,8 @@ rtl_stream_spectrum_get_size(void) {
 static void
 cap_reset(void) {
     memset(&g_cap, 0, sizeof(g_cap));
+    g_publish_opts_calls = 0;
+    g_redraw_calls = 0;
 }
 
 static uint32_t
@@ -106,9 +121,13 @@ main(void) {
     assert(ncurses_input_handler(&opts, &state, DSD_KEY_HISTORY) == 1);
     assert(opts.ncurses_history == 2);
     assert(g_cap.calls == 0);
+    assert(g_publish_opts_calls == 1);
+    assert(g_redraw_calls == 1);
     assert(ncurses_input_handler(&opts, &state, DSD_KEY_HISTORY) == 1);
     assert(opts.ncurses_history == 0);
     assert(g_cap.calls == 0);
+    assert(g_publish_opts_calls == 2);
+    assert(g_redraw_calls == 2);
 
     /* 'k' should set hold from slot-1 TG when no hold is active. */
     cap_reset();
