@@ -156,7 +156,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             // Early CC anchor: if trunking and not voice-tuned and CC unknown,
             // set CC from current tuner so follower has a target.
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
+                && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
@@ -167,6 +168,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 }
                 if (ccfreq != 0) {
                     state->p25_cc_freq = ccfreq;
+                    state->trunk_cc_freq = ccfreq;
                 }
             }
             break;
@@ -175,7 +177,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         case 0x1A:
             NXDN_decode_cch_info(opts, state, ElementsContent);
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
+                && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
@@ -186,6 +189,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 }
                 if (ccfreq != 0) {
                     state->p25_cc_freq = ccfreq;
+                    state->trunk_cc_freq = ccfreq;
                 }
             }
             break;
@@ -194,7 +198,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
         case 0x18:
             NXDN_decode_site_info(opts, state, ElementsContent);
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
+                && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
@@ -205,6 +210,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 }
                 if (ccfreq != 0) {
                     state->p25_cc_freq = ccfreq;
+                    state->trunk_cc_freq = ccfreq;
                 }
             }
             break;
@@ -214,7 +220,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             NXDN_decode_adj_site(opts, state, ElementsContent);
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
             // Adjacent site info often originates from CC. Apply the same anchor.
-            if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && state->p25_cc_freq == 0) {
+            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && opts->trunk_is_tuned == 0
+                && state->p25_cc_freq == 0) {
                 long int ccfreq = 0;
                 if (opts->use_rigctl == 1) {
                     ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
@@ -225,6 +232,7 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                 }
                 if (ccfreq != 0) {
                     state->p25_cc_freq = ccfreq;
+                    state->trunk_cc_freq = ccfreq;
                 }
             }
             break;
@@ -251,10 +259,12 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
             // #else
 
             //tune back to CC here - save about 1-2 seconds
-            if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq != 0
+                && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
                 // Use centralized io/control tuning API
                 dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
                 opts->p25_is_tuned = 0;
+                opts->trunk_is_tuned = 0;
 
                 // NXDN-specific state cleanup
                 memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
@@ -695,7 +705,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
     }
 
     //check for control channel frequency in the channel map if not available
-    if (opts->p25_trunk == 1 && state->p25_cc_freq == 0) {
+    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && state->p25_cc_freq == 0 && opts->trunk_is_tuned == 0) {
         long int ccfreq = 0;
 
         //if not available, then poll rigctl if its available
@@ -703,6 +713,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
         //if using rtl input, we can ask for the current frequency tuned
@@ -710,6 +721,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             ccfreq = (long int)opts->rtlsdr_center_freq;
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
     }
@@ -1023,6 +1035,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
         if (state->trunk_lcn_freq[0] == 0 && freq1 != 0) {
             state->trunk_lcn_freq[0] = freq1;
             state->p25_cc_freq = freq1;
+            state->trunk_cc_freq = freq1;
             state->lcn_freq_count = 1;
         }
     }
@@ -1058,8 +1071,8 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
 
     //poll for current frequency, will always be the control channel
     //this PDU is constantly pumped out on the CC CAC Message
-    if (opts->p25_trunk == 1
-        && opts->p25_is_tuned
+    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1)
+        && opts->trunk_is_tuned
                == 0) //changed this so the rtl tuning lag doesn't set RTCH frequency after tuning but before landing
     {
         long int ccfreq = 0;
@@ -1068,6 +1081,7 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
         //if using rtl input, we can ask for the current frequency tuned
@@ -1077,6 +1091,7 @@ NXDN_decode_srv_info(dsd_opts* opts, dsd_state* state, uint8_t* Message) {
             ccfreq = (long int)opts->rtlsdr_center_freq;
             if (ccfreq != 0) {
                 state->p25_cc_freq = ccfreq;
+                state->trunk_cc_freq = ccfreq;
             }
         }
     }
@@ -1846,8 +1861,10 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, uint8_t* Message, uint8_t dir
                 if (state->trunk_chan_map[31] != 0) {
                     state->p25_cc_freq =
                         state->trunk_chan_map[31]; //user provided channel to go to for '31' -- may change to 0 later?
+                    state->trunk_cc_freq = state->p25_cc_freq;
                 } else if (state->trunk_chan_map[rep2] != 0) {
                     state->p25_cc_freq = state->trunk_chan_map[rep2]; //rep2 is home repeater under this message
+                    state->trunk_cc_freq = state->p25_cc_freq;
                 }
 
                 //run group/tgt analysis and tune if available/desired

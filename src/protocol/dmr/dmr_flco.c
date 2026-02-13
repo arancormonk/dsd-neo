@@ -491,7 +491,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
             }
 
             //update cc amd vc sync time for trunking purposes (particularly Con+)
-            if (opts->p25_is_tuned == 1) {
+            if (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) {
                 dsd_mark_vc_sync(state);
                 dsd_mark_cc_sync(state);
             }
@@ -1356,7 +1356,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         sprintf(state->dmr_site_parms, "%d-%d ", con_netid, con_siteid);
 
         //if using rigctl we can set an unknown cc frequency by polling rigctl for the current frequency
-        if (opts->use_rigctl == 1 && opts->p25_is_tuned == 0) {
+        if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) {
             ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
             if (ccfreq != 0) {
                 state->trunk_cc_freq = ccfreq;
@@ -1364,7 +1364,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         }
 
         //if using rtl input, we can ask for the current frequency tuned
-        if (opts->audio_in_type == AUDIO_IN_RTL && opts->p25_is_tuned == 0) {
+        if (opts->audio_in_type == AUDIO_IN_RTL && opts->trunk_is_tuned == 0) {
             ccfreq = (long int)opts->rtlsdr_center_freq;
             if (ccfreq != 0) {
                 state->trunk_cc_freq = ccfreq;
@@ -1415,7 +1415,9 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         // Use centralized io/control tuning API
                         dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
                         opts->p25_is_tuned = 0;
+                        opts->trunk_is_tuned = 0;
                         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+                        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
                         dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                     }
                 }
@@ -1465,7 +1467,9 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
                         // Use centralized io/control tuning API
                         dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
                         opts->p25_is_tuned = 0;
+                        opts->trunk_is_tuned = 0;
                         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+                        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
                         dmr_reset_blocks(opts, state); //reset all block gathering since we are tuning away
                     }
                 }

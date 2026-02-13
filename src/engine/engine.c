@@ -973,23 +973,14 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     //end experimental conventional frequency scanner mode
 
     // Tune back to last known CC when using trunking after hangtime expires.
-    // Use VC activity when currently tuned to a VC; otherwise use CC timer.
+    // trunk_is_tuned/p25_is_tuned both represent a VC-follow state.
     if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
         double dt;
-        if (opts->p25_is_tuned == 1) {
-            // On a voice channel: gate return by recent voice activity
-            if (state->last_vc_sync_time == 0) {
-                dt = 1e9; // no activity recorded; treat as expired
-            } else {
-                dt = (double)(now - state->last_vc_sync_time);
-            }
+        // On a voice channel: gate return by recent voice activity
+        if (state->last_vc_sync_time == 0) {
+            dt = 1e9; // no activity recorded; treat as expired
         } else {
-            // On control or idle: use CC timer
-            if (state->last_cc_sync_time == 0) {
-                dt = 1e9;
-            } else {
-                dt = (double)(now - state->last_cc_sync_time);
-            }
+            dt = (double)(now - state->last_vc_sync_time);
         }
 
         if (dt > opts->trunk_hangtime) {

@@ -494,7 +494,7 @@ END:
     //NOTE: This will still leave the tuner in the 'locked' state when tuning a voice channel grant on the CC,
     //and will remain locked until a new voice channel grant is received, but its just asthetic, trying to fix it
     //is too much of a hassle and causes other issues like CC hunting, etc.
-    if (opts->trunk_enable == 1 && opts->p25_is_tuned == 1 && state->is_con_plus == 1) {
+    if (opts->trunk_enable == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) && state->is_con_plus == 1) {
         int clear = 0;
         //IF both slots currently signalling IDLE
         if (state->dmrburstL == 9 && state->dmrburstR == 9) {

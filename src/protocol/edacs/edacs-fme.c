@@ -759,7 +759,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
     //if we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
     //this is a simple quick and dirty solution to fix setting the lastsrc value to something that we don't want in event history
-    if (opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) {
         goto EDACS_END;
     }
 
@@ -983,10 +983,12 @@ edacs(dsd_opts* opts, dsd_state* state) {
                         }
 
                         //set trunking cc here so we know where to come back to
-                        if (opts->p25_trunk == 1 && state->trunk_lcn_freq[state->edacs_cc_lcn - 1] != 0) {
+                        if ((opts->trunk_enable == 1 || opts->p25_trunk == 1)
+                            && state->trunk_lcn_freq[state->edacs_cc_lcn - 1] != 0) {
                             state->p25_cc_freq =
                                 state->trunk_lcn_freq[state->edacs_cc_lcn
                                                       - 1]; //index starts at zero, lcn's locally here start at 1
+                            state->trunk_cc_freq = state->p25_cc_freq;
                         }
                     }
                     fprintf(stderr, "%s", KNRM);
@@ -2337,9 +2339,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
                             }
 
                             //Set trunking CC here so we know where to come back to
-                            if (opts->p25_trunk == 1 && state->trunk_lcn_freq[state->edacs_cc_lcn - 1] != 0) {
+                            if ((opts->trunk_enable == 1 || opts->p25_trunk == 1)
+                                && state->trunk_lcn_freq[state->edacs_cc_lcn - 1] != 0) {
                                 //Index starts at zero, LCNs locally here start at 1
                                 state->p25_cc_freq = state->trunk_lcn_freq[state->edacs_cc_lcn - 1];
+                                state->trunk_cc_freq = state->p25_cc_freq;
                             }
                         }
                     }
@@ -2544,10 +2548,13 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     state->last_vc_sync_time = now;
 
     //jump back to CC here
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1) {
+    long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && cc != 0
+        && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
         // Use centralized io/control tuning API
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0);
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0);
         opts->p25_is_tuned = 0;
+        opts->trunk_is_tuned = 0;
 
         // EDACS-specific state cleanup
         state->lasttg = 0;
@@ -2560,5 +2567,6 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         snprintf(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
         snprintf(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
 }
