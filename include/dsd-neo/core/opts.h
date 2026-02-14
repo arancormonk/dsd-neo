@@ -97,6 +97,10 @@ struct dsd_opts {
     int audio_out;
     int dmr_stereo_wav;  //per-call wav file use (rename later)
     int static_wav_file; //single static wav file for decoding duration
+    int rdio_mode;       //0=off, 1=dirwatch, 2=api, 3=both
+    int rdio_system_id;  //rdio-scanner system id used for API upload
+    int rdio_upload_timeout_ms;
+    int rdio_upload_retries;
     int serial_baud;
     int serial_fd;
     int resume;
@@ -276,6 +280,7 @@ struct dsd_opts {
     char pa_input_idx[100];
     char pa_output_idx[100];
     char wav_out_dir[512];
+    char rdio_api_key[256];
     char mbe_in_file[1024];
     char audio_out_dev[1024];
     char mbe_out_dir[1024];
@@ -291,6 +296,7 @@ struct dsd_opts {
     char serial_dev[1024];
     char output_name[1024];
     char rigctlhostname[1024];
+    char rdio_api_url[1024];
     char udp_hostname[1024];
     char udp_in_bindaddr[1024];
     char m17_hostname[1024];

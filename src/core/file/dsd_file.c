@@ -34,6 +34,7 @@
 #include <dsd-neo/protocol/p25/p25p1_const.h> //for imbe fr (7200)
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 
 #include <mbelib.h>
 #include <sndfile.h>
@@ -473,7 +474,8 @@ close_wav_file(SNDFILE* wav_file) {
 }
 
 SNDFILE*
-close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, Event_History_I* event_struct) {
+close_and_rename_wav_file(SNDFILE* wav_file, dsd_opts* opts, char* wav_out_filename, char* dir,
+                          Event_History_I* event_struct) {
     if (wav_file != NULL) {
         sf_close(wav_file);
     }
@@ -482,16 +484,24 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
         return NULL;
     }
 
-    time_t event_time = event_struct->Event_History_Items[0].event_time;
+    const Event_History* event_item = NULL;
+    if (event_struct) {
+        event_item = &event_struct->Event_History_Items[0];
+    }
+
+    time_t event_time = time(NULL);
+    if (event_item && event_item->event_time > 0) {
+        event_time = event_item->event_time;
+    }
     char datestr[9];
     char timestr[7];
     getDateF_buf(event_time, datestr);
     getTimeF_buf(event_time, timestr);
     uint16_t random_number = rand();
 
-    uint32_t source_id = event_struct->Event_History_Items[0].source_id;
-    uint32_t target_id = event_struct->Event_History_Items[0].target_id;
-    int8_t gi = event_struct->Event_History_Items[0].gi;
+    uint32_t source_id = event_item ? event_item->source_id : 0U;
+    uint32_t target_id = event_item ? event_item->target_id : 0U;
+    int8_t gi = event_item ? event_item->gi : 0;
 
     char sys_str[200];
     memset(sys_str, 0, sizeof(sys_str));
@@ -502,9 +512,11 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
     char gi_str[10];
     memset(gi_str, 0, sizeof(gi_str));
 
-    snprintf(sys_str, sizeof(sys_str), "%s", event_struct->Event_History_Items[0].sysid_string);
-    snprintf(src_str, sizeof(src_str), "%s", event_struct->Event_History_Items[0].src_str);
-    snprintf(tgt_str, sizeof(tgt_str), "%s", event_struct->Event_History_Items[0].tgt_str);
+    if (event_item) {
+        snprintf(sys_str, sizeof(sys_str), "%s", event_item->sysid_string);
+        snprintf(src_str, sizeof(src_str), "%s", event_item->src_str);
+        snprintf(tgt_str, sizeof(tgt_str), "%s", event_item->tgt_str);
+    }
 
     snprintf(gi_str, sizeof(gi_str), "%s", "");
     if (gi == 0) {
@@ -546,17 +558,29 @@ close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, 
     }
 
     // Safe to rename now
-    rename(wav_out_filename, new_filename);
+    if (rename(wav_out_filename, new_filename) != 0) {
+        LOG_ERROR("Error - could not rename wav file %s -> %s\n", wav_out_filename, new_filename);
+        return NULL;
+    }
 
     // Optional: recheck final file size and remove if header-only, though we already checked
     file = fopen(new_filename, "r");
+    long final_size = 0;
     if (file != NULL) {
         fseek(file, 0, SEEK_END);
-        long size = ftell(file);
+        final_size = ftell(file);
         fseek(file, 0, SEEK_SET);
         fclose(file);
-        if (size == 44) {
+        if (final_size == 44) {
             remove(new_filename);
+            wav_file = NULL;
+            return wav_file;
+        }
+    }
+
+    if (opts && final_size > 44) {
+        if (dsd_rdio_export_call(opts, event_struct, new_filename) != 0) {
+            LOG_WARN("Rdio export failed for %s\n", new_filename);
         }
     }
 

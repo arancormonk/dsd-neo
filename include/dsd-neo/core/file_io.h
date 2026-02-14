@@ -41,7 +41,8 @@ SNDFILE* open_wav_file(char* dir, char* temp_filename, uint16_t sample_rate, uin
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);
-SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, char* wav_out_filename, char* dir, Event_History_I* event_struct);
+SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, dsd_opts* opts, char* wav_out_filename, char* dir,
+                                   Event_History_I* event_struct);
 SNDFILE* close_and_delete_wav_file(SNDFILE* wav_file, char* wav_out_filename);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);

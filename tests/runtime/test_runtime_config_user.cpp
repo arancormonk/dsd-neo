@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/rdio_export.h>
 
 #include "test_support.h"
 
@@ -69,7 +70,17 @@ test_load_and_apply_basic(void) {
                              "enabled = true\n"
                              "chan_csv = \"/tmp/chan.csv\"\n"
                              "group_csv = \"/tmp/group.csv\"\n"
-                             "allow_list = true\n";
+                             "allow_list = true\n"
+                             "\n"
+                             "[recording]\n"
+                             "per_call_wav = true\n"
+                             "per_call_wav_dir = \"/tmp/wav\"\n"
+                             "rdio_mode = \"both\"\n"
+                             "rdio_system_id = 77\n"
+                             "rdio_api_url = \"http://127.0.0.1:3000\"\n"
+                             "rdio_api_key = \"apikey\"\n"
+                             "rdio_upload_timeout_ms = 2500\n"
+                             "rdio_upload_retries = 3\n";
 
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
@@ -103,8 +114,8 @@ test_load_and_apply_basic(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    opts = dsd_opts{};
+    state = dsd_state{};
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -134,6 +145,23 @@ test_load_and_apply_basic(void) {
     }
     if (opts.trunk_use_allow_list != 1) {
         fprintf(stderr, "trunk_use_allow_list not set\n");
+        rc |= 1;
+    }
+    if (opts.dmr_stereo_wav != 1 || strcmp(opts.wav_out_dir, "/tmp/wav") != 0) {
+        fprintf(stderr, "recording per-call WAV settings not applied\n");
+        rc |= 1;
+    }
+    if (opts.rdio_mode != DSD_RDIO_MODE_BOTH || opts.rdio_system_id != 77) {
+        fprintf(stderr, "rdio mode/system_id not applied (%d/%d)\n", opts.rdio_mode, opts.rdio_system_id);
+        rc |= 1;
+    }
+    if (strcmp(opts.rdio_api_url, "http://127.0.0.1:3000") != 0 || strcmp(opts.rdio_api_key, "apikey") != 0) {
+        fprintf(stderr, "rdio API settings not applied\n");
+        rc |= 1;
+    }
+    if (opts.rdio_upload_timeout_ms != 2500 || opts.rdio_upload_retries != 3) {
+        fprintf(stderr, "rdio upload timeout/retries not applied (%d/%d)\n", opts.rdio_upload_timeout_ms,
+                opts.rdio_upload_retries);
         rc |= 1;
     }
 
@@ -174,8 +202,8 @@ test_snapshot_roundtrip(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    opts = dsd_opts{};
+    state = dsd_state{};
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -244,8 +272,8 @@ test_apply_demod_lock(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    opts = dsd_opts{};
+    state = dsd_state{};
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -268,8 +296,8 @@ static int
 test_snapshot_persists_demod_lock(void) {
     static dsd_opts opts;
     static dsd_state state;
-    memset(&opts, 0, sizeof opts);
-    memset(&state, 0, sizeof state);
+    opts = dsd_opts{};
+    state = dsd_state{};
 
     snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "pulse");
     snprintf(opts.audio_out_dev, sizeof opts.audio_out_dev, "null");

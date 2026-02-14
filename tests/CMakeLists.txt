@@ -160,6 +160,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/mem.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_rdio_export
+  HEADERS_PUBLIC_RUNTIME_RDIO_EXPORT
+  dsd-neo/runtime/rdio_export.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_ring
   HEADERS_PUBLIC_RUNTIME_RING
   dsd-neo/runtime/ring.h
@@ -293,6 +298,11 @@ add_executable(dsd-neo_test_runtime_freq_parse runtime/test_runtime_freq_parse.c
 target_include_directories(dsd-neo_test_runtime_freq_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
+
+add_executable(dsd-neo_test_runtime_rdio_export runtime/test_runtime_rdio_export.c)
+target_include_directories(dsd-neo_test_runtime_rdio_export PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_rdio_export PRIVATE dsd-neo_runtime dsd-neo_test_support)
+add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 add_executable(dsd-neo_test_runtime_trunk_tuning_hooks runtime/test_runtime_trunk_tuning_hooks.c)
 target_include_directories(dsd-neo_test_runtime_trunk_tuning_hooks PRIVATE ${PROJECT_SOURCE_DIR}/include)

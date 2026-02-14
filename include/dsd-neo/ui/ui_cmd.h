@@ -213,7 +213,7 @@ enum UiCmdId {
 /**
  * @brief Command payload envelope for the UI command queue.
  */
-enum { UI_CMD_DATA_MAX = 8192 };
+enum { UI_CMD_DATA_MAX = 16384 };
 
 struct UiCmd {
     int id;

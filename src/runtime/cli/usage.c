@@ -101,6 +101,12 @@ dsd_cli_usage(void) {
     printf(
         "  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
     printf("                 (Per Call works with everything now and doesn't require ncurses terminal!)\n");
+    printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
+    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
+    printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
+    printf("      --rdio-api-key <key>  rdio-scanner API key for trunk-recorder-call-upload\n");
+    printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");
+    printf("      --rdio-upload-retries <n>  API upload retry attempts per call (default 1)\n");
     printf("  -a            Enable Call Alert Beep\n");
     printf("                 (Warning! Might be annoying.)\n");
     printf("  -J <file>     Specify Filename for Event Log Output.\n");

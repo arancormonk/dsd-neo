@@ -15,6 +15,7 @@ target_sources(dsd-neo_runtime PRIVATE
   rtl_stream_io_hooks.c
   rtl_stream_metrics_hooks.c
   m17_udp_hooks.c
+  rdio_export.c
   p25_optional_hooks.c
   p25_p2_audio_ring.c
   rigctl_query_hooks.c
@@ -55,6 +56,7 @@ target_include_directories(dsd-neo_runtime
 )
 
 # Link platform abstraction library for threading primitives
-target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform dsd-neo_feature_rtlsdr dsd-neo_feature_colors_logs)
+target_link_libraries(dsd-neo_runtime PUBLIC dsd-neo_platform dsd-neo_feature_rtlsdr dsd-neo_feature_colors_logs
+                                              dsd-neo_feature_curl)
 
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_warnings)

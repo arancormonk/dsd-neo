@@ -15,7 +15,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex`, `-k keys.csv`, `-K keys_hex.csv`, `-4`, `-0`, `-3`
-- Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`
+- Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode dirwatch|api|both`
 
 ## Quick Start
 
@@ -98,6 +98,12 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
 - `-7 <dir>` Set folder for per‑call WAVs (use before `-P`)
+- `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
+- `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
+- `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
+- `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
+- `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
+- `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
 - `-d <dir>` Save raw MBE vocoder frames in this folder

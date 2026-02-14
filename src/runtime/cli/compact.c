@@ -39,6 +39,42 @@ dsd_cli_compact_args(int argc, char** argv) {
             }
             continue;
         }
+        if (strcmp(arg, "--rdio-mode") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--rdio-system-id") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--rdio-api-url") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--rdio-api-key") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--rdio-upload-timeout-ms") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--rdio-upload-retries") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
         if (strcmp(arg, "--auto-ppm-snr") == 0) {
             if (i + 1 < argc) {
                 i++;

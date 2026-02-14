@@ -112,6 +112,12 @@ initOpts(dsd_opts* opts) {
 
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
     opts->static_wav_file = 0; //single static wav file for decoding duration
+    opts->rdio_mode = 0;
+    opts->rdio_system_id = 0;
+    opts->rdio_upload_timeout_ms = 5000;
+    opts->rdio_upload_retries = 1;
+    opts->rdio_api_key[0] = 0;
+    snprintf(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "http://127.0.0.1:3000");
     //opts->wav_out_fd = -1;
     opts->serial_baud = 115200;
     opts->serial_fd = -1;

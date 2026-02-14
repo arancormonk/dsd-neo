@@ -6,6 +6,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 
 #include <dsd-neo/runtime/colors.h>
 
@@ -106,6 +107,12 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* calc_start_cli = NULL;
     const char* input_vol_cli = NULL;
     const char* input_warn_db_cli = NULL;
+    const char* rdio_mode_cli = NULL;
+    const char* rdio_system_id_cli = NULL;
+    const char* rdio_api_url_cli = NULL;
+    const char* rdio_api_key_cli = NULL;
+    const char* rdio_upload_timeout_cli = NULL;
+    const char* rdio_upload_retries_cli = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
@@ -240,6 +247,30 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             input_warn_db_cli = argv[++i];
             continue;
         }
+        if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {
+            rdio_mode_cli = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--rdio-system-id") == 0 && i + 1 < argc) {
+            rdio_system_id_cli = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--rdio-api-url") == 0 && i + 1 < argc) {
+            rdio_api_url_cli = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--rdio-api-key") == 0 && i + 1 < argc) {
+            rdio_api_key_cli = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0 && i + 1 < argc) {
+            rdio_upload_timeout_cli = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--rdio-upload-retries") == 0 && i + 1 < argc) {
+            rdio_upload_retries_cli = argv[++i];
+            continue;
+        }
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {
             const char* sv = argv[++i];
             if (sv && *sv) {
@@ -335,6 +366,59 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     } else if (cfg && cfg->input_warn_db_is_set) {
         opts->input_warn_db = (float)cfg->input_warn_db;
         LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", opts->input_warn_db);
+    }
+
+    if (rdio_mode_cli) {
+        int mode = DSD_RDIO_MODE_OFF;
+        if (dsd_rdio_mode_from_string(rdio_mode_cli, &mode) == 0) {
+            opts->rdio_mode = mode;
+            LOG_NOTICE("Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));
+        } else {
+            LOG_WARN("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", rdio_mode_cli);
+        }
+    }
+    if (rdio_system_id_cli) {
+        int sid = atoi(rdio_system_id_cli);
+        if (sid < 0) {
+            sid = 0;
+        }
+        if (sid > 65535) {
+            sid = 65535;
+        }
+        opts->rdio_system_id = sid;
+        LOG_NOTICE("Rdio system ID: %d\n", opts->rdio_system_id);
+    }
+    if (rdio_api_url_cli) {
+        snprintf(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", rdio_api_url_cli);
+        opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';
+        LOG_NOTICE("Rdio API URL: %s\n", opts->rdio_api_url);
+    }
+    if (rdio_api_key_cli) {
+        snprintf(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", rdio_api_key_cli);
+        opts->rdio_api_key[sizeof opts->rdio_api_key - 1] = '\0';
+        LOG_NOTICE("Rdio API key configured\n");
+    }
+    if (rdio_upload_timeout_cli) {
+        int timeout_ms = atoi(rdio_upload_timeout_cli);
+        if (timeout_ms < 100) {
+            timeout_ms = 100;
+        }
+        if (timeout_ms > 120000) {
+            timeout_ms = 120000;
+        }
+        opts->rdio_upload_timeout_ms = timeout_ms;
+        LOG_NOTICE("Rdio upload timeout: %d ms\n", opts->rdio_upload_timeout_ms);
+    }
+    if (rdio_upload_retries_cli) {
+        int retries = atoi(rdio_upload_retries_cli);
+        if (retries < 0) {
+            retries = 0;
+        }
+        if (retries > 10) {
+            retries = 10;
+        }
+        opts->rdio_upload_retries = retries;
+        LOG_NOTICE("Rdio upload retries: %d\n", opts->rdio_upload_retries);
     }
 
     int new_argc = dsd_cli_compact_args(argc, argv);

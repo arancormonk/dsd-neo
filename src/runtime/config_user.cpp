@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
+#include <dsd-neo/runtime/rdio_export.h>
 
 #include <cmath>
 #include <ctype.h>
@@ -68,6 +69,13 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->per_call_wav = 0;
     snprintf(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, "%s", "./WAV");
     cfg->per_call_wav_dir[sizeof cfg->per_call_wav_dir - 1] = '\0';
+    cfg->rdio_mode = DSD_RDIO_MODE_OFF;
+    cfg->rdio_system_id = 0;
+    snprintf(cfg->rdio_api_url, sizeof cfg->rdio_api_url, "%s", "http://127.0.0.1:3000");
+    cfg->rdio_api_url[sizeof cfg->rdio_api_url - 1] = '\0';
+    cfg->rdio_api_key[0] = '\0';
+    cfg->rdio_upload_timeout_ms = 5000;
+    cfg->rdio_upload_retries = 1;
 
     // DSP defaults (match runtime defaults)
     cfg->iq_balance = 0;
@@ -508,6 +516,44 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
                 copy_path_expanded(cfg->static_wav_path, sizeof cfg->static_wav_path, val);
             } else if (strcmp(key_lc, "raw_wav") == 0) {
                 copy_path_expanded(cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
+            } else if (strcmp(key_lc, "rdio_mode") == 0) {
+                int mode = DSD_RDIO_MODE_OFF;
+                if (dsd_rdio_mode_from_string(val, &mode) == 0) {
+                    cfg->rdio_mode = mode;
+                }
+            } else if (strcmp(key_lc, "rdio_system_id") == 0) {
+                long v = parse_int(val, 0);
+                if (v < 0) {
+                    v = 0;
+                }
+                if (v > 65535) {
+                    v = 65535;
+                }
+                cfg->rdio_system_id = (int)v;
+            } else if (strcmp(key_lc, "rdio_api_url") == 0) {
+                snprintf(cfg->rdio_api_url, sizeof cfg->rdio_api_url, "%s", val);
+                cfg->rdio_api_url[sizeof cfg->rdio_api_url - 1] = '\0';
+            } else if (strcmp(key_lc, "rdio_api_key") == 0) {
+                snprintf(cfg->rdio_api_key, sizeof cfg->rdio_api_key, "%s", val);
+                cfg->rdio_api_key[sizeof cfg->rdio_api_key - 1] = '\0';
+            } else if (strcmp(key_lc, "rdio_upload_timeout_ms") == 0) {
+                long v = parse_int(val, cfg->rdio_upload_timeout_ms);
+                if (v < 100) {
+                    v = 100;
+                }
+                if (v > 120000) {
+                    v = 120000;
+                }
+                cfg->rdio_upload_timeout_ms = (int)v;
+            } else if (strcmp(key_lc, "rdio_upload_retries") == 0) {
+                long v = parse_int(val, cfg->rdio_upload_retries);
+                if (v < 0) {
+                    v = 0;
+                }
+                if (v > 10) {
+                    v = 10;
+                }
+                cfg->rdio_upload_retries = (int)v;
             }
             continue;
         }
@@ -783,6 +829,22 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
         }
         if (cfg->raw_wav_path[0]) {
             fprintf(out, "raw_wav = \"%s\"\n", cfg->raw_wav_path);
+        }
+        fprintf(out, "rdio_mode = \"%s\"\n", dsd_rdio_mode_to_string(cfg->rdio_mode));
+        if (cfg->rdio_system_id > 0) {
+            fprintf(out, "rdio_system_id = %d\n", cfg->rdio_system_id);
+        }
+        if (cfg->rdio_api_url[0]) {
+            fprintf(out, "rdio_api_url = \"%s\"\n", cfg->rdio_api_url);
+        }
+        if (cfg->rdio_api_key[0]) {
+            fprintf(out, "rdio_api_key = \"%s\"\n", cfg->rdio_api_key);
+        }
+        if (cfg->rdio_upload_timeout_ms > 0) {
+            fprintf(out, "rdio_upload_timeout_ms = %d\n", cfg->rdio_upload_timeout_ms);
+        }
+        if (cfg->rdio_upload_retries >= 0) {
+            fprintf(out, "rdio_upload_retries = %d\n", cfg->rdio_upload_retries);
         }
         fprintf(out, "\n");
     }
@@ -1294,6 +1356,19 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
         } else {
             opts->wav_out_file_raw[0] = '\0';
         }
+
+        opts->rdio_mode = cfg->rdio_mode;
+        opts->rdio_system_id = cfg->rdio_system_id;
+        opts->rdio_upload_timeout_ms = cfg->rdio_upload_timeout_ms;
+        opts->rdio_upload_retries = cfg->rdio_upload_retries;
+        if (cfg->rdio_api_url[0]) {
+            snprintf(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", cfg->rdio_api_url);
+            opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';
+        }
+        if (cfg->rdio_api_key[0]) {
+            snprintf(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", cfg->rdio_api_key);
+            opts->rdio_api_key[sizeof opts->rdio_api_key - 1] = '\0';
+        }
     }
 
     if (cfg->has_dsp) {
@@ -1566,6 +1641,14 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     }
     snprintf(cfg->raw_wav_path, sizeof cfg->raw_wav_path, "%s", opts->wav_out_file_raw);
     cfg->raw_wav_path[sizeof cfg->raw_wav_path - 1] = '\0';
+    cfg->rdio_mode = opts->rdio_mode;
+    cfg->rdio_system_id = opts->rdio_system_id;
+    snprintf(cfg->rdio_api_url, sizeof cfg->rdio_api_url, "%s", opts->rdio_api_url);
+    cfg->rdio_api_url[sizeof cfg->rdio_api_url - 1] = '\0';
+    snprintf(cfg->rdio_api_key, sizeof cfg->rdio_api_key, "%s", opts->rdio_api_key);
+    cfg->rdio_api_key[sizeof cfg->rdio_api_key - 1] = '\0';
+    cfg->rdio_upload_timeout_ms = opts->rdio_upload_timeout_ms;
+    cfg->rdio_upload_retries = opts->rdio_upload_retries;
 
     // DSP snapshot (persist runtime toggles via env for the next run)
     cfg->has_dsp = 1;
@@ -2157,6 +2240,44 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
             copy_path_expanded(cfg->static_wav_path, sizeof cfg->static_wav_path, val);
         } else if (strcmp(key, "raw_wav") == 0) {
             copy_path_expanded(cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
+        } else if (strcmp(key, "rdio_mode") == 0) {
+            int mode = DSD_RDIO_MODE_OFF;
+            if (dsd_rdio_mode_from_string(val, &mode) == 0) {
+                cfg->rdio_mode = mode;
+            }
+        } else if (strcmp(key, "rdio_system_id") == 0) {
+            long v = parse_int(val, 0);
+            if (v < 0) {
+                v = 0;
+            }
+            if (v > 65535) {
+                v = 65535;
+            }
+            cfg->rdio_system_id = (int)v;
+        } else if (strcmp(key, "rdio_api_url") == 0) {
+            snprintf(cfg->rdio_api_url, sizeof cfg->rdio_api_url, "%s", val);
+            cfg->rdio_api_url[sizeof cfg->rdio_api_url - 1] = '\0';
+        } else if (strcmp(key, "rdio_api_key") == 0) {
+            snprintf(cfg->rdio_api_key, sizeof cfg->rdio_api_key, "%s", val);
+            cfg->rdio_api_key[sizeof cfg->rdio_api_key - 1] = '\0';
+        } else if (strcmp(key, "rdio_upload_timeout_ms") == 0) {
+            long v = parse_int(val, cfg->rdio_upload_timeout_ms);
+            if (v < 100) {
+                v = 100;
+            }
+            if (v > 120000) {
+                v = 120000;
+            }
+            cfg->rdio_upload_timeout_ms = (int)v;
+        } else if (strcmp(key, "rdio_upload_retries") == 0) {
+            long v = parse_int(val, cfg->rdio_upload_retries);
+            if (v < 0) {
+                v = 0;
+            }
+            if (v > 10) {
+                v = 10;
+            }
+            cfg->rdio_upload_retries = (int)v;
         }
     } else if (strcmp(section, "dsp") == 0) {
         cfg->has_dsp = 1;

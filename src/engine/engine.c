@@ -1624,12 +1624,12 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     if (opts->static_wav_file == 0) {
         if (opts->wav_out_f != NULL) {
-            opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir,
+            opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
                                                         &state->event_history_s[0]);
         }
 
         if (opts->wav_out_fR != NULL) {
-            opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir,
+            opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
                                                          &state->event_history_s[1]);
         }
     }

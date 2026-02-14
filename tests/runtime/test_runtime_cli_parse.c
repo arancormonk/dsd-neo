@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/rdio_export.h>
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -501,6 +502,78 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     return 0;
 }
 
+static int
+test_rdio_long_options_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rdio-mode";
+    char arg2[] = "both";
+    char arg3[] = "--rdio-system-id";
+    char arg4[] = "42";
+    char arg5[] = "--rdio-api-url";
+    char arg6[] = "http://127.0.0.1:3000";
+    char arg7[] = "--rdio-api-key";
+    char arg8[] = "test-key";
+    char arg9[] = "--rdio-upload-timeout-ms";
+    char arg10[] = "2500";
+    char arg11[] = "--rdio-upload-retries";
+    char arg12[] = "4";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(13, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->rdio_mode != DSD_RDIO_MODE_BOTH) {
+        fprintf(stderr, "expected rdio_mode=%d, got %d\n", DSD_RDIO_MODE_BOTH, opts->rdio_mode);
+        test_rc = 1;
+    }
+    if (opts->rdio_system_id != 42) {
+        fprintf(stderr, "expected rdio_system_id=42, got %d\n", opts->rdio_system_id);
+        test_rc = 1;
+    }
+    if (strcmp(opts->rdio_api_url, "http://127.0.0.1:3000") != 0) {
+        fprintf(stderr, "unexpected rdio_api_url=%s\n", opts->rdio_api_url);
+        test_rc = 1;
+    }
+    if (strcmp(opts->rdio_api_key, "test-key") != 0) {
+        fprintf(stderr, "unexpected rdio_api_key=%s\n", opts->rdio_api_key);
+        test_rc = 1;
+    }
+    if (opts->rdio_upload_timeout_ms != 2500) {
+        fprintf(stderr, "expected timeout=2500, got %d\n", opts->rdio_upload_timeout_ms);
+        test_rc = 1;
+    }
+    if (opts->rdio_upload_retries != 4) {
+        fprintf(stderr, "expected retries=4, got %d\n", opts->rdio_upload_retries);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -511,5 +584,6 @@ main(void) {
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_bootstrap_treats_lone_ini_as_config();
+    rc |= test_rdio_long_options_parse();
     return rc;
 }

@@ -225,6 +225,7 @@ else()
 endif()
 
 find_package(CODEC2)
+find_package(CURL)
 
 # Audio backend selection
 option(DSD_USE_PORTAUDIO "Use PortAudio for cross-platform audio (required on Windows)" OFF)
@@ -328,6 +329,14 @@ if(CODEC2_FOUND)
 else()
     # Provide a stub interface target so linking remains unconditional upstream
     add_library(dsd-neo_feature_codec2 INTERFACE)
+endif()
+
+if(CURL_FOUND)
+    add_library(dsd-neo_feature_curl INTERFACE)
+    target_compile_definitions(dsd-neo_feature_curl INTERFACE USE_CURL)
+    target_link_libraries(dsd-neo_feature_curl INTERFACE CURL::libcurl)
+else()
+    add_library(dsd-neo_feature_curl INTERFACE)
 endif()
 
 if(AUDIO_SYSTEM_LIBS)

@@ -679,6 +679,12 @@ typedef struct dsdneoUserConfig {
     char per_call_wav_dir[512];
     char static_wav_path[1024];
     char raw_wav_path[1024];
+    int rdio_mode;
+    int rdio_system_id;
+    char rdio_api_url[1024];
+    char rdio_api_key[256];
+    int rdio_upload_timeout_ms;
+    int rdio_upload_retries;
 
     /* [dsp] */
     int has_dsp;

@@ -308,6 +308,12 @@ small subset is exposed as config keys for convenience (for example
 | `per_call_wav_dir` | PATH | Per-call WAV output directory | `./WAV` |
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
 | `raw_wav` | PATH | Raw (48 kHz) audio WAV output file | (empty) |
+| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
+| `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
+| `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
+| `rdio_api_key` | STRING | rdio API key | (empty) |
+| `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
+| `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 
