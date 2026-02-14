@@ -216,26 +216,34 @@ test_dirwatch_sidecar_generation(void) {
         return 1;
     }
 
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    opts.rdio_system_id = 48;
-    opts.rdio_upload_timeout_ms = 5000;
-    opts.rdio_upload_retries = 1;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        fprintf(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 48;
+    opts->rdio_upload_timeout_ms = 5000;
+    opts->rdio_upload_retries = 1;
 
-    Event_History_I hist;
-    memset(&hist, 0, sizeof(hist));
-    hist.Event_History_Items[0].event_time = (time_t)1700000000;
-    hist.Event_History_Items[0].target_id = 1201;
-    hist.Event_History_Items[0].source_id = 660045;
-    hist.Event_History_Items[0].channel = 851012500;
-    hist.Event_History_Items[0].enc = 1;
-    snprintf(hist.Event_History_Items[0].sysid_string, sizeof(hist.Event_History_Items[0].sysid_string), "%s",
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+    hist->Event_History_Items[0].source_id = 660045;
+    hist->Event_History_Items[0].channel = 851012500;
+    hist->Event_History_Items[0].enc = 1;
+    snprintf(hist->Event_History_Items[0].sysid_string, sizeof(hist->Event_History_Items[0].sysid_string), "%s",
              "P25_TEST");
-    snprintf(hist.Event_History_Items[0].t_name, sizeof(hist.Event_History_Items[0].t_name), "%s", "FIRE DISP");
+    snprintf(hist->Event_History_Items[0].t_name, sizeof(hist->Event_History_Items[0].t_name), "%s", "FIRE DISP");
 
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
         fprintf(stderr, "dsd_rdio_export_call failed\n");
+        free(hist);
+        free(opts);
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
         return 1;
@@ -244,6 +252,8 @@ test_dirwatch_sidecar_generation(void) {
     char body[4096];
     if (read_file(json_path, body, sizeof(body)) != 0) {
         fprintf(stderr, "failed reading sidecar %s\n", json_path);
+        free(hist);
+        free(opts);
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
         return 1;
@@ -278,6 +288,8 @@ test_dirwatch_sidecar_generation(void) {
     (void)remove(json_path);
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
+    free(hist);
+    free(opts);
 
     return rc;
 }
@@ -304,17 +316,23 @@ test_mode_off_no_sidecar(void) {
         return 1;
     }
 
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.rdio_mode = DSD_RDIO_MODE_OFF;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        fprintf(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    opts->rdio_mode = DSD_RDIO_MODE_OFF;
 
-    Event_History_I hist;
-    memset(&hist, 0, sizeof(hist));
-    hist.Event_History_Items[0].event_time = time(NULL);
-    hist.Event_History_Items[0].target_id = 1;
+    hist->Event_History_Items[0].event_time = time(NULL);
+    hist->Event_History_Items[0].target_id = 1;
 
     int rc = 0;
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
         fprintf(stderr, "mode off should return success\n");
         rc = 1;
     }
@@ -327,6 +345,8 @@ test_mode_off_no_sidecar(void) {
 
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
+    free(hist);
+    free(opts);
     return rc;
 }
 
@@ -352,18 +372,26 @@ test_duration_uses_wav_samplerate(void) {
         return 1;
     }
 
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    opts.rdio_system_id = 48;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        fprintf(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 48;
 
-    Event_History_I hist;
-    memset(&hist, 0, sizeof(hist));
-    hist.Event_History_Items[0].event_time = (time_t)1700000000;
-    hist.Event_History_Items[0].target_id = 1201;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
 
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
         fprintf(stderr, "dsd_rdio_export_call failed for 48k wav\n");
+        free(hist);
+        free(opts);
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
         return 1;
@@ -372,6 +400,8 @@ test_duration_uses_wav_samplerate(void) {
     char body[4096];
     if (read_file(json_path, body, sizeof(body)) != 0) {
         fprintf(stderr, "failed reading sidecar %s\n", json_path);
+        free(hist);
+        free(opts);
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
         return 1;
@@ -386,6 +416,8 @@ test_duration_uses_wav_samplerate(void) {
     (void)remove(json_path);
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
+    free(hist);
+    free(opts);
 
     return rc;
 }
@@ -417,24 +449,30 @@ test_api_shutdown_drains_queue(void) {
         return 1;
     }
 
-    dsd_opts opts;
-    memset(&opts, 0, sizeof(opts));
-    opts.rdio_mode = DSD_RDIO_MODE_BOTH;
-    opts.rdio_system_id = 48;
-    opts.rdio_upload_timeout_ms = 100;
-    opts.rdio_upload_retries = 1;
-    snprintf(opts.rdio_api_url, sizeof(opts.rdio_api_url), "%s", "http://127.0.0.1:1");
-    opts.rdio_api_url[sizeof(opts.rdio_api_url) - 1] = '\0';
-    snprintf(opts.rdio_api_key, sizeof(opts.rdio_api_key), "%s", "test-key");
-    opts.rdio_api_key[sizeof(opts.rdio_api_key) - 1] = '\0';
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        fprintf(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    opts->rdio_system_id = 48;
+    opts->rdio_upload_timeout_ms = 100;
+    opts->rdio_upload_retries = 1;
+    snprintf(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", "http://127.0.0.1:1");
+    opts->rdio_api_url[sizeof(opts->rdio_api_url) - 1] = '\0';
+    snprintf(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+    opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
 
-    Event_History_I hist;
-    memset(&hist, 0, sizeof(hist));
-    hist.Event_History_Items[0].event_time = (time_t)1700000000;
-    hist.Event_History_Items[0].target_id = 1201;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
 
     int rc = 0;
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
         fprintf(stderr, "api enqueue path failed\n");
         rc = 1;
     }
@@ -450,6 +488,8 @@ test_api_shutdown_drains_queue(void) {
     (void)remove(json_path);
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
+    free(hist);
+    free(opts);
     return rc;
 #endif
 }

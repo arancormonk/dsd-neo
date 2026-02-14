@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <dsd-neo/core/opts.h>
@@ -113,56 +114,62 @@ dsd_neo_get_config(void) {
 
 int
 main(void) {
-    dsd_opts opts;
-    dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        fprintf(stderr, "allocation failed\n");
+        free(state);
+        free(opts);
+        return 1;
+    }
 
     /* DMR trunking active via protocol-agnostic flag only. */
-    opts.trunk_enable = 1;
-    opts.p25_trunk = 0;
-    opts.trunk_is_tuned = 1;
-    opts.p25_is_tuned = 1;
-    opts.audio_in_type = AUDIO_IN_PULSE; /* avoid RTL path in this regression */
-    opts.use_rigctl = 1;
-    opts.rigctl_sockfd = 1;
+    opts->trunk_enable = 1;
+    opts->p25_trunk = 0;
+    opts->trunk_is_tuned = 1;
+    opts->p25_is_tuned = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE; /* avoid RTL path in this regression */
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 1;
 
-    state.trunk_cc_freq = 851000000;
-    state.p25_cc_freq = 0;
-    state.trunk_vc_freq[0] = 852000000;
-    state.trunk_vc_freq[1] = 852000000;
-    state.last_cc_sync_time = 0;
-    state.last_cc_sync_time_m = 0.0;
+    state->trunk_cc_freq = 851000000;
+    state->p25_cc_freq = 0;
+    state->trunk_vc_freq[0] = 852000000;
+    state->trunk_vc_freq[1] = 852000000;
+    state->last_cc_sync_time = 0;
+    state->last_cc_sync_time_m = 0.0;
 
     /* DMR/GFSK-ish demod settings should remain unchanged on DMR return. */
-    state.samplesPerSymbol = 17;
-    state.symbolCenter = 8;
-    state.rf_mod = 2;
+    state->samplesPerSymbol = 17;
+    state->symbolCenter = 8;
+    state->rf_mod = 2;
 
     g_setfreq_calls = 0;
     g_last_setfreq_hz = 0;
 
-    dsd_engine_return_to_cc(&opts, &state);
+    dsd_engine_return_to_cc(opts, state);
 
     /* Core return semantics. */
-    assert(opts.trunk_is_tuned == 0);
-    assert(opts.p25_is_tuned == 0);
-    assert(state.trunk_vc_freq[0] == 0);
-    assert(state.trunk_vc_freq[1] == 0);
+    assert(opts->trunk_is_tuned == 0);
+    assert(opts->p25_is_tuned == 0);
+    assert(state->trunk_vc_freq[0] == 0);
+    assert(state->trunk_vc_freq[1] == 0);
 
     /* Critical regression check: DMR return must still issue a retune to CC. */
     assert(g_setfreq_calls == 1);
-    assert(g_last_setfreq_hz == state.trunk_cc_freq);
+    assert(g_last_setfreq_hz == state->trunk_cc_freq);
 
     /* Critical regression check: DMR return still updates CC retune bookkeeping. */
-    assert(state.last_cc_sync_time != 0);
-    assert(state.last_cc_sync_time_m > 0.0);
+    assert(state->last_cc_sync_time != 0);
+    assert(state->last_cc_sync_time_m > 0.0);
 
     /* Critical regression check: no P25-specific modulation/timing override in DMR path. */
-    assert(state.samplesPerSymbol == 17);
-    assert(state.symbolCenter == 8);
-    assert(state.rf_mod == 2);
+    assert(state->samplesPerSymbol == 17);
+    assert(state->symbolCenter == 8);
+    assert(state->rf_mod == 2);
 
     printf("DMR_T3_RETURN_TO_CC_REGRESSION: OK\n");
+    free(state);
+    free(opts);
     return 0;
 }

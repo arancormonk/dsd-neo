@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <dsd-neo/core/opts.h>
@@ -126,20 +127,24 @@ cap_u32(void) {
 
 int
 main(void) {
-    dsd_opts opts;
-    dsd_state state;
-    memset(&opts, 0, sizeof(opts));
-    memset(&state, 0, sizeof(state));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        fprintf(stderr, "allocation failed\n");
+        free(state);
+        free(opts);
+        return 1;
+    }
 
     /* 'h' must cycle immediately in UI thread (no command queue dependency). */
     cap_reset();
-    opts.ncurses_history = 1;
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_HISTORY) == 1);
+    opts->ncurses_history = 1;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
     assert(ui_history_get_mode() == 2);
     assert(g_cap.calls == 0);
     assert(g_history_cycle_calls == 1);
     assert(g_redraw_calls == 1);
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_HISTORY) == 1);
+    assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
     assert(ui_history_get_mode() == 0);
     assert(g_cap.calls == 0);
     assert(g_history_cycle_calls == 2);
@@ -147,12 +152,12 @@ main(void) {
 
     /* 'k' should set hold from slot-1 TG when no hold is active. */
     cap_reset();
-    state.tg_hold = 0;
-    state.lasttg = 1001;
-    opts.frame_nxdn48 = 0;
-    opts.frame_nxdn96 = 0;
-    opts.frame_provoice = 0;
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_TG_HOLD1) == 1);
+    state->tg_hold = 0;
+    state->lasttg = 1001;
+    opts->frame_nxdn48 = 0;
+    opts->frame_nxdn96 = 0;
+    opts->frame_provoice = 0;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD1) == 1);
     assert(g_cap.calls == 1);
     assert(g_cap.id == UI_CMD_TG_HOLD_SET);
     assert(g_cap.n == sizeof(uint32_t));
@@ -160,45 +165,47 @@ main(void) {
 
     /* 'k' should clear hold (post 0) when hold is already active. */
     cap_reset();
-    state.tg_hold = 4242;
-    state.lasttg = 9999;
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_TG_HOLD1) == 1);
+    state->tg_hold = 4242;
+    state->lasttg = 9999;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD1) == 1);
     assert(g_cap.id == UI_CMD_TG_HOLD_SET);
     assert(cap_u32() == 0U);
 
     /* 'l' should set hold from slot-2 TG when no hold is active. */
     cap_reset();
-    state.tg_hold = 0;
-    state.lasttgR = 2002;
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_TG_HOLD2) == 1);
+    state->tg_hold = 0;
+    state->lasttgR = 2002;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD2) == 1);
     assert(g_cap.id == UI_CMD_TG_HOLD_SET);
     assert(cap_u32() == 2002U);
 
     /* NXDN fallback path for slot-1 hold when DMR/P25 TG is absent. */
     cap_reset();
-    state.tg_hold = 0;
-    state.lasttg = 0;
-    state.nxdn_last_tg = 3003;
-    opts.frame_nxdn48 = 1;
-    opts.frame_nxdn96 = 0;
-    opts.frame_provoice = 0;
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_TG_HOLD1) == 1);
+    state->tg_hold = 0;
+    state->lasttg = 0;
+    state->nxdn_last_tg = 3003;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 0;
+    opts->frame_provoice = 0;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD1) == 1);
     assert(g_cap.id == UI_CMD_TG_HOLD_SET);
     assert(cap_u32() == 3003U);
 
     /* ProVoice fallback path for slot-2 hold when TG is absent. */
     cap_reset();
-    state.tg_hold = 0;
-    state.lasttgR = 0;
-    state.lastsrcR = 4004;
-    state.ea_mode = 0;
-    opts.frame_nxdn48 = 0;
-    opts.frame_nxdn96 = 0;
-    opts.frame_provoice = 1;
-    assert(ncurses_input_handler(&opts, &state, DSD_KEY_TG_HOLD2) == 1);
+    state->tg_hold = 0;
+    state->lasttgR = 0;
+    state->lastsrcR = 4004;
+    state->ea_mode = 0;
+    opts->frame_nxdn48 = 0;
+    opts->frame_nxdn96 = 0;
+    opts->frame_provoice = 1;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD2) == 1);
     assert(g_cap.id == UI_CMD_TG_HOLD_SET);
     assert(cap_u32() == 4004U);
 
     printf("UI_HOTKEYS_REGRESSION: OK\n");
+    free(state);
+    free(opts);
     return 0;
 }

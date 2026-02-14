@@ -45,6 +45,14 @@ write_temp_config(const char* contents, char* out_path, size_t out_sz) {
     return 0;
 }
 
+static void
+reset_opts_and_state(dsd_opts& opts, dsd_state& state) {
+    static const dsd_opts k_zero_opts = {};
+    static const dsd_state k_zero_state = {};
+    opts = k_zero_opts;
+    state = k_zero_state;
+}
+
 static int
 test_load_and_apply_basic(void) {
     static const char* ini = "version = 1\n"
@@ -114,8 +122,7 @@ test_load_and_apply_basic(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    opts = dsd_opts{};
-    state = dsd_state{};
+    reset_opts_and_state(opts, state);
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -202,8 +209,7 @@ test_snapshot_roundtrip(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    opts = dsd_opts{};
-    state = dsd_state{};
+    reset_opts_and_state(opts, state);
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -272,8 +278,7 @@ test_apply_demod_lock(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    opts = dsd_opts{};
-    state = dsd_state{};
+    reset_opts_and_state(opts, state);
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -296,8 +301,7 @@ static int
 test_snapshot_persists_demod_lock(void) {
     static dsd_opts opts;
     static dsd_state state;
-    opts = dsd_opts{};
-    state = dsd_state{};
+    reset_opts_and_state(opts, state);
 
     snprintf(opts.audio_in_dev, sizeof opts.audio_in_dev, "pulse");
     snprintf(opts.audio_out_dev, sizeof opts.audio_out_dev, "null");
