@@ -39,6 +39,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_async.h>
 
@@ -1645,6 +1646,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
             opts->wav_out_fR = close_wav_file(opts->wav_out_fR);
         }
     }
+
+    // Finalized WAV close/rename can enqueue API uploads; drain them before teardown.
+    dsd_rdio_upload_shutdown();
 
     if (opts->wav_out_raw != NULL) {
         opts->wav_out_raw = close_wav_file(opts->wav_out_raw);

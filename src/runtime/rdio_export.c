@@ -46,21 +46,14 @@ typedef struct dsd_rdio_upload_job {
 
 static dsd_mutex_t g_rdio_upload_mutex;
 static dsd_cond_t g_rdio_upload_cond;
+static dsd_thread_t g_rdio_upload_worker;
 static dsd_rdio_upload_job* g_rdio_upload_head = NULL;
 static dsd_rdio_upload_job* g_rdio_upload_tail = NULL;
 static size_t g_rdio_upload_depth = 0;
-static atomic_int g_rdio_upload_state = 0; // 0=uninitialized, 1=initializing, 2=ready, 3=failed
+static int g_rdio_upload_stop_requested = 0;
+static atomic_int g_rdio_upload_state = 0; // 0=uninitialized, 1=initializing, 2=ready, 3=failed, 4=stopping
 
 static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path);
-
-static void
-dsd_rdio_detach_thread(dsd_thread_t thread) {
-#if DSD_PLATFORM_WIN_NATIVE
-    (void)CloseHandle(thread);
-#else
-    (void)pthread_detach(thread);
-#endif
-}
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -71,8 +64,13 @@ static DSD_THREAD_RETURN_TYPE
 
     for (;;) {
         dsd_mutex_lock(&g_rdio_upload_mutex);
-        while (g_rdio_upload_head == NULL) {
+        while (g_rdio_upload_head == NULL && !g_rdio_upload_stop_requested) {
             dsd_cond_wait(&g_rdio_upload_cond, &g_rdio_upload_mutex);
+        }
+
+        if (g_rdio_upload_head == NULL && g_rdio_upload_stop_requested) {
+            dsd_mutex_unlock(&g_rdio_upload_mutex);
+            break;
         }
 
         dsd_rdio_upload_job* job = g_rdio_upload_head;
@@ -101,7 +99,7 @@ dsd_rdio_upload_worker_init(void) {
     if (state == 2) {
         return 0;
     }
-    if (state == 3) {
+    if (state == 3 || state == 4) {
         return -1;
     }
 
@@ -117,15 +115,18 @@ dsd_rdio_upload_worker_init(void) {
             return -1;
         }
 
-        dsd_thread_t worker;
-        if (dsd_thread_create(&worker, (dsd_thread_fn)dsd_rdio_upload_worker_thread, NULL) != 0) {
+        g_rdio_upload_head = NULL;
+        g_rdio_upload_tail = NULL;
+        g_rdio_upload_depth = 0;
+        g_rdio_upload_stop_requested = 0;
+
+        if (dsd_thread_create(&g_rdio_upload_worker, (dsd_thread_fn)dsd_rdio_upload_worker_thread, NULL) != 0) {
             (void)dsd_cond_destroy(&g_rdio_upload_cond);
             (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
             atomic_store(&g_rdio_upload_state, 3);
             return -1;
         }
 
-        dsd_rdio_detach_thread(worker);
         atomic_store(&g_rdio_upload_state, 2);
         return 0;
     }
@@ -138,8 +139,62 @@ dsd_rdio_upload_worker_init(void) {
         if (state == 3) {
             return -1;
         }
+        if (state == 4) {
+            return -1;
+        }
         dsd_sleep_ms(1U);
     }
+}
+
+static void
+dsd_rdio_clear_upload_queue_locked(void) {
+    while (g_rdio_upload_head != NULL) {
+        dsd_rdio_upload_job* next = g_rdio_upload_head->next;
+        free(g_rdio_upload_head);
+        g_rdio_upload_head = next;
+    }
+    g_rdio_upload_tail = NULL;
+    g_rdio_upload_depth = 0;
+}
+
+void
+dsd_rdio_upload_shutdown(void) {
+    for (;;) {
+        int state = atomic_load(&g_rdio_upload_state);
+        if (state == 0 || state == 3) {
+            return;
+        }
+        if (state == 1 || state == 4) {
+            dsd_sleep_ms(1U);
+            continue;
+        }
+
+        int expected = 2;
+        if (atomic_compare_exchange_strong(&g_rdio_upload_state, &expected, 4)) {
+            break;
+        }
+    }
+
+    dsd_mutex_lock(&g_rdio_upload_mutex);
+    g_rdio_upload_stop_requested = 1;
+    dsd_cond_broadcast(&g_rdio_upload_cond);
+    dsd_mutex_unlock(&g_rdio_upload_mutex);
+
+    if (dsd_thread_join(g_rdio_upload_worker) != 0) {
+        LOG_ERROR("Rdio export: failed to join upload worker during shutdown\n");
+        atomic_store(&g_rdio_upload_state, 3);
+        return;
+    }
+
+    dsd_mutex_lock(&g_rdio_upload_mutex);
+    dsd_rdio_clear_upload_queue_locked();
+    g_rdio_upload_stop_requested = 0;
+    dsd_mutex_unlock(&g_rdio_upload_mutex);
+
+    (void)dsd_cond_destroy(&g_rdio_upload_cond);
+    (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
+
+    atomic_store(&g_rdio_upload_state, 0);
 }
 
 static void
@@ -218,6 +273,13 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const ch
     }
 
     dsd_mutex_lock(&g_rdio_upload_mutex);
+    if (g_rdio_upload_stop_requested) {
+        dsd_mutex_unlock(&g_rdio_upload_mutex);
+        LOG_WARN("Rdio export: shutdown in progress, dropping %s\n", wav_path);
+        free(job);
+        return -1;
+    }
+
     if (g_rdio_upload_depth >= DSD_RDIO_UPLOAD_QUEUE_MAX) {
         dsd_mutex_unlock(&g_rdio_upload_mutex);
         LOG_WARN("Rdio export: upload queue full, dropping %s\n", wav_path);

@@ -390,6 +390,70 @@ test_duration_uses_wav_samplerate(void) {
     return rc;
 }
 
+static int
+test_api_shutdown_drains_queue(void) {
+#ifndef USE_CURL
+    dsd_rdio_upload_shutdown();
+    dsd_rdio_upload_shutdown();
+    return 0;
+#else
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_api_shutdown")) {
+        fprintf(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call_api.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call_api.json") != 0) {
+        fprintf(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    dsd_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.rdio_mode = DSD_RDIO_MODE_BOTH;
+    opts.rdio_system_id = 48;
+    opts.rdio_upload_timeout_ms = 100;
+    opts.rdio_upload_retries = 1;
+    snprintf(opts.rdio_api_url, sizeof(opts.rdio_api_url), "%s", "http://127.0.0.1:1");
+    opts.rdio_api_url[sizeof(opts.rdio_api_url) - 1] = '\0';
+    snprintf(opts.rdio_api_key, sizeof(opts.rdio_api_key), "%s", "test-key");
+    opts.rdio_api_key[sizeof(opts.rdio_api_key) - 1] = '\0';
+
+    Event_History_I hist;
+    memset(&hist, 0, sizeof(hist));
+    hist.Event_History_Items[0].event_time = (time_t)1700000000;
+    hist.Event_History_Items[0].target_id = 1201;
+
+    int rc = 0;
+    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        fprintf(stderr, "api enqueue path failed\n");
+        rc = 1;
+    }
+
+    dsd_rdio_upload_shutdown();
+    dsd_rdio_upload_shutdown();
+
+    if (!file_exists(json_path)) {
+        fprintf(stderr, "sidecar missing after API shutdown drain\n");
+        rc = 1;
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -397,5 +461,6 @@ main(void) {
     rc |= test_dirwatch_sidecar_generation();
     rc |= test_mode_off_no_sidecar();
     rc |= test_duration_uses_wav_samplerate();
+    rc |= test_api_shutdown_drains_queue();
     return rc;
 }

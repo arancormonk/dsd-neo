@@ -54,6 +54,14 @@ const char* dsd_rdio_mode_to_string(int mode);
  */
 int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path);
 
+/**
+ * Drain queued rdio API uploads and stop the background worker.
+ *
+ * Intended for process shutdown after final call files are closed/renamed.
+ * Safe to call when the worker was never started.
+ */
+void dsd_rdio_upload_shutdown(void);
+
 #ifdef __cplusplus
 }
 #endif
