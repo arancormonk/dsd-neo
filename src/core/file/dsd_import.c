@@ -11,6 +11,17 @@
 #include <string.h>
 #define BSIZE 999
 
+static inline void
+trim_eol(char* s) {
+    if (!s) {
+        return;
+    }
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) {
+        s[--n] = '\0';
+    }
+}
+
 int
 csvGroupImport(dsd_opts* opts, dsd_state* state) {
     char filename[1024] = "filename.csv";
@@ -27,39 +38,53 @@ csvGroupImport(dsd_opts* opts, dsd_state* state) {
     int field_count = 0;
     long int group_number = 0; //local group number for array index value
     UNUSED(group_number);
-    int i = 0;
+    const size_t group_cap = sizeof(state->group_array) / sizeof(state->group_array[0]);
+    size_t dropped_rows = 0;
     while (fgets(buffer, BSIZE, fp)) {
         field_count = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
+
+        if (state->group_tally >= group_cap) {
+            dropped_rows++;
+            continue;
+        }
+
+        size_t idx = state->group_tally;
         char* field = strtok(buffer, ","); //seperate by comma
         while (field) {
+            trim_eol(field);
 
             if (field_count == 0) {
                 //group_number = atol(field);
-                state->group_array[i].groupNumber = atol(field);
-                LOG_INFO("%ld, ", state->group_array[i].groupNumber);
+                state->group_array[idx].groupNumber = atol(field);
+                LOG_INFO("%ld, ", state->group_array[idx].groupNumber);
             }
             if (field_count == 1) {
-                strncpy(state->group_array[i].groupMode, field, sizeof(state->group_array[i].groupMode) - 1);
-                state->group_array[i].groupMode[sizeof(state->group_array[i].groupMode) - 1] = '\0';
-                LOG_INFO("%s, ", state->group_array[i].groupMode);
+                strncpy(state->group_array[idx].groupMode, field, sizeof(state->group_array[idx].groupMode) - 1);
+                state->group_array[idx].groupMode[sizeof(state->group_array[idx].groupMode) - 1] = '\0';
+                LOG_INFO("%s, ", state->group_array[idx].groupMode);
             }
             if (field_count == 2) {
-                strncpy(state->group_array[i].groupName, field, sizeof(state->group_array[i].groupName) - 1);
-                state->group_array[i].groupName[sizeof(state->group_array[i].groupName) - 1] = '\0';
-                LOG_INFO("%s ", state->group_array[i].groupName);
+                strncpy(state->group_array[idx].groupName, field, sizeof(state->group_array[idx].groupName) - 1);
+                state->group_array[idx].groupName[sizeof(state->group_array[idx].groupName) - 1] = '\0';
+                LOG_INFO("%s ", state->group_array[idx].groupName);
             }
 
             field = strtok(NULL, ",");
             field_count++;
         }
         LOG_INFO("\n");
-        i++;
         state->group_tally++;
     }
+
+    if (dropped_rows > 0) {
+        LOG_WARNING("Group file '%s' exceeded capacity (%zu entries); ignored %zu additional rows.\n", filename,
+                    group_cap, dropped_rows);
+    }
+
     fclose(fp);
     return 0;
 }

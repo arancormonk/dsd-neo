@@ -6,6 +6,8 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,12 +103,70 @@ test_channel_import_missing_file(void) {
     return 0;
 }
 
+static int
+test_group_import_capacity_cap(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char tmpl[] = "dsd-neo-test-group-overflow-XXXXXX";
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    FILE* fp = fopen(tmpl, "w");
+    if (!fp) {
+        (void)remove(tmpl);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    fprintf(fp, "group,mode,name\n");
+    const size_t cap = sizeof(state->group_array) / sizeof(state->group_array[0]);
+    const size_t rows = cap + 25;
+    for (size_t i = 0; i < rows; i++) {
+        fprintf(fp, "%zu,D,Alias %zu\n", i + 1, i + 1);
+    }
+    fclose(fp);
+
+    (void)snprintf(opts->group_in_file, sizeof opts->group_in_file, "%s", tmpl);
+    int rc = csvGroupImport(opts, state);
+
+    int failed = 0;
+    if (rc != 0) {
+        failed = 1;
+    }
+    if (state->group_tally != cap) {
+        failed = 1;
+    }
+    if (state->group_array[cap - 1].groupNumber != (unsigned long)cap) {
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free(state);
+    return failed;
+}
+
 int
 main(void) {
     if (test_group_import_missing_file() != 0) {
         return 1;
     }
     if (test_channel_import_missing_file() != 0) {
+        return 1;
+    }
+    if (test_group_import_capacity_cap() != 0) {
         return 1;
     }
     return 0;

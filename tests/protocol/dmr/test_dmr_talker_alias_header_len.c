@@ -73,19 +73,24 @@ int
 main(void) {
     int rc = 0;
 
-    static dsd_opts opts;
-    static dsd_state st;
-    memset(&opts, 0, sizeof opts);
-    memset(&st, 0, sizeof st);
-
-    st.event_history_s = (Event_History_I*)calloc(2u, sizeof(Event_History_I));
-    if (!st.event_history_s) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!opts || !st) {
+        free(st);
+        free(opts);
         return 100;
     }
 
-    st.currentslot = 0;
-    st.lastsrc = 123;
-    st.event_history_s[0].Event_History_Items[0].source_id = st.lastsrc;
+    st->event_history_s = (Event_History_I*)calloc(2u, sizeof(Event_History_I));
+    if (!st->event_history_s) {
+        free(st);
+        free(opts);
+        return 100;
+    }
+
+    st->currentslot = 0;
+    st->lastsrc = 123;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
 
     uint8_t lc_bits[80];
     memset(lc_bits, 0, sizeof lc_bits);
@@ -95,11 +100,36 @@ main(void) {
     const uint8_t payload[] = {0x04, 0x00, 0x84, 0x4B, 0x45, 0x38, 0x4E, 0x41, 0x58};
     bytes_to_bits_msb(lc_bits, sizeof lc_bits, payload, sizeof payload);
 
-    dmr_talker_alias_lc_header(&opts, &st, 0, lc_bits);
-    rc |= expect_has_substr(st.generic_talker_alias[0], "KE8NAX", "talker_alias_header");
+    dmr_talker_alias_lc_header(opts, st, 0, lc_bits);
+    rc |= expect_has_substr(st->generic_talker_alias[0], "KE8NAX", "talker_alias_header");
 
-    free(st.event_history_s);
-    st.event_history_s = NULL;
+    // Capacity guard regression: when group table is full, runtime alias handling
+    // must not write past group_array bounds.
+    const size_t cap = sizeof(st->group_array) / sizeof(st->group_array[0]);
+    st->group_tally = (unsigned int)cap;
+    for (size_t i = 0; i < cap; i++) {
+        st->group_array[i].groupNumber = (unsigned long)(i + 1u);
+    }
+    st->lastsrc = 600000u;
+    st->late_entry_mi_fragment[0][0][0] = 0x1122334455667788ULL;
+
+    uint8_t tait_bits[64];
+    memset(tait_bits, 0, sizeof tait_bits);
+    tait_iso7_embedded_alias_decode(opts, st, 0, 1, tait_bits);
+
+    if (st->group_tally != cap) {
+        fprintf(stderr, "group capacity guard failed: tally changed (%u)\n", st->group_tally);
+        rc = 1;
+    }
+    if (st->late_entry_mi_fragment[0][0][0] != 0x1122334455667788ULL) {
+        fprintf(stderr, "group capacity guard failed: sentinel changed\n");
+        rc = 1;
+    }
+
+    free(st->event_history_s);
+    st->event_history_s = NULL;
+    free(st);
+    free(opts);
 
     return rc;
 }
