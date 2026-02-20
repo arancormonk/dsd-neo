@@ -275,6 +275,11 @@ target_include_directories(dsd-neo_test_nxdn_alias_decode PRIVATE ${PROJECT_SOUR
 target_link_libraries(dsd-neo_test_nxdn_alias_decode PRIVATE dsd-neo_proto_nxdn)
 add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
 
+add_executable(dsd-neo_test_nxdn_dcr_utils protocol/nxdn/test_nxdn_dcr_utils.c)
+target_include_directories(dsd-neo_test_nxdn_dcr_utils PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_nxdn_dcr_utils PRIVATE dsd-neo_proto_nxdn)
+add_test(NAME NXDN_DCR_UTILS COMMAND dsd-neo_test_nxdn_dcr_utils)
+
 add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)

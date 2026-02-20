@@ -172,7 +172,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     lich = lich_full >> 1;
 
     //special cases on DCR where parity is computed over 7 bits, and not 4 bits
-    if (lich == 0x4A || lich == 0x48 || lich == 0x46) {
+    if (lich == 0x08 || lich == 0x4A || lich == 0x48 || lich == 0x46) {
         lich_parity_computed = ((lich_full >> 7) + (lich_full >> 6) + (lich_full >> 5) + (lich_full >> 4)
                                 + (lich_full >> 3) + (lich_full >> 2) + (lich_full >> 1))
                                & 1;
@@ -262,7 +262,11 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
             sacch2 = 1;
             break;
 
-        //DCR Data or End Frame
+        //DCR SB0, Data, or End Frame
+        case 0x08:
+            sacch2 = 1;
+            pich_tch = 1; // SB0 payload observed in first PICH/TCH block.
+            break;
         case 0x48: pich_tch = 3; /* fall through */
         case 0x4A: sacch2 = 1; break;
 
@@ -634,10 +638,10 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         nxdn_deperm_sacch2_soft(opts, state, sacch_bits, sacch_reliab);
     }
     if (pich_tch & 1) {
-        nxdn_deperm_pich_tch_soft(opts, state, facch_bits_a, facch_reliab_a);
+        nxdn_deperm_pich_tch_soft(opts, state, facch_bits_a, facch_reliab_a, lich);
     }
     if (pich_tch & 2) {
-        nxdn_deperm_pich_tch_soft(opts, state, facch_bits_b, facch_reliab_b);
+        nxdn_deperm_pich_tch_soft(opts, state, facch_bits_b, facch_reliab_b, lich);
     }
 
     //only run facch in second slot if its not equal to the first one

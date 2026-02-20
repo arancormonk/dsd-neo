@@ -818,6 +818,7 @@ struct dsd_state {
     uint8_t nxdn_alias_arib_total_segments;
     uint8_t nxdn_alias_arib_seen_mask;
     uint8_t nxdn_alias_arib_segments[4][6];
+    uint8_t nxdn_dcr_sf_message_type; // DCR SACCH2 SF message type; 0xFF means unknown.
 
     //site/srv/cch info
 

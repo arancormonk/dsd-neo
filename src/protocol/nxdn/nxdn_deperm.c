@@ -34,6 +34,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/colors.h>
 
@@ -56,6 +57,12 @@ static const uint8_t scramble_t[182] = { //values are the position values we nee
     47,  52,  54,  56,  57,  59,  62,  63,  64,  65,  66,  67,  69,  70,  73,  76,  79,  81,  82,  84,  85,  86,  87,
     88,  89,  92,  95,  96,  98,  100, 103, 104, 107, 108, 116, 117, 121, 122, 125, 127, 131, 132, 134, 137, 139, 140,
     141, 142, 143, 144, 145, 147, 151, 153, 154, 158, 159, 160, 162, 164, 165, 168, 170, 171, 174, 175, 176, 177, 181};
+
+static int
+nxdn_dcr_is_sb0_message_type(uint8_t message_type) {
+    // SACCH2 sf_mes 0x01 identifies call (SB0) traffic; other values are PDU/End/Idle.
+    return message_type == 0x01U;
+}
 
 //decoding functions here
 void
@@ -147,6 +154,7 @@ nxdn_deperm_facch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
             m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc12f(trellis_buf, 84);
+        check = 0;
         for (int i = 0; i < 12; i++) {
             check = check << 1;
             check = check | trellis_buf[i + 84];
@@ -900,8 +908,10 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
     uint8_t sf_num = (uint8_t)convert_bits_into_output(trellis_buf + 1, 2);
     uint8_t sf_mes = (uint8_t)convert_bits_into_output(trellis_buf + 3, 5);
     uint8_t sf_pof = 3 - sf_num;
+    state->nxdn_dcr_sf_message_type = 0xFFU;
 
     if (crc == check) {
+        state->nxdn_dcr_sf_message_type = sf_mes;
         if (sf_fb && sf_pof) { //single message, single unit
             fprintf(stderr, "PF: %d/1; ", sf_num + 1);
         } else { //multiple unit message
@@ -1040,7 +1050,7 @@ nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]) {
 //PICH or TCH 144 bit (JPN DCR)
 //SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
 void
-nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
+nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144], uint8_t lich) {
     uint8_t deperm[144];     //144
     uint8_t depunc[192];     //192
     uint8_t trellis_buf[96]; //96
@@ -1119,6 +1129,7 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
             m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc12f(trellis_buf, 84);
+        check = 0;
         for (int i = 0; i < 12; i++) {
             check = check << 1;
             check = check | trellis_buf[i + 84];
@@ -1128,39 +1139,56 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     //STD-T98 DCR suggests TCH1 has data, and TCH2 will be zero fill
     //could vary by PDU, but limited data points suggests the same
     if (crc == check) {
+        char csm_alias[32];
+        memset(csm_alias, 0, sizeof(csm_alias));
         uint8_t opcode = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0], 8);
         uint8_t gi = trellis_buf[16];
         uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
         uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
+        // LICH 0x08 spans SB0/PDU/End; only SB0 (Call) may carry CSM alias digits.
+        int is_dcr_sb0 = (lich == 0x08U) && nxdn_dcr_is_sb0_message_type(state->nxdn_dcr_sf_message_type);
 
-        //may only be relevant on MFID 0x30 "F.R.C." Radios
-        if (opcode == 0x0F) {
-            fprintf(stderr, "\n ");
-            fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-            if (gi) {
-                fprintf(stderr, "Private; ");
-            } else {
-                fprintf(stderr, "Group; ");
+        if (is_dcr_sb0) {
+            if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
+                fprintf(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
+                snprintf(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
+                if (state->event_history_s != NULL) {
+                    snprintf(state->event_history_s[0].Event_History_Items[0].alias,
+                             sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
+                }
+            } else if (opts->payload == 1) {
+                fprintf(stderr, "\n Call Sign Memory: decode error; ");
+            }
+        } else {
+            //may only be relevant on MFID 0x30 "F.R.C." Radios
+            if (opcode == 0x0F) {
+                fprintf(stderr, "\n ");
+                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
+                if (gi) {
+                    fprintf(stderr, "Private; ");
+                } else {
+                    fprintf(stderr, "Group; ");
+                }
+
+                fprintf(stderr, "Data Preamble; ");
+                uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+                fprintf(stderr, "Countdown: %d; ", countdown);
             }
 
-            fprintf(stderr, "Data Preamble; ");
-            uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-            fprintf(stderr, "Countdown: %d; ", countdown);
-        }
+            //may only be relevant on MFID 0x30 "F.R.C." Radios
+            if (opcode == 0x32) {
+                fprintf(stderr, "\n ");
+                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
+                if (gi) {
+                    fprintf(stderr, "Private; ");
+                } else {
+                    fprintf(stderr, "Group; ");
+                }
 
-        //may only be relevant on MFID 0x30 "F.R.C." Radios
-        if (opcode == 0x32) {
-            fprintf(stderr, "\n ");
-            fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-            if (gi) {
-                fprintf(stderr, "Private; ");
-            } else {
-                fprintf(stderr, "Group; ");
+                fprintf(stderr, "Precoded Message; ");
+                uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+                fprintf(stderr, "Index#: %d;", idx);
             }
-
-            fprintf(stderr, "Precoded Message; ");
-            uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-            fprintf(stderr, "Index#: %d;", idx);
         }
 
         // if (opcode == 0x00)
@@ -1171,13 +1199,21 @@ nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]) {
     } else if (opts->payload == 0) {
         fprintf(stderr, "\n ");
         fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "TCH (CRC ERR)");
+        if (lich == 0x08) {
+            fprintf(stderr, "PICH (CRC ERR)");
+        } else {
+            fprintf(stderr, "TCH (CRC ERR)");
+        }
         fprintf(stderr, "%s", KNRM);
     }
 
     if (opts->payload == 1) {
         fprintf(stderr, "\n");
-        fprintf(stderr, " TCH Payload ");
+        if (lich == 0x08) {
+            fprintf(stderr, " PICH Payload ");
+        } else {
+            fprintf(stderr, " TCH Payload ");
+        }
         for (int i = 0; i < 12; i++) {
             fprintf(stderr, "[%02X]", m_data[i]);
         }
@@ -1643,10 +1679,7 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
     }
 
     crc = crc7_scch(trellis_buf, 25);
-    for (int i = 0; i < 7; i++) {
-        check = check << 1;
-        check = check | trellis_buf[i + 25];
-    }
+    check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
 
     //debug
     // if (crc == check)
@@ -1665,10 +1698,7 @@ nxdn_deperm_scch(dsd_opts* opts, dsd_state* state, uint8_t bits[60], uint8_t dir
             m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc7_scch(trellis_buf, 25);
-        for (int i = 0; i < 6; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 25];
-        }
+        check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
     }
 
     //check the sf early for scrambler reset, if required
@@ -2659,10 +2689,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     }
 
     crc = crc7_scch(trellis_buf, 25);
-    for (int i = 0; i < 7; i++) {
-        check = check << 1;
-        check = check | trellis_buf[i + 25];
-    }
+    check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
 
     if (crc != check) {
         memset(trellis_buf, 0, sizeof(trellis_buf));
@@ -2672,11 +2699,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
             m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[((size_t)i * 8)], 8);
         }
         crc = crc7_scch(trellis_buf, 25);
-        check = 0;
-        for (int i = 0; i < 7; i++) {
-            check = check << 1;
-            check = check | trellis_buf[i + 25];
-        }
+        check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
     }
 
     sf = (trellis_buf[0] << 1) | trellis_buf[1];
@@ -2817,8 +2840,10 @@ nxdn_deperm_sacch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], cons
     uint8_t sf_num = (uint8_t)convert_bits_into_output(trellis_buf + 1, 2);
     uint8_t sf_mes = (uint8_t)convert_bits_into_output(trellis_buf + 3, 5);
     uint8_t sf_pof = 3 - sf_num;
+    state->nxdn_dcr_sf_message_type = 0xFFU;
 
     if (crc == check) {
+        state->nxdn_dcr_sf_message_type = sf_mes;
         if (sf_fb && sf_pof) {
             fprintf(stderr, "PF: %d/1; ", sf_num + 1);
         } else {
@@ -2868,7 +2893,8 @@ nxdn_deperm_sacch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], cons
  * Soft-decision variant of nxdn_deperm_pich_tch.
  */
 void
-nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]) {
+nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
+                          uint8_t lich) {
     uint8_t deperm[144];
     uint8_t deperm_rel[144];
     uint8_t depunc[192];
@@ -2954,46 +2980,71 @@ nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], c
     }
 
     if (crc == check) {
+        char csm_alias[32];
+        memset(csm_alias, 0, sizeof(csm_alias));
         uint8_t opcode = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0], 8);
         uint8_t gi = trellis_buf[16];
         uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
         uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
+        // LICH 0x08 spans SB0/PDU/End; only SB0 (Call) may carry CSM alias digits.
+        int is_dcr_sb0 = (lich == 0x08U) && nxdn_dcr_is_sb0_message_type(state->nxdn_dcr_sf_message_type);
 
-        if (opcode == 0x0F) {
-            fprintf(stderr, "\n ");
-            fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-            if (gi) {
-                fprintf(stderr, "Private; ");
-            } else {
-                fprintf(stderr, "Group; ");
+        if (is_dcr_sb0) {
+            if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
+                fprintf(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
+                snprintf(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
+                if (state->event_history_s != NULL) {
+                    snprintf(state->event_history_s[0].Event_History_Items[0].alias,
+                             sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
+                }
+            } else if (opts->payload == 1) {
+                fprintf(stderr, "\n Call Sign Memory: decode error; ");
             }
-            fprintf(stderr, "Data Preamble; ");
-            uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-            fprintf(stderr, "Countdown: %d; ", countdown);
-        }
+        } else {
+            if (opcode == 0x0F) {
+                fprintf(stderr, "\n ");
+                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
+                if (gi) {
+                    fprintf(stderr, "Private; ");
+                } else {
+                    fprintf(stderr, "Group; ");
+                }
+                fprintf(stderr, "Data Preamble; ");
+                uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+                fprintf(stderr, "Countdown: %d; ", countdown);
+            }
 
-        if (opcode == 0x32) {
-            fprintf(stderr, "\n ");
-            fprintf(stderr, "Source: %d; Target: %d; ", source, target);
-            if (gi) {
-                fprintf(stderr, "Private; ");
-            } else {
-                fprintf(stderr, "Group; ");
+            if (opcode == 0x32) {
+                fprintf(stderr, "\n ");
+                fprintf(stderr, "Source: %d; Target: %d; ", source, target);
+                if (gi) {
+                    fprintf(stderr, "Private; ");
+                } else {
+                    fprintf(stderr, "Group; ");
+                }
+                fprintf(stderr, "Precoded Message; ");
+                uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+                fprintf(stderr, "Index#: %d;", idx);
             }
-            fprintf(stderr, "Precoded Message; ");
-            uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-            fprintf(stderr, "Index#: %d;", idx);
         }
     } else if (opts->payload == 0) {
         fprintf(stderr, "\n ");
         fprintf(stderr, "%s", KRED);
-        fprintf(stderr, "TCH (CRC ERR)");
+        if (lich == 0x08) {
+            fprintf(stderr, "PICH (CRC ERR)");
+        } else {
+            fprintf(stderr, "TCH (CRC ERR)");
+        }
         fprintf(stderr, "%s", KNRM);
     }
 
     if (opts->payload == 1) {
         fprintf(stderr, "\n");
-        fprintf(stderr, " TCH Payload ");
+        if (lich == 0x08) {
+            fprintf(stderr, " PICH Payload ");
+        } else {
+            fprintf(stderr, " TCH Payload ");
+        }
         for (int i = 0; i < 12; i++) {
             fprintf(stderr, "[%02X]", m_data[i]);
         }

@@ -798,6 +798,7 @@ initState(dsd_state* state) {
     state->nxdn_alias_arib_total_segments = 0;
     state->nxdn_alias_arib_seen_mask = 0;
     memset(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
+    state->nxdn_dcr_sf_message_type = 0xFFU;
 
     //site/srv/cch info
     state->nxdn_location_site_code = 0;

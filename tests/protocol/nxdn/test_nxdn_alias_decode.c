@@ -105,6 +105,24 @@ expect_u8(const char* tag, uint8_t got, uint8_t want) {
     return 0;
 }
 
+static int
+expect_int(const char* tag, int got, int want) {
+    if (got != want) {
+        fprintf(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_size(const char* tag, size_t got, size_t want) {
+    if (got != want) {
+        fprintf(stderr, "%s: got %zu want %zu\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     dsd_state state;
@@ -212,12 +230,30 @@ main(void) {
         char out[32];
         static const uint8_t sjis_ascii[] = {'A', 'B', ' ', ' ', 0x00};
         static const uint8_t sjis_halfwidth[] = {0xA1, 0x00};
+        static const uint8_t sjis_nihon[] = {0x93, 0xFA, 0x96, 0x7B, 0x00};
+        int sjis_full = nxdn_alias_shift_jis_full_available();
 
-        nxdn_alias_decode_shift_jis_like(sjis_ascii, sizeof(sjis_ascii), out, sizeof(out));
+        if (sjis_full != 0 && sjis_full != 1) {
+            fprintf(stderr, "sjis-full-availability: expected 0/1 got %d\n", sjis_full);
+            rc |= 1;
+        }
+        rc |= expect_int("sjis-full-availability-normalized", !!sjis_full, sjis_full);
+
+        size_t out_len = nxdn_alias_decode_shift_jis_like(sjis_ascii, sizeof(sjis_ascii), out, sizeof(out));
         rc |= expect_str("sjis-ascii-trim", out, "AB");
+        rc |= expect_size("sjis-ascii-trim-len", out_len, strlen(out));
 
-        nxdn_alias_decode_shift_jis_like(sjis_halfwidth, sizeof(sjis_halfwidth), out, sizeof(out));
+        out_len = nxdn_alias_decode_shift_jis_like(sjis_halfwidth, sizeof(sjis_halfwidth), out, sizeof(out));
         rc |= expect_str("sjis-halfwidth", out, "\xEF\xBD\xA1");
+        rc |= expect_size("sjis-halfwidth-len", out_len, strlen(out));
+
+        out_len = nxdn_alias_decode_shift_jis_like(sjis_nihon, sizeof(sjis_nihon), out, sizeof(out));
+        if (sjis_full != 0) {
+            rc |= expect_str("sjis-multibyte-full", out, "\xE6\x97\xA5\xE6\x9C\xAC");
+        } else {
+            rc |= expect_str("sjis-multibyte-fallback", out, "\xEF\xBF\xBD\xEF\xBF\xBD");
+        }
+        rc |= expect_size("sjis-multibyte-len", out_len, strlen(out));
     }
 
     if (rc == 0) {

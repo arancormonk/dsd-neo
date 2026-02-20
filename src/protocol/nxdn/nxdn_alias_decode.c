@@ -14,6 +14,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#if !defined(DSD_HAVE_ICONV)
+#define DSD_HAVE_ICONV 0
+#endif
+
+#if DSD_HAVE_ICONV
+#include <errno.h>
+#include <iconv.h>
+#endif
+
 static uint8_t
 nxdn_bits_to_u8(const uint8_t* bits, size_t start, uint32_t len) {
     return (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[start], len); // NOLINT(cppcoreguidelines-pro-type-const-cast)
@@ -133,6 +142,76 @@ nxdn_is_sjis_trail(uint8_t b) {
     return (b >= 0x40U && b <= 0xFCU && b != 0x7FU);
 }
 
+static size_t
+nxdn_alias_effective_len(const uint8_t* in, size_t in_len) {
+    if (in == NULL || in_len == 0U) {
+        return 0U;
+    }
+    size_t n = 0U;
+    while (n < in_len && in[n] != 0U) {
+        n++;
+    }
+    return n;
+}
+
+#if DSD_HAVE_ICONV
+static const char* const nxdn_alias_iconv_enc_candidates[] = {"SHIFT-JIS", "SHIFT_JIS", "CP932"};
+
+static int
+nxdn_alias_try_iconv_decode(const uint8_t* in, size_t in_len, char* out, size_t out_sz, size_t* out_len) {
+    if (in == NULL || out == NULL || out_sz == 0U || out_len == NULL) {
+        return 0;
+    }
+
+    const size_t enc_count = sizeof(nxdn_alias_iconv_enc_candidates) / sizeof(nxdn_alias_iconv_enc_candidates[0]);
+    for (size_t i = 0U; i < enc_count; i++) {
+        iconv_t cd = iconv_open("UTF-8", nxdn_alias_iconv_enc_candidates[i]);
+        if (cd == (iconv_t)-1) {
+            continue;
+        }
+
+        char* in_ptr = (char*)(uintptr_t)in; // iconv API may not be const-correct.
+        size_t in_left = in_len;
+        char* out_ptr = out;
+        size_t out_left = out_sz - 1U;
+        errno = 0;
+        size_t rc = iconv(cd, &in_ptr, &in_left, &out_ptr, &out_left);
+        int ok = (rc != (size_t)-1);
+        iconv_close(cd);
+
+        if (ok) {
+            *out_ptr = '\0';
+            *out_len = (size_t)(out_ptr - out);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int
+nxdn_alias_iconv_shift_jis_available(void) {
+    const size_t enc_count = sizeof(nxdn_alias_iconv_enc_candidates) / sizeof(nxdn_alias_iconv_enc_candidates[0]);
+    for (size_t i = 0U; i < enc_count; i++) {
+        iconv_t cd = iconv_open("UTF-8", nxdn_alias_iconv_enc_candidates[i]);
+        if (cd != (iconv_t)-1) {
+            (void)iconv_close(cd);
+            return 1;
+        }
+    }
+    return 0;
+}
+#endif
+
+int
+nxdn_alias_shift_jis_full_available(void) {
+#if DSD_HAVE_ICONV
+    return nxdn_alias_iconv_shift_jis_available();
+#else
+    return 0;
+#endif
+}
+
 size_t
 nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, size_t out_sz) {
     if (out == NULL || out_sz == 0U) {
@@ -143,12 +222,24 @@ nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, si
         return 0U;
     }
 
-    size_t pos = 0U;
-    for (size_t i = 0U; i < in_len; i++) {
-        uint8_t b = in[i];
-        if (b == 0U) {
-            break;
+    const size_t eff_len = nxdn_alias_effective_len(in, in_len);
+    if (eff_len == 0U) {
+        return 0U;
+    }
+
+#if DSD_HAVE_ICONV
+    {
+        size_t converted = 0U;
+        if (nxdn_alias_try_iconv_decode(in, eff_len, out, out_sz, &converted)) {
+            nxdn_alias_trim_trailing_spaces(out);
+            return strlen(out);
         }
+    }
+#endif
+
+    size_t pos = 0U;
+    for (size_t i = 0U; i < eff_len; i++) {
+        uint8_t b = in[i];
 
         if (b >= 0x20U && b <= 0x7EU) {
             if (pos + 1U >= out_sz) {
@@ -183,7 +274,7 @@ nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, si
     }
     out[pos] = '\0';
     nxdn_alias_trim_trailing_spaces(out);
-    return pos;
+    return strlen(out);
 }
 
 void

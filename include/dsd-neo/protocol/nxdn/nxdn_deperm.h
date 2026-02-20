@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /**
  * @file
- * @brief NXDN deinterleave/depunc/CRC helper APIs.
+ * @brief NXDN deinterleave/depunc/CRC and DCR helper APIs.
  *
- * Declares the NXDN helpers implemented in `src/protocol/nxdn/nxdn_deperm.c`.
+ * Declares the NXDN helper APIs implemented in `src/protocol/nxdn/`.
  */
 
 #pragma once
@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,8 +33,9 @@ void nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], 
 void nxdn_deperm_sacch2(dsd_opts* opts, dsd_state* state, uint8_t bits[60]);
 void nxdn_deperm_sacch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 
-void nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144]);
-void nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144]);
+void nxdn_deperm_pich_tch(dsd_opts* opts, dsd_state* state, uint8_t bits[144], uint8_t lich);
+void nxdn_deperm_pich_tch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
+                               uint8_t lich);
 
 void nxdn_deperm_facch2_udch(dsd_opts* opts, dsd_state* state, uint8_t bits[348], uint8_t type);
 void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
@@ -58,6 +60,20 @@ uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(uint8_t bits[], int len);
+
+/**
+ * Read the 7-bit SCCH CRC check field from decoded trellis bits.
+ */
+uint8_t nxdn_scch_crc7_check_from_trellis(const uint8_t trellis_bits[32]);
+
+/**
+ * Decode DCR SB0 Call Sign Memory (CSM) digits from trellis bits.
+ *
+ * On success, writes `CSM ddddddddd` to @p out.
+ *
+ * @return 1 when decode succeeds, 0 on invalid input or insufficient output space.
+ */
+int nxdn_dcr_decode_csm_alias(const uint8_t trellis_bits[96], char* out, size_t out_sz);
 
 #ifdef __cplusplus
 }
