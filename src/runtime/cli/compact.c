@@ -39,6 +39,12 @@ dsd_cli_compact_args(int argc, char** argv) {
             }
             continue;
         }
+        if (strcmp(arg, "--frame-log") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
         if (strcmp(arg, "--rdio-mode") == 0) {
             if (i + 1 < argc) {
                 i++;

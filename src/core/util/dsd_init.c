@@ -94,6 +94,7 @@ initOpts(dsd_opts* opts) {
     opts->symbol_out_file[0] = 0;
     opts->lrrp_out_file[0] = 0;
     opts->event_out_file[0] = 0;
+    opts->frame_log_file[0] = 0;
     //csv import filenames
     opts->group_in_file[0] = 0;
     opts->lcn_in_file[0] = 0;
@@ -102,6 +103,9 @@ initOpts(dsd_opts* opts) {
     //end import filenames
     opts->szNumbers[0] = 0;
     opts->symbol_out_f = NULL;
+    opts->frame_log_f = NULL;
+    opts->frame_log_open_error_reported = 0;
+    opts->frame_log_write_error_reported = 0;
     opts->symbol_out_file_creation_time = time(NULL);
     opts->symbol_out_file_is_auto = 0;
     opts->mbe_out = 0;

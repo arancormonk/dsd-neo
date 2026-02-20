@@ -92,6 +92,7 @@ Path expansion is applied to:
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
 - `[logging] event_log`
+- `[logging] frame_log`
 - `[recording] per_call_wav_dir`
 - `[recording] static_wav`
 - `[recording] raw_wav`
@@ -300,6 +301,7 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `event_log` | PATH | Event history log file path | (empty) |
+| `frame_log` | PATH | Frame trace log file path | (empty) |
 
 **[recording] section:**
 | Key | Type | Description | Default |

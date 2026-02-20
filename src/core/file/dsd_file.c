@@ -39,6 +39,7 @@
 #include <mbelib.h>
 #include <sndfile.h>
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -113,47 +114,157 @@ saveAmbe2450DataR(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     fputc(b, opts->mbe_out_fR);
 }
 
+static int
+frame_log_ensure_open(dsd_opts* opts) {
+    if (!opts || opts->frame_log_file[0] == '\0') {
+        return 0;
+    }
+    if (opts->frame_log_f != NULL) {
+        return 1;
+    }
+    opts->frame_log_f = fopen(opts->frame_log_file, "a");
+    if (opts->frame_log_f == NULL) {
+        if (!opts->frame_log_open_error_reported) {
+            LOG_ERROR("Unable to open frame log file: %s\n", opts->frame_log_file);
+            opts->frame_log_open_error_reported = 1;
+        }
+        return 0;
+    }
+    opts->frame_log_open_error_reported = 0;
+    (void)setvbuf(opts->frame_log_f, NULL, _IOLBF, 0);
+    return 1;
+}
+
+static void
+frame_log_sanitize_line(char* line) {
+    if (!line) {
+        return;
+    }
+    for (char* p = line; *p != '\0'; ++p) {
+        if (*p == '\r' || *p == '\n' || *p == '\t') {
+            *p = ' ';
+        }
+    }
+}
+
+int
+dsd_frame_log_enabled(const dsd_opts* opts) {
+    return (opts != NULL && opts->frame_log_file[0] != '\0') ? 1 : 0;
+}
+
+int
+dsd_frame_detail_enabled(const dsd_opts* opts) {
+    return (opts != NULL && (opts->payload == 1 || dsd_frame_log_enabled(opts))) ? 1 : 0;
+}
+
+void
+dsd_frame_log_close(dsd_opts* opts) {
+    if (!opts || opts->frame_log_f == NULL) {
+        return;
+    }
+    fflush(opts->frame_log_f);
+    fclose(opts->frame_log_f);
+    opts->frame_log_f = NULL;
+}
+
+void
+dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
+    if (!format || !dsd_frame_log_enabled(opts)) {
+        return;
+    }
+    if (!frame_log_ensure_open(opts)) {
+        return;
+    }
+
+    char line[4096];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    frame_log_sanitize_line(line);
+
+    time_t now = time(NULL);
+    char timestr[9];
+    char datestr[11];
+    getTimeN_buf(now, timestr);
+    getDateN_buf(now, datestr);
+
+    if (fprintf(opts->frame_log_f, "%s %s %s\n", datestr, timestr, line) < 0) {
+        if (!opts->frame_log_write_error_reported) {
+            LOG_ERROR("Failed writing frame log file: %s\n", opts->frame_log_file);
+            opts->frame_log_write_error_reported = 1;
+        }
+        dsd_frame_log_close(opts);
+        return;
+    }
+    opts->frame_log_write_error_reported = 0;
+}
+
 void
 PrintIMBEData(dsd_opts* opts, dsd_state* state, char* imbe_d) //for P25P1 and ProVoice
 {
-    fprintf(stderr, "\n IMBE ");
-    uint8_t imbe[88];
-    for (int i = 0; i < 11; i++) {
-        imbe[i] = convert_bits_into_output((uint8_t*)imbe_d + ((size_t)i * 8u), 8);
-        fprintf(stderr, "%02X", imbe[i]);
+    if (!opts || !state || !imbe_d) {
+        return;
     }
 
-    fprintf(stderr, " err = [%X] [%X] ", state->errs, state->errs2);
-    UNUSED(opts);
+    uint8_t imbe[11];
+    char imbe_hex[23];
+    size_t hex_off = 0;
+    imbe_hex[0] = '\0';
+    for (int i = 0; i < 11; i++) {
+        imbe[i] = convert_bits_into_output((uint8_t*)imbe_d + ((size_t)i * 8u), 8);
+        if (hex_off + 2 < sizeof(imbe_hex)) {
+            (void)snprintf(imbe_hex + hex_off, sizeof(imbe_hex) - hex_off, "%02X", imbe[i]);
+            hex_off += 2;
+        }
+    }
+    imbe_hex[sizeof(imbe_hex) - 1] = '\0';
+
+    if (opts->payload == 1) {
+        fprintf(stderr, "\n IMBE %s err = [%X] [%X] ", imbe_hex, state->errs, state->errs2);
+    }
+    dsd_frame_logf(opts, "FRAME IMBE slot=%d data=%s err=[%X] [%X]", state->currentslot + 1, imbe_hex, state->errs,
+                   state->errs2);
 }
 
 void
 PrintAMBEData(dsd_opts* opts, dsd_state* state, char* ambe_d) {
+    if (!opts || !state || !ambe_d) {
+        return;
+    }
 
     //cast as unsigned long long int and not uint64_t
     //to avoid the %lx vs %llx warning on 32 or 64 bit
     unsigned long long int ambe = 0;
-
-    //preceeding line break, if required
-    if (opts->dmr_stereo == 0 && opts->dmr_mono == 0) {
-        fprintf(stderr, "\n");
-    }
+    int errs = 0;
+    int errs2 = 0;
 
     ambe = convert_bits_into_output((uint8_t*)ambe_d, 49);
     ambe = ambe << 7; //shift to final position
 
-    fprintf(stderr, " AMBE %014llX", ambe);
-
     if (state->currentslot == 0) {
-        fprintf(stderr, " err = [%X] [%X] ", state->errs, state->errs2);
+        errs = state->errs;
+        errs2 = state->errs2;
     } else {
-        fprintf(stderr, " err = [%X] [%X] ", state->errsR, state->errs2R);
+        errs = state->errsR;
+        errs2 = state->errs2R;
     }
 
-    //trailing line break, if required
-    if (opts->dmr_stereo == 1 || opts->dmr_mono == 1) {
-        fprintf(stderr, "\n");
+    if (opts->payload == 1) {
+        //preceeding line break, if required
+        if (opts->dmr_stereo == 0 && opts->dmr_mono == 0) {
+            fprintf(stderr, "\n");
+        }
+
+        fprintf(stderr, " AMBE %014llX err = [%X] [%X] ", ambe, errs, errs2);
+
+        //trailing line break, if required
+        if (opts->dmr_stereo == 1 || opts->dmr_mono == 1) {
+            fprintf(stderr, "\n");
+        }
     }
+
+    dsd_frame_logf(opts, "FRAME AMBE slot=%d data=%014llX err=[%X] [%X]", state->currentslot + 1, ambe, errs, errs2);
 }
 
 int
@@ -192,6 +303,21 @@ readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {
     }
     if (opts->payload == 1) {
         fprintf(stderr, " err = [%X] [%X] ", state->errs, state->errs2); //not sure that errs here are legit values
+    }
+    if (dsd_frame_log_enabled(opts)) {
+        char imbe_hex[23];
+        size_t hex_off = 0;
+        imbe_hex[0] = '\0';
+        for (i = 0; i < 11; i++) {
+            uint8_t oct = convert_bits_into_output((uint8_t*)imbe_d + ((size_t)i * 8u), 8);
+            if (hex_off + 2 < sizeof(imbe_hex)) {
+                (void)snprintf(imbe_hex + hex_off, sizeof(imbe_hex) - hex_off, "%02X", oct);
+                hex_off += 2;
+            }
+        }
+        imbe_hex[sizeof(imbe_hex) - 1] = '\0';
+        dsd_frame_logf(opts, "FRAME IMBE slot=%d data=%s err=[%X] [%X] source=mbe-file", state->currentslot + 1,
+                       imbe_hex, state->errs, state->errs2);
     }
     return (0);
 }
@@ -239,6 +365,12 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     }
     b = fgetc(opts->mbe_in_f);
     ambe_d[48] = (b & 1);
+    if (dsd_frame_log_enabled(opts)) {
+        unsigned long long ambe = convert_bits_into_output((uint8_t*)ambe_d, 49);
+        ambe = ambe << 7;
+        dsd_frame_logf(opts, "FRAME AMBE slot=%d data=%014llX err=[%X] [%X] source=mbe-file", state->currentslot + 1,
+                       ambe, state->errs, state->errs2);
+    }
 
     return (0);
 }
@@ -1015,7 +1147,7 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, char* ambe_str, uint8_t* k
     mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                              state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
 
-    if (opts->payload == 1) {
+    if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
     }
 
@@ -1135,7 +1267,7 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, char* imbe_str, uint8_t* ks
     mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
                              state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
 
-    if (opts->payload == 1) {
+    if (dsd_frame_detail_enabled(opts)) {
         PrintIMBEData(opts, state, imbe_d);
     }
 

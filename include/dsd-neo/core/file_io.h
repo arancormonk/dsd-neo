@@ -25,6 +25,10 @@ extern "C" {
 void saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d);
 void saveAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
 void saveAmbe2450DataR(dsd_opts* opts, dsd_state* state, char* ambe_d);
+int dsd_frame_log_enabled(const dsd_opts* opts);
+int dsd_frame_detail_enabled(const dsd_opts* opts);
+void dsd_frame_logf(dsd_opts* opts, const char* format, ...);
+void dsd_frame_log_close(dsd_opts* opts);
 void PrintAMBEData(dsd_opts* opts, dsd_state* state, char* ambe_d);
 void PrintIMBEData(dsd_opts* opts, dsd_state* state, char* imbe_d);
 int readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d);

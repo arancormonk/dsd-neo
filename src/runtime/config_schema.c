@@ -67,6 +67,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
 
     /* [logging] section */
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+    {"logging", "frame_log", "Frame trace log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
 
     /* [recording] section */
     {"recording", "per_call_wav", "Enable per-call WAV output", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},

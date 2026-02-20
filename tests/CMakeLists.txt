@@ -420,6 +420,25 @@ else()
 endif()
 add_test(NAME RUNTIME_CLI_PARSE COMMAND dsd-neo_test_runtime_cli_parse)
 
+add_executable(dsd-neo_test_core_frame_log core/test_core_frame_log.c)
+target_include_directories(dsd-neo_test_core_frame_log PRIVATE ${PROJECT_SOURCE_DIR}/include)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+  target_link_libraries(dsd-neo_test_core_frame_log PRIVATE
+    "-Wl,--start-group"
+    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+    "-Wl,--end-group"
+    ${LIBS}
+    dsd-neo_test_support
+  )
+else()
+  target_link_libraries(dsd-neo_test_core_frame_log PRIVATE
+    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+    ${LIBS}
+    dsd-neo_test_support
+  )
+endif()
+add_test(NAME CORE_FRAME_LOG COMMAND dsd-neo_test_core_frame_log)
+
 add_executable(dsd-neo_test_runtime_config_user runtime/test_runtime_config_user.cpp)
 target_include_directories(dsd-neo_test_runtime_config_user PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_user PRIVATE dsd-neo_runtime dsd-neo_test_support)

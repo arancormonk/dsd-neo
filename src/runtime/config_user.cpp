@@ -113,6 +113,16 @@ strip_inline_comment(char* s) {
 }
 
 static void
+close_frame_log_handle(dsd_opts* opts) {
+    if (!opts || opts->frame_log_f == NULL) {
+        return;
+    }
+    fflush(opts->frame_log_f);
+    fclose(opts->frame_log_f);
+    opts->frame_log_f = NULL;
+}
+
+static void
 unquote(char* s) {
     size_t n = strlen(s);
     if (n >= 2 && s[0] == '"' && s[n - 1] == '"') {
@@ -499,6 +509,8 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
             cfg->has_logging = 1;
             if (strcmp(key_lc, "event_log") == 0 || strcmp(key_lc, "event_log_file") == 0) {
                 copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
+            } else if (strcmp(key_lc, "frame_log") == 0) {
+                copy_path_expanded(cfg->frame_log, sizeof cfg->frame_log, val);
             }
             continue;
         }
@@ -814,6 +826,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* out) {
         fprintf(out, "[logging]\n");
         if (cfg->event_log[0]) {
             fprintf(out, "event_log = \"%s\"\n", cfg->event_log);
+        }
+        if (cfg->frame_log[0]) {
+            fprintf(out, "frame_log = \"%s\"\n", cfg->frame_log);
         }
         fprintf(out, "\n");
     }
@@ -1328,6 +1343,17 @@ dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_s
     if (cfg->has_logging) {
         snprintf(opts->event_out_file, sizeof opts->event_out_file, "%s", cfg->event_log);
         opts->event_out_file[sizeof opts->event_out_file - 1] = '\0';
+
+        char frame_log_file_next[sizeof opts->frame_log_file];
+        snprintf(frame_log_file_next, sizeof frame_log_file_next, "%s", cfg->frame_log);
+        frame_log_file_next[sizeof frame_log_file_next - 1] = '\0';
+        if (strcmp(opts->frame_log_file, frame_log_file_next) != 0) {
+            close_frame_log_handle(opts);
+            opts->frame_log_open_error_reported = 0;
+            opts->frame_log_write_error_reported = 0;
+        }
+        snprintf(opts->frame_log_file, sizeof opts->frame_log_file, "%s", frame_log_file_next);
+        opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';
     }
 
     if (cfg->has_recording) {
@@ -1627,6 +1653,8 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     cfg->has_logging = 1;
     snprintf(cfg->event_log, sizeof cfg->event_log, "%s", opts->event_out_file);
     cfg->event_log[sizeof cfg->event_log - 1] = '\0';
+    snprintf(cfg->frame_log, sizeof cfg->frame_log, "%s", opts->frame_log_file);
+    cfg->frame_log[sizeof cfg->frame_log - 1] = '\0';
 
     // Recording snapshot
     cfg->has_recording = 1;
@@ -2228,6 +2256,8 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
         cfg->has_logging = 1;
         if (strcmp(key, "event_log") == 0 || strcmp(key, "event_log_file") == 0) {
             copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
+        } else if (strcmp(key, "frame_log") == 0) {
+            copy_path_expanded(cfg->frame_log, sizeof cfg->frame_log, val);
         }
     } else if (strcmp(section, "recording") == 0) {
         cfg->has_recording = 1;

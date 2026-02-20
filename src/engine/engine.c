@@ -1519,6 +1519,9 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
                  datestr, timestr);
         write_event_to_log_file(opts, state, 0, 0, event_string);
     }
+    if (dsd_frame_log_enabled(opts)) {
+        dsd_frame_logf(opts, "DSD-neo frame logging initialized");
+    }
 
     //test P25 moto alias by loading in test vectors captured from a system and dumped on forum (see dsd_gps.c)
     // apx_embedded_alias_test_phase1(opts, state); //enable this to run test
@@ -1656,6 +1659,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     //no if statement first?
     closeSymbolOutFile(opts, state);
+    dsd_frame_log_close(opts);
 
 #ifdef USE_RTLSDR
     if (opts->rtl_started == 1) {

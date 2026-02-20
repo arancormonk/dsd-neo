@@ -7,7 +7,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000]`
 - Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000]`
-- Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
+- Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
@@ -74,6 +74,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 - `-N` Use the ncurses terminal UI
 - `-Z` Log MBE/PDU payloads to the console (verbose)
+- `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `-O` List PulseAudio input sources and output sinks
 - `-j` P25: enable LCW explicit retune (format 0x44)
 - `-^` P25: prefer CC candidates during control channel hunt
@@ -108,6 +109,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-c <file>` Save symbol captures to a .bin file
 - `-d <dir>` Save raw MBE vocoder frames in this folder
 - `-J <file>` Append event log output
+- `--frame-log <file>` Append frame-level one-line timestamped traces
 - `-L <file>` Append LRRP (location) data
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, unmute encrypted audio

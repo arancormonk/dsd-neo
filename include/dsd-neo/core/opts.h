@@ -52,6 +52,7 @@ struct dsd_opts {
     FILE* mbe_out_f;
     FILE* mbe_out_fR; //second slot on a TDMA system
     FILE* symbol_out_f;
+    FILE* frame_log_f;                    // optional frame-trace sink
     time_t symbol_out_file_creation_time; //time the symbol out file was created
     SNDFILE* wav_out_f;
     SNDFILE* wav_out_fR;
@@ -198,6 +199,8 @@ struct dsd_opts {
     double p25_p1_err_hold_s;          // additional seconds to hold when threshold exceeded
     int reset_state;
     int payload;
+    int frame_log_open_error_reported;  // guard repeated open error spam
+    int frame_log_write_error_reported; // guard repeated write error spam
     unsigned int dPMR_curr_frame_is_encrypted;
     int dPMR_next_part_of_superframe;
     int inverted_dpmr;
@@ -292,6 +295,7 @@ struct dsd_opts {
     char symbol_out_file[1024];
     char lrrp_out_file[1024];
     char event_out_file[1024];
+    char frame_log_file[1024];
     char szNumbers[1024]; //**tera 10/32/64 char str
     char serial_dev[1024];
     char output_name[1024];

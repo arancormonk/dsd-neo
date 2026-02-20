@@ -437,7 +437,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
 
         //mbe_processImbe7200x4400Framef (state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_fr, imbe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintIMBEData(opts, state, imbe_d);
         }
 
@@ -458,9 +458,11 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         mbe_demodulateImbe7100x4400Data(imbe7100_fr);
         state->errs2 += mbe_eccImbe7100x4400Data(imbe7100_fr, imbe_d);
 
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintIMBEData(opts, state, imbe_d);
-            fprintf(stderr, " 7100");
+            if (opts->payload == 1) {
+                fprintf(stderr, " 7100");
+            }
         }
 
         mbe_convertImbe7100to7200(imbe_d);
@@ -487,7 +489,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
     } else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_DSTAR_VOICE_NEG)) {
         mbe_processAmbe3600x2400Framef(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_fr,
                                        ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
         }
         if (opts->mbe_out_f != NULL) {
@@ -593,7 +595,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             state->p25_p2_voice_err_hist_pos[sidx] = (hpos + 1) % len2;
         }
 
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
         }
 
@@ -1001,8 +1003,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             //old method for this step below
             //mbe_processAmbe3600x2450Framef (state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_fr, ambe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
-            if (opts->payload
-                == 1) // && state->R == 0 this is why slot 1 didn't primt abme, probably had it set during testing
+            if (dsd_frame_detail_enabled(
+                    opts)) // && state->R == 0 this is why slot 1 didn't primt abme, probably had it set during testing
             {
                 PrintAMBEData(opts, state, ambe_d);
             }
@@ -1411,7 +1413,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
 
             //old method for this step below
             //mbe_processAmbe3600x2450Framef (state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR, ambe_fr, ambe_d, state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2, opts->uvquality);
-            if (opts->payload == 1) {
+            if (dsd_frame_detail_enabled(opts)) {
                 PrintAMBEData(opts, state, ambe_d);
             }
 

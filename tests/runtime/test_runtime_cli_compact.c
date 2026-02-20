@@ -66,11 +66,32 @@ test_config_equals_form_is_removed(void) {
     return 0;
 }
 
+static int
+test_frame_log_consumes_path_and_leaves_short_opts(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--frame-log";
+    char arg2[] = "frames.log";
+    char arg3[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int new_argc = dsd_cli_compact_args(4, argv);
+    if (new_argc != 2) {
+        fprintf(stderr, "expected new_argc=2, got %d\n", new_argc);
+        return 1;
+    }
+    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        fprintf(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_config_without_path_does_not_consume_next_arg();
     rc |= test_config_with_path_consumes_only_path();
     rc |= test_config_equals_form_is_removed();
+    rc |= test_frame_log_consumes_path_and_leaves_short_opts();
     return rc;
 }

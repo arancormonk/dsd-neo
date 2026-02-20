@@ -994,7 +994,7 @@ processYSF(dsd_opts* opts, dsd_state* state) {
             mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, ambe_d,
                                      state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
 
-            if (opts->payload == 1) {
+            if (dsd_frame_detail_enabled(opts)) {
                 PrintAMBEData(opts, state, ambe_d);
             }
 

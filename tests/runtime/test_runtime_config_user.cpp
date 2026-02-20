@@ -80,6 +80,10 @@ test_load_and_apply_basic(void) {
                              "group_csv = \"/tmp/group.csv\"\n"
                              "allow_list = true\n"
                              "\n"
+                             "[logging]\n"
+                             "event_log = \"/tmp/events.log\"\n"
+                             "frame_log = \"/tmp/frames.log\"\n"
+                             "\n"
                              "[recording]\n"
                              "per_call_wav = true\n"
                              "per_call_wav_dir = \"/tmp/wav\"\n"
@@ -152,6 +156,11 @@ test_load_and_apply_basic(void) {
     }
     if (opts.trunk_use_allow_list != 1) {
         fprintf(stderr, "trunk_use_allow_list not set\n");
+        rc |= 1;
+    }
+    if (strcmp(opts.event_out_file, "/tmp/events.log") != 0 || strcmp(opts.frame_log_file, "/tmp/frames.log") != 0) {
+        fprintf(stderr, "logging paths not applied correctly event=%s frame=%s\n", opts.event_out_file,
+                opts.frame_log_file);
         rc |= 1;
     }
     if (opts.dmr_stereo_wav != 1 || strcmp(opts.wav_out_dir, "/tmp/wav") != 0) {
@@ -349,6 +358,81 @@ test_snapshot_persists_demod_lock(void) {
     return rc;
 }
 
+static int
+test_apply_logging_retargets_frame_log_file(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    FILE* first_handle = tmpfile();
+    if (!first_handle) {
+        fprintf(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    opts.frame_log_f = first_handle;
+    opts.frame_log_open_error_reported = 1;
+    opts.frame_log_write_error_reported = 1;
+    snprintf(opts.frame_log_file, sizeof opts.frame_log_file, "%s", "/tmp/frames-old.log");
+    opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
+
+    dsdneoUserConfig cfg = {};
+    cfg.version = 1;
+    cfg.has_logging = 1;
+    snprintf(cfg.frame_log, sizeof cfg.frame_log, "%s", "/tmp/frames-new.log");
+    cfg.frame_log[sizeof cfg.frame_log - 1] = '\0';
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (opts.frame_log_f != NULL) {
+        fprintf(stderr, "frame log handle should be closed after retarget\n");
+        rc |= 1;
+    }
+    if (strcmp(opts.frame_log_file, "/tmp/frames-new.log") != 0) {
+        fprintf(stderr, "frame log path not updated after retarget: %s\n", opts.frame_log_file);
+        rc |= 1;
+    }
+    if (opts.frame_log_open_error_reported != 0) {
+        fprintf(stderr, "frame log open error state should reset after retarget\n");
+        rc |= 1;
+    }
+    if (opts.frame_log_write_error_reported != 0) {
+        fprintf(stderr, "frame log write error state should reset after retarget\n");
+        rc |= 1;
+    }
+
+    FILE* second_handle = tmpfile();
+    if (!second_handle) {
+        fprintf(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    opts.frame_log_f = second_handle;
+    opts.frame_log_open_error_reported = 1;
+    opts.frame_log_write_error_reported = 1;
+    cfg.frame_log[0] = '\0';
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (opts.frame_log_f != NULL) {
+        fprintf(stderr, "frame log handle should be closed when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.frame_log_file[0] != '\0') {
+        fprintf(stderr, "frame log path should be cleared when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.frame_log_open_error_reported != 0) {
+        fprintf(stderr, "frame log open error state should reset when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.frame_log_write_error_reported != 0) {
+        fprintf(stderr, "frame log write error state should reset when disabling logging path\n");
+        rc |= 1;
+    }
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -356,5 +440,6 @@ main(void) {
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();
     rc |= test_snapshot_persists_demod_lock();
+    rc |= test_apply_logging_retargets_frame_log_file();
     return rc;
 }

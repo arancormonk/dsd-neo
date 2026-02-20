@@ -141,7 +141,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     //D-STAR AMBE
     else if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
         soft_demod_ambe_dstar(opts, state, ambe_fr, ambe_d);
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
         }
 
@@ -172,7 +172,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     //X2-TDMA AMBE
     else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
         soft_demod_ambe_x2(opts, state, ambe_fr, ambe_d);
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
         }
 
@@ -202,7 +202,7 @@ soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][
     else {
         soft_demod_ambe2_ehr(state, ambe_fr, ambe_d);
         //decrypt here
-        if (opts->payload == 1) {
+        if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
         }
         //make left or right channel decision

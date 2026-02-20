@@ -107,6 +107,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* calc_start_cli = NULL;
     const char* input_vol_cli = NULL;
     const char* input_warn_db_cli = NULL;
+    const char* frame_log_cli = NULL;
     const char* rdio_mode_cli = NULL;
     const char* rdio_system_id_cli = NULL;
     const char* rdio_api_url_cli = NULL;
@@ -247,6 +248,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             input_warn_db_cli = argv[++i];
             continue;
         }
+        if (strcmp(argv[i], "--frame-log") == 0 && i + 1 < argc) {
+            frame_log_cli = argv[++i];
+            continue;
+        }
         if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {
             rdio_mode_cli = argv[++i];
             continue;
@@ -366,6 +371,15 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     } else if (cfg && cfg->input_warn_db_is_set) {
         opts->input_warn_db = (float)cfg->input_warn_db;
         LOG_NOTICE("Low input warning threshold (env): %.1f dBFS\n", opts->input_warn_db);
+    }
+
+    if (frame_log_cli) {
+        snprintf(opts->frame_log_file, sizeof opts->frame_log_file, "%s", frame_log_cli);
+        opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';
+        opts->frame_log_open_error_reported = 0;
+        opts->frame_log_write_error_reported = 0;
+        dsd_frame_log_close(opts);
+        LOG_NOTICE("Frame log file: %s\n", opts->frame_log_file);
     }
 
     if (rdio_mode_cli) {

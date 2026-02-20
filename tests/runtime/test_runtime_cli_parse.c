@@ -574,6 +574,52 @@ test_rdio_long_options_parse(void) {
     return test_rc;
 }
 
+static int
+test_frame_log_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--frame-log";
+    char arg2[] = "frames.log";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->frame_log_file, "frames.log") != 0) {
+        fprintf(stderr, "unexpected frame_log_file=%s\n", opts->frame_log_file);
+        test_rc = 1;
+    }
+    if (opts->payload != 0) {
+        fprintf(stderr, "expected payload to remain off, got %d\n", opts->payload);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -585,5 +631,6 @@ main(void) {
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_bootstrap_treats_lone_ini_as_config();
     rc |= test_rdio_long_options_parse();
+    rc |= test_frame_log_long_option_parse();
     return rc;
 }

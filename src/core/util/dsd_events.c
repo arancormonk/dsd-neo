@@ -1158,6 +1158,8 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
              sizeof state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
              event_string); // could change this to a strncpy to prevent potential overflow
 
+    dsd_frame_logf(opts, "FRAME DATA slot=%d src=%u dst=%u %s", slot + 1, src, dst, data_string ? data_string : "");
+
     /* stack buffers; no free */
 
     //call alert on data calls
