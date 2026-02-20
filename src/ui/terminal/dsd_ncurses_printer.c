@@ -2174,7 +2174,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             int a = (edacs_channel_tree[i][2] >> state->edacs_a_shift) & state->edacs_a_mask;
             int f = (edacs_channel_tree[i][2] >> state->edacs_f_shift) & state->edacs_f_mask;
             int s = edacs_channel_tree[i][2] & state->edacs_s_mask;
-            printw("| - LCN [%02d][%010.06lf] MHz", i, (double)state->trunk_lcn_freq[i - 1] / 1000000);
+            printw("| - LCN [%02d][%.06lf] MHz", i, (double)state->trunk_lcn_freq[i - 1] / 1000000);
 
             //print Control Channel on LCN line with the current Control Channel
             if ((i) == state->edacs_cc_lcn) {
@@ -2600,8 +2600,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         printw("|");
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("      %s\n", item->text_message);
+                        attron(COLOR_PAIR(4));
+                        printw("  \\-- %s\n", item->text_message);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2611,8 +2611,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         printw("|");
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("      Alias: %s \n", item->alias);
+                        attron(COLOR_PAIR(4));
+                        printw("  \\-- Alias: %s \n", item->alias);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2622,8 +2622,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         printw("|");
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("      GPS: %s \n", item->gps_s);
+                        attron(COLOR_PAIR(4));
+                        printw("  \\-- GPS: %s \n", item->gps_s);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2633,8 +2633,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         printw("|");
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("      DSD-neo: %s \n", item->internal_str);
+                        attron(COLOR_PAIR(4));
+                        printw("  \\-- DSD-neo: %s \n", item->internal_str);
                         attron(COLOR_PAIR(4));
                     }
                 }
@@ -2729,7 +2729,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                             break;
                         }
                         attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("| S%d      %s\n", slot + 1, item->text_message);
+                        printw("| S%d \\-- %s\n", slot + 1, item->text_message);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2738,8 +2738,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         if (y >= history_stop_y) {
                             break;
                         }
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("| S%d      Alias: %s \n", slot + 1, item->alias);
+                        attron(COLOR_PAIR(4));
+                        printw("| S%d \\-- Alias: %s \n", slot + 1, item->alias);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2748,8 +2748,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         if (y >= history_stop_y) {
                             break;
                         }
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("| S%d      GPS: %s \n", slot + 1, item->gps_s);
+                        attron(COLOR_PAIR(4));
+                        printw("| S%d \\-- GPS: %s \n", slot + 1, item->gps_s);
                         attron(COLOR_PAIR(4));
                     }
 
@@ -2758,8 +2758,8 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                         if (y >= history_stop_y) {
                             break;
                         }
-                        attron(COLOR_PAIR(4)); //feel free to change this to any value you want
-                        printw("| S%d      DSD-neo: %s \n", slot + 1, item->internal_str);
+                        attron(COLOR_PAIR(4));
+                        printw("| S%d \\-- DSD-neo: %s \n", slot + 1, item->internal_str);
                         attron(COLOR_PAIR(4));
                     }
                 }
