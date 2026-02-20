@@ -18,12 +18,13 @@
 /**
  * @brief Open a string prompt asynchronously.
  *
- * The callback is invoked with the entered text (or NULL on cancel/empty).
+ * The callback is invoked with entered text, "" on explicit empty submit,
+ * or NULL on cancel.
  *
  * @param title    Title shown in prompt window.
  * @param prefill  Optional prefilled text (may be NULL).
  * @param cap      Max buffer capacity for input.
- * @param on_done  Callback invoked when user completes (text may be NULL).
+ * @param on_done  Callback invoked when user completes (text may be NULL on cancel).
  * @param user     User context passed to callback.
  */
 void ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,

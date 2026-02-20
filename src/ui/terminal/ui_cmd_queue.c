@@ -35,6 +35,7 @@
 #include <dsd-neo/ui/menu_services.h>
 #include <dsd-neo/ui/ui_history.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +95,21 @@ q_is_full_unlocked(void) {
 static inline int
 q_is_empty_unlocked(void) {
     return g_head == g_tail;
+}
+
+static void
+ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
+    if (!state || !fmt) {
+        return;
+    }
+    if (ttl_s < 1) {
+        ttl_s = 1;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(state->ui_msg, sizeof state->ui_msg, fmt, ap); // NOLINT
+    va_end(ap);
+    state->ui_msg_expire = time(NULL) + ttl_s;
 }
 
 int
@@ -342,13 +358,16 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 if (opts->tcp_in_ctx != NULL) {
                     LOG_INFO("TCP Socket Connected Successfully.\n");
                     opts->audio_in_type = AUDIO_IN_TCP; // TCP PCM16LE
+                    ui_set_toast(state, 3, "TCP audio connected: %s:%d", opts->tcp_hostname, opts->tcp_portno);
                 } else {
                     LOG_ERROR("Error, couldn't open TCP audio input\n");
                     dsd_socket_close(opts->tcp_sockfd);
                     opts->tcp_sockfd = 0;
+                    ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
                 }
             } else {
                 LOG_ERROR("TCP Socket Connection Error.\n");
+                ui_set_toast(state, 4, "TCP connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
             }
             break;
         }
@@ -357,6 +376,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             memcpy(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
             opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
             opts->use_rigctl = (opts->rigctl_sockfd != 0) ? 1 : 0;
+            if (opts->use_rigctl) {
+                ui_set_toast(state, 3, "Rigctl connected: %s:%d", opts->rigctlhostname, opts->rigctlportno);
+            } else {
+                ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", opts->rigctlhostname, opts->rigctlportno);
+            }
             break;
         }
         case UI_CMD_RETURN_CC: {
@@ -1022,7 +1046,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(host, c->data, 255);
                 int32_t port = 0;
                 memcpy(&port, c->data + 256, sizeof(int32_t));
-                svc_udp_output_config(opts, state, host, port);
+                int rc = svc_udp_output_config(opts, state, host, port);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "UDP output configured: %s:%d", host, (int)port);
+                } else {
+                    ui_set_toast(state, 4, "UDP output failed: %s:%d", host, (int)port);
+                }
             }
             break;
         }
@@ -1032,7 +1061,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(host, c->data, 255);
                 int32_t port = 0;
                 memcpy(&port, c->data + 256, sizeof(int32_t));
-                svc_tcp_connect_audio(opts, host, port);
+                int rc = svc_tcp_connect_audio(opts, host, port);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, (int)port);
+                } else {
+                    ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", host, (int)port);
+                }
             }
             break;
         }
@@ -1042,7 +1076,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(host, c->data, 255);
                 int32_t port = 0;
                 memcpy(&port, c->data + 256, sizeof(int32_t));
-                svc_rigctl_connect(opts, host, port);
+                int rc = svc_rigctl_connect(opts, host, port);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Rigctl connected: %s:%d", host, (int)port);
+                } else {
+                    ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", host, (int)port);
+                }
             }
             break;
         }
@@ -1056,6 +1095,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 opts->udp_in_portno = port;
                 snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
                 opts->audio_in_type = AUDIO_IN_UDP;
+                ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
             }
             break;
         }

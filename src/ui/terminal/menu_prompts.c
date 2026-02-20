@@ -31,7 +31,7 @@ typedef struct {
     char* buf;
     size_t cap;
     size_t len;
-    void (*on_done_str)(void* user, const char* text); // NULL text indicates cancel/empty
+    void (*on_done_str)(void* user, const char* text); // NULL text indicates cancel
     void* user;
 } UiPrompt;
 
@@ -92,6 +92,7 @@ ui_prompt_close_all(void) {
         free(g_prompt.buf);
         g_prompt.buf = NULL;
     }
+    (void)curs_set(0); // hide cursor when no prompt is active
     memset(&g_prompt, 0, sizeof(g_prompt));
 }
 
@@ -272,7 +273,7 @@ ui_prompt_handle_key(int ch) {
         g_prompt.on_done_str = NULL; // prevent close_all() from calling again
         ui_prompt_close_all();
         if (cb) {
-            cb(up, text_copy);
+            cb(up, have_text ? text_copy : "");
         }
         free(text_copy);
         return 1;
@@ -300,6 +301,41 @@ ui_prompt_render(void) {
     }
     int scr_h = 0, scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
+    if (scr_h < 4 || scr_w < 8) {
+        return;
+    }
+    int max_w = scr_w - 2;
+    if (max_w < 10) {
+        // On narrow terminals, relax side margins before forcing a larger minimum width.
+        max_w = scr_w;
+    }
+    if (max_w < 4) {
+        return;
+    }
+    if (w > max_w) {
+        w = max_w;
+    }
+    if (w < 10 && max_w >= 10) {
+        w = 10;
+    }
+
+    int max_h = scr_h - 2;
+    if (max_h < 6) {
+        // On short terminals, relax vertical margins before forcing a larger minimum height.
+        max_h = scr_h;
+    }
+    if (max_h < 3) {
+        return;
+    }
+    if (h > max_h) {
+        h = max_h;
+    }
+    if (h < 6 && max_h >= 6) {
+        h = 6;
+    }
+    if (h < 3) {
+        h = 3;
+    }
     int py = (scr_h - h) / 2;
     int px = (scr_w - w) / 2;
     if (py < 0) {
@@ -310,14 +346,70 @@ ui_prompt_render(void) {
     }
     if (!g_prompt.win) {
         g_prompt.win = ui_make_window(h, w, py, px);
+        if (!g_prompt.win) {
+            return;
+        }
         wtimeout(g_prompt.win, 0);
     }
     WINDOW* win = g_prompt.win;
+    (void)curs_set(1); // show cursor while editing prompt text
     werase(win);
     box(win, 0, 0);
-    mvwprintw(win, 1, 2, "%s", title);
-    mvwprintw(win, 3, 2, "> %s", g_prompt.buf ? g_prompt.buf : "");
-    mvwprintw(win, h - 2, 2, "Enter=OK  Esc=Cancel");
+
+    int interior_rows = h - 2;
+    int title_y = -1;
+    int input_y = 1;
+    int footer_y = -1;
+    if (interior_rows >= 4) {
+        title_y = 1;
+        input_y = 3;
+        footer_y = h - 2;
+    } else if (interior_rows == 3) {
+        title_y = 1;
+        input_y = 2;
+        footer_y = h - 2;
+    } else if (interior_rows == 2) {
+        title_y = 1;
+        input_y = 2;
+    } else {
+        input_y = 1;
+    }
+    int body_w = (w > 4) ? (w - 4) : 1;
+    if (title_y > 0) {
+        mvwaddnstr(win, title_y, 2, title, body_w);
+    }
+
+    const char* text = g_prompt.buf ? g_prompt.buf : "";
+    int field_col = 4; // after "> " in normal-width prompts
+    int field_right = w - 2;
+    if (field_col > field_right) {
+        field_col = field_right;
+    }
+    if (field_col < 2) {
+        field_col = 2;
+    }
+    int field_width = field_right - field_col;
+    if (field_width < 1) {
+        field_width = 1;
+    }
+    size_t text_len = strlen(text);
+    size_t start = 0;
+    if ((int)text_len > field_width) {
+        start = text_len - (size_t)field_width;
+    }
+    mvwaddnstr(win, input_y, 2, "> ", (w > 5) ? 2 : 1);
+    mvwaddnstr(win, input_y, field_col, text + start, field_width);
+    int cursor_x = field_col + (int)(text_len - start);
+    if (cursor_x > field_right) {
+        cursor_x = field_right;
+    }
+    if (cursor_x < 2) {
+        cursor_x = 2;
+    }
+    wmove(win, input_y, cursor_x);
+    if (footer_y > 0 && footer_y != input_y) {
+        mvwaddnstr(win, footer_y, 2, "Enter=OK  Esc=Cancel", body_w);
+    }
     wnoutrefresh(win);
 }
 
@@ -342,6 +434,7 @@ ui_help_close(void) {
         delwin(g_help.win);
         g_help.win = NULL;
     }
+    (void)curs_set(0);
     memset(&g_help, 0, sizeof(g_help));
 }
 
@@ -374,8 +467,28 @@ ui_help_render(void) {
     }
     int scr_h = 0, scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
-    if (w > scr_w - 2) {
-        w = scr_w - 2;
+    if (scr_h < 4 || scr_w < 8) {
+        ui_help_close();
+        return;
+    }
+    int max_w = scr_w - 2;
+    int max_h = scr_h - 2;
+    if (max_w < 10 || max_h < 6) {
+        // Overlay cannot be rendered at its minimum usable size.
+        ui_help_close();
+        return;
+    }
+    if (w > max_w) {
+        w = max_w;
+    }
+    if (w < 10) {
+        w = 10;
+    }
+    if (h > max_h) {
+        h = max_h;
+    }
+    if (h < 6) {
+        h = 6;
     }
     int hy = (scr_h - h) / 2;
     int hx = (scr_w - w) / 2;
@@ -387,6 +500,10 @@ ui_help_render(void) {
     }
     if (!g_help.win) {
         g_help.win = ui_make_window(h, w, hy, hx);
+        if (!g_help.win) {
+            ui_help_close();
+            return;
+        }
         wtimeout(g_help.win, 0);
     }
     WINDOW* hw = g_help.win;
@@ -400,8 +517,26 @@ ui_help_render(void) {
 
 // ---- Chooser implementations ----
 
+static void
+ui_chooser_finish(int sel) {
+    void (*cb)(void*, int) = g_chooser.on_done;
+    void* userp = g_chooser.user;
+    g_chooser.on_done = NULL; // prevent double-callback during close/reentry
+    ui_chooser_close();
+    if (cb) {
+        cb(userp, sel);
+    }
+}
+
 void
 ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user) {
+    if (!items || count <= 0) {
+        ui_chooser_close();
+        if (on_done) {
+            on_done(user, -1);
+        }
+        return;
+    }
     g_chooser.active = 1;
     g_chooser.title = title;
     g_chooser.items = items;
@@ -421,6 +556,7 @@ ui_chooser_close(void) {
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
+    (void)curs_set(0);
     memset(&g_chooser, 0, sizeof(g_chooser));
 }
 
@@ -433,6 +569,10 @@ int
 ui_chooser_handle_key(int ch) {
     if (!g_chooser.active) {
         return 0;
+    }
+    if (g_chooser.count <= 0) {
+        ui_chooser_finish(-1);
+        return 1;
     }
     if (ch == ERR) {
         return 1;
@@ -456,17 +596,12 @@ ui_chooser_handle_key(int ch) {
         return 1;
     }
     if (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC) {
-        ui_chooser_close();
+        ui_chooser_finish(-1);
         return 1;
     }
     if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
-        void (*cb)(void*, int) = g_chooser.on_done;
-        void* userp = g_chooser.user;
         int sel = g_chooser.sel;
-        ui_chooser_close();
-        if (cb) {
-            cb(userp, sel);
-        }
+        ui_chooser_finish(sel);
         return 1;
     }
     return 1;
@@ -475,6 +610,10 @@ ui_chooser_handle_key(int ch) {
 void
 ui_chooser_render(void) {
     if (!g_chooser.active) {
+        return;
+    }
+    if (g_chooser.count <= 0 || !g_chooser.items) {
+        ui_chooser_finish(-1);
         return;
     }
     const char* title = g_chooser.title ? g_chooser.title : "Select";
@@ -502,11 +641,28 @@ ui_chooser_render(void) {
     }
     int scr_h = 0, scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
-    if (w > scr_w - 2) {
-        w = scr_w - 2;
+    if (scr_h < 4 || scr_w < 8) {
+        ui_chooser_finish(-1);
+        return;
     }
-    if (h > scr_h - 2) {
-        h = scr_h - 2;
+    int max_w = scr_w - 2;
+    int max_h = scr_h - 2;
+    if (max_w < 10 || max_h < 6) {
+        // Overlay cannot be rendered at its minimum usable size.
+        ui_chooser_finish(-1);
+        return;
+    }
+    if (w > max_w) {
+        w = max_w;
+    }
+    if (w < 10) {
+        w = 10;
+    }
+    if (h > max_h) {
+        h = max_h;
+    }
+    if (h < 6) {
+        h = 6;
     }
     int wy = (scr_h - h) / 2;
     int wx = (scr_w - w) / 2;
@@ -518,6 +674,10 @@ ui_chooser_render(void) {
     }
     if (!g_chooser.win) {
         g_chooser.win = ui_make_window(h, w, wy, wx);
+        if (!g_chooser.win) {
+            ui_chooser_finish(-1);
+            return;
+        }
         keypad(g_chooser.win, TRUE);
         wtimeout(g_chooser.win, 0);
     }

@@ -30,6 +30,7 @@
 
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -40,6 +41,31 @@ static int g_overlay_open = 0;
 static UiMenuFrame g_stack[8];
 static int g_depth = 0;
 static UiCtx g_ctx_overlay = {0};
+
+static void
+ui_overlay_breadcrumb(char* buf, size_t n) {
+    if (!buf || n == 0) {
+        return;
+    }
+    buf[0] = '\0';
+    size_t off = 0;
+    for (int i = 0; i < g_depth; i++) {
+        const char* t = g_stack[i].title;
+        if (!t || !*t) {
+            continue;
+        }
+        int wrote = snprintf(buf + off, n - off, "%s%s", (off > 0) ? " > " : "", t);
+        if (wrote < 0) {
+            break;
+        }
+        size_t w = (size_t)wrote;
+        if (w >= (n - off)) {
+            buf[n - 1] = '\0';
+            break;
+        }
+        off += w;
+    }
+}
 
 static void
 ui_overlay_close_all(void) {
@@ -79,6 +105,7 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     g_stack[0].items = items;
     g_stack[0].n = n;
     g_stack[0].hi = 0;
+    g_stack[0].title = "Main Menu";
     ui_overlay_layout(&g_stack[0], &g_ctx_overlay);
 }
 
@@ -169,6 +196,10 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
                 nf->items = it->submenu;
                 nf->n = it->submenu_len;
                 nf->hi = 0;
+                nf->title = it->label ? it->label : it->id;
+                if (!ui_is_enabled(&nf->items[nf->hi], &g_ctx_overlay)) {
+                    nf->hi = ui_next_enabled(nf->items, nf->n, &g_ctx_overlay, nf->hi, +1);
+                }
                 ui_overlay_layout(nf, &g_ctx_overlay);
             }
         }
@@ -219,9 +250,17 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];
+    if (f->items && f->n > 0 && !ui_is_enabled(&f->items[f->hi], &g_ctx_overlay)) {
+        f->hi = ui_next_enabled(f->items, f->n, &g_ctx_overlay, f->hi, +1);
+    }
     // Ensure window exists with up-to-date geometry
     ui_overlay_layout(f, &g_ctx_overlay);
     ui_overlay_recreate_if_needed(f);
     ui_overlay_ensure_window(f);
-    ui_draw_menu(f->win, f->items, f->n, f->hi, &g_ctx_overlay);
+    if (!f->win) {
+        return;
+    }
+    char breadcrumb[256];
+    ui_overlay_breadcrumb(breadcrumb, sizeof breadcrumb);
+    ui_draw_menu(f->win, f->items, f->n, f->hi, breadcrumb, &g_ctx_overlay);
 }

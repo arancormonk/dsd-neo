@@ -14,6 +14,7 @@
 #include <dsd-neo/platform/curses_compat.h>
 #include "menu_internal.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -67,18 +68,66 @@ ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir)
 // ---- Render helpers ----
 
 void
-ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* ctx) {
+ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, const char* title, void* ctx) {
     int x = 2;
-    int y = 1;
     werase(menu_win);
     box(menu_win, 0, 0);
     int mh = 0, mw = 0;
     getmaxyx(menu_win, mh, mw);
+    int items_top = 2;     // row 1 is reserved for breadcrumb/title
+    int spacer_y = mh - 5; // blank line above footer
+    int items_bottom = spacer_y - 1;
+    int items_rows = items_bottom - items_top + 1;
+    if (items_rows < 1) {
+        items_rows = 1;
+    }
+    int items_last_row = items_top + items_rows - 1;
+    int footer_min_y = items_last_row + 1;
+
+    // Top-line breadcrumb/title for context in nested menus.
+    if (title && *title) {
+        mvwhline(menu_win, 1, 1, ' ', mw - 2);
+        mvwaddnstr(menu_win, 1, x, title, (mw > 4) ? (mw - 4) : 1);
+    }
+
+    int vis_total = 0;
+    int hi_pos = 0;
     for (size_t i = 0; i < n; i++) {
         if (!ui_is_enabled(&items[i], ctx)) {
-            // Hide items that are not enabled for current context
             continue;
         }
+        if ((int)i == hi) {
+            hi_pos = vis_total;
+        }
+        vis_total++;
+    }
+
+    int top = 0;
+    if (vis_total > items_rows) {
+        top = hi_pos - (items_rows / 2);
+        if (top < 0) {
+            top = 0;
+        }
+        if (top > vis_total - items_rows) {
+            top = vis_total - items_rows;
+        }
+    }
+
+    int vis_pos = 0;
+    int drawn = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!ui_is_enabled(&items[i], ctx)) {
+            continue;
+        }
+        if (vis_pos < top) {
+            vis_pos++;
+            continue;
+        }
+        if (drawn >= items_rows) {
+            break;
+        }
+        int y = items_top + drawn;
+        mvwhline(menu_win, y, 1, ' ', mw - 2);
         if ((int)i == hi) {
             wattron(menu_win, A_REVERSE);
         }
@@ -90,21 +139,54 @@ ui_draw_menu(WINDOW* menu_win, const NcMenuItem* items, size_t n, int hi, void* 
                 lab = got;
             }
         }
-        mvwprintw(menu_win, y++, x, "%s", lab);
+        mvwaddnstr(menu_win, y, x, lab, (mw > 4) ? (mw - 4) : 1);
         wattroff(menu_win, A_REVERSE);
+        vis_pos++;
+        drawn++;
     }
-    // ensure a blank spacer line above footer to avoid looking like an item
-    mvwhline(menu_win, mh - 5, 1, ' ', mw - 2);
-    // footer help (split across two lines to avoid overflow)
-    mvwprintw(menu_win, mh - 4, x, "Arrows: move  Enter: select");
-    mvwprintw(menu_win, mh - 3, x, "h: help  Esc/q: back");
+    // Clear remaining rows in item viewport when visible item count shrinks.
+    while (drawn < items_rows) {
+        mvwhline(menu_win, items_top + drawn, 1, ' ', mw - 2);
+        drawn++;
+    }
+
+    // Ensure a blank spacer line above footer, but never erase visible item rows.
+    if (spacer_y >= footer_min_y && spacer_y <= mh - 2) {
+        mvwhline(menu_win, spacer_y, 1, ' ', mw - 2);
+    }
+
+    // Footer includes a position indicator so long menus remain navigable.
+    char navline[96];
+    if (vis_total > 0) {
+        snprintf(navline, sizeof navline, "Arrows: move  Enter: select  (%d/%d)", hi_pos + 1, vis_total);
+    } else {
+        snprintf(navline, sizeof navline, "Arrows: move  Enter: select");
+    }
+    int nav_y = mh - 4;
+    if (nav_y >= footer_min_y && nav_y <= mh - 2) {
+        mvwhline(menu_win, nav_y, 1, ' ', mw - 2);
+        mvwaddnstr(menu_win, nav_y, x, navline, (mw > 4) ? (mw - 4) : 1);
+    }
+    int help_y = mh - 3;
+    if (help_y >= footer_min_y && help_y <= mh - 2) {
+        mvwhline(menu_win, help_y, 1, ' ', mw - 2);
+        mvwaddnstr(menu_win, help_y, x, "h: help  Esc/q: back", (mw > 4) ? (mw - 4) : 1);
+    }
+
     // transient status
     time_t now = time(NULL);
     char sline[256];
     if (ui_status_peek(sline, sizeof sline, now)) {
-        // clear line then print
-        mvwhline(menu_win, mh - 2, 1, ' ', mw - 2);
-        mvwprintw(menu_win, mh - 2, x, "Status: %s", sline);
+        int status_y = mh - 2;
+        if (status_y >= footer_min_y) {
+            // clear line then print
+            mvwhline(menu_win, status_y, 1, ' ', mw - 2);
+            if (x <= mw - 2) {
+                char status_line[288];
+                snprintf(status_line, sizeof status_line, "Status: %s", sline);
+                mvwaddnstr(menu_win, status_y, x, status_line, mw - x - 1);
+            }
+        }
     } else {
         ui_status_clear_if_expired(now);
     }
@@ -158,10 +240,16 @@ ui_overlay_layout(UiMenuFrame* f, void* ctx) {
     if (f2w > width) {
         width = f2w;
     }
+    if (f->title && *f->title) {
+        int tw = pad_x + (int)strlen(f->title);
+        if (tw > width) {
+            width = tw;
+        }
+    }
     width += 2; // borders
-    int height = vis + 6;
-    if (height < 8) {
-        height = 8;
+    int height = vis + 7;
+    if (height < 9) {
+        height = 9;
     }
     int term_h = 24, term_w = 80;
     getmaxyx(stdscr, term_h, term_w);
@@ -173,8 +261,8 @@ ui_overlay_layout(UiMenuFrame* f, void* ctx) {
     }
     if (height > term_h - 2) {
         height = term_h - 2;
-        if (height < 7) {
-            height = 7;
+        if (height < 6) {
+            height = 6;
         }
     }
     int my = (term_h - height) / 2;
@@ -198,6 +286,9 @@ ui_overlay_ensure_window(UiMenuFrame* f) {
     }
     if (!f->win) {
         f->win = ui_make_window(f->h, f->w, f->y, f->x);
+        if (!f->win) {
+            return;
+        }
         keypad(f->win, TRUE);
         wtimeout(f->win, 0);
     }

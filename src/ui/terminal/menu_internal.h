@@ -25,6 +25,7 @@ typedef struct {
     const NcMenuItem* items;
     size_t n;
     int hi;
+    const char* title;
     WINDOW* win;
     int w, h;
     int y, x;
@@ -108,7 +109,7 @@ int ui_submenu_has_visible(const NcMenuItem* items, size_t n, void* ctx);
 int ui_next_enabled(const NcMenuItem* items, size_t n, void* ctx, int from, int dir);
 
 // ---- Render helpers (from menu_render.c) ----
-void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, void* ctx);
+void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, const char* title, void* ctx);
 void ui_overlay_layout(UiMenuFrame* f, void* ctx);
 void ui_overlay_ensure_window(UiMenuFrame* f);
 void ui_overlay_recreate_if_needed(UiMenuFrame* f);
