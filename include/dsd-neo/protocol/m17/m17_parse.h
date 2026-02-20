@@ -56,6 +56,15 @@ struct m17_lsf_result {
  */
 int m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* out);
 
+/**
+ * Return a human-readable name for an M17 packet protocol identifier.
+ *
+ * @param protocol 8-bit protocol code from packet payload octet 0.
+ *
+ * @return Constant string for known protocol IDs, or NULL if unknown/reserved.
+ */
+const char* m17_packet_protocol_name(uint8_t protocol);
+
 #ifdef __cplusplus
 }
 #endif

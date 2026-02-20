@@ -3469,29 +3469,10 @@ decodeM17PKT(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     int i;
 
     uint8_t protocol = input[0];
+    const char* protocol_name = m17_packet_protocol_name(protocol);
     fprintf(stderr, " Protocol:");
-    if (protocol == 0x00) {
-        fprintf(stderr, " Raw;");
-    } else if (protocol == 0x01) {
-        fprintf(stderr, " AX.25;");
-    } else if (protocol == 0x02) {
-        fprintf(stderr, " APRS;");
-    } else if (protocol == 0x03) {
-        fprintf(stderr, " 6LoWPAN;");
-    } else if (protocol == 0x04) {
-        fprintf(stderr, " IPv4;");
-    } else if (protocol == 0x05) {
-        fprintf(stderr, " SMS;");
-    } else if (protocol == 0x06) {
-        fprintf(stderr, " Winlink;");
-    } else if (protocol == 0x80) {
-        fprintf(stderr, " Meta Text Data;"); //internal format only from meta
-    } else if (protocol == 0x81) {
-        fprintf(stderr, " Meta GNSS Position Data;"); //internal format only from meta
-    } else if (protocol == 0x82) {
-        fprintf(stderr, " Meta Extended CSD;"); //internal format only from meta
-    } else if (protocol == 0x89) {
-        fprintf(stderr, " 1600 Arbitrary Data;"); //internal format only from 1600
+    if (protocol_name != NULL) {
+        fprintf(stderr, " %s;", protocol_name);
     } else {
         fprintf(stderr, " Res/Unk: %02X;", protocol);
     }

@@ -1257,6 +1257,9 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     state->nxdn_alias_block_number = 0;
     memset(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    state->nxdn_alias_arib_total_segments = 0;
+    state->nxdn_alias_arib_seen_mask = 0;
+    memset(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
     state->nxdn_call_type[0] = '\0';
 
     //unload keys when using keylaoder

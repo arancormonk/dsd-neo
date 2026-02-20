@@ -13,6 +13,26 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
 
+const char*
+m17_packet_protocol_name(uint8_t protocol) {
+    switch (protocol) {
+        case 0x00: return "Raw";
+        case 0x01: return "AX.25";
+        case 0x02: return "APRS";
+        case 0x03: return "6LoWPAN";
+        case 0x04: return "IPv4";
+        case 0x05: return "SMS";
+        case 0x06: return "Winlink";
+        case 0x07: return "TLE";
+        case 0x80: return "Meta Text Data";
+        case 0x81: return "Meta GNSS Position Data";
+        case 0x82: return "Meta Extended CSD";
+        case 0x89: return "1600 Arbitrary Data";
+        default: break;
+    }
+    return NULL;
+}
+
 int
 m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* out) {
     if (out == NULL || lsf_bits == NULL) {

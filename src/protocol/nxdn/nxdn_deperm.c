@@ -31,6 +31,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/trellis.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -2000,14 +2001,20 @@ nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         fprintf(stderr, " SDCALL_RESP");
     } else if (MessageType == 0x3F) {
         fprintf(stderr, " ALIAS");
+    } else if (MessageType == 0xE1) {
+        fprintf(stderr, " VCALL (ARIB)");
+    } else if (MessageType == 0xE7) {
+        fprintf(stderr, " ALIAS_ARIB");
+    } else if (MessageType == 0xE8) {
+        fprintf(stderr, " TX_REL (ARIB)");
     } else {
         fprintf(stderr, " Unknown Message Type: %02X;", MessageType);
     }
     fprintf(stderr, "%s", KNRM);
 
     //Zero out stale values on DISC or TX_REL only (IDLE messaages occur often on NXDN96 VCH, and randomly on Type-C FACCH1 steals for some reason)
-    if (MessageType == 0x08 || MessageType == 0x11) {
-        memset(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    if (MessageType == 0x08 || MessageType == 0x11 || MessageType == 0xE8) {
+        nxdn_alias_reset(state);
         state->nxdn_last_rid = 0;
         state->nxdn_last_tg = 0;
         state->nxdn_cipher_type = 0; //force will reactivate it if needed during voice tx
@@ -2019,7 +2026,7 @@ nxdn_message_type(dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         sprintf(state->nxdn_call_type, "%s", "");
     }
 
-    if (MessageType == 0x07 || MessageType == 0x08 || MessageType == 0x11) {
+    if (MessageType == 0x07 || MessageType == 0x08 || MessageType == 0x11 || MessageType == 0xE8) {
         //reset gain
         if (opts->floating_point == 1) {
             state->aout_gain = opts->audio_gain;

@@ -270,6 +270,11 @@ target_include_directories(dsd-neo_test_nxdn_trunk_diag PRIVATE ${PROJECT_SOURCE
 target_link_libraries(dsd-neo_test_nxdn_trunk_diag PRIVATE dsd-neo_proto_nxdn)
 add_test(NAME NXDN_TRUNK_DIAG COMMAND dsd-neo_test_nxdn_trunk_diag)
 
+add_executable(dsd-neo_test_nxdn_alias_decode protocol/nxdn/test_nxdn_alias_decode.c)
+target_include_directories(dsd-neo_test_nxdn_alias_decode PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_nxdn_alias_decode PRIVATE dsd-neo_proto_nxdn)
+add_test(NAME NXDN_ALIAS_DECODE COMMAND dsd-neo_test_nxdn_alias_decode)
+
 add_executable(dsd-neo_test_runtime_rings runtime/test_runtime_rings.cpp)
 target_include_directories(dsd-neo_test_runtime_rings PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)
@@ -949,6 +954,13 @@ add_executable(dsd-neo_test_m17_lsf_parse
   ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_tables.c)
 target_include_directories(dsd-neo_test_m17_lsf_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_test(NAME M17_LSF_PARSE COMMAND dsd-neo_test_m17_lsf_parse)
+
+add_executable(dsd-neo_test_m17_protocol_names
+  protocol/m17/test_m17_protocol_names.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_parse.c
+  ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_tables.c)
+target_include_directories(dsd-neo_test_m17_protocol_names PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME M17_PROTOCOL_NAMES COMMAND dsd-neo_test_m17_protocol_names)
 
 add_executable(dsd-neo_test_dmr_t3_sm_clamp
   protocol/dmr/test_dmr_t3_sm_clamp.c

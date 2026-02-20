@@ -1,6 +1,7 @@
 add_library(dsd-neo_proto_nxdn)
 
 target_sources(dsd-neo_proto_nxdn PRIVATE
+  nxdn_alias_decode.c
   nxdn_convolution.c
   nxdn_deperm.c
   nxdn_element.c

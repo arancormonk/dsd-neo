@@ -815,6 +815,9 @@ struct dsd_state {
     uint8_t nxdn_sacch_frame_segcrc[4];
     uint8_t nxdn_alias_block_number;
     char nxdn_alias_block_segment[4][4][8];
+    uint8_t nxdn_alias_arib_total_segments;
+    uint8_t nxdn_alias_arib_seen_mask;
+    uint8_t nxdn_alias_arib_segments[4][6];
 
     //site/srv/cch info
 
