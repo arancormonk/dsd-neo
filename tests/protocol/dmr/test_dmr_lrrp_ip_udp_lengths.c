@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 /*
@@ -175,6 +175,73 @@ build_ipv4_udp_lrrp(uint8_t* out, size_t cap, uint8_t ihl_words) {
     return ip_total_len;
 }
 
+static size_t
+build_ipv4_udp_vertex_tms(uint8_t* out, size_t cap, uint8_t ihl_words) {
+    memset(out, 0, cap);
+
+    const size_t ip_header_len = (size_t)ihl_words * 4u;
+    const size_t vtx_hdr_len = 21u;
+    const size_t utf16_text_len = 4u; // "HI"
+    const size_t udp_payload_len = vtx_hdr_len + utf16_text_len;
+    const size_t udp_len = 8u + udp_payload_len;
+    const size_t ip_total_len = ip_header_len + udp_len;
+
+    if (cap < ip_total_len || ihl_words < 5) {
+        return 0;
+    }
+
+    // IPv4 header
+    out[0] = (uint8_t)((4u << 4) | (ihl_words & 0x0Fu)); // Version + IHL
+    out[1] = 0x00;                                       // TOS
+    out[2] = (uint8_t)((ip_total_len >> 8) & 0xFFu);
+    out[3] = (uint8_t)(ip_total_len & 0xFFu);
+    out[8] = 0x40; // TTL
+    out[9] = 0x11; // UDP
+
+    // Src IP 1.2.3.4 / Dst IP 5.6.7.8
+    out[12] = 1;
+    out[13] = 2;
+    out[14] = 3;
+    out[15] = 4;
+    out[16] = 5;
+    out[17] = 6;
+    out[18] = 7;
+    out[19] = 8;
+
+    for (size_t i = 20; i < ip_header_len; i++) {
+        out[i] = 0x00;
+    }
+
+    // UDP header
+    const size_t udp_off = ip_header_len;
+    const uint16_t port = 5007;
+    out[udp_off + 0] = (uint8_t)((port >> 8) & 0xFFu);
+    out[udp_off + 1] = (uint8_t)(port & 0xFFu);
+    out[udp_off + 2] = (uint8_t)((port >> 8) & 0xFFu);
+    out[udp_off + 3] = (uint8_t)(port & 0xFFu);
+    out[udp_off + 4] = (uint8_t)((udp_len >> 8) & 0xFFu);
+    out[udp_off + 5] = (uint8_t)(udp_len & 0xFFu);
+    out[udp_off + 6] = 0x00;
+    out[udp_off + 7] = 0x00;
+
+    // UDP payload: 21-byte vendor header + UTF-16BE text.
+    size_t p = udp_off + 8u;
+    const uint8_t vtx_hdr[21] = {
+        0x0E, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // observed fixed prefix
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,             // reserved/unknown
+        0x00, 0x00, 0x00, 0x00, 0x00                          // reserved/unknown
+    };
+    memcpy(out + p, vtx_hdr, sizeof(vtx_hdr));
+    p += sizeof(vtx_hdr);
+
+    out[p++] = 0x00;
+    out[p++] = 'H';
+    out[p++] = 0x00;
+    out[p++] = 'I';
+
+    return ip_total_len;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -209,6 +276,17 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_nonempty(st.dmr_lrrp_gps[0], "ihl=6 decoded");
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], " km/h 90", "ihl=6 has speed+heading");
+    }
+
+    // Case 3: Vertex TMS on UDP/5007 should not trim valid text when data_block_poc is non-zero.
+    {
+        size_t plen = build_ipv4_udp_vertex_tms(pkt, sizeof pkt, 5);
+        st.data_block_poc[0] = 2; // non-zero from RF block framing; not part of UDP payload length
+        st.dmr_lrrp_gps[0][0] = '\0';
+        st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "VTX TMS SRC:", "vtx5007 label");
+        rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "HI", "vtx5007 text");
     }
 
     free(st.event_history_s);

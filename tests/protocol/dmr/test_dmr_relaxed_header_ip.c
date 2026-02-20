@@ -255,5 +255,39 @@ main(int argc, char** argv) {
     assert(state.dmr_lrrp_target[state.currentslot] != 0);
     assert(state.dmr_lrrp_source[state.currentslot] != 0);
 
+    // Vertex proprietary extended header (MFID 0x77), slot 0.
+    memset(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.data_ks_start[0] = 3;
+    memset(bits, 0, sizeof(bits));
+    set_bits(bits, 0, 2U, 4);            // p_sap != 1
+    set_bits(bits, 4, 15U, 4);           // dpf=15 (proprietary)
+    set_bits(bits, 8, 0x77U, 8);         // p_mfid=Vertex
+    set_bits(bits, 16, 0x5AU, 8);        // key id
+    set_bits(bits, 48, 0xA1B2C3D4U, 32); // MI(32)
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.payload_algid == 0x07);
+    assert(state.payload_keyid == 0x5A);
+    assert((uint32_t)state.payload_mi == 0xA1B2C3D4U);
+    assert(state.dmr_so == 0x100);
+    assert(state.data_ks_start[0] == 0);
+
+    // Vertex proprietary extended header (MFID 0x77), slot 1 mirror fields.
+    memset(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    state.data_ks_start[1] = 2;
+    memset(bits, 0, sizeof(bits));
+    set_bits(bits, 0, 2U, 4);            // p_sap != 1
+    set_bits(bits, 4, 15U, 4);           // dpf=15 (proprietary)
+    set_bits(bits, 8, 0x77U, 8);         // p_mfid=Vertex
+    set_bits(bits, 16, 0x33U, 8);        // key id
+    set_bits(bits, 48, 0x01020304U, 32); // MI(32)
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.payload_algidR == 0x07);
+    assert(state.payload_keyidR == 0x33);
+    assert((uint32_t)state.payload_miR == 0x01020304U);
+    assert(state.dmr_soR == 0x100);
+    assert(state.data_ks_start[1] == 0);
+
     return 0;
 }

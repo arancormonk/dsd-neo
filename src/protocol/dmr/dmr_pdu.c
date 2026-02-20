@@ -551,6 +551,40 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             //https://trbonet.com/kb/how-to-configure-dt500-and-mobile-radio-to-work-with-scada-sensors/
             fprintf(stderr, "TRBOnet SCADA;");
             sprintf(state->dmr_lrrp_gps[slot], "SCADA SRC: %d; DST: %d;", src24, dst24);
+        } else if (port1 == 5007 && port2 == 5007) {
+            const size_t vtx_text_off = 21u;
+            const size_t vtx_diag_hdr_len = 9u;
+            size_t text_len = 0u;
+
+            fprintf(stderr, "VTX STD TMS;");
+            sprintf(state->dmr_lrrp_gps[slot], "VTX TMS SRC: %d; DST: %d; ", src24, dst24);
+
+            if (opts->payload == 1) {
+                size_t diag_len = ((size_t)payload_len < vtx_diag_hdr_len) ? (size_t)payload_len : vtx_diag_hdr_len;
+                fprintf(stderr, " HDR: ");
+                for (size_t i = 0; i < diag_len; i++) {
+                    fprintf(stderr, "%02X", payload[i]);
+                }
+                if (diag_len < vtx_diag_hdr_len) {
+                    fprintf(stderr, " (truncated)");
+                }
+                fprintf(stderr, ";");
+            }
+
+            if ((size_t)payload_len > vtx_text_off) {
+                text_len = (size_t)payload_len - vtx_text_off;
+            }
+
+            // UTF-16BE text must be even-sized.
+            text_len &= ~(size_t)1u;
+
+            if (text_len > 0u) {
+                fprintf(stderr, " Text: ");
+                utf16_to_text(state, 1, (uint16_t)text_len, payload + vtx_text_off);
+            } else {
+                dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "No Text;");
+                fprintf(stderr, " No Text;");
+            }
         }
         //ETSI specific -- unknown entry value, assuming +28
         else if (port1 == 5016 && port2 == 5016) {
