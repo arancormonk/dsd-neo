@@ -16,7 +16,9 @@ static int
 ui_handle_eh_next(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)opts;
     (void)c;
-    state->eh_index++;
+    if (state->eh_index < 254) {
+        state->eh_index++;
+    }
     return 1;
 }
 
@@ -24,7 +26,9 @@ static int
 ui_handle_eh_prev(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)opts;
     (void)c;
-    state->eh_index--;
+    if (state->eh_index > 0) {
+        state->eh_index--;
+    }
     return 1;
 }
 

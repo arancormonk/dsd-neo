@@ -2406,6 +2406,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
     }
     //only print event history if enabled
     const int history_mode = ui_history_get_mode();
+    int history_draw_footer = 1;
     attron(COLOR_PAIR(4)); //cyan for history
     {
         /* Custom header to underline active Cycle (h) mode */
@@ -2458,6 +2459,14 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             attroff(A_UNDERLINE);
         }
 
+        // If there's no room for at least one event row, surface it in-header.
+        if (history_mode != 0) {
+            int room_hint = rows - (y + 1) - 2;
+            if (room_hint < 1) {
+                addstr(" [No room]");
+            }
+        }
+
         /* Fill remainder of line with '-' and advance to next line */
         int used_y = 0, used = 0;
         getyx(stdscr, used_y, used);
@@ -2480,7 +2489,13 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         (void)start_x;
 
         // Leave room for the bottom HR line and avoid scrolling on ui_print_hr().
+        // If that leaves no room, reclaim the footer line instead of truncating
+        // higher sections.
         int avail_lines = rows - start_y - 2;
+        if (avail_lines < 1) {
+            avail_lines = rows - start_y - 1;
+            history_draw_footer = 0;
+        }
         if (avail_lines < 0) {
             avail_lines = 0;
         }
@@ -2490,6 +2505,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         int events_to_show = avail_lines;
         if (events_to_show > max_events) {
             events_to_show = max_events;
+        }
+
+        int history_stop_y = rows - (history_draw_footer ? 2 : 1);
+        if (history_stop_y < 0) {
+            history_stop_y = 0;
         }
 
         // In short mode, bound the displayed event string to the current width to avoid wrapping.
@@ -2524,7 +2544,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     int y = 0, x = 0;
                     getyx(stdscr, y, x);
                     (void)x;
-                    if (y >= rows - 2) {
+                    if (y >= history_stop_y) {
                         break;
                     }
 
@@ -2552,7 +2572,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->text_message[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         printw("|");
@@ -2563,7 +2583,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->alias[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         printw("|");
@@ -2574,7 +2594,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->gps_s[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         printw("|");
@@ -2585,7 +2605,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->internal_str[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         printw("|");
@@ -2637,7 +2657,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                     int y = 0, x = 0;
                     getyx(stdscr, y, x);
                     (void)x;
-                    if (y >= rows - 2) {
+                    if (y >= history_stop_y) {
                         break;
                     }
 
@@ -2681,7 +2701,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->text_message[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         attron(COLOR_PAIR(4)); //feel free to change this to any value you want
@@ -2691,7 +2711,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->alias[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         attron(COLOR_PAIR(4)); //feel free to change this to any value you want
@@ -2701,7 +2721,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->gps_s[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         attron(COLOR_PAIR(4)); //feel free to change this to any value you want
@@ -2711,7 +2731,7 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
 
                     if (item->internal_str[0] != '\0') {
                         getyx(stdscr, y, x);
-                        if (y >= rows - 2) {
+                        if (y >= history_stop_y) {
                             break;
                         }
                         attron(COLOR_PAIR(4)); //feel free to change this to any value you want
@@ -2723,7 +2743,9 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    ui_print_hr();
+    if (history_draw_footer || history_mode == 0) {
+        ui_print_hr();
+    }
     attroff(COLOR_PAIR(4)); //cyan for history
 
     wnoutrefresh(stdscr);
