@@ -114,6 +114,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_api_key_cli = NULL;
     const char* rdio_upload_timeout_cli = NULL;
     const char* rdio_upload_retries_cli = NULL;
+    const char* dmr_baofeng_pc5_cli = NULL;
+    const char* dmr_csi_ee72_cli = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
@@ -276,6 +278,32 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             rdio_upload_retries_cli = argv[++i];
             continue;
         }
+        if (strcmp(argv[i], "--dmr-baofeng-pc5") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--dmr-baofeng-pc5 requires a hex key value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            dmr_baofeng_pc5_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--dmr-baofeng-pc5=", 18) == 0) {
+            dmr_baofeng_pc5_cli = argv[i] + 18;
+            continue;
+        }
+        if (strcmp(argv[i], "--dmr-csi-ee72") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--dmr-csi-ee72 requires a hex key value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            dmr_csi_ee72_cli = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--dmr-csi-ee72=", 15) == 0) {
+            dmr_csi_ee72_cli = argv[i] + 15;
+            continue;
+        }
         if (strcmp(argv[i], "--auto-ppm-snr") == 0 && i + 1 < argc) {
             const char* sv = argv[++i];
             if (sv && *sv) {
@@ -433,6 +461,21 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }
         opts->rdio_upload_retries = retries;
         LOG_NOTICE("Rdio upload retries: %d\n", opts->rdio_upload_retries);
+    }
+
+    if (dmr_baofeng_pc5_cli) {
+        if (baofeng_ap_pc5_keystream_creation(state, dmr_baofeng_pc5_cli) != 0) {
+            LOG_ERROR("Invalid --dmr-baofeng-pc5 value\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
+    }
+    if (dmr_csi_ee72_cli) {
+        if (connect_systems_ee72_key_creation(state, dmr_csi_ee72_cli) != 0) {
+            LOG_ERROR("Invalid --dmr-csi-ee72 value\n");
+            cli_set_exit_rc(out_exit_rc, 1);
+            return DSD_PARSE_ERROR;
+        }
     }
 
     int new_argc = dsd_cli_compact_args(argc, argv);

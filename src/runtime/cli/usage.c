@@ -270,6 +270,9 @@ dsd_cli_usage(void) {
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
     printf("                 -5 '736B9A9C5645288B 243AD5CB8701EF8A' \n");
     printf("                 \n");
+    printf("      --dmr-baofeng-pc5 <hex>  Force Baofeng AP (PC5) key (32 or 64 hex chars).\n");
+    printf("      --dmr-csi-ee72 <hex>     Force Connect Systems EE72 key (18 hex chars).\n");
+    printf("                 \n");
     printf("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value) \n");
     printf("                 \n");
     printf("  -A <hex>      Manually Enter and Enforce Anytone 16-bit BP Key Value (DMR) (Hex Value) \n");

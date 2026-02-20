@@ -912,6 +912,9 @@ struct dsd_state {
     int tyt_ap;
     int tyt_bp;
     int tyt_ep;
+    int baofeng_ap;
+    int csi_ee;
+    uint8_t csi_ee_key[9];
     // retrevis rc2
     int retevis_ap;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
 #include <dsd-neo/runtime/cli.h>
@@ -79,6 +79,24 @@ dsd_cli_compact_args(int argc, char** argv) {
             if (i + 1 < argc) {
                 i++;
             }
+            continue;
+        }
+        if (strcmp(arg, "--dmr-baofeng-pc5") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--dmr-baofeng-pc5=", 18) == 0) {
+            continue;
+        }
+        if (strcmp(arg, "--dmr-csi-ee72") == 0) {
+            if (i + 1 < argc) {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--dmr-csi-ee72=", 15) == 0) {
             continue;
         }
         if (strcmp(arg, "--auto-ppm-snr") == 0) {

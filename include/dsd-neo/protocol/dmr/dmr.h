@@ -64,6 +64,7 @@ void LFSR(dsd_state* state);
 void LFSR64(dsd_state* state);
 void LFSR128d(dsd_state* state);
 void hytera_enhanced_alg_refresh(dsd_state* state);
+uint32_t kirisun_lfsr(unsigned long long int mi);
 
 #ifdef __cplusplus
 }

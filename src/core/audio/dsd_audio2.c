@@ -97,6 +97,11 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
     return 0;
 }
 
+static inline int
+dmr_forced_privacy_unmute_enabled(const dsd_state* state) {
+    return state && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
+}
+
 void
 dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -199,12 +204,13 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     encL = 1;
     encR = 1;
     {
+        const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
         int l_is_enc = state->dmr_encL != 0; // decoder flagged L as encrypted
         int r_is_enc = state->dmr_encR != 0; // decoder flagged R as encrypted
-        if (!l_is_enc || opts->dmr_mute_encL == 0) {
+        if (forced_dmr_privacy || !l_is_enc || opts->dmr_mute_encL == 0) {
             encL = 0;
         }
-        if (!r_is_enc || opts->dmr_mute_encR == 0) {
+        if (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) {
             encR = 0;
         }
     }
@@ -1031,9 +1037,15 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     encL = (state->dmr_so >> 6) & 0x1;
     encR = (state->dmr_soR >> 6) & 0x1;
 
+    // Forced vendor privacy modes decrypt AMBE with static keys even when ALG/KeyID
+    // metadata does not map to the normal RC4/AES key fields.
+    const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
+
     //checkdown to see if we can lift the 'mute' if a key is available
     if (encL) {
-        if (state->payload_algid == 0) {
+        if (forced_dmr_privacy) {
+            encL = 0;
+        } else if (state->payload_algid == 0) {
             if (state->K != 0 || state->K1 != 0) {
                 encL = 0;
             }
@@ -1041,7 +1053,8 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
             if (state->R != 0) {
                 encL = 0;
             }
-        } else if (state->payload_algid == 0x24 || state->payload_algid == 0x25) {
+        } else if (state->payload_algid == 0x24 || state->payload_algid == 0x25 || state->payload_algid == 0x36
+                   || state->payload_algid == 0x37) {
             //going to need a better check for this later on, or seperated keys or something
             if (state->aes_key_loaded[0] == 1) {
                 encL = 0;
@@ -1050,7 +1063,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     }
 
     if (encR) {
-        if (state->payload_algidR == 0) {
+        if (forced_dmr_privacy) {
+            encR = 0;
+        } else if (state->payload_algidR == 0) {
             if (state->K != 0 || state->K1 != 0) {
                 encR = 0;
             }
@@ -1058,7 +1073,8 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
             if (state->RR != 0) {
                 encR = 0;
             }
-        } else if (state->payload_algidR == 0x24 || state->payload_algidR == 0x25) {
+        } else if (state->payload_algidR == 0x24 || state->payload_algidR == 0x25 || state->payload_algidR == 0x36
+                   || state->payload_algidR == 0x37) {
             //going to need a better check for this later on, or seperated keys or something
             if (state->aes_key_loaded[1] == 1) {
                 encR = 0;

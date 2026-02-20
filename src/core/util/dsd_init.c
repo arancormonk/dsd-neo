@@ -390,6 +390,8 @@ initState(dsd_state* state) {
 
     // RTL-SDR stream context (initialized to NULL; lifecycle managed by caller)
     state->rtl_ctx = NULL;
+    // Optional RC2 crypto context (allocated on demand by key setup path)
+    state->rc2_context = NULL;
 
     //Bitmap Filtering Options
     state->audio_smoothing = 0;
@@ -605,6 +607,9 @@ initState(dsd_state* state) {
     state->tyt_ap = 0;
     state->tyt_bp = 0;
     state->tyt_ep = 0;
+    state->baofeng_ap = 0;
+    state->csi_ee = 0;
+    memset(state->csi_ee_key, 0, sizeof(state->csi_ee_key));
     state->retevis_ap = 0;
 
     state->ken_sc = 0;
@@ -1018,4 +1023,7 @@ freeState(dsd_state* state) {
     free(state->dmr_reliab_buf);
     state->dmr_reliab_buf = NULL;
     state->dmr_reliab_p = NULL;
+
+    free(state->rc2_context);
+    state->rc2_context = NULL;
 }

@@ -22,8 +22,6 @@
 
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
-    UNUSED2(opts, CRCCorrect);
-
     uint8_t MFID = PI_BYTE[1];
 
     if (IrrecoverableErrors == 0) {
@@ -36,7 +34,46 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         }
 
-        if (MFID == 0x68) //Hytera Enhanced
+        if (MFID == 0x0A && CRCCorrect == 1) //Kirisun
+        {
+            const uint8_t alg = PI_BYTE[0];
+            const uint8_t so = PI_BYTE[2];
+            const uint32_t target =
+                ((uint32_t)PI_BYTE[7] << 16U) | ((uint32_t)PI_BYTE[8] << 8U) | ((uint32_t)PI_BYTE[9] << 0U);
+            const uint8_t key_hash = (uint8_t)((alg * target) & 0xFFU);
+            const uint32_t mi = ((uint32_t)PI_BYTE[3] << 24U) | ((uint32_t)PI_BYTE[4] << 16U)
+                                | ((uint32_t)PI_BYTE[5] << 8U) | ((uint32_t)PI_BYTE[6] << 0U);
+
+            if (state->currentslot == 0) {
+                state->dmr_so = so;
+                state->payload_algid = alg;
+                state->payload_keyid = key_hash;
+                state->payload_mi = mi;
+            } else {
+                state->dmr_soR = so;
+                state->payload_algidR = alg;
+                state->payload_keyidR = key_hash;
+                state->payload_miR = mi;
+            }
+
+            fprintf(stderr, "%s ", KYEL);
+            fprintf(stderr, "\n Slot %d", state->currentslot + 1);
+            fprintf(stderr, " DMR PI H- ALG ID: %02X; KEY ID: %02X; MI(32): %08X;", alg, key_hash, mi);
+            fprintf(stderr, " Kirisun ");
+            if (alg == 0x36) {
+                fprintf(stderr, "Advanced;");
+            } else if (alg == 0x37) {
+                fprintf(stderr, "Universal;");
+            } else {
+                fprintf(stderr, "Encryption;");
+            }
+            fprintf(stderr, "%s", KNRM);
+
+            // Use Kirisun-specific LE handling for SB/MI refresh.
+            opts->dmr_le = 3;
+        }
+
+        else if (MFID == 0x68) //Hytera Enhanced
         {
             if (state->currentslot == 0) {
                 state->dmr_so |= 0x40; //OR the enc bit onto the SO
@@ -469,4 +506,29 @@ hytera_enhanced_alg_refresh(dsd_state* state) {
     } else {
         state->payload_miR = mi_value;
     }
+}
+
+uint32_t
+kirisun_lfsr(unsigned long long int mi) {
+    uint32_t lfsr = (uint32_t)mi;
+    uint32_t next_mi = 0;
+    const uint32_t taps = 0xD459C4F1U;
+
+    for (int i = 0; i < 4; i++) {
+        uint8_t out = 0;
+        for (int j = 0; j < 8; j++) {
+            const uint32_t temp = lfsr << 1U;
+            const uint8_t msb = (uint8_t)((lfsr >> 31U) & 1U);
+            if (msb != 0U) {
+                out |= (uint8_t)(1U << j);
+                lfsr = temp ^ taps;
+            } else {
+                lfsr = temp;
+            }
+        }
+        next_mi <<= 8U;
+        next_mi |= out;
+    }
+
+    return next_mi;
 }

@@ -444,6 +444,25 @@ else()
 endif()
 add_test(NAME CORE_FRAME_LOG COMMAND dsd-neo_test_core_frame_log)
 
+add_executable(dsd-neo_test_core_init_state core/test_core_init_state.c)
+target_include_directories(dsd-neo_test_core_init_state PRIVATE ${PROJECT_SOURCE_DIR}/include)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+  target_link_libraries(dsd-neo_test_core_init_state PRIVATE
+    "-Wl,--start-group"
+    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+    "-Wl,--end-group"
+    ${LIBS}
+    dsd-neo_test_support
+  )
+else()
+  target_link_libraries(dsd-neo_test_core_init_state PRIVATE
+    ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+    ${LIBS}
+    dsd-neo_test_support
+  )
+endif()
+add_test(NAME CORE_INIT_STATE COMMAND dsd-neo_test_core_init_state)
+
 add_executable(dsd-neo_test_runtime_config_user runtime/test_runtime_config_user.cpp)
 target_include_directories(dsd-neo_test_runtime_config_user PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_user PRIVATE dsd-neo_runtime dsd-neo_test_support)
@@ -1174,6 +1193,11 @@ add_executable(dsd-neo_test_dmr_le_infer_algid protocol/dmr/test_dmr_le_infer_al
 target_include_directories(dsd-neo_test_dmr_le_infer_algid PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_dmr_le_infer_algid PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_LE_INFER_ALGID COMMAND dsd-neo_test_dmr_le_infer_algid)
+
+add_executable(dsd-neo_test_dmr_pi_kirisun protocol/dmr/test_dmr_pi_kirisun.c)
+target_include_directories(dsd-neo_test_dmr_pi_kirisun PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_dmr_pi_kirisun PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_PI_KIRISUN COMMAND dsd-neo_test_dmr_pi_kirisun)
 
 add_executable(dsd-neo_test_dmr_r34_stub protocol/dmr/test_dmr_r34_stub.c)
 target_include_directories(dsd-neo_test_dmr_r34_stub PRIVATE ${PROJECT_SOURCE_DIR}/include)

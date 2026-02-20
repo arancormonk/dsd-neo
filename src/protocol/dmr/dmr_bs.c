@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*-------------------------------------------------------------------------------
  * dmr_bs.c
@@ -543,6 +543,11 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
                 tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
                 tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
             }
+            if (state->csi_ee == 1) {
+                csi72_ambe2_codeword_keystream(state, ambe_fr);
+                csi72_ambe2_codeword_keystream(state, ambe_fr2);
+                csi72_ambe2_codeword_keystream(state, ambe_fr3);
+            }
 
 #ifdef PRINT_AMBE72
             ambe2_codeword_print_i(opts, ambe_fr);
@@ -998,6 +1003,11 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
         tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
         tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+    }
+    if (state->csi_ee == 1) {
+        csi72_ambe2_codeword_keystream(state, ambe_fr);
+        csi72_ambe2_codeword_keystream(state, ambe_fr2);
+        csi72_ambe2_codeword_keystream(state, ambe_fr3);
     }
 
 #ifdef PRINT_AMBE72
