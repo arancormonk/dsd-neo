@@ -104,9 +104,12 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     for (i = state->optind; i < argc; i++) {
         sprintf(opts->mbe_in_file, "%s", argv[i]);
         openMbeInFile(opts, state);
+        if (opts->mbe_in_f == NULL) {
+            continue;
+        }
         mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
         fprintf(stderr, "\n playing %s\n", opts->mbe_in_file);
-        while (feof(opts->mbe_in_f) == 0) {
+        while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
             if (state->mbe_file_type == 0) {
                 readImbe4400Data(opts, state, imbe_d);
                 mbe_processImbe4400Dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_d,
@@ -198,7 +201,10 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                 break;
             }
         }
-        fclose(opts->mbe_in_f); //close file after playing it
+        if (opts->mbe_in_f != NULL) {
+            fclose(opts->mbe_in_f); //close file after playing it
+            opts->mbe_in_f = NULL;
+        }
         if (exitflag == 1) {
             return;
         }

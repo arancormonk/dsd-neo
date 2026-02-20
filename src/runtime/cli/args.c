@@ -1631,7 +1631,6 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 opts->dmr_stereo = 0;
                 state->dmr_stereo = 0;
                 snprintf(opts->output_name, sizeof opts->output_name, "%s", "MBE Playback");
-                state->optind = optind;
                 break;
             case 'l': opts->use_cosine_filter = 0; break;
             case 't':
@@ -1705,6 +1704,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 cli_set_exit_rc(out_exit_rc, 1);
                 return DSD_PARSE_ERROR;
         }
+    }
+    // Set after getopt completes so -r file ordering is independent of later options.
+    if (opts->playfiles == 1) {
+        state->optind = optind;
     }
     return DSD_PARSE_CONTINUE;
 }

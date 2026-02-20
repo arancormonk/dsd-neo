@@ -7,6 +7,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/rdio_export.h>
 
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -504,6 +505,160 @@ test_bootstrap_treats_lone_ini_as_config(void) {
 }
 
 static int
+test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
+    int test_rc = 0;
+    char wav_path_a[1024];
+    char wav_path_b[1024];
+    const char* tdir = test_tmp_dir();
+    const char sep = test_path_sep();
+    if (snprintf(wav_path_a, sizeof wav_path_a, "%s%c%s", tdir, sep, "dsdneo_cli_parse_a.wav")
+            >= (int)sizeof(wav_path_a)
+        || snprintf(wav_path_b, sizeof wav_path_b, "%s%c%s", tdir, sep, "dsdneo_cli_parse_b.wav")
+               >= (int)sizeof(wav_path_b)) {
+        fprintf(stderr, "temp path too long\n");
+        return 1;
+    }
+    (void)remove(wav_path_a);
+    (void)remove(wav_path_b);
+
+    {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            fprintf(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "-r";
+        char arg2[] = "play_first.amb";
+        char arg3[] = "-w";
+        char* argv[] = {arg0, arg1, arg2, arg3, wav_path_a, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || opts->playfiles != 1) {
+            fprintf(stderr, "expected parse continue with playfiles=1, got rc=%d playfiles=%d exit_rc=%d\n", rc,
+                    opts->playfiles, exit_rc);
+            test_rc = 1;
+        } else if (state->optind < 1 || state->optind >= argc_effective) {
+            fprintf(stderr, "invalid optind for playback: optind=%d argc_effective=%d\n", state->optind,
+                    argc_effective);
+            test_rc = 1;
+        } else if (strcmp(argv[state->optind], "play_first.amb") != 0) {
+            fprintf(stderr, "expected first playback arg to be play_first.amb, got %s\n", argv[state->optind]);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            fprintf(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "-w";
+        char* arg2 = wav_path_b;
+        char arg3[] = "-r";
+        char arg4[] = "play_last.amb";
+        char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || opts->playfiles != 1) {
+            fprintf(stderr, "expected parse continue with playfiles=1, got rc=%d playfiles=%d exit_rc=%d\n", rc,
+                    opts->playfiles, exit_rc);
+            test_rc = 1;
+        } else if (state->optind < 1 || state->optind >= argc_effective) {
+            fprintf(stderr, "invalid optind for playback: optind=%d argc_effective=%d\n", state->optind,
+                    argc_effective);
+            test_rc = 1;
+        } else if (strcmp(argv[state->optind], "play_last.amb") != 0) {
+            fprintf(stderr, "expected first playback arg to be play_last.amb, got %s\n", argv[state->optind]);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    (void)remove(wav_path_a);
+    (void)remove(wav_path_b);
+
+    return test_rc;
+}
+
+static int
+test_open_mbe_missing_file_leaves_stream_null(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char missing_path[1024];
+    const char* tdir = test_tmp_dir();
+    const char sep = test_path_sep();
+    if (snprintf(missing_path, sizeof missing_path, "%s%c%s", tdir, sep, "dsdneo_missing_playback_input.amb")
+        >= (int)sizeof(missing_path)) {
+        fprintf(stderr, "temp path too long\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    (void)remove(missing_path);
+
+    snprintf(opts->mbe_in_file, sizeof opts->mbe_in_file, "%s", missing_path);
+    state->mbe_file_type = 7;
+    openMbeInFile(opts, state);
+    if (opts->mbe_in_f != NULL) {
+        fprintf(stderr, "expected missing input open to leave mbe_in_f NULL\n");
+        fclose(opts->mbe_in_f);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->mbe_file_type != -1) {
+        fprintf(stderr, "expected mbe_file_type=-1 on missing input, got %d\n", state->mbe_file_type);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
 test_rdio_long_options_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -819,6 +974,8 @@ main(void) {
     rc |= test_1_loads_rc4_key_for_both_slots_and_allows_spaces();
     rc |= test_1_loads_rc4_key_allows_0x_prefix();
     rc |= test_bootstrap_treats_lone_ini_as_config();
+    rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
+    rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
     rc |= test_dmr_baofeng_pc5_long_option_parse();

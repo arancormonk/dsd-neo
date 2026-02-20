@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: ISC
 /*
- * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 /*
  * Copyright (C) 2010 DSD Author
@@ -380,18 +380,22 @@ void
 openMbeInFile(dsd_opts* opts, dsd_state* state) {
 
     char cookie[5];
+    state->mbe_file_type = -1;
 
     opts->mbe_in_f = fopen(opts->mbe_in_file, "ro");
     if (opts->mbe_in_f == NULL) {
         LOG_ERROR("Error: could not open %s\n", opts->mbe_in_file);
+        return;
     }
 
     //this will check the last 4 characters of the opts->mbe_in_file string
     char ext[5];
     memset(ext, 0, sizeof(ext));
-    uint16_t str_len = strlen((const char*)opts->mbe_in_file);
-    uint16_t ext_ptr = str_len - 4;
-    strncpy(ext, opts->mbe_in_file + ext_ptr, 4);
+    size_t str_len = strlen((const char*)opts->mbe_in_file);
+    if (str_len >= 4U) {
+        size_t ext_ptr = str_len - 4U;
+        strncpy(ext, opts->mbe_in_file + ext_ptr, 4);
+    }
 
     //debug
     // fprintf (stderr, "EXT: %s;", ext);
