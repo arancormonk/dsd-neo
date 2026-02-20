@@ -51,6 +51,7 @@ int dsd_rtl_stream_get_auto_ppm(void);
 /* RTL-TCP autotune control */
 int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
 int dsd_rtl_stream_get_rtltcp_autotune(void);
+int dsd_rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz);
 /* Eye-based SNR fallback */
 double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 double dsd_rtl_stream_estimate_snr_qpsk_const(void);
@@ -166,16 +167,7 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     if (!ctx || !ctx->stream) {
         return -1;
     }
-    // simple process-level cache; safe since single tuner is typical
-    static uint32_t s_last_freq = 0U;
-    if (center_freq_hz == s_last_freq) {
-        return 0; // no-op
-    }
-    int rc = ctx->stream->tune(center_freq_hz);
-    if (rc == 0) {
-        s_last_freq = center_freq_hz;
-    }
-    return rc;
+    return ctx->stream->tune(center_freq_hz);
 }
 
 /**
@@ -560,4 +552,9 @@ rtl_stream_get_rtltcp_autotune(void) {
 extern "C" void
 rtl_stream_set_rtltcp_autotune(int onoff) {
     (void)dsd_rtl_stream_set_rtltcp_autotune(onoff);
+}
+
+extern "C" int
+rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
+    return dsd_rtl_stream_get_last_applied_freq(out_freq_hz);
 }

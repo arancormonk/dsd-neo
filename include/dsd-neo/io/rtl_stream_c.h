@@ -148,6 +148,16 @@ int rtl_stream_get_rtltcp_autotune(void);
 void rtl_stream_set_rtltcp_autotune(int onoff);
 
 /**
+ * @brief Return the last RF center frequency applied by the controller thread.
+ *
+ * This reports the effective tuned frequency after any pending-retune coalescing.
+ *
+ * @param out_freq_hz [out] Applied center frequency in Hz.
+ * @return 0 on success; negative on error.
+ */
+int rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz);
+
+/**
  * @brief Get smoothed TED residual (EMA of Gardner error) from demod pipeline.
  * Positive: persistent early (nudge center right). Negative: late (nudge left).
  * Returns 0 when unavailable.

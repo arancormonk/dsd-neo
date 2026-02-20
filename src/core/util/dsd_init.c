@@ -296,7 +296,8 @@ initOpts(dsd_opts* opts) {
     opts->trunk_tune_enc_calls = 1; //enabled by default
 
     //P25 LCW explicit retune (format 0x44)
-    opts->p25_lcw_retune = 0; //disabled by default
+    //Enabled by default so explicit-only P25 systems follow voice grants out-of-the-box.
+    opts->p25_lcw_retune = 1;
 
     opts->dPMR_next_part_of_superframe = 0;
 
@@ -487,6 +488,7 @@ initState(dsd_state* state) {
     state->optind = 0;
     state->numtdulc = 0;
     state->firstframe = 0;
+    state->p25_lcw_retune_disabled_warned = 0;
     state->slot1light[0] = '\0';
     state->slot2light[0] = '\0';
     state->aout_gain = 25.0f;

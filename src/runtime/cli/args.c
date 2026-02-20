@@ -483,7 +483,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 break;
             case 'j':
                 opts->p25_lcw_retune = 1;
-                LOG_NOTICE("P25: Enable LCW explicit retune (0x44).\n");
+                LOG_NOTICE("P25: LCW explicit retune (0x44) forced ON.\n");
                 break;
             case '^':
                 opts->p25_prefer_candidates = 1;

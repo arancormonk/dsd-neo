@@ -228,6 +228,12 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecovera
                             }
                         }
                     }
+                } else if (opts->p25_lcw_retune == 0 && opts->p25_trunk == 1 && state->p25_cc_freq != 0
+                           && state->p25_lcw_retune_disabled_warned == 0) {
+                    /* One-shot guidance for explicit systems when LCW retune is disabled. */
+                    state->p25_lcw_retune_disabled_warned = 1;
+                    fprintf(stderr, " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. "
+                                    "Enable with -j or menu.] ");
                 }
                 {
                     //add active channel to string for ncurses display (with FDMA/slot hint)

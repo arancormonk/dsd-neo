@@ -34,7 +34,7 @@ dsd_cli_usage(void) {
     printf("  -N            Use NCurses Terminal\n");
     printf("                 dsd-neo -N 2> console_log.txt \n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
-    printf("  -j            Enable P25 LCW explicit retune (format 0x44)\n");
+    printf("  -j            Force-enable P25 LCW explicit retune (format 0x44; default is enabled)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
     printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
     printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");

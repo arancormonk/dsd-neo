@@ -607,8 +607,9 @@ struct dsd_state {
     uint32_t p25_p2_enc_pending_ttg[2];
 
     //iden freq storage for frequency calculations
-    int p25_chan_tdma[16];              // set from iden_up vs iden_up_tdma (bit0 = TDMA flag)
-    uint8_t p25_chan_tdma_explicit[16]; // 0=unknown, 1=explicit FDMA, 2=explicit TDMA
+    int p25_chan_tdma[16];                  // set from iden_up vs iden_up_tdma (bit0 = TDMA flag)
+    uint8_t p25_chan_tdma_explicit[16];     // 0=unknown, 1=explicit FDMA, 2=explicit TDMA
+    uint8_t p25_lcw_retune_disabled_warned; // 1 once "LCW retune disabled" warning emitted
     int p25_chan_iden;
     int p25_chan_type[16];
     int p25_trans_off[16];

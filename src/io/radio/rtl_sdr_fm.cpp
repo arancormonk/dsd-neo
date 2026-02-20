@@ -215,6 +215,8 @@ struct controller_state {
     /* Request ID for matching completion signals to requests (prevents stale wakeups) */
     std::atomic<uint32_t> retune_request_id;
     std::atomic<uint32_t> retune_complete_id;
+    /* Last center frequency successfully applied by the controller thread. */
+    std::atomic<uint32_t> last_applied_freq_hz;
 };
 
 struct rtl_device* rtl_device_handle = NULL;
@@ -1635,6 +1637,7 @@ static DSD_THREAD_RETURN_TYPE
 
     /* Set the frequency then sample rate (rtl_fm order). */
     rtl_device_set_frequency(rtl_device_handle, dongle.freq);
+    s->last_applied_freq_hz.store((uint32_t)s->freqs[0], std::memory_order_release);
     LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
     LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
@@ -1704,6 +1707,7 @@ static DSD_THREAD_RETURN_TYPE
             /* Ask consumer to purge ring safely (keeps SPSC producer/consumer contract). */
             g_ring_purge_pending.store(1, std::memory_order_release);
             apply_capture_settings((uint32_t)tgt);
+            s->last_applied_freq_hz.store((uint32_t)tgt, std::memory_order_release);
             rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
             rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
             demod_reset_on_retune(&demod);
@@ -1730,6 +1734,7 @@ static DSD_THREAD_RETURN_TYPE
         /* Flush any leftover IQ from the previous frequency before applying the new center. */
         g_ring_purge_pending.store(1, std::memory_order_release);
         apply_capture_settings((uint32_t)s->freqs[s->freq_now]);
+        s->last_applied_freq_hz.store((uint32_t)s->freqs[s->freq_now], std::memory_order_release);
         rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
         rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, g_stream ? g_stream->opts : NULL, &output);
         demod_reset_on_retune(&demod);
@@ -2206,6 +2211,7 @@ controller_init(struct controller_state* s) {
     s->retune_done_flag.store(0);
     s->retune_request_id.store(0);
     s->retune_complete_id.store(0);
+    s->last_applied_freq_hz.store(0, std::memory_order_release);
 }
 
 /**
@@ -3825,6 +3831,7 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
     if (opts->payload == 1) {
         LOG_INFO("\nTuning to %ld Hz.", frequency);
     }
+    uint32_t requested_freq = (uint32_t)frequency;
     dongle.freq = opts->rtlsdr_center_freq = frequency;
 
     /* Enqueue retune, coalescing with any already-pending request so completion IDs
@@ -3865,9 +3872,36 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
     }
     dsd_mutex_unlock(&controller.retune_done_m);
 
+    if (rc == 0) {
+        /* If our request was coalesced/overridden by a newer pending tune,
+         * sync caller-visible frequency state to what was actually applied.
+         *
+         * Only reconcile after successful wait completion. On timeout, the
+         * controller may still be retuning, so forcing state here can stale
+         * caller-visible frequency and emit false supersede logs. */
+        uint32_t applied_freq = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+        if (applied_freq != 0 && applied_freq != requested_freq) {
+            LOG_NOTICE("Retune request %u Hz superseded by %u Hz (coalesced pending tune).\n", requested_freq,
+                       applied_freq);
+            dongle.freq = applied_freq;
+            if (opts) {
+                opts->rtlsdr_center_freq = (long int)applied_freq;
+            }
+        }
+    }
+
     /* Honor drain/clear policy for API-triggered tunes as well */
     drain_output_on_retune();
     return rc;
+}
+
+extern "C" int
+dsd_rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
+    if (!out_freq_hz) {
+        return -1;
+    }
+    *out_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    return 0;
 }
 
 /**
