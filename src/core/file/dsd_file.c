@@ -179,6 +179,7 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
     char line[4096];
     va_list args;
     va_start(args, format);
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
     vsnprintf(line, sizeof(line), format, args);
     va_end(args);
     frame_log_sanitize_line(line);
