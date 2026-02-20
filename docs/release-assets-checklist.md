@@ -17,7 +17,7 @@ Required license/notice files in every shipped asset:
   - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files.
 - [ ] Download `dsd-neo-linux-aarch64-portable-*.AppImage`.
   - [ ] Extract with `--appimage-extract` on aarch64 or in a container.
-  - [ ] Confirm `usr/share/doc/dsd-neo/` contains all required files.
+  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files.
 
 ### macOS (DMG)
 

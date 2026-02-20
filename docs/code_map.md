@@ -81,9 +81,9 @@ header rather than UI headers directly.
 - `ui_request_redraw()` — request UI refresh
 - `ui_publish_both_and_redraw(opts, state)` — convenience combo
 
-**Weak stub pattern:** The runtime provides weak no-op implementations (`src/runtime/ui_async_stubs.c`) so headless
-builds and unit tests link without requiring the UI module. When the terminal UI is linked, strong definitions in
-`src/ui/terminal/` override these stubs.
+**Hook registration pattern:** Runtime owns a thread-safe hook table (`src/runtime/telemetry_hooks.c`). The terminal
+UI installs its callbacks at startup (`src/ui/terminal/telemetry_hooks_install.c`), and headless/test builds simply run
+with the default no-callback state.
 
 **Dependency direction:** DSP/Protocol → Runtime (hooks) ← UI (implementations). This keeps DSP UI-agnostic while
 allowing state propagation.
@@ -123,9 +123,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   - `dsd-neo_io_radio` — RTL-SDR front-end and orchestrator for USB and rtl_tcp; provides constellation/eye/spectrum
     snapshots, optional bias-tee, and auto-PPM hooks
     - Built only when `RTLSDR_FOUND`; otherwise provided as an INTERFACE stub target
-  - `dsd-neo_io_audio` — network audio inputs: UDP PCM16LE input and TCP PCM16LE input
+  - `dsd-neo_io_audio` — network audio/input backends: UDP PCM16LE input, TCP PCM16LE input, UDP audio output helpers,
+    and M17 UDP helpers
   - `dsd-neo_io_udp_control` — UDP retune control server (used by the RTL-SDR/FM helpers)
-  - `dsd-neo_io_control` — rigctl/serial control interfaces, plus UDP audio “socket blaster” output
+  - `dsd-neo_io_control` — rigctl/serial control interfaces
 
 Key public headers:
 
@@ -133,17 +134,18 @@ Key public headers:
 - RTL C++ orchestrator: `include/dsd-neo/io/rtl_stream.h` (class `RtlSdrOrchestrator`)
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
-- Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl.h`
+- Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl.h`, `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`
-- UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/control/dsd_rigctl.c`)
+- UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/audio_backends/udp_audio.c`)
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
 
 Notes:
 
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
-- Network PCM input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`).
-- M17 IP frame packing lives in `src/protocol/m17/m17.c`; UDP socket helpers live in `dsd-neo_io_control`
-  (`src/io/control/dsd_rigctl.c`, declared in `include/dsd-neo/io/rigctl.h`).
+- Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
+  `m17_udp.c`, `udp_bind.c`).
+- M17 protocol frame packing/parsing lives in `src/protocol/m17/m17.c`; M17 UDP socket helpers are exposed via
+  `include/dsd-neo/io/m17_udp.h`.
 
 Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 
@@ -250,7 +252,8 @@ Additional includes of interest:
 - Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,
   `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/control.h>`, `<dsd-neo/io/rigctl.h>`,
-  `<dsd-neo/io/udp_audio.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`, `<dsd-neo/io/tcp_input.h>`
+  `<dsd-neo/io/m17_udp.h>`, `<dsd-neo/io/udp_audio.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`,
+  `<dsd-neo/io/tcp_input.h>`
 - UI: `<dsd-neo/ui/menu_core.h>`, `<dsd-neo/ui/menu_defs.h>`, `<dsd-neo/ui/menu_services.h>`
 
 ## Build Targets
