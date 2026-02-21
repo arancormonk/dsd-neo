@@ -309,6 +309,13 @@ target_include_directories(dsd-neo_test_ui_history_state PRIVATE ${PROJECT_SOURC
 target_link_libraries(dsd-neo_test_ui_history_state PRIVATE dsd-neo_platform)
 add_test(NAME UI_HISTORY_STATE COMMAND dsd-neo_test_ui_history_state)
 
+add_executable(dsd-neo_test_ui_snapshot_event_history
+  ui/test_ui_snapshot_event_history.c
+  ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snapshot.c)
+target_include_directories(dsd-neo_test_ui_snapshot_event_history PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_ui_snapshot_event_history PRIVATE dsd-neo_platform)
+add_test(NAME UI_SNAPSHOT_EVENT_HISTORY COMMAND dsd-neo_test_ui_snapshot_event_history)
+
 add_executable(dsd-neo_test_runtime_freq_parse runtime/test_runtime_freq_parse.c)
 target_include_directories(dsd-neo_test_runtime_freq_parse PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
