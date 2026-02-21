@@ -13,15 +13,20 @@
  */
 
 #include <dsd-neo/platform/platform.h>
+#include <pulse/context.h>
+#include <pulse/def.h>
+#include <pulse/error.h>
+#include <pulse/introspect.h>
+#include <pulse/mainloop-api.h>
+#include <pulse/mainloop.h>
+#include <pulse/operation.h>
+#include <pulse/sample.h>
+#include <stdint.h>
 
 #if DSD_PLATFORM_POSIX
 
 #include <dsd-neo/platform/audio.h>
-
-#include <pulse/pulseaudio.h>
 #include <pulse/simple.h>
-
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

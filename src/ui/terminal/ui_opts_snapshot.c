@@ -4,11 +4,13 @@
  */
 
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 #include "telemetry_hooks_impl.h"
 
 static dsd_opts g_pub_opts;     // latest published

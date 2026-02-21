@@ -9,16 +9,18 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/colors.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {

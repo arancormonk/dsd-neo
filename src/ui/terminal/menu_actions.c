@@ -10,12 +10,6 @@
 
 #include "menu_actions.h"
 
-#include "menu_callbacks.h"
-#include "menu_env.h"
-#include "menu_internal.h"
-#include "menu_prompts.h"
-
-#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -24,13 +18,18 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_prims.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/ui/menu_core.h"
+#include "menu_callbacks.h"
+#include "menu_env.h"
+#include "menu_internal.h"
+#include "menu_prompts.h"
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>

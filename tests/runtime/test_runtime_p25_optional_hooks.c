@@ -4,10 +4,14 @@
  */
 
 #include <assert.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int g_watchdog_calls = 0;
 static dsd_opts* g_watchdog_opts = NULL;

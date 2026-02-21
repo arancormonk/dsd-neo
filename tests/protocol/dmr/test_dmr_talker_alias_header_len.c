@@ -3,14 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/embedded_alias.h>
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Minimal stubs needed to link `src/core/util/dsd_alias.c` in isolation.
 uint16_t

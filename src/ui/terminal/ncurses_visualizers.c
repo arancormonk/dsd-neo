@@ -7,18 +7,20 @@
  * RTL-SDR visualization panels: constellation, eye diagram, histogram, spectrum
  */
 
-#include <dsd-neo/ui/ncurses_internal.h>
-#include <dsd-neo/ui/ncurses_visualizers.h>
-
+#include <curses.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/ui/ncurses_internal.h>
+#include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
-
-#include <dsd-neo/platform/curses_compat.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>

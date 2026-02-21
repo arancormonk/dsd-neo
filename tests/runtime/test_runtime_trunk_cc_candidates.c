@@ -4,10 +4,12 @@
  */
 
 #include <assert.h>
-#include <stdlib.h>
-
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <stdlib.h>
+
+#include "dsd-neo/core/state_ext.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 test_add_dedup_rollover(void) {

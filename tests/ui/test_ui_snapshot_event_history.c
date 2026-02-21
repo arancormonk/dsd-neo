@@ -4,13 +4,14 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/ui/ui_snapshot.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/ui/ui_snapshot.h>
+#include "dsd-neo/core/state_fwd.h"
 
 void ui_terminal_telemetry_publish_snapshot(const dsd_state* state);
 

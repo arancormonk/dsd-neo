@@ -12,8 +12,6 @@
 #ifndef DSP_TED_H
 #define DSP_TED_H
 
-#include <stdint.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif

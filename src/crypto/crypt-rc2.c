@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: ISC
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc2.h>
-
-#include <dsd-neo/core/state.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 static inline uint64_t
 rol64(uint64_t x, int n) {

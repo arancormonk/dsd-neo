@@ -10,12 +10,16 @@
  * and next-CC iteration behavior.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+
+struct RtlSdrContext;
 
 #define setenv dsd_test_setenv
 

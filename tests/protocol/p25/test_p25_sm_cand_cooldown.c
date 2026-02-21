@@ -7,15 +7,16 @@
  * cooled down and skipped on the next hunt in favor of another candidate. */
 
 #include <assert.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static long g_last_tuned_cc = 0;
 

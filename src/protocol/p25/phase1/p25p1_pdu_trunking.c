@@ -20,10 +20,13 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 //trunking data delivered via PDU format
 void

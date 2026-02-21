@@ -14,8 +14,6 @@
 #ifndef DSP_FLL_H
 #define DSP_FLL_H
 
-#include <stdint.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif

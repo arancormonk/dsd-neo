@@ -14,11 +14,12 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/runtime/colors.h>
-
 #include <mbelib.h>
-
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 dsd_dispatch_matches_p25p1(int synctype) {

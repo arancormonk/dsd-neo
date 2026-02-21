@@ -3,16 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/crypto/dmr_keystream.h>
-
+#include <ctype.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
-
-#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 static size_t
 csi_collect_hex_digits(const char* input, char* out, size_t out_cap) {

@@ -7,15 +7,14 @@
  * Unicode/ASCII fallback utilities implementation.
  */
 
-#include <dsd-neo/runtime/unicode.h>
-
-#include <dsd-neo/platform/posix_compat.h>
-
 #include <ctype.h>
+#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <windows.h>

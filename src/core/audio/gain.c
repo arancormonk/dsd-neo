@@ -15,10 +15,11 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-
 #include <math.h>
-#include <stddef.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Return 1 if all elements are effectively zero (|x| < 1e-12f)
 static inline int

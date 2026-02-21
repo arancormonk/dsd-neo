@@ -3,14 +3,17 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/io/m17_udp.h>
-
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/io/m17_udp.h>
 #include <dsd-neo/platform/sockets.h>
-
+#include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static struct sockaddr_in addressM17;
 

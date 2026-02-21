@@ -18,22 +18,22 @@
  *   - menu_env.c / menu_env.h
  */
 
+#include <curses.h>
+#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
-
-#include "menu_internal.h"
-#include "menu_prompts.h"
-
-#include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "menu_internal.h"
+#include "menu_prompts.h"
 
 // -------------------- Nonblocking overlay driver --------------------
 

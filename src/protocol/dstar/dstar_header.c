@@ -6,10 +6,12 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/protocol/dstar/dstar_header_utils.h"
 
 void
 dstar_header_decode(dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_CODED_BITS]) {

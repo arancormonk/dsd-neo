@@ -7,12 +7,14 @@
  * DMR CSBK parsing and dispatch helpers.
  */
 
-#include <string.h>
-
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
-#include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr_csbk_result* out) {

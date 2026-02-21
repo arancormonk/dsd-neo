@@ -23,8 +23,9 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/colors.h>
-
 #include <stdio.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 void
 printFrameInfo(dsd_opts* opts, dsd_state* state) {

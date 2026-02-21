@@ -11,6 +11,7 @@
 #include <dsd-neo/ui/menu_defs.h>
 
 // All NcMenuItem arrays are declared in menu_items.h
+#include "dsd-neo/ui/menu_core.h"
 #include "menu_items.h"
 
 void

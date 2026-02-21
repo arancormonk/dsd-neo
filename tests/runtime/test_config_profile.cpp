@@ -7,13 +7,13 @@
  * Unit tests for config profile support.
  */
 
+#include <dsd-neo/runtime/config.h>
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
-#include <dsd-neo/runtime/config.h>
-
+#include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
 static int

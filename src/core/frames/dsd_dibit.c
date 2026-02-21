@@ -31,15 +31,15 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
-#include <dsd-neo/dsp/p25p1_heuristics.h>
-
 #include <assert.h>
+#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <math.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 print_datascope(dsd_opts* opts, dsd_state* state, const float* sbuf2, int count) {

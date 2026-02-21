@@ -5,6 +5,9 @@
 
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
 static dsd_p25_optional_hooks g_p25_optional_hooks = {0};
 
 void

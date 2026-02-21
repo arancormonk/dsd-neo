@@ -9,6 +9,8 @@
  * TTL sweep of stale entries, and clear/remove deactivation.
  */
 
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,8 +18,10 @@
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 // Stubs for external hooks referenced in the linked library
 bool

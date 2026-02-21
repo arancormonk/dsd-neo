@@ -16,19 +16,15 @@
  * 2024-03 EDACS-FME display improvements
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/dsd_time.h>
+#include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
-#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -41,22 +37,20 @@
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
 #include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <wchar.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
-
-/* file_compat.h provides portable file descriptor operations */
-#include <dsd-neo/platform/file_compat.h>
 
 extern unsigned long long int edacs_channel_tree[33][6];
 

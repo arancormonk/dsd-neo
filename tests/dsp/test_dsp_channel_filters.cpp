@@ -5,7 +5,6 @@
 
 /* Unit tests for input channel filters in dsd_filters.c: DC preservation. */
 
-#include <stdint.h>
 #include <stdio.h>
 
 extern "C" void init_rrc_filter_memory(void);

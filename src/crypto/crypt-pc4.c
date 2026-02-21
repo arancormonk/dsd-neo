@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/crypto/pc4.h>
+#include <stddef.h>
+#include <stdint.h>
 
 /* Global PC4 context instance */
 PC4Context ctx;

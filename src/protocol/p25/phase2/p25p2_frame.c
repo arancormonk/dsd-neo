@@ -23,6 +23,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/ez.h>
+#include <stdint.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -36,11 +37,12 @@
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/telemetry.h>
-
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #if defined(DSD_NEO_P25P2_TEST_STUB)
 #define p25_sm_emit_active(opts, state, slot) ((void)0)

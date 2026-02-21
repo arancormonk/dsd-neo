@@ -8,12 +8,13 @@
  * Ensures TDMA/FDMA suffix formatting and CC-TDMA fallback denom behavior.
  */
 
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq_str(const char* tag, const char* got, const char* want) {

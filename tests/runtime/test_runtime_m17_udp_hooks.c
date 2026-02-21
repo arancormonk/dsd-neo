@@ -4,9 +4,12 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <stdlib.h>
 
-#include <dsd-neo/runtime/m17_udp_hooks.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 static int g_udp_bind_calls = 0;
 static int g_connect_calls = 0;

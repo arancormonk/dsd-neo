@@ -3,11 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/trunk_cc_candidates.h>
-
 #include <dsd-neo/core/state.h>
-
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdlib.h>
+
+#include "dsd-neo/core/state_ext.h"
+#include "dsd-neo/core/state_fwd.h"
 
 dsd_trunk_cc_candidates*
 dsd_trunk_cc_candidates_get(dsd_state* state) {

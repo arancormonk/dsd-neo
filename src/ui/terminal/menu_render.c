@@ -11,14 +11,14 @@
  * that are shared across the menu subsystem.
  */
 
-#include <dsd-neo/platform/curses_compat.h>
-#include "menu_internal.h"
-
+#include <curses.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/ui/ui_prims.h>
+#include "dsd-neo/ui/menu_core.h"
+#include "menu_internal.h"
 
 // ---- Visibility helpers ----
 

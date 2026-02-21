@@ -4,15 +4,17 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static uint8_t
 bits_to_u4_msb(const unsigned char bits4[4]) {

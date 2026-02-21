@@ -6,7 +6,7 @@
 #include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/shutdown.h>
-
+#include <stddef.h>
 #include <stdint.h>
 
 #if !defined(_WIN32)

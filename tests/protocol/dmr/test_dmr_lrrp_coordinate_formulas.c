@@ -21,8 +21,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 // Tolerance for floating point comparison (0.01 degrees ~ 1km)
 #define TOLERANCE 0.01

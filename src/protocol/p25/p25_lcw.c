@@ -23,10 +23,13 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/unicode.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Bounded append helper
 static inline void

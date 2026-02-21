@@ -15,11 +15,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -30,7 +28,6 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
-#include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_control.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -45,18 +42,16 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <dsd-neo/runtime/worker_pool.h>
-#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if DSD_PLATFORM_POSIX
-#include <unistd.h>
-#endif
-#include <vector>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -685,21 +680,6 @@ demod_reset_on_retune(struct demod_state* s) {
     }
 }
 
-/**
- * @brief Demodulation worker: consume input ring, run pipeline, and produce audio.
- *
- * Reads baseband I/Q blocks from the input ring, invokes the full demodulation
- * pipeline, and writes audio samples to the output ring with optional
- * resampling or legacy upsampling. Runs until global exit flag is set.
- *
- * @param arg Pointer to `demod_state`.
- * @return NULL on exit.
- */
-/* SNR buffers for different modulations
- * NOTE: These are updated from the demod thread and read from the UI thread.
- * Use atomics to avoid data races and stale reads. Relaxed ordering is
- * sufficient because we only need value coherence, not synchronization. */
-#include <atomic>
 std::atomic<double> g_snr_c4fm_db{-100.0};
 std::atomic<double> g_snr_qpsk_db{-100.0};
 std::atomic<double> g_snr_gfsk_db{-100.0};

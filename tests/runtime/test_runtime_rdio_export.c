@@ -6,14 +6,16 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rdio_export.h>
-
-#include "test_support.h"
-
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/platform.h"
+#include "test_support.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <direct.h>

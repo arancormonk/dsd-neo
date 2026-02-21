@@ -5,8 +5,6 @@
 
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/snr_bias.h>
-#include <math.h>
-#include <stddef.h>
 #include <stdio.h>
 
 static int

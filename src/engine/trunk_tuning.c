@@ -3,25 +3,25 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/engine/trunk_tuning.h>
-
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /**
  * @brief Return to the P25 control channel, draining audio and resetting state.

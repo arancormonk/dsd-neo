@@ -6,11 +6,13 @@
 // DMR SM clamp test: deny untrusted LPCN mapping off-CC; allow when on-CC.
 
 #include <assert.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Stubs to avoid linking IO/rigctl
 void

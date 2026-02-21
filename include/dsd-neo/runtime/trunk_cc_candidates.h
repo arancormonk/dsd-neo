@@ -15,7 +15,6 @@
  */
 #pragma once
 
-#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus

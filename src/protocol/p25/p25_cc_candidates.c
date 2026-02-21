@@ -15,13 +15,14 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {

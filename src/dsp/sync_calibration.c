@@ -17,10 +17,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/runtime/config.h>
-
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 float_compare_asc(const void* a, const void* b) {

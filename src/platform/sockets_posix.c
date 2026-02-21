@@ -3,7 +3,17 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <arpa/inet.h>
 #include <dsd-neo/platform/sockets.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 

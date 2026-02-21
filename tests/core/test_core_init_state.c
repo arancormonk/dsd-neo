@@ -5,13 +5,17 @@
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/state.h>
+
 #define DSD_NEO_MAIN
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
+
 #undef DSD_NEO_MAIN
 
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 int
 main(void) {

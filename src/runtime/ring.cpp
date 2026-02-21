@@ -11,10 +11,11 @@
  * optional signaling semantics.
  */
 
+#include <atomic>
 #include <cstring>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/ring.h>
-#include <errno.h>
+#include <stdint.h>
 
 extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 

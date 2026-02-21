@@ -20,11 +20,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-
 #include <mbelib.h>
-
 #include <stdint.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 //the initial functions will ONLY return demodulated ambe or imbe frames, THAT'S IT!
 //decryption and audio handling etc will be handled at a different area

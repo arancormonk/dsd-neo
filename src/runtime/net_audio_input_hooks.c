@@ -4,6 +4,10 @@
  */
 
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <stddef.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 static dsd_net_audio_input_hooks g_net_audio_input_hooks = {0};
 

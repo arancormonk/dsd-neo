@@ -31,11 +31,14 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/telemetry.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
 

@@ -16,15 +16,9 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
-
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-#if !DSD_PLATFORM_WIN_NATIVE
-#include <sched.h>
-#endif
 
 /**
  * @brief Optionally enable realtime scheduling and set CPU affinity for the current thread.

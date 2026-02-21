@@ -5,7 +5,8 @@
 
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
-#include <stddef.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static dsd_frame_sync_hooks g_frame_sync_hooks = {0};
 

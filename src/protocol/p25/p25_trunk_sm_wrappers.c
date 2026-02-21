@@ -11,14 +11,13 @@
  */
 
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 
-#include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static inline double
 now_monotonic(void) {

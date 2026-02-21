@@ -4,9 +4,12 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <stdint.h>
 #include <stdlib.h>
 
-#include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 static int g_tcp_open_calls = 0;
 static int g_tcp_close_calls = 0;

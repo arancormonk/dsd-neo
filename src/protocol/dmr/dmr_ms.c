@@ -26,9 +26,12 @@
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
 

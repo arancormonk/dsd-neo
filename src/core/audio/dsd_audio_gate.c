@@ -14,10 +14,12 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {

@@ -3,11 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
-
 #include <dsd-neo/core/state.h>
-
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 void
 p25_p2_audio_ring_reset(dsd_state* state, int slot) {

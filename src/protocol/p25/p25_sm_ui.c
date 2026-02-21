@@ -11,10 +11,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 p25_sm_log_status(dsd_opts* opts, dsd_state* state, const char* tag) {

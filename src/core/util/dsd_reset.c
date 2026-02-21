@@ -6,10 +6,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/p25p1_heuristics.h>
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 //fixed the memory leak, but now random segfaults occur -- double free or corruption (out) or (!prev)
 void

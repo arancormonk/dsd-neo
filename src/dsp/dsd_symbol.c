@@ -29,25 +29,27 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol_levels.h>
+#include <time.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 extern dsd_socket_t Connect(char* hostname, int portno);
 extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);

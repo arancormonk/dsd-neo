@@ -14,13 +14,17 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
-
+#include <mbelib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include <mbelib.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/p25p1_heuristics.h"
+#include "dsd-neo/platform/sockets.h"
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>

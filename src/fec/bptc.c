@@ -13,6 +13,8 @@
 /* Include ------------------------------------------------------------------*/
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 /* Define -------------------------------------------------------------------*/
 

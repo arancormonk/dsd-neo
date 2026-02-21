@@ -4,13 +4,14 @@
  */
 
 #include <dsd-neo/platform/posix_compat.h>
+#include <sys/types.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
-#include <errno.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 int
 dsd_setenv(const char* name, const char* value, int overwrite) {

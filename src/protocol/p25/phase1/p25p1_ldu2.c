@@ -31,16 +31,19 @@
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
-#include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/p25p1_heuristics.h"
 
 void
 processLDU2(dsd_opts* opts, dsd_state* state) {

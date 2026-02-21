@@ -10,11 +10,9 @@
  * the explicit parity-bit check behavior.
  */
 
-#include <stdint.h>
+#include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <stdio.h>
 #include <string.h>
-
-#include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 
 static int
 expect_eq_int(const char* tag, int got, int want) {

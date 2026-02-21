@@ -3,21 +3,26 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/platform/atomic_compat.h>
+#include <curses.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/control_pump.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_prims.h>
-
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
+#include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_opts_snapshot.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <dsd-neo/ui/ui_snapshot.h>
+#include <stdatomic.h>
+#include <stddef.h>
+#include <stdint.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "telemetry_hooks_impl.h"
 
 // Minimal thread state.

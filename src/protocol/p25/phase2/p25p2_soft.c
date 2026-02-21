@@ -7,11 +7,9 @@
  * P25P2 soft-decision RS erasure helpers.
  */
 
+#include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
-#include <dsd-neo/runtime/config.h>
 
 /* Import reliability buffers from p25p2_frame.c */
 extern uint8_t p2reliab[700];

@@ -3,13 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
-
-#include <stddef.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 extern int dsd_dispatch_matches_nxdn(int synctype);
 extern void dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state);

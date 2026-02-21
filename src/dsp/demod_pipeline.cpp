@@ -23,14 +23,10 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-
-#include <algorithm>
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <vector>
 
 /* Macros and constants from the original file */
 #ifndef MAXIMUM_OVERSAMPLE

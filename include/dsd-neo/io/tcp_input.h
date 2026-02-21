@@ -15,7 +15,6 @@
 
 #pragma once
 
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 #include <stdint.h>
 

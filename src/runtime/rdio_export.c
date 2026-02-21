@@ -3,23 +3,25 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/rdio_export.h>
-
+#include <ctype.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/log.h>
-
-#include <ctype.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #ifdef USE_CURL
 #include <curl/curl.h>

@@ -10,14 +10,15 @@
  * SPSC input_ring_state and output_state helpers.
  */
 
-#include <stdint.h>
+#include <atomic>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/ring.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/platform/threading.h>
-#include <dsd-neo/runtime/input_ring.h>
-#include <dsd-neo/runtime/ring.h>
+#include "dsd-neo/platform/platform.h"
 
 /* RTL-SDR stream exit shim (when USE_RTLSDR is enabled in runtime) */
 extern "C" int

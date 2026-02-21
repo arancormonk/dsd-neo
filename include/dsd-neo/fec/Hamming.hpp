@@ -6,8 +6,6 @@
 #include <bitset>
 #include <string>
 
-#include <iostream>
-
 /**
  * @file
  * @brief Hamming (10,6,3) FEC helper classes.

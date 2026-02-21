@@ -5,11 +5,6 @@
 
 /* UI → Demod command queue (SPSC, bounded) */
 
-#include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_cmd_dispatch.h>
-
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -23,7 +18,6 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -32,25 +26,31 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_services.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_cmd.h>
+#include <dsd-neo/ui/ui_cmd_dispatch.h>
 #include <dsd-neo/ui/ui_history.h>
-
+#include <sndfile.h>
 #include <stdarg.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <sndfile.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ui_dsp_cmd.h>
 #endif
 
-#include <errno.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 #define UI_CMD_Q_CAP 128
 

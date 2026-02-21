@@ -23,6 +23,7 @@
 
 #include <dsd-neo/dsp/ted.h>
 #include <math.h>
+#include <stddef.h>
 
 /* NaN check helper: isnan() may not be available in all C standards, so use
  * the x != x idiom which is true only for NaN (IEEE 754 property). */

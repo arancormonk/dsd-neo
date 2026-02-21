@@ -3,6 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/input_ring.h>
+#include <stdint.h>
 /**
  * @file
  * @brief Input ring buffer implementation for interleaved I/Q float samples.
@@ -10,10 +13,8 @@
  * Provides producer/consumer primitives to reserve, commit, write, and
  * blockingly read samples with wrap-around handling and wakeup signaling.
  */
+#include <atomic>
 #include <cstring>
-#include <dsd-neo/platform/threading.h>
-#include <dsd-neo/runtime/input_ring.h>
-#include <errno.h>
 
 extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 #ifdef USE_RTLSDR

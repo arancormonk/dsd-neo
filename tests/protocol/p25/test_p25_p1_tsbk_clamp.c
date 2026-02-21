@@ -8,12 +8,13 @@
  * when channel→frequency mapping is invalid (unseeded iden).
  */
 
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Stubs referenced by linked paths
 void

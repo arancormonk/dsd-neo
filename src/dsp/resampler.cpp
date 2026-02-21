@@ -10,14 +10,12 @@
  * Simplified scalar upfirdn implementation used by the FM audio path.
  */
 
-#include <math.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/runtime/mem.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)

@@ -39,14 +39,15 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/exitflag.h>
-
 #include <mbelib.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 //NOTE: This set of functions will be reorganized and simplified (hopefully) or at least
 //a more logical flow will be established to jive with the new audio handling

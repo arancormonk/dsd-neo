@@ -34,10 +34,14 @@
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
-
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /**
  * Read a dibit and retrieve both analog signal value and reliability.

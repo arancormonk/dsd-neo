@@ -9,9 +9,11 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 #define P25_PATCH_TTL_SECONDS 20
 

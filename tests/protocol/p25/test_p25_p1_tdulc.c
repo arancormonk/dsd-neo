@@ -12,15 +12,17 @@
  * grant when LCW retune is enabled and CC is known.
  */
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/p25p1_heuristics.h"
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 

@@ -11,11 +11,12 @@
  * - pop from empty returns zeros and 0 status.
  */
 
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_int(const char* tag, int got, int want) {

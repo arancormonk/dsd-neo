@@ -27,10 +27,10 @@
 //#include DEFAULTCONFIG
 
 #include <dsd-neo/fec/rs_12_9.h>
+#include <stdint.h>
 
 //#include <libs/daemon/console.h>
 
-#include <stdio.h>
 #include <string.h>
 
 typedef struct {

@@ -27,11 +27,13 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dpmr/dpmr_const.h>
 #include <dsd-neo/runtime/colors.h>
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int32_t GetdPmrColorCode(uint8_t ChannelCodeBit[24]);
 void ScrambledPMRBit(uint32_t* LfsrValue, uint8_t* BufferIn, uint8_t* BufferOut, uint32_t NbOfBitToScramble);

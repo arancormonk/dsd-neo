@@ -10,22 +10,21 @@
 
 #include "menu_callbacks.h"
 
-#include "menu_env.h"
-#include "menu_internal.h"
-#include "menu_prompts.h"
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_prims.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/ui/menu_core.h"
+#include "menu_env.h"
+#include "menu_internal.h"
+#include "menu_prompts.h"
 
 static int
 clamp_int_with_notice(const char* label, int value, int min_v, int max_v, int* adjusted) {

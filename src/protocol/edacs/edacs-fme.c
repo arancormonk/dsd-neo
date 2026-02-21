@@ -38,7 +38,6 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
@@ -49,12 +48,15 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
-
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <time.h>
 
-#include <sndfile.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 unsigned long long int edacs_bch(unsigned long long int message);
 

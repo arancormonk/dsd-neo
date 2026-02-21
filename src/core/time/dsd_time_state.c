@@ -4,10 +4,10 @@
  */
 
 #include <dsd-neo/core/dsd_time.h>
-
 #include <dsd-neo/core/state.h>
-
 #include <time.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 void
 dsd_mark_cc_sync(dsd_state* state) {

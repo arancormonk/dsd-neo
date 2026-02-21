@@ -14,12 +14,15 @@
 #include <sched.h>
 #endif
 
+#include <bits/types/struct_sched_param.h>
 #include <dsd-neo/platform/threading.h>
+#include <pthread.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
 #include <errno.h>
-#include <string.h>
 #include <time.h>
 
 /*============================================================================

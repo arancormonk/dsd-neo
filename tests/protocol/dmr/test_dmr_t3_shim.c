@@ -12,16 +12,20 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 // Rigctl/RTL and CC-return stubs to avoid external I/O and core linkage
 bool
@@ -44,6 +48,7 @@ GetCurrentFreq(dsd_socket_t sockfd) {
     return 0;
 }
 struct RtlSdrContext;
+
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int

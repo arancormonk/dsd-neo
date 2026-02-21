@@ -5,6 +5,9 @@
 
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
 static dsd_udp_audio_hooks g_udp_audio_hooks = {0};
 
 void

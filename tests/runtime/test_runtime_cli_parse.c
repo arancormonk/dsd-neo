@@ -3,10 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/bootstrap.h>
-#include <dsd-neo/runtime/cli.h>
-#include <dsd-neo/runtime/rdio_export.h>
-
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -14,18 +10,27 @@
 #include <dsd-neo/crypto/pc5.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/bootstrap.h>
+#include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/rdio_export.h>
+#include <stdint.h>
+
 #define DSD_NEO_MAIN
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
+
 #undef DSD_NEO_MAIN
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 void
 noCarrier(dsd_opts* opts, dsd_state* state) {

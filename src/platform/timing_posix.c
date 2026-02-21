@@ -4,6 +4,9 @@
  */
 
 #include <dsd-neo/platform/timing.h>
+#include <stdint.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 

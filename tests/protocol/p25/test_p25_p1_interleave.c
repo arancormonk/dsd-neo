@@ -10,7 +10,6 @@
  * round-trip mapping through the schedule preserves the original 72 dibits.
  */
 
-#include <stdint.h>
 #include <stdio.h>
 
 // Local copy of the IMBE interleave schedule to validate mapping logic

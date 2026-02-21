@@ -7,16 +7,16 @@
  * Shared utility functions for ncurses UI modules
  */
 
-#include <dsd-neo/ui/ncurses_internal.h>
-
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/unicode.h>
-
+#include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 /* Shared state: last sync type seen by the UI (updated by ncursesPrinter) */
 int ncurses_last_synctype = DSD_SYNC_NONE;

@@ -7,17 +7,17 @@
  * Trunk system display functions for ncurses UI
  */
 
-#include <dsd-neo/ui/ncurses_trunk_display.h>
-
+#include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
+#include <dsd-neo/ui/ncurses_trunk_display.h>
 #include <dsd-neo/ui/ui_prims.h>
-
-#include <dsd-neo/platform/curses_compat.h>
 #include <string.h>
-#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Print learned trunking LCNs and their mapped frequencies
 void

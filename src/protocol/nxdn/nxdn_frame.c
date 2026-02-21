@@ -31,11 +31,11 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-#include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
 #include <dsd-neo/runtime/colors.h>
+#include <time.h>
 #ifdef LIMAZULUTWEAKS
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #endif
@@ -43,6 +43,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // #define NXDN_DEBUG_LICH   //print LICH debug info on err on payload == 1
 #define NXDN_LICH_OFFBITS //use the offbits to help determine sync status (disable if bad signal / bad sample)

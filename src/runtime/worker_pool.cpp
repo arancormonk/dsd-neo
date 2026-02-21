@@ -17,8 +17,10 @@
 #include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unordered_map>
+#include <utility>
+
+#include "dsd-neo/platform/platform.h"
 
 /* Opaque handle keyed off demod_state* to avoid depending on its layout here */
 struct WorkerCtx {

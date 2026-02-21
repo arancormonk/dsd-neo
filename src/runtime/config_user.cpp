@@ -11,6 +11,8 @@
  * existing CLI/environment workflows.
  */
 
+#include <cmath>
+#include <ctype.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -19,15 +21,14 @@
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
-
-#include <cmath>
-#include <ctype.h>
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
 
-#include <sys/stat.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #if defined(_WIN32)
 #include <windows.h>

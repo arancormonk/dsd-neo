@@ -21,10 +21,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
-
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 processX2TDMAdata(dsd_opts* opts, dsd_state* state) {

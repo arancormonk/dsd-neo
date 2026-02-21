@@ -9,14 +9,18 @@
  * p25_sm_on_release -> return_to_cc is invoked when tuned.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
 

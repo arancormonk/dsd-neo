@@ -12,15 +12,12 @@
  * the UI and protocol code.
  */
 
-#include <dsd-neo/io/rtl_metrics.h>
-
 #include <atomic>
 #include <cmath>
-#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <string.h>
-
+#include <dsd-neo/io/rtl_metrics.h>
 #include <pffft.h>
+#include <string.h>
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */

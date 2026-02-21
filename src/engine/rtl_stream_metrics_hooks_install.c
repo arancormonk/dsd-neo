@@ -4,9 +4,11 @@
  */
 
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <stddef.h>
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
+
 unsigned int dsd_rtl_stream_output_rate(void);
 
 static int

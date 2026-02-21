@@ -3,14 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/pc4.h>
-
-#include <dsd-neo/core/state.h>
-
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 #define KIR_MD2_MAX_BLOCK 264U
 

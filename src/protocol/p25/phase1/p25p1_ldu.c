@@ -9,8 +9,10 @@
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
-
 #include <stdio.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #ifdef TRACE_DSD
 static void

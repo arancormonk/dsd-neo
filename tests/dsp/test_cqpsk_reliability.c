@@ -13,7 +13,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 /*
  * CQPSK reliability calculation - matches the CQPSK branch of

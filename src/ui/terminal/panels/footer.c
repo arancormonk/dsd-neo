@@ -8,12 +8,14 @@
  * Footer panel renderer for the ncurses terminal UI
  */
 
-#include <dsd-neo/platform/curses_compat.h>
-#include <time.h>
-
+#include <curses.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 ui_panel_footer_status_render(dsd_opts* opts, dsd_state* state) {

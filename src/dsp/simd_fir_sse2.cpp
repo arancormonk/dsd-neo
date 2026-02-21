@@ -12,7 +12,7 @@
  */
 
 #include <cstring>
-#include <emmintrin.h> /* SSE2 */
+#include <xmmintrin.h>
 
 /**
  * SSE2 complex symmetric FIR filter (no decimation).

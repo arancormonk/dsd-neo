@@ -13,8 +13,6 @@
 
 #pragma once
 
-#include <stdint.h>
-
 /**
  * Number of taps for the half-band FIR low-pass filter.
  */

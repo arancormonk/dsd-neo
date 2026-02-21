@@ -3,9 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 
-#include <dsd-neo/core/state.h>
+#include "dsd-neo/core/state_fwd.h"
 
 static dsd_rtl_stream_io_hooks g_rtl_stream_io_hooks = {0};
 

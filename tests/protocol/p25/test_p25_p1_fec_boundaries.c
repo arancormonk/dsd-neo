@@ -10,12 +10,10 @@
  * - RS(24,16,9): correct up to 4 symbol errors; fail on 5.
  */
 
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
+#include <stdio.h>
+#include <string.h>
 
 static void
 bits_from_u(int value, int n_bits, char* out_bits) {

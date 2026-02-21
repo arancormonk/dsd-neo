@@ -15,9 +15,12 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 dmr_slot_is_kirisun_call(const dsd_state* state, uint8_t slot_idx) {

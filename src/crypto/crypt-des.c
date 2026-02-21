@@ -4,10 +4,7 @@
  * DES Alg
  *-----------------------------------------------------------------------------*/
 
-#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 //NOTE: The SLUT boxes are S boxes with additional calculations so we don't have

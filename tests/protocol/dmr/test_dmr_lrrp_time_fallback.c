@@ -9,21 +9,21 @@
  * timestamp should not be printed to stderr.
  */
 
-#include <assert.h>
-#include <errno.h>
-#include <limits.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
 // Stubs to keep test self-contained and avoid pulling heavy deps

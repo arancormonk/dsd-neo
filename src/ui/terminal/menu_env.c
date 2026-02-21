@@ -14,7 +14,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 
 int
 env_get_int(const char* name, int defv) {

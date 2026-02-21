@@ -10,16 +10,18 @@
  */
 
 #include <assert.h>
+#include <curses.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/ui/keymap.h>
+#include <dsd-neo/ui/ui_cmd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/ui/keymap.h>
-#include <dsd-neo/ui/ui_cmd.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* Function under test (compiled from src/ui/terminal/dsd_ncurses_handler.c). */
 uint8_t ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c);

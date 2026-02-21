@@ -10,14 +10,13 @@
  * config with expected defaults and range checks.
  */
 
-#include <dsd-neo/runtime/config.h>
-
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "test_support.h"
 
 #define setenv   dsd_test_setenv

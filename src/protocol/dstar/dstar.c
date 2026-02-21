@@ -13,11 +13,12 @@
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <dsd-neo/runtime/telemetry.h>
-
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 void processDSTAR_SD(dsd_opts* opts, dsd_state* state, uint8_t* sd);

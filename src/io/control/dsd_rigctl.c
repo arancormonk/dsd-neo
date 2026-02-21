@@ -22,12 +22,19 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-#include <errno.h>
 #include <limits.h>
 #include <math.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #define BUFSIZE        1024
 #define FREQ_MAX       4096

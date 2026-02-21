@@ -27,14 +27,15 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
-#include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <dsd-neo/runtime/bootstrap.h>
-
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 main(int argc, char** argv) {

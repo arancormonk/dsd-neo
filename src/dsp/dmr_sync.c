@@ -19,9 +19,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
-
 #include <stdlib.h>
-#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * DMR Sync Pattern Templates

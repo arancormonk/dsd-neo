@@ -21,15 +21,16 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-
-#include <mbelib.h>
-
-#include <sndfile.h>
-
 #include <math.h>
-#include <stddef.h>
+#include <mbelib.h>
+#include <sndfile.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* Write int16 audio using the abstraction layer */
 static void

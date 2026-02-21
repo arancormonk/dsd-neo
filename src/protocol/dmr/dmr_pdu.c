@@ -21,9 +21,12 @@
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/unicode.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 

@@ -6,12 +6,14 @@
 // DMR SM release gating: defer when slot is active; release via tick.
 
 #include <assert.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Stubs
 void

@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/math_utils.h>
 #include <stdio.h>
 #include <string.h>
 

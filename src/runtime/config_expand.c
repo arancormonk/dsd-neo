@@ -14,9 +14,9 @@
  * Missing variables expand to empty string (no error).
  */
 
-#include <dsd-neo/runtime/config.h>
-
 #include <ctype.h>
+#include <dsd-neo/runtime/config.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,7 +24,6 @@
 #include <windows.h>
 #else
 #include <pwd.h>
-#include <sys/types.h>
 #include <unistd.h>
 #endif
 

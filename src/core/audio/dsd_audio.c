@@ -25,18 +25,19 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-
-#include <sndfile.h>
-
 #include <math.h>
-#include <stddef.h>
+#include <sndfile.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 closeAudioOutput(dsd_opts* opts) {

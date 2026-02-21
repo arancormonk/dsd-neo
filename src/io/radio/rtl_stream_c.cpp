@@ -13,13 +13,14 @@
  */
 
 #include <new>
+#include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
-#include <dsd-neo/core/opts.h>
+#include "dsd-neo/core/opts_fwd.h"
 
 extern "C" {
 #include <dsd-neo/io/rtl_stream_c.h>
+
 // Local forward declarations for legacy helpers used under the hood
 void dsd_rtl_stream_clear_output(void);
 double dsd_rtl_stream_return_pwr(void);

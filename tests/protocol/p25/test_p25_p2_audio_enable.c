@@ -10,12 +10,15 @@
  * encryption fields so that audio gating is enabled for the affected slot.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 // Gate policy helper (from test shim)
 int p25_test_p2_gate(int algid, unsigned long long key, int aes_loaded);

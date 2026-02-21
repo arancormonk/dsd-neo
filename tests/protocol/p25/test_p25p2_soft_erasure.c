@@ -9,7 +9,6 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* Define reliability buffers that p25p2_soft.c will extern */

@@ -4,11 +4,9 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 int
 main(void) {

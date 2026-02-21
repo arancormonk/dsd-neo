@@ -32,25 +32,27 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
+#include <stdatomic.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
-
-#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/timing.h"
 
 static inline void
 dmr_set_symbol_timing(dsd_opts* opts, dsd_state* state) {
@@ -1013,19 +1015,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                     return DSD_SYNC_P25P1_NEG;
                 }
             }
-            /* When DMR/dPMR/NXDN are enabled targets, proactively disable FM AGC/limiter which can
-             * distort 2-level/FSK symbol envelopes and elevate early audio errors under marginal SNR.
-             * Also force FLL/TED off for FSK paths — but only when we are actually on the FSK/GFSK path. */
-#ifdef USE_RTLSDR
-            // Automatic DSP toggling disabled by user request.
-            // if ((opts->frame_dmr == 1 || opts->frame_dpmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)
-            //     && state->rf_mod == 2) { /* 2 = GFSK/FSK family */
-            //     rtl_stream_set_fm_agc(0);
-            //     rtl_stream_set_fm_limiter(0);
-            //     rtl_stream_toggle_fll(0);
-            //     rtl_stream_toggle_ted(0);
-            // }
-#endif
             if (opts->frame_x2tdma == 1) {
                 if ((strcmp(synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
                     state->carrier = 1;

@@ -12,13 +12,12 @@
 
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
-
 #include <math.h>
-
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 uint16_t q_abs_diff(const uint16_t v1, const uint16_t v2);
 uint32_t viterbi_chainback(uint8_t* out, size_t pos, uint16_t len);

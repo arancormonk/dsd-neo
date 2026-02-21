@@ -3,11 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 

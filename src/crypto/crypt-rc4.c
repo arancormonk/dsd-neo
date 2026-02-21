@@ -7,9 +7,10 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
-
 #include <stdint.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 //this version is for voice, going to transition to a block output version
 void

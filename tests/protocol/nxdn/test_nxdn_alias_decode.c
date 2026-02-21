@@ -10,10 +10,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 uint64_t
 ConvertBitIntoBytes(uint8_t* bits, uint32_t n) {

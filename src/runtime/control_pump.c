@@ -4,8 +4,10 @@
  */
 
 #include <dsd-neo/runtime/control_pump.h>
-
 #include <stddef.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static dsd_control_pump_fn g_control_pump_fn = NULL;
 

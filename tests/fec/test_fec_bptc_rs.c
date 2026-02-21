@@ -4,14 +4,12 @@
  */
 
 #include <assert.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/fec/rs_12_9.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 static void
 set_bits_from_u32_u8(uint8_t* dst_bits, int nbits, unsigned int v) {

@@ -4,8 +4,6 @@
  */
 
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
-
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 

@@ -3,15 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/runtime/log.h>
-
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
     uint8_t missing_seen[(0xFFFFu + 7u) / 8u];

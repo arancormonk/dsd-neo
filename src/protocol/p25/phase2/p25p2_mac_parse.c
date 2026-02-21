@@ -7,10 +7,10 @@
  * P25 Phase 2 MAC VPDU parsing helpers.
  */
 
-#include <stddef.h>
-
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_tables.h>
+#include <stddef.h>
+#include <stdint.h>
 
 int
 p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out) {

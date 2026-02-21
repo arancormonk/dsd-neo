@@ -14,14 +14,12 @@
  */
 
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
-
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <vector>
 
 static double
 rms(const std::vector<float>& x) {

@@ -14,7 +14,6 @@
 
 #include <cstdarg>
 #include <cstdio>
-#include <cstring>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
 

@@ -4,11 +4,13 @@
  */
 
 #include <assert.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int g_tune_to_freq_calls = 0;
 static int g_tune_to_cc_calls = 0;

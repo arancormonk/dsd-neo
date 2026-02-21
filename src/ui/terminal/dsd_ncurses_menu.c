@@ -12,10 +12,10 @@
 
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
+#include <stdint.h>
 
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 uint32_t temp_freq = -1;
 

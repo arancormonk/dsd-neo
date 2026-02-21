@@ -4,9 +4,11 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
-
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;

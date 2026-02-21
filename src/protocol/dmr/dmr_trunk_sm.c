@@ -13,9 +13,12 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 

@@ -23,11 +23,12 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
-
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {

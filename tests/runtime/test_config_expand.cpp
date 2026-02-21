@@ -7,11 +7,9 @@
  * Unit tests for config path expansion (~, $VAR, ${VAR}).
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/runtime/config.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "test_support.h"
 

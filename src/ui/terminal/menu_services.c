@@ -17,16 +17,19 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/ui/menu_services.h>
-
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/ui/menu_services.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 int
 svc_toggle_all_mutes(dsd_opts* opts) {
@@ -612,7 +615,6 @@ svc_toggle_inv_m17(dsd_opts* opts) {
 }
 
 #ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
 
 int
 svc_rtl_enable_input(dsd_opts* opts, dsd_state* state) {

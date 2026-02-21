@@ -8,15 +8,13 @@
  * ncurses UI primitives shared by menu framework and screen panels
  */
 
-#include <dsd-neo/platform/curses_compat.h>
-
+#include <curses.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-#include <dsd-neo/ui/ui_prims.h>
 
 // ---------------- Window helpers ----------------
 

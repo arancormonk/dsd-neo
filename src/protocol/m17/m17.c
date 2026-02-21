@@ -38,19 +38,23 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <stdbool.h>
+#include <sys/types.h>
+#include <time.h>
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
 #endif
 
 #include <math.h>
-#include <stddef.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <sndfile.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void decodeM17PKT(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 

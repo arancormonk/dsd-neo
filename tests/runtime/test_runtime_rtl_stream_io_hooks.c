@@ -4,10 +4,12 @@
  */
 
 #include <assert.h>
-#include <stdlib.h>
-
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <stdlib.h>
+
+#include "dsd-neo/core/state_ext.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int g_read_calls = 0;
 static int g_return_pwr_calls = 0;

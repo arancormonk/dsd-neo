@@ -13,9 +13,7 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_callsign.h>
-
 #include <stdio.h>
-#include <string.h>
 
 /* P25 Radix-50 character table (40 characters):
  * Index 0: space

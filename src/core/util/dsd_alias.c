@@ -17,10 +17,13 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/runtime/unicode.h>
-
 #include <locale.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t num_bits, uint8_t* input);
 void apx_embedded_alias_dump(dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t num_bytes, uint8_t* input,

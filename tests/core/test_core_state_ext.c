@@ -4,8 +4,10 @@
  */
 
 #include <dsd-neo/core/state.h>
-
 #include <stdlib.h>
+
+#include "dsd-neo/core/state_ext.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int s_cleanup_calls = 0;
 

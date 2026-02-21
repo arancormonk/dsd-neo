@@ -7,8 +7,7 @@
  * P25 protocol display functions for ncurses UI
  */
 
-#include <dsd-neo/ui/ncurses_p25_display.h>
-
+#include <curses.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -19,13 +18,16 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ncurses_internal.h>
+#include <dsd-neo/ui/ncurses_p25_display.h>
 #include <dsd-neo/ui/ui_prims.h>
-
-#include <dsd-neo/platform/curses_compat.h>
-#include <math.h>
-#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* Alias for shared last synctype tracking (defined in ncurses_utils.c) */
 #define lls ncurses_last_synctype

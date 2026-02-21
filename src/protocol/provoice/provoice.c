@@ -7,10 +7,12 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <dsd-neo/runtime/colors.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // #define PVDEBUG
 

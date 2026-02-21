@@ -10,12 +10,17 @@
  * decoded.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);

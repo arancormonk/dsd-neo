@@ -12,8 +12,6 @@
  * driven DSP toggles, and rate-dependent helpers.
  */
 
-#include <dsd-neo/io/rtl_demod_config.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -21,16 +19,19 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/runtime/worker_pool.h>
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/dsp/costas.h"
+#include "dsd-neo/platform/threading.h"
 
 /* Debug/compat toggles via env (mirrored from rtl_sdr_fm.cpp responsibilities). */
 int combine_rotate_enabled = 1;      /* DSD_NEO_COMBINE_ROT (1 default) */

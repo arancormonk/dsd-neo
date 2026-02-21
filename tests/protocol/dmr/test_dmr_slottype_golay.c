@@ -11,11 +11,10 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
+#include <dsd-neo/fec/block_codes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-
-#include <dsd-neo/fec/block_codes.h>
 
 static void
 bits_from_byte(unsigned char b, unsigned char out[8]) {

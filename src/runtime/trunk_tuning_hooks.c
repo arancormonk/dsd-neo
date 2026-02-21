@@ -3,13 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
-
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static dsd_trunk_tuning_hooks g_trunk_tuning_hooks = {0};
 

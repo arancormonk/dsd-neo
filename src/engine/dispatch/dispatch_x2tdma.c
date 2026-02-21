@@ -9,8 +9,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
-
 #include <stdio.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 dsd_dispatch_matches_x2tdma(int synctype) {

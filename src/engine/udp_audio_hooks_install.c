@@ -3,9 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/udp_audio_hooks.h>
-
 #include <dsd-neo/io/udp_audio.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <stddef.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 dsd_engine_udp_audio_blast(dsd_opts* opts, dsd_state* state, size_t nsam, void* data) {

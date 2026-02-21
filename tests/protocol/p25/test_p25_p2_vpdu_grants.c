@@ -8,11 +8,9 @@
  * Asserts trunking tune side-effects via test shim capture.
  */
 
-#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 // Test shim wrapper

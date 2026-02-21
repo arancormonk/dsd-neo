@@ -23,18 +23,18 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
 #include <math.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <rtl-sdr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
 #include <excpt.h>
-#endif
-
-#if DSD_PLATFORM_POSIX
-#include <strings.h>
-#include <unistd.h>
 #endif
 /* Some platforms (e.g. non-glibc) may not define MSG_NOSIGNAL */
 #ifndef MSG_NOSIGNAL

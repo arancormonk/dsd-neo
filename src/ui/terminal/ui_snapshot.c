@@ -4,11 +4,13 @@
  */
 
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/ui/ui_snapshot.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 #include "telemetry_hooks_impl.h"
 
 static dsd_state g_pub;     // latest published by demod thread

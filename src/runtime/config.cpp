@@ -17,8 +17,13 @@
 #include <dsd-neo/runtime/config.h>
 #include <limits.h>
 #include <math.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static dsdneoRuntimeConfig g_config;
 static int g_config_inited = 0;

@@ -13,6 +13,8 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/state.h>
 
+#include "dsd-neo/core/state_fwd.h"
+
 // Produce 6 short samples (48k) for every 1 short sample (8k)
 // Uses linear interpolation between prev and invalue for smoother output.
 // Interpolation coefficients: [0/6, 1/6, 2/6, 3/6, 4/6, 5/6] from prev to invalue

@@ -8,9 +8,6 @@
  * broad decoder headers to unit tests that lack external deps (e.g., mbelib).
  */
 
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -19,6 +16,12 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.

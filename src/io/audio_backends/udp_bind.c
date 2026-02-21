@@ -3,13 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/io/udp_bind.h>
-
+#include <arpa/inet.h>
 #include <dsd-neo/core/constants.h>
-
+#include <dsd-neo/io/udp_bind.h>
+#include <netinet/in.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+
+#include "dsd-neo/platform/sockets.h"
 
 dsd_socket_t
 UDPBind(char* hostname, int portno) {

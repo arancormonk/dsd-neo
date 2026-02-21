@@ -5,8 +5,6 @@
 
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 
-#include <string.h>
-
 // D-STAR scrambler: 7-bit LFSR with polynomial x^7 + x^4 + 1, seeded with 0b0000111.
 // We output the MSb (reg[6]) each step and clock once per bit. The sequence repeats every 127 bits.
 static void

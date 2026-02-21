@@ -4,11 +4,9 @@
  */
 
 #include <assert.h>
-#include <stddef.h>
+#include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
 #include <string.h>
-
-#include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 
 static void
 convolution_encode(const int* bits, size_t bit_count, int* symbols) {

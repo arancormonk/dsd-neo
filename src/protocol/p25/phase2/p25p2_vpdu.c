@@ -26,10 +26,8 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
-
-#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -38,7 +36,9 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
 // Expose MAC helpers for tests and diagnostics.
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
-#include <dsd-neo/protocol/p25/p25p2_mac_tables.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void

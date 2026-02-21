@@ -9,12 +9,17 @@
  * when provenance (WACN/SYSID and, if present, RFSS/SITE) matches current site.
  */
 
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 static int
 expect_eq_int(const char* tag, int got, int want) {

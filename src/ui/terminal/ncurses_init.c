@@ -7,14 +7,17 @@
  * ncurses initialization and cleanup
  */
 
+#include <curses.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses.h>
-
-#include <dsd-neo/platform/curses_compat.h>
-
+#include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* EDACS channel tree state (initialized in ncursesOpen) */
 unsigned long long int edacs_channel_tree[33][6];

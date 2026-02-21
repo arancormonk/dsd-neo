@@ -11,12 +11,14 @@
  * retune-allowed policy, and does not dispatch when retune is disabled.
  */
 
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
 

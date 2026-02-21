@@ -12,9 +12,7 @@
  */
 
 #include <dsd-neo/dsp/firdes.h>
-
 #include <math.h>
-#include <string.h>
 
 /* GNU Radio's M_PI definition */
 #ifndef GR_M_PI

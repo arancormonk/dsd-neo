@@ -14,11 +14,10 @@
 
 #include "menu_items.h"
 
-#include "menu_actions.h"
-#include "menu_internal.h"
-#include "menu_labels.h"
-
 #include <dsd-neo/ui/menu_core.h>
+
+#include "menu_actions.h"
+#include "menu_labels.h"
 
 // ============================================================================
 // RTL-SDR Menu Items (USE_RTLSDR only)

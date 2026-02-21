@@ -5,14 +5,16 @@
 
 /* UI command actions — logging/history domain */
 
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/ui/menu_services.h>
+#include <dsd-neo/ui/ui_cmd_dispatch.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/ui/menu_services.h>
-#include <dsd-neo/ui/ui_cmd_dispatch.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/ui/ui_cmd.h"
 
 static int
 ui_handle_eh_next(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {

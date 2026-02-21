@@ -19,11 +19,13 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/unicode.h>
-
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {

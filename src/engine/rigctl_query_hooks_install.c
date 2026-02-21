@@ -3,10 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/rigctl_query_hooks.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rigctl_client.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 static long int
 dsd_engine_rigctl_get_current_freq_hz(const dsd_opts* opts) {

@@ -12,16 +12,15 @@
  */
 
 #include "menu_prompts.h"
-#include <dsd-neo/platform/curses_compat.h>
-#include "menu_internal.h"
 
 #include <ctype.h>
+#include <curses.h>
+#include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/ui/keymap.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <dsd-neo/ui/keymap.h>
-#include <dsd-neo/ui/ui_prims.h>
 
 // ---- Prompt overlay state ----
 typedef struct {

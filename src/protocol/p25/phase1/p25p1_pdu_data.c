@@ -25,10 +25,13 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static inline void
 dsd_append(char* dst, size_t dstsz, const char* src) {

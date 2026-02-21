@@ -4,8 +4,10 @@
  */
 
 #include <dsd-neo/core/cleanup.h>
-
 #include <dsd-neo/runtime/shutdown.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 cleanupAndExit(dsd_opts* opts, dsd_state* state) {

@@ -21,10 +21,12 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
-
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {

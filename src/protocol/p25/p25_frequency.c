@@ -16,8 +16,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
-
+#include <stdint.h>
 #include <stdio.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // P25 channel → frequency mapping
 // - Channel format: 4-bit iden (MSBs) + 12-bit channel number.

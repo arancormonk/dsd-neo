@@ -10,10 +10,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {

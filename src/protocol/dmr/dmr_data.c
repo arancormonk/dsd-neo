@@ -25,12 +25,16 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
+#include <stdint.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {

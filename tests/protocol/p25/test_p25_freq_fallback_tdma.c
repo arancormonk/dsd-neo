@@ -8,13 +8,18 @@
  * Ensures process_channel_to_freq uses denom=2 in this case.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 // Stubs for external hooks possibly referenced
 bool

@@ -5,6 +5,8 @@
 
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+
 static dsd_rigctl_query_hooks g_rigctl_query_hooks = {0};
 
 void

@@ -10,17 +10,18 @@
  * without touching CLI or environment precedence.
  */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/file_compat.h"
 #include "test_support.h"
 
 static int

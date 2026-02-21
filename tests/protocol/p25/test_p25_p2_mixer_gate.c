@@ -8,11 +8,12 @@
  * cross-mute the opposite slot.
  */
 
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/state.h>
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq(const char* tag, int got, int want) {

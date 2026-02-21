@@ -12,9 +12,8 @@
 
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config_schema.h>
-
+#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 /* Schema data for all configuration keys */
 static const dsdcfg_schema_entry_t s_schema[] = {

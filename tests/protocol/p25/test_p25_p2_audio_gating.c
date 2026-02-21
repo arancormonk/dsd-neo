@@ -7,12 +7,13 @@
  * P25 Phase 2 audio gating transitions: SIGNAL and explicit MAC Release.
  */
 
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Shim entry to process a MAC VPDU with LCCH flag and slot
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);

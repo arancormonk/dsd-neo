@@ -14,7 +14,8 @@
 
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-
+#include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 
 //modified to accept variable payload size and len

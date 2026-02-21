@@ -10,9 +10,6 @@
  * Implements float half-band decimation by 2 with persistent history.
  */
 
-#include <stdint.h>
-#include <string.h>
-
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/simd_fir.h>
 

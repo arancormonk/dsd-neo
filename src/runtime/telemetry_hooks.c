@@ -3,12 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/telemetry.h>
-
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/telemetry.h>
+#include <stdatomic.h>
 
-#include <stddef.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static dsd_telemetry_hooks g_telemetry_hooks = {0};
 static dsd_mutex_t g_telemetry_hooks_mu;

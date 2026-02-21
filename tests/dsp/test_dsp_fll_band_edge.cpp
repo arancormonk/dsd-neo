@@ -6,8 +6,6 @@
 /* Regression test for OP25/GNU Radio-compatible band-edge FLL filter design. */
 
 #include <dsd-neo/dsp/costas.h>
-
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 

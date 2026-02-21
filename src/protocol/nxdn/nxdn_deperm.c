@@ -37,10 +37,13 @@
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/colors.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, uint8_t* ElementsContent);

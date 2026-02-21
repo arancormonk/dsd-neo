@@ -7,6 +7,7 @@
  * Verify MAC VPDU length inference from MCO for unknown opcode and capacity capping.
  */
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@
 
 // Forward declare config init to keep test dependencies narrow.
 struct dsd_opts;
+
 void dsd_neo_config_init(const struct dsd_opts* opts);
 
 // Test shim entrypoint (provided by dsd-neo_proto_p25)

@@ -4,6 +4,10 @@
  */
 
 #include <dsd-neo/platform/file_compat.h>
+#include <stdio.h>
+#include <sys/types.h>
+
+#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 

@@ -10,13 +10,15 @@
  * - ring holds the last 8 tags in FIFO order.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_sm_ui.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_int(const char* tag, int got, int want) {

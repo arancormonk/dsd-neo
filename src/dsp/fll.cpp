@@ -11,12 +11,8 @@
  * Uses high-quality sin/cos from the math library for NCO rotation.
 */
 
-#include <complex>
 #include <dsd-neo/dsp/fll.h>
-#include <dsd-neo/dsp/math_utils.h>
 #include <math.h>
-#include <stdlib.h>
-#include <string.h>
 
 static const float kTwoPiF = 6.28318530717958647692f;
 

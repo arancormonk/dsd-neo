@@ -35,16 +35,17 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
-
 #include <mbelib.h>
 #include <sndfile.h>
-
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 saveImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d) {

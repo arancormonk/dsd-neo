@@ -13,7 +13,11 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/platform/posix_compat.h>
+#include <stdint.h>
 #include <unordered_map>
+#include <utility>
+#include <vector>
+
 #include "ezpwd/rs"
 
 extern "C" {

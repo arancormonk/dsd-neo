@@ -4,9 +4,7 @@
  */
 
 #include <dsd-neo/dsp/symbol_levels.h>
-
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 
 static int

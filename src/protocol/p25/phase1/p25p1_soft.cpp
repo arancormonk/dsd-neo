@@ -8,14 +8,11 @@
  * @brief Soft-decision FEC decoders for P25 Phase 1 voice.
  */
 
-#include <dsd-neo/protocol/p25/p25p1_soft.h>
-
+#include <cstring>
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/fec/Hamming.hpp>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
-
-#include <algorithm>
-#include <cstring>
 
 /* Erasure threshold: symbols with reliability below this are marked as erasures.
  * Range: 0-255. Default: 64 (~25% confidence).

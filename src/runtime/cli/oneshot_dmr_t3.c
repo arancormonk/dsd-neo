@@ -12,11 +12,9 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 // --- Local helpers -----------------------------------------------------------
 

@@ -8,6 +8,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ui_cmd_dispatch.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/ui/ui_cmd.h"
 
 static int
 ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {

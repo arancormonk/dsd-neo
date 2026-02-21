@@ -9,14 +9,18 @@
  * disabled.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;

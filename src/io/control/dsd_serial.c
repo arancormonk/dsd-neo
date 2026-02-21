@@ -4,9 +4,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/log.h>
-
 #include <stdio.h>
-#include <stdlib.h>
+#include <sys/types.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
 /* Windows: Serial port support is stubbed for now. */
@@ -44,7 +46,8 @@ resumeScan(dsd_opts* opts, dsd_state* state) {
 #else /* POSIX */
 
 #include <fcntl.h>
-#include <termios.h>
+// IWYU pragma: no_include <bits/termios-baud.h>
+#include <termios.h> // IWYU pragma: keep
 #include <unistd.h>
 
 /**

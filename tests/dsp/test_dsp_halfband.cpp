@@ -7,7 +7,6 @@
 
 #include <dsd-neo/dsp/halfband.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 static int
 approx_eq(float a, float b, float tol) {

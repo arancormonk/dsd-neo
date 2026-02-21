@@ -10,9 +10,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
-
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq) {

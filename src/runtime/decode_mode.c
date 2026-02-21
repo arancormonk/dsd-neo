@@ -3,12 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/decode_mode.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdio.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/config.h"
 
 int
 dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode) {

@@ -10,9 +10,9 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
+#include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -20,6 +20,11 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <dsd-neo/ui/ui_history.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif

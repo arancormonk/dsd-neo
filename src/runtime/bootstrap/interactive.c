@@ -3,20 +3,21 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/runtime/cli.h>
-#include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/decode_mode.h>
-#include <dsd-neo/runtime/log.h>
-
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
-
+#include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 trim_newline(char* s) {

@@ -3,9 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/state_ext.h>
-
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <stddef.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 dsd_state_ext_id_is_valid(dsd_state_ext_id id) {

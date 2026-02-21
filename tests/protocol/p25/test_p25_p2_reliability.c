@@ -15,14 +15,12 @@
  * dragging in full library dependencies.
  */
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-#include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state_fwd.h>
 
 /* External declarations matching p25p2_frame.c */
 extern int p2bit[4320];

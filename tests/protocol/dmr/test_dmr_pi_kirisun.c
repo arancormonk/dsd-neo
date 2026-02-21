@@ -4,15 +4,17 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {

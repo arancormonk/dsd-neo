@@ -24,9 +24,14 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 void dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]);

@@ -8,11 +8,13 @@
  * IDEN tables and drives the channel→frequency calculator.
  */
 
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Test shim helper (exposed by protocol library)
 int p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, int* out_spac, int* out_type,

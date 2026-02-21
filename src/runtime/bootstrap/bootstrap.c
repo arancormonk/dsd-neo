@@ -3,23 +3,22 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <ctype.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
-
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
-
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/posix_compat.h>
-
 #include <mbelib.h>
-
-#include <ctype.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/config_schema.h"
 
 static void
 bootstrap_set_exit_rc(int* out_exit_rc, int rc) {

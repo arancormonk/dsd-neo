@@ -26,9 +26,12 @@
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/unicode.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #define DMR_PDU_DECRYPTION //disable to skip attempting to decrypt DMR PDUs
 

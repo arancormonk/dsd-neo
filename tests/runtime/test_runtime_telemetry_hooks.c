@@ -4,9 +4,11 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <stdlib.h>
 
-#include <dsd-neo/runtime/telemetry.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int g_publish_snapshot_calls = 0;
 static int g_publish_opts_snapshot_calls = 0;

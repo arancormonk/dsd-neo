@@ -11,14 +11,12 @@
  * provided by sync_calibration.h.
  */
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 #define FLOAT_TOL 0.01f
 

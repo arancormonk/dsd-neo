@@ -7,11 +7,11 @@
  * M17 LSF parsing helpers.
  */
 
-#include <string.h>
-
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
+#include <stdint.h>
+#include <string.h>
 
 const char*
 m17_packet_protocol_name(uint8_t protocol) {

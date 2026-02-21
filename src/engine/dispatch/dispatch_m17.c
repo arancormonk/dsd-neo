@@ -4,10 +4,12 @@
  */
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/m17/m17.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 int
 dsd_dispatch_matches_m17(int synctype) {

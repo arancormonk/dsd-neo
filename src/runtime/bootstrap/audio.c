@@ -7,10 +7,11 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 
 static void
 trim_newline(char* s) {

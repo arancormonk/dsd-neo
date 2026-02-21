@@ -11,13 +11,13 @@
  * tuning, and reads with error propagation. Intended as a safer API surface.
  */
 
-#include <dsd-neo/io/rtl_stream.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state_fwd.h>
-
+#include <dsd-neo/io/rtl_stream.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 
 extern "C" {
 // Local forward declarations for legacy functions now hidden from public headers

@@ -72,10 +72,6 @@
  *
  */
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-
 int m, n, length, k, t, d;
 int p[21];
 int alpha_to[1048576], index_of[1048576], g[548576];

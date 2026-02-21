@@ -6,13 +6,18 @@
 /* Verify ENC override via regroup KEY=0: encrypted SVC bits should tune when
  * WGID is within an active SGID that has KEY=0 (clear) policy. */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 // Stubs
 bool

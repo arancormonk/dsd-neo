@@ -6,14 +6,16 @@
 // Smoke test: relaxed header acceptance for SAP=4 (IP-based) with CRC fail
 
 #include <assert.h>
-#include <stdint.h>
-#include <string.h>
-
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Forward under test
 extern void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[],

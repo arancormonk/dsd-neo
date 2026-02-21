@@ -5,13 +5,15 @@
  * the opposite slot is inactive.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Helper from shim that mirrors early ENC handling and now flushes ring
 int p25_test_p2_early_enc_handle(dsd_opts* opts, dsd_state* state, int slot);

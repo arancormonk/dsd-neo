@@ -4,9 +4,11 @@
  */
 
 #include <assert.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <stddef.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 
 static int g_calls = 0;
 static const dsd_opts* g_last_opts = NULL;

@@ -13,14 +13,12 @@
  * accumulation period.
  */
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 /* Tolerance for floating point comparisons */
 #define FLOAT_TOL 0.01f

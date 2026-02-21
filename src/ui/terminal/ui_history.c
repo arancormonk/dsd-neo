@@ -3,8 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/ui/ui_history.h>
+#include <stdatomic.h>
 
 static atomic_int g_ui_history_mode = 1;
 

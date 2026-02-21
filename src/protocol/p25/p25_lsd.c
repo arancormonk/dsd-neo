@@ -20,6 +20,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
+#include <stdint.h>
 
 // Parity lookup from legacy implementation in p25_crc.c
 extern uint8_t lsd_parity[256];

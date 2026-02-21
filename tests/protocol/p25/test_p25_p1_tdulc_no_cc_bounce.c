@@ -15,15 +15,20 @@
  *  - Asserts that return_to_cc() is not called (i.e., no immediate CC bounce)
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/p25p1_heuristics.h"
+
+struct RtlSdrContext;
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 

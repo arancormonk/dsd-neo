@@ -4,12 +4,10 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/fec/block_codes.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-#include <dsd-neo/fec/block_codes.h>
 
 static void
 set_bits_from_u32(unsigned char* dst_bits, int nbits, unsigned int v) {

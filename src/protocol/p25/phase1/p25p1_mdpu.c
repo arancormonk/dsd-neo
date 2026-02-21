@@ -21,6 +21,7 @@
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
+#include <stdint.h>
 #ifdef USE_RTLSDR
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -28,6 +29,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 uint32_t
 crc32mbf(uint8_t* buf, int len) {

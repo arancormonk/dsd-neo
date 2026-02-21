@@ -8,17 +8,21 @@
  */
 
 #include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
-
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 
 // Stubs and helpers (same pattern as other DMR tests)
 uint64_t
@@ -60,6 +64,7 @@ rotate_symbol_out_file(dsd_opts* o, dsd_state* s) {
     (void)s;
 }
 struct RtlSdrContext;
+
 struct RtlSdrContext* g_rtl_ctx = 0;
 
 int

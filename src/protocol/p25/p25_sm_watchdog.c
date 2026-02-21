@@ -4,13 +4,18 @@
  */
 
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <stdatomic.h>
+#include <stddef.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 /* exitflag declared in runtime/exitflag.h, defined in src/runtime/exitflag.c */
 

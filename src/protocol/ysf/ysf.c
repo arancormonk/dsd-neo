@@ -20,13 +20,14 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/runtime/colors.h>
-
 #include <mbelib.h>
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* thx gr-ysf fr_vch_decoder_bb_impl.cc * Copyright 2015 Mathias Weyland */
 // I hold Sylvain Munaut in high esteem for figuring this out.

@@ -7,15 +7,15 @@
  * DSP status panel (RTL-SDR pipeline state)
  */
 
-#include <dsd-neo/ui/ncurses_dsp_display.h>
-
+#include <curses.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ui_prims.h>
-
 #include <stdarg.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>

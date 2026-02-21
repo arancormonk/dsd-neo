@@ -7,13 +7,14 @@
  * SNR history, sparkline, and meter rendering
  */
 
-#include <dsd-neo/ui/ncurses_snr.h>
-
+#include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/ui/ncurses_internal.h>
-
-#include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/ui/ncurses_snr.h>
 #include <math.h>
+#include <stddef.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 
 /* SNR history buffers for sparkline (per modulation) */
 enum { SNR_HIST_N = 48 };

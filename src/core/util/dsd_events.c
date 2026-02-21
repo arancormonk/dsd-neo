@@ -20,11 +20,13 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
-#include <dsd-neo/runtime/git_ver.h>
-
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 // Safe bounded copy helper that tolerates potential overlap
 static inline void

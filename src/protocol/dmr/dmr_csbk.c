@@ -32,11 +32,16 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
 #define PCLEAR_TUNE_AWAY //disable if slower return is preferred
 
 // Safe append helper: appends src to dst within dstsz, NUL-terminating

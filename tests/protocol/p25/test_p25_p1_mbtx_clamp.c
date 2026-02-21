@@ -8,6 +8,7 @@
  * and diagnostic notice is emitted.
  */
 
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -15,9 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
-
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 
 // Shim: decode one MBT using seeded IDEN parameters and return fields
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,

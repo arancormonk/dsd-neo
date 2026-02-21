@@ -42,15 +42,23 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ui_async.h>
-
-#include <mbelib.h>
-
 #include <limits.h>
+#include <mbelib.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_ext.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/p25p1_heuristics.h"
+#include "dsd-neo/platform/sockets.h"
+
+struct CODEC2;
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <rtl-sdr.h>
