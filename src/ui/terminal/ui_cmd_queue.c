@@ -431,6 +431,553 @@ apply_dsp_op(const UiDspPayload* p) {
 }
 #endif
 
+static int
+apply_cmd_runtime_toggles(dsd_opts* opts, const struct UiCmd* c) {
+    if (!opts || !c) {
+        return 0;
+    }
+    switch (c->id) {
+        case UI_CMD_DMR_LE_TOGGLE: svc_toggle_dmr_le(opts); return 1;
+        case UI_CMD_ALL_MUTES_TOGGLE: svc_toggle_all_mutes(opts); return 1;
+        case UI_CMD_INV_X2_TOGGLE: svc_toggle_inv_x2(opts); return 1;
+        case UI_CMD_INV_DMR_TOGGLE: svc_toggle_inv_dmr(opts); return 1;
+        case UI_CMD_INV_DPMR_TOGGLE: svc_toggle_inv_dpmr(opts); return 1;
+        case UI_CMD_INV_M17_TOGGLE: svc_toggle_inv_m17(opts); return 1;
+        default: return 0;
+    }
+}
+
+static int
+apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    if (!opts || !c) {
+        return 0;
+    }
+    switch (c->id) {
+        case UI_CMD_WAV_STATIC_OPEN: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_open_static_wav(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Static WAV output -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Static WAV open -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_WAV_RAW_OPEN: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_open_raw_wav(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Raw WAV output -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Raw WAV open -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_DSP_OUT_SET: {
+            if (c->n > 0) {
+                char name[256] = {0};
+                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
+                memcpy(name, c->data, n);
+                name[n] = '\0';
+                int rc = svc_set_dsp_output_file(opts, name);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: DSP output -> %s", opts->dsp_out_file);
+                } else {
+                    ui_set_toast(state, 4, "Failed: DSP output path invalid");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_SYMCAP_OPEN: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_open_symbol_out(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Symbol capture -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Symbol capture open -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_SYMBOL_IN_OPEN: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_open_symbol_in(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Symbol input open -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_INPUT_WAV_SET: {
+            if (c->n > 0) {
+                size_t n = c->n < sizeof(opts->audio_in_dev) ? c->n : sizeof(opts->audio_in_dev) - 1;
+                memcpy(opts->audio_in_dev, c->data, n);
+                opts->audio_in_dev[n] = '\0';
+                opts->audio_in_type = AUDIO_IN_WAV;
+                ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
+            }
+            return 1;
+        }
+        case UI_CMD_INPUT_SYM_STREAM_SET: {
+            if (c->n > 0) {
+                size_t n = c->n < sizeof(opts->audio_in_dev) ? c->n : sizeof(opts->audio_in_dev) - 1;
+                memcpy(opts->audio_in_dev, c->data, n);
+                opts->audio_in_dev[n] = '\0';
+                opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
+                ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
+            }
+            return 1;
+        }
+        case UI_CMD_INPUT_SET_PULSE: {
+            snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+            opts->audio_in_type = AUDIO_IN_PULSE;
+            ui_set_toast(state, 3, "Applied: Input switched to Pulse");
+            return 1;
+        }
+        case UI_CMD_UDP_OUT_CFG: {
+            if (state && c->n >= (int)(256 + sizeof(int32_t))) {
+                char host[256] = {0};
+                memcpy(host, c->data, 255);
+                int32_t port = 0;
+                memcpy(&port, c->data + 256, sizeof(int32_t));
+                int rc = svc_udp_output_config(opts, state, host, port);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "UDP output configured: %s:%d", host, (int)port);
+                } else {
+                    ui_set_toast(state, 4, "UDP output failed: %s:%d", host, (int)port);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_TCP_CONNECT_AUDIO_CFG: {
+            if (state && c->n >= (int)(256 + sizeof(int32_t))) {
+                char host[256] = {0};
+                memcpy(host, c->data, 255);
+                int32_t port = 0;
+                memcpy(&port, c->data + 256, sizeof(int32_t));
+                int rc = svc_tcp_connect_audio(opts, host, port);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, (int)port);
+                } else {
+                    ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", host, (int)port);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RIGCTL_CONNECT_CFG: {
+            if (state && c->n >= (int)(256 + sizeof(int32_t))) {
+                char host[256] = {0};
+                memcpy(host, c->data, 255);
+                int32_t port = 0;
+                memcpy(&port, c->data + 256, sizeof(int32_t));
+                int rc = svc_rigctl_connect(opts, host, port);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Rigctl connected: %s:%d", host, (int)port);
+                } else {
+                    ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", host, (int)port);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_UDP_INPUT_CFG: {
+            if (state && c->n >= (int)(256 + sizeof(int32_t))) {
+                char bind[256] = {0};
+                memcpy(bind, c->data, 255);
+                int32_t port = 0;
+                memcpy(&port, c->data + 256, sizeof(int32_t));
+                snprintf(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", bind);
+                opts->udp_in_portno = port;
+                snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
+                opts->audio_in_type = AUDIO_IN_UDP;
+                ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_ENABLE_INPUT: {
+            if (state) {
+                int rc = svc_rtl_enable_input(opts, state);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL input enabled");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL input enable");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_RESTART: {
+            if (state) {
+                int rc = svc_rtl_restart(opts, state);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL stream restarted");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL stream restart");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_DEV: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                int rc = svc_rtl_set_dev_index(opts, state, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL device index -> %d", (int)v);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL device index -> %d", (int)v);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_FREQ: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                int rc = svc_rtl_set_freq(opts, state, (uint32_t)v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL frequency -> %d Hz", (int)v);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL frequency -> %d Hz", (int)v);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_GAIN: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                int rc = svc_rtl_set_gain(opts, state, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL gain -> %d", (int)v);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_PPM: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                int rc = svc_rtl_set_ppm(opts, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL PPM -> %d", (int)opts->rtlsdr_ppm_error);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL PPM update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_BW: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                int rc = svc_rtl_set_bandwidth(opts, state, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL DSP BW update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_SQL_DB: {
+            if (state && c->n >= (int)sizeof(double)) {
+                double d = 0.0;
+                memcpy(&d, c->data, sizeof d);
+                int rc = svc_rtl_set_sql_db(opts, d);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL squelch -> %.1f dB", d);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL squelch update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_VOL_MULT: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                int rc = svc_rtl_set_volume_mult(opts, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL volume -> %dX", (int)opts->rtl_volume_multiplier);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL volume update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_BIAS_TEE: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t on = 0;
+                memcpy(&on, c->data, sizeof on);
+                int rc = svc_rtl_set_bias_tee(opts, state, on);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL bias tee update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTLTCP_SET_AUTOTUNE: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t on = 0;
+                memcpy(&on, c->data, sizeof on);
+                int rc = svc_rtltcp_set_autotune(opts, state, on);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL-TCP adaptive networking -> %s", on ? "On" : "Off");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL-TCP adaptive networking update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RTL_SET_AUTO_PPM: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t on = 0;
+                memcpy(&on, c->data, sizeof on);
+                int rc = svc_rtl_set_auto_ppm(opts, state, on);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Auto PPM -> %s", on ? "On" : "Off");
+                } else {
+                    ui_set_toast(state, 4, "Failed: Auto PPM update");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_RIGCTL_SET_MOD_BW: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t hz = 0;
+                memcpy(&hz, c->data, sizeof hz);
+                svc_set_rigctl_setmod_bw(opts, hz);
+                ui_set_toast(state, 3, "Applied: Rigctl setmod BW -> %d Hz", opts->setmod_bw);
+            }
+            return 1;
+        }
+        case UI_CMD_TG_HOLD_SET: {
+            if (state && c->n >= (int)sizeof(uint32_t)) {
+                uint32_t tg = 0;
+                memcpy(&tg, c->data, sizeof tg);
+                svc_set_tg_hold(state, tg);
+                ui_set_toast(state, 3, "Applied: TG Hold -> %u", tg);
+            }
+            return 1;
+        }
+        case UI_CMD_HANGTIME_SET: {
+            if (state && c->n >= (int)sizeof(double)) {
+                double s = 0.0;
+                memcpy(&s, c->data, sizeof s);
+                svc_set_hangtime(opts, s);
+                ui_set_toast(state, 3, "Applied: Hangtime -> %.3f s", opts->trunk_hangtime);
+            }
+            return 1;
+        }
+        case UI_CMD_SLOT_PREF_SET: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t p = 0;
+                memcpy(&p, c->data, sizeof p);
+                svc_set_slot_pref(opts, p);
+                ui_set_toast(state, 3, "Applied: Slot preference -> %d", opts->slot_preference + 1);
+            }
+            return 1;
+        }
+        case UI_CMD_SLOTS_ONOFF_SET: {
+            if (state && c->n >= (int)sizeof(int32_t)) {
+                int32_t m = 0;
+                memcpy(&m, c->data, sizeof m);
+                svc_set_slots_onoff(opts, m);
+                ui_set_toast(state, 3, "Applied: Slot mask -> %d", (opts->slot1_on ? 1 : 0) | (opts->slot2_on ? 2 : 0));
+            }
+            return 1;
+        }
+        case UI_CMD_PULSE_OUT_SET: {
+            if (state && c->n > 0) {
+                char name[256] = {0};
+                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
+                memcpy(name, c->data, n);
+                name[n] = '\0';
+                int rc = svc_set_pulse_output(opts, name);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Pulse output -> %s", name);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Pulse output -> %s", name);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_PULSE_IN_SET: {
+            if (state && c->n > 0) {
+                char name[256] = {0};
+                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
+                memcpy(name, c->data, n);
+                name[n] = '\0';
+                int rc = svc_set_pulse_input(opts, name);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Pulse input -> %s", name);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_LRRP_SET_HOME: {
+            if (state) {
+                int rc = svc_lrrp_set_home(opts);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", opts->lrrp_out_file);
+                } else {
+                    ui_set_toast(state, 4, "Failed: LRRP output (home)");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_LRRP_SET_DSDP: {
+            if (state) {
+                int rc = svc_lrrp_set_dsdp(opts);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", opts->lrrp_out_file);
+                } else {
+                    ui_set_toast(state, 4, "Failed: LRRP output (DSDPlus)");
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_LRRP_SET_CUSTOM: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_lrrp_set_custom(opts, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: LRRP output -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_LRRP_DISABLE:
+            if (state) {
+                svc_lrrp_disable(opts);
+                ui_set_toast(state, 3, "Applied: LRRP output disabled");
+            }
+            return 1;
+        case UI_CMD_P25_P2_PARAMS_SET: {
+            if (state && c->n >= (int)(sizeof(uint64_t) * 3)) {
+                struct {
+                    uint64_t w;
+                    uint64_t s;
+                    uint64_t n;
+                } p = {0};
+
+                memcpy(&p, c->data, sizeof p);
+                svc_set_p2_params(state, p.w, p.s, p.n);
+                ui_set_toast(state, 3, "Applied: P25 P2 params W:%llX S:%llX N:%llX",
+                             (unsigned long long)state->p2_wacn, (unsigned long long)state->p2_sysid,
+                             (unsigned long long)state->p2_cc);
+            }
+            return 1;
+        }
+        case UI_CMD_IMPORT_CHANNEL_MAP: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_import_channel_map(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_IMPORT_GROUP_LIST: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_import_group_list(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Group list imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Group list import -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_IMPORT_KEYS_DEC: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_import_keys_dec(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Keys (DEC) imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Keys (DEC) import -> %s", path);
+                }
+            }
+            return 1;
+        }
+        case UI_CMD_IMPORT_KEYS_HEX: {
+            if (state && c->n > 0) {
+                char path[1024] = {0};
+                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+                memcpy(path, c->data, n);
+                path[n] = '\0';
+                int rc = svc_import_keys_hex(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Keys (HEX) imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Keys (HEX) import -> %s", path);
+                }
+            }
+            return 1;
+        }
+        default: return 0;
+    }
+}
+
+#ifdef USE_RTLSDR
+static int
+apply_cmd_dsp(const struct UiCmd* c) {
+    if (!c || c->id != UI_CMD_DSP_OP) {
+        return 0;
+    }
+    UiDspPayload p = {0};
+    if (c->n >= (int)sizeof(UiDspPayload)) {
+        memcpy(&p, c->data, sizeof p);
+    }
+    apply_dsp_op(&p);
+    return 1;
+}
+#endif
+
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     if (payload_sz > sizeof(g_q[0].data)) {
@@ -478,6 +1025,17 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     if (apply_cmd_key_management(opts, state, c)) {
         return;
     }
+    if (apply_cmd_runtime_toggles(opts, c)) {
+        return;
+    }
+    if (apply_cmd_io_and_import(opts, state, c)) {
+        return;
+    }
+#ifdef USE_RTLSDR
+    if (apply_cmd_dsp(c)) {
+        return;
+    }
+#endif
     switch (c->id) {
         case UI_CMD_QUIT: {
             exitflag = 1;
@@ -1263,562 +1821,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_DMR_LE_TOGGLE: {
-            if (opts) {
-                svc_toggle_dmr_le(opts);
-            }
-            break;
-        }
-        case UI_CMD_ALL_MUTES_TOGGLE: {
-            if (opts) {
-                svc_toggle_all_mutes(opts);
-            }
-            break;
-        }
-        case UI_CMD_INV_X2_TOGGLE: {
-            if (opts) {
-                svc_toggle_inv_x2(opts);
-            }
-            break;
-        }
-        case UI_CMD_INV_DMR_TOGGLE: {
-            if (opts) {
-                svc_toggle_inv_dmr(opts);
-            }
-            break;
-        }
-        case UI_CMD_INV_DPMR_TOGGLE: {
-            if (opts) {
-                svc_toggle_inv_dpmr(opts);
-            }
-            break;
-        }
-        case UI_CMD_INV_M17_TOGGLE: {
-            if (opts) {
-                svc_toggle_inv_m17(opts);
-            }
-            break;
-        }
-        case UI_CMD_WAV_STATIC_OPEN: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_open_static_wav(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Static WAV output -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Static WAV open -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_WAV_RAW_OPEN: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_open_raw_wav(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Raw WAV output -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Raw WAV open -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_DSP_OUT_SET: {
-            if (opts && c->n > 0) {
-                char name[256] = {0};
-                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
-                memcpy(name, c->data, n);
-                name[n] = '\0';
-                int rc = svc_set_dsp_output_file(opts, name);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: DSP output -> %s", opts->dsp_out_file);
-                } else {
-                    ui_set_toast(state, 4, "Failed: DSP output path invalid");
-                }
-            }
-            break;
-        }
-        case UI_CMD_SYMCAP_OPEN: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_open_symbol_out(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Symbol capture -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Symbol capture open -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_SYMBOL_IN_OPEN: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_open_symbol_in(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Symbol input open -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_INPUT_WAV_SET: {
-            if (opts && c->n > 0) {
-                size_t n = c->n < sizeof(opts->audio_in_dev) ? c->n : sizeof(opts->audio_in_dev) - 1;
-                memcpy(opts->audio_in_dev, c->data, n);
-                opts->audio_in_dev[n] = '\0';
-                opts->audio_in_type = AUDIO_IN_WAV;
-                ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
-            }
-            break;
-        }
-        case UI_CMD_INPUT_SYM_STREAM_SET: {
-            if (opts && c->n > 0) {
-                size_t n = c->n < sizeof(opts->audio_in_dev) ? c->n : sizeof(opts->audio_in_dev) - 1;
-                memcpy(opts->audio_in_dev, c->data, n);
-                opts->audio_in_dev[n] = '\0';
-                opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
-                ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
-            }
-            break;
-        }
-        case UI_CMD_INPUT_SET_PULSE: {
-            if (opts) {
-                snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-                opts->audio_in_type = AUDIO_IN_PULSE;
-                ui_set_toast(state, 3, "Applied: Input switched to Pulse");
-            }
-            break;
-        }
-        case UI_CMD_UDP_OUT_CFG: {
-            if (opts && c->n >= (int)(256 + sizeof(int32_t))) {
-                char host[256] = {0};
-                memcpy(host, c->data, 255);
-                int32_t port = 0;
-                memcpy(&port, c->data + 256, sizeof(int32_t));
-                int rc = svc_udp_output_config(opts, state, host, port);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "UDP output configured: %s:%d", host, (int)port);
-                } else {
-                    ui_set_toast(state, 4, "UDP output failed: %s:%d", host, (int)port);
-                }
-            }
-            break;
-        }
-        case UI_CMD_TCP_CONNECT_AUDIO_CFG: {
-            if (opts && c->n >= (int)(256 + sizeof(int32_t))) {
-                char host[256] = {0};
-                memcpy(host, c->data, 255);
-                int32_t port = 0;
-                memcpy(&port, c->data + 256, sizeof(int32_t));
-                int rc = svc_tcp_connect_audio(opts, host, port);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, (int)port);
-                } else {
-                    ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", host, (int)port);
-                }
-            }
-            break;
-        }
-        case UI_CMD_RIGCTL_CONNECT_CFG: {
-            if (opts && c->n >= (int)(256 + sizeof(int32_t))) {
-                char host[256] = {0};
-                memcpy(host, c->data, 255);
-                int32_t port = 0;
-                memcpy(&port, c->data + 256, sizeof(int32_t));
-                int rc = svc_rigctl_connect(opts, host, port);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Rigctl connected: %s:%d", host, (int)port);
-                } else {
-                    ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", host, (int)port);
-                }
-            }
-            break;
-        }
-        case UI_CMD_UDP_INPUT_CFG: {
-            if (opts && c->n >= (int)(256 + sizeof(int32_t))) {
-                char bind[256] = {0};
-                memcpy(bind, c->data, 255);
-                int32_t port = 0;
-                memcpy(&port, c->data + 256, sizeof(int32_t));
-                snprintf(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", bind);
-                opts->udp_in_portno = port;
-                snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
-                opts->audio_in_type = AUDIO_IN_UDP;
-                ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
-            }
-            break;
-        }
-        case UI_CMD_RTL_ENABLE_INPUT: {
-            if (opts && state) {
-                int rc = svc_rtl_enable_input(opts, state);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL input enabled");
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL input enable");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_RESTART: {
-            if (opts && state) {
-                int rc = svc_rtl_restart(opts, state);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL stream restarted");
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL stream restart");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_DEV: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                int rc = svc_rtl_set_dev_index(opts, state, v);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL device index -> %d", (int)v);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL device index -> %d", (int)v);
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_FREQ: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                int rc = svc_rtl_set_freq(opts, state, (uint32_t)v);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL frequency -> %d Hz", (int)v);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL frequency -> %d Hz", (int)v);
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_GAIN: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                int rc = svc_rtl_set_gain(opts, state, v);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL gain -> %d", (int)v);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_PPM: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                int rc = svc_rtl_set_ppm(opts, v);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL PPM -> %d", (int)opts->rtlsdr_ppm_error);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL PPM update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_BW: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                int rc = svc_rtl_set_bandwidth(opts, state, v);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL DSP BW update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_SQL_DB: {
-            if (opts && c->n >= (int)sizeof(double)) {
-                double d = 0.0;
-                memcpy(&d, c->data, sizeof d);
-                int rc = svc_rtl_set_sql_db(opts, d);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL squelch -> %.1f dB", d);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL squelch update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_VOL_MULT: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
-                int32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                int rc = svc_rtl_set_volume_mult(opts, v);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL volume -> %dX", (int)opts->rtl_volume_multiplier);
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL volume update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_BIAS_TEE: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t on = 0;
-                memcpy(&on, c->data, sizeof on);
-                int rc = svc_rtl_set_bias_tee(opts, state, on);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL bias tee update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTLTCP_SET_AUTOTUNE: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t on = 0;
-                memcpy(&on, c->data, sizeof on);
-                int rc = svc_rtltcp_set_autotune(opts, state, on);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: RTL-TCP adaptive networking -> %s", on ? "On" : "Off");
-                } else {
-                    ui_set_toast(state, 4, "Failed: RTL-TCP adaptive networking update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RTL_SET_AUTO_PPM: {
-            if (opts && state && c->n >= (int)sizeof(int32_t)) {
-                int32_t on = 0;
-                memcpy(&on, c->data, sizeof on);
-                int rc = svc_rtl_set_auto_ppm(opts, state, on);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Auto PPM -> %s", on ? "On" : "Off");
-                } else {
-                    ui_set_toast(state, 4, "Failed: Auto PPM update");
-                }
-            }
-            break;
-        }
-        case UI_CMD_RIGCTL_SET_MOD_BW: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
-                int32_t hz = 0;
-                memcpy(&hz, c->data, sizeof hz);
-                svc_set_rigctl_setmod_bw(opts, hz);
-                ui_set_toast(state, 3, "Applied: Rigctl setmod BW -> %d Hz", opts->setmod_bw);
-            }
-            break;
-        }
-        case UI_CMD_TG_HOLD_SET: {
-            if (state && c->n >= (int)sizeof(uint32_t)) {
-                uint32_t tg = 0;
-                memcpy(&tg, c->data, sizeof tg);
-                svc_set_tg_hold(state, tg);
-                ui_set_toast(state, 3, "Applied: TG Hold -> %u", tg);
-            }
-            break;
-        }
-        case UI_CMD_HANGTIME_SET: {
-            if (opts && c->n >= (int)sizeof(double)) {
-                double s = 0.0;
-                memcpy(&s, c->data, sizeof s);
-                svc_set_hangtime(opts, s);
-                ui_set_toast(state, 3, "Applied: Hangtime -> %.3f s", opts->trunk_hangtime);
-            }
-            break;
-        }
-        case UI_CMD_SLOT_PREF_SET: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
-                int32_t p = 0;
-                memcpy(&p, c->data, sizeof p);
-                svc_set_slot_pref(opts, p);
-                ui_set_toast(state, 3, "Applied: Slot preference -> %d", opts->slot_preference + 1);
-            }
-            break;
-        }
-        case UI_CMD_SLOTS_ONOFF_SET: {
-            if (opts && c->n >= (int)sizeof(int32_t)) {
-                int32_t m = 0;
-                memcpy(&m, c->data, sizeof m);
-                svc_set_slots_onoff(opts, m);
-                ui_set_toast(state, 3, "Applied: Slot mask -> %d", (opts->slot1_on ? 1 : 0) | (opts->slot2_on ? 2 : 0));
-            }
-            break;
-        }
-        case UI_CMD_PULSE_OUT_SET: {
-            if (opts && c->n > 0) {
-                char name[256] = {0};
-                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
-                memcpy(name, c->data, n);
-                name[n] = '\0';
-                int rc = svc_set_pulse_output(opts, name);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Pulse output -> %s", name);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Pulse output -> %s", name);
-                }
-            }
-            break;
-        }
-        case UI_CMD_PULSE_IN_SET: {
-            if (opts && c->n > 0) {
-                char name[256] = {0};
-                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
-                memcpy(name, c->data, n);
-                name[n] = '\0';
-                int rc = svc_set_pulse_input(opts, name);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Pulse input -> %s", name);
-                }
-            }
-            break;
-        }
-
-        case UI_CMD_LRRP_SET_HOME: {
-            if (opts) {
-                int rc = svc_lrrp_set_home(opts);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", opts->lrrp_out_file);
-                } else {
-                    ui_set_toast(state, 4, "Failed: LRRP output (home)");
-                }
-            }
-            break;
-        }
-        case UI_CMD_LRRP_SET_DSDP: {
-            if (opts) {
-                int rc = svc_lrrp_set_dsdp(opts);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", opts->lrrp_out_file);
-                } else {
-                    ui_set_toast(state, 4, "Failed: LRRP output (DSDPlus)");
-                }
-            }
-            break;
-        }
-        case UI_CMD_LRRP_SET_CUSTOM: {
-            if (opts && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_lrrp_set_custom(opts, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: LRRP output -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_LRRP_DISABLE: {
-            if (opts) {
-                svc_lrrp_disable(opts);
-                ui_set_toast(state, 3, "Applied: LRRP output disabled");
-            }
-            break;
-        }
-        case UI_CMD_P25_P2_PARAMS_SET: {
-            if (state && c->n >= (int)(sizeof(uint64_t) * 3)) {
-                struct {
-                    uint64_t w;
-                    uint64_t s;
-                    uint64_t n;
-                } p = {0};
-
-                memcpy(&p, c->data, sizeof p);
-                svc_set_p2_params(state, p.w, p.s, p.n);
-                ui_set_toast(state, 3, "Applied: P25 P2 params W:%llX S:%llX N:%llX",
-                             (unsigned long long)state->p2_wacn, (unsigned long long)state->p2_sysid,
-                             (unsigned long long)state->p2_cc);
-            }
-            break;
-        }
-        case UI_CMD_IMPORT_CHANNEL_MAP: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_import_channel_map(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_IMPORT_GROUP_LIST: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_import_group_list(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Group list imported -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Group list import -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_IMPORT_KEYS_DEC: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_import_keys_dec(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Keys (DEC) imported -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Keys (DEC) import -> %s", path);
-                }
-            }
-            break;
-        }
-        case UI_CMD_IMPORT_KEYS_HEX: {
-            if (opts && state && c->n > 0) {
-                char path[1024] = {0};
-                size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
-                memcpy(path, c->data, n);
-                path[n] = '\0';
-                int rc = svc_import_keys_hex(opts, state, path);
-                if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Keys (HEX) imported -> %s", path);
-                } else {
-                    ui_set_toast(state, 4, "Failed: Keys (HEX) import -> %s", path);
-                }
-            }
-            break;
-        }
-#ifdef USE_RTLSDR
-        case UI_CMD_DSP_OP: {
-            UiDspPayload p = {0};
-            if (c->n >= (int)sizeof(UiDspPayload)) {
-                memcpy(&p, c->data, sizeof p);
-            }
-            apply_dsp_op(&p);
-            break;
-        }
-#endif
         default: break;
     }
 }
