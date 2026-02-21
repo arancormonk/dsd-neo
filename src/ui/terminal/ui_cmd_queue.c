@@ -1040,6 +1040,223 @@ mark_cc_sync(dsd_state* state, int include_monotonic) {
     }
 }
 
+#ifdef USE_RTLSDR
+static void
+apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_freq[0]) {
+        uint32_t hz = dsd_parse_freq_hz(cfg->rtl_freq);
+        if (hz > 0) {
+            opts->rtlsdr_center_freq = hz;
+        }
+    }
+    if (cfg->rtl_ppm) {
+        opts->rtlsdr_ppm_error = cfg->rtl_ppm;
+    }
+    if (cfg->rtl_bw_khz) {
+        opts->rtl_dsp_bw_khz = cfg->rtl_bw_khz;
+    }
+    if (cfg->rtl_sql) {
+        double sql = (double)cfg->rtl_sql;
+        if (sql > 1.0) {
+            sql /= (32768.0 * 32768.0);
+        }
+        opts->rtl_squelch_level = sql;
+        rtl_stream_set_channel_squelch((float)sql);
+    }
+    if (cfg->rtl_gain) {
+        opts->rtl_gain_value = cfg->rtl_gain;
+    }
+    if (cfg->rtl_volume) {
+        opts->rtl_volume_multiplier = cfg->rtl_volume;
+    }
+}
+
+static void
+apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                          int old_audio_in_type) {
+    if (!cfg->has_input || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP)
+        || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        return;
+    }
+
+    if (cfg->input_source == DSDCFG_INPUT_RTL) {
+        if (cfg->rtl_device >= 0) {
+            opts->rtl_dev_index = cfg->rtl_device;
+        }
+        apply_cfg_rtl_common(opts, cfg);
+        opts->rtltcp_enabled = 0;
+    } else { // DSDCFG_INPUT_RTLTCP
+        if (cfg->rtltcp_host[0]) {
+            snprintf(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", cfg->rtltcp_host);
+        }
+        if (cfg->rtltcp_port) {
+            opts->rtltcp_portno = cfg->rtltcp_port;
+        }
+        apply_cfg_rtl_common(opts, cfg);
+        opts->rtltcp_enabled = 1;
+    }
+    (void)svc_rtl_restart(opts, state);
+}
+#endif
+
+static void
+apply_cfg_tcp_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                          int old_audio_in_type) {
+    if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_TCP || old_audio_in_type != AUDIO_IN_TCP
+        || strncmp(old_audio_in_dev, "tcp", 3) != 0 || strncmp(opts->audio_in_dev, "tcp", 3) != 0
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        return;
+    }
+
+    if (cfg->tcp_host[0]) {
+        snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", cfg->tcp_host);
+    }
+    if (cfg->tcp_port) {
+        opts->tcp_portno = cfg->tcp_port;
+    }
+    if (opts->tcp_in_ctx) {
+        tcp_input_close(opts->tcp_in_ctx);
+        opts->tcp_in_ctx = NULL;
+    }
+    if (opts->tcp_sockfd != 0) {
+        dsd_socket_close(opts->tcp_sockfd);
+        opts->tcp_sockfd = 0;
+    }
+    if (svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno) != 0) {
+        LOG_ERROR("Config: failed to reconnect TCP audio %s:%d\n", opts->tcp_hostname, opts->tcp_portno);
+    }
+}
+
+static void
+apply_cfg_udp_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                          int old_audio_in_type) {
+    if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_UDP || old_audio_in_type != AUDIO_IN_UDP
+        || strncmp(old_audio_in_dev, "udp", 3) != 0 || strncmp(opts->audio_in_dev, "udp", 3) != 0
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        return;
+    }
+
+    if (cfg->udp_addr[0]) {
+        snprintf(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", cfg->udp_addr);
+    }
+    if (cfg->udp_port) {
+        opts->udp_in_portno = cfg->udp_port;
+    }
+    if (opts->udp_in_ctx) {
+        udp_input_stop(opts);
+    }
+    const char* bindaddr = opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1";
+    int port = opts->udp_in_portno ? opts->udp_in_portno : 7355;
+    if (udp_input_start(opts, bindaddr, port, opts->wav_sample_rate) != 0) {
+        LOG_ERROR("Config: failed to restart UDP input %s:%d\n", bindaddr, port);
+    }
+}
+
+static void
+apply_cfg_file_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                           int old_audio_in_type) {
+    if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE || old_audio_in_type != AUDIO_IN_WAV
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        return;
+    }
+
+    if (opts->audio_in_file) {
+        sf_close(opts->audio_in_file);
+        opts->audio_in_file = NULL;
+    }
+    if (opts->audio_in_file_info) {
+        free(opts->audio_in_file_info);
+        opts->audio_in_file_info = NULL;
+    }
+    opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
+    if (!opts->audio_in_file_info) {
+        LOG_ERROR("Config: failed to allocate SF_INFO for file input\n");
+        return;
+    }
+
+    opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
+    opts->audio_in_file_info->channels = 1;
+    opts->audio_in_file_info->seekable = 0;
+    opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
+    opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
+    if (!opts->audio_in_file) {
+        LOG_ERROR("Config: failed to open file input %s: %s\n", opts->audio_in_dev, sf_strerror(NULL));
+    } else {
+        opts->audio_in_type = AUDIO_IN_WAV;
+    }
+}
+
+static void
+apply_cfg_pulse_in_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                               int old_audio_in_type) {
+    if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_PULSE || old_audio_in_type != AUDIO_IN_PULSE
+        || opts->audio_in_type != AUDIO_IN_PULSE) {
+        return;
+    }
+    if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0
+        && strncmp(old_audio_in_dev, "pulse", 5) == 0) {
+        return;
+    }
+
+    closeAudioInput(opts);
+    if (strncmp(opts->audio_in_dev, "pulse", 5) == 0 && opts->audio_in_dev[5] == ':' && opts->audio_in_dev[6] != '\0') {
+        char tmp[128] = {0};
+        snprintf(tmp, sizeof tmp, "%s", opts->audio_in_dev + 6);
+        parse_audio_input_string(opts, tmp);
+    } else {
+        opts->pa_input_idx[0] = '\0';
+    }
+    if (openAudioInput(opts) != 0) {
+        LOG_ERROR("Config: failed to open PulseAudio input\n");
+    }
+}
+
+static void
+apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_out_dev,
+                                int old_audio_out_type) {
+    if (!cfg->has_output || cfg->output_backend != DSDCFG_OUTPUT_PULSE || old_audio_out_type != 0
+        || opts->audio_out_type != 0) {
+        return;
+    }
+    if (strncmp(old_audio_out_dev, opts->audio_out_dev, sizeof opts->audio_out_dev) == 0
+        && strncmp(old_audio_out_dev, "pulse", 5) == 0) {
+        return;
+    }
+
+    closeAudioOutput(opts);
+    if (strncmp(opts->audio_out_dev, "pulse", 5) == 0 && opts->audio_out_dev[5] == ':'
+        && opts->audio_out_dev[6] != '\0') {
+        char tmp[128] = {0};
+        snprintf(tmp, sizeof tmp, "%s", opts->audio_out_dev + 6);
+        parse_audio_output_string(opts, tmp);
+    } else {
+        opts->pa_output_idx[0] = '\0';
+    }
+    if (openAudioOutput(opts) != 0) {
+        LOG_ERROR("Config: failed to open PulseAudio output\n");
+    }
+}
+
+static void
+apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                               const char* old_audio_in_dev, int old_audio_in_type, const char* old_audio_out_dev,
+                               int old_audio_out_type) {
+    /* Tighten runtime behavior when applying configs mid-run by restarting
+     * active backends whose configuration changed, while avoiding cross-backend
+     * hot-switches. */
+#ifdef USE_RTLSDR
+    apply_cfg_rtl_hot_restart(opts, state, cfg, old_audio_in_dev, old_audio_in_type);
+#else
+    (void)state;
+#endif
+    apply_cfg_tcp_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
+    apply_cfg_udp_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
+    apply_cfg_file_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
+    apply_cfg_pulse_in_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
+    apply_cfg_pulse_out_hot_restart(opts, cfg, old_audio_out_dev, old_audio_out_type);
+}
+
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     if (payload_sz > sizeof(g_q[0].data)) {
@@ -1616,193 +1833,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
                 memcpy(&cfg, c->data, sizeof cfg);
                 dsd_apply_user_config_to_opts(&cfg, opts, state);
-
-                /* Tighten runtime behavior when applying configs mid-run by
-                 * restarting or retuning backends that are already active and
-                 * whose configuration has changed. This mirrors startup flows
-                 * while avoiding cross-backend hot-switches. */
-
-#ifdef USE_RTLSDR
-                if (cfg.has_input && (cfg.input_source == DSDCFG_INPUT_RTL || cfg.input_source == DSDCFG_INPUT_RTLTCP)
-                    && old_audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
-                    && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
-                    if (cfg.input_source == DSDCFG_INPUT_RTL) {
-                        if (cfg.rtl_device >= 0) {
-                            opts->rtl_dev_index = cfg.rtl_device;
-                        }
-                        if (cfg.rtl_freq[0]) {
-                            uint32_t hz = dsd_parse_freq_hz(cfg.rtl_freq);
-                            if (hz > 0) {
-                                opts->rtlsdr_center_freq = hz;
-                            }
-                        }
-                        if (cfg.rtl_ppm) {
-                            opts->rtlsdr_ppm_error = cfg.rtl_ppm;
-                        }
-                        if (cfg.rtl_bw_khz) {
-                            opts->rtl_dsp_bw_khz = cfg.rtl_bw_khz;
-                        }
-                        if (cfg.rtl_sql) {
-                            double sql = (double)cfg.rtl_sql;
-                            if (sql > 1.0) {
-                                sql /= (32768.0 * 32768.0);
-                            }
-                            opts->rtl_squelch_level = sql;
-                            rtl_stream_set_channel_squelch((float)sql);
-                        }
-                        if (cfg.rtl_gain) {
-                            opts->rtl_gain_value = cfg.rtl_gain;
-                        }
-                        if (cfg.rtl_volume) {
-                            opts->rtl_volume_multiplier = cfg.rtl_volume;
-                        }
-                        opts->rtltcp_enabled = 0;
-                    } else { // DSDCFG_INPUT_RTLTCP
-                        if (cfg.rtltcp_host[0]) {
-                            snprintf(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", cfg.rtltcp_host);
-                        }
-                        if (cfg.rtltcp_port) {
-                            opts->rtltcp_portno = cfg.rtltcp_port;
-                        }
-                        if (cfg.rtl_freq[0]) {
-                            uint32_t hz = dsd_parse_freq_hz(cfg.rtl_freq);
-                            if (hz > 0) {
-                                opts->rtlsdr_center_freq = hz;
-                            }
-                        }
-                        if (cfg.rtl_ppm) {
-                            opts->rtlsdr_ppm_error = cfg.rtl_ppm;
-                        }
-                        if (cfg.rtl_bw_khz) {
-                            opts->rtl_dsp_bw_khz = cfg.rtl_bw_khz;
-                        }
-                        if (cfg.rtl_sql) {
-                            double sql = (double)cfg.rtl_sql;
-                            if (sql > 1.0) {
-                                sql /= (32768.0 * 32768.0);
-                            }
-                            opts->rtl_squelch_level = sql;
-                            rtl_stream_set_channel_squelch((float)sql);
-                        }
-                        if (cfg.rtl_gain) {
-                            opts->rtl_gain_value = cfg.rtl_gain;
-                        }
-                        if (cfg.rtl_volume) {
-                            opts->rtl_volume_multiplier = cfg.rtl_volume;
-                        }
-                        opts->rtltcp_enabled = 1;
-                    }
-                    (void)svc_rtl_restart(opts, state);
-                }
-#endif
-
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_TCP && old_audio_in_type == AUDIO_IN_TCP
-                    && strncmp(old_audio_in_dev, "tcp", 3) == 0 && strncmp(opts->audio_in_dev, "tcp", 3) == 0
-                    && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
-                    if (cfg.tcp_host[0]) {
-                        snprintf(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", cfg.tcp_host);
-                    }
-                    if (cfg.tcp_port) {
-                        opts->tcp_portno = cfg.tcp_port;
-                    }
-                    if (opts->tcp_in_ctx) {
-                        tcp_input_close(opts->tcp_in_ctx);
-                        opts->tcp_in_ctx = NULL;
-                    }
-                    if (opts->tcp_sockfd != 0) {
-                        dsd_socket_close(opts->tcp_sockfd);
-                        opts->tcp_sockfd = 0;
-                    }
-                    if (svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno) != 0) {
-                        LOG_ERROR("Config: failed to reconnect TCP audio %s:%d\n", opts->tcp_hostname,
-                                  opts->tcp_portno);
-                    }
-                }
-
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_UDP && old_audio_in_type == AUDIO_IN_UDP
-                    && strncmp(old_audio_in_dev, "udp", 3) == 0 && strncmp(opts->audio_in_dev, "udp", 3) == 0
-                    && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
-                    if (cfg.udp_addr[0]) {
-                        snprintf(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", cfg.udp_addr);
-                    }
-                    if (cfg.udp_port) {
-                        opts->udp_in_portno = cfg.udp_port;
-                    }
-                    if (opts->udp_in_ctx) {
-                        udp_input_stop(opts);
-                    }
-                    const char* bindaddr = opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1";
-                    int port = opts->udp_in_portno ? opts->udp_in_portno : 7355;
-                    if (udp_input_start(opts, bindaddr, port, opts->wav_sample_rate) != 0) {
-                        LOG_ERROR("Config: failed to restart UDP input %s:%d\n", bindaddr, port);
-                    }
-                }
-
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_FILE && old_audio_in_type == AUDIO_IN_WAV
-                    && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0) {
-                    if (opts->audio_in_file) {
-                        sf_close(opts->audio_in_file);
-                        opts->audio_in_file = NULL;
-                    }
-                    if (opts->audio_in_file_info) {
-                        free(opts->audio_in_file_info);
-                        opts->audio_in_file_info = NULL;
-                    }
-                    opts->audio_in_file_info = calloc(1, sizeof(SF_INFO));
-                    if (!opts->audio_in_file_info) {
-                        LOG_ERROR("Config: failed to allocate SF_INFO for file input\n");
-                    } else {
-                        opts->audio_in_file_info->samplerate = opts->wav_sample_rate;
-                        opts->audio_in_file_info->channels = 1;
-                        opts->audio_in_file_info->seekable = 0;
-                        opts->audio_in_file_info->format = SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-                        opts->audio_in_file = sf_open(opts->audio_in_dev, SFM_READ, opts->audio_in_file_info);
-                        if (!opts->audio_in_file) {
-                            LOG_ERROR("Config: failed to open file input %s: %s\n", opts->audio_in_dev,
-                                      sf_strerror(NULL));
-                        } else {
-                            opts->audio_in_type = AUDIO_IN_WAV;
-                        }
-                    }
-                }
-
-                if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_PULSE && old_audio_in_type == AUDIO_IN_PULSE
-                    && opts->audio_in_type == AUDIO_IN_PULSE) {
-                    if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof old_audio_in_dev) != 0
-                        || strncmp(old_audio_in_dev, "pulse", 5) != 0) {
-                        closeAudioInput(opts);
-                        if (strncmp(opts->audio_in_dev, "pulse", 5) == 0 && opts->audio_in_dev[5] == ':'
-                            && opts->audio_in_dev[6] != '\0') {
-                            char tmp[128] = {0};
-                            snprintf(tmp, sizeof tmp, "%s", opts->audio_in_dev + 6);
-                            parse_audio_input_string(opts, tmp);
-                        } else {
-                            opts->pa_input_idx[0] = '\0';
-                        }
-                        if (openAudioInput(opts) != 0) {
-                            LOG_ERROR("Config: failed to open PulseAudio input\n");
-                        }
-                    }
-                }
-
-                if (cfg.has_output && cfg.output_backend == DSDCFG_OUTPUT_PULSE && old_audio_out_type == 0
-                    && opts->audio_out_type == 0) {
-                    if (strncmp(old_audio_out_dev, opts->audio_out_dev, sizeof old_audio_out_dev) != 0
-                        || strncmp(old_audio_out_dev, "pulse", 5) != 0) {
-                        closeAudioOutput(opts);
-                        if (strncmp(opts->audio_out_dev, "pulse", 5) == 0 && opts->audio_out_dev[5] == ':'
-                            && opts->audio_out_dev[6] != '\0') {
-                            char tmp[128] = {0};
-                            snprintf(tmp, sizeof tmp, "%s", opts->audio_out_dev + 6);
-                            parse_audio_output_string(opts, tmp);
-                        } else {
-                            opts->pa_output_idx[0] = '\0';
-                        }
-                        if (openAudioOutput(opts) != 0) {
-                            LOG_ERROR("Config: failed to open PulseAudio output\n");
-                        }
-                    }
-                }
+                apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type,
+                                               old_audio_out_dev, old_audio_out_type);
             }
             break;
         }
