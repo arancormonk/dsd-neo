@@ -212,6 +212,76 @@ jobs:
         if: always()
         run: ccache -s
 
+  scan-build:
+    name: scan-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install scan-build toolchain and deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-tools cmake ninja-build pkg-config git \
+            build-essential libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/arancormonk/mbelib-neo /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Run scan-build
+        run: |
+          tools/scan_build.sh --strict
+
+      - name: Upload scan-build output
+        if: always()
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: scan-build-report
+          path: |
+            .scan-build.local.out
+            .scan-build.local
+          include-hidden-files: true
+          retention-days: 7
+
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Install Semgrep
+        run: python -m pip install --upgrade semgrep
+
+      - name: Run Semgrep
+        run: tools/semgrep.sh --strict
+
+      - name: Upload Semgrep output
+        if: always()
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: semgrep-report
+          path: .semgrep.local.out
+          include-hidden-files: true
+          retention-days: 7
+
   update-nightly-tag:
     name: Update nightly tag
     needs: [build-linux]
@@ -585,10 +655,10 @@ jobs:
           restore-keys: |
             deps-${{ runner.os }}-
 
-      - name: Inll toolchains
+      - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy ripgrep build-essential cmake ninja-build pkg-config git ccache \
+          sudo apt-get install -y clang-tidy ripgrep iwyu build-essential cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev \
             libfftw3-dev libblas-dev liblapack-dev gfortran
 
@@ -729,6 +799,32 @@ jobs:
         with:
           name: clang-tidy-report
           path: .clang-tidy.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+      - name: Run IWYU
+        run: |
+          tools/iwyu.sh --strict
+
+      - name: Upload IWYU output
+        if: always()
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: iwyu-report
+          path: .iwyu.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+      - name: Run GCC fanalyzer
+        run: |
+          tools/gcc_fanalyzer.sh
+
+      - name: Upload GCC fanalyzer output
+        if: always()
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: gcc-fanalyzer-report
+          path: .gcc-fanalyzer.local.out
           include-hidden-files: true
           retention-days: 7
 

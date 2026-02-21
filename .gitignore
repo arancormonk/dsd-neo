@@ -27,3 +27,4 @@ Thumbs.db
 /logs/
 *.log
 *.out
+/.scan-build.local/

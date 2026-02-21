@@ -305,7 +305,13 @@ Quick examples
 ## Tooling
 
 - Format: `tools/format.sh` (requires `clang-format`; see `.clang-format`).
-- Static analysis: `tools/clang_tidy.sh` (use `--strict` for extra checks) or `clang-tidy -p build/dev-debug <files>`.
+- Static analysis:
+  - `tools/clang_tidy.sh` (use `--strict` for extra checks).
+  - `tools/cppcheck.sh` (use `--strict` for broader checks).
+  - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
+  - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).
+  - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`).
+  - `tools/semgrep.sh` (additional SAST rules; use `--strict` to fail on findings; excludes `src/third_party`).
 - Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and clang‑tidy/cppcheck on push.
 
 ## Contributing
