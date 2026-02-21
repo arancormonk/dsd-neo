@@ -1386,7 +1386,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     // fprintf (stderr, " Source Size: %d.\n", source_size);
     // fprintf (stderr, "\n");
 
-    char* str_buffer = strtok(source_str, "{ \""); //value after initial { open bracket
+    char* str_saveptr = NULL;
+    char* str_buffer = strtok_r(source_str, "{ \"", &str_saveptr); //value after initial { open bracket
 
     //debug print current str_buffer
     // fprintf (stderr, "%s", str_buffer);
@@ -1397,7 +1398,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         // fprintf (stderr, "%s", str_buffer);
 
         if (strncmp("version", str_buffer, 7) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             version = strtol(str_buffer, NULL, 10);
 
@@ -1412,7 +1413,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
         //compare and set items accordingly
         if (strncmp("protocol", str_buffer, 8) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             //debug print current str_buffer
             fprintf(stderr, "\n Protocol: %s", str_buffer);
@@ -1464,7 +1465,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("call_type", str_buffer, 9) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             //set gi value based on this
             if (strncmp("GROUP", str_buffer, 5) == 0) {
@@ -1483,7 +1484,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("encrypted", str_buffer, 9) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             //set enc value based on this
             if (strncmp("true", str_buffer, 4) == 0) {
@@ -1504,7 +1505,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("to", str_buffer, 2) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             target = strtol(str_buffer, NULL, 10);
 
@@ -1518,7 +1519,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("from", str_buffer, 4) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             source = strtol(str_buffer, NULL, 10);
 
@@ -1532,7 +1533,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("encryption_algorithm", str_buffer, 20) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             alg_id = strtol(str_buffer, NULL, 10);
 
@@ -1549,7 +1550,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("encryption_key_id", str_buffer, 17) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             key_id = strtol(str_buffer, NULL, 10);
 
@@ -1566,7 +1567,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("encryption_mi", str_buffer, 13) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             uint16_t iv_len = strlen((const char*)str_buffer);
             char iv_str[20];
@@ -1661,7 +1662,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("hex", str_buffer, 3) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             if (protocol == 1) //P25p1 IMBE
             {
@@ -1724,7 +1725,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         if (strncmp("time", str_buffer, 4) == 0) {
-            str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+            str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
             char time_str[20];
             memset(time_str, 0, sizeof(time_str));
@@ -1765,7 +1766,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
             ks_idx = 0;
         }
 
-        str_buffer = strtok(NULL, " : \""); //next value after any : "" string
+        str_buffer = strtok_r(NULL, " : \"", &str_saveptr); //next value after any : "" string
 
         if (str_buffer == NULL) {
             break;

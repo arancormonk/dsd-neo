@@ -850,40 +850,41 @@ dsd_engine_parse_m17_userdata(dsd_opts* opts, dsd_state* state) {
 
         LOG_NOTICE("M17 User Data: ");
         char* curr;
+        char* saveptr = NULL;
 
         // if((strncmp(state->m17dat, "M17", 3) == 0))
         // goto M17END;
 
-        curr = strtok(state->m17dat, ":"); //should be 'M17'
+        curr = strtok_r(state->m17dat, ":", &saveptr); //should be 'M17'
         if (curr != NULL)
             ; //continue
         else {
             goto M17END; //end early with preset values
         }
 
-        curr = strtok(NULL, ":"); //m17 channel access number
+        curr = strtok_r(NULL, ":", &saveptr); //m17 channel access number
         if (curr != NULL) {
             state->m17_can_en = atoi(curr);
         }
 
-        curr = strtok(NULL, ":"); //m17 src address
+        curr = strtok_r(NULL, ":", &saveptr); //m17 src address
         if (curr != NULL) {
             strncpy(state->str50c, curr, 9); //only read first 9
             state->str50c[9] = '\0';
         }
 
-        curr = strtok(NULL, ":"); //m17 dst address
+        curr = strtok_r(NULL, ":", &saveptr); //m17 dst address
         if (curr != NULL) {
             strncpy(state->str50b, curr, 9); //only read first 9
             state->str50b[9] = '\0';
         }
 
-        curr = strtok(NULL, ":"); //m17 input audio rate
+        curr = strtok_r(NULL, ":", &saveptr); //m17 input audio rate
         if (curr != NULL) {
             state->m17_rate = atoi(curr);
         }
 
-        curr = strtok(NULL, ":"); //m17 vox enable
+        curr = strtok_r(NULL, ":", &saveptr); //m17 vox enable
         if (curr != NULL) {
             state->m17_vox = atoi(curr);
         }

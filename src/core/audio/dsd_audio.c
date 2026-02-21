@@ -160,7 +160,8 @@ dsd_drain_audio_output(dsd_opts* opts) {
 void
 parse_audio_input_string(dsd_opts* opts, char* input) {
     char* curr;
-    curr = strtok(input, ":");
+    char* saveptr = NULL;
+    curr = strtok_r(input, ":", &saveptr);
     if (curr != NULL) {
         strncpy(opts->pa_input_idx, curr, 99);
         opts->pa_input_idx[99] = '\0';
@@ -173,7 +174,8 @@ parse_audio_input_string(dsd_opts* opts, char* input) {
 void
 parse_audio_output_string(dsd_opts* opts, char* input) {
     char* curr;
-    curr = strtok(input, ":");
+    char* saveptr = NULL;
+    curr = strtok_r(input, ":", &saveptr);
     if (curr != NULL) {
         strncpy(opts->pa_output_idx, curr, 99);
         opts->pa_output_idx[99] = '\0';

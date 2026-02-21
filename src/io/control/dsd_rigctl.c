@@ -161,6 +161,7 @@ GetCurrentFreq(dsd_socket_t sockfd) {
     char buf[BUFSIZE];
     char* ptr;
     char* token;
+    char* saveptr = NULL;
 
     Send(sockfd, "f\n");
     Recv(sockfd, buf);
@@ -169,7 +170,7 @@ GetCurrentFreq(dsd_socket_t sockfd) {
         return freq;
     }
 
-    token = strtok(buf, "\n");
+    token = strtok_r(buf, "\n", &saveptr);
     freq = strtol(token, &ptr, 10);
     // fprintf (stderr, "\nRIGCTL VFO Freq: [%ld]\n", freq);
     return freq;

@@ -80,7 +80,8 @@ void
 straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
     uint16_t len = 0;
     char* curr;
-    curr = strtok(input, ":"); //should be len (mod) of key (decimal)
+    char* saveptr = NULL;
+    curr = strtok_r(input, ":", &saveptr); //should be len (mod) of key (decimal)
     if (curr != NULL) {
         sscanf(curr, "%hu", &len);
     } else {
@@ -92,7 +93,7 @@ straight_mod_xor_keystream_creation(dsd_state* state, char* input) {
         len = 882;
     }
 
-    curr = strtok(NULL, ":"); //should be key in hex
+    curr = strtok_r(NULL, ":", &saveptr); //should be key in hex
     if (curr != NULL) {
         //continue
     } else {
