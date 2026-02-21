@@ -112,6 +112,325 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     state->ui_msg_expire = time(NULL) + ttl_s;
 }
 
+static int
+apply_cmd_ui_visibility(dsd_opts* opts, const struct UiCmd* c) {
+    if (!opts || !c) {
+        return 0;
+    }
+    switch (c->id) {
+        case UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE: opts->show_dsp_panel = opts->show_dsp_panel ? 0 : 1; return 1;
+        case UI_CMD_UI_SHOW_P25_METRICS_TOGGLE: opts->show_p25_metrics = opts->show_p25_metrics ? 0 : 1; return 1;
+        case UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE:
+            opts->show_p25_affiliations = opts->show_p25_affiliations ? 0 : 1;
+            return 1;
+        case UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE: opts->show_p25_neighbors = opts->show_p25_neighbors ? 0 : 1; return 1;
+        case UI_CMD_UI_SHOW_P25_IDEN_TOGGLE: opts->show_p25_iden_plan = opts->show_p25_iden_plan ? 0 : 1; return 1;
+        case UI_CMD_UI_SHOW_P25_CCC_TOGGLE:
+            opts->show_p25_cc_candidates = opts->show_p25_cc_candidates ? 0 : 1;
+            return 1;
+        case UI_CMD_UI_SHOW_CHANNELS_TOGGLE: opts->show_channels = opts->show_channels ? 0 : 1; return 1;
+        case UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE:
+            opts->show_p25_callsign_decode = opts->show_p25_callsign_decode ? 0 : 1;
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    if (!c) {
+        return 0;
+    }
+    switch (c->id) {
+        case UI_CMD_KEY_BASIC_SET: {
+            if (state && opts && c->n >= (int)sizeof(uint32_t)) {
+                uint32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                state->K = v;
+                state->keyloader = 0;
+                state->payload_keyid = state->payload_keyidR = 0;
+                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_SCRAMBLER_SET: {
+            if (state && opts && c->n >= (int)sizeof(uint32_t)) {
+                uint32_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                state->R = v;
+                state->keyloader = 0;
+                state->payload_keyid = state->payload_keyidR = 0;
+                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_RC4DES_SET: {
+            if (state && opts && c->n >= (int)sizeof(uint64_t)) {
+                uint64_t v = 0;
+                memcpy(&v, c->data, sizeof v);
+                state->R = v;
+                state->RR = v;
+                state->keyloader = 0;
+                state->payload_keyid = state->payload_keyidR = 0;
+                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_HYTERA_SET: {
+            if (state && opts && c->n >= (int)(sizeof(uint64_t) * 5)) {
+                struct {
+                    uint64_t H, K1, K2, K3, K4;
+                } p;
+
+                memcpy(&p, c->data, sizeof p);
+                state->H = p.H;
+                state->K1 = p.K1;
+                state->K2 = p.K2;
+                state->K3 = p.K3;
+                state->K4 = p.K4;
+                state->keyloader = 0;
+                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+                snprintf(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
+                         (state->M == 1) ? "forced" : "not forced");
+                state->ui_msg_expire = time(NULL) + 5;
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_AES_SET: {
+            if (state && opts && c->n >= (int)(sizeof(uint64_t) * 4)) {
+                struct {
+                    uint64_t K1, K2, K3, K4;
+                } p;
+
+                memcpy(&p, c->data, sizeof p);
+                state->K1 = p.K1;
+                state->K2 = p.K2;
+                state->K3 = p.K3;
+                state->K4 = p.K4;
+                memset(state->A1, 0, sizeof(state->A1));
+                memset(state->A2, 0, sizeof(state->A2));
+                memset(state->A3, 0, sizeof(state->A3));
+                memset(state->A4, 0, sizeof(state->A4));
+                state->keyloader = 0;
+                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_TYT_AP_SET: {
+            if (state && c->n > 0) {
+                char s[256];
+                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
+                memcpy(s, c->data, n);
+                s[n] = '\0';
+                tyt_ap_pc4_keystream_creation(state, s);
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_RETEVIS_RC2_SET: {
+            if (state && c->n > 0) {
+                char s[256];
+                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
+                memcpy(s, c->data, n);
+                s[n] = '\0';
+                retevis_rc2_keystream_creation(state, s);
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_TYT_EP_SET: {
+            if (state && c->n > 0) {
+                char s[256];
+                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
+                memcpy(s, c->data, n);
+                s[n] = '\0';
+                tyt_ep_aes_keystream_creation(state, s);
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_KEN_SCR_SET: {
+            if (state && c->n > 0) {
+                char s[128];
+                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
+                memcpy(s, c->data, n);
+                s[n] = '\0';
+                ken_dmr_scrambler_keystream_creation(state, s);
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_ANYTONE_BP_SET: {
+            if (state && c->n > 0) {
+                char s[128];
+                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
+                memcpy(s, c->data, n);
+                s[n] = '\0';
+                anytone_bp_keystream_creation(state, s);
+            }
+            return 1;
+        }
+        case UI_CMD_KEY_XOR_SET: {
+            if (state && c->n > 0) {
+                char s[256];
+                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
+                memcpy(s, c->data, n);
+                s[n] = '\0';
+                straight_mod_xor_keystream_creation(state, s);
+            }
+            return 1;
+        }
+        case UI_CMD_M17_USER_DATA_SET: {
+            if (state && c->n > 0) {
+                size_t n = (c->n < sizeof(state->m17dat) - 1) ? c->n : sizeof(state->m17dat) - 1;
+                memcpy(state->m17dat, c->data, n);
+                state->m17dat[n] = '\0';
+            }
+            return 1;
+        }
+        default: return 0;
+    }
+}
+
+#ifdef USE_RTLSDR
+static void
+apply_dsp_op(const UiDspPayload* p) {
+    if (!p) {
+        return;
+    }
+    switch (p->op) {
+        case UI_DSP_OP_TOGGLE_CQ: {
+            int cq = 0, f = 0, t = 0;
+            rtl_stream_dsp_get(&cq, &f, &t);
+            rtl_stream_toggle_cqpsk(cq ? 0 : 1);
+            break;
+        }
+        case UI_DSP_OP_TOGGLE_FLL: {
+            int cq = 0, f = 0, t = 0;
+            rtl_stream_dsp_get(&cq, &f, &t);
+            rtl_stream_toggle_fll(f ? 0 : 1);
+            break;
+        }
+        case UI_DSP_OP_TOGGLE_TED: {
+            int cq = 0, f = 0, t = 0;
+            rtl_stream_dsp_get(&cq, &f, &t);
+            rtl_stream_toggle_ted(t ? 0 : 1);
+            break;
+        }
+        case UI_DSP_OP_TOGGLE_IQBAL: {
+            int on = rtl_stream_get_iq_balance();
+            int new_on = on ? 0 : 1;
+            rtl_stream_toggle_iq_balance(new_on);
+            dsd_setenv("DSD_NEO_IQ_BALANCE", new_on ? "1" : "0", 1);
+            break;
+        }
+        case UI_DSP_OP_IQ_DC_TOGGLE: {
+            int k = 0;
+            int on = rtl_stream_get_iq_dc(&k);
+            int new_on = on ? 0 : 1;
+            rtl_stream_set_iq_dc(new_on, -1);
+            dsd_setenv("DSD_NEO_IQ_DC_BLOCK", new_on ? "1" : "0", 1);
+            break;
+        }
+        case UI_DSP_OP_IQ_DC_K_DELTA: {
+            int k = 0;
+            (void)rtl_stream_get_iq_dc(&k);
+            int nk = k + p->a;
+            rtl_stream_set_iq_dc(-1, nk);
+            break;
+        }
+        case UI_DSP_OP_TED_GAIN_SET: {
+            int g_milli = p->a; /* gain in milli-units (e.g., 25 => 0.025) */
+            if (g_milli < 10) {
+                g_milli = 10;
+            }
+            if (g_milli > 500) {
+                g_milli = 500;
+            }
+            float g = (float)g_milli * 0.001f;
+            rtl_stream_set_ted_gain(g);
+            break;
+        }
+        case UI_DSP_OP_C4FM_CLK_CYCLE: {
+            int mode = rtl_stream_get_c4fm_clk();
+            mode = (mode + 1) % 3;
+            rtl_stream_set_c4fm_clk(mode);
+            break;
+        }
+        case UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE: {
+            int en = rtl_stream_get_c4fm_clk_sync();
+            rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
+            break;
+        }
+        case UI_DSP_OP_FM_AGC_TOGGLE: {
+            int on = rtl_stream_get_fm_agc();
+            rtl_stream_set_fm_agc(on ? 0 : 1);
+            break;
+        }
+
+        case UI_DSP_OP_FM_LIMITER_TOGGLE: {
+            int on = rtl_stream_get_fm_limiter();
+            rtl_stream_set_fm_limiter(on ? 0 : 1);
+            break;
+        }
+        case UI_DSP_OP_FM_AGC_TARGET_DELTA: {
+            float tgt = 0.0f;
+            rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
+            float nt = tgt + ((float)p->a * 0.01f);
+            if (nt < 0.05f) {
+                nt = 0.05f;
+            }
+            if (nt > 2.5f) {
+                nt = 2.5f;
+            }
+            rtl_stream_set_fm_agc_params(nt, -1.0f, -1.0f, -1.0f);
+            break;
+        }
+        case UI_DSP_OP_FM_AGC_MIN_DELTA: {
+            float mn = 0.0f;
+            rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
+            float nm = mn + ((float)p->a * 0.01f);
+            if (nm < 0.0f) {
+                nm = 0.0f;
+            }
+            if (nm > 1.0f) {
+                nm = 1.0f;
+            }
+            rtl_stream_set_fm_agc_params(-1.0f, nm, -1.0f, -1.0f);
+            break;
+        }
+        case UI_DSP_OP_FM_AGC_ATTACK_DELTA: {
+            float au = 0.0f;
+            rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
+            float na = au + ((float)p->a * 0.01f);
+            if (na < 0.0f) {
+                na = 0.0f;
+            }
+            if (na > 1.0f) {
+                na = 1.0f;
+            }
+            rtl_stream_set_fm_agc_params(-1.0f, -1.0f, na, -1.0f);
+            break;
+        }
+        case UI_DSP_OP_FM_AGC_DECAY_DELTA: {
+            float ad = 0.0f;
+            rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
+            float nd = ad + ((float)p->a * 0.01f);
+            if (nd < 0.0f) {
+                nd = 0.0f;
+            }
+            if (nd > 1.0f) {
+                nd = 1.0f;
+            }
+            rtl_stream_set_fm_agc_params(-1.0f, -1.0f, -1.0f, nd);
+            break;
+        }
+        case UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE: {
+            int on = rtl_stream_get_tuner_autogain();
+            rtl_stream_set_tuner_autogain(on ? 0 : 1);
+            break;
+        }
+        default: break;
+    }
+}
+#endif
+
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     if (payload_sz > sizeof(g_q[0].data)) {
@@ -140,8 +459,23 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
 
 static void
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    if (!c) {
+        return;
+    }
+    if (!opts) {
+        if (c->id == UI_CMD_QUIT) {
+            exitflag = 1;
+        }
+        return;
+    }
     // Try dispatch table first; fall back to legacy switch.
     if (ui_cmd_dispatch(opts, state, c)) {
+        return;
+    }
+    if (apply_cmd_ui_visibility(opts, c)) {
+        return;
+    }
+    if (apply_cmd_key_management(opts, state, c)) {
         return;
     }
     switch (c->id) {
@@ -1415,158 +1749,6 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
             break;
         }
-        case UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE: opts->show_dsp_panel = opts->show_dsp_panel ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_P25_METRICS_TOGGLE: opts->show_p25_metrics = opts->show_p25_metrics ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE: opts->show_p25_affiliations = opts->show_p25_affiliations ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE: opts->show_p25_neighbors = opts->show_p25_neighbors ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_P25_IDEN_TOGGLE: opts->show_p25_iden_plan = opts->show_p25_iden_plan ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_P25_CCC_TOGGLE: opts->show_p25_cc_candidates = opts->show_p25_cc_candidates ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_CHANNELS_TOGGLE: opts->show_channels = opts->show_channels ? 0 : 1; break;
-        case UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE:
-            opts->show_p25_callsign_decode = opts->show_p25_callsign_decode ? 0 : 1;
-            break;
-        case UI_CMD_KEY_BASIC_SET: {
-            if (state && opts && c->n >= (int)sizeof(uint32_t)) {
-                uint32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                state->K = v;
-                state->keyloader = 0;
-                state->payload_keyid = state->payload_keyidR = 0;
-                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
-            }
-            break;
-        }
-        case UI_CMD_KEY_SCRAMBLER_SET: {
-            if (state && opts && c->n >= (int)sizeof(uint32_t)) {
-                uint32_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                state->R = v;
-                state->keyloader = 0;
-                state->payload_keyid = state->payload_keyidR = 0;
-                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
-            }
-            break;
-        }
-        case UI_CMD_KEY_RC4DES_SET: {
-            if (state && opts && c->n >= (int)sizeof(uint64_t)) {
-                uint64_t v = 0;
-                memcpy(&v, c->data, sizeof v);
-                state->R = v;
-                state->RR = v;
-                state->keyloader = 0;
-                state->payload_keyid = state->payload_keyidR = 0;
-                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
-            }
-            break;
-        }
-        case UI_CMD_KEY_HYTERA_SET: {
-            if (state && opts && c->n >= (int)(sizeof(uint64_t) * 5)) {
-                struct {
-                    uint64_t H, K1, K2, K3, K4;
-                } p;
-
-                memcpy(&p, c->data, sizeof p);
-                state->H = p.H;
-                state->K1 = p.K1;
-                state->K2 = p.K2;
-                state->K3 = p.K3;
-                state->K4 = p.K4;
-                state->keyloader = 0;
-                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
-                snprintf(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
-                         (state->M == 1) ? "forced" : "not forced");
-                state->ui_msg_expire = time(NULL) + 5;
-            }
-            break;
-        }
-        case UI_CMD_KEY_AES_SET: {
-            if (state && opts && c->n >= (int)(sizeof(uint64_t) * 4)) {
-                struct {
-                    uint64_t K1, K2, K3, K4;
-                } p;
-
-                memcpy(&p, c->data, sizeof p);
-                state->K1 = p.K1;
-                state->K2 = p.K2;
-                state->K3 = p.K3;
-                state->K4 = p.K4;
-                memset(state->A1, 0, sizeof(state->A1));
-                memset(state->A2, 0, sizeof(state->A2));
-                memset(state->A3, 0, sizeof(state->A3));
-                memset(state->A4, 0, sizeof(state->A4));
-                state->keyloader = 0;
-                opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
-            }
-            break;
-        }
-        case UI_CMD_KEY_TYT_AP_SET: {
-            if (state && c->n > 0) {
-                char s[256];
-                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
-                memcpy(s, c->data, n);
-                s[n] = '\0';
-                tyt_ap_pc4_keystream_creation(state, s);
-            }
-            break;
-        }
-        case UI_CMD_KEY_RETEVIS_RC2_SET: {
-            if (state && c->n > 0) {
-                char s[256];
-                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
-                memcpy(s, c->data, n);
-                s[n] = '\0';
-                retevis_rc2_keystream_creation(state, s);
-            }
-            break;
-        }
-        case UI_CMD_KEY_TYT_EP_SET: {
-            if (state && c->n > 0) {
-                char s[256];
-                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
-                memcpy(s, c->data, n);
-                s[n] = '\0';
-                tyt_ep_aes_keystream_creation(state, s);
-            }
-            break;
-        }
-        case UI_CMD_KEY_KEN_SCR_SET: {
-            if (state && c->n > 0) {
-                char s[128];
-                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
-                memcpy(s, c->data, n);
-                s[n] = '\0';
-                ken_dmr_scrambler_keystream_creation(state, s);
-            }
-            break;
-        }
-        case UI_CMD_KEY_ANYTONE_BP_SET: {
-            if (state && c->n > 0) {
-                char s[128];
-                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
-                memcpy(s, c->data, n);
-                s[n] = '\0';
-                anytone_bp_keystream_creation(state, s);
-            }
-            break;
-        }
-        case UI_CMD_KEY_XOR_SET: {
-            if (state && c->n > 0) {
-                char s[256];
-                size_t n = (c->n < sizeof s - 1) ? c->n : sizeof s - 1;
-                memcpy(s, c->data, n);
-                s[n] = '\0';
-                straight_mod_xor_keystream_creation(state, s);
-            }
-            break;
-        }
-        case UI_CMD_M17_USER_DATA_SET: {
-            if (state && c->n > 0) {
-                size_t n = (c->n < sizeof(state->m17dat) - 1) ? c->n : sizeof(state->m17dat) - 1;
-                memcpy(state->m17dat, c->data, n);
-                state->m17dat[n] = '\0';
-            }
-            break;
-        }
         case UI_CMD_IMPORT_CHANNEL_MAP: {
             if (opts && state && c->n > 0) {
                 char path[1024] = {0};
@@ -1633,141 +1815,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (c->n >= (int)sizeof(UiDspPayload)) {
                 memcpy(&p, c->data, sizeof p);
             }
-            switch (p.op) {
-                case UI_DSP_OP_TOGGLE_CQ: {
-                    int cq = 0, f = 0, t = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t);
-                    rtl_stream_toggle_cqpsk(cq ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_FLL: {
-                    int cq = 0, f = 0, t = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t);
-                    rtl_stream_toggle_fll(f ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_TED: {
-                    int cq = 0, f = 0, t = 0;
-                    rtl_stream_dsp_get(&cq, &f, &t);
-                    rtl_stream_toggle_ted(t ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_TOGGLE_IQBAL: {
-                    int on = rtl_stream_get_iq_balance();
-                    int new_on = on ? 0 : 1;
-                    rtl_stream_toggle_iq_balance(new_on);
-                    dsd_setenv("DSD_NEO_IQ_BALANCE", new_on ? "1" : "0", 1);
-                    break;
-                }
-                case UI_DSP_OP_IQ_DC_TOGGLE: {
-                    int k = 0;
-                    int on = rtl_stream_get_iq_dc(&k);
-                    int new_on = on ? 0 : 1;
-                    rtl_stream_set_iq_dc(new_on, -1);
-                    dsd_setenv("DSD_NEO_IQ_DC_BLOCK", new_on ? "1" : "0", 1);
-                    break;
-                }
-                case UI_DSP_OP_IQ_DC_K_DELTA: {
-                    int k = 0;
-                    (void)rtl_stream_get_iq_dc(&k);
-                    int nk = k + p.a;
-                    rtl_stream_set_iq_dc(-1, nk);
-                    break;
-                }
-                case UI_DSP_OP_TED_GAIN_SET: {
-                    /* p.a is gain in milli-units (e.g., 25 = 0.025) */
-                    int g_milli = p.a;
-                    if (g_milli < 10) {
-                        g_milli = 10; /* min 0.01 */
-                    }
-                    if (g_milli > 500) {
-                        g_milli = 500; /* max 0.5 */
-                    }
-                    float g = (float)g_milli * 0.001f;
-                    rtl_stream_set_ted_gain(g);
-                    break;
-                }
-                case UI_DSP_OP_C4FM_CLK_CYCLE: {
-                    int mode = rtl_stream_get_c4fm_clk();
-                    mode = (mode + 1) % 3;
-                    rtl_stream_set_c4fm_clk(mode);
-                    break;
-                }
-                case UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE: {
-                    int en = rtl_stream_get_c4fm_clk_sync();
-                    rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_FM_AGC_TOGGLE: {
-                    int on = rtl_stream_get_fm_agc();
-                    rtl_stream_set_fm_agc(on ? 0 : 1);
-                    break;
-                }
-
-                case UI_DSP_OP_FM_LIMITER_TOGGLE: {
-                    int on = rtl_stream_get_fm_limiter();
-                    rtl_stream_set_fm_limiter(on ? 0 : 1);
-                    break;
-                }
-                case UI_DSP_OP_FM_AGC_TARGET_DELTA: {
-                    float tgt = 0.0f;
-                    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-                    float nt = tgt + ((float)p.a * 0.01f);
-                    if (nt < 0.05f) {
-                        nt = 0.05f;
-                    }
-                    if (nt > 2.5f) {
-                        nt = 2.5f;
-                    }
-                    rtl_stream_set_fm_agc_params(nt, -1.0f, -1.0f, -1.0f);
-                    break;
-                }
-                case UI_DSP_OP_FM_AGC_MIN_DELTA: {
-                    float mn = 0.0f;
-                    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-                    float nm = mn + ((float)p.a * 0.01f);
-                    if (nm < 0.0f) {
-                        nm = 0.0f;
-                    }
-                    if (nm > 1.0f) {
-                        nm = 1.0f;
-                    }
-                    rtl_stream_set_fm_agc_params(-1.0f, nm, -1.0f, -1.0f);
-                    break;
-                }
-                case UI_DSP_OP_FM_AGC_ATTACK_DELTA: {
-                    float au = 0.0f;
-                    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-                    float na = au + ((float)p.a * 0.01f);
-                    if (na < 0.0f) {
-                        na = 0.0f;
-                    }
-                    if (na > 1.0f) {
-                        na = 1.0f;
-                    }
-                    rtl_stream_set_fm_agc_params(-1.0f, -1.0f, na, -1.0f);
-                    break;
-                }
-                case UI_DSP_OP_FM_AGC_DECAY_DELTA: {
-                    float ad = 0.0f;
-                    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-                    float nd = ad + ((float)p.a * 0.01f);
-                    if (nd < 0.0f) {
-                        nd = 0.0f;
-                    }
-                    if (nd > 1.0f) {
-                        nd = 1.0f;
-                    }
-                    rtl_stream_set_fm_agc_params(-1.0f, -1.0f, -1.0f, nd);
-                    break;
-                }
-                case UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE: {
-                    int on = rtl_stream_get_tuner_autogain();
-                    rtl_stream_set_tuner_autogain(on ? 0 : 1);
-                    break;
-                }
-                default: break;
-            }
+            apply_dsp_op(&p);
             break;
         }
 #endif
