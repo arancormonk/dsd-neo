@@ -777,6 +777,92 @@ test_frame_log_long_option_parse(void) {
 }
 
 static int
+test_rtl_udp_control_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-udp-control";
+    char arg2[] = "9911";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->rtl_udp_port != 9911) {
+        fprintf(stderr, "expected rtl_udp_port=9911, got %d\n", opts->rtl_udp_port);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_rtl_udp_control_missing_port_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-udp-control";
+    char arg2[] = "--auto-ppm";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        fprintf(stderr, "expected parse error for missing --rtl-udp-control value, got rc=%d exit_rc=%d\n", rc,
+                exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (opts->rtl_auto_ppm != 0) {
+        fprintf(stderr, "expected --auto-ppm not to be consumed on parse error\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
 test_dmr_baofeng_pc5_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -978,6 +1064,8 @@ main(void) {
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
+    rc |= test_rtl_udp_control_long_option_parse();
+    rc |= test_rtl_udp_control_missing_port_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes();
     rc |= test_dmr_csi_ee72_long_option_parse();

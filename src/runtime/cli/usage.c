@@ -68,6 +68,7 @@ dsd_cli_usage(void) {
     printf("                udp:0.0.0.0:7355 to bind all interfaces for UDP input\n");
     printf("                m17udp for M17 UDP/IP socket bind input (default host 127.0.0.1; default port 17000)\n");
     printf("                m17udp:192.168.7.8:17001 for M17 UDP/IP bind input (Binding Address and Port\n");
+    printf("                - for stdin raw PCM16LE mono input (set sample rate with -s)\n");
     printf("                filename.bin for OP25/FME capture bin files\n");
     printf("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
     printf("                filename.wav -s 96000 for 96K/1 wav files (DSDPlus)\n");
@@ -85,11 +86,13 @@ dsd_cli_usage(void) {
     printf(
         "                m17udp for M17 UDP/IP socket blaster output (default host 127.0.0.1; default port 17000)\n");
     printf("                m17udp:192.168.7.8:17001 for M17 UDP/IP blaster output (Target Address and Port\n");
+    printf("                - for stdout raw decoded audio output\n");
     printf("  -d <dir>      Create mbe data files, use this directory (TDMA version is experimental)\n");
     printf("  -r <files>    Read/Play saved mbe data from file(s)\n");
     printf("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
     printf("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
     printf("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto; 0-100%%  )\n");
+    printf("  -nm           Enable legacy DMR mono audio path (same as -n m)\n");
     printf("  -6 <file>     Output raw audio .wav file (48K/1). (WARNING! Large File Sizes 1 Hour ~= 360 MB)\n");
     printf("  -7 <dir>      Create/Use Custom directory for Per Call decoded .wav file saving.\n");
     printf("                 (Use ./folder for Nested Directory!)\n");
@@ -117,7 +120,8 @@ dsd_cli_usage(void) {
     printf("  -c <file>     Output symbol capture to .bin file\n");
     printf("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n");
     printf("  -V <num>      TDMA Voice Synthesis: 0=Off, 1=Slot1, 2=Slot2, 3=Both; Default is 3\n");
-    printf("  -y            Enable Experimental Pulse Audio Float Audio Output\n");
+    printf("  -z <num>      TDMA slot preference: 0=Slot1, 1=Slot2, 2=Auto; default is 2\n");
+    printf("  -y            Enable experimental float audio output (Pulse/UDP/stdout)\n");
     printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option)\n");
     printf("                1 1 1 1 (0xF): PBF/LPF/HPF/HPFD on\n");
     printf("\n");
@@ -158,6 +162,7 @@ dsd_cli_usage(void) {
     printf("  --auto-ppm    Enable spectrum-based RTL auto PPM (6 dB gate; 1 ppm step)\n");
     printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
     printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
+    printf("  --rtl-udp-control <port>  Enable external RTL retune control on UDP/<port>\n");
     printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
@@ -184,6 +189,7 @@ dsd_cli_usage(void) {
     printf("  -fA           Passive Analog Audio Monitor\n");
     printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
+    printf("  -fr           DMR TDMA BS/MS Simplex (legacy mono alias; same as -fs -nm)\n");
     printf("  -f1           Decode only P25 Phase 1\n");
     printf("  -f2           Decode only P25 Phase 2 (6000 sps) **\n");
     printf("  -fd           Decode only DSTAR\n");
@@ -322,6 +328,7 @@ dsd_cli_usage(void) {
     printf("  --enc-lockout  P25: Do not tune encrypted calls (ENC lockout On)\n");
     printf("  --enc-follow   P25: Allow encrypted calls (ENC lockout Off; default)\n");
     printf("  --no-p25p2-soft    Disable P25P2 soft-decision RS erasure marking\n");
+    printf("  --no-p25p1-soft-voice  Disable P25p1 soft-decision voice FEC\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");

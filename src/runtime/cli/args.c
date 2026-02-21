@@ -19,6 +19,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +91,26 @@ cli_parse_hex_u64_n(const char* hex, size_t n, unsigned long long* out) {
     return 1;
 }
 
+static int
+cli_parse_decimal_u32(const char* in, unsigned long* out) {
+    if (!in || !out || in[0] == '\0') {
+        return 0;
+    }
+    for (const char* p = in; *p; ++p) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+    errno = 0;
+    char* end = NULL;
+    unsigned long v = strtoul(in, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
@@ -116,11 +137,43 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_upload_retries_cli = NULL;
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
+    int rtl_udp_control_cli_seen = 0;
+    unsigned long rtl_udp_control_cli_port = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {
             opts->rtltcp_autotune = 1;
             dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
+            continue;
+        }
+        if (strcmp(argv[i], "--rtl-udp-control") == 0) {
+            if (i + 1 >= argc) {
+                LOG_ERROR("--rtl-udp-control requires a port value\n");
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            const char* port_arg = argv[i + 1];
+            unsigned long parsed_port = 0;
+            if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {
+                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            rtl_udp_control_cli_seen = 1;
+            rtl_udp_control_cli_port = parsed_port;
+            i++;
+            continue;
+        }
+        if (strncmp(argv[i], "--rtl-udp-control=", 18) == 0) {
+            const char* port_arg = argv[i] + 18;
+            unsigned long parsed_port = 0;
+            if (!cli_parse_decimal_u32(port_arg, &parsed_port)) {
+                LOG_ERROR("Invalid --rtl-udp-control value \"%s\" (expected decimal port)\n", port_arg);
+                cli_set_exit_rc(out_exit_rc, 1);
+                return DSD_PARSE_ERROR;
+            }
+            rtl_udp_control_cli_seen = 1;
+            rtl_udp_control_cli_port = parsed_port;
             continue;
         }
         if (strcmp(argv[i], "--p25-vc-grace") == 0 && i + 1 < argc) {
@@ -363,6 +416,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(cfg->dmr_t3_calc_csv);
         cli_set_exit_rc(out_exit_rc, rc);
         return DSD_PARSE_ONE_SHOT;
+    }
+
+    if (rtl_udp_control_cli_seen) {
+        int p = rtl_udp_control_cli_port > 65535UL ? 65535 : (int)rtl_udp_control_cli_port;
+        opts->rtl_udp_port = p;
+        if (p > 0) {
+            LOG_NOTICE("RTL: external UDP retune control enabled on UDP/%d\n", p);
+        } else {
+            LOG_NOTICE("RTL: external UDP retune control disabled\n");
+        }
     }
 
     // Apply input volume and warn threshold

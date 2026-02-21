@@ -24,7 +24,7 @@ extern "C" {
  * samples into the input ring.
  *
  * @param opts Decoder options (receives UDP context).
- * @param bindaddr Bind address (e.g., "0.0.0.0" or "::").
+ * @param bindaddr IPv4 bind address (e.g., "127.0.0.1" or "0.0.0.0").
  * @param port UDP port number.
  * @param samplerate Expected sample rate in Hz.
  * @return 0 on success; negative on error.

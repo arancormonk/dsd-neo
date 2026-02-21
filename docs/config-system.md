@@ -447,6 +447,7 @@ When `[trunking] enabled = true`:
 - CSV paths (`chan_csv`, `group_csv`) are passed to the decoder.
 - CSV paths in the config are applied the same as passing `-C`/`-G` and are
   loaded when trunking is enabled.
+- CSV formats and examples are documented in `docs/csv-formats.md` and `examples/`.
 - If you start DSD-neo with any CLI args and you do not explicitly set trunking
   or scan mode (`-T`/`-Y`), trunking inherited from the config is disabled for
   that run.

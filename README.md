@@ -12,12 +12,12 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 
 ## Downloads
 
-- Stable releases (**TBD**):
-  - Linux AppImage (x86_64): dsd-neo-linux-x86_64-portable-<version>.AppImage
-  - Linux AppImage (aarch64): dsd-neo-linux-aarch64-portable-<version>.AppImage
-  - macOS DMG (arm64): dsd-neo-macos-arm64-portable-<version>.dmg
-  - Windows native ZIP (MSVC x86_64, **recommended**): dsd-neo-msvc-x86_64-native-<version>.zip
-  - Windows native ZIP (MinGW x86_64, alternative): dsd-neo-mingw-x86_64-native-<version>.zip
+- Stable releases: see [GitHub Releases](https://github.com/arancormonk/dsd-neo/releases)
+  - Linux AppImage (x86_64): `dsd-neo-linux-x86_64-portable-<version>.AppImage`
+  - Linux AppImage (aarch64): `dsd-neo-linux-aarch64-portable-<version>.AppImage`
+  - macOS DMG (arm64): `dsd-neo-macos-arm64-portable-<version>.dmg`
+  - Windows native ZIP (MSVC x86_64, **recommended**): `dsd-neo-msvc-x86_64-native-<version>.zip`
+  - Windows native ZIP (MinGW x86_64, alternative): `dsd-neo-mingw-x86_64-native-<version>.zip`
 - Nightly builds:
   - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
@@ -45,13 +45,13 @@ This project is an active work in progress as we decouple from the upstream fork
 - More input and streaming options
 
   - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
-  - UDP audio in/out: receive PCM16 over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts.
+  - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
   - M17 UDP/IP in/out: dedicated M17 frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
 
 - Built‑in trunking workflow
 
   - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `-N`).
-  - On‑the‑fly control via UDP retune or rigctl; pairs well with TCP/RTL‑TCP inputs.
+  - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled with `--rtl-udp-control <port>`; see `docs/udp-control.md`).
 
 - RTL‑SDR quality‑of‑life features
 
@@ -109,6 +109,23 @@ OS package hints
 - Windows:
   - Preferred binary: the native MSVC ZIP. The MinGW ZIP is an alternative native build.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` or `win-mingw-*` presets in `CMakePresets.json`.
+
+MBE vocoder dependency (mbelib-neo)
+
+DSD‑neo requires the `mbe-neo` CMake package (from `mbelib-neo`). If CMake fails with “could not find mbe-neo”, install it and re-run configure.
+
+Example (Linux/macOS):
+
+```bash
+# Build and install mbelib-neo (once)
+git clone https://github.com/arancormonk/mbelib-neo
+cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release
+cmake --build mbelib-neo/build -j
+cmake --install mbelib-neo/build --prefix "$HOME/.local"
+
+# Then configure dsd-neo (point CMake to the install prefix)
+cmake --preset dev-release -DCMAKE_PREFIX_PATH="$HOME/.local"
+```
 
 Build recipes (copy/paste)
 
@@ -241,6 +258,7 @@ Common options:
   - DMR mono helpers:
     - Modern form: `-fs -nm` (DMR BS/MS simplex + mono audio).
     - Legacy alias: `-fr` (kept as a shorthand for the same DMR‑mono profile).
+  - CSV formats (channel maps, group lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
 
 Quick examples
 
@@ -262,7 +280,13 @@ Quick examples
 
 ## Documentation
 
-- Module overview and targets are documented in `docs/code_map.md`.
+- CLI usage and options: `docs/cli.md`
+- User config system (INI): `docs/config-system.md`
+- Trunking CSV formats: `docs/csv-formats.md` (examples in `examples/`)
+- Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`
+- Terminal UI hotkeys and menus: `docs/ui-terminal.md`
+- RTL UDP retune control protocol: `docs/udp-control.md`
+- Module overview and build targets: `docs/code_map.md`
 
 ## Project Layout
 

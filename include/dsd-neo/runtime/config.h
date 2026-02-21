@@ -54,35 +54,33 @@ extern "C" {
  *
  * Rational resampler (polyphase upfirdn L/M)
  * - DSD_NEO_RESAMP
- *     Target output sample rate in Hz. Enables L/M resampler when set.
- *     Values: "off" or "0" to disable; integer Hz (e.g., 48000) to enable. Default: 48000 (enabled).
+ *     Target output sample rate in Hz (RTL/RTL-TCP). The RTL demod pipeline
+ *     enables resampling by default to keep the output rate at ~48 kHz.
+ *     Values: "off" or "0" to disable; integer Hz (e.g., 48000) to enable/override.
  *
  * Residual CFO frequency-locked loop (FLL)
  * - DSD_NEO_FLL
- *     Enable residual carrier frequency correction.
+ *     Enable residual carrier frequency correction (RTL demod path).
  *     Values: "1" to enable; "0"/unset/other to disable. Default: disabled.
  * - DSD_NEO_FLL_ALPHA, DSD_NEO_FLL_BETA
- *     Proportional and integral gains (Q15 fixed-point, ~value/32768). Typical small values.
- *     Defaults: ALPHA=100 (~0.003), BETA=10 (~0.0003). May be adjusted for digital modes if not set.
+ *     Native-float proportional/integral gains (typical: ALPHA 0.001..0.01, BETA 0.0001..0.001).
+ *     When unset, mode-specific defaults are selected by the RTL demod config.
  * - DSD_NEO_FLL_DEADBAND
  *     Ignore small phase errors in the FLL loop to avoid audible low-frequency sweeps in analog FM.
- *     Values: Q14 integer threshold (pi == 1<<14). Example: 60 (~0.36 degrees). Default: 45.
+ *     Values: native-float threshold (typical 0.001..0.01).
  * - DSD_NEO_FLL_SLEW
  *     Limit per-update NCO frequency change (slew-rate) to prevent rapid ramps.
- *     Values: Q15 integer (2*pi == 1<<15). Example: 32..128. Default: 64.
+ *     Values: native-float max freq delta per sample (rad/sample).
  *
  * Gardner timing error detector (TED)
  * - DSD_NEO_TED
- *     Enable lightweight fractional-delay timing correction. Generally off for analog FM.
- *     Values: 1 enable, else disabled. Default: 0 (disabled). For certain digital modes, defaults are adjusted
- *     only if envs are not provided (still off unless forced via DSD_NEO_TED=1).
- * - DSD_NEO_TED_SPS
- *     Nominal samples-per-symbol (integer). If unset and a digital mode is active, it is derived from output rate.
- *     Default: 10.
+ *     Enable lightweight fractional-delay timing correction (RTL demod path). Generally off for analog FM.
+ *     Values: 1 enable, else disabled. Default: 0 (disabled).
  * - DSD_NEO_TED_GAIN
- *     Small loop gain (Q20). Default: 64; for common digital modes may default to 96 when not provided.
+ *     Native-float loop gain (OP25-style; typical 0.01..0.1).
  * - DSD_NEO_TED_FORCE
- *     Force TED to run for FM/C4FM paths where it is normally skipped. Values: 1 enable, else disabled. Default: 0.
+ *     Force TED to run even when the pipeline would normally gate it off (e.g., non-integer SPS).
+ *     Values: 1 enable, else disabled. Default: 0.
  *
  * C4FM clock assist (symbol-domain)
  * - DSD_NEO_C4FM_CLK

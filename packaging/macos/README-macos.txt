@@ -15,10 +15,12 @@ Usage
 
 Notes
 - The launcher sets DYLD_FALLBACK_LIBRARY_PATH to use bundled libs.
-- PulseAudio is required for audio backends used by dsd-neo. If you do not
-  see audio devices, install and start PulseAudio via Homebrew:
+- This portable build uses PulseAudio by default. If you do not see audio
+  devices or get silence, install and start PulseAudio via Homebrew:
     brew install pulseaudio
     brew services start pulseaudio
+- If you built dsd-neo with the PortAudio backend (`-DDSD_USE_PORTAUDIO=ON`),
+  PulseAudio is not required.
 - RTL-SDR support requires appropriate permissions and drivers; consult the
   RTL-SDR project documentation for macOS specifics.
 

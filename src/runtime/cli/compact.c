@@ -27,6 +27,15 @@ dsd_cli_compact_args(int argc, char** argv) {
         if (strcmp(arg, "--rtltcp-autotune") == 0) {
             continue;
         }
+        if (strcmp(arg, "--rtl-udp-control") == 0) {
+            if (i + 1 < argc && argv[i + 1] != NULL && argv[i + 1][0] != '-') {
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--rtl-udp-control=", 18) == 0) {
+            continue;
+        }
         if (strcmp(arg, "--input-volume") == 0) {
             if (i + 1 < argc) {
                 i++;

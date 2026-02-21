@@ -5,14 +5,15 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 ## Cheatsheet
 
 - Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
-- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000]`
-- Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000]`
+- Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | tcp[:host:7355] | udp[:bind:7355] | m17udp[:bind:17000] | -`
+- Outputs: `-o pulse | null | udp[:host:23456] | m17udp[:host:17000] | -`
 - Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-u 3`, `-q`
 - Trunking/scan: `-T`, `-Y`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--no-p25p2-soft`, `--no-p25p1-soft-voice`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
+- RTL retune control: `--rtl-udp-control <port>` (see `docs/udp-control.md`)
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
@@ -26,8 +27,9 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 
-Tip: If no config exists, running with no arguments starts the interactive setup (respects `DSD_NEO_NO_BOOTSTRAP`). When a
-config file is present and enabled, a no-arg run reuses it; use `--interactive-setup` to force the wizard.
+Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the interactive setup (respects
+`DSD_NEO_NO_BOOTSTRAP`). When a config file is enabled and loads successfully, a no-arg run reuses it; use
+`--interactive-setup` to force the wizard.
 
 ## Configuration Files
 
@@ -53,8 +55,14 @@ config file is present and enabled, a no-arg run reuses it; use `--interactive-s
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (default port 7355; sample rate uses `-s`, default 48000)
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP input: `-i m17udp[:bind_addr:port]` (defaults 127.0.0.1:17000)
+- stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical)
+
+TCP/UDP PCM input format notes
+
+- Sample format is signed PCM16LE (little-endian), mono, headerless stream/datagrams.
+- See `docs/network-audio.md` for practical send/receive examples and UDP output details.
 
 Other input options
 
@@ -67,8 +75,9 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 - PulseAudio: `-o pulse` or a specific sink like `-o pulse:alsa_output.pci-0000_0d_00.3.analog-stereo`
 - Null (no audio): `-o null`
-- UDP audio out (PCM16): `-o udp[:host:port]` (default 127.0.0.1:23456)
+- UDP audio out (raw PCM): `-o udp[:host:port]` (default 127.0.0.1:23456). See `docs/network-audio.md`.
 - M17 UDP/IP out: `-o m17udp[:host:port]` (default 127.0.0.1:17000)
+- stdout (raw decoded audio): `-o -` (see `docs/network-audio.md`)
 
 ## Display & UI
 
@@ -76,6 +85,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `-O` List PulseAudio input sources and output sinks
+- UI hotkeys and menu navigation: `docs/ui-terminal.md`
 - `-j` P25: force-enable LCW explicit retune (format 0x44; enabled by default)
 - `-^` P25: prefer CC candidates during control channel hunt
 
@@ -172,6 +182,7 @@ Notes
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders)
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`)
 - Group list CSV (allow/block + labels): `-G <file>`
+- CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout` do not tune encrypted P25 calls, `--enc-follow` allow encrypted (default)
 - P25 soft-decision controls: `--no-p25p2-soft` disable P25p2 RS erasure marking, `--no-p25p1-soft-voice` disable P25p1 soft-decision voice FEC
@@ -192,6 +203,7 @@ Notes
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
+- External retune control (RTL/RTL‑TCP): `--rtl-udp-control <port>` (see `docs/udp-control.md`)
 
 Advanced (env)
 
