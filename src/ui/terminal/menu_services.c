@@ -77,7 +77,7 @@ svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename) {
     }
     snprintf(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s", filename);
     openSymbolOutFile(opts, state);
-    return 0;
+    return (opts->symbol_out_f != NULL) ? 0 : -1;
 }
 
 int
@@ -326,7 +326,7 @@ svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     opts->dmr_stereo_wav = 0;
     opts->static_wav_file = 1;
     openWavOutFileLR(opts, state);
-    return 0;
+    return (opts->wav_out_f != NULL) ? 0 : -1;
 }
 
 int
@@ -337,7 +337,7 @@ svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     strncpy(opts->wav_out_file_raw, path, sizeof opts->wav_out_file_raw - 1);
     opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
     openWavOutFileRaw(opts, state);
-    return 0;
+    return (opts->wav_out_raw != NULL) ? 0 : -1;
 }
 
 int

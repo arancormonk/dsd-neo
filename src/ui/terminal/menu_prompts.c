@@ -16,6 +16,7 @@
 #include "menu_internal.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -67,9 +68,125 @@ typedef struct {
     int active;
     const char* text;
     WINDOW* win;
+    int scroll;
+    int line_count;
+    int page_rows;
 } UiHelp;
 
 static UiHelp g_help = {0};
+
+enum {
+    UI_HELP_MAX_LINES = 256,
+    UI_HELP_MAX_LINE_CHARS = 256,
+};
+
+static int
+ui_help_push_line(char lines[][UI_HELP_MAX_LINE_CHARS], int max_lines, int* count, const char* src, int len) {
+    if (!lines || !count || max_lines <= 0) {
+        return 0;
+    }
+    if (*count >= max_lines) {
+        return 0;
+    }
+    if (!src || len <= 0) {
+        lines[*count][0] = '\0';
+        (*count)++;
+        return 1;
+    }
+    if (len >= UI_HELP_MAX_LINE_CHARS) {
+        len = UI_HELP_MAX_LINE_CHARS - 1;
+    }
+    memcpy(lines[*count], src, (size_t)len);
+    lines[*count][len] = '\0';
+    (*count)++;
+    return 1;
+}
+
+static int
+ui_help_wrap_text(const char* text, int width, char lines[][UI_HELP_MAX_LINE_CHARS], int max_lines) {
+    if (!lines || max_lines <= 0 || width <= 0) {
+        return 0;
+    }
+    if (!text) {
+        text = "";
+    }
+    int out_count = 0;
+    char cur[UI_HELP_MAX_LINE_CHARS];
+    int cur_len = 0;
+    const char* p = text;
+
+    while (*p != '\0') {
+        if (*p == '\n') {
+            ui_help_push_line(lines, max_lines, &out_count, cur, cur_len);
+            cur_len = 0;
+            p++;
+            continue;
+        }
+
+        while (*p == ' ') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        if (*p == '\n') {
+            continue;
+        }
+
+        const char* wstart = p;
+        int wlen = 0;
+        while (*p != '\0' && *p != ' ' && *p != '\n') {
+            if (wlen < (UI_HELP_MAX_LINE_CHARS - 1)) {
+                wlen++;
+            }
+            p++;
+        }
+
+        if (wlen <= 0) {
+            continue;
+        }
+
+        if (cur_len > 0 && (cur_len + 1 + wlen) <= width) {
+            cur[cur_len++] = ' ';
+            memcpy(cur + cur_len, wstart, (size_t)wlen);
+            cur_len += wlen;
+            continue;
+        }
+
+        if (cur_len > 0) {
+            ui_help_push_line(lines, max_lines, &out_count, cur, cur_len);
+            cur_len = 0;
+        }
+
+        if (wlen <= width) {
+            memcpy(cur, wstart, (size_t)wlen);
+            cur_len = wlen;
+            continue;
+        }
+
+        // Long unbreakable token: hard-wrap it to keep the overlay stable.
+        int off = 0;
+        while (off < wlen) {
+            int chunk = width;
+            if (chunk > wlen - off) {
+                chunk = wlen - off;
+            }
+            if (!ui_help_push_line(lines, max_lines, &out_count, wstart + off, chunk)) {
+                break;
+            }
+            off += chunk;
+        }
+    }
+
+    if (cur_len > 0) {
+        ui_help_push_line(lines, max_lines, &out_count, cur, cur_len);
+    }
+    if (out_count == 0) {
+        lines[0][0] = '\0';
+        out_count = 1;
+    }
+    return out_count;
+}
 
 // ---- Prompt implementations ----
 
@@ -141,6 +258,7 @@ ui_prompt_int_finish(void* u, const char* text) {
     char* end = NULL;
     long v = strtol(text, &end, 10);
     if (!end || *end != '\0') {
+        ui_statusf("Invalid integer input");
         if (pic->cb) {
             pic->cb(pic->user, 0, 0);
         }
@@ -168,6 +286,7 @@ ui_prompt_double_finish(void* u, const char* text) {
     char* end = NULL;
     double v = strtod(text, &end);
     if (!end || *end != '\0') {
+        ui_statusf("Invalid numeric input");
         if (pdc->cb) {
             pdc->cb(pdc->user, 0, 0.0);
         }
@@ -394,12 +513,24 @@ ui_prompt_render(void) {
     }
     size_t text_len = strlen(text);
     size_t start = 0;
-    if ((int)text_len > field_width) {
-        start = text_len - (size_t)field_width;
+    int show_left_ellipsis = 0;
+    int visible_chars = field_width;
+    if ((int)text_len > field_width && field_width >= 4) {
+        show_left_ellipsis = 1;
+        visible_chars = field_width - 3;
+    }
+    if ((int)text_len > visible_chars) {
+        start = text_len - (size_t)visible_chars;
     }
     mvwaddnstr(win, input_y, 2, "> ", (w > 5) ? 2 : 1);
-    mvwaddnstr(win, input_y, field_col, text + start, field_width);
-    int cursor_x = field_col + (int)(text_len - start);
+    if (show_left_ellipsis) {
+        mvwaddnstr(win, input_y, field_col, "...", 3);
+        mvwaddnstr(win, input_y, field_col + 3, text + start, visible_chars);
+    } else {
+        mvwaddnstr(win, input_y, field_col, text + start, field_width);
+    }
+    int cursor_prefix = show_left_ellipsis ? 3 : 0;
+    int cursor_x = field_col + cursor_prefix + (int)(text_len - start);
     if (cursor_x > field_right) {
         cursor_x = field_right;
     }
@@ -422,6 +553,9 @@ ui_help_open(const char* help) {
     }
     g_help.active = 1;
     g_help.text = help;
+    g_help.scroll = 0;
+    g_help.line_count = 0;
+    g_help.page_rows = 0;
     if (g_help.win) {
         delwin(g_help.win);
         g_help.win = NULL;
@@ -448,7 +582,62 @@ ui_help_handle_key(int ch) {
     if (!g_help.active) {
         return 0;
     }
+    if (ch == KEY_RESIZE) {
+#if DSD_CURSES_NEEDS_EXPLICIT_RESIZE
+        resize_term(0, 0);
+#endif
+        if (g_help.win) {
+            delwin(g_help.win);
+            g_help.win = NULL;
+        }
+        return 1;
+    }
+    int max_scroll = 0;
+    if (g_help.line_count > g_help.page_rows && g_help.page_rows > 0) {
+        max_scroll = g_help.line_count - g_help.page_rows;
+    }
+    int page_step = (g_help.page_rows > 1) ? (g_help.page_rows - 1) : 1;
     if (ch != ERR) {
+        if (ch == KEY_UP) {
+            if (g_help.scroll > 0) {
+                g_help.scroll--;
+            }
+            return 1;
+        }
+        if (ch == KEY_DOWN) {
+            if (g_help.scroll < max_scroll) {
+                g_help.scroll++;
+            }
+            return 1;
+        }
+        if (ch == KEY_PPAGE) {
+            g_help.scroll -= page_step;
+            if (g_help.scroll < 0) {
+                g_help.scroll = 0;
+            }
+            return 1;
+        }
+        if (ch == KEY_NPAGE) {
+            g_help.scroll += page_step;
+            if (g_help.scroll > max_scroll) {
+                g_help.scroll = max_scroll;
+            }
+            return 1;
+        }
+        if (ch == KEY_HOME) {
+            g_help.scroll = 0;
+            return 1;
+        }
+        if (ch == KEY_END) {
+            g_help.scroll = max_scroll;
+            return 1;
+        }
+        if (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q' || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER
+            || ch == '\r') {
+            ui_help_close();
+            return 1;
+        }
+        // Keep previous ergonomics: any non-navigation key closes help.
         ui_help_close();
     }
     return 1;
@@ -460,11 +649,8 @@ ui_help_render(void) {
         return;
     }
     const char* t = g_help.text ? g_help.text : "";
-    int h = 8;
-    int w = (int)strlen(t) + 6;
-    if (w < 40) {
-        w = 40;
-    }
+    int h = 14;
+    int w = 68;
     int scr_h = 0, scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
     if (scr_h < 4 || scr_w < 8) {
@@ -481,8 +667,8 @@ ui_help_render(void) {
     if (w > max_w) {
         w = max_w;
     }
-    if (w < 10) {
-        w = 10;
+    if (w < 30) {
+        w = max_w;
     }
     if (h > max_h) {
         h = max_h;
@@ -509,9 +695,56 @@ ui_help_render(void) {
     WINDOW* hw = g_help.win;
     werase(hw);
     box(hw, 0, 0);
-    mvwprintw(hw, 1, 2, "Help:");
-    mvwprintw(hw, 3, 2, "%s", t);
-    mvwprintw(hw, h - 2, 2, "Press any key to continue...");
+    const int body_w = (w > 4) ? (w - 4) : 1;
+    const int page_rows = (h > 4) ? (h - 4) : 1;
+    if (page_rows < 1) {
+        return;
+    }
+
+    char lines[UI_HELP_MAX_LINES][UI_HELP_MAX_LINE_CHARS];
+    int line_count = ui_help_wrap_text(t, body_w, lines, UI_HELP_MAX_LINES);
+    if (line_count < 1) {
+        line_count = 1;
+    }
+    g_help.line_count = line_count;
+    g_help.page_rows = page_rows;
+
+    int max_scroll = (line_count > page_rows) ? (line_count - page_rows) : 0;
+    if (max_scroll < 0) {
+        max_scroll = 0;
+    }
+    if (g_help.scroll < 0) {
+        g_help.scroll = 0;
+    }
+    if (g_help.scroll > max_scroll) {
+        g_help.scroll = max_scroll;
+    }
+
+    int first = g_help.scroll;
+    int last = first + page_rows;
+    if (last > line_count) {
+        last = line_count;
+    }
+
+    if (max_scroll > 0) {
+        mvwprintw(hw, 1, 2, "Help (%d-%d/%d)", first + 1, last, line_count);
+    } else {
+        mvwprintw(hw, 1, 2, "Help");
+    }
+
+    int y = 2;
+    for (int i = first; i < last && y <= (h - 3); i++, y++) {
+        if (i < 0 || i >= line_count || i >= UI_HELP_MAX_LINES) {
+            break;
+        }
+        mvwaddnstr(hw, y, 2, lines[i], body_w);
+    }
+
+    if (max_scroll > 0) {
+        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/q: close", body_w);
+    } else {
+        mvwaddnstr(hw, h - 2, 2, "Esc/q/Enter: close", body_w);
+    }
     wnoutrefresh(hw);
 }
 

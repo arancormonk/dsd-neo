@@ -971,7 +971,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_open_static_wav(opts, state, path);
+                int rc = svc_open_static_wav(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Static WAV output -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Static WAV open -> %s", path);
+                }
             }
             break;
         }
@@ -981,7 +986,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_open_raw_wav(opts, state, path);
+                int rc = svc_open_raw_wav(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Raw WAV output -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Raw WAV open -> %s", path);
+                }
             }
             break;
         }
@@ -991,7 +1001,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
                 memcpy(name, c->data, n);
                 name[n] = '\0';
-                svc_set_dsp_output_file(opts, name);
+                int rc = svc_set_dsp_output_file(opts, name);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: DSP output -> %s", opts->dsp_out_file);
+                } else {
+                    ui_set_toast(state, 4, "Failed: DSP output path invalid");
+                }
             }
             break;
         }
@@ -1001,7 +1016,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_open_symbol_out(opts, state, path);
+                int rc = svc_open_symbol_out(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Symbol capture -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Symbol capture open -> %s", path);
+                }
             }
             break;
         }
@@ -1011,7 +1031,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_open_symbol_in(opts, state, path);
+                int rc = svc_open_symbol_in(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Symbol input open -> %s", path);
+                }
             }
             break;
         }
@@ -1021,6 +1046,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(opts->audio_in_dev, c->data, n);
                 opts->audio_in_dev[n] = '\0';
                 opts->audio_in_type = AUDIO_IN_WAV;
+                ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
             }
             break;
         }
@@ -1030,6 +1056,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 memcpy(opts->audio_in_dev, c->data, n);
                 opts->audio_in_dev[n] = '\0';
                 opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
+                ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
             }
             break;
         }
@@ -1037,6 +1064,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts) {
                 snprintf(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
                 opts->audio_in_type = AUDIO_IN_PULSE;
+                ui_set_toast(state, 3, "Applied: Input switched to Pulse");
             }
             break;
         }
@@ -1101,13 +1129,23 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         }
         case UI_CMD_RTL_ENABLE_INPUT: {
             if (opts && state) {
-                svc_rtl_enable_input(opts, state);
+                int rc = svc_rtl_enable_input(opts, state);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL input enabled");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL input enable");
+                }
             }
             break;
         }
         case UI_CMD_RTL_RESTART: {
             if (opts && state) {
-                svc_rtl_restart(opts, state);
+                int rc = svc_rtl_restart(opts, state);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL stream restarted");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL stream restart");
+                }
             }
             break;
         }
@@ -1115,7 +1153,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_dev_index(opts, state, v);
+                int rc = svc_rtl_set_dev_index(opts, state, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL device index -> %d", (int)v);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL device index -> %d", (int)v);
+                }
             }
             break;
         }
@@ -1123,7 +1166,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_freq(opts, state, (uint32_t)v);
+                int rc = svc_rtl_set_freq(opts, state, (uint32_t)v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL frequency -> %d Hz", (int)v);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL frequency -> %d Hz", (int)v);
+                }
             }
             break;
         }
@@ -1131,7 +1179,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_gain(opts, state, v);
+                int rc = svc_rtl_set_gain(opts, state, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL gain -> %d", (int)v);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
+                }
             }
             break;
         }
@@ -1139,7 +1192,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_ppm(opts, v);
+                int rc = svc_rtl_set_ppm(opts, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL PPM -> %d", (int)opts->rtlsdr_ppm_error);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL PPM update");
+                }
             }
             break;
         }
@@ -1147,7 +1205,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_bandwidth(opts, state, v);
+                int rc = svc_rtl_set_bandwidth(opts, state, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL DSP BW update");
+                }
             }
             break;
         }
@@ -1155,7 +1218,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && c->n >= (int)sizeof(double)) {
                 double d = 0.0;
                 memcpy(&d, c->data, sizeof d);
-                svc_rtl_set_sql_db(opts, d);
+                int rc = svc_rtl_set_sql_db(opts, d);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL squelch -> %.1f dB", d);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL squelch update");
+                }
             }
             break;
         }
@@ -1163,7 +1231,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && c->n >= (int)sizeof(int32_t)) {
                 int32_t v = 0;
                 memcpy(&v, c->data, sizeof v);
-                svc_rtl_set_volume_mult(opts, v);
+                int rc = svc_rtl_set_volume_mult(opts, v);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL volume -> %dX", (int)opts->rtl_volume_multiplier);
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL volume update");
+                }
             }
             break;
         }
@@ -1171,7 +1244,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t on = 0;
                 memcpy(&on, c->data, sizeof on);
-                svc_rtl_set_bias_tee(opts, state, on);
+                int rc = svc_rtl_set_bias_tee(opts, state, on);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL bias tee update");
+                }
             }
             break;
         }
@@ -1179,7 +1257,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t on = 0;
                 memcpy(&on, c->data, sizeof on);
-                svc_rtltcp_set_autotune(opts, state, on);
+                int rc = svc_rtltcp_set_autotune(opts, state, on);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: RTL-TCP adaptive networking -> %s", on ? "On" : "Off");
+                } else {
+                    ui_set_toast(state, 4, "Failed: RTL-TCP adaptive networking update");
+                }
             }
             break;
         }
@@ -1187,7 +1270,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             if (opts && state && c->n >= (int)sizeof(int32_t)) {
                 int32_t on = 0;
                 memcpy(&on, c->data, sizeof on);
-                svc_rtl_set_auto_ppm(opts, state, on);
+                int rc = svc_rtl_set_auto_ppm(opts, state, on);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Auto PPM -> %s", on ? "On" : "Off");
+                } else {
+                    ui_set_toast(state, 4, "Failed: Auto PPM update");
+                }
             }
             break;
         }
@@ -1196,6 +1284,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 int32_t hz = 0;
                 memcpy(&hz, c->data, sizeof hz);
                 svc_set_rigctl_setmod_bw(opts, hz);
+                ui_set_toast(state, 3, "Applied: Rigctl setmod BW -> %d Hz", opts->setmod_bw);
             }
             break;
         }
@@ -1204,6 +1293,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 uint32_t tg = 0;
                 memcpy(&tg, c->data, sizeof tg);
                 svc_set_tg_hold(state, tg);
+                ui_set_toast(state, 3, "Applied: TG Hold -> %u", tg);
             }
             break;
         }
@@ -1212,6 +1302,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 double s = 0.0;
                 memcpy(&s, c->data, sizeof s);
                 svc_set_hangtime(opts, s);
+                ui_set_toast(state, 3, "Applied: Hangtime -> %.3f s", opts->trunk_hangtime);
             }
             break;
         }
@@ -1220,6 +1311,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 int32_t p = 0;
                 memcpy(&p, c->data, sizeof p);
                 svc_set_slot_pref(opts, p);
+                ui_set_toast(state, 3, "Applied: Slot preference -> %d", opts->slot_preference + 1);
             }
             break;
         }
@@ -1228,6 +1320,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 int32_t m = 0;
                 memcpy(&m, c->data, sizeof m);
                 svc_set_slots_onoff(opts, m);
+                ui_set_toast(state, 3, "Applied: Slot mask -> %d", (opts->slot1_on ? 1 : 0) | (opts->slot2_on ? 2 : 0));
             }
             break;
         }
@@ -1237,7 +1330,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
                 memcpy(name, c->data, n);
                 name[n] = '\0';
-                svc_set_pulse_output(opts, name);
+                int rc = svc_set_pulse_output(opts, name);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Pulse output -> %s", name);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Pulse output -> %s", name);
+                }
             }
             break;
         }
@@ -1247,20 +1345,35 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
                 memcpy(name, c->data, n);
                 name[n] = '\0';
-                svc_set_pulse_input(opts, name);
+                int rc = svc_set_pulse_input(opts, name);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Pulse input -> %s", name);
+                }
             }
             break;
         }
 
         case UI_CMD_LRRP_SET_HOME: {
             if (opts) {
-                svc_lrrp_set_home(opts);
+                int rc = svc_lrrp_set_home(opts);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", opts->lrrp_out_file);
+                } else {
+                    ui_set_toast(state, 4, "Failed: LRRP output (home)");
+                }
             }
             break;
         }
         case UI_CMD_LRRP_SET_DSDP: {
             if (opts) {
-                svc_lrrp_set_dsdp(opts);
+                int rc = svc_lrrp_set_dsdp(opts);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", opts->lrrp_out_file);
+                } else {
+                    ui_set_toast(state, 4, "Failed: LRRP output (DSDPlus)");
+                }
             }
             break;
         }
@@ -1270,13 +1383,19 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_lrrp_set_custom(opts, path);
+                int rc = svc_lrrp_set_custom(opts, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: LRRP output -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: LRRP output -> %s", path);
+                }
             }
             break;
         }
         case UI_CMD_LRRP_DISABLE: {
             if (opts) {
                 svc_lrrp_disable(opts);
+                ui_set_toast(state, 3, "Applied: LRRP output disabled");
             }
             break;
         }
@@ -1290,6 +1409,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
                 memcpy(&p, c->data, sizeof p);
                 svc_set_p2_params(state, p.w, p.s, p.n);
+                ui_set_toast(state, 3, "Applied: P25 P2 params W:%llX S:%llX N:%llX",
+                             (unsigned long long)state->p2_wacn, (unsigned long long)state->p2_sysid,
+                             (unsigned long long)state->p2_cc);
             }
             break;
         }
@@ -1451,7 +1573,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_import_channel_map(opts, state, path);
+                int rc = svc_import_channel_map(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
+                }
             }
             break;
         }
@@ -1461,7 +1588,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_import_group_list(opts, state, path);
+                int rc = svc_import_group_list(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Group list imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Group list import -> %s", path);
+                }
             }
             break;
         }
@@ -1471,7 +1603,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_import_keys_dec(opts, state, path);
+                int rc = svc_import_keys_dec(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Keys (DEC) imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Keys (DEC) import -> %s", path);
+                }
             }
             break;
         }
@@ -1481,7 +1618,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                 size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
                 memcpy(path, c->data, n);
                 path[n] = '\0';
-                svc_import_keys_hex(opts, state, path);
+                int rc = svc_import_keys_hex(opts, state, path);
+                if (rc == 0) {
+                    ui_set_toast(state, 3, "Applied: Keys (HEX) imported -> %s", path);
+                } else {
+                    ui_set_toast(state, 4, "Failed: Keys (HEX) import -> %s", path);
+                }
             }
             break;
         }

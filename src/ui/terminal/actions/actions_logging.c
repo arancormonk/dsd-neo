@@ -5,7 +5,9 @@
 
 /* UI command actions — logging/history domain */
 
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -63,6 +65,8 @@ ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     (void)c;
     if (state) {
         svc_reset_event_history(state);
+        snprintf(state->ui_msg, sizeof state->ui_msg, "Applied: Event history reset");
+        state->ui_msg_expire = time(NULL) + 3;
     }
     (void)opts;
     return 1;
@@ -70,23 +74,37 @@ ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
 static int
 ui_handle_event_log_disable(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    (void)state;
     (void)c;
     if (opts) {
         svc_disable_event_log(opts);
+        if (state) {
+            snprintf(state->ui_msg, sizeof state->ui_msg, "Applied: Event log disabled");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
     }
     return 1;
 }
 
 static int
 ui_handle_event_log_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    (void)state;
     if (opts && c->n > 0) {
         char path[1024] = {0};
         size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
         memcpy(path, c->data, n);
         path[n] = '\0';
-        svc_set_event_log(opts, path);
+        int rc = svc_set_event_log(opts, path);
+        if (state) {
+            if (rc == 0) {
+                const size_t prefix_len = strlen("Applied: Event log -> ");
+                int max_path =
+                    (sizeof state->ui_msg > (prefix_len + 1)) ? (int)(sizeof state->ui_msg - prefix_len - 1) : 0;
+                snprintf(state->ui_msg, sizeof state->ui_msg, "Applied: Event log -> %.*s", max_path, path);
+                state->ui_msg_expire = time(NULL) + 3;
+            } else {
+                snprintf(state->ui_msg, sizeof state->ui_msg, "Failed: Event log path invalid");
+                state->ui_msg_expire = time(NULL) + 4;
+            }
+        }
     }
     return 1;
 }
