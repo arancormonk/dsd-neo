@@ -978,6 +978,68 @@ apply_cmd_dsp(const struct UiCmd* c) {
 }
 #endif
 
+static long
+current_cc_freq(const dsd_state* state) {
+    return (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+}
+
+static void
+reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
+    memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    memset(state->active_channel, 0, sizeof(state->active_channel));
+    dmr_reset_blocks(opts, state);
+    state->lasttg = state->lasttgR = 0;
+    state->lastsrc = state->lastsrcR = 0;
+    state->payload_algid = state->payload_algidR = 0;
+    state->payload_keyid = state->payload_keyidR = 0;
+    state->payload_mi = state->payload_miR = state->payload_miP = state->payload_miN = 0;
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    if (clear_trunk_vc) {
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    }
+}
+
+static int
+current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
+    int demod_rate = 0;
+#ifdef USE_RTLSDR
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+    return demod_rate;
+}
+
+static void
+set_cc_symbol_timing(dsd_opts* opts, dsd_state* state, int fdma_only) {
+    int sym_rate = 0;
+    if (fdma_only) {
+        // In FDMA-only retune paths, keep existing SPS unless CC type is explicitly FDMA.
+        if (state->p25_cc_is_tdma != 0) {
+            return;
+        }
+        sym_rate = 4800;
+    } else {
+        sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
+    }
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, current_demod_rate(opts, state));
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+}
+
+static void
+mark_cc_sync(dsd_state* state, int include_monotonic) {
+    state->last_cc_sync_time = time(NULL);
+    if (include_monotonic) {
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    }
+}
+
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     if (payload_sz > sizeof(g_q[0].data)) {
@@ -1277,36 +1339,10 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         }
         case UI_CMD_RETURN_CC: {
             if (opts->p25_trunk == 1 && (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0)) {
-                // extra safeguards due to sync issues with NXDN
-                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                memset(state->active_channel, 0, sizeof(state->active_channel));
-                dmr_reset_blocks(opts, state);
-                state->lasttg = state->lasttgR = 0;
-                state->lastsrc = state->lastsrcR = 0;
-                state->payload_algid = state->payload_algidR = 0;
-                state->payload_keyid = state->payload_keyidR = 0;
-                state->payload_mi = state->payload_miR = state->payload_miP = state->payload_miN = 0;
-                opts->p25_is_tuned = 0;
-                opts->trunk_is_tuned = 0;
-                state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-                state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-                {
-                    long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-                    io_control_set_freq(opts, state, f);
-                }
-                state->last_cc_sync_time = time(NULL);
-                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                // Set symbol timing dynamically based on CC type and actual demod rate
-                int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-                int demod_rate = 0;
-#ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-                    demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
-                }
-#endif
-                state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
-                state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+                reset_call_tracking(opts, state, 1);
+                io_control_set_freq(opts, state, current_cc_freq(state));
+                mark_cc_sync(state, 1);
+                set_cc_symbol_timing(opts, state, 0);
                 LOG_INFO("User Activated Return to CC\n");
             }
             break;
@@ -1359,46 +1395,17 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
             }
 
             // Extra safeguards and resets
-            memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-            memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-            memset(state->active_channel, 0, sizeof(state->active_channel));
-            dmr_reset_blocks(opts, state);
-            state->lasttg = 0;
-            state->lasttgR = 0;
-            state->lastsrc = 0;
-            state->lastsrcR = 0;
-            state->payload_algid = 0;
-            state->payload_algidR = 0;
-            state->payload_keyid = 0;
-            state->payload_keyidR = 0;
-            state->payload_mi = 0;
-            state->payload_miR = 0;
-            state->payload_miP = 0;
-            state->payload_miN = 0;
-            opts->p25_is_tuned = 0;
-            opts->trunk_is_tuned = 0;
-            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+            reset_call_tracking(opts, state, 1);
 
             // Retune to CC via io/control API
             if (opts->p25_trunk == 1) {
                 noCarrier(opts, state);
-                long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+                long f = current_cc_freq(state);
                 io_control_set_freq(opts, state, f);
                 state->trunk_cc_freq = f;
             }
-            state->last_cc_sync_time = time(NULL);
-            // Set symbol timing dynamically based on CC type and actual demod rate
-            if (state->p25_cc_is_tdma == 0) {
-                int demod_rate_tune = 0;
-#ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-                    demod_rate_tune = (int)rtl_stream_output_rate(state->rtl_ctx);
-                }
-#endif
-                state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate_tune);
-                state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-            }
+            mark_cc_sync(state, 0);
+            set_cc_symbol_timing(opts, state, 1);
             break;
         }
 
@@ -1439,25 +1446,13 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         }
         case UI_CMD_CHANNEL_CYCLE: {
             if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
-                memset(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-                memset(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-                memset(state->active_channel, 0, sizeof(state->active_channel));
-                dmr_reset_blocks(opts, state);
-                state->lasttg = state->lasttgR = 0;
-                state->lastsrc = state->lastsrcR = 0;
-                state->payload_algid = state->payload_algidR = 0;
-                state->payload_keyid = state->payload_keyidR = 0;
-                state->payload_mi = state->payload_miR = state->payload_miP = state->payload_miN = 0;
-                opts->p25_is_tuned = 0;
-                opts->trunk_is_tuned = 0;
-                state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+                reset_call_tracking(opts, state, 0);
                 if (opts->p25_prefer_candidates == 1) {
                     long cand = 0;
                     if (p25_sm_next_cc_candidate(state, &cand)) {
                         io_control_set_freq(opts, state, cand);
                         LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
-                        state->last_cc_sync_time = time(NULL);
-                        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+                        mark_cc_sync(state, 1);
                         break;
                     }
                 }
@@ -1479,18 +1474,8 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
                              (double)state->trunk_lcn_freq[state->lcn_freq_roll] / 1000000);
                 }
                 state->lcn_freq_roll++;
-                state->last_cc_sync_time = time(NULL);
-                state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-                // Set symbol timing dynamically based on CC type and actual demod rate
-                int sym_rate_roll = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-                int demod_rate_roll = 0;
-#ifdef USE_RTLSDR
-                if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-                    demod_rate_roll = (int)rtl_stream_output_rate(state->rtl_ctx);
-                }
-#endif
-                state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate_roll, demod_rate_roll);
-                state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+                mark_cc_sync(state, 1);
+                set_cc_symbol_timing(opts, state, 0);
             }
             break;
         }
