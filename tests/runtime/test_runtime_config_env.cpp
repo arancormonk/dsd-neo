@@ -486,8 +486,8 @@ test_p25_watchdog_ms(void) {
 
 static int
 test_dmr_t3_heur_apply(void) {
-    dsd_opts opts;
-    memset(&opts, 0, sizeof opts);
+    static dsd_opts opts;
+    opts = {};
     opts.dmr_t3_heuristic_fill = 7; /* sentinel */
 
     unsetenv("DSD_NEO_DMR_T3_HEUR");

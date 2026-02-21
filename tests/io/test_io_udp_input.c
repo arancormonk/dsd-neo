@@ -106,7 +106,7 @@ main(void) {
     int th_started = 0;
     int rs_inited = 0;
 
-    dsd_opts opts;
+    static dsd_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.wav_sample_rate = 48000;
 

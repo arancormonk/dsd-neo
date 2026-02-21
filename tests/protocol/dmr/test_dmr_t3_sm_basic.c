@@ -73,8 +73,8 @@ int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_opts_state(&opts, &state);
 
     // Initialize the SM

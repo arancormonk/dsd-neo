@@ -15,8 +15,8 @@ void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int l
 
 void
 p25_test_p1_pdu_data_decode_with_evh(const unsigned char* input, int len) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 

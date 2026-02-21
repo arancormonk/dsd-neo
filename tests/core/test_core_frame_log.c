@@ -44,7 +44,7 @@ main(void) {
 #if defined(_WIN32)
     return 0;
 #else
-    dsd_opts opts;
+    static dsd_opts opts;
     memset(&opts, 0, sizeof opts);
     initOpts(&opts);
 

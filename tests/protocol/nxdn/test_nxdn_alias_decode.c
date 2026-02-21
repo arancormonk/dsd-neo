@@ -125,8 +125,8 @@ expect_size(const char* tag, size_t got, size_t want) {
 
 int
 main(void) {
-    dsd_state state;
-    dsd_opts opts;
+    static dsd_state state;
+    static dsd_opts opts;
     uint8_t bits[96];
     int rc = 0;
 

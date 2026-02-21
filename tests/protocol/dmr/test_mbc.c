@@ -36,8 +36,8 @@ crc16_bit_order_smoke(void) {
 
 static void
 mbc_aggregate_bounds(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
     state.currentslot = 0;

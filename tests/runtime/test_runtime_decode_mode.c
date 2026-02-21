@@ -12,8 +12,8 @@
 
 static int
 test_auto_profile_differences(void) {
-    dsd_opts opts = {0};
-    dsd_state state = {0};
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
 
     opts.frame_dstar = 0;
     opts.frame_dmr = 0;
@@ -61,8 +61,8 @@ test_auto_profile_differences(void) {
 
 static int
 test_interactive_x2_and_ysf_behavior(void) {
-    dsd_opts opts = {0};
-    dsd_state state = {0};
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
 
     opts.mod_c4fm = 0;
     opts.mod_qpsk = 1;

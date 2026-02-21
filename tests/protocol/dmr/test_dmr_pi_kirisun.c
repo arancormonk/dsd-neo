@@ -46,8 +46,8 @@ load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
 
 static void
 test_pi_kirisun_slot0_sets_fields_and_le_mode(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 
@@ -64,8 +64,8 @@ test_pi_kirisun_slot0_sets_fields_and_le_mode(void) {
 
 static void
 test_pi_kirisun_requires_crc_ok(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 
@@ -82,8 +82,8 @@ test_pi_kirisun_requires_crc_ok(void) {
 
 static void
 test_alg_refresh_advances_kirisun_mi(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 
@@ -103,8 +103,8 @@ test_alg_refresh_advances_kirisun_mi(void) {
 
 static void
 test_sbrc_kirisun_gate_rejects_non_kirisun_calls(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 
@@ -122,8 +122,8 @@ test_sbrc_kirisun_gate_rejects_non_kirisun_calls(void) {
 
 static void
 test_sbrc_kirisun_gate_accepts_kirisun_calls(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 
@@ -141,8 +141,8 @@ test_sbrc_kirisun_gate_accepts_kirisun_calls(void) {
 
 static void
 test_sbrc_kirisun_gate_ignores_stale_kirisun_alg(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     memset(&opts, 0, sizeof(opts));
     memset(&state, 0, sizeof(state));
 

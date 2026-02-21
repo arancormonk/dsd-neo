@@ -24,8 +24,8 @@
 
 int
 main(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     initOpts(&opts);
     initState(&state);
 
