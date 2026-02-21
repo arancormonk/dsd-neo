@@ -79,7 +79,7 @@ p25_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
 
 /* ============================================================================
  * Legacy Compatibility Wrappers
- * These use weak symbols (where supported) to allow tests to override them.
+ * Tests override behavior via `p25_sm_set_api(...)` / `p25_sm_get_api()`.
  * ============================================================================ */
 
 static void
