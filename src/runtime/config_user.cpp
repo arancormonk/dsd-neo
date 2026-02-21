@@ -2149,8 +2149,10 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
         } else if (strcmp(key, "rtl_volume") == 0) {
             cfg->rtl_volume = atoi(val);
         } else if (strcmp(key, "auto_ppm") == 0 || strcmp(key, "rtl_auto_ppm") == 0) {
-            cfg->rtl_auto_ppm =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->rtl_auto_ppm = b;
+            }
         } else if (strcmp(key, "rtltcp_host") == 0) {
             snprintf(cfg->rtltcp_host, sizeof cfg->rtltcp_host, "%s", val);
         } else if (strcmp(key, "rtltcp_port") == 0) {
@@ -2179,8 +2181,10 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
         } else if (strcmp(key, "pulse_sink") == 0 || strcmp(key, "pulse_output") == 0) {
             snprintf(cfg->pulse_output, sizeof cfg->pulse_output, "%s", val);
         } else if (strcmp(key, "ncurses_ui") == 0) {
-            cfg->ncurses_ui =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->ncurses_ui = b;
+            }
         }
     } else if (strcmp(section, "mode") == 0) {
         cfg->has_mode = 1;
@@ -2230,27 +2234,39 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
     } else if (strcmp(section, "trunking") == 0) {
         cfg->has_trunking = 1;
         if (strcmp(key, "enabled") == 0) {
-            cfg->trunk_enabled =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->trunk_enabled = b;
+            }
         } else if (strcmp(key, "chan_csv") == 0) {
             copy_path_expanded(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, val);
         } else if (strcmp(key, "group_csv") == 0) {
             copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
         } else if (strcmp(key, "allow_list") == 0) {
-            cfg->trunk_use_allow_list =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->trunk_use_allow_list = b;
+            }
         } else if (strcmp(key, "tune_group_calls") == 0) {
-            cfg->trunk_tune_group_calls =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->trunk_tune_group_calls = b;
+            }
         } else if (strcmp(key, "tune_private_calls") == 0) {
-            cfg->trunk_tune_private_calls =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->trunk_tune_private_calls = b;
+            }
         } else if (strcmp(key, "tune_data_calls") == 0) {
-            cfg->trunk_tune_data_calls =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->trunk_tune_data_calls = b;
+            }
         } else if (strcmp(key, "tune_enc_calls") == 0) {
-            cfg->trunk_tune_enc_calls =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->trunk_tune_enc_calls = b;
+            }
         }
     } else if (strcmp(section, "logging") == 0) {
         cfg->has_logging = 1;
@@ -2262,8 +2278,10 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
     } else if (strcmp(section, "recording") == 0) {
         cfg->has_recording = 1;
         if (strcmp(key, "per_call_wav") == 0) {
-            cfg->per_call_wav =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->per_call_wav = b;
+            }
         } else if (strcmp(key, "per_call_wav_dir") == 0) {
             copy_path_expanded(cfg->per_call_wav_dir, sizeof cfg->per_call_wav_dir, val);
         } else if (strcmp(key, "static_wav") == 0) {
@@ -2312,11 +2330,15 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
     } else if (strcmp(section, "dsp") == 0) {
         cfg->has_dsp = 1;
         if (strcmp(key, "iq_balance") == 0) {
-            cfg->iq_balance =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->iq_balance = b;
+            }
         } else if (strcmp(key, "iq_dc_block") == 0) {
-            cfg->iq_dc_block =
-                (dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+            int b = 0;
+            if (parse_bool(val, &b) == 0) {
+                cfg->iq_dc_block = b;
+            }
         }
     }
 }

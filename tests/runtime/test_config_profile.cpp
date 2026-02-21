@@ -191,6 +191,79 @@ test_profile_multiple_overrides(void) {
 }
 
 static int
+test_profile_bool_aliases(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[output]\n"
+                             "backend = \"pulse\"\n"
+                             "ncurses_ui = false\n"
+                             "\n"
+                             "[trunking]\n"
+                             "enabled = true\n"
+                             "allow_list = false\n"
+                             "tune_group_calls = true\n"
+                             "tune_private_calls = true\n"
+                             "tune_data_calls = false\n"
+                             "tune_enc_calls = true\n"
+                             "\n"
+                             "[profile.bool_aliases]\n"
+                             "output.ncurses_ui = on\n"
+                             "trunking.enabled = off\n"
+                             "trunking.allow_list = on\n"
+                             "trunking.tune_group_calls = off\n"
+                             "trunking.tune_private_calls = no\n"
+                             "trunking.tune_data_calls = yes\n"
+                             "trunking.tune_enc_calls = 0\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    int rc = dsd_user_config_load_profile(path, "bool_aliases", &cfg);
+
+    int result = 0;
+    if (rc != 0) {
+        fprintf(stderr, "FAIL: load with bool_aliases profile failed (rc=%d)\n", rc);
+        result = 1;
+    }
+    if (!cfg.ncurses_ui) {
+        fprintf(stderr, "FAIL: expected ncurses_ui on from profile alias\n");
+        result = 1;
+    }
+    if (cfg.trunk_enabled) {
+        fprintf(stderr, "FAIL: expected trunking disabled by profile alias\n");
+        result = 1;
+    }
+    if (!cfg.trunk_use_allow_list) {
+        fprintf(stderr, "FAIL: expected allow_list enabled by profile alias\n");
+        result = 1;
+    }
+    if (cfg.trunk_tune_group_calls != 0) {
+        fprintf(stderr, "FAIL: expected tune_group_calls disabled by profile alias\n");
+        result = 1;
+    }
+    if (cfg.trunk_tune_private_calls != 0) {
+        fprintf(stderr, "FAIL: expected tune_private_calls disabled by profile alias\n");
+        result = 1;
+    }
+    if (cfg.trunk_tune_data_calls != 1) {
+        fprintf(stderr, "FAIL: expected tune_data_calls enabled by profile alias\n");
+        result = 1;
+    }
+    if (cfg.trunk_tune_enc_calls != 0) {
+        fprintf(stderr, "FAIL: expected tune_enc_calls disabled by profile alias\n");
+        result = 1;
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_unknown_profile(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -503,6 +576,7 @@ main(void) {
     rc |= test_load_without_profile();
     rc |= test_load_with_profile_override();
     rc |= test_profile_multiple_overrides();
+    rc |= test_profile_bool_aliases();
     rc |= test_unknown_profile();
     rc |= test_list_profiles();
     rc |= test_list_profiles_empty();
