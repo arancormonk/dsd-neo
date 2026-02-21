@@ -6,6 +6,7 @@ target_sources(dsd-neo_runtime PRIVATE
   config.cpp
   config_user.cpp
   config_schema.c
+  decode_mode.c
   config_expand.c
   control_pump.c
   freq_parse.c

@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 
@@ -1030,116 +1031,30 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                            opts->use_hpf_d);
                 break;
             }
-            case 'f':
+            case 'f': {
                 // Any -f* preset should stop pure analog-monitor mode unless explicitly selecting it.
                 opts->analog_only = 0;
                 opts->monitor_input_audio = 0;
-                if (optarg[0] == 'a') {
-                    opts->frame_dstar = 1;
-                    opts->frame_x2tdma = 1;
-                    opts->frame_p25p1 = 1;
-                    opts->frame_p25p2 = 1;
-                    opts->inverted_p2 = 0;
-                    opts->frame_nxdn48 = 1;
-                    opts->frame_nxdn96 = 1;
-                    opts->frame_dmr = 1;
-                    opts->frame_dpmr = 1;
-                    opts->frame_provoice = 1;
-                    opts->frame_ysf = 1;
-                    opts->frame_m17 = 1;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    state->rf_mod = 0;
-                    opts->dmr_stereo = 1;
-                    opts->dmr_mono = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 2;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
-                    LOG_NOTICE("Decoding AUTO: all digital modes with multi-rate SPS hunting\n");
-                } else if (optarg[0] == 'A') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    state->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->rf_mod = 0;
-                    opts->monitor_input_audio = 1;
-                    opts->analog_only = 1;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "Analog Monitor");
-                    LOG_NOTICE("Only Monitoring Passive Analog Signal\n");
-                } else if (optarg[0] == 'd') {
-                    opts->frame_dstar = 1;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    state->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->rf_mod = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "DSTAR");
-                    LOG_NOTICE("Decoding only DSTAR frames.\n");
-                } else if (optarg[0] == 'x') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 1;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 2;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "X2-TDMA");
-                    LOG_NOTICE("Decoding only X2-TDMA frames.\n");
-                } else if (optarg[0] == 't') {
-                    /* TDMA focus: P25 p1+p2 and DMR enabled; others off */
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 1;
-                    opts->frame_p25p2 = 1;
-                    opts->inverted_p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 1;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->dmr_stereo = 1;
-                    opts->dmr_mono = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 2;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "TDMA");
+
+                dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;
+                if (dsd_decode_mode_from_cli_preset(optarg[0], &core_mode) == 0
+                    && dsd_apply_decode_mode_preset(core_mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0) {
+                    switch (optarg[0]) {
+                        case 'a': LOG_NOTICE("Decoding AUTO: all digital modes with multi-rate SPS hunting\n"); break;
+                        case 'A': LOG_NOTICE("Only Monitoring Passive Analog Signal\n"); break;
+                        case 'd': LOG_NOTICE("Decoding only DSTAR frames.\n"); break;
+                        case 'x': LOG_NOTICE("Decoding only X2-TDMA frames.\n"); break;
+                        case '1': LOG_NOTICE("Decoding only P25 Phase 1 frames.\n"); break;
+                        case '2': LOG_NOTICE("Decoding only P25 Phase 2 frames.\n"); break;
+                        case 's': LOG_NOTICE("Decoding only DMR frames.\n"); break;
+                        case 'i': LOG_NOTICE("Decoding only NXDN48 frames.\n"); break;
+                        case 'n': LOG_NOTICE("Decoding only NXDN96 frames.\n"); break;
+                        case 'y': LOG_NOTICE("Decoding only YSF frames.\n"); break;
+                        case 'm':
+                            LOG_NOTICE("Decoding only M17 frames (polarity auto-detected from preamble).\n");
+                            break;
+                        default: break;
+                    }
                 } else if (optarg[0] == 'p') {
                     opts->frame_dstar = 0;
                     opts->frame_x2tdma = 0;
@@ -1350,78 +1265,6 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                                    state->edacs_s_bits);
                     }
                     opts->rtl_dsp_bw_khz = 24;
-                } else if (optarg[0] == '1') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 1;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->dmr_stereo = 0;
-                    state->dmr_stereo = 0;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->ssize = 36;
-                    opts->msize = 15;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "P25p1");
-                    LOG_NOTICE("Decoding only P25 Phase 1 frames.\n");
-                } else if (optarg[0] == '2') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 1;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 8;
-                    state->symbolCenter = 3;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->dmr_stereo = 1;
-                    state->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "P25p2");
-                    LOG_NOTICE("Decoding only P25 Phase 2 frames.\n");
-                } else if (optarg[0] == 's') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->inverted_p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 1;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->dmr_stereo = 1;
-                    opts->dmr_mono = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 2;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR");
-                    LOG_NOTICE("Decoding only DMR frames.\n");
                 } else if (optarg[0] == 'r') {
                     /* Legacy -fr alias: DMR BS/MS simplex with mono audio.
                        Mirrors -fs but prefers mono content while keeping a
@@ -1452,101 +1295,6 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     opts->pulse_digi_out_channels = 2;
                     snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");
                     LOG_NOTICE("Decoding DMR (legacy -fr mono mode).\n");
-                } else if (optarg[0] == 'i') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 1;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    state->samplesPerSymbol = 20;
-                    state->symbolCenter = 9; /* (sps-1)/2 */
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    state->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "NXDN48");
-                    LOG_NOTICE("Decoding only NXDN48 frames.\n");
-                } else if (optarg[0] == 'n') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 1;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 0;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "NXDN96");
-                    LOG_NOTICE("Decoding only NXDN96 frames.\n");
-                } else if (optarg[0] == 'y') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_ysf = 1;
-                    opts->frame_m17 = 0;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    state->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "YSF");
-                    LOG_NOTICE("Decoding only YSF frames.\n");
-                } else if (optarg[0] == 'm') {
-                    opts->frame_dstar = 0;
-                    opts->frame_x2tdma = 0;
-                    opts->frame_p25p1 = 0;
-                    opts->frame_p25p2 = 0;
-                    opts->frame_nxdn48 = 0;
-                    opts->frame_nxdn96 = 0;
-                    opts->frame_dmr = 0;
-                    opts->frame_provoice = 0;
-                    opts->frame_dpmr = 0;
-                    opts->frame_ysf = 0;
-                    opts->frame_m17 = 1;
-                    opts->mod_c4fm = 1;
-                    opts->mod_qpsk = 0;
-                    opts->mod_gfsk = 0;
-                    state->rf_mod = 0;
-                    opts->pulse_digi_rate_out = 8000;
-                    opts->pulse_digi_out_channels = 1;
-                    opts->dmr_stereo = 0;
-                    opts->dmr_mono = 0;
-                    state->dmr_stereo = 0;
-                    snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17");
-                    LOG_NOTICE("Decoding only M17 frames (polarity auto-detected from preamble).\n");
-                    opts->use_cosine_filter = 0;
                 } else if (optarg[0] == 'Z') {
                     opts->m17encoder = 1;
                     opts->pulse_digi_rate_out = 48000;
@@ -1574,6 +1322,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                     LOG_NOTICE("Decoding M17 UDP/IP Frames.\n");
                 }
                 break;
+            }
             case 'm':
                 if (optarg[0] == 'a') {
                     opts->mod_c4fm = 1;

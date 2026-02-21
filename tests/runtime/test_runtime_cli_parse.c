@@ -1050,6 +1050,199 @@ test_dmr_baofeng_pc5_long_option_rejects_invalid_key(void) {
     return 0;
 }
 
+static int
+test_f_auto_preset_applies_cli_profile(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fa";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_dstar && opts->frame_x2tdma && opts->frame_p25p1 && opts->frame_p25p2 && opts->frame_nxdn48
+          && opts->frame_nxdn96 && opts->frame_dmr && opts->frame_dpmr && opts->frame_provoice && opts->frame_ysf
+          && opts->frame_m17)) {
+        fprintf(stderr, "expected -fa to enable all digital frame types\n");
+        test_rc = 1;
+    }
+    if (opts->pulse_digi_out_channels != 2 || opts->dmr_stereo != 1 || opts->dmr_mono != 0) {
+        fprintf(stderr, "unexpected -fa audio settings channels=%d stereo=%d mono=%d\n", opts->pulse_digi_out_channels,
+                opts->dmr_stereo, opts->dmr_mono);
+        test_rc = 1;
+    }
+    if (strcmp(opts->output_name, "AUTO") != 0) {
+        fprintf(stderr, "expected output_name=AUTO, got %s\n", opts->output_name);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_f_ysf_preset_applies_cli_profile(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fy";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_ysf == 1 && opts->frame_dstar == 0 && opts->frame_dmr == 0 && opts->frame_p25p1 == 0
+          && opts->frame_p25p2 == 0)) {
+        fprintf(stderr, "unexpected -fy frame flags\n");
+        test_rc = 1;
+    }
+    if (opts->pulse_digi_out_channels != 1 || opts->dmr_stereo != 0 || opts->dmr_mono != 0 || state->dmr_stereo != 0) {
+        fprintf(stderr, "unexpected -fy audio settings channels=%d stereo=%d mono=%d state_stereo=%d\n",
+                opts->pulse_digi_out_channels, opts->dmr_stereo, opts->dmr_mono, state->dmr_stereo);
+        test_rc = 1;
+    }
+    if (strcmp(opts->output_name, "YSF") != 0) {
+        fprintf(stderr, "expected output_name=YSF, got %s\n", opts->output_name);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_f_legacy_fr_mono_still_supported(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fr";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_dmr == 1 && opts->dmr_mono == 1 && opts->dmr_stereo == 0 && state->dmr_stereo == 0)) {
+        fprintf(stderr, "unexpected -fr mono settings frame_dmr=%d mono=%d stereo=%d state_stereo=%d\n",
+                opts->frame_dmr, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo);
+        test_rc = 1;
+    }
+    if (opts->pulse_digi_out_channels != 2 || strcmp(opts->output_name, "DMR-Mono") != 0) {
+        fprintf(stderr, "unexpected -fr output channels/name channels=%d name=%s\n", opts->pulse_digi_out_channels,
+                opts->output_name);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_f_nxdn48_clears_dmr_mono_after_fr(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fr";
+    char arg2[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        fprintf(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_nxdn48 == 1 && opts->frame_dmr == 0 && opts->dmr_mono == 0)) {
+        fprintf(stderr, "expected -fi to clear -fr mono mode (nxdn48=%d dmr=%d mono=%d)\n", opts->frame_nxdn48,
+                opts->frame_dmr, opts->dmr_mono);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1070,5 +1263,9 @@ main(void) {
     rc |= test_dmr_baofeng_pc5_256_long_option_decodes_hex_bytes();
     rc |= test_dmr_csi_ee72_long_option_parse();
     rc |= test_dmr_baofeng_pc5_long_option_rejects_invalid_key();
+    rc |= test_f_auto_preset_applies_cli_profile();
+    rc |= test_f_ysf_preset_applies_cli_profile();
+    rc |= test_f_legacy_fr_mono_still_supported();
+    rc |= test_f_nxdn48_clears_dmr_mono_after_fr();
     return rc;
 }

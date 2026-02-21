@@ -433,6 +433,71 @@ test_apply_logging_retargets_frame_log_file(void) {
     return rc;
 }
 
+static int
+test_apply_mode_ysf_uses_config_profile_behavior(void) {
+    dsdneoUserConfig cfg = {};
+    cfg.version = 1;
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_YSF;
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (!(opts.frame_ysf == 1 && opts.frame_dstar == 0 && opts.frame_dmr == 0)) {
+        fprintf(stderr, "YSF config mode flags not applied as expected\n");
+        rc |= 1;
+    }
+    if (opts.pulse_digi_out_channels != 2 || opts.dmr_stereo != 1 || opts.dmr_mono != 0) {
+        fprintf(stderr, "YSF config profile audio mismatch channels=%d stereo=%d mono=%d\n",
+                opts.pulse_digi_out_channels, opts.dmr_stereo, opts.dmr_mono);
+        rc |= 1;
+    }
+    if (strcmp(opts.output_name, "YSF") != 0) {
+        fprintf(stderr, "YSF output_name mismatch: %s\n", opts.output_name);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_snapshot_mode_inference_tdma_and_auto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_opts_and_state(opts, state);
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dstar = 0;
+    opts.frame_ysf = 0;
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 0;
+    opts.frame_provoice = 0;
+    opts.frame_m17 = 0;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    int rc = 0;
+    if (snap.decode_mode != DSDCFG_MODE_TDMA) {
+        fprintf(stderr, "expected TDMA mode inference, got %d\n", (int)snap.decode_mode);
+        rc |= 1;
+    }
+
+    reset_opts_and_state(opts, state);
+    opts.frame_dmr = 1;
+    opts.frame_ysf = 1;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.decode_mode != DSDCFG_MODE_AUTO) {
+        fprintf(stderr, "expected AUTO fallback mode inference, got %d\n", (int)snap.decode_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -441,5 +506,7 @@ main(void) {
     rc |= test_apply_demod_lock();
     rc |= test_snapshot_persists_demod_lock();
     rc |= test_apply_logging_retargets_frame_log_file();
+    rc |= test_apply_mode_ysf_uses_config_profile_behavior();
+    rc |= test_snapshot_mode_inference_tdma_and_auto();
     return rc;
 }

@@ -70,6 +70,11 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/runtime/config_schema.h
   C)
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_decode_mode
+  HEADERS_PUBLIC_RUNTIME_DECODE_MODE
+  dsd-neo/runtime/decode_mode.h
+  C)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_control_pump
   HEADERS_PUBLIC_RUNTIME_CONTROL_PUMP
   dsd-neo/runtime/control_pump.h
