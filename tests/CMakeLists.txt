@@ -478,6 +478,11 @@ target_include_directories(dsd-neo_test_runtime_config_user PRIVATE ${PROJECT_SO
 target_link_libraries(dsd-neo_test_runtime_config_user PRIVATE dsd-neo_runtime dsd-neo_test_support)
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
+add_executable(dsd-neo_test_runtime_decode_mode runtime/test_runtime_decode_mode.c)
+target_include_directories(dsd-neo_test_runtime_decode_mode PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dsd-neo_test_runtime_decode_mode PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_DECODE_MODE COMMAND dsd-neo_test_runtime_decode_mode)
+
 add_executable(dsd-neo_test_runtime_config_env runtime/test_runtime_config_env.cpp)
 target_include_directories(dsd-neo_test_runtime_config_env PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_env PRIVATE dsd-neo_runtime dsd-neo_test_support)

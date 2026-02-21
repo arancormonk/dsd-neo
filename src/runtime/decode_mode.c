@@ -159,7 +159,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
             opts->mod_gfsk = 0;
             state->rf_mod = 0;
             opts->dmr_stereo = 0;
-            if (profile == DSD_DECODE_PRESET_PROFILE_CLI) {
+            if (profile != DSD_DECODE_PRESET_PROFILE_CONFIG) {
                 state->dmr_stereo = 0;
                 opts->dmr_mono = 0;
             }
@@ -187,7 +187,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
             opts->mod_gfsk = 0;
             state->rf_mod = 0;
             opts->dmr_stereo = 0;
-            if (profile == DSD_DECODE_PRESET_PROFILE_CLI) {
+            if (profile != DSD_DECODE_PRESET_PROFILE_CONFIG) {
                 state->dmr_stereo = 0;
                 opts->dmr_mono = 0;
             }
@@ -208,8 +208,12 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
             opts->frame_provoice = 0;
             opts->frame_ysf = 0;
             opts->frame_m17 = 0;
+            opts->mod_c4fm = 1;
+            opts->mod_qpsk = 0;
+            opts->mod_gfsk = 0;
+            state->rf_mod = 0;
             opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 2;
+            opts->pulse_digi_out_channels = (profile == DSD_DECODE_PRESET_PROFILE_INTERACTIVE) ? 1 : 2;
             opts->dmr_stereo = 0;
             opts->dmr_mono = 0;
             state->dmr_stereo = 0;
@@ -234,7 +238,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
             state->rf_mod = 0;
             opts->dmr_mono = 0;
             opts->pulse_digi_rate_out = 8000;
-            if (profile == DSD_DECODE_PRESET_PROFILE_CLI) {
+            if (profile != DSD_DECODE_PRESET_PROFILE_CONFIG) {
                 opts->dmr_stereo = 0;
                 state->dmr_stereo = 0;
                 opts->pulse_digi_out_channels = 1;

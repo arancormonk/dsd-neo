@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <dsd-neo/core/csv_import.h>
@@ -238,314 +239,26 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     int mode = prompt_int("Selection", 1, 1, 14);
 
     // Apply decode mode selection
+    dsdneoUserDecodeMode decode_mode = DSDCFG_MODE_UNSET;
     switch (mode) {
-        case 1: /* Auto: keep init defaults */
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
-            break;
-        case 2: /* P25 Phase 1 only (-f1) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 1;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->dmr_stereo = 0;
-            state->dmr_stereo = 0;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->dmr_mono = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->ssize = 36;
-            opts->msize = 15;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "P25p1");
-            break;
-        case 3: /* P25 Phase 2 only (-f2) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 1;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            state->samplesPerSymbol = 8;
-            state->symbolCenter = 3;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->dmr_stereo = 1;
-            state->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "P25p2");
-            break;
-        case 4: /* DMR (-fs) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->inverted_p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 1;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->dmr_stereo = 1;
-            opts->dmr_mono = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 2;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "DMR");
-            break;
-        case 5: /* NXDN48 (-fi) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 1;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            state->samplesPerSymbol = 20;
-            state->symbolCenter = 9; /* (sps-1)/2 */
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            state->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "NXDN48");
-            break;
-        case 6: /* NXDN96 (-fn) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 1;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->dmr_stereo = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "NXDN96");
-            break;
-        case 7: /* X2-TDMA (-fx) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 1;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            state->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->rf_mod = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "X2-TDMA");
-            break;
-        case 8: /* YSF (-fy) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 1;
-            opts->frame_m17 = 0;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            state->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "YSF");
-            break;
-        case 9: /* D-STAR (-fd) */
-            opts->frame_dstar = 1;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            state->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->rf_mod = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "DSTAR");
-            break;
-        case 10: /* EDACS/ProVoice (std/net) (-fh) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 1;
-            state->ea_mode = 0;
-            state->esk_mask = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            state->samplesPerSymbol = 5;
-            state->symbolCenter = 2;
-            opts->mod_c4fm = 0;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 1;
-            state->rf_mod = 2;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->dmr_stereo = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");
-            break;
-        case 11: /* dPMR (-fm) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_dpmr = 1;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            state->samplesPerSymbol = 20; // same as NXDN48
-            state->symbolCenter = 9;      // (sps-1)/2, same as NXDN48
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->dmr_stereo = 0;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "dPMR");
-            break;
-        case 12: /* M17 (-fz) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 1;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->dmr_stereo = 0;
-            opts->use_cosine_filter = 0; // per -fz note
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "M17");
-            break;
-        case 13: /* P25 + DMR (TDMA) (-ft) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 1;
-            opts->frame_p25p2 = 1;
-            opts->inverted_p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 1;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            state->rf_mod = 0;
-            opts->dmr_stereo = 1;
-            opts->dmr_mono = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 2;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "TDMA");
-            break;
-        case 14: /* Analog monitor (-fA) */
-            opts->frame_dstar = 0;
-            opts->frame_x2tdma = 0;
-            opts->frame_p25p1 = 0;
-            opts->frame_p25p2 = 0;
-            opts->frame_nxdn48 = 0;
-            opts->frame_nxdn96 = 0;
-            opts->frame_dmr = 0;
-            opts->frame_dpmr = 0;
-            opts->frame_provoice = 0;
-            opts->frame_ysf = 0;
-            opts->frame_m17 = 0;
-            opts->pulse_digi_rate_out = 8000;
-            opts->pulse_digi_out_channels = 1;
-            opts->dmr_stereo = 0;
-            state->dmr_stereo = 0;
-            opts->dmr_mono = 0;
-            state->rf_mod = 0;
-            opts->monitor_input_audio = 1;
-            opts->analog_only = 1;
-            snprintf(opts->output_name, sizeof opts->output_name, "%s", "Analog Monitor");
-            break;
+        case 1: decode_mode = DSDCFG_MODE_AUTO; break;
+        case 2: decode_mode = DSDCFG_MODE_P25P1; break;
+        case 3: decode_mode = DSDCFG_MODE_P25P2; break;
+        case 4: decode_mode = DSDCFG_MODE_DMR; break;
+        case 5: decode_mode = DSDCFG_MODE_NXDN48; break;
+        case 6: decode_mode = DSDCFG_MODE_NXDN96; break;
+        case 7: decode_mode = DSDCFG_MODE_X2TDMA; break;
+        case 8: decode_mode = DSDCFG_MODE_YSF; break;
+        case 9: decode_mode = DSDCFG_MODE_DSTAR; break;
+        case 10: decode_mode = DSDCFG_MODE_EDACS_PV; break;
+        case 11: decode_mode = DSDCFG_MODE_DPMR; break;
+        case 12: decode_mode = DSDCFG_MODE_M17; break;
+        case 13: decode_mode = DSDCFG_MODE_TDMA; break;
+        case 14: decode_mode = DSDCFG_MODE_ANALOG; break;
         default: break;
+    }
+    if (decode_mode != DSDCFG_MODE_UNSET) {
+        (void)dsd_apply_decode_mode_preset(decode_mode, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, opts, state);
     }
 
     // Offer trunking toggle when applicable

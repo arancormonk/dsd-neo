@@ -24,7 +24,11 @@ extern "C" {
  * Some presets intentionally differ between config and CLI paths to preserve
  * existing behavior.
  */
-typedef enum { DSD_DECODE_PRESET_PROFILE_CONFIG = 0, DSD_DECODE_PRESET_PROFILE_CLI } dsdDecodePresetProfile;
+typedef enum {
+    DSD_DECODE_PRESET_PROFILE_CONFIG = 0,
+    DSD_DECODE_PRESET_PROFILE_CLI,
+    DSD_DECODE_PRESET_PROFILE_INTERACTIVE
+} dsdDecodePresetProfile;
 
 /**
  * @brief Map a core `-f` CLI preset character to a user decode mode enum.
