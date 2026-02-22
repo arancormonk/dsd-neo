@@ -129,6 +129,14 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
 
+/**
+ * @brief Return 1 when a DMR/P25-style voice ALGID has sufficient key material to decrypt.
+ *
+ * This helper intentionally only covers known/implemented families. Unknown ALGIDs
+ * return 0 so callers keep audio muted rather than falsely unmuting garble.
+ */
+int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded);
+
 /** @brief Legacy UI beeper helper (used by ncurses call-alert and events). */
 void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 

@@ -3,10 +3,13 @@ set -euo pipefail
 
 # Run the same checks as .githooks/pre-push without performing a push.
 # Useful for catching CI failures locally before pushing.
+# Also checks uncommitted (staged/unstaged/untracked) local changes.
 
 usage() {
   cat <<'USAGE'
 Usage: tools/preflight_ci.sh [--remote <name>] [--base <ref-or-sha>]
+
+Runs pre-push checks for the push delta and current uncommitted changes.
 
 Options:
   --remote NAME   Remote name to model push against (default: upstream remote, or origin).
@@ -121,3 +124,28 @@ echo "preflight: local_ref=${local_ref} local_sha=${local_sha}"
 echo "preflight: remote=${REMOTE_NAME} remote_ref=${remote_ref} remote_sha=${remote_sha}"
 
 printf '%s %s %s %s\n' "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url"
+
+tmp_index="$(mktemp "${TMPDIR:-/tmp}/dsd-neo-preflight-index.XXXXXX")"
+cleanup() {
+  rm -f "$tmp_index"
+}
+trap cleanup EXIT
+
+GIT_INDEX_FILE="$tmp_index" git read-tree "$local_sha"
+GIT_INDEX_FILE="$tmp_index" git add -A -- .
+
+worktree_tree=$(GIT_INDEX_FILE="$tmp_index" git write-tree)
+head_tree=$(git rev-parse "${local_sha}^{tree}")
+
+if [[ "$worktree_tree" != "$head_tree" ]]; then
+  worktree_sha=$(
+    printf 'preflight_ci synthetic worktree commit\n' | \
+      GIT_AUTHOR_NAME=dsd-neo-preflight \
+      GIT_AUTHOR_EMAIL=preflight@local \
+      GIT_COMMITTER_NAME=dsd-neo-preflight \
+      GIT_COMMITTER_EMAIL=preflight@local \
+      git commit-tree "$worktree_tree" -p "$local_sha"
+  )
+  echo "preflight: running checks for uncommitted local changes"
+  printf '%s %s %s %s\n' "$local_ref" "$worktree_sha" "$local_ref" "$local_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url"
+fi

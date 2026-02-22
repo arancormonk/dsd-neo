@@ -1516,8 +1516,12 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             state->dmr_encL = 0;
         }
 
-        //check for available R key
-        if (state->R != 0) {
+        // Unmute only when ALG/key state is known-decryptable.
+        if (state->payload_algid == 0) {
+            if (state->R != 0 || state->K != 0 || state->K1 != 0) {
+                state->dmr_encL = 0;
+            }
+        } else if (dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0])) {
             state->dmr_encL = 0;
         }
 
@@ -1526,6 +1530,10 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
                 state->dmr_encL = 1;
             }
+        }
+
+        if (state->baofeng_ap == 1 || state->csi_ee == 1) {
+            state->dmr_encL = 0;
         }
 
         if (state->ken_sc == 1) {
@@ -1567,8 +1575,12 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             state->dmr_encR = 0;
         }
 
-        //check for available RR key
-        if (state->RR != 0) {
+        // Unmute only when ALG/key state is known-decryptable.
+        if (state->payload_algidR == 0) {
+            if (state->RR != 0 || state->K != 0 || state->K1 != 0) {
+                state->dmr_encR = 0;
+            }
+        } else if (dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1])) {
             state->dmr_encR = 0;
         }
 
@@ -1577,6 +1589,10 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
             if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
                 state->dmr_encR = 1;
             }
+        }
+
+        if (state->baofeng_ap == 1 || state->csi_ee == 1) {
+            state->dmr_encR = 0;
         }
 
         if (state->ken_sc == 1) {
@@ -1661,19 +1677,29 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
     }
 
-    //per call wav file writing for slot 1
+    // Per-call WAV writing for trunked dual-slot modes. Reuse group/TG-hold
+    // gate logic so blocked or non-held TGs are not persisted to disk.
     if (opts->dmr_stereo_wav == 1 && opts->dmr_stereo == 1 && state->currentslot == 0) {
-        if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
-            //write wav to per call on left channel Slot 1
-            writeSynthesizedVoice(opts, state);
+        int allow_rec = (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) ? 1 : 0;
+        if (allow_rec) {
+            int rec_gate = 0;
+            unsigned long tg = (unsigned long)state->lasttg;
+            if (dsd_audio_group_gate_mono(opts, state, tg, 0, &rec_gate) == 0 && rec_gate == 0) {
+                //write wav to per call on left channel Slot 1
+                writeSynthesizedVoice(opts, state);
+            }
         }
     }
 
-    //per call wav file writing for slot 2
     if (opts->dmr_stereo_wav == 1 && opts->dmr_stereo == 1 && state->currentslot == 1) {
-        if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
-            //write wav to per call on right channel Slot 2
-            writeSynthesizedVoiceR(opts, state);
+        int allow_rec = (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) ? 1 : 0;
+        if (allow_rec) {
+            int rec_gate = 0;
+            unsigned long tg = (unsigned long)state->lasttgR;
+            if (dsd_audio_group_gate_mono(opts, state, tg, 0, &rec_gate) == 0 && rec_gate == 0) {
+                //write wav to per call on right channel Slot 2
+                writeSynthesizedVoiceR(opts, state);
+            }
         }
     }
 

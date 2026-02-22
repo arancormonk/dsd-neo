@@ -1422,8 +1422,12 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                     kid = state->payload_keyidR;
                 }
 
+                if (alg == 0x07) {
+                    fprintf(stderr, " Vertex Std data decrypt not implemented;");
+                }
+
                 char enc_str[200];
-                memset(enc_str, 200, sizeof(enc_str));
+                memset(enc_str, 0, sizeof(enc_str));
                 sprintf(enc_str, "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
                         state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], alg, kid);
                 sprintf(state->dmr_lrrp_gps[slot], "%s", enc_str);

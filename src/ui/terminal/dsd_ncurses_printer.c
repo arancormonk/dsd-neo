@@ -1763,6 +1763,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
             }
             attron(COLOR_PAIR(3));
         }
+        if (state->payload_algid == 0x07) {
+            attron(COLOR_PAIR(1));
+            printw("Vertex Std");
+            attron(COLOR_PAIR(3));
+        }
         if (state->payload_algid == 0x36 || state->payload_algid == 0x37) {
             attron(COLOR_PAIR(1));
             if (state->payload_algid == 0x36) {
@@ -1973,6 +1978,11 @@ ncursesPrinter(dsd_opts* opts, dsd_state* state) {
                 if (state->RR != 0) {
                     printw(" Key: %010llX", state->RR);
                 }
+                attron(COLOR_PAIR(3));
+            }
+            if (state->payload_algidR == 0x07) {
+                attron(COLOR_PAIR(1));
+                printw("Vertex Std");
                 attron(COLOR_PAIR(3));
             }
             if (state->payload_algidR == 0x36 || state->payload_algidR == 0x37) {

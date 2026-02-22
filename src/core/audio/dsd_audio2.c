@@ -1044,42 +1044,26 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 
     //checkdown to see if we can lift the 'mute' if a key is available
     if (encL) {
-        if (forced_dmr_privacy) {
+        const int key_loaded = (state->K != 0 || state->K1 != 0);
+        const int can_decrypt =
+            forced_dmr_privacy
+            || ((state->payload_algid == 0)
+                    ? key_loaded
+                    : dsd_dmr_voice_alg_can_decrypt(state->payload_algid, state->R, state->aes_key_loaded[0]));
+        if (can_decrypt) {
             encL = 0;
-        } else if (state->payload_algid == 0) {
-            if (state->K != 0 || state->K1 != 0) {
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x02 || state->payload_algid == 0x21 || state->payload_algid == 0x22) {
-            if (state->R != 0) {
-                encL = 0;
-            }
-        } else if (state->payload_algid == 0x24 || state->payload_algid == 0x25 || state->payload_algid == 0x36
-                   || state->payload_algid == 0x37) {
-            //going to need a better check for this later on, or seperated keys or something
-            if (state->aes_key_loaded[0] == 1) {
-                encL = 0;
-            }
         }
     }
 
     if (encR) {
-        if (forced_dmr_privacy) {
+        const int key_loaded = (state->K != 0 || state->K1 != 0);
+        const int can_decrypt =
+            forced_dmr_privacy
+            || ((state->payload_algidR == 0)
+                    ? key_loaded
+                    : dsd_dmr_voice_alg_can_decrypt(state->payload_algidR, state->RR, state->aes_key_loaded[1]));
+        if (can_decrypt) {
             encR = 0;
-        } else if (state->payload_algidR == 0) {
-            if (state->K != 0 || state->K1 != 0) {
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x02 || state->payload_algidR == 0x21 || state->payload_algidR == 0x22) {
-            if (state->RR != 0) {
-                encR = 0;
-            }
-        } else if (state->payload_algidR == 0x24 || state->payload_algidR == 0x25 || state->payload_algidR == 0x36
-                   || state->payload_algidR == 0x37) {
-            //going to need a better check for this later on, or seperated keys or something
-            if (state->aes_key_loaded[1] == 1) {
-                encR = 0;
-            }
         }
     }
 

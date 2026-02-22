@@ -22,6 +22,32 @@
 #include "dsd-neo/core/state_fwd.h"
 
 int
+dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded) {
+    switch (algid) {
+        // RC4/DES-style families keyed from 40/56-bit key material.
+        case 0x02: // Hytera Enhanced
+        case 0x21: // DMR RC4
+        case 0x22: // DMR DES
+        case 0x81: // P25 DES
+        case 0x9F: // P25 DES-XL
+        case 0xAA: // P25 RC4
+            return (r_key != 0ULL) ? 1 : 0;
+
+        // AES/TDEA-style families keyed from loaded AES key segments.
+        case 0x24: // DMR AES-128
+        case 0x25: // DMR AES-256
+        case 0x36: // Kirisun Advanced
+        case 0x37: // Kirisun Universal
+        case 0x83: // P25 TDEA
+        case 0x84: // P25 AES-256
+        case 0x89: // P25 AES-128
+            return (aes_loaded == 1) ? 1 : 0;
+
+        default: return 0;
+    }
+}
+
+int
 dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {
     if (!state || !encL || !encR) {
         return -1;

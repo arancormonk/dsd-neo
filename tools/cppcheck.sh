@@ -27,6 +27,10 @@ Options:
 Arguments:
   files...    Optional list of translation units to analyze (e.g., src/foo.c).
               When omitted, analyzes the src/ and include/ trees.
+
+Environment:
+  CPPCHECK_BUILD_DIR   Build/cache directory used in strict mode for cppcheck
+                       cross-translation-unit state (default: .cppcheck-build).
 USAGE
 }
 
@@ -86,14 +90,18 @@ CPPCHECK_ARGS=(
 # Strict mode: enable all checks and be more aggressive
 if [[ $STRICT -eq 1 ]]; then
   echo "Strict mode: enabling all checks and gating warning/performance/portability/error diagnostics"
+  CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
+  mkdir -p "$CPPCHECK_BUILD_DIR"
   CPPCHECK_ARGS=(
     --enable=all
+    --force
     --std=c11
     --std=c++14
     --suppress=missingIncludeSystem
     --inline-suppr
     -I include
     -j "$NPROC"
+    "--cppcheck-build-dir=${CPPCHECK_BUILD_DIR}"
   )
 fi
 

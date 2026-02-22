@@ -29,6 +29,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>   //for ambe+2 fr
@@ -1038,6 +1040,34 @@ reverse_lfsr_64_to_len(dsd_opts* opts, uint8_t* iv, int16_t len) {
     return bit2;
 }
 
+static void
+sdrtrunk_lfsr_64_to_128(uint8_t* iv) {
+    uint64_t lfsr = 0;
+    uint64_t bit = 0;
+
+    lfsr = ((uint64_t)iv[0] << 56ULL) + ((uint64_t)iv[1] << 48ULL) + ((uint64_t)iv[2] << 40ULL)
+           + ((uint64_t)iv[3] << 32ULL) + ((uint64_t)iv[4] << 24ULL) + ((uint64_t)iv[5] << 16ULL)
+           + ((uint64_t)iv[6] << 8ULL) + ((uint64_t)iv[7] << 0ULL);
+
+    uint8_t cnt = 0;
+    uint8_t x = 64;
+    for (cnt = 0; cnt < 64; cnt++) {
+        // Polynomial is C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1
+        bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 0x1;
+        lfsr = (lfsr << 1) | bit;
+        iv[x / 8] = (uint8_t)((iv[x / 8] << 1) + bit);
+        x++;
+    }
+}
+
+static unsigned long long
+sdrtrunk_u64_from_be8(const uint8_t* v) {
+    return ((unsigned long long)v[0] << 56ULL) | ((unsigned long long)v[1] << 48ULL)
+           | ((unsigned long long)v[2] << 40ULL) | ((unsigned long long)v[3] << 32ULL)
+           | ((unsigned long long)v[4] << 24ULL) | ((unsigned long long)v[5] << 16ULL)
+           | ((unsigned long long)v[6] << 8ULL) | ((unsigned long long)v[7] << 0ULL);
+}
+
 //convert a user string into a uint8_t array
 uint16_t
 parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
@@ -1100,6 +1130,109 @@ parse_raw_user_string(char* input, uint8_t* output, size_t out_cap) {
     }
 
     return (uint16_t)want_octets;
+}
+
+static int
+sdrtrunk_build_voice_keystream_bits(dsd_state* state, uint8_t alg_id, uint16_t key_id, const uint8_t iv64[8],
+                                    int rc4_db, int rc4_mod, int protocol, uint8_t* out_bits, size_t out_bits_cap) {
+    if (!state || !iv64 || !out_bits || out_bits_cap < 8) {
+        return 0;
+    }
+
+    enum { SDRTRUNK_KS_BYTES = 384 };
+
+    uint8_t ks_bytes[SDRTRUNK_KS_BYTES];
+    memset(ks_bytes, 0, sizeof(ks_bytes));
+
+    size_t ks_valid_bytes = 0;
+    size_t skip_bytes = 0;
+
+    if (alg_id == 0xAA || alg_id == 0x21) {
+        unsigned long long int rc4_key = state->rkey_array[key_id];
+        if (rc4_key == 0ULL) {
+            rc4_key = state->R;
+        }
+        if (rc4_key == 0ULL) {
+            return 0;
+        }
+
+        uint8_t rc4_kiv[13];
+        memset(rc4_kiv, 0, sizeof(rc4_kiv));
+        rc4_kiv[0] = (uint8_t)((rc4_key >> 32ULL) & 0xFFULL);
+        rc4_kiv[1] = (uint8_t)((rc4_key >> 24ULL) & 0xFFULL);
+        rc4_kiv[2] = (uint8_t)((rc4_key >> 16ULL) & 0xFFULL);
+        rc4_kiv[3] = (uint8_t)((rc4_key >> 8ULL) & 0xFFULL);
+        rc4_kiv[4] = (uint8_t)((rc4_key >> 0ULL) & 0xFFULL);
+        memcpy(rc4_kiv + 5, iv64, 8);
+
+        rc4_block_output(rc4_db, rc4_mod, SDRTRUNK_KS_BYTES, rc4_kiv, ks_bytes);
+        ks_valid_bytes = SDRTRUNK_KS_BYTES;
+    } else if (alg_id == 0x81) {
+        unsigned long long int des_key = state->rkey_array[key_id];
+        if (des_key == 0ULL) {
+            des_key = state->R;
+        }
+        if (des_key == 0ULL) {
+            return 0;
+        }
+        unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
+        des_multi_keystream_output(iv_u64, des_key, ks_bytes, 1, SDRTRUNK_KS_BYTES / 8);
+        ks_valid_bytes = SDRTRUNK_KS_BYTES;
+        // SDRTrunk P25p1 playback requires LC/reserved offset in addition to OFB discard.
+        // P25p2 uses only the OFB discard offset.
+        skip_bytes = (protocol == 1) ? 19 : 8;
+    } else if (alg_id == 0x84 || alg_id == 0x89) {
+        uint8_t aes_key[32];
+        memset(aes_key, 0, sizeof(aes_key));
+        unsigned long long int a1 = state->rkey_array[key_id + 0x000];
+        unsigned long long int a2 = state->rkey_array[key_id + 0x101];
+        unsigned long long int a3 = state->rkey_array[key_id + 0x201];
+        unsigned long long int a4 = state->rkey_array[key_id + 0x301];
+        if (a1 == 0ULL && a2 == 0ULL && a3 == 0ULL && a4 == 0ULL) {
+            a1 = state->K1;
+            a2 = state->K2;
+            a3 = state->K3;
+            a4 = state->K4;
+        }
+        for (int i = 0; i < 8; i++) {
+            aes_key[i + 0] = (uint8_t)((a1 >> (56 - (i * 8))) & 0xFFULL);
+            aes_key[i + 8] = (uint8_t)((a2 >> (56 - (i * 8))) & 0xFFULL);
+            aes_key[i + 16] = (uint8_t)((a3 >> (56 - (i * 8))) & 0xFFULL);
+            aes_key[i + 24] = (uint8_t)((a4 >> (56 - (i * 8))) & 0xFFULL);
+        }
+        uint8_t zeros[32];
+        memset(zeros, 0, sizeof(zeros));
+        if (memcmp(aes_key, zeros, sizeof(aes_key)) == 0) {
+            return 0;
+        }
+
+        uint8_t aes_iv[16];
+        memset(aes_iv, 0, sizeof(aes_iv));
+        memcpy(aes_iv, iv64, 8);
+        sdrtrunk_lfsr_64_to_128(aes_iv);
+
+        const int aes_type = (alg_id == 0x84) ? 2 : 0; // 256/128
+        aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, aes_type, SDRTRUNK_KS_BYTES / 16);
+        ks_valid_bytes = SDRTRUNK_KS_BYTES;
+        // SDRTrunk P25p1 playback requires LC/reserved offset in addition to OFB discard.
+        // P25p2 uses only the OFB discard offset.
+        skip_bytes = (protocol == 1) ? 27 : 16;
+    } else {
+        return 0;
+    }
+
+    if (ks_valid_bytes <= skip_bytes) {
+        return 0;
+    }
+
+    memset(out_bits, 0, out_bits_cap);
+    size_t unpack_bytes = ks_valid_bytes - skip_bytes;
+    size_t max_unpack = out_bits_cap / 8;
+    if (unpack_bytes > max_unpack) {
+        unpack_bytes = max_unpack;
+    }
+    unpack_byte_array_into_bit_array(ks_bytes + skip_bytes, out_bits, (int)unpack_bytes);
+    return 1;
 }
 
 uint16_t
@@ -1618,45 +1751,38 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
                 keyring(opts, state);
             }
 
-            //TODO: Handle multi keystream creation with a new function
-            uint8_t ks_bytes[375];
-            memset(ks_bytes, 0, sizeof(ks_bytes));
-            uint8_t kiv[15];
-            memset(kiv, 0, sizeof(kiv));
+            ks_available = 0;
+            uint8_t iv64[8];
+            memset(iv64, 0, sizeof(iv64));
+            (void)parse_raw_user_string(iv_str, iv64, sizeof(iv64));
 
-            //Test: Setup a simple RC4 for now (working)
-            if ((alg_id == 0xAA || alg_id == 0x21) && state->R != 0) {
+            if (is_enc == 1) {
+                ks_available = (uint8_t)sdrtrunk_build_voice_keystream_bits(state, alg_id, key_id, iv64, rc4_db,
+                                                                            rc4_mod, protocol, ks, sizeof(ks));
 
-                //load key into key portion of kiv
-                kiv[0] = ((state->R & 0xFF00000000) >> 32);
-                kiv[1] = ((state->R & 0xFF000000) >> 24);
-                kiv[2] = ((state->R & 0xFF0000) >> 16);
-                kiv[3] = ((state->R & 0xFF00) >> 8);
-                kiv[4] = ((state->R & 0xFF) >> 0);
-
-                //load the str_buffer into the IV portion of kiv
-                // KIV is 15 bytes; IV occupies bytes [5..14] → capacity 10
-                parse_raw_user_string(str_buffer, kiv + 5, sizeof(kiv) - 5);
-
-                rc4_block_output(rc4_db, rc4_mod, 200, kiv, ks_bytes);
-
-                unpack_byte_array_into_bit_array(ks_bytes, ks, 200);
-
-                //reverse lfsr on IV and create keystream with that as well
-                //due to out of order execution on P25p1 ESS sync.
-                if (protocol == 1 && version == 1) {
-                    reverse_lfsr_64_to_len(opts, kiv + 5, 64);
-
-                    memset(ks_bytes, 0, sizeof(ks_bytes));
-
-                    rc4_block_output(rc4_db, rc4_mod, 200, kiv, ks_bytes);
-
-                    unpack_byte_array_into_bit_array(ks_bytes, ks_i, 200);
+                // Reverse-LFSR path for v1 P25p1 SDRTrunk files where ESS appears before the
+                // superframe it should decrypt.
+                if (protocol == 1 && version == 1 && ks_available) {
+                    uint8_t iv_prev[8];
+                    memcpy(iv_prev, iv64, sizeof(iv_prev));
+                    reverse_lfsr_64_to_len(opts, iv_prev, 64);
+                    if (!sdrtrunk_build_voice_keystream_bits(state, alg_id, key_id, iv_prev, rc4_db, rc4_mod, protocol,
+                                                             ks_i, sizeof(ks_i))) {
+                        // Fallback: avoid a zero keystream if reverse derivation fails.
+                        memcpy(ks_i, ks, sizeof(ks_i));
+                    }
                 }
+            }
 
-                ks_available = 1;
-
-            } //end test
+            if (opts->payload == 1 && ks_available) {
+                if (alg_id == 0xAA || alg_id == 0x21) {
+                    fprintf(stderr, " RC4 keystream ready;");
+                } else if (alg_id == 0x81) {
+                    fprintf(stderr, " DES56 keystream ready;");
+                } else if (alg_id == 0x84 || alg_id == 0x89) {
+                    fprintf(stderr, " AES-%s keystream ready;", (alg_id == 0x84) ? "256" : "128");
+                }
+            }
 
             //NOTE: Regarding SDRTrunk .mbe format, the ESS Encryption Sync
             //is in the correct location on P25p2, but for P25p1, the ESS
