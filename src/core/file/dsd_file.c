@@ -39,6 +39,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <fcntl.h> // IWYU pragma: keep
+#include <limits.h>
 #include <mbelib.h>
 #include <sndfile.h>
 #include <stdarg.h>
@@ -120,6 +121,34 @@ saveAmbe2450DataR(dsd_opts* opts, dsd_state* state, char* ambe_d) {
 }
 
 static int
+setvbuf_size_sanitize(size_t requested_size, size_t* out_size) {
+    if (!out_size) {
+        return 0;
+    }
+    size_t size = requested_size;
+    if (size < (size_t)2u) {
+        size = (size_t)2u;
+    }
+    if (size > (size_t)INT_MAX) {
+        size = (size_t)INT_MAX;
+    }
+    *out_size = size;
+    return 1;
+}
+
+static void
+configure_file_stream_buffer(FILE* stream, int mode, size_t requested_size) {
+    if (!stream) {
+        return;
+    }
+    size_t size = 0;
+    if (!setvbuf_size_sanitize(requested_size, &size)) {
+        return;
+    }
+    (void)setvbuf(stream, NULL, mode, size);
+}
+
+static int
 frame_log_ensure_open(dsd_opts* opts) {
     if (!opts || opts->frame_log_file[0] == '\0') {
         return 0;
@@ -136,7 +165,7 @@ frame_log_ensure_open(dsd_opts* opts) {
         return 0;
     }
     opts->frame_log_open_error_reported = 0;
-    (void)setvbuf(opts->frame_log_f, NULL, _IOLBF, 0);
+    configure_file_stream_buffer(opts->frame_log_f, _IOLBF, (size_t)BUFSIZ);
     return 1;
 }
 
@@ -530,10 +559,10 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     } else {
         opts->mbe_out = 1;
         /* Fully buffered output to reduce syscall overhead */
-        setvbuf(opts->mbe_out_f, NULL, _IOFBF, (size_t)64u * 1024u);
+        configure_file_stream_buffer(opts->mbe_out_f, _IOFBF, (size_t)64u * 1024u);
+        fprintf(opts->mbe_out_f, "%s", ext);
     }
 
-    fprintf(opts->mbe_out_f, "%s", ext);
     /* header write will be flushed later on close */
     /* stack buffers; no free */
 }
@@ -584,10 +613,10 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     } else {
         opts->mbe_outR = 1;
         /* Fully buffered output to reduce syscall overhead */
-        setvbuf(opts->mbe_out_fR, NULL, _IOFBF, (size_t)64u * 1024u);
+        configure_file_stream_buffer(opts->mbe_out_fR, _IOFBF, (size_t)64u * 1024u);
+        fprintf(opts->mbe_out_fR, "%s", ext);
     }
 
-    fprintf(opts->mbe_out_fR, "%s", ext);
     /* header write will be flushed later on close */
     /* stack buffers; no free */
 }

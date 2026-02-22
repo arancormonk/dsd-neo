@@ -1006,15 +1006,17 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         }
         left = state->debug_sample_left_edge / SAMPLE_RATE_IN;
         right = state->debug_sample_right_edge / SAMPLE_RATE_IN;
-        if (state->debug_prefix != '\0') {
-            if (state->debug_prefix == 'I') {
-                fprintf(state->debug_label_file, "%f\t%f\t%c%c %.3f\n", left, right, state->debug_prefix,
-                        state->debug_prefix_2, symbol);
+        if (state->debug_label_file != NULL) {
+            if (state->debug_prefix != '\0') {
+                if (state->debug_prefix == 'I') {
+                    fprintf(state->debug_label_file, "%f\t%f\t%c%c %.3f\n", left, right, state->debug_prefix,
+                            state->debug_prefix_2, symbol);
+                } else {
+                    fprintf(state->debug_label_file, "%f\t%f\t%c %.3f\n", left, right, state->debug_prefix, symbol);
+                }
             } else {
-                fprintf(state->debug_label_file, "%f\t%f\t%c %.3f\n", left, right, state->debug_prefix, symbol);
+                fprintf(state->debug_label_file, "%f\t%f\t%.3f\n", left, right, symbol);
             }
-        } else {
-            fprintf(state->debug_label_file, "%f\t%f\t%.3f\n", left, right, symbol);
         }
     }
 #endif

@@ -22,6 +22,8 @@
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/file_compat.h"
+#include "test_support.h"
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -42,11 +44,55 @@ count_occurrences(const char* haystack, const char* needle) {
     return count;
 }
 
-int
-main(void) {
-#if defined(_WIN32)
+static int
+test_frame_log_writes_entry(void) {
+    static dsd_opts opts;
+    memset(&opts, 0, sizeof opts);
+    initOpts(&opts);
+
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_frame_log");
+    if (fd < 0) {
+        fprintf(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    snprintf(opts.frame_log_file, sizeof opts.frame_log_file, "%s", path);
+    opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
+
+    dsd_frame_logf(&opts, "frame=%d", 42);
+    dsd_frame_log_close(&opts);
+
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        (void)remove(path);
+        return 1;
+    }
+
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof buf - 1, fp);
+    if (n == 0 && ferror(fp)) {
+        fprintf(stderr, "fread(%s) failed: %s\n", path, strerror(errno));
+        fclose(fp);
+        (void)remove(path);
+        return 1;
+    }
+    buf[n] = '\0';
+    fclose(fp);
+    (void)remove(path);
+
+    if (strstr(buf, "frame=42") == NULL) {
+        fprintf(stderr, "frame log did not contain expected payload\n");
+        return 1;
+    }
     return 0;
-#else
+}
+
+#if !defined(_WIN32)
+static int
+test_frame_log_write_error_reported_once(void) {
     static dsd_opts opts;
     memset(&opts, 0, sizeof opts);
     initOpts(&opts);
@@ -159,5 +205,18 @@ out:
         }
     }
     return rc;
+}
 #endif
+
+int
+main(void) {
+    if (test_frame_log_writes_entry() != 0) {
+        return 1;
+    }
+#if !defined(_WIN32)
+    if (test_frame_log_write_error_reported_once() != 0) {
+        return 1;
+    }
+#endif
+    return 0;
 }

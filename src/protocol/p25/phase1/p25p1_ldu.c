@@ -22,9 +22,11 @@ debug_write_label_imbe(dsd_state* state, unsigned int cc, int bitindex, char bit
     if (state->debug_label_imbe_file == NULL) {
         state->debug_label_imbe_file = fopen("pp_label_imbe.txt", "w");
     }
-    left = (state->debug_sample_index - 10) / 48000.0F;
-    right = (state->debug_sample_index) / 48000.0F;
-    fprintf(state->debug_label_imbe_file, "%f\t%f\tC_%i[%i]=%c\n", left, right, cc, bitindex, (bit + '0'));
+    if (state->debug_label_imbe_file != NULL) {
+        left = (state->debug_sample_index - 10) / 48000.0F;
+        right = (state->debug_sample_index) / 48000.0F;
+        fprintf(state->debug_label_imbe_file, "%f\t%f\tC_%i[%i]=%c\n", left, right, cc, bitindex, (bit + '0'));
+    }
 }
 #endif
 

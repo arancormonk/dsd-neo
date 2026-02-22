@@ -783,9 +783,11 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
         if (state->debug_label_dibit_file == NULL) {
             state->debug_label_dibit_file = fopen("pp_label_dibit.txt", "w");
         }
-        left = l / 48000.0;
-        right = r / 48000.0;
-        fprintf(state->debug_label_dibit_file, "%f\t%f\t%i\n", left, right, dibit);
+        if (state->debug_label_dibit_file != NULL) {
+            left = l / 48000.0;
+            right = r / 48000.0;
+            fprintf(state->debug_label_dibit_file, "%f\t%f\t%i\n", left, right, dibit);
+        }
     }
 #endif
 
