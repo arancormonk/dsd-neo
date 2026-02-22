@@ -312,7 +312,8 @@ Quick examples
   - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).
   - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`).
   - `tools/semgrep.sh` (additional SAST rules; use `--strict` to fail on findings; excludes `src/third_party`).
-- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and clang‑tidy/cppcheck on push.
+- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (clang-format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, optional scan-build) on changed paths.
+- Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
 
 ## Contributing
 

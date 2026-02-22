@@ -1,12 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-push hook: run clang-tidy/cppcheck on files that changed in the push.
+# Pre-push hook: run local CI-style analysis on files changed in the push.
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$repo_root"
 
 remote_name="${1:-origin}"
+remote_url="${2:-}"
+
+# Controls:
+# - DSD_HOOK_RUN_SCAN_BUILD: auto|1|0 (default: auto)
+#   auto => run scan-build only when C/C++ files changed.
+# - DSD_HOOK_FAIL_ON_MISSING_TOOLS: 1|0 (default: 0)
+#   when 1, missing analyzers make the hook fail.
+RUN_SCAN_BUILD="${DSD_HOOK_RUN_SCAN_BUILD:-auto}"
+FAIL_ON_MISSING_TOOLS="${DSD_HOOK_FAIL_ON_MISSING_TOOLS:-0}"
+
+case "$RUN_SCAN_BUILD" in
+  auto|0|1|true|false|yes|no) ;;
+  *)
+    echo "pre-push: invalid DSD_HOOK_RUN_SCAN_BUILD='$RUN_SCAN_BUILD'; using 'auto'." >&2
+    RUN_SCAN_BUILD="auto"
+    ;;
+esac
+
+if [[ -n "$remote_url" ]]; then
+  echo "pre-push: remote=${remote_name} url=<provided>"
+else
+  echo "pre-push: remote=${remote_name} url=<none>"
+fi
 
 zeros="0000000000000000000000000000000000000000"
 
@@ -19,8 +42,78 @@ if [[ -z "$remote_head_ref" ]]; then
   fi
 fi
 
+resolve_new_ref_base() {
+  local base=""
+  for base in \
+    "$remote_head_ref" \
+    "refs/remotes/${remote_name}/main" \
+    "refs/remotes/${remote_name}/master"; do
+    if [[ -n "$base" ]] && git show-ref --verify --quiet "$base"; then
+      printf '%s\n' "$base"
+      return 0
+    fi
+  done
+  return 1
+}
+
+remote_tracking_refs=()
+mapfile -t remote_tracking_refs < <(
+  git for-each-ref --format='%(refname)' "refs/remotes/${remote_name}" 2>/dev/null || true
+)
+
+select_best_remote_merge_base() {
+  local local_sha="$1"
+  local ref=""
+  local merge_base=""
+  local distance=""
+  local best_base=""
+  local best_distance=""
+
+  for ref in "${remote_tracking_refs[@]}"; do
+    merge_base=$(git merge-base "$local_sha" "$ref" 2>/dev/null || true)
+    if [[ -z "$merge_base" ]]; then
+      continue
+    fi
+    distance=$(git rev-list --count "${merge_base}..${local_sha}" 2>/dev/null || true)
+    if [[ -z "$distance" ]]; then
+      continue
+    fi
+    if [[ -z "$best_base" || "$distance" -lt "$best_distance" ]]; then
+      best_base="$merge_base"
+      best_distance="$distance"
+    fi
+  done
+
+  if [[ -n "$best_base" ]]; then
+    printf '%s\n' "$best_base"
+    return 0
+  fi
+  return 1
+}
+
+new_ref_diff_files_fallback() {
+  local local_ref="$1"
+  local local_sha="$2"
+  local fallback_base=""
+  local empty_tree=""
+
+  fallback_base=$(select_best_remote_merge_base "$local_sha" || true)
+  if [[ -n "$fallback_base" ]]; then
+    echo "pre-push: using merge-base fallback for ${local_ref} (no remote default branch found)." >&2
+    git diff --name-only --diff-filter=ACMR "${fallback_base}..${local_sha}" || true
+    return 0
+  fi
+
+  empty_tree=$(git hash-object -t tree /dev/null)
+  echo "pre-push: using empty-tree fallback for ${local_ref} (no remote default branch or merge-base found)." >&2
+  git diff --name-only --diff-filter=ACMR "${empty_tree}" "${local_sha}^{tree}" || true
+}
+
+head_sha=$(git rev-parse -q --verify HEAD 2>/dev/null || true)
+
 changed_paths=()
-while read -r local_ref local_sha remote_ref remote_sha; do
+head_changed_paths=()
+while read -r local_ref local_sha _remote_ref remote_sha; do
   # Deleting a ref; nothing to analyze.
   if [[ "$local_sha" == "$zeros" ]]; then
     continue
@@ -32,17 +125,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   if [[ "$remote_sha" == "$zeros" ]]; then
-    # New branch/ref: compare against remote default branch when possible; otherwise, don't analyze the whole repo.
-    if [[ -n "$remote_head_ref" ]]; then
-      mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${remote_head_ref}...${local_sha}" || true)
+    # New branch/ref: compare against remote default branch when possible.
+    base_ref=$(resolve_new_ref_base || true)
+    if [[ -n "$base_ref" ]]; then
+      mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${base_ref}...${local_sha}" || true)
     else
-      echo "pre-push: cannot determine ${remote_name} default branch; skipping static analysis for ${local_ref}." >&2
-      continue
+      mapfile -t diff_files < <(new_ref_diff_files_fallback "${local_ref}" "${local_sha}")
     fi
   else
     mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${remote_sha}...${local_sha}" || true)
   fi
   changed_paths+=("${diff_files[@]}")
+  if [[ -n "$head_sha" && "$local_sha" == "$head_sha" ]]; then
+    head_changed_paths+=("${diff_files[@]}")
+  fi
 done
 
 if [[ ${#changed_paths[@]} -eq 0 ]]; then
@@ -50,72 +146,254 @@ if [[ ${#changed_paths[@]} -eq 0 ]]; then
 fi
 
 mapfile -t changed_paths < <(printf '%s\n' "${changed_paths[@]}" | sort -u)
+if [[ ${#head_changed_paths[@]} -gt 0 ]]; then
+  mapfile -t head_changed_paths < <(printf '%s\n' "${head_changed_paths[@]}" | sort -u)
+fi
+
+declare -A head_changed_lookup=()
+for p in "${head_changed_paths[@]}"; do
+  head_changed_lookup["$p"]=1
+done
 
 changed_sources=()
 changed_headers=()
+format_files=()
+semgrep_targets=()
+missing_worktree_paths=()
+skipped_missing_paths=()
 for p in "${changed_paths[@]}"; do
   case "$p" in
     build/*|src/third_party/*) continue ;;
   esac
+
+  track_semgrep=0
   case "$p" in
-    *.c|*.cc|*.cpp|*.cxx) changed_sources+=("$p") ;;
-    *.h|*.hh|*.hpp|*.hxx) changed_headers+=("$p") ;;
+    src/*|include/*|apps/*|tests/*|tools/*) track_semgrep=1 ;;
+  esac
+
+  track_c_family=0
+  case "$p" in
+    *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx) track_c_family=1 ;;
+  esac
+
+  if [[ ! -e "$p" && ! -L "$p" ]]; then
+    if [[ $track_semgrep -eq 1 || $track_c_family -eq 1 ]]; then
+      if [[ -n "${head_changed_lookup[$p]:-}" ]]; then
+        missing_worktree_paths+=("$p")
+      else
+        skipped_missing_paths+=("$p")
+      fi
+    fi
+    continue
+  fi
+
+  if [[ $track_semgrep -eq 1 ]]; then
+    semgrep_targets+=("$p")
+  fi
+
+  case "$p" in
+    *.c|*.cc|*.cpp|*.cxx)
+      changed_sources+=("$p")
+      format_files+=("$p")
+      ;;
+    *.h|*.hh|*.hpp|*.hxx)
+      changed_headers+=("$p")
+      format_files+=("$p")
+      ;;
   esac
 done
 
-tidy_sources=("${changed_sources[@]}")
+if [[ ${#format_files[@]} -gt 0 ]]; then
+  mapfile -t format_files < <(printf '%s\n' "${format_files[@]}" | sort -u)
+fi
+if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
+  mapfile -t semgrep_targets < <(printf '%s\n' "${semgrep_targets[@]}" | sort -u)
+fi
+if [[ ${#skipped_missing_paths[@]} -gt 0 ]]; then
+  mapfile -t skipped_missing_paths < <(printf '%s\n' "${skipped_missing_paths[@]}" | sort -u)
+  echo "pre-push: skipping pushed paths absent from current checkout (non-checked-out ref likely):" >&2
+  printf '  %s\n' "${skipped_missing_paths[@]}" >&2
+fi
+if [[ ${#missing_worktree_paths[@]} -gt 0 ]]; then
+  mapfile -t missing_worktree_paths < <(printf '%s\n' "${missing_worktree_paths[@]}" | sort -u)
+  echo "pre-push: unable to analyze pushed paths missing from current worktree for the checked-out ref:" >&2
+  printf '  %s\n' "${missing_worktree_paths[@]}" >&2
+  echo "pre-push: restore local deletions or push from a clean checkout and retry." >&2
+  exit 1
+fi
+
+analysis_tus=("${changed_sources[@]}")
 
 escape_rg() {
   printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
 MAX_TUS_PER_HEADER=5
-for hdr in "${changed_headers[@]}"; do
-  include_key=""
-  if [[ "$hdr" == include/* ]]; then
-    include_key="${hdr#include/}"
-    include_key=$(escape_rg "$include_key")
-    pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"]${include_key}[>\\\"]"
+if [[ ${#changed_headers[@]} -gt 0 ]]; then
+  if command -v rg >/dev/null 2>&1; then
+    for hdr in "${changed_headers[@]}"; do
+      include_key=""
+      if [[ "$hdr" == include/* ]]; then
+        include_key="${hdr#include/}"
+        include_key=$(escape_rg "$include_key")
+        pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"]${include_key}[>\\\"]"
+      else
+        base=$(basename "$hdr")
+        base=$(escape_rg "$base")
+        pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"][^>\\\"]*${base}[>\\\"]"
+      fi
+
+      mapfile -t matches < <(
+        rg -l --glob '!src/third_party/**' \
+          -g'*.c' -g'*.cc' -g'*.cpp' -g'*.cxx' \
+          "$pattern" src apps tests examples 2>/dev/null \
+          | head -n "$MAX_TUS_PER_HEADER" || true
+      )
+      analysis_tus+=("${matches[@]}")
+    done
   else
-    base=$(basename "$hdr")
-    base=$(escape_rg "$base")
-    pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"][^>\\\"]*${base}[>\\\"]"
+    echo "pre-push: rg not found; header include expansion skipped." >&2
   fi
-
-  mapfile -t matches < <(
-    rg -l --glob '!src/third_party/**' -g'*.c' -g'*.cc' -g'*.cpp' -g'*.cxx' "$pattern" src apps tests examples 2>/dev/null \
-      | head -n "$MAX_TUS_PER_HEADER" || true
-  )
-  tidy_sources+=("${matches[@]}")
-done
-
-mapfile -t tidy_sources < <(printf '%s\n' "${tidy_sources[@]}" | sort -u)
-
-if [[ ${#tidy_sources[@]} -eq 0 ]]; then
-  exit 0
 fi
 
+if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+  mapfile -t analysis_tus < <(printf '%s\n' "${analysis_tus[@]}" | sort -u)
+fi
+
+echo "pre-push: changed paths=${#changed_paths[@]} sources=${#changed_sources[@]}" \
+  "headers=${#changed_headers[@]} tus=${#analysis_tus[@]}"
+
 cppcheck_sources=()
-for p in "${tidy_sources[@]}"; do
+for p in "${analysis_tus[@]}"; do
   case "$p" in
     src/*) cppcheck_sources+=("$p") ;;
   esac
 done
-
-set +e
-echo "Running clang-tidy on ${#tidy_sources[@]} changed translation unit(s)..."
-tools/clang_tidy.sh -- "${tidy_sources[@]}"
-tidy_rc=$?
-
-cppcheck_rc=0
 if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
-  echo "Running cppcheck on ${#cppcheck_sources[@]} changed src/ translation unit(s)..."
-  tools/cppcheck.sh -- "${cppcheck_sources[@]}"
-  cppcheck_rc=$?
+  mapfile -t cppcheck_sources < <(printf '%s\n' "${cppcheck_sources[@]}" | sort -u)
 fi
-set -e
 
-if [[ $tidy_rc -ne 0 || $cppcheck_rc -ne 0 ]]; then
+have_c_family_changes=0
+if [[ ${#changed_sources[@]} -gt 0 || ${#changed_headers[@]} -gt 0 ]]; then
+  have_c_family_changes=1
+fi
+
+overall_rc=0
+missing_tools=()
+
+mark_missing_tool() {
+  local tool="$1"
+  local reason="$2"
+  echo "pre-push: skipping ${reason} (${tool} not found in PATH)." >&2
+  missing_tools+=("$tool")
+  if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
+    overall_rc=1
+  fi
+}
+
+run_check() {
+  local label="$1"
+  shift
+  echo "==> ${label}"
+  set +e
+  "$@"
+  local rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    overall_rc=1
+    echo "pre-push: ${label} failed." >&2
+  fi
+}
+
+# shellcheck disable=SC2329 # Invoked indirectly via run_check callback dispatch.
+run_clang_format_check() {
+  local rc=0
+  local f=""
+  for f in "$@"; do
+    if clang-format -n --Werror "$f" >/dev/null 2>&1; then
+      continue
+    fi
+    if ! diff -u "$f" <(clang-format "$f") >/dev/null; then
+      echo "pre-push: formatting issues found in ${f}" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+if [[ ${#format_files[@]} -gt 0 ]]; then
+  if command -v clang-format >/dev/null 2>&1; then
+    run_check "clang-format check (${#format_files[@]} file(s))" run_clang_format_check "${format_files[@]}"
+  else
+    mark_missing_tool "clang-format" "format check"
+  fi
+fi
+
+if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+  if command -v clang-tidy >/dev/null 2>&1; then
+    run_check "clang-tidy (${#analysis_tus[@]} TU(s))" tools/clang_tidy.sh -- "${analysis_tus[@]}"
+  else
+    mark_missing_tool "clang-tidy" "clang-tidy analysis"
+  fi
+fi
+
+if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
+  if command -v cppcheck >/dev/null 2>&1; then
+    run_check "cppcheck (${#cppcheck_sources[@]} TU(s))" tools/cppcheck.sh -- "${cppcheck_sources[@]}"
+  else
+    mark_missing_tool "cppcheck" "cppcheck analysis"
+  fi
+fi
+
+if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+  if command -v include-what-you-use >/dev/null 2>&1; then
+    run_check "IWYU strict (${#analysis_tus[@]} TU(s))" tools/iwyu.sh --strict -- "${analysis_tus[@]}"
+  else
+    mark_missing_tool "include-what-you-use" "IWYU analysis"
+  fi
+fi
+
+if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+  if command -v gcc >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
+    run_check "GCC fanalyzer (${#analysis_tus[@]} TU(s))" tools/gcc_fanalyzer.sh -- "${analysis_tus[@]}"
+  else
+    mark_missing_tool "gcc/g++" "GCC fanalyzer analysis"
+  fi
+fi
+
+if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
+  if command -v semgrep >/dev/null 2>&1; then
+    run_check "Semgrep strict (${#semgrep_targets[@]} path(s))" tools/semgrep.sh --strict -- "${semgrep_targets[@]}"
+  else
+    mark_missing_tool "semgrep" "Semgrep analysis"
+  fi
+fi
+
+should_run_scan_build=0
+case "$RUN_SCAN_BUILD" in
+  1|true|yes) should_run_scan_build=1 ;;
+  auto) [[ $have_c_family_changes -eq 1 ]] && should_run_scan_build=1 ;;
+  0|false|no) should_run_scan_build=0 ;;
+esac
+
+if [[ $should_run_scan_build -eq 1 ]]; then
+  if command -v scan-build >/dev/null 2>&1; then
+    run_check "scan-build strict (full rebuild)" tools/scan_build.sh --strict
+  else
+    mark_missing_tool "scan-build" "scan-build analysis"
+  fi
+fi
+
+if [[ ${#missing_tools[@]} -gt 0 ]]; then
+  mapfile -t missing_tools < <(printf '%s\n' "${missing_tools[@]}" | sort -u)
+  echo "pre-push: missing tools: ${missing_tools[*]}" >&2
+  if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
+    echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1." >&2
+  fi
+fi
+
+if [[ $overall_rc -ne 0 ]]; then
   exit 1
 fi
+
 exit 0

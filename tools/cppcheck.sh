@@ -73,7 +73,7 @@ NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 # Note: cppcheck supports multiple --std flags; it applies the appropriate
 # standard based on file extension (.c -> C standard, .cpp -> C++ standard)
 CPPCHECK_ARGS=(
-  --enable=warning,performance,portability
+  "--enable=warning,performance,portability"
   --std=c11
   --std=c++14
   --suppress=missingIncludeSystem

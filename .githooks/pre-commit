@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-commit hook: format staged C/C headers with clang-format
+# Pre-commit hook: format staged C/C++ sources/headers with clang-format.
 
 # Collect staged files (Added/Copied/Modified/Renamed)
-mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(c|cc|cpp|h|hpp)$' || true)
+mapfile -t staged_paths < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$' || true)
+
+files=()
+for p in "${staged_paths[@]}"; do
+  case "$p" in
+    build/*|src/third_party/*) continue ;;
+  esac
+  files+=("$p")
+done
 
 if [[ ${#files[@]} -eq 0 ]]; then
   exit 0
@@ -23,4 +31,3 @@ git add -- "${files[@]}"
 
 echo "clang-format completed; restaged formatted files."
 exit 0
-

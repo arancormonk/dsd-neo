@@ -20,4 +20,5 @@ if [[ -d "$hooks_dir" ]]; then
   shopt -u nullglob
 fi
 
-echo "Done. Commits will auto-format staged C/C++ files; pushes will run clang-tidy and cppcheck on changed translation units."
+echo "Done. Commits auto-format staged C/C++ files; pushes run local CI-style checks (format, clang-tidy, cppcheck, iwyu, fanalyzer, semgrep, optional scan-build) on changed paths."
+echo "Tip: run tools/preflight_ci.sh to execute the same pre-push checks manually."
