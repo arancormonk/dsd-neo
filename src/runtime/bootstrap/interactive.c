@@ -19,6 +19,25 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int
+path_is_regular_file(const char* path) {
+    dsd_stat_t st;
+    if (!path || path[0] == '\0') {
+        return 0;
+    }
+#if DSD_PLATFORM_WIN_NATIVE
+    if (_stat(path, &st) != 0) {
+        return 0;
+    }
+    return ((st.st_mode & _S_IFMT) == _S_IFREG);
+#else
+    if (stat(path, &st) != 0) {
+        return 0;
+    }
+    return S_ISREG(st.st_mode);
+#endif
+}
+
 static void
 trim_newline(char* s) {
     if (!s) {
@@ -297,8 +316,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             prompt_string("Channel map CSV path (optional)", "", cpath, sizeof cpath);
             if (cpath[0] != '\0') {
                 // Verify file exists before attempting import
-                struct stat st;
-                if (stat(cpath, &st) == 0 && S_ISREG(st.st_mode)) {
+                if (path_is_regular_file(cpath)) {
                     strncpy(opts->chan_in_file, cpath, sizeof opts->chan_in_file - 1);
                     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
                     if (csvChanImport(opts, state) == 0) {
@@ -315,8 +333,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
             char gpath[1024];
             prompt_string("Group list CSV path (optional)", "", gpath, sizeof gpath);
             if (gpath[0] != '\0') {
-                struct stat stg;
-                if (stat(gpath, &stg) == 0 && S_ISREG(stg.st_mode)) {
+                if (path_is_regular_file(gpath)) {
                     strncpy(opts->group_in_file, gpath, sizeof opts->group_in_file - 1);
                     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
                     if (csvGroupImport(opts, state) == 0) {

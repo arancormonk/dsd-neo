@@ -18,6 +18,15 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
+#if defined(__APPLE__) && defined(__MACH__)
+/*
+ * Some Apple SDK feature-level combinations still hide mkdtemp from stdlib.h.
+ * Provide the prototype explicitly so strict C99+ builds do not fail with an
+ * implicit declaration.
+ */
+extern char* mkdtemp(char* tmpl);
+#endif
+
 int
 dsd_setenv(const char* name, const char* value, int overwrite) {
     return setenv(name, value, overwrite);
