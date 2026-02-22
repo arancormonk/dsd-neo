@@ -75,6 +75,15 @@ static int s_last_rigctl_bw = -12345;
 static uint32_t s_last_rtl_freq = 0;
 #endif
 
+static void
+reset_device_io_caches(void) {
+    s_last_rigctl_freq = -1;
+    s_last_rigctl_bw = -12345;
+#ifdef USE_RTLSDR
+    s_last_rtl_freq = 0;
+#endif
+}
+
 void dsd_engine_frame_sync_hooks_install(void);
 void dsd_engine_trunk_tuning_hooks_install(void);
 void dsd_engine_rtl_stream_io_hooks_install(void);
@@ -1734,6 +1743,10 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+
+    /* Keep tune/modulation caches run-scoped so repeated in-process runs do
+     * not inherit stale device state from a prior session. */
+    reset_device_io_caches();
 
     dsd_bootstrap_enable_ftz_daz_if_enabled();
     init_rrc_filter_memory(); //initialize input filtering

@@ -196,6 +196,50 @@ test_invalid_enum_error(void) {
 }
 
 static int
+test_decode_mode_aliases_valid(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[mode]\n"
+                             "decode = \"p25p1_only\"\n"
+                             "\n"
+                             "[profile.alias_p25p2]\n"
+                             "mode.decode = \"p25p2_only\"\n"
+                             "\n"
+                             "[profile.alias_analog]\n"
+                             "mode.decode = \"analog_monitor\"\n"
+                             "\n"
+                             "[profile.alias_edacs]\n"
+                             "mode.decode = \"edacs\"\n"
+                             "\n"
+                             "[profile.alias_provoice]\n"
+                             "mode.decode = \"provoice\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    memset(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    if (rc != 0) {
+        fprintf(stderr, "FAIL: decode alias config returned error %d\n", rc);
+        result = 1;
+    }
+    if (diags.error_count > 0) {
+        fprintf(stderr, "FAIL: decode alias config has %d errors\n", diags.error_count);
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_int_out_of_range(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -536,6 +580,7 @@ main(void) {
     rc |= test_unknown_key_warning();
     rc |= test_unknown_section_warning();
     rc |= test_invalid_enum_error();
+    rc |= test_decode_mode_aliases_valid();
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
     rc |= test_diags_have_line_numbers();

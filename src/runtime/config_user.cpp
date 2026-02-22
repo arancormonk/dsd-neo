@@ -164,6 +164,110 @@ parse_int(const char* v, long defv) {
     return x;
 }
 
+static int
+parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_mode, int* used_compat_alias) {
+    if (!val || !*val || !out_mode) {
+        return -1;
+    }
+    if (used_compat_alias) {
+        *used_compat_alias = 0;
+    }
+
+    if (dsd_strcasecmp(val, "auto") == 0) {
+        *out_mode = DSDCFG_MODE_AUTO;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "p25p1") == 0) {
+        *out_mode = DSDCFG_MODE_P25P1;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "p25p1_only") == 0) {
+        *out_mode = DSDCFG_MODE_P25P1;
+        if (used_compat_alias) {
+            *used_compat_alias = 1;
+        }
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "p25p2") == 0) {
+        *out_mode = DSDCFG_MODE_P25P2;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "p25p2_only") == 0) {
+        *out_mode = DSDCFG_MODE_P25P2;
+        if (used_compat_alias) {
+            *used_compat_alias = 1;
+        }
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "dmr") == 0) {
+        *out_mode = DSDCFG_MODE_DMR;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "nxdn48") == 0) {
+        *out_mode = DSDCFG_MODE_NXDN48;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "nxdn96") == 0) {
+        *out_mode = DSDCFG_MODE_NXDN96;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "x2tdma") == 0) {
+        *out_mode = DSDCFG_MODE_X2TDMA;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "ysf") == 0) {
+        *out_mode = DSDCFG_MODE_YSF;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "dstar") == 0) {
+        *out_mode = DSDCFG_MODE_DSTAR;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "edacs_pv") == 0) {
+        *out_mode = DSDCFG_MODE_EDACS_PV;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "edacs") == 0 || dsd_strcasecmp(val, "provoice") == 0) {
+        *out_mode = DSDCFG_MODE_EDACS_PV;
+        if (used_compat_alias) {
+            *used_compat_alias = 1;
+        }
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "dpmr") == 0) {
+        *out_mode = DSDCFG_MODE_DPMR;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "m17") == 0) {
+        *out_mode = DSDCFG_MODE_M17;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "tdma") == 0) {
+        *out_mode = DSDCFG_MODE_TDMA;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "analog") == 0) {
+        *out_mode = DSDCFG_MODE_ANALOG;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "analog_monitor") == 0) {
+        *out_mode = DSDCFG_MODE_ANALOG;
+        if (used_compat_alias) {
+            *used_compat_alias = 1;
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int
+is_mode_decode_key(const char* section, const char* key) {
+    if (!section || !key) {
+        return 0;
+    }
+    return dsd_strcasecmp(section, "mode") == 0 && dsd_strcasecmp(key, "decode") == 0;
+}
+
 /**
  * @brief Copy a path value with shell-like expansion (~, $VAR, ${VAR}).
  *
@@ -422,35 +526,9 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
         if (strcmp(current_section, "mode") == 0) {
             cfg->has_mode = 1;
             if (strcmp(key_lc, "decode") == 0) {
-                if (dsd_strcasecmp(val, "auto") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_AUTO;
-                } else if (dsd_strcasecmp(val, "p25p1") == 0 || dsd_strcasecmp(val, "p25p1_only") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_P25P1;
-                } else if (dsd_strcasecmp(val, "p25p2") == 0 || dsd_strcasecmp(val, "p25p2_only") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_P25P2;
-                } else if (dsd_strcasecmp(val, "dmr") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_DMR;
-                } else if (dsd_strcasecmp(val, "nxdn48") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_NXDN48;
-                } else if (dsd_strcasecmp(val, "nxdn96") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_NXDN96;
-                } else if (dsd_strcasecmp(val, "x2tdma") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_X2TDMA;
-                } else if (dsd_strcasecmp(val, "ysf") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_YSF;
-                } else if (dsd_strcasecmp(val, "dstar") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_DSTAR;
-                } else if (dsd_strcasecmp(val, "edacs") == 0 || dsd_strcasecmp(val, "provoice") == 0
-                           || dsd_strcasecmp(val, "edacs_pv") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_EDACS_PV;
-                } else if (dsd_strcasecmp(val, "dpmr") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_DPMR;
-                } else if (dsd_strcasecmp(val, "m17") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_M17;
-                } else if (dsd_strcasecmp(val, "tdma") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_TDMA;
-                } else if (dsd_strcasecmp(val, "analog") == 0 || dsd_strcasecmp(val, "analog_monitor") == 0) {
-                    cfg->decode_mode = DSDCFG_MODE_ANALOG;
+                dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
+                if (parse_decode_mode_value(val, &mode, NULL) == 0) {
+                    cfg->decode_mode = mode;
                 }
             } else if (strcmp(key_lc, "demod") == 0) {
                 cfg->has_demod = 1;
@@ -1480,6 +1558,46 @@ validate_enum_value(const char* val, const char* allowed) {
     return -1;
 }
 
+static void
+add_decode_mode_validation_error(dsdcfg_diagnostics_t* diags, int line_num, const char* section, const char* key,
+                                 const char* val, const char* allowed) {
+    if (!diags || !val) {
+        return;
+    }
+    char msg[256];
+    snprintf(msg, sizeof msg,
+             "Invalid value '%s' (allowed: %s, aliases: p25p1_only|p25p2_only|edacs|provoice|analog_monitor)", val,
+             allowed ? allowed : "auto|p25p1|p25p2|dmr|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog");
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, section ? section : "", key ? key : "", msg);
+}
+
+static int
+validate_enum_with_compat_aliases(const char* section, const char* key, const char* val, const char* allowed,
+                                  dsdcfg_diagnostics_t* diags, int line_num, const char* diag_section,
+                                  const char* diag_key) {
+    if (!val) {
+        return -1;
+    }
+    if (is_mode_decode_key(section, key)) {
+        dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
+        if (parse_decode_mode_value(val, &mode, NULL) == 0) {
+            return 0;
+        }
+        add_decode_mode_validation_error(diags, line_num, diag_section, diag_key, val, allowed);
+        return -1;
+    }
+
+    if (allowed && validate_enum_value(val, allowed) != 0) {
+        char msg[256];
+        snprintf(msg, sizeof msg, "Invalid value '%s' (allowed: %s)", val, allowed);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section ? diag_section : "", diag_key ? diag_key : "",
+                         msg);
+        return -1;
+    }
+
+    return 0;
+}
+
 int
 dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
     if (!diags) {
@@ -1660,11 +1778,8 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
                             break;
                         }
                         case DSDCFG_TYPE_ENUM:
-                            if (e->allowed && validate_enum_value(val, e->allowed) != 0) {
-                                char msg[256];
-                                snprintf(msg, sizeof msg, "Invalid value '%s' (allowed: %s)", val, e->allowed);
-                                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, current_section, key, msg);
-                            }
+                            (void)validate_enum_with_compat_aliases(target_sec, target_key, val, e->allowed, diags,
+                                                                    line_num, current_section, key);
                             break;
                         default: /* STRING, PATH, FREQ - accept any value */ break;
                     }
@@ -1719,11 +1834,8 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
                 break;
             }
             case DSDCFG_TYPE_ENUM:
-                if (entry->allowed && validate_enum_value(val, entry->allowed) != 0) {
-                    char msg[256];
-                    snprintf(msg, sizeof msg, "Invalid value '%s' (allowed: %s)", val, entry->allowed);
-                    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, current_section, key, msg);
-                }
+                (void)validate_enum_with_compat_aliases(current_section, key, val, entry->allowed, diags, line_num,
+                                                        current_section, key);
                 break;
             default: /* STRING, PATH, FREQ - accept any value */ break;
         }
@@ -1843,35 +1955,9 @@ apply_profile_key(dsdneoUserConfig* cfg, const char* dotted_key, const char* val
     } else if (strcmp(section, "mode") == 0) {
         cfg->has_mode = 1;
         if (strcmp(key, "decode") == 0) {
-            if (dsd_strcasecmp(val, "auto") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_AUTO;
-            } else if (dsd_strcasecmp(val, "p25p1") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_P25P1;
-            } else if (dsd_strcasecmp(val, "p25p2") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_P25P2;
-            } else if (dsd_strcasecmp(val, "dmr") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_DMR;
-            } else if (dsd_strcasecmp(val, "nxdn48") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_NXDN48;
-            } else if (dsd_strcasecmp(val, "nxdn96") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_NXDN96;
-            } else if (dsd_strcasecmp(val, "x2tdma") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_X2TDMA;
-            } else if (dsd_strcasecmp(val, "ysf") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_YSF;
-            } else if (dsd_strcasecmp(val, "dstar") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_DSTAR;
-            } else if (dsd_strcasecmp(val, "edacs_pv") == 0 || dsd_strcasecmp(val, "edacs") == 0
-                       || dsd_strcasecmp(val, "provoice") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_EDACS_PV;
-            } else if (dsd_strcasecmp(val, "dpmr") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_DPMR;
-            } else if (dsd_strcasecmp(val, "m17") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_M17;
-            } else if (dsd_strcasecmp(val, "tdma") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_TDMA;
-            } else if (dsd_strcasecmp(val, "analog") == 0) {
-                cfg->decode_mode = DSDCFG_MODE_ANALOG;
+            dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
+            if (parse_decode_mode_value(val, &mode, NULL) == 0) {
+                cfg->decode_mode = mode;
             }
         } else if (strcmp(key, "demod") == 0) {
             cfg->has_demod = 1;

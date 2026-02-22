@@ -14,6 +14,10 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Start the async UI subsystem (spawns UI thread).
  * @return 0 on success or when already running; negative on failure.
@@ -43,3 +47,7 @@ int ui_drain_cmds(dsd_opts* opts, dsd_state* state);
  * publish snapshots.
  */
 int ui_is_thread_context(void);
+
+#ifdef __cplusplus
+}
+#endif

@@ -206,6 +206,12 @@ dsd_neo_add_public_header_smoke_test(
   C)
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_ui_async
+  HEADERS_PUBLIC_UI_ASYNC
+  dsd-neo/ui/ui_async.h
+  C)
+
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_cleanup
   HEADERS_PUBLIC_CORE_CLEANUP
   dsd-neo/core/cleanup.h
@@ -514,6 +520,31 @@ add_executable(dsd-neo_test_runtime_config_env runtime/test_runtime_config_env.c
 target_include_directories(dsd-neo_test_runtime_config_env PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dsd-neo_test_runtime_config_env PRIVATE dsd-neo_runtime dsd-neo_test_support)
 add_test(NAME RUNTIME_CONFIG_ENV COMMAND dsd-neo_test_runtime_config_env)
+
+add_executable(dsd-neo_test_runtime_config_apply runtime/test_runtime_config_apply.cpp)
+set_source_files_properties(runtime/test_runtime_config_apply.cpp PROPERTIES LANGUAGE C)
+target_include_directories(dsd-neo_test_runtime_config_apply PRIVATE ${PROJECT_SOURCE_DIR}/include)
+set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
+  dsd-neo_ui_terminal
+  dsd-neo_engine
+  ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+  target_link_libraries(dsd-neo_test_runtime_config_apply PRIVATE
+    "-Wl,--start-group"
+    ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+    "-Wl,--end-group"
+    ${LIBS}
+    dsd-neo_test_support
+  )
+else()
+  target_link_libraries(dsd-neo_test_runtime_config_apply PRIVATE
+    ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+    ${LIBS}
+    dsd-neo_test_support
+  )
+endif()
+add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures")
 file(MAKE_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}")

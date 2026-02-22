@@ -264,6 +264,64 @@ test_profile_bool_aliases(void) {
 }
 
 static int
+test_profile_decode_mode_aliases(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[mode]\n"
+                             "decode = \"auto\"\n"
+                             "\n"
+                             "[profile.alias_p25p1]\n"
+                             "mode.decode = \"p25p1_only\"\n"
+                             "\n"
+                             "[profile.alias_p25p2]\n"
+                             "mode.decode = \"p25p2_only\"\n"
+                             "\n"
+                             "[profile.alias_analog]\n"
+                             "mode.decode = \"analog_monitor\"\n"
+                             "\n"
+                             "[profile.alias_edacs]\n"
+                             "mode.decode = \"edacs\"\n"
+                             "\n"
+                             "[profile.alias_provoice]\n"
+                             "mode.decode = \"provoice\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    struct {
+        const char* profile_name;
+        dsdneoUserDecodeMode expected_mode;
+    } cases[] = {
+        {"alias_p25p1", DSDCFG_MODE_P25P1},       {"alias_p25p2", DSDCFG_MODE_P25P2},
+        {"alias_analog", DSDCFG_MODE_ANALOG},     {"alias_edacs", DSDCFG_MODE_EDACS_PV},
+        {"alias_provoice", DSDCFG_MODE_EDACS_PV},
+    };
+
+    int result = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsdneoUserConfig cfg;
+        memset(&cfg, 0, sizeof(cfg));
+
+        int rc = dsd_user_config_load_profile(path, cases[i].profile_name, &cfg);
+        if (rc != 0) {
+            fprintf(stderr, "FAIL: load with profile %s failed (rc=%d)\n", cases[i].profile_name, rc);
+            result = 1;
+            continue;
+        }
+        if (cfg.decode_mode != cases[i].expected_mode) {
+            fprintf(stderr, "FAIL: profile %s expected decode_mode %d, got %d\n", cases[i].profile_name,
+                    (int)cases[i].expected_mode, (int)cfg.decode_mode);
+            result = 1;
+        }
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_unknown_profile(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -577,6 +635,7 @@ main(void) {
     rc |= test_load_with_profile_override();
     rc |= test_profile_multiple_overrides();
     rc |= test_profile_bool_aliases();
+    rc |= test_profile_decode_mode_aliases();
     rc |= test_unknown_profile();
     rc |= test_list_profiles();
     rc |= test_list_profiles_empty();

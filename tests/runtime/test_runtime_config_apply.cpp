@@ -20,7 +20,25 @@
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <stdio.h>
+#include <string.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+#define DSD_NEO_MAIN
+#include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/protocol/dstar/dstar_const.h>
+#include <dsd-neo/protocol/p25/p25p1_const.h>
+#include <dsd-neo/protocol/provoice/provoice_const.h>
+#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
+#undef DSD_NEO_MAIN
+#ifdef __cplusplus
+}
+#endif
 
 int
 main(void) {
