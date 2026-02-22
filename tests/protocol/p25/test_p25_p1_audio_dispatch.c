@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
 static int g_ms_calls = 0;
 static int g_ss_calls = 0;
 static int g_fm_calls = 0;

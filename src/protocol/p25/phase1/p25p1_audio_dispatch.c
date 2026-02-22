@@ -5,8 +5,10 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 void
 p25p1_play_imbe_audio(dsd_opts* opts, dsd_state* state) {
