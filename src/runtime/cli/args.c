@@ -18,7 +18,6 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
-#include <features.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
