@@ -20,5 +20,6 @@ if [[ -d "$hooks_dir" ]]; then
   shopt -u nullglob
 fi
 
-echo "Done. Commits auto-format staged C/C++ files; pushes run local CI-style strict checks (format, clang-tidy, cppcheck, iwyu, fanalyzer, semgrep, optional scan-build) on changed paths."
+echo "Done. Commits auto-format staged C/C++ files; pushes run local CI-style strict checks (format, clang-tidy, cppcheck, iwyu, fanalyzer, semgrep) on changed paths."
+echo "Optional full scan-build pass: set DSD_HOOK_RUN_SCAN_BUILD=1 for pre-push/preflight."
 echo "Tip: run tools/preflight_ci.sh to execute the same pre-push checks manually."

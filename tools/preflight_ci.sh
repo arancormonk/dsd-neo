@@ -14,13 +14,14 @@ Options:
   -h, --help      Show this help.
 
 Environment:
-  DSD_HOOK_RUN_SCAN_BUILD=auto|1|0
+  DSD_HOOK_RUN_SCAN_BUILD=1|0
+    1 => run optional scan-build full rebuild (default: 0/off)
   DSD_HOOK_FAIL_ON_MISSING_TOOLS=1|0
 
 Examples:
   tools/preflight_ci.sh
   tools/preflight_ci.sh --base origin/main
-  DSD_HOOK_RUN_SCAN_BUILD=0 tools/preflight_ci.sh
+  DSD_HOOK_RUN_SCAN_BUILD=1 tools/preflight_ci.sh
 USAGE
 }
 
