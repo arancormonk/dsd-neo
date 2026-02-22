@@ -28,7 +28,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/threading.h>
 #include <pulse/simple.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -691,7 +690,6 @@ dsd_audio_open_output(const dsd_audio_params* params) {
         if (async_sync_inited) {
             (void)dsd_cond_destroy(&stream->cv);
             (void)dsd_mutex_destroy(&stream->mu);
-            async_sync_inited = 0;
         }
     }
 

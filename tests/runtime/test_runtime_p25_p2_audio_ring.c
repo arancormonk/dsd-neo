@@ -7,6 +7,8 @@
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <string.h>
 
+#include "dsd-neo/core/state_fwd.h"
+
 static int
 is_all_zero_160(const float* buf) {
     for (int i = 0; i < 160; i++) {
