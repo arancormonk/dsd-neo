@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <fcntl.h> // IWYU pragma: keep
 #include <mbelib.h>
 #include <sndfile.h>
 #include <stdarg.h>

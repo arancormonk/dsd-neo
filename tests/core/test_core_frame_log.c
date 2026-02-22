@@ -17,6 +17,7 @@
 #undef DSD_NEO_MAIN
 
 #include <errno.h>
+#include <fcntl.h> // IWYU pragma: keep
 #include <stdio.h>
 #include <string.h>
 

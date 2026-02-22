@@ -16,6 +16,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <errno.h>
+#include <fcntl.h> // IWYU pragma: keep
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

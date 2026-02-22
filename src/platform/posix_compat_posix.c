@@ -17,7 +17,6 @@
 
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 int
 dsd_setenv(const char* name, const char* value, int overwrite) {

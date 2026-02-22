@@ -6,11 +6,11 @@
 #include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/shutdown.h>
-#include <stddef.h>
+#include <stddef.h> // IWYU pragma: keep
 #include <stdint.h>
 
 #if !defined(_WIN32)
-#include <sys/types.h>
+#include <sys/types.h> // IWYU pragma: keep
 #include <sys/wait.h>
 #include <unistd.h>
 #endif

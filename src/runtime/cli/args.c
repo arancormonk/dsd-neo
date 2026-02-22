@@ -548,9 +548,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     // Reset getopt index and parse short options here (migrated)
     extern int optind;
     // NOTE: We invoke getopt() multiple times (unit tests, bootstrap flows).
-    // glibc requires optind=0 to fully reset internal state; BSD variants use optreset.
+    // Linux getopt supports optind=0 full reset; BSD variants use optreset.
     optind = 1;
-#if defined(__GLIBC__)
+#if defined(__linux__)
     optind = 0;
 #endif
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)

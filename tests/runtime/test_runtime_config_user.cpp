@@ -15,6 +15,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#include <fcntl.h> // IWYU pragma: keep
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>

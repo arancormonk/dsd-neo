@@ -12,6 +12,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#include <fcntl.h> // IWYU pragma: keep
 #include <limits.h>
 #include <stdatomic.h>
 #include <stdint.h>
