@@ -247,6 +247,8 @@ Examples
 - Kenwood 15‑bit scrambler (decimal): `-9 <dec>`
 - Anytone 16‑bit BP (hex): `-A <hex>`
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)
+- For proprietary modes where key->keystream mapping is unknown (for example Vertex Std voice ALG `0x07`), use
+  `-S`; key-only input (`-1`/`-k`/`-K`) may not decrypt.
 - Import keys CSV (decimal): `-k <file>`
 - Import keys CSV (hex): `-K <file>`
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing)

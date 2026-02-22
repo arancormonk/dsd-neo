@@ -727,6 +727,13 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                 state->DMRvcL++;
             }
 
+            if (state->currentslot == 0 && state->payload_algid == 0x07 && state->DMRvcL == 0
+                && state->straight_ks != 1) {
+                fprintf(stderr,
+                        "\n DMR Vertex Std voice decrypt is not auto-implemented; use -S bits:hex[:offset[:step]] "
+                        "with a valid keystream.");
+            }
+
             //DMR and P25p2 DES-OFB 56 Handling, Slot 1, VCH 0 -- consider moving into the AES handler
             if ((state->currentslot == 0 && state->payload_algid == 0x22 && state->R != 0)
                 || (state->currentslot == 0 && state->payload_algid == 0x81 && state->R != 0)) {
@@ -1156,6 +1163,13 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
                     pos++;
                 }
                 state->DMRvcR++;
+            }
+
+            if (state->currentslot == 1 && state->payload_algidR == 0x07 && state->DMRvcR == 0
+                && state->straight_ks != 1) {
+                fprintf(stderr,
+                        "\n DMR Vertex Std voice decrypt is not auto-implemented; use -S bits:hex[:offset[:step]] "
+                        "with a valid keystream.");
             }
 
             //DMR and P25p2 DES-OFB 56 Handling, Slot 2, VCH 1 -- Consider moving into AES handler
