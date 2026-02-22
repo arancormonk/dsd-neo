@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 

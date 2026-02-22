@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/runtime/log.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 

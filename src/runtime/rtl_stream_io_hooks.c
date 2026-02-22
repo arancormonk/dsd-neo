@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <stddef.h>
 
 #include "dsd-neo/core/state_fwd.h"
 
