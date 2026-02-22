@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
