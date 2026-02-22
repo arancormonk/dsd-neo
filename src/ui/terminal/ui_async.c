@@ -5,6 +5,7 @@
 
 #include <curses.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -16,7 +17,6 @@
 #include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <dsd-neo/ui/ui_snapshot.h>
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 

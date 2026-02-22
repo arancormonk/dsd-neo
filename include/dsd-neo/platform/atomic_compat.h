@@ -60,6 +60,6 @@ atomic_compare_exchange_strong(atomic_int* obj, int* expected, int desired) {
 
 #else
 
-#include <stdatomic.h>
+#include <stdatomic.h> // IWYU pragma: export
 
 #endif
