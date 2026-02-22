@@ -6,9 +6,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
@@ -79,51 +82,55 @@ unpack_byte_array_into_bit_array(uint8_t* input, uint8_t* output, int len) {
 int
 main(void) {
     int rc = 0;
-    dsd_state st;
-    memset(&st, 0, sizeof(st));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        fprintf(stderr, "allocation failed\n");
+        return 1;
+    }
 
-    st.straight_ks = 1;
-    st.straight_mod = 77;
+    st->straight_ks = 1;
+    st->straight_mod = 77;
     {
         char arg[] = "0:AA";
-        straight_mod_xor_keystream_creation(&st, arg);
-        rc |= expect_eq_int("len-zero-disabled", st.straight_ks, 0);
-        rc |= expect_eq_int("len-zero-mod", st.straight_mod, 0);
+        straight_mod_xor_keystream_creation(st, arg);
+        rc |= expect_eq_int("len-zero-disabled", st->straight_ks, 0);
+        rc |= expect_eq_int("len-zero-mod", st->straight_mod, 0);
     }
 
-    st.straight_ks = 1;
-    st.straight_mod = 55;
+    st->straight_ks = 1;
+    st->straight_mod = 55;
     {
         char arg[] = "999:AA";
-        straight_mod_xor_keystream_creation(&st, arg);
-        rc |= expect_eq_int("len-too-large-disabled", st.straight_ks, 0);
-        rc |= expect_eq_int("len-too-large-mod", st.straight_mod, 0);
+        straight_mod_xor_keystream_creation(st, arg);
+        rc |= expect_eq_int("len-too-large-disabled", st->straight_ks, 0);
+        rc |= expect_eq_int("len-too-large-mod", st->straight_mod, 0);
     }
 
-    st.straight_ks = 1;
-    st.straight_mod = 11;
+    st->straight_ks = 1;
+    st->straight_mod = 11;
     {
         char arg[] = "49";
-        straight_mod_xor_keystream_creation(&st, arg);
-        rc |= expect_eq_int("malformed-disabled", st.straight_ks, 0);
-        rc |= expect_eq_int("malformed-mod", st.straight_mod, 0);
+        straight_mod_xor_keystream_creation(st, arg);
+        rc |= expect_eq_int("malformed-disabled", st->straight_ks, 0);
+        rc |= expect_eq_int("malformed-mod", st->straight_mod, 0);
     }
 
-    memset(st.static_ks_bits, 0, sizeof(st.static_ks_bits));
+    memset(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
     {
         char arg[] = "49:123456789ABC80";
-        straight_mod_xor_keystream_creation(&st, arg);
-        rc |= expect_eq_int("valid-enabled", st.straight_ks, 1);
-        rc |= expect_eq_int("valid-mod", st.straight_mod, 49);
-        rc |= expect_eq_u8("slot0-first-byte", bits_to_u8(st.static_ks_bits[0], 0), 0x12U);
-        rc |= expect_eq_u8("slot0-second-byte", bits_to_u8(st.static_ks_bits[0], 8), 0x34U);
-        rc |= expect_eq_u8("slot1-first-byte", bits_to_u8(st.static_ks_bits[1], 0), 0x12U);
-        rc |= expect_eq_int("slot0-bit48", st.static_ks_bits[0][48], 1);
-        rc |= expect_eq_int("slot1-bit48", st.static_ks_bits[1][48], 1);
+        straight_mod_xor_keystream_creation(st, arg);
+        rc |= expect_eq_int("valid-enabled", st->straight_ks, 1);
+        rc |= expect_eq_int("valid-mod", st->straight_mod, 49);
+        rc |= expect_eq_u8("slot0-first-byte", bits_to_u8(st->static_ks_bits[0], 0), 0x12U);
+        rc |= expect_eq_u8("slot0-second-byte", bits_to_u8(st->static_ks_bits[0], 8), 0x34U);
+        rc |= expect_eq_u8("slot1-first-byte", bits_to_u8(st->static_ks_bits[1], 0), 0x12U);
+        rc |= expect_eq_int("slot0-bit48", st->static_ks_bits[0][48], 1);
+        rc |= expect_eq_int("slot1-bit48", st->static_ks_bits[1][48], 1);
     }
 
     if (rc == 0) {
         printf("CORE_STRAIGHT_KEYSTREAM_VALIDATION: OK\n");
     }
+    free(st);
     return rc;
 }
