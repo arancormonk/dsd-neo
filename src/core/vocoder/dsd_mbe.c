@@ -103,6 +103,9 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     char file_err_str[260];
     srand(time(NULL)); //random seed for some file names using random numbers in file name
 
+    // Playback mode: keep static WAV writing functional even when audio output is disabled (-o null).
+    const int want_static_wav = (opts->wav_out_f != NULL && opts->static_wav_file == 1) ? 1 : 0;
+
     for (i = state->optind; i < argc; i++) {
         sprintf(opts->mbe_in_file, "%s", argv[i]);
         openMbeInFile(opts, state);
@@ -135,18 +138,18 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                     state->p25_p1_voice_err_hist_sum -= old;
                     state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
                 }
-                if (opts->audio_out == 1 && opts->floating_point == 0) {
+                if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
                     processAudio(opts, state);
                 }
 
                 //static wav file only, handled by playSynthesizedVoiceMS
-                //NOTE: if using -o null, playSynthesizedVoiceMS will not write to static wav file
+                //NOTE: Per-call (-P) still writes without event metadata for these legacy frame-only formats.
                 //Per call will work, but will end up with a single file with no meta info
                 if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
                     writeSynthesizedVoice(opts, state);
                 }
 
-                if (opts->audio_out == 1 && opts->floating_point == 0) {
+                if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
                     playSynthesizedVoiceMS(opts, state);
                 }
                 if (opts->floating_point == 1) {
@@ -192,18 +195,18 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                     state->err_str[sizeof(state->err_str) - 1] = '\0';
                 }
 
-                if (opts->audio_out == 1 && opts->floating_point == 0) {
+                if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
                     processAudio(opts, state);
                 }
 
                 //static wav file only, handled by playSynthesizedVoiceMS
-                //NOTE: if using -o null, playSynthesizedVoiceMS will not write to static wav file
+                //NOTE: Per-call (-P) still writes without event metadata for these legacy frame-only formats.
                 //Per call will work, but will end up with a single file with no meta info
                 if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
                     writeSynthesizedVoice(opts, state);
                 }
 
-                if (opts->audio_out == 1 && opts->floating_point == 0) {
+                if ((opts->audio_out == 1 || want_static_wav) && opts->floating_point == 0) {
                     playSynthesizedVoiceMS(opts, state);
                 }
                 if (opts->floating_point == 1) {
@@ -1642,7 +1645,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         }
         if (allow_other) {
             state->debug_audio_errors += state->errs2;
-            if (opts->audio_out == 1 && opts->floating_point == 0) {
+            if ((opts->audio_out == 1 || (opts->wav_out_f != NULL && opts->static_wav_file == 1))
+                && opts->floating_point == 0) {
                 if (is_p25p2 && state->currentslot == 1) {
                     // Use right-channel processing when current slot is 2
                     processAudioR(opts, state);

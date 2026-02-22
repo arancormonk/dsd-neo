@@ -26,6 +26,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N`
 - Play saved MBE files: `dsd-neo -r *.mbe`
+- Decode MBE to a WAV (no speaker output): `dsd-neo -o null -w decoded.wav -r call.mbe`
 
 Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the interactive setup (respects
 `DSD_NEO_NO_BOOTSTRAP`). When a config file is enabled and loads successfully, a no-arg run reuses it; use
